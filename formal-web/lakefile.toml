@@ -1,0 +1,10 @@
+name = "formal-web"
+version = "0.1.0"
+defaultTargets = ["formal-web"]
+
+[[lean_lib]]
+name = "FormalWeb"
+
+[[lean_exe]]
+name = "formal-web"
+root = "Main"
