@@ -1,0 +1,4 @@
+/.lake
+/states/
+/tla_specs/states/
+*.out

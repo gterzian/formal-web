@@ -8,3 +8,7 @@ name = "FormalWeb"
 [[lean_exe]]
 name = "formal-web"
 root = "Main"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
