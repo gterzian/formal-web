@@ -2,3 +2,4 @@
 /states/
 /tla_specs/states/
 *.out
+*.tlc
