@@ -25,11 +25,12 @@ The Rust modules should be sequential logic only, with the exception of embarras
 Each such Rust module should be a black box with an input and output — modeled as atomic functions from Lean's perspective.
 These can be unverified, or verified separately (for a given input and output).
 
-In the end, Lean will be used to implement all concurrent aspects of the engine, and Rust will be used for modular algorithms.
-Rust modules are the isolation boundary — they are the only thing that runs in a sandboxed process.
+In the end, Lean will be used to implement all concurrent aspects of the engine, and Rust will be used for modular sequential and/or embarassingly parralel algorithms.
 
 ---
 
 > **Example:** All Web engines today run some kind of content process, which you can think of as a tab.
 > But in this design, the engine runs a single main process that manages all tabs, and for each tab there would be a process
-> only running a Rust module managing the DOM and calling into JavaScript.
+> only running a Rust module managing the DOM, calling into JavaScript, and producing a display list when needed. 
+> That means that the event-loop for the tab, and all other concurrent aspects,
+> would be part of the main process and be written in Lean.
