@@ -30,6 +30,8 @@ UpdatePort(old, new) == (ports \ {old}) \cup {new}
 Init == ports = {}
 
 ----------------------------------------------------------------------------
+
+\* https://html.spec.whatwg.org/multipage/l#message-port-post-message-steps
 NewMessageChannel(id1, id2, el) ==
     /\ id1 /= id2
     /\ el \in EventLoopId
@@ -45,12 +47,14 @@ NewMessageChannel(id1, id2, el) ==
              queue         |-> <<>> ]
        }
 
+\* https://html.spec.whatwg.org/multipage/#message-ports:transfer-steps
 Transfer(id, el) ==
     \E p \in ports :
         /\ p.id = id
         /\ p.event_loop = el
         /\ ports' = UpdatePort(p, [p EXCEPT !.event_loop = NoEventLoopId])
 
+\* https://html.spec.whatwg.org/multipage/#message-ports:transfer-receiving-steps
 TransferReceive(id, el) ==
     /\ el \in EventLoopId
     /\ \E p \in ports :
@@ -59,6 +63,7 @@ TransferReceive(id, el) ==
         /\ ports' = UpdatePort(p, [p EXCEPT !.event_loop = el])
 
 
+\* https://html.spec.whatwg.org/multipage/l#message-port-post-message-steps
 PostMessage(src_id, el, msg) ==
     \E src, tgt \in ports :
         /\ src.id           = src_id
@@ -67,6 +72,8 @@ PostMessage(src_id, el, msg) ==
         /\ SelectSeq(tgt.queue, LAMBDA e : e = msg) = <<>>
         /\ ports' = UpdatePort(tgt, [tgt EXCEPT !.queue = Append(@, msg)])
 
+\* https://html.spec.whatwg.org/multipage/l#message-port-post-message-steps
+\* The part inside `Add a task that runs the following steps`.
 ReceiveMessage(port_id) ==
     \E p \in ports :
         /\ p.id = port_id

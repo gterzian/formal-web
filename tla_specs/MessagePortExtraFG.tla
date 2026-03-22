@@ -90,18 +90,18 @@ MsgInFlight(msg, tgt_id) ==
                  /\ \E j \in DOMAIN el_tasks[el][i].buf :
                         el_tasks[el][i].buf[j] = msg
 
-\* Direct delivery to queue is only valid when no older Singles or NewTasks
-\* are pending for this target. This matches Servo's sequential event loop
-\* semantics: all prior routing_queue tasks are drained before the next
-\* same-EL PostMessage can fire.
 NoPendingMsgs(tgt_id) ==
     /\ ~(\E i \in DOMAIN routing_queue :
             routing_queue[i].kind = "Single" /\
             routing_queue[i].tgt  = tgt_id)
-    /\ ~(\E el \in EventLoopId :
-         \E i \in DOMAIN el_tasks[el] :
-            el_tasks[el][i].port = tgt_id)
 
+\* For some actions running on an event-loop, 
+\* we must make them dependent on an empty task queue
+\* to preserve the serialization property of task queues. 
+NoPendingTasks(el) ==
+    /\ Len(el_tasks[el]) = 0
+
+\* Create a new entangled pair of ports in an event-loop.
 NewChannel(id1, id2, el) ==
     /\ id1 \in PortId /\ id2 \in PortId /\ id1 /= id2
     /\ el  \in EventLoopId
@@ -115,6 +115,8 @@ NewChannel(id1, id2, el) ==
                  queue |-> <<>>, buf |-> <<>>])
     /\ UNCHANGED <<routing_queue, el_tasks>>
 
+\* Send a message: the message goes to the message queue
+\* diretcly only if sender and receiver are managed in the same event-loop.
 PostMessage(src_id, el, msg) ==
     /\ src_id \in DOMAIN port_state
     /\ port_state[src_id].ts \in {TS_Managed}
@@ -124,6 +126,7 @@ PostMessage(src_id, el, msg) ==
        /\ ~MsgInFlight(msg, tgt_id)
        /\ IF /\ port_state[tgt_id].owner = el
           /\ NoPendingMsgs(tgt_id)
+          /\ NoPendingTasks(el)
           /\ port_state[tgt_id].ts \in {TS_Managed}
           THEN /\ port_state' = [port_state EXCEPT
                       ![tgt_id].queue = Append(@, msg)]
@@ -132,6 +135,7 @@ PostMessage(src_id, el, msg) ==
                       [kind |-> "Single", tgt |-> tgt_id, msg |-> msg])
                /\ UNCHANGED <<port_state, el_tasks>>
 
+\* The equivalent of the message task running and firing the message event.
 ReceiveMessage(port_id, el) ==
     /\ port_id \in DOMAIN port_state
     /\ port_state[port_id].ts = TS_Managed
@@ -141,6 +145,9 @@ ReceiveMessage(port_id, el) ==
            ![port_id].queue = Tail(@)]
     /\ UNCHANGED <<routing_queue, el_tasks>>
 
+\* Transfer a port out of its owning event-loop.
+\* Ports can be re-transfered before the previous transfer completes, 
+\* which puts them in failed transfer mode.
 Transfer(id, el) ==
     /\ id \in DOMAIN port_state
     /\ port_state[id].owner = el
@@ -158,6 +165,11 @@ Transfer(id, el) ==
                  ![id].owner = NoEventLoopId]
           /\ UNCHANGED <<el_tasks, routing_queue>>
 
+\* A port is received in an event-loop,
+\* if a current transfer is in progress, switch to completion in progress,
+\* and queue an event-loop task to complete the transfer.
+\* If this happens while a previous transfer failed, switch to noting the new event-loop
+\* requesting completetion.
 TransferReceive(id, el) ==
     /\ id \in DOMAIN port_state
     /\ el \in EventLoopId
@@ -176,6 +188,9 @@ TransferReceive(id, el) ==
                  ![id].owner = el]
           /\ UNCHANGED <<routing_queue, el_tasks>>
 
+\* A parallel-queue at the level of the user agent, meaning there is only one.
+\* processes messages on at a time, buffers messages when necessary,
+\* and communicates with event-loops by queuing tasks.
 RouteMessage ==
     /\ routing_queue /= <<>>
     /\ LET item   == Head(routing_queue)
@@ -214,6 +229,10 @@ RouteMessage ==
                       ![tgt_id].buf = Append(p.buf, item.msg)]
                /\ UNCHANGED el_tasks
 
+\* Run a task on an event-loop, either
+\* to complete a tranfer or handling an incoming message. 
+\* Note: All actions taking `el` are also implicit event-loop task,
+\* but are modelled as independent to avoid a massive RunTask action.
 RunTask(el) ==
     /\ el_tasks[el] /= <<>>
     /\ LET task    == Head(el_tasks[el])
