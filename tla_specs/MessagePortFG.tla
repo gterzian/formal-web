@@ -60,7 +60,7 @@ PostMessage(src_id, el, msg) ==
        /\ port_state' = [port_state EXCEPT
               ![tgt_id].queue = Append(@, msg)]
 
-Deliver(port_id, el) ==
+ReceiveMessage(port_id, el) ==
     /\ port_id \in DOMAIN port_state
     /\ port_state[port_id].owner = el
     /\ port_state[port_id].ts \in {TS_Managed, TS_CompletionInProgress}
@@ -92,13 +92,13 @@ TransferReceive(id, el) ==
                  ![id].ts    = TS_CompletionRequested,
                  ![id].owner = el]
 
-AckSuccess(id) ==
+TransferCompleted(id) ==
     /\ id \in DOMAIN port_state
     /\ port_state[id].ts = TS_CompletionInProgress
     /\ port_state' = [port_state EXCEPT
            ![id].ts = TS_Managed]
 
-ReturnBuffer(id) ==
+TransferCancelled(id) ==
     /\ id \in DOMAIN port_state
     /\ \/ /\ port_state[id].ts = TS_CompletionFailed
           /\ port_state' = [port_state EXCEPT
@@ -112,11 +112,11 @@ ReturnBuffer(id) ==
 Next ==
     \/ \E id1, id2 \in PortId, el \in EventLoopId : NewChannel(id1, id2, el)
     \/ \E pid \in PortId, mid \in MessageId, el \in EventLoopId : PostMessage(pid, el, mid)
-    \/ \E pid \in PortId, el \in EventLoopId : Deliver(pid, el)
+    \/ \E pid \in PortId, el \in EventLoopId : ReceiveMessage(pid, el)
     \/ \E id \in PortId, el \in EventLoopId : Transfer(id, el)
     \/ \E id \in PortId, el \in EventLoopId : TransferReceive(id, el)
-    \/ \E id \in PortId : AckSuccess(id)
-    \/ \E id \in PortId : ReturnBuffer(id)
+    \/ \E id \in PortId : TransferCompleted(id)
+    \/ \E id \in PortId : TransferCancelled(id)
 
 Spec == Init /\ [][Next]_port_state
 
