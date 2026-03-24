@@ -5,9 +5,9 @@ The below diagram gives an overview of the architecture.
 
 ```
 ┌─────────────────────────────────┐
-│         TLA+ specs              │  high-level design thinking
+│         TLA+ specs              │  highest-level design thinking
 ├─────────────────────────────────┤
-│         Lean specs              │  translation of TLA+ specs
+│         Lean specs              │  TLA-like Lean, high-level state machines or TLS
 ├─────────────────────────────────┤
 │      Lean implementations       │  concurrent logic, I/O
 ├─────────────────────────────────┤
@@ -17,7 +17,7 @@ The below diagram gives an overview of the architecture.
 ```
 
 - TLA+ specs for high-level design thinking.
-- Lean "specs", written in a TLA-like style, as a translation of the TLA+ specs.
+- Lean "specs", written in a TLA-like style to model state transitions.
 - Lean "implementations", using the Lean I/O capabilities, implementing the specs.
 - Rust modules called into from Lean using FFI.
 
