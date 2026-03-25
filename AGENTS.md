@@ -18,3 +18,4 @@ if they may later be split into more modular instruction files.
 - Message kinds used by the runtime are good candidates for inductive action/message types shared with or related to the LTS labels.
 - Lean uses `-- TODO:` comments, not `// TODO:` comments.
 - The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
+- Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
