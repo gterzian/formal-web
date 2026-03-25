@@ -2,7 +2,9 @@ namespace FormalWeb
 
 /-- https://html.spec.whatwg.org/multipage/#concept-origin -/
 structure Origin where
+  /-- https://html.spec.whatwg.org/multipage/#ascii-serialisation-of-an-origin -/
   serialization : String
+  /-- Model-local cache of the result of https://html.spec.whatwg.org/multipage/#obtain-a-site -/
   site : String
 deriving Repr, DecidableEq
 
@@ -24,20 +26,24 @@ deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#similar-origin-window-agent -/
 structure SimilarOriginWindowAgent where
+  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#similar-origin-window-agent -/
   id : Nat
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation -/
 structure AgentCluster where
+  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#agent-cluster -/
   id : Nat
   crossOriginIsolationMode : CrossOriginIsolationMode := .none
   /-- https://html.spec.whatwg.org/multipage/#is-origin-keyed -/
   isOriginKeyed : Bool := false
+  /-- https://html.spec.whatwg.org/multipage/#similar-origin-window-agent -/
   similarOriginWindowAgent : SimilarOriginWindowAgent
 deriving Repr, DecidableEq
 
 /-- Placeholder for the Rust-side DOM object backing a spec-level document. -/
 structure RustDocumentHandle where
+  /-- Model-local handle for https://dom.spec.whatwg.org/#concept-document -/
   id : Nat
 deriving Repr, DecidableEq
 
@@ -108,6 +114,7 @@ deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#document -/
 structure Document where
+  /-- Model-local handle for the host-side DOM object for https://dom.spec.whatwg.org/#concept-document -/
   ffiHandle : RustDocumentHandle
   /-- https://dom.spec.whatwg.org/#concept-document-type -/
   type : String := "html"
@@ -181,7 +188,7 @@ structure DocumentState where
   /-- https://html.spec.whatwg.org/multipage/#document-state-request-referrer-policy -/
   requestReferrerPolicy : String := ""
   /-- https://html.spec.whatwg.org/multipage/#document-state-initiator-origin -/
-  initiatorOrigin : Origin := aboutBlankOrigin
+  initiatorOrigin : Option Origin := none
   /-- https://html.spec.whatwg.org/multipage/#document-state-resource -/
   resource : Option Unit := none
   /-- https://html.spec.whatwg.org/multipage/#document-state-nav-target-name -/
@@ -272,15 +279,25 @@ deriving Repr, DecidableEq
 
 /-- Pending fetch-backed navigation paused at the spec's wait-for-response point. -/
 structure PendingNavigationFetch where
+  /-- Model-local identifier corresponding to https://html.spec.whatwg.org/multipage/#navigation-params-id -/
   navigationId : Nat
+  /-- Model-local reference to https://html.spec.whatwg.org/multipage/#navigation-params-navigable -/
   traversableId : Nat
+  /-- https://html.spec.whatwg.org/multipage/#session-history-entry -/
   historyEntry : SessionHistoryEntry
+  /-- https://html.spec.whatwg.org/multipage/#source-snapshot-params -/
   sourceSnapshotParams : SourceSnapshotParams
+  /-- https://html.spec.whatwg.org/multipage/#target-snapshot-params -/
   targetSnapshotParams : TargetSnapshotParams
+  /-- https://html.spec.whatwg.org/multipage/#navigation-params-nav-timing-type -/
   navTimingType : NavigationTimingType := .navigate
+  /-- https://html.spec.whatwg.org/multipage/#navigation-params-user-involvement -/
   userInvolvement : UserNavigationInvolvement := .none
+  /-- Model-local summary of CSP navigation type from https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching -/
   cspNavigationType : String := "other"
+  /-- Model-local flag for the POST special-case in https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document -/
   allowPOST : Bool := false
+  /-- https://fetch.spec.whatwg.org/#concept-request -/
   request : NavigationRequest
 deriving Repr, DecidableEq
 
@@ -295,6 +312,7 @@ deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#top-level-browsing-context -/
 structure BrowsingContext where
+  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#browsing-context -/
   id : Nat
   /-- https://html.spec.whatwg.org/multipage/#tlbc-group -/
   groupId : Option Nat := none
@@ -302,6 +320,7 @@ deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#browsing-context-group -/
 structure BrowsingContextGroup where
+  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#browsing-context-group -/
   id : Nat
   /-- https://html.spec.whatwg.org/multipage/#browsing-context-set -/
   browsingContextSet : List BrowsingContext := []
@@ -315,22 +334,51 @@ deriving Repr
 
 /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
 structure BrowsingContextGroupSet where
+  /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
   members : List BrowsingContextGroup := []
 deriving Repr
 
+/-- https://html.spec.whatwg.org/multipage/#navigable -/
+structure Navigable where
+  /-- https://html.spec.whatwg.org/multipage/#nav-parent -/
+  parentNavigableId : Option Nat := none
+  /-- https://html.spec.whatwg.org/multipage/#nav-current-history-entry -/
+  currentSessionHistoryEntry : Option SessionHistoryEntry := none
+  /-- https://html.spec.whatwg.org/multipage/#nav-active-history-entry -/
+  activeSessionHistoryEntry : Option SessionHistoryEntry := none
+deriving Repr, DecidableEq
+
+/-- https://html.spec.whatwg.org/multipage/#traversable-navigable -/
+structure TraversableNavigable extends Navigable where
+  /-- Model-local reference to the browsing context controlled by this traversable.
+      Related spec concept: https://html.spec.whatwg.org/multipage/#browsing-context -/
+  activeBrowsingContextId : Option Nat := none
+  /-- Model-local cache of the Document presented via https://html.spec.whatwg.org/multipage/#nav-active-history-entry -/
+  activeDocument : Option Document := none
+  /-- https://html.spec.whatwg.org/multipage/#tn-current-session-history-step -/
+  currentSessionHistoryStep : Nat := 0
+  /-- https://html.spec.whatwg.org/multipage/#tn-session-history-entries -/
+  sessionHistoryEntries : List SessionHistoryEntry := []
+  /-- Model-local identifier for the navigation currently in flight for this traversable.
+      Related spec concept: https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
+  ongoingNavigationId : Option Nat := none
+deriving Repr, DecidableEq
+
 /-- https://html.spec.whatwg.org/multipage/#top-level-traversable -/
 structure TopLevelTraversable where
+  /-- https://html.spec.whatwg.org/multipage/#traversable-navigable -/
+  toTraversableNavigable : TraversableNavigable := {}
+  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#top-level-traversable -/
   id : Nat
-  activeBrowsingContextId : Option Nat := none
-  activeDocument : Option Document := none
+  /-- Model-local mirror of https://html.spec.whatwg.org/multipage/#document-state-nav-target-name for the active entry. -/
   targetName : String := ""
-  currentSessionHistoryStep : Nat := 0
-  sessionHistoryEntries : List SessionHistoryEntry := []
-  ongoingNavigationId : Option Nat := none
+  /-- https://html.spec.whatwg.org/multipage/#nav-parent -/
+  parentNavigableIdNone : toTraversableNavigable.toNavigable.parentNavigableId = none
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
 structure TopLevelTraversableSet where
+  /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
   members : List TopLevelTraversable := []
 deriving Repr
 
@@ -338,14 +386,19 @@ deriving Repr
 The user agent is the top-level global state for the browser model.
 -/
 structure UserAgent where
+  /-- Model-local allocator state for https://dom.spec.whatwg.org/#concept-document -/
   nextRustDocumentHandleId : Nat := 0
+  /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#agent-cluster -/
   nextAgentClusterId : Nat := 0
+  /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#similar-origin-window-agent -/
   nextSimilarOriginWindowAgentId : Nat := 0
+  /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
   nextNavigationId : Nat := 0
   /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
   browsingContextGroupSet : BrowsingContextGroupSet := {}
   /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
   topLevelTraversableSet : TopLevelTraversableSet := {}
+  /-- Model-local queue of fetch-backed navigations suspended in https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching -/
   pendingNavigationFetches : List PendingNavigationFetch := []
 deriving Repr
 
@@ -543,7 +596,11 @@ def nextId (topLevelTraversableSet : TopLevelTraversableSet) : Nat :=
 def appendFresh
     (topLevelTraversableSet : TopLevelTraversableSet) :
     TopLevelTraversableSet × TopLevelTraversable :=
-  let traversable : TopLevelTraversable := { id := topLevelTraversableSet.nextId }
+  let traversable : TopLevelTraversable := {
+    toTraversableNavigable := {}
+    id := topLevelTraversableSet.nextId
+    parentNavigableIdNone := rfl
+  }
   let members := topLevelTraversableSet.members.concat traversable
   ({ members }, traversable)
 
@@ -607,6 +664,27 @@ def ancestorOriginsListCreationSteps
   -- TODO: Model the ancestor origins list creation steps.
   []
 
+/-- https://html.spec.whatwg.org/multipage/#initialize-the-navigable -/
+def initializeNavigable
+    (navigable : Navigable)
+    (document : Document)
+    (documentState : DocumentState)
+    (parentNavigableId : Option Nat := none) :
+    Navigable :=
+  -- Step 1 is the caller-side assertion that documentState.document is non-null.
+  -- Step 2: Let entry be a new session history entry.
+  let entry : SessionHistoryEntry := {
+    url := document.url
+    documentState
+  }
+  -- Steps 3-5: Set current/active session history entry and parent.
+  {
+    navigable with
+      parentNavigableId
+      currentSessionHistoryEntry := some entry
+      activeSessionHistoryEntry := some entry
+  }
+
 def replaceTraversable
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable) :
@@ -643,7 +721,7 @@ def createAndInitializeDocumentObject
     (navigationParams : NavigationParams) :
     UserAgent × Document :=
   -- Step 1: Let browsingContext be the result of obtaining a browsing context to use for a navigation response.
-  let browsingContextId := traversable.activeBrowsingContextId.getD 0
+  let browsingContextId := traversable.toTraversableNavigable.activeBrowsingContextId.getD 0
   -- TODO: Model obtaining a browsing context to use for a navigation response, including COOP-triggered group switches.
 
   -- Step 2: Let permissionsPolicy be the result of creating a permissions policy from a response.
@@ -719,7 +797,7 @@ def loadDocument
     (traversable : TopLevelTraversable)
     (navigationParams : NavigationParams)
     (_sourceSnapshotParams : SourceSnapshotParams)
-    (_initiatorOrigin : Origin) :
+    (_initiatorOrigin : Option Origin) :
     UserAgent × Option Document :=
   if navigationParams.response.contentType = "text/html" then
     let (userAgent, document) := loadHtmlDocument userAgent traversable navigationParams
@@ -735,7 +813,7 @@ def createNavigationParamsFromResponse
     NavigationParams :=
   let finalSandboxingFlagSet := pendingNavigationFetch.targetSnapshotParams.sandboxingFlags
   let origin :=
-    determineOrigin response.url finalSandboxingFlagSet (some pendingNavigationFetch.historyEntry.documentState.initiatorOrigin)
+    determineOrigin response.url finalSandboxingFlagSet pendingNavigationFetch.historyEntry.documentState.initiatorOrigin
   {
     id := pendingNavigationFetch.navigationId
     traversableId := pendingNavigationFetch.traversableId
@@ -843,14 +921,23 @@ def attemptToPopulateHistoryEntryDocument
       let historyEntry : SessionHistoryEntry := {
         entry with
           documentState
-          step := traversable.currentSessionHistoryStep + 1
+          step := traversable.toTraversableNavigable.currentSessionHistoryStep + 1
       }
       let traversable := {
         traversable with
-          sessionHistoryEntries := traversable.sessionHistoryEntries.concat historyEntry
-          currentSessionHistoryStep := historyEntry.step
-          activeDocument := document
-          ongoingNavigationId := none
+          toTraversableNavigable := {
+            traversable.toTraversableNavigable with
+              toNavigable := {
+                traversable.toTraversableNavigable.toNavigable with
+                  currentSessionHistoryEntry := some historyEntry
+                  activeSessionHistoryEntry := some historyEntry
+              }
+              sessionHistoryEntries :=
+                traversable.toTraversableNavigable.sessionHistoryEntries.concat historyEntry
+              currentSessionHistoryStep := historyEntry.step
+              activeDocument := document
+              ongoingNavigationId := none
+          }
       }
       replaceTraversable userAgent traversable
 
@@ -867,7 +954,7 @@ def processNavigationFetchResponse
       match traversable? userAgent pendingNavigationFetch.traversableId with
       | none => userAgent
       | some traversable =>
-          if traversable.ongoingNavigationId != some navigationId then
+          if traversable.toTraversableNavigable.ongoingNavigationId != some navigationId then
             userAgent
           else
             let navigationParams := createNavigationParamsFromResponse pendingNavigationFetch response
@@ -891,18 +978,24 @@ def navigate
     (destinationURL : String)
     (_documentResource : Option Unit := none) :
     UserAgent :=
-  match traversable.activeDocument with
+  match traversable.toTraversableNavigable.activeDocument with
   | none =>
       -- TODO: Model the browser-UI/sourceDocument-null branch of beginning navigation.
       userAgent
   | some sourceDocument =>
       let (userAgent, navigationId) := userAgent.allocateNavigationId
-      let traversable := { traversable with ongoingNavigationId := some navigationId }
+      let traversable := {
+        traversable with
+          toTraversableNavigable := {
+            traversable.toTraversableNavigable with
+              ongoingNavigationId := some navigationId
+          }
+      }
       let userAgent := replaceTraversable userAgent traversable
       let sourceSnapshotParams := snapshotSourceSnapshotParams sourceDocument
       let targetSnapshotParams := snapshotTargetSnapshotParams traversable
       let documentState : DocumentState := {
-        initiatorOrigin := sourceDocument.origin
+        initiatorOrigin := some sourceDocument.origin
         aboutBaseURL := sourceDocument.aboutBaseURL
         navigableTargetName := traversable.targetName
       }
@@ -1158,48 +1251,69 @@ def createNewTopLevelTraversable
   -- TODO: Model creating a new auxiliary browsing context and document given opener.
 
   -- Step 4: Let documentState be a new document state, with
-  -- TODO: Model document state and its fields.
-  let _documentState : Option Document := document
+  let documentState : DocumentState := match document with
+    | some document => {
+        document := some document
+        initiatorOrigin := match opener with
+          | none => none
+          | some _ => some document.origin
+        origin := some document.origin
+        navigableTargetName := targetName
+        aboutBaseURL := document.aboutBaseURL
+      }
+    | none => {
+        initiatorOrigin := none
+        navigableTargetName := targetName
+      }
 
   -- Step 5: Let traversable be a new traversable navigable.
   let (topLevelTraversableSet, traversable) := userAgent.topLevelTraversableSet.appendFresh
-  let initialHistoryEntry := match document with
+  let traversable := match document with
     | some document =>
-        let documentState : DocumentState := {
-          initiatorOrigin := document.origin
-          document := some document
-          origin := some document.origin
-          aboutBaseURL := document.aboutBaseURL
-          everPopulated := true
+        {
+          traversable with
+            toTraversableNavigable :=
+              {
+                traversable.toTraversableNavigable with
+                  toNavigable :=
+                    initializeNavigable traversable.toTraversableNavigable.toNavigable document {
+                      documentState with everPopulated := true
+                    }
+                  activeDocument := some document
+              }
+            parentNavigableIdNone := by rfl
         }
-        some {
-          url := document.url
-          documentState
-          step := 0
-        }
-    | none => none
-  let traversable := {
-    traversable with
-      activeBrowsingContextId := browsingContextId
-      activeDocument := document
-      targetName
-      sessionHistoryEntries := match initialHistoryEntry with
-        | some initialHistoryEntry => [initialHistoryEntry]
-        | none => []
-  }
-  let topLevelTraversableSet := topLevelTraversableSet.replace traversable
+    | none => traversable
 
   -- Step 6: Initialize the navigable traversable given documentState.
-  -- TODO: Model initialize the navigable.
+  -- Modeled above when a concrete initial document exists.
 
   -- Step 7: Let initialHistoryEntry be traversable's active session history entry.
-  let _initialHistoryEntry : Option SessionHistoryEntry := initialHistoryEntry
+  let initialHistoryEntry : Option SessionHistoryEntry :=
+    traversable.toTraversableNavigable.toNavigable.activeSessionHistoryEntry
 
-  -- Step 8: Set initialHistoryEntry's step to 0.
-  -- TODO: Model the session history entry step update.
-
-  -- Step 9: Append initialHistoryEntry to traversable's session history entries.
-  -- TODO: Model traversable session history entries.
+  -- Steps 8-9: Set the initial history entry's step to 0 and append it.
+  let traversable := {
+    traversable with
+      toTraversableNavigable := {
+        traversable.toTraversableNavigable with
+          activeBrowsingContextId := browsingContextId
+          toNavigable := {
+            traversable.toTraversableNavigable.toNavigable with
+              currentSessionHistoryEntry := match initialHistoryEntry with
+                | some initialHistoryEntry => some { initialHistoryEntry with step := 0 }
+                | none => none
+              activeSessionHistoryEntry := match initialHistoryEntry with
+                | some initialHistoryEntry => some { initialHistoryEntry with step := 0 }
+                | none => none
+          }
+          sessionHistoryEntries := match initialHistoryEntry with
+            | some initialHistoryEntry => [{ initialHistoryEntry with step := 0 }]
+            | none => []
+      }
+      targetName
+  }
+  let topLevelTraversableSet := topLevelTraversableSet.replace traversable
 
   -- Step 10: If opener is non-null, then legacy-clone a traversable storage shed given opener's top-level traversable and traversable.
   -- TODO: Model legacy-clone a traversable storage shed.
