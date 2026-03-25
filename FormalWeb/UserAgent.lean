@@ -29,10 +29,16 @@ inductive TaskSource
   | generic
 deriving Repr, DecidableEq
 
+/-- Model-local summary of the work stored in https://html.spec.whatwg.org/multipage/#concept-task-steps -/
+inductive TaskStep
+  | completeNav (navigationId : Nat)
+  | opaque
+deriving Repr, DecidableEq
+
 /-- https://html.spec.whatwg.org/multipage/#concept-task -/
 structure Task where
   /-- Model-local summary of https://html.spec.whatwg.org/multipage/#concept-task-steps -/
-  stepsDescription : String
+  step : TaskStep
   /-- https://html.spec.whatwg.org/multipage/#concept-task-source -/
   source : TaskSource := .generic
   /-- Model-local reference for https://html.spec.whatwg.org/multipage/#concept-task-document -/
@@ -60,6 +66,9 @@ structure Agent where
   /-- https://html.spec.whatwg.org/multipage/#concept-agent-event-loop -/
   eventLoop : EventLoop
 deriving Repr, DecidableEq
+
+/-- Model-local opaque identifier for a https://html.spec.whatwg.org/multipage/#global-object used by task-queueing helpers. -/
+abbrev GlobalObjectId := Nat
 
 /-- https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation -/
 structure AgentCluster where
@@ -194,6 +203,12 @@ deriving Repr, DecidableEq
 inductive UserNavigationInvolvement
   | none
   | browserUI
+deriving Repr, DecidableEq
+
+/-- https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
+inductive OngoingNavigation
+  | navigationId (id : Nat)
+  | traversal
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#source-snapshot-params -/
@@ -377,6 +392,8 @@ structure Navigable where
   currentSessionHistoryEntry : Option SessionHistoryEntry := none
   /-- https://html.spec.whatwg.org/multipage/#nav-active-history-entry -/
   activeSessionHistoryEntry : Option SessionHistoryEntry := none
+  /-- https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
+  ongoingNavigation : Option OngoingNavigation := none
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#traversable-navigable -/
@@ -390,9 +407,6 @@ structure TraversableNavigable extends Navigable where
   currentSessionHistoryStep : Nat := 0
   /-- https://html.spec.whatwg.org/multipage/#tn-session-history-entries -/
   sessionHistoryEntries : List SessionHistoryEntry := []
-  /-- Model-local identifier for the navigation currently in flight for this traversable.
-      Related spec concept: https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
-  ongoingNavigationId : Option Nat := none
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#top-level-traversable -/
@@ -439,6 +453,18 @@ deriving Repr
 
 namespace UserAgent
 
+private def lookupEventLoopEntry
+    (entries : List (Nat × EventLoop))
+    (eventLoopId : Nat) :
+    Option EventLoop :=
+  match entries with
+  | [] => none
+  | (entryId, eventLoop) :: rest =>
+      if entryId = eventLoopId then
+        some eventLoop
+      else
+        lookupEventLoopEntry rest eventLoopId
+
 private def setEventLoopEntry
     (entries : List (Nat × EventLoop))
     (eventLoop : EventLoop) :
@@ -459,6 +485,12 @@ def setEventLoop
     userAgent with
       eventLoops := setEventLoopEntry userAgent.eventLoops eventLoop
   }
+
+def eventLoop?
+    (userAgent : UserAgent)
+    (eventLoopId : Nat) :
+    Option EventLoop :=
+  lookupEventLoopEntry userAgent.eventLoops eventLoopId
 
 def allocateRustDocumentHandle (userAgent : UserAgent) : UserAgent × RustDocumentHandle :=
   let handle : RustDocumentHandle := { id := userAgent.nextRustDocumentHandleId }
@@ -532,6 +564,42 @@ def enqueueTask
   }
 
 end EventLoop
+
+/-- https://html.spec.whatwg.org/multipage/#queue-a-task -/
+def queueTask
+    (userAgent : UserAgent)
+    (source : TaskSource)
+    (eventLoopId : Nat)
+    (documentId : Option Nat)
+    (step : TaskStep) :
+    Option UserAgent :=
+  -- Step 3: Let task be a new task.
+  let task : Task := {
+    step
+    source
+    documentId
+  }
+  -- Steps 4-9: Populate the task and append it to the event loop's associated queue.
+  match userAgent.eventLoop? eventLoopId with
+  | none => none
+  | some eventLoop =>
+      let eventLoop := eventLoop.enqueueTask task
+      some (userAgent.setEventLoop eventLoop)
+
+/-- https://html.spec.whatwg.org/multipage/#queue-a-global-task -/
+def queueGlobalTask
+    (userAgent : UserAgent)
+    (source : TaskSource)
+    (_globalId : GlobalObjectId)
+    (eventLoopId : Nat)
+    (step : TaskStep) :
+    Option UserAgent :=
+  -- Step 1: Let event loop be global's relevant agent's event loop.
+  -- TODO: Replace the explicit eventLoopId parameter with a lookup from an opaque global-object model.
+  -- Step 2: Let document be global's associated Document, if the global is a Window object; otherwise null.
+  let documentId : Option Nat := none
+  -- Step 3: Queue a task given source, event loop, document, and steps.
+  queueTask userAgent source eventLoopId documentId step
 
 /-- https://html.spec.whatwg.org/multipage/#create-an-agent -/
 def createAgent
@@ -781,6 +849,32 @@ def initializeNavigable
       activeSessionHistoryEntry := some entry
   }
 
+/-- https://html.spec.whatwg.org/multipage/#set-the-ongoing-navigation -/
+def setOngoingNavigation
+    (navigable : Navigable)
+    (newValue : Option OngoingNavigation) :
+    Navigable :=
+  -- Step 1: If navigable's ongoing navigation is equal to newValue, then return.
+  if navigable.ongoingNavigation = newValue then
+    navigable
+  else
+    -- Step 2: Inform the navigation API about aborting navigation given navigable.
+    -- TODO: Model the navigation-API-facing abort bookkeeping for ongoing navigations.
+    -- Step 3: Set navigable's ongoing navigation to newValue.
+    {
+      navigable with
+        ongoingNavigation := newValue
+    }
+
+theorem setOngoingNavigation_preserves_parentNavigableId
+    (navigable : Navigable)
+    (newValue : Option OngoingNavigation) :
+    (setOngoingNavigation navigable newValue).parentNavigableId = navigable.parentNavigableId := by
+  unfold setOngoingNavigation
+  by_cases h : navigable.ongoingNavigation = newValue
+  · simp [h]
+  · simp [h]
+
 def replaceTraversable
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable) :
@@ -1019,21 +1113,26 @@ def attemptToPopulateHistoryEntryDocument
           documentState
           step := traversable.toTraversableNavigable.currentSessionHistoryStep + 1
       }
+      let updatedNavigable :=
+        {
+          traversable.toTraversableNavigable.toNavigable with
+            currentSessionHistoryEntry := some historyEntry
+            activeSessionHistoryEntry := some historyEntry
+            ongoingNavigation := none
+        }
       let traversable := {
         traversable with
           toTraversableNavigable := {
             traversable.toTraversableNavigable with
-              toNavigable := {
-                traversable.toTraversableNavigable.toNavigable with
-                  currentSessionHistoryEntry := some historyEntry
-                  activeSessionHistoryEntry := some historyEntry
-              }
+              toNavigable := updatedNavigable
               sessionHistoryEntries :=
                 traversable.toTraversableNavigable.sessionHistoryEntries.concat historyEntry
               currentSessionHistoryStep := historyEntry.step
               activeDocument := document
-              ongoingNavigationId := none
           }
+          parentNavigableIdNone := by
+            simpa [updatedNavigable] using
+              traversable.parentNavigableIdNone
       }
       replaceTraversable userAgent traversable
 
@@ -1050,7 +1149,7 @@ def processNavigationFetchResponse
       match traversable? userAgent pendingNavigationFetch.traversableId with
       | none => userAgent
       | some traversable =>
-          if traversable.toTraversableNavigable.ongoingNavigationId != some navigationId then
+          if traversable.toTraversableNavigable.toNavigable.ongoingNavigation != some (.navigationId navigationId) then
             userAgent
           else
             let navigationParams := createNavigationParamsFromResponse pendingNavigationFetch response
@@ -1080,12 +1179,19 @@ def navigate
       userAgent
   | some sourceDocument =>
       let (userAgent, navigationId) := userAgent.allocateNavigationId
+      let updatedNavigable :=
+        setOngoingNavigation
+          traversable.toTraversableNavigable.toNavigable
+          (some (.navigationId navigationId))
       let traversable := {
         traversable with
           toTraversableNavigable := {
             traversable.toTraversableNavigable with
-              ongoingNavigationId := some navigationId
+              toNavigable := updatedNavigable
           }
+          parentNavigableIdNone := by
+            simpa [updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
+              traversable.parentNavigableIdNone
       }
       let userAgent := replaceTraversable userAgent traversable
       let sourceSnapshotParams := snapshotSourceSnapshotParams sourceDocument
