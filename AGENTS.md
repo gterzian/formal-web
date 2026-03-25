@@ -32,6 +32,10 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
 - When searching the local HTML standard, search for the exact spec anchor string first, such as `creating-a-new-top-level-traversable`.
 - For concurrent spec algorithms such as fetch-and-wait navigation steps, prefer modeling the pause point as explicit pending state on `UserAgent` plus a separate resume transition before introducing real runtime tasks or I/O.
+- When a spec algorithm pauses and later resumes after a wait point, model the resumed portion as an explicit continuation helper instead of re-entering the top-level algorithm at a later argument state.
+- When a spec wait has multiple wakeup conditions, model each wakeup reason explicitly in the LTS; if one branch produces no result and just returns, represent that as its own continuation path instead of folding it into the response-arrival case.
+- Prefer concrete LTS actions that change `Navigable.ongoingNavigation` over synthetic wait-cancellation labels; a fetch wait that ends because the navigation changed should be discharged by the state-changing transition itself.
+- When a new navigation replaces an older `Navigable.ongoingNavigation` navigation id, discharge any fetch wait for the superseded id from that same transition, rather than introducing a separate cancellation label.
 - Introduce a small LTS action type above navigation helpers so spec-visible concurrent steps such as "begin navigation" and "fetch response arrives" are explicit labels, while helper functions remain implementation detail under those labels.
 - It is acceptable for the LTS layer to factor a convenience spec helper into multiple explicit labels, such as separating top-level traversable creation from the later begin-navigation and fetch-completion steps.
 - If a spec convenience helper only bundles multiple LTS-visible steps, prefer modeling those steps directly in the action system and omit the convenience helper unless it still carries independent explanatory value.

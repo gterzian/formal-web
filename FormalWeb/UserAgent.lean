@@ -229,6 +229,26 @@ structure TargetSnapshotParams where
   iframeElementReferrerPolicy : Option String := none
 deriving Repr, DecidableEq
 
+/-- Model-local representation of https://html.spec.whatwg.org/multipage/#post-resource -/
+structure PostResource where
+  /-- https://html.spec.whatwg.org/multipage/#post-resource-request-body -/
+  requestBody : Option String := none
+  /-- https://html.spec.whatwg.org/multipage/#post-resource-request-content-type -/
+  requestContentType : String := "application/x-www-form-urlencoded"
+deriving Repr, DecidableEq
+
+/-- Model-local wrapper for the string branch of https://html.spec.whatwg.org/multipage/#document-state-resource -/
+structure SrcdocResource where
+  /-- https://html.spec.whatwg.org/multipage/#document-state-resource -/
+  source : String
+deriving Repr, DecidableEq
+
+/-- https://html.spec.whatwg.org/multipage/#document-state-resource -/
+inductive DocumentResource
+  | srcdoc (resource : SrcdocResource)
+  | post (resource : PostResource)
+deriving Repr, DecidableEq
+
 /-- https://html.spec.whatwg.org/multipage/#document-state-2 -/
 structure DocumentState where
   /-- https://html.spec.whatwg.org/multipage/#document-state-request-referrer-policy -/
@@ -236,7 +256,7 @@ structure DocumentState where
   /-- https://html.spec.whatwg.org/multipage/#document-state-initiator-origin -/
   initiatorOrigin : Option Origin := none
   /-- https://html.spec.whatwg.org/multipage/#document-state-resource -/
-  resource : Option Unit := none
+  resource : Option DocumentResource := none
   /-- https://html.spec.whatwg.org/multipage/#document-state-nav-target-name -/
   navigableTargetName : String := ""
   /-- https://html.spec.whatwg.org/multipage/#document-state-document -/
@@ -352,8 +372,12 @@ LTS-style actions for the current user-agent navigation model.
 -/
 inductive UserAgentAction
   | createTopLevelTraversable (targetName : String := "")
-  | beginNavigation (traversableId : Nat) (destinationURL : String)
+  | beginNavigation
+      (traversableId : Nat)
+      (destinationURL : String)
+      (documentResource : Option DocumentResource := none)
   | completeNavigation (navigationId : Nat) (response : NavigationResponse)
+  | abortNavigation (traversableId : Nat)
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#top-level-browsing-context -/
@@ -533,6 +557,18 @@ private def takePendingNavigationFetchEntries
         let (result, rest) := takePendingNavigationFetchEntries rest navigationId
         (result, pendingNavigationFetch :: rest)
 
+private def lookupPendingNavigationFetchEntry
+    (pendingNavigationFetches : List PendingNavigationFetch)
+    (navigationId : Nat) :
+    Option PendingNavigationFetch :=
+  match pendingNavigationFetches with
+  | [] => none
+  | pendingNavigationFetch :: rest =>
+      if pendingNavigationFetch.navigationId = navigationId then
+        some pendingNavigationFetch
+      else
+        lookupPendingNavigationFetchEntry rest navigationId
+
 def appendPendingNavigationFetch
     (userAgent : UserAgent)
     (pendingNavigationFetch : PendingNavigationFetch) :
@@ -550,7 +586,20 @@ def takePendingNavigationFetch
     takePendingNavigationFetchEntries userAgent.pendingNavigationFetches navigationId
   ({ userAgent with pendingNavigationFetches }, pendingNavigationFetch)
 
+def pendingNavigationFetch?
+    (userAgent : UserAgent)
+    (navigationId : Nat) :
+    Option PendingNavigationFetch :=
+  lookupPendingNavigationFetchEntry userAgent.pendingNavigationFetches navigationId
+
 end UserAgent
+
+def hasUsablePostResource
+    (documentResource : DocumentResource) :
+    Bool :=
+  match documentResource with
+  | .post postResource => postResource.requestBody.isSome
+  | _ => false
 
 namespace EventLoop
 
@@ -1031,15 +1080,25 @@ def createNavigationParamsByFetching
     (navTimingType : NavigationTimingType) :
     UserAgent :=
   -- Step 1: Let documentResource be entry's document state's resource.
-  let _documentResource := entry.documentState.resource
+  let documentResource := entry.documentState.resource
 
   -- Step 2: Let request be a new request, with:
-  let request : NavigationRequest := {
-    url := entry.url
-    referrer := entry.documentState.requestReferrer
-    referrerPolicy := entry.documentState.requestReferrerPolicy
-    policyContainer := sourceSnapshotParams.sourcePolicyContainer
-  }
+  let request : NavigationRequest :=
+    match documentResource with
+    | some (.post postResource) => {
+        url := entry.url
+        method := "POST"
+        referrer := entry.documentState.requestReferrer
+        referrerPolicy := entry.documentState.requestReferrerPolicy
+        policyContainer := sourceSnapshotParams.sourcePolicyContainer
+        body := postResource.requestBody
+      }
+    | _ => {
+        url := entry.url
+        referrer := entry.documentState.requestReferrer
+        referrerPolicy := entry.documentState.requestReferrerPolicy
+        policyContainer := sourceSnapshotParams.sourcePolicyContainer
+      }
   -- TODO: Model the full request initialization surface, including client, destination, and POST resources.
 
   -- Steps 3-18: Reserved-environment, CSP, redirect-loop, and fetch-controller orchestration.
@@ -1058,6 +1117,106 @@ def createNavigationParamsByFetching
   userAgent.appendPendingNavigationFetch pendingNavigationFetch
 
 /-- https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document -/
+def continueAttemptToPopulateHistoryEntryDocument
+    (userAgent : UserAgent)
+    (entry : SessionHistoryEntry)
+    (traversable : TopLevelTraversable)
+    (sourceSnapshotParams : SourceSnapshotParams)
+    (navigationParams : NavigationParams) :
+    UserAgent :=
+  let (userAgent, document) :=
+    loadDocument
+      userAgent
+      traversable
+      navigationParams
+      sourceSnapshotParams
+      entry.documentState.initiatorOrigin
+  let documentState := {
+    entry.documentState with
+      document
+      everPopulated := document.isSome
+      origin := match document with
+        | some document => some document.origin
+        | none => entry.documentState.origin
+      historyPolicyContainer := some navigationParams.policyContainer
+      requestReferrer := match navigationParams.request with
+        | some request => request.referrer
+        | none => entry.documentState.requestReferrer
+  }
+  let historyEntry : SessionHistoryEntry := {
+    entry with
+      documentState
+      step := traversable.toTraversableNavigable.currentSessionHistoryStep + 1
+  }
+  let updatedNavigable :=
+    {
+      traversable.toTraversableNavigable.toNavigable with
+        currentSessionHistoryEntry := some historyEntry
+        activeSessionHistoryEntry := some historyEntry
+        ongoingNavigation := none
+    }
+  let traversable := {
+    traversable with
+      toTraversableNavigable := {
+        traversable.toTraversableNavigable with
+          toNavigable := updatedNavigable
+          sessionHistoryEntries :=
+            traversable.toTraversableNavigable.sessionHistoryEntries.concat historyEntry
+          currentSessionHistoryStep := historyEntry.step
+          activeDocument := document
+      }
+      parentNavigableIdNone := by
+        simpa [updatedNavigable] using
+          traversable.parentNavigableIdNone
+  }
+  replaceTraversable userAgent traversable
+
+/--
+Continuation of the wait in https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching.
+
+If `response` is `some`, this models the branch where the wait ends because the fetch response became non-null.
+If `response` is `none`, this models the branch where the wait ends because the navigable's ongoing navigation changed to no longer equal `navigationId`.
+-/
+def finishCreatingNavigationParamsByFetching
+    (userAgent : UserAgent)
+    (navigationId : Nat)
+    (response : Option NavigationResponse) :
+    UserAgent :=
+  match userAgent.pendingNavigationFetch? navigationId with
+  | none => userAgent
+  | some pendingNavigationFetch =>
+      let ongoingNavigationMatches :=
+        match traversable? userAgent pendingNavigationFetch.traversableId with
+        | some traversable =>
+            traversable.toTraversableNavigable.toNavigable.ongoingNavigation = some (.navigationId navigationId)
+        | none => false
+      if response.isNone && ongoingNavigationMatches then
+        -- The wait condition has not been satisfied yet, so the pending fetch remains in place.
+        userAgent
+      else
+        let (userAgent, pendingNavigationFetch) := userAgent.takePendingNavigationFetch navigationId
+        match pendingNavigationFetch with
+        | none => userAgent
+        | some pendingNavigationFetch =>
+            match traversable? userAgent pendingNavigationFetch.traversableId with
+            | none => userAgent
+            | some traversable =>
+                if traversable.toTraversableNavigable.toNavigable.ongoingNavigation != some (.navigationId navigationId) then
+                  -- The latter wait condition occurred, so the fetch-backed creation returns without producing navigation params.
+                  userAgent
+                else
+                  match response with
+                  | none => userAgent
+                  | some response =>
+                      let navigationParams := createNavigationParamsFromResponse pendingNavigationFetch response
+                      continueAttemptToPopulateHistoryEntryDocument
+                        userAgent
+                        pendingNavigationFetch.historyEntry
+                        traversable
+                        pendingNavigationFetch.sourceSnapshotParams
+                        navigationParams
+
+/-- https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document -/
 def attemptToPopulateHistoryEntryDocument
     (userAgent : UserAgent)
     (entry : SessionHistoryEntry)
@@ -1074,110 +1233,96 @@ def attemptToPopulateHistoryEntryDocument
   match navigationParams with
   | none =>
       let documentResource := entry.documentState.resource
-      if isFetchScheme entry.url && (documentResource.isNone || allowPOST) then
-        createNavigationParamsByFetching
+      match documentResource with
+      | some (.srcdoc _) =>
+          -- TODO: Model create-navigation-params-from-a-srcdoc-resource.
           userAgent
-          entry
-          traversable
-          sourceSnapshotParams
-          targetSnapshotParams
-          cspNavigationType
-          userInvolvement
-          navigationId
-          navTimingType
-      else
-        -- TODO: Model srcdoc and non-fetch-scheme branches.
-        userAgent
+      | _ =>
+          let mayFetch :=
+            match documentResource with
+            | none => true
+            | some documentResource => allowPOST && hasUsablePostResource documentResource
+          if isFetchScheme entry.url && mayFetch then
+            createNavigationParamsByFetching
+              userAgent
+              entry
+              traversable
+              sourceSnapshotParams
+              targetSnapshotParams
+              cspNavigationType
+              userInvolvement
+              navigationId
+              navTimingType
+          else
+            -- TODO: Model non-fetch-scheme branches.
+            userAgent
   | some navigationParams =>
-      let (userAgent, document) :=
-        loadDocument
-          userAgent
-          traversable
-          navigationParams
-          sourceSnapshotParams
-          entry.documentState.initiatorOrigin
-      let documentState := {
-        entry.documentState with
-          document
-          everPopulated := document.isSome
-          origin := match document with
-            | some document => some document.origin
-            | none => entry.documentState.origin
-          historyPolicyContainer := some navigationParams.policyContainer
-          requestReferrer := match navigationParams.request with
-            | some request => request.referrer
-            | none => entry.documentState.requestReferrer
-      }
-      let historyEntry : SessionHistoryEntry := {
-        entry with
-          documentState
-          step := traversable.toTraversableNavigable.currentSessionHistoryStep + 1
-      }
-      let updatedNavigable :=
-        {
-          traversable.toTraversableNavigable.toNavigable with
-            currentSessionHistoryEntry := some historyEntry
-            activeSessionHistoryEntry := some historyEntry
-            ongoingNavigation := none
-        }
-      let traversable := {
-        traversable with
-          toTraversableNavigable := {
-            traversable.toTraversableNavigable with
-              toNavigable := updatedNavigable
-              sessionHistoryEntries :=
-                traversable.toTraversableNavigable.sessionHistoryEntries.concat historyEntry
-              currentSessionHistoryStep := historyEntry.step
-              activeDocument := document
-          }
-          parentNavigableIdNone := by
-            simpa [updatedNavigable] using
-              traversable.parentNavigableIdNone
-      }
-      replaceTraversable userAgent traversable
+      continueAttemptToPopulateHistoryEntryDocument
+        userAgent
+        entry
+        traversable
+        sourceSnapshotParams
+        navigationParams
 
-/-- Resume a fetch-backed navigation after the concurrent fetch produces a response. -/
 def processNavigationFetchResponse
     (userAgent : UserAgent)
     (navigationId : Nat)
     (response : NavigationResponse) :
     UserAgent :=
-  let (userAgent, pendingNavigationFetch) := userAgent.takePendingNavigationFetch navigationId
-  match pendingNavigationFetch with
+  finishCreatingNavigationParamsByFetching userAgent navigationId (some response)
+
+/--
+Continuation of the alternative branch of the wait in https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching,
+when the navigable's ongoing navigation changed before any response became available.
+-/
+def processNavigationFetchCancellation
+    (userAgent : UserAgent)
+    (navigationId : Nat) :
+    UserAgent :=
+  finishCreatingNavigationParamsByFetching userAgent navigationId none
+
+/-- Model a concrete ongoing-navigation change that can wake a fetch-backed wait. -/
+def abortNavigation
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    UserAgent :=
+  match traversable? userAgent traversableId with
   | none => userAgent
-  | some pendingNavigationFetch =>
-      match traversable? userAgent pendingNavigationFetch.traversableId with
-      | none => userAgent
-      | some traversable =>
-          if traversable.toTraversableNavigable.toNavigable.ongoingNavigation != some (.navigationId navigationId) then
-            userAgent
-          else
-            let navigationParams := createNavigationParamsFromResponse pendingNavigationFetch response
-            attemptToPopulateHistoryEntryDocument
-              userAgent
-              pendingNavigationFetch.historyEntry
-              traversable
-              pendingNavigationFetch.navTimingType
-              pendingNavigationFetch.sourceSnapshotParams
-              pendingNavigationFetch.targetSnapshotParams
-              pendingNavigationFetch.userInvolvement
-              navigationId
-              (some navigationParams)
-              pendingNavigationFetch.cspNavigationType
-              pendingNavigationFetch.allowPOST
+  | some traversable =>
+      let previousOngoingNavigation :=
+        traversable.toTraversableNavigable.toNavigable.ongoingNavigation
+      let updatedNavigable :=
+        setOngoingNavigation traversable.toTraversableNavigable.toNavigable none
+      let updatedTraversable := {
+        traversable with
+          toTraversableNavigable := {
+            traversable.toTraversableNavigable with
+              toNavigable := updatedNavigable
+          }
+          parentNavigableIdNone := by
+            simpa [updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
+              traversable.parentNavigableIdNone
+      }
+      let userAgent := replaceTraversable userAgent updatedTraversable
+      match previousOngoingNavigation with
+      | some (.navigationId navigationId) =>
+          processNavigationFetchCancellation userAgent navigationId
+      | _ => userAgent
 
 /-- https://html.spec.whatwg.org/multipage/#navigate -/
 def navigate
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable)
     (destinationURL : String)
-    (_documentResource : Option Unit := none) :
+  (documentResource : Option DocumentResource := none) :
     UserAgent :=
   match traversable.toTraversableNavigable.activeDocument with
   | none =>
       -- TODO: Model the browser-UI/sourceDocument-null branch of beginning navigation.
       userAgent
   | some sourceDocument =>
+      let previousOngoingNavigation :=
+        traversable.toTraversableNavigable.toNavigable.ongoingNavigation
       let (userAgent, navigationId) := userAgent.allocateNavigationId
       let updatedNavigable :=
         setOngoingNavigation
@@ -1194,11 +1339,20 @@ def navigate
               traversable.parentNavigableIdNone
       }
       let userAgent := replaceTraversable userAgent traversable
+      let userAgent :=
+        match previousOngoingNavigation with
+        | some (.navigationId previousNavigationId) =>
+            if previousNavigationId = navigationId then
+              userAgent
+            else
+              processNavigationFetchCancellation userAgent previousNavigationId
+        | _ => userAgent
       let sourceSnapshotParams := snapshotSourceSnapshotParams sourceDocument
       let targetSnapshotParams := snapshotTargetSnapshotParams traversable
       let documentState : DocumentState := {
         initiatorOrigin := some sourceDocument.origin
         aboutBaseURL := sourceDocument.aboutBaseURL
+        resource := documentResource
         navigableTargetName := traversable.targetName
       }
       let historyEntry : SessionHistoryEntry := {
@@ -1545,11 +1699,13 @@ def createNewTopLevelTraversable
     | .createTopLevelTraversable targetName =>
       let (userAgent, _traversable) := createNewTopLevelTraversable userAgent none targetName
       some userAgent
-    | .beginNavigation traversableId destinationURL =>
+    | .beginNavigation traversableId destinationURL documentResource =>
       match traversable? userAgent traversableId with
       | none => none
-      | some traversable => some (navigate userAgent traversable destinationURL)
+      | some traversable => some (navigate userAgent traversable destinationURL documentResource)
     | .completeNavigation navigationId response =>
       some (processNavigationFetchResponse userAgent navigationId response)
+    | .abortNavigation traversableId =>
+      some (abortNavigation userAgent traversableId)
 
 end FormalWeb
