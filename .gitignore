@@ -3,3 +3,4 @@
 /tla_specs/states/
 *.out
 *.tlc
+/web_standards/
