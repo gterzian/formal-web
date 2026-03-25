@@ -12,4 +12,9 @@ if they may later be split into more modular instruction files.
 - For partially implemented algorithm steps in Lean, put a `-- TODO:` comment immediately below the corresponding step comment.
 - When a spec algorithm calls another algorithm, model that callee as a separate Lean function.
 - Prefer pure state-transition signatures that thread `UserAgent` and return any produced values, so the model can evolve toward a labeled transition system.
+- The LTS should sit above helper functions: helper calls are implementation detail inside larger concurrent transitions, not necessarily one LTS step each.
+- Near-term focus is modeling data and spec algorithms first; the LTS layer comes after those foundations exist.
+- Long-term, there should be both an LTS model and an executable task/channel-based implementation, with proofs that the implementation refines or simulates the LTS.
+- Message kinds used by the runtime are good candidates for inductive action/message types shared with or related to the LTS labels.
 - Lean uses `-- TODO:` comments, not `// TODO:` comments.
+- The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
