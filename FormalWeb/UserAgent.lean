@@ -24,10 +24,41 @@ inductive AgentClusterKey
   | origin (origin : Origin)
 deriving Repr, DecidableEq
 
-/-- https://html.spec.whatwg.org/multipage/#similar-origin-window-agent -/
-structure SimilarOriginWindowAgent where
-  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#similar-origin-window-agent -/
+/-- https://html.spec.whatwg.org/multipage/#task-source -/
+inductive TaskSource
+  | generic
+deriving Repr, DecidableEq
+
+/-- https://html.spec.whatwg.org/multipage/#concept-task -/
+structure Task where
+  /-- Model-local summary of https://html.spec.whatwg.org/multipage/#concept-task-steps -/
+  stepsDescription : String
+  /-- https://html.spec.whatwg.org/multipage/#concept-task-source -/
+  source : TaskSource := .generic
+  /-- Model-local reference for https://html.spec.whatwg.org/multipage/#concept-task-document -/
+  documentId : Option Nat := none
+  /-- Model-local placeholder for https://html.spec.whatwg.org/multipage/#script-evaluation-environment-settings-object-set -/
+  scriptEvaluationEnvironmentSettingsObjectSet : List Nat := []
+deriving Repr, DecidableEq
+
+/-- https://html.spec.whatwg.org/multipage/#event-loop -/
+structure EventLoop where
+  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#event-loop -/
   id : Nat
+  /-- Model-local collapse of https://html.spec.whatwg.org/multipage/#task-queue to a single queue containing https://html.spec.whatwg.org/multipage/#concept-task values. -/
+  taskQueue : List Task := []
+  /-- https://html.spec.whatwg.org/multipage/#termination-nesting-level -/
+  terminationNestingLevel : Nat := 0
+deriving Repr, DecidableEq
+
+/-- https://tc39.es/ecma262/#sec-agents -/
+structure Agent where
+  /-- Model-local identifier standing in for the signifier allocated by https://html.spec.whatwg.org/multipage/#create-an-agent -/
+  id : Nat
+  /-- https://tc39.es/ecma262/#sec-agents -/
+  canBlock : Bool := false
+  /-- https://html.spec.whatwg.org/multipage/#concept-agent-event-loop -/
+  eventLoop : EventLoop
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation -/
@@ -37,8 +68,8 @@ structure AgentCluster where
   crossOriginIsolationMode : CrossOriginIsolationMode := .none
   /-- https://html.spec.whatwg.org/multipage/#is-origin-keyed -/
   isOriginKeyed : Bool := false
-  /-- https://html.spec.whatwg.org/multipage/#similar-origin-window-agent -/
-  similarOriginWindowAgent : SimilarOriginWindowAgent
+  /-- The single https://html.spec.whatwg.org/multipage/#similar-origin-window-agent contained in this browsing context agent cluster. -/
+  similarOriginWindowAgent : Agent
 deriving Repr, DecidableEq
 
 /-- Placeholder for the Rust-side DOM object backing a spec-level document. -/
@@ -390,19 +421,44 @@ structure UserAgent where
   nextRustDocumentHandleId : Nat := 0
   /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#agent-cluster -/
   nextAgentClusterId : Nat := 0
-  /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#similar-origin-window-agent -/
-  nextSimilarOriginWindowAgentId : Nat := 0
+  /-- Model-local allocator state for https://tc39.es/ecma262/#sec-agents -/
+  nextAgentId : Nat := 0
+  /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#event-loop -/
+  nextEventLoopId : Nat := 0
   /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
   nextNavigationId : Nat := 0
   /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
   browsingContextGroupSet : BrowsingContextGroupSet := {}
   /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
   topLevelTraversableSet : TopLevelTraversableSet := {}
+  /-- Model-local map from https://html.spec.whatwg.org/multipage/#event-loop identifiers to event-loop objects. -/
+  eventLoops : List (Nat × EventLoop) := []
   /-- Model-local queue of fetch-backed navigations suspended in https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching -/
   pendingNavigationFetches : List PendingNavigationFetch := []
 deriving Repr
 
 namespace UserAgent
+
+private def setEventLoopEntry
+    (entries : List (Nat × EventLoop))
+    (eventLoop : EventLoop) :
+    List (Nat × EventLoop) :=
+  match entries with
+  | [] => [(eventLoop.id, eventLoop)]
+  | (entryId, entryEventLoop) :: rest =>
+      if entryId = eventLoop.id then
+        (eventLoop.id, eventLoop) :: rest
+      else
+        (entryId, entryEventLoop) :: setEventLoopEntry rest eventLoop
+
+def setEventLoop
+    (userAgent : UserAgent)
+    (eventLoop : EventLoop) :
+    UserAgent :=
+  {
+    userAgent with
+      eventLoops := setEventLoopEntry userAgent.eventLoops eventLoop
+  }
 
 def allocateRustDocumentHandle (userAgent : UserAgent) : UserAgent × RustDocumentHandle :=
   let handle : RustDocumentHandle := { id := userAgent.nextRustDocumentHandleId }
@@ -414,13 +470,18 @@ def allocateAgentClusterId (userAgent : UserAgent) : UserAgent × Nat :=
   let userAgent := { userAgent with nextAgentClusterId := userAgent.nextAgentClusterId + 1 }
   (userAgent, agentClusterId)
 
-def allocateSimilarOriginWindowAgentId (userAgent : UserAgent) : UserAgent × Nat :=
-  let windowAgentId := userAgent.nextSimilarOriginWindowAgentId
+def allocateAgentId (userAgent : UserAgent) : UserAgent × Nat :=
+  let agentId := userAgent.nextAgentId
   let userAgent := {
     userAgent with
-      nextSimilarOriginWindowAgentId := userAgent.nextSimilarOriginWindowAgentId + 1
+      nextAgentId := userAgent.nextAgentId + 1
   }
-  (userAgent, windowAgentId)
+  (userAgent, agentId)
+
+def allocateEventLoopId (userAgent : UserAgent) : UserAgent × Nat :=
+  let eventLoopId := userAgent.nextEventLoopId
+  let userAgent := { userAgent with nextEventLoopId := userAgent.nextEventLoopId + 1 }
+  (userAgent, eventLoopId)
 
 def allocateNavigationId (userAgent : UserAgent) : UserAgent × Nat :=
   let navigationId := userAgent.nextNavigationId
@@ -458,6 +519,41 @@ def takePendingNavigationFetch
   ({ userAgent with pendingNavigationFetches }, pendingNavigationFetch)
 
 end UserAgent
+
+namespace EventLoop
+
+def enqueueTask
+    (eventLoop : EventLoop)
+    (task : Task) :
+    EventLoop :=
+  {
+    eventLoop with
+      taskQueue := eventLoop.taskQueue.concat task
+  }
+
+end EventLoop
+
+/-- https://html.spec.whatwg.org/multipage/#create-an-agent -/
+def createAgent
+    (userAgent : UserAgent)
+    (canBlock : Bool) :
+    UserAgent × Agent :=
+  -- Step 1: Let signifier be a new unique internal value.
+  let (userAgent, agentId) := userAgent.allocateAgentId
+  -- Step 2: Let candidateExecution be a new candidate execution.
+  -- TODO: Model candidate execution if scheduling between agents becomes explicit.
+  -- Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is signifier, [[CandidateExecution]] is candidateExecution, and [[IsLockFree1]], [[IsLockFree2]], and [[LittleEndian]] are set at the implementation's discretion.
+  -- Step 4: Set agent's event loop to a new event loop.
+  let (userAgent, eventLoopId) := userAgent.allocateEventLoopId
+  let eventLoop : EventLoop := { id := eventLoopId }
+  let userAgent := userAgent.setEventLoop eventLoop
+  let agent : Agent := {
+    id := agentId
+    canBlock
+    eventLoop
+  }
+  -- Step 5: Return agent.
+  (userAgent, agent)
 
 namespace BrowsingContextGroup
 
@@ -1022,7 +1118,7 @@ def obtainSimilarOriginWindowAgent
     (origin : Origin)
     (group : BrowsingContextGroup)
     (requestsOAC : Bool) :
-    UserAgent × BrowsingContextGroup × SimilarOriginWindowAgent :=
+  UserAgent × BrowsingContextGroup × Agent :=
   -- Step 1: Let site be the result of obtaining a site with origin.
   let site := obtainSite origin
 
@@ -1056,17 +1152,19 @@ def obtainSimilarOriginWindowAgent
     | none =>
         -- Step 6.1: Let agentCluster be a new agent cluster.
         let (userAgent, agentClusterId) := userAgent.allocateAgentClusterId
+        -- Step 6.2: Set agentCluster's cross-origin isolation mode to group's cross-origin isolation mode.
+        -- Step 6.3: If key is an origin, then set agentCluster's is origin-keyed to true.
         -- Step 6.4: Add the result of creating an agent, given false, to agentCluster.
-        let (userAgent, windowAgentId) := userAgent.allocateSimilarOriginWindowAgentId
-        let similarOriginWindowAgent : SimilarOriginWindowAgent := { id := windowAgentId }
+        let (userAgent, agent) := createAgent userAgent false
         let agentCluster : AgentCluster := {
           id := agentClusterId
-          similarOriginWindowAgent
+          similarOriginWindowAgent := agent
           crossOriginIsolationMode := group.crossOriginIsolationMode
           isOriginKeyed := match key with
             | .origin _ => true
             | .site _ => false
         }
+        -- Step 6.5: Set group's agent cluster map[key] to agentCluster.
         let group := group.setAgentCluster key agentCluster
         (userAgent, group, agentCluster)
 
