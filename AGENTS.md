@@ -6,6 +6,7 @@ if they may later be split into more modular instruction files.
 This file is for durable project-wide lessons and guidance only, not task-by-task work logs or progress notes.
 
 - Lean library modules live under `FormalWeb/` and are re-exported from `FormalWeb.lean`.
+- Keep top-level navigation orchestration and the LTS in `FormalWeb/UserAgent.lean`; move shared document, session-history, navigation, and traversable models/helpers into broader companion modules such as `Document.lean`, `SessionHistory.lean`, `Navigation.lean`, and `Traversable.lean` instead of many tiny files.
 - Use CamelCase filenames such as `FormalWeb/UserAgent.lean` for modules like `FormalWeb.UserAgent`.
 - Keep structure docstrings tied to the spec only when the type itself has a direct spec concept; put spec links on individual structure fields when the spec concept belongs to the member.
 - Prefer single-line doc comments for spec-only documentation such as `/-- https://html.spec.whatwg.org/multipage/#anchor -/`.

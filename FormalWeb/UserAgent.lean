@@ -1,371 +1,6 @@
+import FormalWeb.Traversable
+
 namespace FormalWeb
-
-/-- https://html.spec.whatwg.org/multipage/#concept-origin -/
-structure Origin where
-  /-- https://html.spec.whatwg.org/multipage/#ascii-serialisation-of-an-origin -/
-  serialization : String
-  /-- Model-local cache of the result of https://html.spec.whatwg.org/multipage/#obtain-a-site -/
-  site : String
-deriving Repr, DecidableEq
-
-def aboutBlankOrigin : Origin :=
-  { serialization := "about:blank", site := "about:blank" }
-
-/-- https://html.spec.whatwg.org/multipage/#cross-origin-isolation-mode -/
-inductive CrossOriginIsolationMode
-  | none
-  | logical
-  | concrete
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#agent-cluster-key -/
-inductive AgentClusterKey
-  | site (site : String)
-  | origin (origin : Origin)
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#task-source -/
-inductive TaskSource
-  | generic
-deriving Repr, DecidableEq
-
-/-- Model-local summary of the work stored in https://html.spec.whatwg.org/multipage/#concept-task-steps -/
-inductive TaskStep
-  | completeNav (navigationId : Nat)
-  | opaque
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#concept-task -/
-structure Task where
-  /-- Model-local summary of https://html.spec.whatwg.org/multipage/#concept-task-steps -/
-  step : TaskStep
-  /-- https://html.spec.whatwg.org/multipage/#concept-task-source -/
-  source : TaskSource := .generic
-  /-- Model-local reference for https://html.spec.whatwg.org/multipage/#concept-task-document -/
-  documentId : Option Nat := none
-  /-- Model-local placeholder for https://html.spec.whatwg.org/multipage/#script-evaluation-environment-settings-object-set -/
-  scriptEvaluationEnvironmentSettingsObjectSet : List Nat := []
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#event-loop -/
-structure EventLoop where
-  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#event-loop -/
-  id : Nat
-  /-- Model-local collapse of https://html.spec.whatwg.org/multipage/#task-queue to a single queue containing https://html.spec.whatwg.org/multipage/#concept-task values. -/
-  taskQueue : List Task := []
-  /-- https://html.spec.whatwg.org/multipage/#termination-nesting-level -/
-  terminationNestingLevel : Nat := 0
-deriving Repr, DecidableEq
-
-/-- https://tc39.es/ecma262/#sec-agents -/
-structure Agent where
-  /-- Model-local identifier standing in for the signifier allocated by https://html.spec.whatwg.org/multipage/#create-an-agent -/
-  id : Nat
-  /-- https://tc39.es/ecma262/#sec-agents -/
-  canBlock : Bool := false
-  /-- https://html.spec.whatwg.org/multipage/#concept-agent-event-loop -/
-  eventLoop : EventLoop
-deriving Repr, DecidableEq
-
-/-- Model-local opaque identifier for a https://html.spec.whatwg.org/multipage/#global-object used by task-queueing helpers. -/
-abbrev GlobalObjectId := Nat
-
-/-- https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation -/
-structure AgentCluster where
-  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#agent-cluster -/
-  id : Nat
-  crossOriginIsolationMode : CrossOriginIsolationMode := .none
-  /-- https://html.spec.whatwg.org/multipage/#is-origin-keyed -/
-  isOriginKeyed : Bool := false
-  /-- The single https://html.spec.whatwg.org/multipage/#similar-origin-window-agent contained in this browsing context agent cluster. -/
-  similarOriginWindowAgent : Agent
-deriving Repr, DecidableEq
-
-/-- Placeholder for the Rust-side DOM object backing a spec-level document. -/
-structure RustDocumentHandle where
-  /-- Model-local handle for https://dom.spec.whatwg.org/#concept-document -/
-  id : Nat
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#document-load-timing-info -/
-structure DocumentLoadTimingInfo where
-  /-- https://html.spec.whatwg.org/multipage/#navigation-start-time -/
-  navigationStartTime : Nat := 0
-  /-- https://html.spec.whatwg.org/multipage/#dom-interactive-time -/
-  domInteractiveTime : Nat := 0
-  /-- https://html.spec.whatwg.org/multipage/#dom-content-loaded-event-start-time -/
-  domContentLoadedEventStartTime : Nat := 0
-  /-- https://html.spec.whatwg.org/multipage/#dom-content-loaded-event-end-time -/
-  domContentLoadedEventEndTime : Nat := 0
-  /-- https://html.spec.whatwg.org/multipage/#dom-complete-time -/
-  domCompleteTime : Nat := 0
-  /-- https://html.spec.whatwg.org/multipage/#load-event-start-time -/
-  loadEventStartTime : Nat := 0
-  /-- https://html.spec.whatwg.org/multipage/#load-event-end-time -/
-  loadEventEndTime : Nat := 0
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#cross-origin-opener-policy-value -/
-inductive OpenerPolicyValue
-  | unsafeNone
-  | sameOriginAllowPopups
-  | sameOrigin
-  | noopenerAllowPopups
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#cross-origin-opener-policy -/
-structure OpenerPolicy where
-  /-- https://html.spec.whatwg.org/multipage/#coop-struct-value -/
-  value : OpenerPolicyValue := .unsafeNone
-  /-- https://html.spec.whatwg.org/multipage/#coop-struct-report-endpoint -/
-  reportingEndpoint : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#coop-struct-report-only-value -/
-  reportOnlyValue : OpenerPolicyValue := .unsafeNone
-  /-- https://html.spec.whatwg.org/multipage/#coop-struct-report-only-endpoint -/
-  reportOnlyReportingEndpoint : Option String := none
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#policy-container -/
-structure PolicyContainer where
-  /-- https://html.spec.whatwg.org/multipage/#policy-container-csp-list -/
-  cspList : List String := []
-  /-- https://html.spec.whatwg.org/multipage/#policy-container-embedder-policy -/
-  embedderPolicy : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#policy-container-referrer-policy -/
-  referrerPolicy : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#policy-container-integrity-policy -/
-  integrityPolicy : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#policy-container-report-only-integrity-policy -/
-  reportOnlyIntegrityPolicy : Option String := none
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#concept-document-permissions-policy -/
-structure PermissionsPolicy where
-  placeholder : Bool := true
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#active-sandboxing-flag-set -/
-abbrev SandboxingFlagSet := List String
-
-/-- Placeholder for the created custom element registry. -/
-structure CustomElementRegistry where
-  initialized : Bool := true
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#document -/
-structure Document where
-  /-- Model-local handle for the host-side DOM object for https://dom.spec.whatwg.org/#concept-document -/
-  ffiHandle : RustDocumentHandle
-  /-- https://dom.spec.whatwg.org/#concept-document-type -/
-  type : String := "html"
-  /-- https://dom.spec.whatwg.org/#concept-document-content-type -/
-  contentType : String := "text/html"
-  /-- https://dom.spec.whatwg.org/#concept-document-mode -/
-  mode : String := "quirks"
-  /-- https://dom.spec.whatwg.org/#concept-document-origin -/
-  origin : Origin
-  /-- https://html.spec.whatwg.org/multipage/#concept-document-bc -/
-  browsingContextId : Nat
-  /-- https://html.spec.whatwg.org/multipage/#concept-document-permissions-policy -/
-  permissionsPolicy : PermissionsPolicy := {}
-  /-- https://html.spec.whatwg.org/multipage/#active-sandboxing-flag-set -/
-  activeSandboxingFlagSet : SandboxingFlagSet := []
-  /-- https://html.spec.whatwg.org/multipage/#load-timing-info -/
-  loadTimingInfo : DocumentLoadTimingInfo := {}
-  /-- https://html.spec.whatwg.org/multipage/#is-initial-about:blank -/
-  isInitialAboutBlank : Bool := true
-  /-- https://html.spec.whatwg.org/multipage/#concept-document-about-base-url -/
-  aboutBaseURL : Option String := none
-  /-- https://dom.spec.whatwg.org/#concept-document-allow-declarative-shadow-roots -/
-  allowDeclarativeShadowRoots : Bool := true
-  /-- https://dom.spec.whatwg.org/#document-custom-element-registry -/
-  customElementRegistry : CustomElementRegistry := {}
-  /-- https://html.spec.whatwg.org/multipage/#concept-document-internal-ancestor-origin-objects-list -/
-  internalAncestorOriginObjectsList : List Origin := []
-  /-- https://html.spec.whatwg.org/multipage/#concept-document-ancestor-origins-list -/
-  ancestorOriginsList : Option (List Origin) := none
-  /-- https://html.spec.whatwg.org/multipage/#the-document's-referrer -/
-  referrer : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#concept-document-policy-container -/
-  policyContainer : PolicyContainer := {}
-  /-- https://html.spec.whatwg.org/multipage/#concept-document-coop -/
-  openerPolicy : OpenerPolicy := {}
-  /-- https://dom.spec.whatwg.org/#concept-document-url -/
-  url : String := "about:blank"
-deriving Repr, DecidableEq
-
-/-- https://w3c.github.io/navigation-timing/#dom-navigationtimingtype -/
-inductive NavigationTimingType
-  | navigate
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#user-navigation-involvement -/
-inductive UserNavigationInvolvement
-  | none
-  | browserUI
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
-inductive OngoingNavigation
-  | navigationId (id : Nat)
-  | traversal
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#source-snapshot-params -/
-structure SourceSnapshotParams where
-  /-- https://html.spec.whatwg.org/multipage/#source-snapshot-params-activation -/
-  hasTransientActivation : Bool := false
-  /-- https://html.spec.whatwg.org/multipage/#source-snapshot-params-client -/
-  fetchClientId : Option Nat := none
-  /-- https://html.spec.whatwg.org/multipage/#source-snapshot-params-policy-container -/
-  sourcePolicyContainer : PolicyContainer := {}
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#target-snapshot-params -/
-structure TargetSnapshotParams where
-  /-- https://html.spec.whatwg.org/multipage/#target-snapshot-params-sandbox -/
-  sandboxingFlags : SandboxingFlagSet := []
-  /-- https://html.spec.whatwg.org/multipage/#target-snapshot-params-iframe-referrer-policy -/
-  iframeElementReferrerPolicy : Option String := none
-deriving Repr, DecidableEq
-
-/-- Model-local representation of https://html.spec.whatwg.org/multipage/#post-resource -/
-structure PostResource where
-  /-- https://html.spec.whatwg.org/multipage/#post-resource-request-body -/
-  requestBody : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#post-resource-request-content-type -/
-  requestContentType : String := "application/x-www-form-urlencoded"
-deriving Repr, DecidableEq
-
-/-- Model-local wrapper for the string branch of https://html.spec.whatwg.org/multipage/#document-state-resource -/
-structure SrcdocResource where
-  /-- https://html.spec.whatwg.org/multipage/#document-state-resource -/
-  source : String
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#document-state-resource -/
-inductive DocumentResource
-  | srcdoc (resource : SrcdocResource)
-  | post (resource : PostResource)
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#document-state-2 -/
-structure DocumentState where
-  /-- https://html.spec.whatwg.org/multipage/#document-state-request-referrer-policy -/
-  requestReferrerPolicy : String := ""
-  /-- https://html.spec.whatwg.org/multipage/#document-state-initiator-origin -/
-  initiatorOrigin : Option Origin := none
-  /-- https://html.spec.whatwg.org/multipage/#document-state-resource -/
-  resource : Option DocumentResource := none
-  /-- https://html.spec.whatwg.org/multipage/#document-state-nav-target-name -/
-  navigableTargetName : String := ""
-  /-- https://html.spec.whatwg.org/multipage/#document-state-document -/
-  document : Option Document := none
-  /-- https://html.spec.whatwg.org/multipage/#document-state-origin -/
-  origin : Option Origin := none
-  /-- https://html.spec.whatwg.org/multipage/#document-state-about-base-url -/
-  aboutBaseURL : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#document-state-history-policy-container -/
-  historyPolicyContainer : Option PolicyContainer := none
-  /-- https://html.spec.whatwg.org/multipage/#document-state-request-referrer -/
-  requestReferrer : String := "client"
-  /-- https://html.spec.whatwg.org/multipage/#document-state-ever-populated -/
-  everPopulated : Bool := false
-  /-- https://html.spec.whatwg.org/multipage/#document-state-reload-pending -/
-  reloadPending : Bool := false
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#session-history-entry -/
-structure SessionHistoryEntry where
-  /-- https://html.spec.whatwg.org/multipage/#she-url -/
-  url : String
-  /-- https://html.spec.whatwg.org/multipage/#she-document-state -/
-  documentState : DocumentState
-  /-- https://html.spec.whatwg.org/multipage/#she-step -/
-  step : Nat := 0
-deriving Repr, DecidableEq
-
-/-- https://fetch.spec.whatwg.org/#concept-request -/
-structure NavigationRequest where
-  /-- https://fetch.spec.whatwg.org/#concept-request-url -/
-  url : String
-  /-- https://fetch.spec.whatwg.org/#concept-request-method -/
-  method : String := "GET"
-  /-- https://fetch.spec.whatwg.org/#concept-request-referrer -/
-  referrer : String := "client"
-  /-- https://fetch.spec.whatwg.org/#concept-request-referrer-policy -/
-  referrerPolicy : String := ""
-  /-- https://fetch.spec.whatwg.org/#concept-request-policy-container -/
-  policyContainer : PolicyContainer := {}
-  /-- https://fetch.spec.whatwg.org/#concept-request-body -/
-  body : Option String := none
-deriving Repr, DecidableEq
-
-/-- https://fetch.spec.whatwg.org/#concept-response -/
-structure NavigationResponse where
-  /-- https://fetch.spec.whatwg.org/#concept-response-url -/
-  url : String
-  /-- https://fetch.spec.whatwg.org/#concept-response-status -/
-  status : Nat := 200
-  /-- Minimal MIME type surface for loading-a-document dispatch. -/
-  contentType : String := "text/html"
-  /-- Placeholder response body for the future parser/runtime model. -/
-  body : String := ""
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#navigation-params -/
-structure NavigationParams where
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-id -/
-  id : Nat
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-navigable -/
-  traversableId : Nat
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-request -/
-  request : Option NavigationRequest := none
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-response -/
-  response : NavigationResponse
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-fetch-controller -/
-  fetchControllerId : Option Nat := none
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-origin -/
-  origin : Origin
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-policy-container -/
-  policyContainer : PolicyContainer := {}
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-sandboxing -/
-  finalSandboxingFlagSet : SandboxingFlagSet := []
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-iframe-referrer-policy -/
-  iframeElementReferrerPolicy : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-coop -/
-  coop : OpenerPolicy := {}
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-nav-timing-type -/
-  navigationTimingType : NavigationTimingType := .navigate
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-about-base-url -/
-  aboutBaseURL : Option String := none
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-user-involvement -/
-  userInvolvement : UserNavigationInvolvement := .none
-deriving Repr, DecidableEq
-
-/-- Pending fetch-backed navigation paused at the spec's wait-for-response point. -/
-structure PendingNavigationFetch where
-  /-- Model-local identifier corresponding to https://html.spec.whatwg.org/multipage/#navigation-params-id -/
-  navigationId : Nat
-  /-- Model-local reference to https://html.spec.whatwg.org/multipage/#navigation-params-navigable -/
-  traversableId : Nat
-  /-- https://html.spec.whatwg.org/multipage/#session-history-entry -/
-  historyEntry : SessionHistoryEntry
-  /-- https://html.spec.whatwg.org/multipage/#source-snapshot-params -/
-  sourceSnapshotParams : SourceSnapshotParams
-  /-- https://html.spec.whatwg.org/multipage/#target-snapshot-params -/
-  targetSnapshotParams : TargetSnapshotParams
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-nav-timing-type -/
-  navTimingType : NavigationTimingType := .navigate
-  /-- https://html.spec.whatwg.org/multipage/#navigation-params-user-involvement -/
-  userInvolvement : UserNavigationInvolvement := .none
-  /-- Model-local summary of CSP navigation type from https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching -/
-  cspNavigationType : String := "other"
-  /-- Model-local flag for the POST special-case in https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document -/
-  allowPOST : Bool := false
-  /-- https://fetch.spec.whatwg.org/#concept-request -/
-  request : NavigationRequest
-deriving Repr, DecidableEq
 
 /--
 LTS-style actions for the current user-agent navigation model.
@@ -379,77 +14,6 @@ inductive UserAgentAction
   | completeNavigation (navigationId : Nat) (response : NavigationResponse)
   | abortNavigation (traversableId : Nat)
 deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#top-level-browsing-context -/
-structure BrowsingContext where
-  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#browsing-context -/
-  id : Nat
-  /-- https://html.spec.whatwg.org/multipage/#tlbc-group -/
-  groupId : Option Nat := none
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#browsing-context-group -/
-structure BrowsingContextGroup where
-  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#browsing-context-group -/
-  id : Nat
-  /-- https://html.spec.whatwg.org/multipage/#browsing-context-set -/
-  browsingContextSet : List BrowsingContext := []
-  /-- https://html.spec.whatwg.org/multipage/#agent-cluster-map -/
-  agentClusterMap : List (AgentClusterKey × AgentCluster) := []
-  /-- https://html.spec.whatwg.org/multipage/#historical-agent-cluster-key-map -/
-  historicalAgentClusterKeyMap : List (Origin × AgentClusterKey) := []
-  /-- https://html.spec.whatwg.org/multipage/#bcg-cross-origin-isolation -/
-  crossOriginIsolationMode : CrossOriginIsolationMode := .none
-deriving Repr
-
-/-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
-structure BrowsingContextGroupSet where
-  /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
-  members : List BrowsingContextGroup := []
-deriving Repr
-
-/-- https://html.spec.whatwg.org/multipage/#navigable -/
-structure Navigable where
-  /-- https://html.spec.whatwg.org/multipage/#nav-parent -/
-  parentNavigableId : Option Nat := none
-  /-- https://html.spec.whatwg.org/multipage/#nav-current-history-entry -/
-  currentSessionHistoryEntry : Option SessionHistoryEntry := none
-  /-- https://html.spec.whatwg.org/multipage/#nav-active-history-entry -/
-  activeSessionHistoryEntry : Option SessionHistoryEntry := none
-  /-- https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
-  ongoingNavigation : Option OngoingNavigation := none
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#traversable-navigable -/
-structure TraversableNavigable extends Navigable where
-  /-- Model-local reference to the browsing context controlled by this traversable.
-      Related spec concept: https://html.spec.whatwg.org/multipage/#browsing-context -/
-  activeBrowsingContextId : Option Nat := none
-  /-- Model-local cache of the Document presented via https://html.spec.whatwg.org/multipage/#nav-active-history-entry -/
-  activeDocument : Option Document := none
-  /-- https://html.spec.whatwg.org/multipage/#tn-current-session-history-step -/
-  currentSessionHistoryStep : Nat := 0
-  /-- https://html.spec.whatwg.org/multipage/#tn-session-history-entries -/
-  sessionHistoryEntries : List SessionHistoryEntry := []
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#top-level-traversable -/
-structure TopLevelTraversable where
-  /-- https://html.spec.whatwg.org/multipage/#traversable-navigable -/
-  toTraversableNavigable : TraversableNavigable := {}
-  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#top-level-traversable -/
-  id : Nat
-  /-- Model-local mirror of https://html.spec.whatwg.org/multipage/#document-state-nav-target-name for the active entry. -/
-  targetName : String := ""
-  /-- https://html.spec.whatwg.org/multipage/#nav-parent -/
-  parentNavigableIdNone : toTraversableNavigable.toNavigable.parentNavigableId = none
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
-structure TopLevelTraversableSet where
-  /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
-  members : List TopLevelTraversable := []
-deriving Repr
 
 /--
 The user agent is the top-level global state for the browser model.
@@ -594,25 +158,38 @@ def pendingNavigationFetch?
 
 end UserAgent
 
-def hasUsablePostResource
-    (documentResource : DocumentResource) :
-    Bool :=
-  match documentResource with
-  | .post postResource => postResource.requestBody.isSome
-  | _ => false
-
-namespace EventLoop
-
-def enqueueTask
-    (eventLoop : EventLoop)
-    (task : Task) :
-    EventLoop :=
+def replaceTraversable
+    (userAgent : UserAgent)
+    (traversable : TopLevelTraversable) :
+    UserAgent :=
   {
-    eventLoop with
-      taskQueue := eventLoop.taskQueue.concat task
+    userAgent with
+      topLevelTraversableSet := userAgent.topLevelTraversableSet.replace traversable
   }
 
-end EventLoop
+def traversable?
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    Option TopLevelTraversable :=
+  userAgent.topLevelTraversableSet.find? traversableId
+
+/-- https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags -/
+def determineCreationSandboxingFlags
+    (_browsingContext : BrowsingContext)
+    (_embedder : Option Unit) :
+    SandboxingFlagSet :=
+  -- TODO: Model the creation sandboxing flags algorithm.
+  []
+
+/-- https://html.spec.whatwg.org/multipage/#snapshotting-source-snapshot-params -/
+def snapshotSourceSnapshotParams (sourceDocument : Document) : SourceSnapshotParams :=
+  {
+    sourcePolicyContainer := sourceDocument.policyContainer
+  }
+
+/-- https://html.spec.whatwg.org/multipage/#snapshotting-target-snapshot-params -/
+def snapshotTargetSnapshotParams (_traversable : TopLevelTraversable) : TargetSnapshotParams :=
+  {}
 
 /-- https://html.spec.whatwg.org/multipage/#queue-a-task -/
 def queueTask
@@ -671,287 +248,6 @@ def createAgent
   }
   -- Step 5: Return agent.
   (userAgent, agent)
-
-namespace BrowsingContextGroup
-
-private def lookupAgentCluster
-    (entries : List (AgentClusterKey × AgentCluster))
-    (key : AgentClusterKey) :
-    Option AgentCluster :=
-  match entries with
-  | [] => none
-  | (entryKey, agentCluster) :: rest =>
-      if entryKey = key then some agentCluster else lookupAgentCluster rest key
-
-private def setAgentClusterEntry
-    (entries : List (AgentClusterKey × AgentCluster))
-    (key : AgentClusterKey)
-    (agentCluster : AgentCluster) :
-    List (AgentClusterKey × AgentCluster) :=
-  match entries with
-  | [] => [(key, agentCluster)]
-  | (entryKey, entryValue) :: rest =>
-      if entryKey = key then
-        (key, agentCluster) :: rest
-      else
-        (entryKey, entryValue) :: setAgentClusterEntry rest key agentCluster
-
-private def lookupHistoricalAgentClusterKey
-    (entries : List (Origin × AgentClusterKey))
-    (origin : Origin) :
-    Option AgentClusterKey :=
-  match entries with
-  | [] => none
-  | (entryOrigin, key) :: rest =>
-      if entryOrigin = origin then some key else lookupHistoricalAgentClusterKey rest origin
-
-private def setHistoricalAgentClusterKeyEntry
-    (entries : List (Origin × AgentClusterKey))
-    (origin : Origin)
-    (key : AgentClusterKey) :
-    List (Origin × AgentClusterKey) :=
-  match entries with
-  | [] => [(origin, key)]
-  | (entryOrigin, entryKey) :: rest =>
-      if entryOrigin = origin then
-        (origin, key) :: rest
-      else
-        (entryOrigin, entryKey) :: setHistoricalAgentClusterKeyEntry rest origin key
-
-private def nextBrowsingContextIdFromMembers (members : List BrowsingContext) : Nat :=
-  members.foldl (fun nextId browsingContext => max nextId (browsingContext.id + 1)) 0
-
-def nextBrowsingContextId (group : BrowsingContextGroup) : Nat :=
-  nextBrowsingContextIdFromMembers group.browsingContextSet
-
-def append
-    (group : BrowsingContextGroup)
-    (browsingContext : BrowsingContext) :
-    BrowsingContextGroup × BrowsingContext :=
-  let browsingContext := { browsingContext with groupId := some group.id }
-  let browsingContextSet := group.browsingContextSet.concat browsingContext
-  ({ group with browsingContextSet }, browsingContext)
-
-def historicalAgentClusterKey
-    (group : BrowsingContextGroup)
-    (origin : Origin) :
-    Option AgentClusterKey :=
-  lookupHistoricalAgentClusterKey group.historicalAgentClusterKeyMap origin
-
-def setHistoricalAgentClusterKey
-    (group : BrowsingContextGroup)
-    (origin : Origin)
-    (key : AgentClusterKey) :
-    BrowsingContextGroup :=
-  {
-    group with
-      historicalAgentClusterKeyMap :=
-        setHistoricalAgentClusterKeyEntry group.historicalAgentClusterKeyMap origin key
-  }
-
-def agentCluster
-    (group : BrowsingContextGroup)
-    (key : AgentClusterKey) :
-    Option AgentCluster :=
-  lookupAgentCluster group.agentClusterMap key
-
-def setAgentCluster
-    (group : BrowsingContextGroup)
-    (key : AgentClusterKey)
-    (agentCluster : AgentCluster) :
-    BrowsingContextGroup :=
-  { group with agentClusterMap := setAgentClusterEntry group.agentClusterMap key agentCluster }
-
-end BrowsingContextGroup
-
-namespace BrowsingContextGroupSet
-
-private def nextIdFromMembers (members : List BrowsingContextGroup) : Nat :=
-  members.foldl (fun nextId group => max nextId (group.id + 1)) 0
-
-def nextId (groupSet : BrowsingContextGroupSet) : Nat :=
-  nextIdFromMembers groupSet.members
-
-def appendFresh
-    (groupSet : BrowsingContextGroupSet) :
-    BrowsingContextGroupSet × BrowsingContextGroup :=
-  let group : BrowsingContextGroup := { id := groupSet.nextId }
-  let members := groupSet.members.concat group
-  ({ members }, group)
-
-def replace
-    (groupSet : BrowsingContextGroupSet)
-    (updatedGroup : BrowsingContextGroup) :
-    BrowsingContextGroupSet :=
-  let members := groupSet.members.map fun group =>
-    if group.id = updatedGroup.id then updatedGroup else group
-  { members }
-
-end BrowsingContextGroupSet
-
-namespace TopLevelTraversableSet
-
-private def lookupTraversableById
-    (members : List TopLevelTraversable)
-    (id : Nat) :
-    Option TopLevelTraversable :=
-  match members with
-  | [] => none
-  | traversable :: rest =>
-      if traversable.id = id then some traversable else lookupTraversableById rest id
-
-private def nextIdFromMembers (members : List TopLevelTraversable) : Nat :=
-  members.foldl (fun nextId traversable => max nextId (traversable.id + 1)) 0
-
-def nextId (topLevelTraversableSet : TopLevelTraversableSet) : Nat :=
-  nextIdFromMembers topLevelTraversableSet.members
-
-def appendFresh
-    (topLevelTraversableSet : TopLevelTraversableSet) :
-    TopLevelTraversableSet × TopLevelTraversable :=
-  let traversable : TopLevelTraversable := {
-    toTraversableNavigable := {}
-    id := topLevelTraversableSet.nextId
-    parentNavigableIdNone := rfl
-  }
-  let members := topLevelTraversableSet.members.concat traversable
-  ({ members }, traversable)
-
-def replace
-    (topLevelTraversableSet : TopLevelTraversableSet)
-    (updatedTraversable : TopLevelTraversable) :
-    TopLevelTraversableSet :=
-  let members := topLevelTraversableSet.members.map fun traversable =>
-    if traversable.id = updatedTraversable.id then updatedTraversable else traversable
-  { members }
-
-def find?
-    (topLevelTraversableSet : TopLevelTraversableSet)
-    (id : Nat) :
-    Option TopLevelTraversable :=
-  lookupTraversableById topLevelTraversableSet.members id
-
-end TopLevelTraversableSet
-
-/-- https://html.spec.whatwg.org/multipage/#obtain-a-site -/
-def obtainSite (origin : Origin) : String :=
-  origin.site
-
-/-- https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags -/
-def determineCreationSandboxingFlags
-    (_browsingContext : BrowsingContext)
-    (_embedder : Option Unit) :
-    SandboxingFlagSet :=
-  -- TODO: Model the creation sandboxing flags algorithm.
-  []
-
-/-- https://html.spec.whatwg.org/multipage/#determining-the-origin -/
-def determineOrigin
-    (_url : String)
-    (_sandboxFlags : SandboxingFlagSet)
-    (creatorOrigin : Option Origin) :
-    Origin :=
-  -- TODO: Model the determining the origin algorithm.
-  creatorOrigin.getD { serialization := "about:blank", site := "about:blank" }
-
-/-- https://html.spec.whatwg.org/multipage/#concept-document-permissions-policy -/
-def createPermissionsPolicy
-    (_embedder : Option Unit)
-    (_origin : Origin) :
-    PermissionsPolicy :=
-  -- TODO: Model creating a permissions policy.
-  {}
-
-/-- https://html.spec.whatwg.org/multipage/#internal-ancestor-origin-objects-list-creation-steps -/
-def internalAncestorOriginObjectsListCreationSteps
-    (_document : Document)
-    (_iframeReferrerPolicy : Option String) :
-    List Origin :=
-  -- TODO: Model the internal ancestor origin objects list creation steps.
-  []
-
-/-- https://html.spec.whatwg.org/multipage/#ancestor-origins-list-creation-steps -/
-def ancestorOriginsListCreationSteps
-    (_document : Document) :
-    List Origin :=
-  -- TODO: Model the ancestor origins list creation steps.
-  []
-
-/-- https://html.spec.whatwg.org/multipage/#initialize-the-navigable -/
-def initializeNavigable
-    (navigable : Navigable)
-    (document : Document)
-    (documentState : DocumentState)
-    (parentNavigableId : Option Nat := none) :
-    Navigable :=
-  -- Step 1 is the caller-side assertion that documentState.document is non-null.
-  -- Step 2: Let entry be a new session history entry.
-  let entry : SessionHistoryEntry := {
-    url := document.url
-    documentState
-  }
-  -- Steps 3-5: Set current/active session history entry and parent.
-  {
-    navigable with
-      parentNavigableId
-      currentSessionHistoryEntry := some entry
-      activeSessionHistoryEntry := some entry
-  }
-
-/-- https://html.spec.whatwg.org/multipage/#set-the-ongoing-navigation -/
-def setOngoingNavigation
-    (navigable : Navigable)
-    (newValue : Option OngoingNavigation) :
-    Navigable :=
-  -- Step 1: If navigable's ongoing navigation is equal to newValue, then return.
-  if navigable.ongoingNavigation = newValue then
-    navigable
-  else
-    -- Step 2: Inform the navigation API about aborting navigation given navigable.
-    -- TODO: Model the navigation-API-facing abort bookkeeping for ongoing navigations.
-    -- Step 3: Set navigable's ongoing navigation to newValue.
-    {
-      navigable with
-        ongoingNavigation := newValue
-    }
-
-theorem setOngoingNavigation_preserves_parentNavigableId
-    (navigable : Navigable)
-    (newValue : Option OngoingNavigation) :
-    (setOngoingNavigation navigable newValue).parentNavigableId = navigable.parentNavigableId := by
-  unfold setOngoingNavigation
-  by_cases h : navigable.ongoingNavigation = newValue
-  · simp [h]
-  · simp [h]
-
-def replaceTraversable
-    (userAgent : UserAgent)
-    (traversable : TopLevelTraversable) :
-    UserAgent :=
-  {
-    userAgent with
-      topLevelTraversableSet := userAgent.topLevelTraversableSet.replace traversable
-  }
-
-def traversable?
-    (userAgent : UserAgent)
-    (traversableId : Nat) :
-    Option TopLevelTraversable :=
-  userAgent.topLevelTraversableSet.find? traversableId
-
-/-- https://fetch.spec.whatwg.org/#fetch-scheme -/
-def isFetchScheme (url : String) : Bool :=
-  url.startsWith "http://" || url.startsWith "https://"
-
-/-- https://html.spec.whatwg.org/multipage/#snapshotting-source-snapshot-params -/
-def snapshotSourceSnapshotParams (sourceDocument : Document) : SourceSnapshotParams :=
-  {
-    sourcePolicyContainer := sourceDocument.policyContainer
-  }
-
-/-- https://html.spec.whatwg.org/multipage/#snapshotting-target-snapshot-params -/
-def snapshotTargetSnapshotParams (_traversable : TopLevelTraversable) : TargetSnapshotParams :=
-  {}
 
 /-- https://html.spec.whatwg.org/multipage/#initialise-the-document-object -/
 def createAndInitializeDocumentObject
@@ -1314,7 +610,7 @@ def navigate
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable)
     (destinationURL : String)
-  (documentResource : Option DocumentResource := none) :
+    (documentResource : Option DocumentResource := none) :
     UserAgent :=
   match traversable.toTraversableNavigable.activeDocument with
   | none =>
@@ -1378,7 +674,7 @@ def obtainSimilarOriginWindowAgent
     (origin : Origin)
     (group : BrowsingContextGroup)
     (requestsOAC : Bool) :
-  UserAgent × BrowsingContextGroup × Agent :=
+    UserAgent × BrowsingContextGroup × Agent :=
   -- Step 1: Let site be the result of obtaining a site with origin.
   let site := obtainSite origin
 
@@ -1578,7 +874,7 @@ def createNewBrowsingContextGroupAndDocument
 /-- https://html.spec.whatwg.org/multipage/#creating-a-new-top-level-browsing-context -/
 def createNewTopLevelBrowsingContextAndDocument
     (userAgent : UserAgent) :
-  UserAgent × BrowsingContext × Document :=
+    UserAgent × BrowsingContext × Document :=
   -- Step 1: Let group and document be the result of creating a new browsing context group and document.
   let (userAgent, _group, browsingContext, document) :=
     createNewBrowsingContextGroupAndDocument userAgent
@@ -1685,27 +981,27 @@ def createNewTopLevelTraversable
   -- Step 13: Return traversable.
   (userAgent, traversable)
 
-  /--
-  Apply one user-agent transition.
+/--
+Apply one user-agent transition.
 
-  This sits above helper algorithms such as `navigate` and
-  `processNavigationFetchResponse`, which implement the details of each labeled step.
-  -/
-  def step
+This sits above helper algorithms such as `navigate` and
+`processNavigationFetchResponse`, which implement the details of each labeled step.
+-/
+def step
     (userAgent : UserAgent)
     (action : UserAgentAction) :
     Option UserAgent :=
-    match action with
-    | .createTopLevelTraversable targetName =>
+  match action with
+  | .createTopLevelTraversable targetName =>
       let (userAgent, _traversable) := createNewTopLevelTraversable userAgent none targetName
       some userAgent
-    | .beginNavigation traversableId destinationURL documentResource =>
+  | .beginNavigation traversableId destinationURL documentResource =>
       match traversable? userAgent traversableId with
       | none => none
       | some traversable => some (navigate userAgent traversable destinationURL documentResource)
-    | .completeNavigation navigationId response =>
+  | .completeNavigation navigationId response =>
       some (processNavigationFetchResponse userAgent navigationId response)
-    | .abortNavigation traversableId =>
+  | .abortNavigation traversableId =>
       some (abortNavigation userAgent traversableId)
 
 end FormalWeb
