@@ -32,6 +32,7 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - Lean uses `-- TODO:` comments, not `// TODO:` comments.
 - The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
 - Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
+- The vendored Blitz `HtmlDocument` can be rendered for debugging with `root_element().outer_html()`.
 - Prefer a custom Lake `target` plus `moreLinkObjs` for repo-local Rust static libraries; reserve `extern_lib` for cases that truly need it.
 - Keep upstream Rust checkouts in `scratchpad/` for reference only; if the build depends on local Blitz crates, copy the required subset under `ffi/vendor/` and depend on that vendored copy instead of `scratchpad/` paths.
 - When searching the local HTML standard, search for the exact spec anchor string first, such as `creating-a-new-top-level-traversable`.

@@ -124,6 +124,18 @@ def rustDocumentPointer?
     Option RustDocumentPointer :=
   lookupRustDocumentPointerEntry userAgent.rustDocumentPointers handle
 
+def documentHtml
+    (userAgent : UserAgent)
+    (document : Document) :
+    String :=
+  match userAgent.rustDocumentPointer? document.ffiHandle with
+  | none => "<missing rust document pointer>"
+  | some pointer =>
+      if pointer = RustDocumentPointer.null then
+        "<null rust document pointer>"
+      else
+        renderHtmlDocument pointer.raw
+
 def allocateRustDocumentHandle (userAgent : UserAgent) : UserAgent × RustDocumentHandle :=
   let handle : RustDocumentHandle := { id := userAgent.nextRustDocumentHandleId }
   let userAgent := {
@@ -292,6 +304,14 @@ def populateWithHtmlHeadBody
   -- Notes: Store the resulting opaque Rust document pointer on the Lean-side document handle.
   userAgent.setRustDocumentPointer document.ffiHandle pointer
 
+/-- Model-local helper that installs a fixed fetched HTML document for navigation demos. -/
+def populateWithLoadedHtmlDocument
+    (userAgent : UserAgent)
+    (document : Document) :
+    UserAgent :=
+  let pointer := createLoadedHtmlDocument ()
+  userAgent.setRustDocumentPointer document.ffiHandle pointer
+
 /-- https://html.spec.whatwg.org/multipage/#create-an-agent -/
 def createAgent
     (userAgent : UserAgent)
@@ -387,8 +407,10 @@ def loadHtmlDocument
     let userAgent := populateWithHtmlHeadBody userAgent document
     (userAgent, document)
   else
-    -- Step 2 otherwise: Create and feed the HTML parser.
-    -- TODO: Model the parser-facing concurrent stream processing for HTML bytes.
+    -- Step 3: Otherwise, create an HTML parser and associate it with the document.
+    -- Notes: The current model stubs the parser-driven branch by installing a fixed Rust-side HTML document that contains the text "Loaded!".
+    let userAgent := populateWithLoadedHtmlDocument userAgent document
+    -- Notes: Fetch delivery and incremental parser input remain future work.
     (userAgent, document)
 
 /-- https://html.spec.whatwg.org/multipage/#loading-a-document -/
