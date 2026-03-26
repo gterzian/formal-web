@@ -14,6 +14,7 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - Document structure fields with spec-slot links wherever the standard exposes a corresponding slot; if a field is model-local, say so explicitly and link the closest relevant spec concept.
 - When the spec distinguishes agent kinds mostly by context, prefer a shared `Agent` model plus the slots actually used by the current algorithms, instead of separate placeholder agent record types.
 - For spec algorithms, document the Lean function with the spec link and annotate the body with `Step n: ...` comments using verbatim spec prose.
+- For spec algorithms, keep `Step n:` comments for spec prose only; add separate `Notes:` comments for concrete modeling or implementation details.
 - Model shared spec algorithms at the least-specific spec type that the standard uses; for example, `initialize-the-navigable` should take a `Navigable`, not a `TraversableNavigable`, since the spec reuses it for child navigables.
 - Model ongoing-navigation state on `Navigable`, not only on traversables, since `set-the-ongoing-navigation` is defined for navigables generally.
 - Use the `set-the-ongoing-navigation` helper only where the spec explicitly invokes that algorithm, such as `navigate`; do not route unrelated post-navigation state commits through it.
@@ -31,6 +32,8 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - Lean uses `-- TODO:` comments, not `// TODO:` comments.
 - The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
 - Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
+- Prefer a custom Lake `target` plus `moreLinkObjs` for repo-local Rust static libraries; reserve `extern_lib` for cases that truly need it.
+- Keep upstream Rust checkouts in `scratchpad/` for reference only; if the build depends on local Blitz crates, copy the required subset under `ffi/vendor/` and depend on that vendored copy instead of `scratchpad/` paths.
 - When searching the local HTML standard, search for the exact spec anchor string first, such as `creating-a-new-top-level-traversable`.
 - For concurrent spec algorithms such as fetch-and-wait navigation steps, prefer modeling the pause point as explicit pending state on `UserAgent` plus a separate resume transition before introducing real runtime tasks or I/O.
 - When a spec algorithm pauses and later resumes after a wait point, model the resumed portion as an explicit continuation helper instead of re-entering the top-level algorithm at a later argument state.

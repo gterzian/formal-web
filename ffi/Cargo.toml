@@ -1,0 +1,12 @@
+[package]
+name = "formalwebffi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+blitz-dom = { path = "vendor/blitz/packages/blitz-dom", default-features = false }
+blitz-html = { path = "vendor/blitz/packages/blitz-html", default-features = false }

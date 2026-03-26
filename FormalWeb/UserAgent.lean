@@ -1,3 +1,4 @@
+import FormalWeb.FFI
 import FormalWeb.Traversable
 
 namespace FormalWeb
@@ -21,6 +22,8 @@ The user agent is the top-level global state for the browser model.
 structure UserAgent where
   /-- Model-local allocator state for https://dom.spec.whatwg.org/#concept-document -/
   nextRustDocumentHandleId : Nat := 0
+  /-- Model-local map from document handles to opaque Rust-side document pointers. -/
+  rustDocumentPointers : List (RustDocumentHandle × RustDocumentPointer) := []
   /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#agent-cluster -/
   nextAgentClusterId : Nat := 0
   /-- Model-local allocator state for https://tc39.es/ecma262/#sec-agents -/
@@ -40,6 +43,31 @@ structure UserAgent where
 deriving Repr
 
 namespace UserAgent
+
+private def lookupRustDocumentPointerEntry
+    (entries : List (RustDocumentHandle × RustDocumentPointer))
+    (handle : RustDocumentHandle) :
+    Option RustDocumentPointer :=
+  match entries with
+  | [] => none
+  | (entryHandle, pointer) :: rest =>
+      if entryHandle = handle then
+        some pointer
+      else
+        lookupRustDocumentPointerEntry rest handle
+
+private def setRustDocumentPointerEntry
+    (entries : List (RustDocumentHandle × RustDocumentPointer))
+    (handle : RustDocumentHandle)
+    (pointer : RustDocumentPointer) :
+    List (RustDocumentHandle × RustDocumentPointer) :=
+  match entries with
+  | [] => [(handle, pointer)]
+  | (entryHandle, entryPointer) :: rest =>
+      if entryHandle = handle then
+        (handle, pointer) :: rest
+      else
+        (entryHandle, entryPointer) :: setRustDocumentPointerEntry rest handle pointer
 
 private def lookupEventLoopEntry
     (entries : List (Nat × EventLoop))
@@ -80,9 +108,30 @@ def eventLoop?
     Option EventLoop :=
   lookupEventLoopEntry userAgent.eventLoops eventLoopId
 
+def setRustDocumentPointer
+    (userAgent : UserAgent)
+    (handle : RustDocumentHandle)
+    (pointer : RustDocumentPointer) :
+    UserAgent :=
+  {
+    userAgent with
+      rustDocumentPointers := setRustDocumentPointerEntry userAgent.rustDocumentPointers handle pointer
+  }
+
+def rustDocumentPointer?
+    (userAgent : UserAgent)
+    (handle : RustDocumentHandle) :
+    Option RustDocumentPointer :=
+  lookupRustDocumentPointerEntry userAgent.rustDocumentPointers handle
+
 def allocateRustDocumentHandle (userAgent : UserAgent) : UserAgent × RustDocumentHandle :=
   let handle : RustDocumentHandle := { id := userAgent.nextRustDocumentHandleId }
-  let userAgent := { userAgent with nextRustDocumentHandleId := userAgent.nextRustDocumentHandleId + 1 }
+  let userAgent := {
+    userAgent with
+      nextRustDocumentHandleId := userAgent.nextRustDocumentHandleId + 1
+      rustDocumentPointers :=
+        userAgent.rustDocumentPointers.concat (handle, RustDocumentPointer.null)
+  }
   (userAgent, handle)
 
 def allocateAgentClusterId (userAgent : UserAgent) : UserAgent × Nat :=
@@ -227,6 +276,22 @@ def queueGlobalTask
   -- Step 3: Queue a task given source, event loop, document, and steps.
   queueTask userAgent source eventLoopId documentId step
 
+/-- https://html.spec.whatwg.org/multipage/#populate-with-html/head/body -/
+def populateWithHtmlHeadBody
+    (userAgent : UserAgent)
+    (document : Document) :
+    UserAgent :=
+  -- Step 1: Let html be the result of creating an element given document, "html", and the HTML namespace.
+  -- Step 2: Let head be the result of creating an element given document, "head", and the HTML namespace.
+  -- Step 3: Let body be the result of creating an element given document, "body", and the HTML namespace.
+  -- Step 4: Append html to document.
+  -- Step 5: Append head to html.
+  -- Step 6: Append body to html.
+  -- Notes: The current model performs those DOM allocations and append operations with one Rust-side helper that creates the initial html/head/body skeleton.
+  let pointer := createEmptyHtmlDocument ()
+  -- Notes: Store the resulting opaque Rust document pointer on the Lean-side document handle.
+  userAgent.setRustDocumentPointer document.ffiHandle pointer
+
 /-- https://html.spec.whatwg.org/multipage/#create-an-agent -/
 def createAgent
     (userAgent : UserAgent)
@@ -319,7 +384,7 @@ def loadHtmlDocument
 
   -- Step 2: If document's URL is about:blank, then populate with html/head/body given document.
   if document.url = "about:blank" then
-    -- TODO: Model populate with html/head/body for non-initial about:blank documents.
+    let userAgent := populateWithHtmlHeadBody userAgent document
     (userAgent, document)
   else
     -- Step 2 otherwise: Create and feed the HTML parser.
@@ -838,7 +903,7 @@ def createNewBrowsingContextAndDocument
   -- TODO: Model readiness for post-load tasks.
 
   -- Step 22: Populate with html/head/body given document.
-  -- TODO: Model populating the initial DOM tree.
+  let userAgent := populateWithHtmlHeadBody userAgent document
 
   -- Step 23: Make active document.
   -- TODO: Model make active.

@@ -1,0 +1,65 @@
+[workspace]
+members = [
+    "packages/debug_timer",
+    "packages/blitz-traits",
+    "packages/blitz-dom",
+    "packages/blitz-html",
+    "packages/stylo_taffy",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/dioxuslabs/blitz"
+repository = "https://github.com/dioxuslabs/blitz"
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.92.0"
+
+[workspace.dependencies]
+blitz-dom = { version = "0.2.0", path = "./packages/blitz-dom", default-features = false }
+blitz-html = { version = "0.2.0", path = "./packages/blitz-html", default-features = false }
+blitz-traits = { version = "0.2.0", path = "./packages/blitz-traits", default-features = false }
+stylo_taffy = { version = "0.2.0", path = "./packages/stylo_taffy", default-features = false }
+debug_timer = { version = "0.1.2", path = "./packages/debug_timer" }
+style = { version = "0.14.0", package = "stylo" }
+style_traits = { version = "0.14.0", package = "stylo_traits" }
+style_atoms = { version = "0.14.0", package = "stylo_atoms" }
+style_config = { version = "0.14.0", package = "stylo_static_prefs" }
+style_dom = { version = "0.14.0", package = "stylo_dom" }
+selectors = { version = "0.36.0", package = "selectors" }
+cssparser = { version = "0.36" }
+markup5ever = "0.37.0"
+html5ever = "0.37.0"
+xml5ever = "0.37.0"
+euclid = "0.22"
+atomic_refcell = "0.1.13"
+app_units = "0.7.5"
+smallvec = "1"
+taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", default-features = false, features = ["std", "flexbox", "grid", "block_layout", "content_size", "calc", "detailed_layout_info"] }
+color = "0.3"
+linebender_resource_handle = "0.1"
+kurbo = "0.13"
+parley = { git = "https://github.com/linebender/parley", rev = "c3d3d41eaaca0d2dce9558f460c2c129559fc425", default-features = false, features = ["std"] }
+skrifa = { version = "0.40", default-features = false, features = ["std"] }
+accesskit = "0.24"
+image = { version = "=0.25.6", default-features = false }
+usvg = "0.46"
+woff = { version = "0.6", default-features = false }
+wuff = "0.2"
+html-escape = "0.2.13"
+percent-encoding = "2.3.1"
+url = "2.5.0"
+http = "1.1.0"
+bytes = "1.7.1"
+keyboard-types = "0.7"
+cursor-icon = "1"
+serde = "1"
+smol_str = "0.3"
+slab = "0.4.9"
+bitflags = "2.8.0"
+tracing = "0.1.40"
+fastrand = "2.3.0"
+rayon = "1"
+thread_local = "1"
