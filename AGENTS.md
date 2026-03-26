@@ -35,6 +35,8 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - The vendored Blitz `HtmlDocument` can be rendered for debugging with `root_element().outer_html()`.
 - Prefer a custom Lake `target` plus `moreLinkObjs` for repo-local Rust static libraries; reserve `extern_lib` for cases that truly need it.
 - Keep upstream Rust checkouts in `scratchpad/` for reference only; if the build depends on local Blitz crates, copy the required subset under `ffi/vendor/` and depend on that vendored copy instead of `scratchpad/` paths.
+- For Lean FFI callbacks from Rust, prefer exporting a Lean function and calling it from Rust through a tiny C shim that includes `lean/lean.h`; Rust alone cannot directly use Lean's many inline runtime helpers such as `lean_dec`, `lean_string_cstr`, and `lean_io_result_*`.
+- On macOS, current `winit` builds may still reference the legacy AppKit global `NSFilenamesPboardType`; provide a tiny Objective-C compatibility definition in the repo-local static library when the final Lean dylib fails to load with that missing symbol.
 - When searching the local HTML standard, search for the exact spec anchor string first, such as `creating-a-new-top-level-traversable`.
 - For concurrent spec algorithms such as fetch-and-wait navigation steps, prefer modeling the pause point as explicit pending state on `UserAgent` plus a separate resume transition before introducing real runtime tasks or I/O.
 - When a spec algorithm pauses and later resumes after a wait point, model the resumed portion as an explicit continuation helper instead of re-entering the top-level algorithm at a later argument state.
@@ -45,3 +47,4 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - It is acceptable for the LTS layer to factor a convenience spec helper into multiple explicit labels, such as separating top-level traversable creation from the later begin-navigation and fetch-completion steps.
 - If a spec convenience helper only bundles multiple LTS-visible steps, prefer modeling those steps directly in the action system and omit the convenience helper unless it still carries independent explanatory value.
 - If a spec algorithm is only a top-level entry point and is not referenced by other spec algorithms, it does not need to be preserved as a separate helper in the model when the LTS already captures its intended behavior.
+- A guide on Lean FFI can be found in `/scratchpad/ffi_guide/md`.

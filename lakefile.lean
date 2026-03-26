@@ -11,14 +11,47 @@ require mathlib from git
 def ffiDir : FilePath := "ffi"
 def vendoredBlitzDir : FilePath := ffiDir / "vendor" / "blitz"
 def rustToolchain := "1.92.0"
+def macOSSDKPath : FilePath :=
+  "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+
+def ffiMacOSLinkArgs : Array String :=
+  if System.Platform.isOSX then
+    let frameworkDir := macOSSDKPath / "System" / "Library" / "Frameworks"
+    let systemLibDir := macOSSDKPath / "usr" / "lib"
+    #[
+      "-F", frameworkDir.toString,
+      "-L", systemLibDir.toString,
+      s!"-Wl,-syslibroot,{macOSSDKPath}",
+      "-framework", "ApplicationServices",
+      "-framework", "CoreGraphics",
+      "-framework", "CoreVideo",
+      "-framework", "Carbon",
+      "-framework", "CoreFoundation",
+      "-framework", "AppKit",
+      "-framework", "Foundation",
+      "-lobjc",
+      "-liconv",
+      "-lm"
+    ]
+  else
+    #[]
 
 input_file ffiCargoToml where
   path := ffiDir / "Cargo.toml"
   text := true
 
+input_file ffiBuildScript where
+  path := ffiDir / "build.rs"
+  text := true
+
 input_dir ffiRustSources where
   path := ffiDir / "src"
   filter := .extension <| .mem #["rs"]
+  text := true
+
+input_dir ffiCSources where
+  path := ffiDir / "src"
+  filter := .extension <| .mem #["c", "h", "m"]
   text := true
 
 input_file vendoredBlitzWorkspaceCargoToml where
@@ -76,7 +109,9 @@ input_dir vendoredStyloTaffySources where
 
 target formalwebffiStatic pkg : FilePath := do
   let ffiManifest ← ffiCargoToml.fetch
+  let ffiBuild ← ffiBuildScript.fetch
   let ffiSources ← ffiRustSources.fetch
+  let ffiCSrcs ← ffiCSources.fetch
   let vendoredBlitzWorkspaceManifest ← vendoredBlitzWorkspaceCargoToml.fetch
   let vendoredBlitzHtmlManifest ← vendoredBlitzHtmlCargoToml.fetch
   let vendoredBlitzHtmlSrcs ← vendoredBlitzHtmlSources.fetch
@@ -94,7 +129,9 @@ target formalwebffiStatic pkg : FilePath := do
   let manifestPath := pkg.dir / ffiDir / "Cargo.toml"
   let builtLib := pkg.dir / ffiDir / "target" / "release" / libName
   ffiManifest.bindM (sync := true) fun _ =>
+  ffiBuild.bindM (sync := true) fun _ =>
   ffiSources.bindM (sync := true) fun _ =>
+  ffiCSrcs.bindM (sync := true) fun _ =>
   vendoredBlitzWorkspaceManifest.bindM (sync := true) fun _ =>
   vendoredBlitzHtmlManifest.bindM (sync := true) fun _ =>
   vendoredBlitzHtmlSrcs.bindM (sync := true) fun _ =>
@@ -133,7 +170,9 @@ target formalwebffiStatic pkg : FilePath := do
 lean_lib FormalWeb where
   precompileModules := true
   moreLinkObjs := #[formalwebffiStatic]
+  moreLinkArgs := ffiMacOSLinkArgs
 
 @[default_target]
 lean_exe "formal-web" where
   root := `Main
+  moreLinkArgs := ffiMacOSLinkArgs

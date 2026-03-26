@@ -20,4 +20,12 @@ opaque createLoadedHtmlDocument : Unit → RustDocumentPointer
 @[extern "formal_web_render_html_document"]
 opaque renderHtmlDocument : USize → String
 
+/-- Sends a runtime message through the Rust-side demo channel. -/
+@[extern "formal_web_send_runtime_message"]
+opaque sendRuntimeMessage : @& String → IO Unit
+
+/-- Runs the Rust-side `winit` demo event loop until the window closes. -/
+@[extern "formal_web_run_winit_event_loop"]
+opaque runWinitEventLoop : Unit → IO Unit
+
 end FormalWeb
