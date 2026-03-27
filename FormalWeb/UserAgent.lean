@@ -1,3 +1,4 @@
+import Std.Data.TreeMap
 import FormalWeb.FFI
 import FormalWeb.Traversable
 
@@ -23,7 +24,7 @@ structure UserAgent where
   /-- Model-local allocator state for https://dom.spec.whatwg.org/#concept-document -/
   nextRustDocumentHandleId : Nat := 0
   /-- Model-local map from document handles to opaque Rust-side document pointers. -/
-  rustDocumentPointers : List (RustDocumentHandle × RustDocumentPointer) := []
+  rustDocumentPointers : Std.TreeMap RustDocumentHandle RustDocumentPointer := Std.TreeMap.empty
   /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#agent-cluster -/
   nextAgentClusterId : Nat := 0
   /-- Model-local allocator state for https://tc39.es/ecma262/#sec-agents -/
@@ -37,61 +38,12 @@ structure UserAgent where
   /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
   topLevelTraversableSet : TopLevelTraversableSet := {}
   /-- Model-local map from https://html.spec.whatwg.org/multipage/#event-loop identifiers to event-loop objects. -/
-  eventLoops : List (Nat × EventLoop) := []
+  eventLoops : Std.TreeMap Nat EventLoop := Std.TreeMap.empty
   /-- Model-local queue of fetch-backed navigations suspended in https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching -/
-  pendingNavigationFetches : List PendingNavigationFetch := []
+  pendingNavigationFetches : Std.TreeMap Nat PendingNavigationFetch := Std.TreeMap.empty
 deriving Repr
 
 namespace UserAgent
-
-private def lookupRustDocumentPointerEntry
-    (entries : List (RustDocumentHandle × RustDocumentPointer))
-    (handle : RustDocumentHandle) :
-    Option RustDocumentPointer :=
-  match entries with
-  | [] => none
-  | (entryHandle, pointer) :: rest =>
-      if entryHandle = handle then
-        some pointer
-      else
-        lookupRustDocumentPointerEntry rest handle
-
-private def setRustDocumentPointerEntry
-    (entries : List (RustDocumentHandle × RustDocumentPointer))
-    (handle : RustDocumentHandle)
-    (pointer : RustDocumentPointer) :
-    List (RustDocumentHandle × RustDocumentPointer) :=
-  match entries with
-  | [] => [(handle, pointer)]
-  | (entryHandle, entryPointer) :: rest =>
-      if entryHandle = handle then
-        (handle, pointer) :: rest
-      else
-        (entryHandle, entryPointer) :: setRustDocumentPointerEntry rest handle pointer
-
-private def lookupEventLoopEntry
-    (entries : List (Nat × EventLoop))
-    (eventLoopId : Nat) :
-    Option EventLoop :=
-  match entries with
-  | [] => none
-  | (entryId, eventLoop) :: rest =>
-      if entryId = eventLoopId then
-        some eventLoop
-      else
-        lookupEventLoopEntry rest eventLoopId
-
-private def setEventLoopEntry
-    (entries : List (Nat × EventLoop))
-    (eventLoop : EventLoop) :
-    List (Nat × EventLoop) :=
-  match entries with
-  | [] => [(eventLoop.id, eventLoop)]
-  | (entryId, entryEventLoop) :: rest =>
-      if entryId = eventLoop.id then
-        (eventLoop.id, eventLoop) :: rest
-      else
-        (entryId, entryEventLoop) :: setEventLoopEntry rest eventLoop
 
 def setEventLoop
     (userAgent : UserAgent)
@@ -99,14 +51,14 @@ def setEventLoop
     UserAgent :=
   {
     userAgent with
-      eventLoops := setEventLoopEntry userAgent.eventLoops eventLoop
+      eventLoops := userAgent.eventLoops.insert eventLoop.id eventLoop
   }
 
 def eventLoop?
     (userAgent : UserAgent)
     (eventLoopId : Nat) :
     Option EventLoop :=
-  lookupEventLoopEntry userAgent.eventLoops eventLoopId
+  userAgent.eventLoops.get? eventLoopId
 
 def setRustDocumentPointer
     (userAgent : UserAgent)
@@ -115,14 +67,14 @@ def setRustDocumentPointer
     UserAgent :=
   {
     userAgent with
-      rustDocumentPointers := setRustDocumentPointerEntry userAgent.rustDocumentPointers handle pointer
+      rustDocumentPointers := userAgent.rustDocumentPointers.insert handle pointer
   }
 
 def rustDocumentPointer?
     (userAgent : UserAgent)
     (handle : RustDocumentHandle) :
     Option RustDocumentPointer :=
-  lookupRustDocumentPointerEntry userAgent.rustDocumentPointers handle
+  userAgent.rustDocumentPointers.get? handle
 
 def documentHtml
     (userAgent : UserAgent)
@@ -141,8 +93,7 @@ def allocateRustDocumentHandle (userAgent : UserAgent) : UserAgent × RustDocume
   let userAgent := {
     userAgent with
       nextRustDocumentHandleId := userAgent.nextRustDocumentHandleId + 1
-      rustDocumentPointers :=
-        userAgent.rustDocumentPointers.concat (handle, RustDocumentPointer.null)
+      rustDocumentPointers := userAgent.rustDocumentPointers.insert handle RustDocumentPointer.null
   }
   (userAgent, handle)
 
@@ -169,53 +120,31 @@ def allocateNavigationId (userAgent : UserAgent) : UserAgent × Nat :=
   let userAgent := { userAgent with nextNavigationId := userAgent.nextNavigationId + 1 }
   (userAgent, navigationId)
 
-private def takePendingNavigationFetchEntries
-    (pendingNavigationFetches : List PendingNavigationFetch)
-    (navigationId : Nat) :
-    Option PendingNavigationFetch × List PendingNavigationFetch :=
-  match pendingNavigationFetches with
-  | [] => (none, [])
-  | pendingNavigationFetch :: rest =>
-      if pendingNavigationFetch.navigationId = navigationId then
-        (some pendingNavigationFetch, rest)
-      else
-        let (result, rest) := takePendingNavigationFetchEntries rest navigationId
-        (result, pendingNavigationFetch :: rest)
-
-private def lookupPendingNavigationFetchEntry
-    (pendingNavigationFetches : List PendingNavigationFetch)
-    (navigationId : Nat) :
-    Option PendingNavigationFetch :=
-  match pendingNavigationFetches with
-  | [] => none
-  | pendingNavigationFetch :: rest =>
-      if pendingNavigationFetch.navigationId = navigationId then
-        some pendingNavigationFetch
-      else
-        lookupPendingNavigationFetchEntry rest navigationId
-
 def appendPendingNavigationFetch
     (userAgent : UserAgent)
     (pendingNavigationFetch : PendingNavigationFetch) :
     UserAgent :=
   {
     userAgent with
-      pendingNavigationFetches := userAgent.pendingNavigationFetches.concat pendingNavigationFetch
+      pendingNavigationFetches :=
+        userAgent.pendingNavigationFetches.insert
+          pendingNavigationFetch.navigationId
+          pendingNavigationFetch
   }
 
 def takePendingNavigationFetch
     (userAgent : UserAgent)
     (navigationId : Nat) :
     UserAgent × Option PendingNavigationFetch :=
-  let (pendingNavigationFetch, pendingNavigationFetches) :=
-    takePendingNavigationFetchEntries userAgent.pendingNavigationFetches navigationId
-  ({ userAgent with pendingNavigationFetches }, pendingNavigationFetch)
+  let result := userAgent.pendingNavigationFetches.get? navigationId
+  let userAgent := { userAgent with pendingNavigationFetches := userAgent.pendingNavigationFetches.erase navigationId }
+  (userAgent, result)
 
 def pendingNavigationFetch?
     (userAgent : UserAgent)
     (navigationId : Nat) :
     Option PendingNavigationFetch :=
-  lookupPendingNavigationFetchEntry userAgent.pendingNavigationFetches navigationId
+  userAgent.pendingNavigationFetches.get? navigationId
 
 end UserAgent
 

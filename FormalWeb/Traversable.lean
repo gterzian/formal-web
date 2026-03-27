@@ -1,3 +1,4 @@
+import Std.Data.TreeMap
 import FormalWeb.Navigation
 
 namespace FormalWeb
@@ -13,7 +14,7 @@ deriving Repr, DecidableEq
 inductive AgentClusterKey
   | site (site : String)
   | origin (origin : Origin)
-deriving Repr, DecidableEq
+deriving Repr, DecidableEq, Ord
 
 /-- https://html.spec.whatwg.org/multipage/#task-source -/
 inductive TaskSource
@@ -102,11 +103,11 @@ structure BrowsingContextGroup where
   /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#browsing-context-group -/
   id : Nat
   /-- https://html.spec.whatwg.org/multipage/#browsing-context-set -/
-  browsingContextSet : List BrowsingContext := []
+  browsingContextSet : Std.TreeMap Nat BrowsingContext := Std.TreeMap.empty
   /-- https://html.spec.whatwg.org/multipage/#agent-cluster-map -/
-  agentClusterMap : List (AgentClusterKey × AgentCluster) := []
+  agentClusterMap : Std.TreeMap AgentClusterKey AgentCluster := Std.TreeMap.empty
   /-- https://html.spec.whatwg.org/multipage/#historical-agent-cluster-key-map -/
-  historicalAgentClusterKeyMap : List (Origin × AgentClusterKey) := []
+  historicalAgentClusterKeyMap : Std.TreeMap Origin AgentClusterKey := Std.TreeMap.empty
   /-- https://html.spec.whatwg.org/multipage/#bcg-cross-origin-isolation -/
   crossOriginIsolationMode : CrossOriginIsolationMode := .none
 deriving Repr
@@ -114,7 +115,7 @@ deriving Repr
 /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
 structure BrowsingContextGroupSet where
   /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
-  members : List BrowsingContextGroup := []
+  members : Std.TreeMap Nat BrowsingContextGroup := Std.TreeMap.empty
 deriving Repr
 
 /-- https://html.spec.whatwg.org/multipage/#navigable -/
@@ -157,74 +158,27 @@ deriving Repr, DecidableEq
 /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
 structure TopLevelTraversableSet where
   /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
-  members : List TopLevelTraversable := []
+  members : Std.TreeMap Nat TopLevelTraversable := Std.TreeMap.empty
 deriving Repr
 
 namespace BrowsingContextGroup
 
-private def lookupAgentCluster
-    (entries : List (AgentClusterKey × AgentCluster))
-    (key : AgentClusterKey) :
-    Option AgentCluster :=
-  match entries with
-  | [] => none
-  | (entryKey, agentCluster) :: rest =>
-      if entryKey = key then some agentCluster else lookupAgentCluster rest key
-
-private def setAgentClusterEntry
-    (entries : List (AgentClusterKey × AgentCluster))
-    (key : AgentClusterKey)
-    (agentCluster : AgentCluster) :
-    List (AgentClusterKey × AgentCluster) :=
-  match entries with
-  | [] => [(key, agentCluster)]
-  | (entryKey, entryValue) :: rest =>
-      if entryKey = key then
-        (key, agentCluster) :: rest
-      else
-        (entryKey, entryValue) :: setAgentClusterEntry rest key agentCluster
-
-private def lookupHistoricalAgentClusterKey
-    (entries : List (Origin × AgentClusterKey))
-    (origin : Origin) :
-    Option AgentClusterKey :=
-  match entries with
-  | [] => none
-  | (entryOrigin, key) :: rest =>
-      if entryOrigin = origin then some key else lookupHistoricalAgentClusterKey rest origin
-
-private def setHistoricalAgentClusterKeyEntry
-    (entries : List (Origin × AgentClusterKey))
-    (origin : Origin)
-    (key : AgentClusterKey) :
-    List (Origin × AgentClusterKey) :=
-  match entries with
-  | [] => [(origin, key)]
-  | (entryOrigin, entryKey) :: rest =>
-      if entryOrigin = origin then
-        (origin, key) :: rest
-      else
-        (entryOrigin, entryKey) :: setHistoricalAgentClusterKeyEntry rest origin key
-
-private def nextBrowsingContextIdFromMembers (members : List BrowsingContext) : Nat :=
-  members.foldl (fun nextId browsingContext => max nextId (browsingContext.id + 1)) 0
-
 def nextBrowsingContextId (group : BrowsingContextGroup) : Nat :=
-  nextBrowsingContextIdFromMembers group.browsingContextSet
+  group.browsingContextSet.size
 
 def append
     (group : BrowsingContextGroup)
     (browsingContext : BrowsingContext) :
     BrowsingContextGroup × BrowsingContext :=
   let browsingContext := { browsingContext with groupId := some group.id }
-  let browsingContextSet := group.browsingContextSet.concat browsingContext
+  let browsingContextSet := group.browsingContextSet.insert browsingContext.id browsingContext
   ({ group with browsingContextSet }, browsingContext)
 
 def historicalAgentClusterKey
     (group : BrowsingContextGroup)
     (origin : Origin) :
     Option AgentClusterKey :=
-  lookupHistoricalAgentClusterKey group.historicalAgentClusterKeyMap origin
+  group.historicalAgentClusterKeyMap.get? origin
 
 def setHistoricalAgentClusterKey
     (group : BrowsingContextGroup)
@@ -233,66 +187,48 @@ def setHistoricalAgentClusterKey
     BrowsingContextGroup :=
   {
     group with
-      historicalAgentClusterKeyMap :=
-        setHistoricalAgentClusterKeyEntry group.historicalAgentClusterKeyMap origin key
+      historicalAgentClusterKeyMap := group.historicalAgentClusterKeyMap.insert origin key
   }
 
 def agentCluster
     (group : BrowsingContextGroup)
     (key : AgentClusterKey) :
     Option AgentCluster :=
-  lookupAgentCluster group.agentClusterMap key
+  group.agentClusterMap.get? key
 
 def setAgentCluster
     (group : BrowsingContextGroup)
     (key : AgentClusterKey)
     (agentCluster : AgentCluster) :
     BrowsingContextGroup :=
-  { group with agentClusterMap := setAgentClusterEntry group.agentClusterMap key agentCluster }
+  { group with agentClusterMap := group.agentClusterMap.insert key agentCluster }
 
 end BrowsingContextGroup
 
 namespace BrowsingContextGroupSet
 
-private def nextIdFromMembers (members : List BrowsingContextGroup) : Nat :=
-  members.foldl (fun nextId group => max nextId (group.id + 1)) 0
-
 def nextId (groupSet : BrowsingContextGroupSet) : Nat :=
-  nextIdFromMembers groupSet.members
+  groupSet.members.size
 
 def appendFresh
     (groupSet : BrowsingContextGroupSet) :
     BrowsingContextGroupSet × BrowsingContextGroup :=
   let group : BrowsingContextGroup := { id := groupSet.nextId }
-  let members := groupSet.members.concat group
+  let members := groupSet.members.insert group.id group
   ({ members }, group)
 
 def replace
     (groupSet : BrowsingContextGroupSet)
     (updatedGroup : BrowsingContextGroup) :
     BrowsingContextGroupSet :=
-  let members := groupSet.members.map fun group =>
-    if group.id = updatedGroup.id then updatedGroup else group
-  { members }
+  { groupSet with members := groupSet.members.insert updatedGroup.id updatedGroup }
 
 end BrowsingContextGroupSet
 
 namespace TopLevelTraversableSet
 
-private def lookupTraversableById
-    (members : List TopLevelTraversable)
-    (id : Nat) :
-    Option TopLevelTraversable :=
-  match members with
-  | [] => none
-  | traversable :: rest =>
-      if traversable.id = id then some traversable else lookupTraversableById rest id
-
-private def nextIdFromMembers (members : List TopLevelTraversable) : Nat :=
-  members.foldl (fun nextId traversable => max nextId (traversable.id + 1)) 0
-
 def nextId (topLevelTraversableSet : TopLevelTraversableSet) : Nat :=
-  nextIdFromMembers topLevelTraversableSet.members
+  topLevelTraversableSet.members.size
 
 def appendFresh
     (topLevelTraversableSet : TopLevelTraversableSet) :
@@ -302,22 +238,20 @@ def appendFresh
     id := topLevelTraversableSet.nextId
     parentNavigableIdNone := rfl
   }
-  let members := topLevelTraversableSet.members.concat traversable
+  let members := topLevelTraversableSet.members.insert traversable.id traversable
   ({ members }, traversable)
 
 def replace
     (topLevelTraversableSet : TopLevelTraversableSet)
     (updatedTraversable : TopLevelTraversable) :
     TopLevelTraversableSet :=
-  let members := topLevelTraversableSet.members.map fun traversable =>
-    if traversable.id = updatedTraversable.id then updatedTraversable else traversable
-  { members }
+  { topLevelTraversableSet with members := topLevelTraversableSet.members.insert updatedTraversable.id updatedTraversable }
 
 def find?
     (topLevelTraversableSet : TopLevelTraversableSet)
     (id : Nat) :
     Option TopLevelTraversable :=
-  lookupTraversableById topLevelTraversableSet.members id
+  topLevelTraversableSet.members.get? id
 
 end TopLevelTraversableSet
 

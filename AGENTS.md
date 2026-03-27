@@ -48,3 +48,4 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - If a spec convenience helper only bundles multiple LTS-visible steps, prefer modeling those steps directly in the action system and omit the convenience helper unless it still carries independent explanatory value.
 - If a spec algorithm is only a top-level entry point and is not referenced by other spec algorithms, it does not need to be preserved as a separate helper in the model when the LTS already captures its intended behavior.
 - A guide on Lean FFI can be found in `/scratchpad/ffi_guide/md`.
+- On the current Lean 4.29 toolchain, use `Std.Data.TreeMap` for standard ordered maps; the verified API here is `Std.TreeMap.empty`, `map.insert`, and `map.get?`.

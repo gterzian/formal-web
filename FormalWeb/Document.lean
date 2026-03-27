@@ -1,3 +1,5 @@
+import Std.Data.TreeMap
+
 namespace FormalWeb
 
 /-- https://html.spec.whatwg.org/multipage/#concept-origin -/
@@ -6,7 +8,7 @@ structure Origin where
   serialization : String
   /-- Model-local cache of the result of https://html.spec.whatwg.org/multipage/#obtain-a-site -/
   site : String
-deriving Repr, DecidableEq
+deriving Repr, DecidableEq, Ord
 
 def aboutBlankOrigin : Origin :=
   { serialization := "about:blank", site := "about:blank" }
@@ -15,7 +17,7 @@ def aboutBlankOrigin : Origin :=
 structure RustDocumentHandle where
   /-- Model-local handle for https://dom.spec.whatwg.org/#concept-document -/
   id : Nat
-deriving Repr, DecidableEq
+deriving Repr, DecidableEq, Ord
 
 /-- https://html.spec.whatwg.org/multipage/#document-load-timing-info -/
 structure DocumentLoadTimingInfo where
