@@ -15,6 +15,24 @@ inductive UserAgentAction
       (documentResource : Option DocumentResource := none)
   | completeNavigation (navigationId : Nat) (response : NavigationResponse)
   | abortNavigation (traversableId : Nat)
+  /--
+  Models the user agent sending a NavigationFinished user event to the winit app.
+  Pre-condition: the traversable has an active document and no ongoing navigation.
+  The app responds by calling `request_redraw()` and sending an UpdateTheRendering message.
+  -/
+  | navigationFinished (traversableId : Nat)
+  /--
+  Models the user agent receiving an UpdateTheRendering message from the winit app
+  (sent when the app calls `request_redraw()`), and enqueuing an UpdateTheRendering
+  task on the given event loop, deduplicating if one is already pending.
+  -/
+  | queueUpdateTheRendering (traversableId : Nat) (eventLoopId : Nat)
+  /--
+  Models the event-loop task running: Rust has extracted the `BaseDocument` pointer
+  from the `HtmlDocument`, stored it, and sent a Paint user event to the winit app.
+  Clears `hasPendingUpdateTheRendering` on the event loop.
+  -/
+  | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (baseDocPointer : RustBaseDocumentPointer)
 deriving Repr, DecidableEq
 
 /--
@@ -41,7 +59,12 @@ structure UserAgent where
   eventLoops : Std.TreeMap Nat EventLoop := Std.TreeMap.empty
   /-- Model-local queue of fetch-backed navigations suspended in https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching -/
   pendingNavigationFetches : Std.TreeMap Nat PendingNavigationFetch := Std.TreeMap.empty
+  /-- Model-local map from traversable id to the latest `BaseDocument` pointer produced by an UpdateTheRendering task. -/
+  baseDocumentPointers : Std.TreeMap Nat RustBaseDocumentPointer := Std.TreeMap.empty
 deriving Repr
+
+instance : Inhabited UserAgent where
+  default := {}
 
 namespace UserAgent
 
@@ -146,6 +169,20 @@ def pendingNavigationFetch?
     Option PendingNavigationFetch :=
   userAgent.pendingNavigationFetches.get? navigationId
 
+def setBaseDocumentPointer
+    (userAgent : UserAgent)
+    (traversableId : Nat)
+    (pointer : RustBaseDocumentPointer) :
+    UserAgent :=
+  { userAgent with
+      baseDocumentPointers := userAgent.baseDocumentPointers.insert traversableId pointer }
+
+def baseDocumentPointer?
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    Option RustBaseDocumentPointer :=
+  userAgent.baseDocumentPointers.get? traversableId
+
 end UserAgent
 
 def replaceTraversable
@@ -162,6 +199,28 @@ def traversable?
     (traversableId : Nat) :
     Option TopLevelTraversable :=
   userAgent.topLevelTraversableSet.find? traversableId
+
+def noteRenderingOpportunity
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    IO Unit := do
+  match traversable? userAgent traversableId with
+  | none =>
+    pure ()
+  | some traversable =>
+      match traversable.toTraversableNavigable.activeDocument with
+    | none =>
+      pure ()
+      | some document =>
+          match userAgent.rustDocumentPointer? document.ffiHandle with
+      | none =>
+        pure ()
+          | some pointer =>
+              if pointer = RustDocumentPointer.null then
+                pure ()
+              else
+                let baseDocumentPointer := FormalWeb.extractBaseDocument pointer.raw
+                FormalWeb.queuePaint baseDocumentPointer.raw
 
 /-- https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags -/
 def determineCreationSandboxingFlags
@@ -1019,5 +1078,38 @@ def step
       some (processNavigationFetchResponse userAgent navigationId response)
   | .abortNavigation traversableId =>
       some (abortNavigation userAgent traversableId)
+  | .navigationFinished traversableId =>
+      -- Pre-condition: traversable exists, has an active document, and has no ongoing navigation.
+      -- The action label models the UA sending NavigationFinished to the winit app.
+      match traversable? userAgent traversableId with
+      | none => none
+      | some traversable =>
+          if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then none
+          else if traversable.toTraversableNavigable.activeDocument.isNone then none
+          else some userAgent
+  | .queueUpdateTheRendering traversableId eventLoopId =>
+      -- Models the UA receiving UpdateTheRendering from the winit app and enqueuing the task (dedup).
+      match traversable? userAgent traversableId with
+      | none => none
+      | some _traversable =>
+          match userAgent.eventLoop? eventLoopId with
+          | none => none
+          | some eventLoop =>
+              let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
+              some (userAgent.setEventLoop eventLoop)
+  | .updateTheRendering traversableId eventLoopId baseDocPointer =>
+      -- Models the event-loop task running: BaseDocument extracted, Paint user event sent to winit.
+      -- Clears hasPendingUpdateTheRendering and records the latest base document pointer.
+      match traversable? userAgent traversableId with
+      | none => none
+      | some _traversable =>
+          match userAgent.eventLoop? eventLoopId with
+          | none => none
+          | some eventLoop =>
+              if !eventLoop.hasPendingUpdateTheRendering then none
+              else
+                let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
+                let userAgent := userAgent.setEventLoop eventLoop
+                some (userAgent.setBaseDocumentPointer traversableId baseDocPointer)
 
 end FormalWeb

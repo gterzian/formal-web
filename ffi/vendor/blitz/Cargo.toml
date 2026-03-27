@@ -4,6 +4,7 @@ members = [
     "packages/blitz-traits",
     "packages/blitz-dom",
     "packages/blitz-html",
+    "packages/blitz-paint",
     "packages/stylo_taffy",
 ]
 resolver = "2"
@@ -20,9 +21,12 @@ rust-version = "1.92.0"
 [workspace.dependencies]
 blitz-dom = { version = "0.2.0", path = "./packages/blitz-dom", default-features = false }
 blitz-html = { version = "0.2.0", path = "./packages/blitz-html", default-features = false }
+blitz-paint = { version = "0.2.0", path = "./packages/blitz-paint", default-features = false }
 blitz-traits = { version = "0.2.0", path = "./packages/blitz-traits", default-features = false }
 stylo_taffy = { version = "0.2.0", path = "./packages/stylo_taffy", default-features = false }
 debug_timer = { version = "0.1.2", path = "./packages/debug_timer" }
+anyrender = { version = "0.8" }
+anyrender_svg = { version = "0.9" }
 style = { version = "0.14.0", package = "stylo" }
 style_traits = { version = "0.14.0", package = "stylo_traits" }
 style_atoms = { version = "0.14.0", package = "stylo_atoms" }
@@ -39,6 +43,7 @@ app_units = "0.7.5"
 smallvec = "1"
 taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "4b6687da0ca1e9d71da4e48b4c659f5c45060707", default-features = false, features = ["std", "flexbox", "grid", "block_layout", "content_size", "calc", "detailed_layout_info"] }
 color = "0.3"
+peniko = "0.6.0"
 linebender_resource_handle = "0.1"
 kurbo = "0.13"
 parley = { git = "https://github.com/linebender/parley", rev = "c3d3d41eaaca0d2dce9558f460c2c129559fc425", default-features = false, features = ["std"] }

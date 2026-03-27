@@ -29,6 +29,8 @@ def ffiMacOSLinkArgs : Array String :=
       "-framework", "CoreFoundation",
       "-framework", "AppKit",
       "-framework", "Foundation",
+      "-framework", "Metal",
+      "-framework", "QuartzCore",
       "-lobjc",
       "-liconv",
       "-lm"
@@ -60,6 +62,15 @@ input_file vendoredBlitzWorkspaceCargoToml where
 
 input_file vendoredBlitzHtmlCargoToml where
   path := vendoredBlitzDir / "packages" / "blitz-html" / "Cargo.toml"
+  text := true
+
+input_file vendoredBlitzPaintCargoToml where
+  path := vendoredBlitzDir / "packages" / "blitz-paint" / "Cargo.toml"
+  text := true
+
+input_dir vendoredBlitzPaintSources where
+  path := vendoredBlitzDir / "packages" / "blitz-paint" / "src"
+  filter := .extension <| .mem #["rs"]
   text := true
 
 input_dir vendoredBlitzHtmlSources where
@@ -114,6 +125,8 @@ target formalwebffiStatic pkg : FilePath := do
   let ffiCSrcs ← ffiCSources.fetch
   let vendoredBlitzWorkspaceManifest ← vendoredBlitzWorkspaceCargoToml.fetch
   let vendoredBlitzHtmlManifest ← vendoredBlitzHtmlCargoToml.fetch
+  let vendoredBlitzPaintManifest ← vendoredBlitzPaintCargoToml.fetch
+  let vendoredBlitzPaintSrcs ← vendoredBlitzPaintSources.fetch
   let vendoredBlitzHtmlSrcs ← vendoredBlitzHtmlSources.fetch
   let vendoredBlitzDomManifest ← vendoredBlitzDomCargoToml.fetch
   let vendoredBlitzDomSrcs ← vendoredBlitzDomSources.fetch
@@ -134,6 +147,8 @@ target formalwebffiStatic pkg : FilePath := do
   ffiCSrcs.bindM (sync := true) fun _ =>
   vendoredBlitzWorkspaceManifest.bindM (sync := true) fun _ =>
   vendoredBlitzHtmlManifest.bindM (sync := true) fun _ =>
+  vendoredBlitzPaintManifest.bindM (sync := true) fun _ =>
+  vendoredBlitzPaintSrcs.bindM (sync := true) fun _ =>
   vendoredBlitzHtmlSrcs.bindM (sync := true) fun _ =>
   vendoredBlitzDomManifest.bindM (sync := true) fun _ =>
   vendoredBlitzDomSrcs.bindM (sync := true) fun _ =>
