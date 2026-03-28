@@ -23,14 +23,15 @@ inductive UserAgentAction
   | navigationFinished (traversableId : Nat)
   /--
   Models the user agent receiving an UpdateTheRendering message from the winit app
-  (sent when the app calls `request_redraw()`), and enqueuing an UpdateTheRendering
-  task on the given event loop, deduplicating if one is already pending.
+  and enqueuing an UpdateTheRendering task on the given event loop, deduplicating if
+  one is already pending. This can happen at any time, but only if the event loop exists.
   -/
   | queueUpdateTheRendering (traversableId : Nat) (eventLoopId : Nat)
   /--
   Models the event-loop task running: Rust has extracted the `BaseDocument` pointer
   from the `HtmlDocument`, stored it, and sent a Paint user event to the winit app.
-  Clears `hasPendingUpdateTheRendering` on the event loop.
+  Clears `hasPendingUpdateTheRendering` on the event loop. This requires the
+  traversable's navigation to have completed.
   -/
   | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (baseDocPointer : RustBaseDocumentPointer)
 deriving Repr, DecidableEq
@@ -1065,51 +1066,51 @@ This sits above helper algorithms such as `navigate` and
 def step
     (userAgent : UserAgent)
     (action : UserAgentAction) :
-    Option UserAgent :=
+    Option UserAgent := do
   match action with
   | .createTopLevelTraversable targetName =>
       let (userAgent, _traversable) := createNewTopLevelTraversable userAgent none targetName
-      some userAgent
+      pure userAgent
   | .beginNavigation traversableId destinationURL documentResource =>
-      match traversable? userAgent traversableId with
-      | none => none
-      | some traversable => some (navigate userAgent traversable destinationURL documentResource)
+      let traversable <- traversable? userAgent traversableId
+      pure (navigate userAgent traversable destinationURL documentResource)
   | .completeNavigation navigationId response =>
-      some (processNavigationFetchResponse userAgent navigationId response)
+      pure (processNavigationFetchResponse userAgent navigationId response)
   | .abortNavigation traversableId =>
-      some (abortNavigation userAgent traversableId)
+      pure (abortNavigation userAgent traversableId)
   | .navigationFinished traversableId =>
       -- Pre-condition: traversable exists, has an active document, and has no ongoing navigation.
       -- The action label models the UA sending NavigationFinished to the winit app.
-      match traversable? userAgent traversableId with
-      | none => none
-      | some traversable =>
-          if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then none
-          else if traversable.toTraversableNavigable.activeDocument.isNone then none
-          else some userAgent
+      let traversable <- traversable? userAgent traversableId
+      if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
+        none
+      else if traversable.toTraversableNavigable.activeDocument.isNone then
+        none
+      else
+        pure userAgent
   | .queueUpdateTheRendering traversableId eventLoopId =>
       -- Models the UA receiving UpdateTheRendering from the winit app and enqueuing the task (dedup).
-      match traversable? userAgent traversableId with
-      | none => none
-      | some _traversable =>
-          match userAgent.eventLoop? eventLoopId with
-          | none => none
-          | some eventLoop =>
-              let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
-              some (userAgent.setEventLoop eventLoop)
+      -- This action is allowed regardless of navigation state, but only if the referenced event loop exists.
+      let _traversable <- traversable? userAgent traversableId
+      let eventLoop <- userAgent.eventLoop? eventLoopId
+      let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
+      pure (userAgent.setEventLoop eventLoop)
   | .updateTheRendering traversableId eventLoopId baseDocPointer =>
       -- Models the event-loop task running: BaseDocument extracted, Paint user event sent to winit.
       -- Clears hasPendingUpdateTheRendering and records the latest base document pointer.
-      match traversable? userAgent traversableId with
-      | none => none
-      | some _traversable =>
-          match userAgent.eventLoop? eventLoopId with
-          | none => none
-          | some eventLoop =>
-              if !eventLoop.hasPendingUpdateTheRendering then none
-              else
-                let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
-                let userAgent := userAgent.setEventLoop eventLoop
-                some (userAgent.setBaseDocumentPointer traversableId baseDocPointer)
+      -- This requires the traversable to have an active document and no ongoing navigation.
+      let traversable <- traversable? userAgent traversableId
+      if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
+        none
+      else if traversable.toTraversableNavigable.activeDocument.isNone then
+        none
+      else
+        let eventLoop <- userAgent.eventLoop? eventLoopId
+        if !eventLoop.hasPendingUpdateTheRendering then
+          none
+        else
+          let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
+          let userAgent := userAgent.setEventLoop eventLoop
+          pure (userAgent.setBaseDocumentPointer traversableId baseDocPointer)
 
 end FormalWeb
