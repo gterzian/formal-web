@@ -30,6 +30,8 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - Long-term, there should be both an LTS model and an executable task/channel-based implementation, with proofs that the implementation refines or simulates the LTS.
 - Message kinds used by the runtime are good candidates for inductive action/message types shared with or related to the LTS labels.
 - Lean uses `-- TODO:` comments, not `// TODO:` comments.
+- In Lean code, prefer `do`-notation and monadic binds or pattern lets such as `let x <- ...` / `let some x := ... | ...` over nested `match` expressions when a function already returns `Option`, `IO`, or another monad.
+- For pure state-transition helpers that thread `UserAgent` and return `UserAgent`, it is acceptable to use `Id.run do` so early exits can be expressed with pattern lets instead of nested `match` expressions.
 - The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
 - Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
 - The vendored Blitz `HtmlDocument` can be rendered for debugging with `root_element().outer_html()`.

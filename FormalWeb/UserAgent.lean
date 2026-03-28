@@ -205,23 +205,14 @@ def noteRenderingOpportunity
     (userAgent : UserAgent)
     (traversableId : Nat) :
     IO Unit := do
-  match traversable? userAgent traversableId with
-  | none =>
+  let some traversable := traversable? userAgent traversableId | pure ()
+  let some document := traversable.toTraversableNavigable.activeDocument | pure ()
+  let some pointer := userAgent.rustDocumentPointer? document.ffiHandle | pure ()
+  if pointer = RustDocumentPointer.null then
     pure ()
-  | some traversable =>
-      match traversable.toTraversableNavigable.activeDocument with
-    | none =>
-      pure ()
-      | some document =>
-          match userAgent.rustDocumentPointer? document.ffiHandle with
-      | none =>
-        pure ()
-          | some pointer =>
-              if pointer = RustDocumentPointer.null then
-                pure ()
-              else
-                let baseDocumentPointer := FormalWeb.extractBaseDocument pointer.raw
-                FormalWeb.queuePaint baseDocumentPointer.raw
+  else
+    let baseDocumentPointer := FormalWeb.extractBaseDocument pointer.raw
+    FormalWeb.queuePaint baseDocumentPointer.raw
 
 /-- https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags -/
 def determineCreationSandboxingFlags
@@ -248,7 +239,7 @@ def queueTask
     (eventLoopId : Nat)
     (documentId : Option Nat)
     (step : TaskStep) :
-    Option UserAgent :=
+    Option UserAgent := do
   -- Step 3: Let task be a new task.
   let task : Task := {
     step
@@ -256,11 +247,9 @@ def queueTask
     documentId
   }
   -- Steps 4-9: Populate the task and append it to the event loop's associated queue.
-  match userAgent.eventLoop? eventLoopId with
-  | none => none
-  | some eventLoop =>
-      let eventLoop := eventLoop.enqueueTask task
-      some (userAgent.setEventLoop eventLoop)
+  let eventLoop <- userAgent.eventLoop? eventLoopId
+  let eventLoop := eventLoop.enqueueTask task
+  pure (userAgent.setEventLoop eventLoop)
 
 /-- https://html.spec.whatwg.org/multipage/#queue-a-global-task -/
 def queueGlobalTask
@@ -554,39 +543,36 @@ def finishCreatingNavigationParamsByFetching
     (navigationId : Nat)
     (response : Option NavigationResponse) :
     UserAgent :=
-  match userAgent.pendingNavigationFetch? navigationId with
-  | none => userAgent
-  | some pendingNavigationFetch =>
-      let ongoingNavigationMatches :=
-        match traversable? userAgent pendingNavigationFetch.traversableId with
-        | some traversable =>
-            traversable.toTraversableNavigable.toNavigable.ongoingNavigation = some (.navigationId navigationId)
-        | none => false
-      if response.isNone && ongoingNavigationMatches then
-        -- The wait condition has not been satisfied yet, so the pending fetch remains in place.
+  Id.run do
+    let some pendingNavigationFetch := userAgent.pendingNavigationFetch? navigationId
+      | userAgent
+    let ongoingNavigationMatches :=
+      match traversable? userAgent pendingNavigationFetch.traversableId with
+      | some traversable =>
+          traversable.toTraversableNavigable.toNavigable.ongoingNavigation = some (.navigationId navigationId)
+      | none => false
+    if response.isNone && ongoingNavigationMatches then
+      -- The wait condition has not been satisfied yet, so the pending fetch remains in place.
+      userAgent
+    else
+      let (userAgent, pendingNavigationFetch?) := userAgent.takePendingNavigationFetch navigationId
+      let some pendingNavigationFetch := pendingNavigationFetch?
+        | userAgent
+      let some traversable := traversable? userAgent pendingNavigationFetch.traversableId
+        | userAgent
+      if traversable.toTraversableNavigable.toNavigable.ongoingNavigation != some (.navigationId navigationId) then
+        -- The latter wait condition occurred, so the fetch-backed creation returns without producing navigation params.
         userAgent
       else
-        let (userAgent, pendingNavigationFetch) := userAgent.takePendingNavigationFetch navigationId
-        match pendingNavigationFetch with
-        | none => userAgent
-        | some pendingNavigationFetch =>
-            match traversable? userAgent pendingNavigationFetch.traversableId with
-            | none => userAgent
-            | some traversable =>
-                if traversable.toTraversableNavigable.toNavigable.ongoingNavigation != some (.navigationId navigationId) then
-                  -- The latter wait condition occurred, so the fetch-backed creation returns without producing navigation params.
-                  userAgent
-                else
-                  match response with
-                  | none => userAgent
-                  | some response =>
-                      let navigationParams := createNavigationParamsFromResponse pendingNavigationFetch response
-                      continueAttemptToPopulateHistoryEntryDocument
-                        userAgent
-                        pendingNavigationFetch.historyEntry
-                        traversable
-                        pendingNavigationFetch.sourceSnapshotParams
-                        navigationParams
+        let some response := response
+          | userAgent
+        let navigationParams := createNavigationParamsFromResponse pendingNavigationFetch response
+        continueAttemptToPopulateHistoryEntryDocument
+          userAgent
+          pendingNavigationFetch.historyEntry
+          traversable
+          pendingNavigationFetch.sourceSnapshotParams
+          navigationParams
 
 /-- https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document -/
 def attemptToPopulateHistoryEntryDocument
@@ -602,8 +588,15 @@ def attemptToPopulateHistoryEntryDocument
     (cspNavigationType : String := "other")
     (allowPOST : Bool := false) :
     UserAgent :=
-  match navigationParams with
-  | none =>
+  Id.run do
+    if let some navigationParams := navigationParams then
+      continueAttemptToPopulateHistoryEntryDocument
+        userAgent
+        entry
+        traversable
+        sourceSnapshotParams
+        navigationParams
+    else
       let documentResource := entry.documentState.resource
       match documentResource with
       | some (.srcdoc _) =>
@@ -628,13 +621,6 @@ def attemptToPopulateHistoryEntryDocument
           else
             -- TODO: Model non-fetch-scheme branches.
             userAgent
-  | some navigationParams =>
-      continueAttemptToPopulateHistoryEntryDocument
-        userAgent
-        entry
-        traversable
-        sourceSnapshotParams
-        navigationParams
 
 def processNavigationFetchResponse
     (userAgent : UserAgent)
@@ -658,28 +644,28 @@ def abortNavigation
     (userAgent : UserAgent)
     (traversableId : Nat) :
     UserAgent :=
-  match traversable? userAgent traversableId with
-  | none => userAgent
-  | some traversable =>
-      let previousOngoingNavigation :=
-        traversable.toTraversableNavigable.toNavigable.ongoingNavigation
-      let updatedNavigable :=
-        setOngoingNavigation traversable.toTraversableNavigable.toNavigable none
-      let updatedTraversable := {
-        traversable with
-          toTraversableNavigable := {
-            traversable.toTraversableNavigable with
-              toNavigable := updatedNavigable
-          }
-          parentNavigableIdNone := by
-            simpa [updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
-              traversable.parentNavigableIdNone
-      }
-      let userAgent := replaceTraversable userAgent updatedTraversable
-      match previousOngoingNavigation with
-      | some (.navigationId navigationId) =>
-          processNavigationFetchCancellation userAgent navigationId
-      | _ => userAgent
+  Id.run do
+    let some traversable := traversable? userAgent traversableId
+      | userAgent
+    let previousOngoingNavigation :=
+      traversable.toTraversableNavigable.toNavigable.ongoingNavigation
+    let updatedNavigable :=
+      setOngoingNavigation traversable.toTraversableNavigable.toNavigable none
+    let updatedTraversable := {
+      traversable with
+        toTraversableNavigable := {
+          traversable.toTraversableNavigable with
+            toNavigable := updatedNavigable
+        }
+        parentNavigableIdNone := by
+          simpa [updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
+            traversable.parentNavigableIdNone
+    }
+    let userAgent := replaceTraversable userAgent updatedTraversable
+    if let some (.navigationId navigationId) := previousOngoingNavigation then
+      processNavigationFetchCancellation userAgent navigationId
+    else
+      userAgent
 
 /-- https://html.spec.whatwg.org/multipage/#navigate -/
 def navigate
@@ -688,61 +674,60 @@ def navigate
     (destinationURL : String)
     (documentResource : Option DocumentResource := none) :
     UserAgent :=
-  match traversable.toTraversableNavigable.activeDocument with
-  | none =>
-      -- TODO: Model the browser-UI/sourceDocument-null branch of beginning navigation.
-      userAgent
-  | some sourceDocument =>
-      let previousOngoingNavigation :=
-        traversable.toTraversableNavigable.toNavigable.ongoingNavigation
-      let (userAgent, navigationId) := userAgent.allocateNavigationId
-      let updatedNavigable :=
-        setOngoingNavigation
-          traversable.toTraversableNavigable.toNavigable
-          (some (.navigationId navigationId))
-      let traversable := {
-        traversable with
-          toTraversableNavigable := {
-            traversable.toTraversableNavigable with
-              toNavigable := updatedNavigable
-          }
-          parentNavigableIdNone := by
-            simpa [updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
-              traversable.parentNavigableIdNone
-      }
-      let userAgent := replaceTraversable userAgent traversable
-      let userAgent :=
-        match previousOngoingNavigation with
-        | some (.navigationId previousNavigationId) =>
-            if previousNavigationId = navigationId then
-              userAgent
-            else
-              processNavigationFetchCancellation userAgent previousNavigationId
-        | _ => userAgent
-      let sourceSnapshotParams := snapshotSourceSnapshotParams sourceDocument
-      let targetSnapshotParams := snapshotTargetSnapshotParams traversable
-      let documentState : DocumentState := {
-        initiatorOrigin := some sourceDocument.origin
-        aboutBaseURL := sourceDocument.aboutBaseURL
-        resource := documentResource
-        navigableTargetName := traversable.targetName
-      }
-      let historyEntry : SessionHistoryEntry := {
-        url := destinationURL
-        documentState
-      }
-      attemptToPopulateHistoryEntryDocument
+  Id.run do
+    let some sourceDocument := traversable.toTraversableNavigable.activeDocument
+      | userAgent
+    -- TODO: Model the browser-UI/sourceDocument-null branch of beginning navigation.
+    let previousOngoingNavigation :=
+      traversable.toTraversableNavigable.toNavigable.ongoingNavigation
+    let (userAgent, navigationId) := userAgent.allocateNavigationId
+    let updatedNavigable :=
+      setOngoingNavigation
+        traversable.toTraversableNavigable.toNavigable
+        (some (.navigationId navigationId))
+    let traversable := {
+      traversable with
+        toTraversableNavigable := {
+          traversable.toTraversableNavigable with
+            toNavigable := updatedNavigable
+        }
+        parentNavigableIdNone := by
+          simpa [updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
+            traversable.parentNavigableIdNone
+    }
+    let userAgent := replaceTraversable userAgent traversable
+    let userAgent :=
+      if let some (.navigationId previousNavigationId) := previousOngoingNavigation then
+        if previousNavigationId = navigationId then
+          userAgent
+        else
+          processNavigationFetchCancellation userAgent previousNavigationId
+      else
         userAgent
-        historyEntry
-        traversable
-        .navigate
-        sourceSnapshotParams
-        targetSnapshotParams
-        .none
-        navigationId
-        none
-        "other"
-        true
+    let sourceSnapshotParams := snapshotSourceSnapshotParams sourceDocument
+    let targetSnapshotParams := snapshotTargetSnapshotParams traversable
+    let documentState : DocumentState := {
+      initiatorOrigin := some sourceDocument.origin
+      aboutBaseURL := sourceDocument.aboutBaseURL
+      resource := documentResource
+      navigableTargetName := traversable.targetName
+    }
+    let historyEntry : SessionHistoryEntry := {
+      url := destinationURL
+      documentState
+    }
+    attemptToPopulateHistoryEntryDocument
+      userAgent
+      historyEntry
+      traversable
+      .navigate
+      sourceSnapshotParams
+      targetSnapshotParams
+      .none
+      navigationId
+      none
+      "other"
+      true
 
 /-- https://html.spec.whatwg.org/multipage/#obtain-similar-origin-window-agent -/
 def obtainSimilarOriginWindowAgent
