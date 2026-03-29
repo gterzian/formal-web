@@ -80,9 +80,13 @@ def completeFetch
     (controllerId : Nat) :
     Fetch × Option PendingFetch :=
   let pendingFetch := fetch.pendingFetches.get? controllerId
+  let pendingFetches :=
+    match pendingFetch with
+    | some _ => fetch.pendingFetches.erase controllerId
+    | none => fetch.pendingFetches
   let fetch := {
     fetch with
-      pendingFetches := fetch.pendingFetches.erase controllerId
+      pendingFetches
   }
   (fetch, pendingFetch)
 
