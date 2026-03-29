@@ -5,38 +5,6 @@ import FormalWeb.Traversable
 namespace FormalWeb
 
 /--
-LTS-style actions for the current user-agent navigation model.
--/
-inductive UserAgentAction
-  | createTopLevelTraversable (targetName : String := "")
-  | beginNavigation
-      (traversableId : Nat)
-      (destinationURL : String)
-      (documentResource : Option DocumentResource := none)
-  | completeNavigation (navigationId : Nat) (response : NavigationResponse)
-  | abortNavigation (traversableId : Nat)
-  /--
-  Models the user agent sending a NavigationFinished user event to the winit app.
-  Pre-condition: the traversable has an active document and no ongoing navigation.
-  The app responds by calling `request_redraw()` and sending an UpdateTheRendering message.
-  -/
-  | navigationFinished (traversableId : Nat)
-  /--
-  Models the user agent receiving an UpdateTheRendering message from the winit app
-  and enqueuing an UpdateTheRendering task on the given event loop, deduplicating if
-  one is already pending. This can happen at any time, but only if the event loop exists.
-  -/
-  | queueUpdateTheRendering (traversableId : Nat) (eventLoopId : Nat)
-  /--
-  Models the event-loop task running: Rust has extracted the `BaseDocument` pointer
-  from the `HtmlDocument`, stored it, and sent a Paint user event to the winit app.
-  Clears `hasPendingUpdateTheRendering` on the event loop. This requires the
-  traversable's navigation to have completed.
-  -/
-  | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (baseDocPointer : RustBaseDocumentPointer)
-deriving Repr, DecidableEq
-
-/--
 The user agent is the top-level global state for the browser model.
 -/
 structure UserAgent where
@@ -1041,6 +1009,38 @@ def createNewTopLevelTraversable
 
   -- Step 13: Return traversable.
   (userAgent, traversable)
+
+/--
+LTS-style actions for the current user-agent navigation model.
+-/
+inductive UserAgentAction
+  | createTopLevelTraversable (targetName : String := "")
+  | beginNavigation
+      (traversableId : Nat)
+      (destinationURL : String)
+      (documentResource : Option DocumentResource := none)
+  | completeNavigation (navigationId : Nat) (response : NavigationResponse)
+  | abortNavigation (traversableId : Nat)
+  /--
+  Models the user agent sending a NavigationFinished user event to the winit app.
+  Pre-condition: the traversable has an active document and no ongoing navigation.
+  The app responds by calling `request_redraw()` and sending an UpdateTheRendering message.
+  -/
+  | navigationFinished (traversableId : Nat)
+  /--
+  Models the user agent receiving an UpdateTheRendering message from the winit app
+  and enqueuing an UpdateTheRendering task on the given event loop, deduplicating if
+  one is already pending. This can happen at any time, but only if the event loop exists.
+  -/
+  | queueUpdateTheRendering (traversableId : Nat) (eventLoopId : Nat)
+  /--
+  Models the event-loop task running: Rust has extracted the `BaseDocument` pointer
+  from the `HtmlDocument`, stored it, and sent a Paint user event to the winit app.
+  Clears `hasPendingUpdateTheRendering` on the event loop. This requires the
+  traversable's navigation to have completed.
+  -/
+  | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (baseDocPointer : RustBaseDocumentPointer)
+deriving Repr, DecidableEq
 
 /--
 Apply one user-agent transition.
