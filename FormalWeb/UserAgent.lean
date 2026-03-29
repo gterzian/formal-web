@@ -38,6 +38,8 @@ instance : Inhabited UserAgent where
 
 namespace UserAgent
 
+private abbrev M := StateM UserAgent
+
 def setEventLoop
     (userAgent : UserAgent)
     (eventLoop : EventLoop) :
@@ -164,6 +166,33 @@ def baseDocumentPointer?
     Option RustBaseDocumentPointer :=
   userAgent.baseDocumentPointers.get? traversableId
 
+private def allocateRustDocumentHandleM : M RustDocumentHandle := do
+  let userAgent ← get
+  let (userAgent, handle) := userAgent.allocateRustDocumentHandle
+  set userAgent
+  pure handle
+
+private def allocateAgentIdM : M Nat := do
+  let userAgent ← get
+  let (userAgent, agentId) := userAgent.allocateAgentId
+  set userAgent
+  pure agentId
+
+private def allocateAgentClusterIdM : M Nat := do
+  let userAgent ← get
+  let (userAgent, agentClusterId) := userAgent.allocateAgentClusterId
+  set userAgent
+  pure agentClusterId
+
+private def allocateEventLoopIdM : M Nat := do
+  let userAgent ← get
+  let (userAgent, eventLoopId) := userAgent.allocateEventLoopId
+  set userAgent
+  pure eventLoopId
+
+private def setEventLoopM (eventLoop : EventLoop) : M Unit :=
+  modify (·.setEventLoop eventLoop)
+
 end UserAgent
 
 def replaceTraversable
@@ -275,22 +304,25 @@ def createAgent
     (userAgent : UserAgent)
     (canBlock : Bool) :
     UserAgent × Agent :=
-  -- Step 1: Let signifier be a new unique internal value.
-  let (userAgent, agentId) := userAgent.allocateAgentId
-  -- Step 2: Let candidateExecution be a new candidate execution.
-  -- TODO: Model candidate execution if scheduling between agents becomes explicit.
-  -- Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is signifier, [[CandidateExecution]] is candidateExecution, and [[IsLockFree1]], [[IsLockFree2]], and [[LittleEndian]] are set at the implementation's discretion.
-  -- Step 4: Set agent's event loop to a new event loop.
-  let (userAgent, eventLoopId) := userAgent.allocateEventLoopId
-  let eventLoop : EventLoop := { id := eventLoopId }
-  let userAgent := userAgent.setEventLoop eventLoop
-  let agent : Agent := {
-    id := agentId
-    canBlock
-    eventLoop
-  }
-  -- Step 5: Return agent.
+  let (agent, userAgent) := (createAgentImpl canBlock).run userAgent
   (userAgent, agent)
+where
+  createAgentImpl (canBlock : Bool) : UserAgent.M Agent := do
+    -- Step 1: Let signifier be a new unique internal value.
+    let agentId ← UserAgent.allocateAgentIdM
+    -- Step 2: Let candidateExecution be a new candidate execution.
+    -- TODO: Model candidate execution if scheduling between agents becomes explicit.
+    -- Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is signifier, [[CandidateExecution]] is candidateExecution, and [[IsLockFree1]], [[IsLockFree2]], and [[LittleEndian]] are set at the implementation's discretion.
+    -- Step 4: Set agent's event loop to a new event loop.
+    let eventLoopId ← UserAgent.allocateEventLoopIdM
+    let eventLoop : EventLoop := { id := eventLoopId }
+    UserAgent.setEventLoopM eventLoop
+    -- Step 5: Return agent.
+    pure {
+      id := agentId
+      canBlock
+      eventLoop
+    }
 
 /-- https://html.spec.whatwg.org/multipage/#initialise-the-document-object -/
 def createAndInitializeDocumentObject
@@ -298,58 +330,64 @@ def createAndInitializeDocumentObject
     (traversable : TopLevelTraversable)
     (navigationParams : NavigationParams) :
     UserAgent × Document :=
-  -- Step 1: Let browsingContext be the result of obtaining a browsing context to use for a navigation response.
-  let browsingContextId := traversable.toTraversableNavigable.activeBrowsingContextId.getD 0
-  -- TODO: Model obtaining a browsing context to use for a navigation response, including COOP-triggered group switches.
-
-  -- Step 2: Let permissionsPolicy be the result of creating a permissions policy from a response.
-  let permissionsPolicy := createPermissionsPolicy none navigationParams.origin
-  -- TODO: Model creating a permissions policy from a response.
-
-  -- Step 3: Let creationURL be navigationParams's response's URL.
-  let creationURL := navigationParams.response.url
-
-  -- Steps 4-10: Window/realm/environment setup.
-  -- TODO: Model window reuse, new realms, and window environment settings for response-driven document creation.
-
-  -- Step 11: Let loadTimingInfo be a new document load timing info.
-  let loadTimingInfo : DocumentLoadTimingInfo := {}
-  -- TODO: Thread actual response timing info into load timing.
-
-  -- Step 12: Let document be a new Document, with:
-  let (userAgent, ffiHandle) := userAgent.allocateRustDocumentHandle
-  let document : Document := {
-    ffiHandle
-    origin := navigationParams.origin
-    browsingContextId
-    policyContainer := navigationParams.policyContainer
-    permissionsPolicy
-    activeSandboxingFlagSet := navigationParams.finalSandboxingFlagSet
-    openerPolicy := navigationParams.coop
-    loadTimingInfo
-    isInitialAboutBlank := false
-    aboutBaseURL := navigationParams.aboutBaseURL
-    referrer := match navigationParams.request with
-      | some request => some request.referrer
-      | none => none
-    url := creationURL
-  }
-
-  -- Steps 13-14: Set ancestor-origin lists.
-  let document := {
-    document with
-      internalAncestorOriginObjectsList :=
-        internalAncestorOriginObjectsListCreationSteps document navigationParams.iframeElementReferrerPolicy
-  }
-  let document := {
-    document with
-      ancestorOriginsList := some (ancestorOriginsListCreationSteps document)
-  }
-
-  -- Steps 15+: Response-driven initialization hooks.
-  -- TODO: Model CSP initialization, navigation timing entries, early hints, and link-header processing.
-
+  let (document, userAgent) :=
+    (createAndInitializeDocumentObjectImpl traversable navigationParams).run userAgent
   (userAgent, document)
+where
+  createAndInitializeDocumentObjectImpl
+      (traversable : TopLevelTraversable)
+      (navigationParams : NavigationParams) :
+      UserAgent.M Document := do
+    -- Step 1: Let browsingContext be the result of obtaining a browsing context to use for a navigation response.
+    let browsingContextId := traversable.toTraversableNavigable.activeBrowsingContextId.getD 0
+    -- TODO: Model obtaining a browsing context to use for a navigation response, including COOP-triggered group switches.
+
+    -- Step 2: Let permissionsPolicy be the result of creating a permissions policy from a response.
+    let permissionsPolicy := createPermissionsPolicy none navigationParams.origin
+    -- TODO: Model creating a permissions policy from a response.
+
+    -- Step 3: Let creationURL be navigationParams's response's URL.
+    let creationURL := navigationParams.response.url
+
+    -- Steps 4-10: Window/realm/environment setup.
+    -- TODO: Model window reuse, new realms, and window environment settings for response-driven document creation.
+
+    -- Step 11: Let loadTimingInfo be a new document load timing info.
+    let loadTimingInfo : DocumentLoadTimingInfo := {}
+    -- TODO: Thread actual response timing info into load timing.
+
+    -- Step 12: Let document be a new Document, with:
+    let ffiHandle ← UserAgent.allocateRustDocumentHandleM
+    let document : Document := {
+      ffiHandle
+      origin := navigationParams.origin
+      browsingContextId
+      policyContainer := navigationParams.policyContainer
+      permissionsPolicy
+      activeSandboxingFlagSet := navigationParams.finalSandboxingFlagSet
+      openerPolicy := navigationParams.coop
+      loadTimingInfo
+      isInitialAboutBlank := false
+      aboutBaseURL := navigationParams.aboutBaseURL
+      referrer := navigationParams.request.map (·.referrer)
+      url := creationURL
+    }
+
+    -- Steps 13-14: Set ancestor-origin lists.
+    let document := {
+      document with
+        internalAncestorOriginObjectsList :=
+          internalAncestorOriginObjectsListCreationSteps document navigationParams.iframeElementReferrerPolicy
+    }
+    let document := {
+      document with
+        ancestorOriginsList := some (ancestorOriginsListCreationSteps document)
+    }
+
+    -- Steps 15+: Response-driven initialization hooks.
+    -- TODO: Model CSP initialization, navigation timing entries, early hints, and link-header processing.
+
+    pure document
 
 /-- https://html.spec.whatwg.org/multipage/#navigate-html -/
 def loadHtmlDocument
@@ -480,9 +518,8 @@ def continueAttemptToPopulateHistoryEntryDocument
         | some document => some document.origin
         | none => entry.documentState.origin
       historyPolicyContainer := some navigationParams.policyContainer
-      requestReferrer := match navigationParams.request with
-        | some request => request.referrer
-        | none => entry.documentState.requestReferrer
+      requestReferrer :=
+        (navigationParams.request.map (·.referrer)).getD entry.documentState.requestReferrer
   }
   let historyEntry : SessionHistoryEntry := {
     entry with
@@ -527,10 +564,10 @@ def finishCreatingNavigationParamsByFetching
     let some pendingNavigationFetch := userAgent.pendingNavigationFetch? navigationId
       | userAgent
     let ongoingNavigationMatches :=
-      match traversable? userAgent pendingNavigationFetch.traversableId with
-      | some traversable =>
-          traversable.toTraversableNavigable.toNavigable.ongoingNavigation = some (.navigationId navigationId)
-      | none => false
+      if let some traversable := traversable? userAgent pendingNavigationFetch.traversableId then
+        traversable.toTraversableNavigable.toNavigable.ongoingNavigation = some (.navigationId navigationId)
+      else
+        false
     if response.isNone && ongoingNavigationMatches then
       -- The wait condition has not been satisfied yet, so the pending fetch remains in place.
       userAgent
@@ -576,31 +613,28 @@ def attemptToPopulateHistoryEntryDocument
         traversable
         sourceSnapshotParams
         navigationParams
+    else if let some (.srcdoc _) := entry.documentState.resource then
+      -- TODO: Model create-navigation-params-from-a-srcdoc-resource.
+      userAgent
     else
-      let documentResource := entry.documentState.resource
-      match documentResource with
-      | some (.srcdoc _) =>
-          -- TODO: Model create-navigation-params-from-a-srcdoc-resource.
+      let mayFetch :=
+        match entry.documentState.resource with
+        | none => true
+        | some documentResource => allowPOST && hasUsablePostResource documentResource
+      if isFetchScheme entry.url && mayFetch then
+        createNavigationParamsByFetching
           userAgent
-      | _ =>
-          let mayFetch :=
-            match documentResource with
-            | none => true
-            | some documentResource => allowPOST && hasUsablePostResource documentResource
-          if isFetchScheme entry.url && mayFetch then
-            createNavigationParamsByFetching
-              userAgent
-              entry
-              traversable
-              sourceSnapshotParams
-              targetSnapshotParams
-              cspNavigationType
-              userInvolvement
-              navigationId
-              navTimingType
-          else
-            -- TODO: Model non-fetch-scheme branches.
-            userAgent
+          entry
+          traversable
+          sourceSnapshotParams
+          targetSnapshotParams
+          cspNavigationType
+          userInvolvement
+          navigationId
+          navTimingType
+      else
+        -- TODO: Model non-fetch-scheme branches.
+        userAgent
 
 def processNavigationFetchResponse
     (userAgent : UserAgent)
@@ -732,34 +766,33 @@ def obtainSimilarOriginWindowAgent
 
   -- Step 2: Let key be site.
   let defaultKey := AgentClusterKey.site site
+  let historicalKey := group.historicalAgentClusterKey origin
 
   -- Step 3: If group's cross-origin isolation mode is not "none", then set key to origin.
-  let key := if group.crossOriginIsolationMode != .none then AgentClusterKey.origin origin else defaultKey
-
   -- Step 4: Otherwise, if group's historical agent cluster key map[origin] exists, then set key to group's historical agent cluster key map[origin].
-  let key := if group.crossOriginIsolationMode != .none then
-    key
-  else
-    match group.historicalAgentClusterKey origin with
-    | some historicalKey => historicalKey
-    | none => key
+  let key :=
+    if group.crossOriginIsolationMode != .none then
+      AgentClusterKey.origin origin
+    else
+      historicalKey.getD defaultKey
 
   -- Step 5: Otherwise:
-  let (group, key) := if group.crossOriginIsolationMode != .none || (group.historicalAgentClusterKey origin).isSome then
-    (group, key)
-  else
-    -- Step 5.1: If requestsOAC is true, then set key to origin.
-    let key := if requestsOAC then AgentClusterKey.origin origin else key
-    -- Step 5.2: Set group's historical agent cluster key map[origin] to key.
-    let group := group.setHistoricalAgentClusterKey origin key
-    (group, key)
+  let (group, key) :=
+    if group.crossOriginIsolationMode != .none || historicalKey.isSome then
+      (group, key)
+    else
+      -- Step 5.1: If requestsOAC is true, then set key to origin.
+      let key := if requestsOAC then AgentClusterKey.origin origin else key
+      -- Step 5.2: Set group's historical agent cluster key map[origin] to key.
+      let group := group.setHistoricalAgentClusterKey origin key
+      (group, key)
 
   -- Step 6: If group's agent cluster map[key] does not exist, then:
   let (userAgent, group, agentCluster) := match group.agentCluster key with
     | some agentCluster => (userAgent, group, agentCluster)
     | none =>
         -- Step 6.1: Let agentCluster be a new agent cluster.
-        let (userAgent, agentClusterId) := userAgent.allocateAgentClusterId
+      let (userAgent, agentClusterId) := userAgent.allocateAgentClusterId
         -- Step 6.2: Set agentCluster's cross-origin isolation mode to group's cross-origin isolation mode.
         -- Step 6.3: If key is an origin, then set agentCluster's is origin-keyed to true.
         -- Step 6.4: Add the result of creating an agent, given false, to agentCluster.
@@ -768,7 +801,8 @@ def obtainSimilarOriginWindowAgent
           id := agentClusterId
           similarOriginWindowAgent := agent
           crossOriginIsolationMode := group.crossOriginIsolationMode
-          isOriginKeyed := match key with
+          isOriginKeyed :=
+            match key with
             | .origin _ => true
             | .site _ => false
         }
@@ -786,91 +820,110 @@ def createNewBrowsingContextAndDocument
     (embedder : Option Unit)
     (group : BrowsingContextGroup) :
     UserAgent × BrowsingContextGroup × BrowsingContext × Document :=
-  -- Step 1: Let browsingContext be a new browsing context.
-  let browsingContext : BrowsingContext := { id := group.nextBrowsingContextId }
+  let ((group, browsingContext, document), userAgent) :=
+    (createNewBrowsingContextAndDocumentImpl creator embedder group).run userAgent
+  (userAgent, group, browsingContext, document)
+where
+  obtainSimilarOriginWindowAgentM
+      (origin : Origin)
+      (group : BrowsingContextGroup)
+      (requestsOAC : Bool) :
+      UserAgent.M (BrowsingContextGroup × Agent) := do
+    let userAgent ← get
+    let (userAgent, group, agent) := obtainSimilarOriginWindowAgent userAgent origin group requestsOAC
+    set userAgent
+    pure (group, agent)
 
-  -- Step 2: Let unsafeContextCreationTime be the unsafe shared current time.
-  let unsafeContextCreationTime : Nat := 0
+  createNewBrowsingContextAndDocumentImpl
+      (creator : Option Document)
+      (embedder : Option Unit)
+      (group : BrowsingContextGroup) :
+      UserAgent.M (BrowsingContextGroup × BrowsingContext × Document) := do
+    -- Step 1: Let browsingContext be a new browsing context.
+    let browsingContext : BrowsingContext := { id := group.nextBrowsingContextId }
 
-  -- Step 3: Let creatorOrigin be null.
-  let creatorOrigin : Option Origin := none
+    -- Step 2: Let unsafeContextCreationTime be the unsafe shared current time.
+    let unsafeContextCreationTime : Nat := 0
 
-  -- Step 4: Let creatorBaseURL be null.
-  let creatorBaseURL : Option String := none
+    -- Step 3: Let creatorOrigin be null.
+    let creatorOrigin : Option Origin := none
 
-  -- Step 5: If creator is non-null, then:
-  let (creatorOrigin, creatorBaseURL, browsingContext) := match creator with
-    | some creator =>
-        -- Step 5.1: Set creatorOrigin to creator's origin.
-        -- Step 5.2: Set creatorBaseURL to creator's document base URL.
-        -- Step 5.3: Set browsingContext's virtual browsing context group ID to creator's browsing context's top-level browsing context's virtual browsing context group ID.
-        -- TODO: Model virtual browsing context group IDs.
-        (some creator.origin, creator.aboutBaseURL, browsingContext)
-    | none =>
-        (creatorOrigin, creatorBaseURL, browsingContext)
+    -- Step 4: Let creatorBaseURL be null.
+    let creatorBaseURL : Option String := none
 
-  -- Step 6: Let sandboxFlags be the result of determining the creation sandboxing flags given browsingContext and embedder.
-  let sandboxFlags := determineCreationSandboxingFlags browsingContext embedder
+    -- Step 5: If creator is non-null, then:
+    let (creatorOrigin, creatorBaseURL) := match creator with
+      | some creator =>
+          -- Step 5.1: Set creatorOrigin to creator's origin.
+          -- Step 5.2: Set creatorBaseURL to creator's document base URL.
+          -- Step 5.3: Set browsingContext's virtual browsing context group ID to creator's browsing context's top-level browsing context's virtual browsing context group ID.
+          -- TODO: Model virtual browsing context group IDs.
+          (some creator.origin, creator.aboutBaseURL)
+      | none =>
+          (creatorOrigin, creatorBaseURL)
 
-  -- Step 7: Let origin be the result of determining the origin given about:blank, sandboxFlags, and creatorOrigin.
-  let origin := determineOrigin "about:blank" sandboxFlags creatorOrigin
+    -- Step 6: Let sandboxFlags be the result of determining the creation sandboxing flags given browsingContext and embedder.
+    let sandboxFlags := determineCreationSandboxingFlags browsingContext embedder
 
-  -- Step 8: Let permissionsPolicy be the result of creating a permissions policy given embedder and origin.
-  let permissionsPolicy := createPermissionsPolicy embedder origin
+    -- Step 7: Let origin be the result of determining the origin given about:blank, sandboxFlags, and creatorOrigin.
+    let origin := determineOrigin "about:blank" sandboxFlags creatorOrigin
 
-  -- Step 9: Let agent be the result of obtaining a similar-origin window agent given origin, group, and false.
-  let (userAgent, group, _agent) := obtainSimilarOriginWindowAgent userAgent origin group false
+    -- Step 8: Let permissionsPolicy be the result of creating a permissions policy given embedder and origin.
+    let permissionsPolicy := createPermissionsPolicy embedder origin
 
-  -- Step 10: Let realm execution context be the result of creating a new realm given agent and the following customizations:
-  -- TODO: Model creating a new realm.
+    -- Step 9: Let agent be the result of obtaining a similar-origin window agent given origin, group, and false.
+    let (group, _agent) ← obtainSimilarOriginWindowAgentM origin group false
 
-  -- Step 11: Let topLevelCreationURL be about:blank if embedder is null; otherwise embedder's relevant settings object's top-level creation URL.
-  let _topLevelCreationURL : String := "about:blank"
-  -- TODO: Model the non-null embedder case for top-level creation URL.
+    -- Step 10: Let realm execution context be the result of creating a new realm given agent and the following customizations:
+    -- TODO: Model creating a new realm.
 
-  -- Step 12: Let topLevelOrigin be origin if embedder is null; otherwise embedder's relevant settings object's top-level origin.
-  let _topLevelOrigin : Origin := origin
-  -- TODO: Model the non-null embedder case for top-level origin.
+    -- Step 11: Let topLevelCreationURL be about:blank if embedder is null; otherwise embedder's relevant settings object's top-level creation URL.
+    let _topLevelCreationURL : String := "about:blank"
+    -- TODO: Model the non-null embedder case for top-level creation URL.
 
-  -- Step 13: Set up a window environment settings object with about:blank, realm execution context, null, topLevelCreationURL, and topLevelOrigin.
-  -- TODO: Model setting up a window environment settings object.
+    -- Step 12: Let topLevelOrigin be origin if embedder is null; otherwise embedder's relevant settings object's top-level origin.
+    let _topLevelOrigin : Origin := origin
+    -- TODO: Model the non-null embedder case for top-level origin.
 
-  -- Step 14: Let loadTimingInfo be a new document load timing info with its navigation start time set to the result of calling coarsen time with unsafeContextCreationTime and the new environment settings object's cross-origin isolated capability.
-  let loadTimingInfo : DocumentLoadTimingInfo := { navigationStartTime := unsafeContextCreationTime }
-  -- TODO: Model coarsen time once the environment settings object exists.
+    -- Step 13: Set up a window environment settings object with about:blank, realm execution context, null, topLevelCreationURL, and topLevelOrigin.
+    -- TODO: Model setting up a window environment settings object.
 
-  -- Step 15: Let document be a new Document, with:
-  let (userAgent, ffiHandle) := userAgent.allocateRustDocumentHandle
-  let document : Document := {
-    ffiHandle
-    origin
-    browsingContextId := browsingContext.id
-    permissionsPolicy
-    activeSandboxingFlagSet := sandboxFlags
-    loadTimingInfo
-    aboutBaseURL := creatorBaseURL
-  }
+    -- Step 14: Let loadTimingInfo be a new document load timing info with its navigation start time set to the result of calling coarsen time with unsafeContextCreationTime and the new environment settings object's cross-origin isolated capability.
+    let loadTimingInfo : DocumentLoadTimingInfo := { navigationStartTime := unsafeContextCreationTime }
+    -- TODO: Model coarsen time once the environment settings object exists.
 
-  -- Step 16: Let iframeReferrerPolicy be the result of determining the iframe element referrer policy given embedder.
-  let iframeReferrerPolicy : Option String := none
-  -- TODO: Model determining the iframe element referrer policy.
+    -- Step 15: Let document be a new Document, with:
+    let ffiHandle ← UserAgent.allocateRustDocumentHandleM
+    let document : Document := {
+      ffiHandle
+      origin
+      browsingContextId := browsingContext.id
+      permissionsPolicy
+      activeSandboxingFlagSet := sandboxFlags
+      loadTimingInfo
+      aboutBaseURL := creatorBaseURL
+    }
 
-  -- Step 17: Set document's internal ancestor origin objects list to the result of running the internal ancestor origin objects list creation steps given document and iframeReferrerPolicy.
-  let document := {
-    document with
-      internalAncestorOriginObjectsList :=
-        internalAncestorOriginObjectsListCreationSteps document iframeReferrerPolicy
-  }
+    -- Step 16: Let iframeReferrerPolicy be the result of determining the iframe element referrer policy given embedder.
+    let iframeReferrerPolicy : Option String := none
+    -- TODO: Model determining the iframe element referrer policy.
 
-  -- Step 18: Set document's ancestor origins list to the result of running the ancestor origins list creation steps given document.
-  let document := {
-    document with
-      ancestorOriginsList := some (ancestorOriginsListCreationSteps document)
-  }
+    -- Step 17: Set document's internal ancestor origin objects list to the result of running the internal ancestor origin objects list creation steps given document and iframeReferrerPolicy.
+    let document := {
+      document with
+        internalAncestorOriginObjectsList :=
+          internalAncestorOriginObjectsListCreationSteps document iframeReferrerPolicy
+    }
 
-  -- Step 19: If creator is non-null, then:
-  let document := match creator with
-    | some creator =>
+    -- Step 18: Set document's ancestor origins list to the result of running the ancestor origins list creation steps given document.
+    let document := {
+      document with
+        ancestorOriginsList := some (ancestorOriginsListCreationSteps document)
+    }
+
+    -- Step 19: If creator is non-null, then:
+    let document :=
+      if let some creator := creator then
         -- Step 19.1: Set document's referrer to the serialization of creator's URL.
         -- Step 19.2: Set document's policy container to a clone of creator's policy container.
         -- Step 19.3: If creator's origin is same origin with creator's relevant settings object's top-level origin, then set document's opener policy to creator's browsing context's top-level browsing context's active document's opener policy.
@@ -881,47 +934,63 @@ def createNewBrowsingContextAndDocument
             policyContainer := creator.policyContainer
             openerPolicy := creator.openerPolicy
         }
-    | none => document
+      else
+        document
 
-  -- Step 20: Assert: document's URL and document's relevant settings object's creation URL are about:blank.
-  -- TODO: Model document URL and creation URL.
+    -- Step 20: Assert: document's URL and document's relevant settings object's creation URL are about:blank.
+    -- TODO: Model document URL and creation URL.
 
-  -- Step 21: Mark document as ready for post-load tasks.
-  -- TODO: Model readiness for post-load tasks.
+    -- Step 21: Mark document as ready for post-load tasks.
+    -- TODO: Model readiness for post-load tasks.
 
-  -- Step 22: Populate with html/head/body given document.
-  let userAgent := populateWithHtmlHeadBody userAgent document
+    -- Step 22: Populate with html/head/body given document.
+    modify (fun userAgent => populateWithHtmlHeadBody userAgent document)
 
-  -- Step 23: Make active document.
-  -- TODO: Model make active.
+    -- Step 23: Make active document.
+    -- TODO: Model make active.
 
-  -- Step 24: Completely finish loading document.
-  -- TODO: Model completely finish loading.
+    -- Step 24: Completely finish loading document.
+    -- TODO: Model completely finish loading.
 
-  -- Step 25: Return browsingContext and document.
-  (userAgent, group, browsingContext, document)
+    -- Step 25: Return browsingContext and document.
+    pure (group, browsingContext, document)
 
 /-- https://html.spec.whatwg.org/multipage/#creating-a-new-browsing-context-group -/
 def createNewBrowsingContextGroupAndDocument
     (userAgent : UserAgent) :
     UserAgent × BrowsingContextGroup × BrowsingContext × Document :=
-  -- Step 1: Let group be a new browsing context group.
-  let (browsingContextGroupSet, group) := userAgent.browsingContextGroupSet.appendFresh
-
-  -- Step 2: Append group to the user agent's browsing context group set.
-  let userAgent := { userAgent with browsingContextGroupSet }
-
-  -- Step 3: Let browsingContext and document be the result of creating a new browsing context and document with null, null, and group.
-  let (userAgent, group, browsingContext, document) :=
-    createNewBrowsingContextAndDocument userAgent none none group
-
-  -- Step 4: Append browsingContext to group.
-  let (group, browsingContext) := group.append browsingContext
-  let browsingContextGroupSet := userAgent.browsingContextGroupSet.replace group
-  let userAgent := { userAgent with browsingContextGroupSet }
-
-  -- Step 5: Return group and document.
+  let ((group, browsingContext, document), userAgent) :=
+    createNewBrowsingContextGroupAndDocumentImpl.run userAgent
   (userAgent, group, browsingContext, document)
+where
+  createNewBrowsingContextAndDocumentM
+      (group : BrowsingContextGroup) :
+      UserAgent.M (BrowsingContextGroup × BrowsingContext × Document) := do
+    let userAgent ← get
+    let (userAgent, group, browsingContext, document) :=
+      createNewBrowsingContextAndDocument userAgent none none group
+    set userAgent
+    pure (group, browsingContext, document)
+
+  createNewBrowsingContextGroupAndDocumentImpl :
+      UserAgent.M (BrowsingContextGroup × BrowsingContext × Document) := do
+    -- Step 1: Let group be a new browsing context group.
+    let userAgent ← get
+    let (browsingContextGroupSet, group) := userAgent.browsingContextGroupSet.appendFresh
+
+    -- Step 2: Append group to the user agent's browsing context group set.
+    set { userAgent with browsingContextGroupSet }
+
+    -- Step 3: Let browsingContext and document be the result of creating a new browsing context and document with null, null, and group.
+    let (group, browsingContext, document) ← createNewBrowsingContextAndDocumentM group
+
+    -- Step 4: Append browsingContext to group.
+    let (group, browsingContext) := group.append browsingContext
+    modify fun userAgent =>
+      { userAgent with browsingContextGroupSet := userAgent.browsingContextGroupSet.replace group }
+
+    -- Step 5: Return group and document.
+    pure (group, browsingContext, document)
 
 /-- https://html.spec.whatwg.org/multipage/#creating-a-new-top-level-browsing-context -/
 def createNewTopLevelBrowsingContextAndDocument
@@ -941,97 +1010,110 @@ def createNewTopLevelTraversable
     (targetName : String)
     (_openerNavigableForWebDriver : Option Unit := none) :
     UserAgent × TopLevelTraversable :=
-  -- Step 1: Let document be null.
-  let document : Option Document := none
-
-  -- Step 2: If opener is null, then set document to the second return value of creating a new top-level browsing context and document.
-  let (userAgent, browsingContextId, document) := match opener with
-    | none =>
-        let (userAgent, browsingContext, document) :=
-          createNewTopLevelBrowsingContextAndDocument userAgent
-        (userAgent, some browsingContext.id, some document)
-    | some _ =>
-        (userAgent, none, document)
-
-  -- Step 3: Otherwise, set document to the second return value of creating a new auxiliary browsing context and document given opener.
-  -- TODO: Model creating a new auxiliary browsing context and document given opener.
-
-  -- Step 4: Let documentState be a new document state, with
-  let documentState : DocumentState := match document with
-    | some document => {
-        document := some document
-        initiatorOrigin := match opener with
-          | none => none
-          | some _ => some document.origin
-        origin := some document.origin
-        navigableTargetName := targetName
-        aboutBaseURL := document.aboutBaseURL
-      }
-    | none => {
-        initiatorOrigin := none
-        navigableTargetName := targetName
-      }
-
-  -- Step 5: Let traversable be a new traversable navigable.
-  let (topLevelTraversableSet, traversable) := userAgent.topLevelTraversableSet.appendFresh
-  let traversable := match document with
-    | some document =>
-        {
-          traversable with
-            toTraversableNavigable :=
-              {
-                traversable.toTraversableNavigable with
-                  toNavigable :=
-                    initializeNavigable traversable.toTraversableNavigable.toNavigable document {
-                      documentState with everPopulated := true
-                    }
-                  activeDocument := some document
-              }
-            parentNavigableIdNone := by rfl
-        }
-    | none => traversable
-
-  -- Step 6: Initialize the navigable traversable given documentState.
-  -- Modeled above when a concrete initial document exists.
-
-  -- Step 7: Let initialHistoryEntry be traversable's active session history entry.
-  let initialHistoryEntry : Option SessionHistoryEntry :=
-    traversable.toTraversableNavigable.toNavigable.activeSessionHistoryEntry
-
-  -- Steps 8-9: Set the initial history entry's step to 0 and append it.
-  let traversable := {
-    traversable with
-      toTraversableNavigable := {
-        traversable.toTraversableNavigable with
-          activeBrowsingContextId := browsingContextId
-          toNavigable := {
-            traversable.toTraversableNavigable.toNavigable with
-              currentSessionHistoryEntry := match initialHistoryEntry with
-                | some initialHistoryEntry => some { initialHistoryEntry with step := 0 }
-                | none => none
-              activeSessionHistoryEntry := match initialHistoryEntry with
-                | some initialHistoryEntry => some { initialHistoryEntry with step := 0 }
-                | none => none
-          }
-          sessionHistoryEntries := match initialHistoryEntry with
-            | some initialHistoryEntry => [{ initialHistoryEntry with step := 0 }]
-            | none => []
-      }
-      targetName
-  }
-  let topLevelTraversableSet := topLevelTraversableSet.replace traversable
-
-  -- Step 10: If opener is non-null, then legacy-clone a traversable storage shed given opener's top-level traversable and traversable.
-  -- TODO: Model legacy-clone a traversable storage shed.
-
-  -- Step 11: Append traversable to the user agent's top-level traversable set.
-  let userAgent := { userAgent with topLevelTraversableSet }
-
-  -- Step 12: Invoke WebDriver BiDi navigable created with traversable and openerNavigableForWebDriver.
-  -- TODO: Model the WebDriver BiDi hook.
-
-  -- Step 13: Return traversable.
+  let (traversable, userAgent) :=
+    (createNewTopLevelTraversableImpl opener targetName).run userAgent
   (userAgent, traversable)
+where
+  createNewTopLevelBrowsingContextAndDocumentM : UserAgent.M (BrowsingContext × Document) := do
+    let userAgent ← get
+    let (userAgent, browsingContext, document) :=
+      createNewTopLevelBrowsingContextAndDocument userAgent
+    set userAgent
+    pure (browsingContext, document)
+
+  createNewTopLevelTraversableImpl
+      (opener : Option Unit)
+      (targetName : String) :
+      UserAgent.M TopLevelTraversable := do
+    -- Step 1: Let document be null.
+    let document : Option Document := none
+
+    -- Step 2: If opener is null, then set document to the second return value of creating a new top-level browsing context and document.
+    let (browsingContextId, document) ←
+      match opener with
+      | none =>
+          let (browsingContext, document) ← createNewTopLevelBrowsingContextAndDocumentM
+          pure (some browsingContext.id, some document)
+      | some _ =>
+          pure (none, document)
+
+    -- Step 3: Otherwise, set document to the second return value of creating a new auxiliary browsing context and document given opener.
+    -- TODO: Model creating a new auxiliary browsing context and document given opener.
+
+    -- Step 4: Let documentState be a new document state, with
+    let documentState : DocumentState := match document with
+      | some document => {
+          document := some document
+          initiatorOrigin := match opener with
+            | none => none
+            | some _ => some document.origin
+          origin := some document.origin
+          navigableTargetName := targetName
+          aboutBaseURL := document.aboutBaseURL
+        }
+      | none => {
+          initiatorOrigin := none
+          navigableTargetName := targetName
+        }
+
+    -- Step 5: Let traversable be a new traversable navigable.
+    let userAgent ← get
+    let (topLevelTraversableSet, traversable) := userAgent.topLevelTraversableSet.appendFresh
+    set { userAgent with topLevelTraversableSet }
+    let traversable := match document with
+      | some document =>
+          {
+            traversable with
+              toTraversableNavigable :=
+                {
+                  traversable.toTraversableNavigable with
+                    toNavigable :=
+                      initializeNavigable traversable.toTraversableNavigable.toNavigable document {
+                        documentState with everPopulated := true
+                      }
+                    activeDocument := some document
+                }
+              parentNavigableIdNone := by rfl
+          }
+      | none => traversable
+
+    -- Step 6: Initialize the navigable traversable given documentState.
+    -- Modeled above when a concrete initial document exists.
+
+    -- Step 7: Let initialHistoryEntry be traversable's active session history entry.
+    let initialHistoryEntry : Option SessionHistoryEntry :=
+      traversable.toTraversableNavigable.toNavigable.activeSessionHistoryEntry.map fun entry =>
+        { entry with step := 0 }
+
+    -- Steps 8-9: Set the initial history entry's step to 0 and append it.
+    let traversable := {
+      traversable with
+        toTraversableNavigable := {
+          traversable.toTraversableNavigable with
+            activeBrowsingContextId := browsingContextId
+            toNavigable := {
+              traversable.toTraversableNavigable.toNavigable with
+                currentSessionHistoryEntry := initialHistoryEntry
+                activeSessionHistoryEntry := initialHistoryEntry
+            }
+            sessionHistoryEntries := initialHistoryEntry.toList
+        }
+        targetName
+    }
+    modify fun userAgent =>
+      { userAgent with topLevelTraversableSet := userAgent.topLevelTraversableSet.replace traversable }
+
+    -- Step 10: If opener is non-null, then legacy-clone a traversable storage shed given opener's top-level traversable and traversable.
+    -- TODO: Model legacy-clone a traversable storage shed.
+
+    -- Step 11: Append traversable to the user agent's top-level traversable set.
+    -- Modeled above by replacing the freshly appended traversable.
+
+    -- Step 12: Invoke WebDriver BiDi navigable created with traversable and openerNavigableForWebDriver.
+    -- TODO: Model the WebDriver BiDi hook.
+
+    -- Step 13: Return traversable.
+    pure traversable
 
 /--
 LTS-style actions for the current user-agent navigation model.

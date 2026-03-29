@@ -61,8 +61,9 @@ deriving Repr, DecidableEq
 def hasUsablePostResource
     (documentResource : DocumentResource) :
     Bool :=
-  match documentResource with
-  | .post postResource => postResource.requestBody.isSome
-  | _ => false
+  if let .post postResource := documentResource then
+    postResource.requestBody.isSome
+  else
+    false
 
 end FormalWeb

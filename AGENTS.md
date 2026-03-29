@@ -31,6 +31,7 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - Message kinds used by the runtime are good candidates for inductive action/message types shared with or related to the LTS labels.
 - Lean uses `-- TODO:` comments, not `// TODO:` comments.
 - In Lean code, prefer `do`-notation and monadic binds or pattern lets such as `let x <- ...` / `let some x := ... | ...` over nested `match` expressions when a function already returns `Option`, `IO`, or another monad.
+- For small state-threading helpers, prefer `Option.map`, `Option.getD`, and local helper bindings over repeating the same inline `match` expressions when that keeps the spec-facing control flow unchanged.
 - For pure state-transition helpers that thread `UserAgent` and return `UserAgent`, it is acceptable to use `Id.run do` so early exits can be expressed with pattern lets instead of nested `match` expressions.
 - The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
 - Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
