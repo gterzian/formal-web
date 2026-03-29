@@ -119,8 +119,4 @@ structure PendingNavigationFetch where
   request : NavigationRequest
 deriving Repr, DecidableEq
 
-/-- https://fetch.spec.whatwg.org/#fetch-scheme -/
-def isFetchScheme (url : String) : Bool :=
-  url.startsWith "http://" || url.startsWith "https://"
-
 end FormalWeb

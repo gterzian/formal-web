@@ -4,5 +4,6 @@ import FormalWeb.Document
 import FormalWeb.FFI
 import FormalWeb.SessionHistory
 import FormalWeb.Navigation
+import FormalWeb.Fetch
 import FormalWeb.Traversable
 import FormalWeb.UserAgent

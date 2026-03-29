@@ -1,5 +1,6 @@
 import Std.Data.TreeMap
 import FormalWeb.FFI
+import FormalWeb.Fetch
 import FormalWeb.Traversable
 
 namespace FormalWeb
@@ -137,6 +138,17 @@ def pendingNavigationFetch?
     (navigationId : Nat) :
     Option PendingNavigationFetch :=
   userAgent.pendingNavigationFetches.get? navigationId
+
+/-- Model-local bridge from the HTML navigation wait state to the runtime fetch worker. -/
+def pendingNavigationFetchRequest?
+    (userAgent : UserAgent)
+    (navigationId : Nat) :
+    Option PendingFetchRequest := do
+  let pendingNavigationFetch <- userAgent.pendingNavigationFetch? navigationId
+  pure {
+    navigationId := pendingNavigationFetch.navigationId
+    request := pendingNavigationFetch.request
+  }
 
 def setBaseDocumentPointer
     (userAgent : UserAgent)
@@ -636,15 +648,15 @@ def abortNavigation
       userAgent
 
 /-- https://html.spec.whatwg.org/multipage/#navigate -/
-def navigate
+def navigateWithPendingFetchRequest
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable)
     (destinationURL : String)
     (documentResource : Option DocumentResource := none) :
-    UserAgent :=
+    UserAgent × Option PendingFetchRequest :=
   Id.run do
     let some sourceDocument := traversable.toTraversableNavigable.activeDocument
-      | userAgent
+      | (userAgent, none)
     -- TODO: Model the browser-UI/sourceDocument-null branch of beginning navigation.
     let previousOngoingNavigation :=
       traversable.toTraversableNavigable.toNavigable.ongoingNavigation
@@ -684,7 +696,8 @@ def navigate
       url := destinationURL
       documentState
     }
-    attemptToPopulateHistoryEntryDocument
+    let userAgent :=
+      attemptToPopulateHistoryEntryDocument
       userAgent
       historyEntry
       traversable
@@ -696,6 +709,16 @@ def navigate
       none
       "other"
       true
+    (userAgent, UserAgent.pendingNavigationFetchRequest? userAgent navigationId)
+
+/-- https://html.spec.whatwg.org/multipage/#navigate -/
+def navigate
+    (userAgent : UserAgent)
+    (traversable : TopLevelTraversable)
+    (destinationURL : String)
+    (documentResource : Option DocumentResource := none) :
+    UserAgent :=
+  (navigateWithPendingFetchRequest userAgent traversable destinationURL documentResource).1
 
 /-- https://html.spec.whatwg.org/multipage/#obtain-similar-origin-window-agent -/
 def obtainSimilarOriginWindowAgent

@@ -9,6 +9,7 @@ use blitz_html::HtmlDocument;
 use data_url::DataUrl;
 use std::ffi::{CStr, c_char};
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -45,10 +46,13 @@ static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent
 static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
     LazyLock::new(|| Mutex::new(None));
 
+const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
+const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE: &str = "NewTopLevelTraversable";
+
 enum FormalWebUserEvent {
     Paint(usize),
     DocumentRequestRedraw,
-    RuntimeMessage(String),
+    NewTopLevelTraversable,
 }
 
 struct DataOnlyNetProvider;
@@ -122,6 +126,26 @@ fn call_lean_runtime_message_handler(message: &str) {
     }
 
     unsafe { formal_web_lean_dec(io_result) };
+}
+
+fn startup_runtime_message() -> Result<String, String> {
+    let current_dir = std::env::current_dir()
+        .map_err(|error| format!("failed to determine current directory: {error}"))?;
+    let artifact_path: PathBuf = current_dir.join(STARTUP_ARTIFACT_RELATIVE_PATH);
+    let artifact_path = artifact_path
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve startup artifact path: {error}"))?;
+    Ok(format!(
+        "FreshTopLevelTraversable|file://{}",
+        artifact_path.display()
+    ))
+}
+
+fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
+    match message {
+        NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE => Ok(FormalWebUserEvent::NewTopLevelTraversable),
+        _ => Err(format!("unknown runtime message: {message}")),
+    }
 }
 
 fn user_agent_note_rendering_opportunity(message: &str) {
@@ -272,7 +296,10 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                     Self::update_window_viewport_snapshot(&window);
                     self.resume_renderer_for_window(&window);
                     self.window = Some(window);
-                    call_lean_runtime_message_handler("FreshTopLevelTraversable");
+                    match startup_runtime_message() {
+                        Ok(message) => call_lean_runtime_message_handler(&message),
+                        Err(_error) => event_loop.exit(),
+                    }
                 }
                 Err(error) => {
                     let _ = error;
@@ -362,16 +389,11 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                     }
                 }
             }
-            FormalWebUserEvent::RuntimeMessage(message) => {
-                match message.as_str() {
-                    "NewTopLevelTraversable" => {
-                        self.has_top_level_traversable = true;
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                            user_agent_note_rendering_opportunity("request_redraw");
-                        }
-                    }
-                    _ => {}
+            FormalWebUserEvent::NewTopLevelTraversable => {
+                self.has_top_level_traversable = true;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                    user_agent_note_rendering_opportunity("request_redraw");
                 }
             }
         }
@@ -435,9 +457,10 @@ pub extern "C" fn formal_web_send_runtime_message(message: *mut lean_object) -> 
         let message = unsafe { CStr::from_ptr(c_message) }
             .to_string_lossy()
             .into_owned();
+        let user_event = user_event_of_runtime_message(&message)?;
         with_event_loop_proxy(|proxy| match proxy {
             Some(proxy) => proxy
-                .send_event(FormalWebUserEvent::RuntimeMessage(message))
+                .send_event(user_event)
                 .map_err(|error| format!("failed to send runtime message event: {error}")),
             None => Err(String::from("winit event loop proxy is not initialized")),
         })
