@@ -1,6 +1,8 @@
 import Std.Data.TreeMap
+import Std.Sync.Channel
 import FormalWeb.FFI
 import FormalWeb.Fetch
+import FormalWeb.TransitionTrace
 import FormalWeb.Traversable
 
 namespace FormalWeb
@@ -1202,5 +1204,379 @@ def step
           let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
           let userAgent := userAgent.setEventLoop eventLoop
           pure (userAgent.setBaseDocumentPointer traversableId baseDocPointer)
+
+inductive UserAgentTaskMessage where
+  | freshTopLevelTraversable (destinationURL : String)
+  | renderingOpportunity
+  | fetchCompleted (navigationId : Nat) (response : NavigationResponse)
+deriving Repr, DecidableEq
+
+structure UserAgentTaskState where
+  userAgent : UserAgent := default
+  startupTraversableId : Option Nat := none
+deriving Repr, Inhabited
+
+structure UserAgentTaskResult where
+  state : UserAgentTaskState
+  fetchMessages : List FetchTaskMessage := []
+  sentNewTopLevelTraversable : Bool := false
+  error : Option String := none
+deriving Repr
+
+def userAgentTaskMessageOfString? (message : String) : Option UserAgentTaskMessage := do
+  let messagePrefix := "FreshTopLevelTraversable|"
+  if message.startsWith messagePrefix then
+    some (.freshTopLevelTraversable (message.drop messagePrefix.length).toString)
+  else
+    none
+
+def startupNavigationFailureDetails
+    (destinationURL : String)
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    String :=
+  let fetchScheme := isFetchScheme destinationURL
+  match traversable? userAgent traversableId with
+  | none =>
+      s!"expected startup navigation for traversable {traversableId} to create a pending fetch; traversable missing after navigate, destinationURL={destinationURL}, fetchScheme={fetchScheme}"
+  | some traversable =>
+      let ongoingNavigation := traversable.toTraversableNavigable.toNavigable.ongoingNavigation
+      let activeDocumentUrl :=
+        (traversable.toTraversableNavigable.activeDocument.map (·.url)).getD "<none>"
+      let ongoingNavigationDescription :=
+        match ongoingNavigation with
+        | none => "none"
+        | some (.navigationId navigationId) => s!"navigationId({navigationId})"
+        | some .traversal => "traversal"
+      let pendingNavigationFetchDescription :=
+        match ongoingNavigation with
+        | some (.navigationId navigationId) =>
+            match UserAgent.pendingNavigationFetch? userAgent navigationId with
+            | some pendingNavigationFetch =>
+                s!"present(navigationId={pendingNavigationFetch.navigationId}, requestUrl={pendingNavigationFetch.request.url}, method={pendingNavigationFetch.request.method})"
+            | none =>
+                s!"missing(navigationId={navigationId})"
+        | some .traversal => "not-applicable(traversal)"
+        | none => "not-applicable(no ongoing navigation)"
+      s!"expected startup navigation for traversable {traversableId} to create a pending fetch; destinationURL={destinationURL}, fetchScheme={fetchScheme}, activeDocumentUrl={activeDocumentUrl}, ongoingNavigation={ongoingNavigationDescription}, pendingNavigationFetch={pendingNavigationFetchDescription}"
+
+def bootstrapFreshTopLevelTraversable
+    (destinationURL : String)
+    (userAgent : UserAgent) :
+    Except String (UserAgent × Nat × PendingFetchRequest) :=
+  let (userAgent, traversable) := createNewTopLevelTraversable userAgent none ""
+  let (userAgent, pendingFetchRequest) :=
+    navigateWithPendingFetchRequest userAgent traversable destinationURL
+  match pendingFetchRequest with
+  | some pendingFetchRequest => .ok (userAgent, traversable.id, pendingFetchRequest)
+  | none => .error (startupNavigationFailureDetails destinationURL userAgent traversable.id)
+
+def startupTraversableReadyHtml?
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    Option String := do
+  let traversable <- traversable? userAgent traversableId
+  if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
+    none
+  else
+    let document <- traversable.toTraversableNavigable.activeDocument
+    pure (UserAgent.documentHtml userAgent document)
+
+def handleUserAgentTaskMessagePure
+    (state : UserAgentTaskState)
+    (message : UserAgentTaskMessage) :
+    UserAgentTaskResult :=
+  match message with
+  | .freshTopLevelTraversable destinationURL =>
+      match bootstrapFreshTopLevelTraversable destinationURL state.userAgent with
+      | .ok (userAgent, traversableId, pendingFetchRequest) =>
+          {
+            state := {
+              state with
+                userAgent
+                startupTraversableId := some traversableId
+            }
+            fetchMessages := [.startFetch pendingFetchRequest]
+          }
+      | .error error =>
+          { state, error := some error }
+  | .renderingOpportunity =>
+      { state }
+  | .fetchCompleted navigationId response =>
+      let userAgent := processNavigationFetchResponse state.userAgent navigationId response
+      let sentNewTopLevelTraversable :=
+        match state.startupTraversableId with
+        | none => false
+        | some traversableId =>
+            (startupTraversableReadyHtml? userAgent traversableId).isSome
+      {
+        state := { state with userAgent }
+        sentNewTopLevelTraversable
+      }
+
+def userAgentTaskStep
+    (state : UserAgentTaskState)
+    (message : UserAgentTaskMessage) :
+    UserAgentTaskState :=
+  (handleUserAgentTaskMessagePure state message).state
+
+def userAgentTaskExec
+    (state : UserAgentTaskState)
+    (messages : List UserAgentTaskMessage) :
+    UserAgentTaskState :=
+  messages.foldl userAgentTaskStep state
+
+inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAgentAction → Prop where
+  | freshTopLevelTraversableError
+      (destinationURL : String) :
+      UserAgentTaskMessageActionShape (.freshTopLevelTraversable destinationURL) []
+  | freshTopLevelTraversableSuccess
+      (destinationURL : String)
+      (traversableId : Nat) :
+      UserAgentTaskMessageActionShape
+        (.freshTopLevelTraversable destinationURL)
+        [.createTopLevelTraversable "", .beginNavigation traversableId destinationURL none]
+  | renderingOpportunity :
+      UserAgentTaskMessageActionShape .renderingOpportunity []
+  | fetchCompleted
+      (navigationId : Nat)
+      (response : NavigationResponse) :
+      UserAgentTaskMessageActionShape
+        (.fetchCompleted navigationId response)
+        [.completeNavigation navigationId response]
+
+theorem createTopLevelTraversable_trace
+    (userAgent : UserAgent)
+    (targetName : String := "") :
+    TransitionTrace
+      step
+      userAgent
+      [.createTopLevelTraversable targetName]
+      (createNewTopLevelTraversable userAgent none targetName).1 := by
+  refine TransitionTrace.single ?_
+  simp [step, createNewTopLevelTraversable]
+
+theorem createNewTopLevelTraversable_lookup
+    (userAgent : UserAgent)
+    (targetName : String := "") :
+    let result := createNewTopLevelTraversable userAgent none targetName
+    traversable? result.1 result.2.id = some result.2 := by
+  simp [createNewTopLevelTraversable, traversable?, TopLevelTraversableSet.find?]
+  unfold createNewTopLevelTraversable.createNewTopLevelTraversableImpl
+  simp [TopLevelTraversableSet.appendFresh, TopLevelTraversableSet.nextId, TopLevelTraversableSet.replace]
+
+theorem beginNavigation_after_createTopLevelTraversable_trace
+    (userAgent : UserAgent)
+    (destinationURL : String)
+    (targetName : String := "") :
+    let created := createNewTopLevelTraversable userAgent none targetName
+    TransitionTrace
+      step
+      created.1
+      [.beginNavigation created.2.id destinationURL none]
+      (navigate created.1 created.2 destinationURL) := by
+  intro created
+  refine TransitionTrace.single ?_
+  have hlookup : traversable? created.1 created.2.id = some created.2 := by
+    simpa [created] using createNewTopLevelTraversable_lookup userAgent targetName
+  simp [step, navigate, hlookup]
+
+theorem startupSuccess_trace
+    (userAgent nextUserAgent : UserAgent)
+    (destinationURL : String)
+    (traversableId : Nat)
+    (pendingFetchRequest : PendingFetchRequest)
+    (hbootstrap :
+      bootstrapFreshTopLevelTraversable destinationURL userAgent =
+        .ok (nextUserAgent, traversableId, pendingFetchRequest)) :
+    TransitionTrace
+      step
+      userAgent
+      [
+        .createTopLevelTraversable "",
+        .beginNavigation traversableId destinationURL none
+      ]
+      nextUserAgent := by
+  unfold bootstrapFreshTopLevelTraversable at hbootstrap
+  let created := createNewTopLevelTraversable userAgent none ""
+  let navigated := navigateWithPendingFetchRequest created.1 created.2 destinationURL
+  cases hpending : navigated.2 with
+  | none =>
+      simp [created, navigated, hpending] at hbootstrap
+  | some actualPendingFetchRequest =>
+      cases hnav : navigated with
+      | mk actualNextUserAgent actualPendingFetchRequest? =>
+          have hpending' : actualPendingFetchRequest? = some actualPendingFetchRequest := by
+            simpa [hnav] using hpending
+          simp [created, navigated, hnav, hpending'] at hbootstrap
+          rcases hbootstrap with ⟨hnextUserAgent, htraversableId, hpendingFetchRequest⟩
+          subst hnextUserAgent
+          subst htraversableId
+          subst hpendingFetchRequest
+          refine TransitionTrace.cons (intermediate := created.1) ?_ ?_
+          · simpa [created] using
+              (show step userAgent (.createTopLevelTraversable "") = some (createNewTopLevelTraversable userAgent none "").1 by
+                simp [step, createNewTopLevelTraversable])
+          · simpa [created, navigate, navigated, hnav] using
+              beginNavigation_after_createTopLevelTraversable_trace userAgent destinationURL ""
+
+theorem handleUserAgentTaskMessagePure_refines
+    (state : UserAgentTaskState)
+    (message : UserAgentTaskMessage) :
+    ∃ actions,
+      UserAgentTaskMessageActionShape message actions ∧
+      TransitionTrace
+        step
+        state.userAgent
+        actions
+        (handleUserAgentTaskMessagePure state message).state.userAgent := by
+  cases message with
+  | freshTopLevelTraversable destinationURL =>
+      cases hbootstrap : bootstrapFreshTopLevelTraversable destinationURL state.userAgent with
+      | error _ =>
+          refine ⟨[], .freshTopLevelTraversableError destinationURL, ?_⟩
+          simp [handleUserAgentTaskMessagePure, hbootstrap, TransitionTrace.nil]
+      | ok result =>
+          refine ⟨
+            [.createTopLevelTraversable "", .beginNavigation result.2.1 destinationURL none],
+            .freshTopLevelTraversableSuccess destinationURL result.2.1,
+            ?_
+          ⟩
+          simpa [handleUserAgentTaskMessagePure, hbootstrap] using
+            startupSuccess_trace state.userAgent result.1 destinationURL result.2.1 result.2.2 hbootstrap
+  | renderingOpportunity =>
+      refine ⟨[], .renderingOpportunity, ?_⟩
+      simp [handleUserAgentTaskMessagePure, TransitionTrace.nil]
+  | fetchCompleted navigationId response =>
+      refine ⟨[.completeNavigation navigationId response], .fetchCompleted navigationId response, ?_⟩
+      refine TransitionTrace.single ?_
+      simp [handleUserAgentTaskMessagePure, step, processNavigationFetchResponse]
+
+theorem userAgentTaskStep_refines
+    (state : UserAgentTaskState)
+    (message : UserAgentTaskMessage) :
+    ∃ actions,
+      UserAgentTaskMessageActionShape message actions ∧
+      TransitionTrace
+        step
+        state.userAgent
+        actions
+        (userAgentTaskStep state message).userAgent := by
+  simpa [userAgentTaskStep] using handleUserAgentTaskMessagePure_refines state message
+
+theorem userAgentTaskExec_refines
+    (state : UserAgentTaskState)
+    (messages : List UserAgentTaskMessage) :
+    ∃ actions,
+      TransitionTrace
+        step
+        state.userAgent
+        actions
+        (userAgentTaskExec state messages).userAgent := by
+  induction messages generalizing state with
+  | nil =>
+      refine ⟨[], ?_⟩
+      simp [userAgentTaskExec, TransitionTrace.nil]
+  | cons message messages ih =>
+      have hstep := userAgentTaskStep_refines state message
+      have htail := ih (userAgentTaskStep state message)
+      rcases hstep with ⟨actions₁, _shape, htrace₁⟩
+      rcases htail with ⟨actions₂, htrace₂⟩
+      refine ⟨actions₁ ++ actions₂, ?_⟩
+      simpa [userAgentTaskExec] using TransitionTrace.append htrace₁ htrace₂
+
+theorem default_userAgentTaskState_empty
+    (traversableId navigationId : Nat) :
+    (default : UserAgentTaskState).startupTraversableId = none ∧
+    (traversable? (default : UserAgentTaskState).userAgent traversableId).isNone = true ∧
+    (UserAgent.pendingNavigationFetch? (default : UserAgentTaskState).userAgent navigationId).isNone = true := by
+  refine ⟨rfl, ?_, ?_⟩
+  · change
+      (match (Std.TreeMap.empty : Std.TreeMap Nat TopLevelTraversable)[traversableId]? with
+        | some _ => false
+        | none => true) = true
+    simp
+  · change
+      (match (Std.TreeMap.empty : Std.TreeMap Nat PendingNavigationFetch)[navigationId]? with
+        | some _ => false
+        | none => true) = true
+    simp
+
+theorem userAgentTaskExec_startup_from_default_success
+    (destinationURL : String)
+    (nextUserAgent : UserAgent)
+    (traversableId : Nat)
+    (pendingFetchRequest : PendingFetchRequest)
+    (hbootstrap :
+      bootstrapFreshTopLevelTraversable destinationURL (default : UserAgentTaskState).userAgent =
+        .ok (nextUserAgent, traversableId, pendingFetchRequest)) :
+    (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).startupTraversableId = some traversableId ∧
+    (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).userAgent = nextUserAgent ∧
+    (handleUserAgentTaskMessagePure (default : UserAgentTaskState) (.freshTopLevelTraversable destinationURL)).fetchMessages =
+      [.startFetch pendingFetchRequest] ∧
+    (handleUserAgentTaskMessagePure (default : UserAgentTaskState) (.freshTopLevelTraversable destinationURL)).error = none ∧
+    TransitionTrace
+      step
+      (default : UserAgentTaskState).userAgent
+      [.createTopLevelTraversable "", .beginNavigation traversableId destinationURL none]
+      (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).userAgent := by
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  · simp [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap]
+  · simp [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap]
+  · simp [handleUserAgentTaskMessagePure, hbootstrap]
+  · simp [handleUserAgentTaskMessagePure, hbootstrap]
+  · simpa [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap] using
+      startupSuccess_trace
+        (default : UserAgentTaskState).userAgent
+        nextUserAgent
+        destinationURL
+        traversableId
+        pendingFetchRequest
+        hbootstrap
+
+private def recvCloseableChannel?
+    (channel : Std.CloseableChannel α) :
+    IO (Option α) := do
+  let receiveTask ← channel.recv
+  IO.wait receiveTask
+
+private def notifyStartupTraversableReady
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    IO Unit := do
+  let some _html := startupTraversableReadyHtml? userAgent traversableId | pure ()
+  FormalWeb.sendRuntimeMessage "NewTopLevelTraversable"
+
+def runUserAgentMessage
+    (enqueueFetchMessage : FetchTaskMessage -> IO Unit)
+    (state : UserAgentTaskState)
+    (message : UserAgentTaskMessage) :
+    IO UserAgentTaskState := do
+  let result := handleUserAgentTaskMessagePure state message
+  let nextState := result.state
+  if let some error := result.error then
+    IO.eprintln s!"handleUserAgentTaskMessagePure failed: {error}"
+  for fetchMessage in result.fetchMessages do
+    enqueueFetchMessage fetchMessage
+  match message with
+  | .freshTopLevelTraversable _ =>
+      pure ()
+  | .renderingOpportunity =>
+      let some traversableId := nextState.startupTraversableId | pure ()
+      noteRenderingOpportunity nextState.userAgent traversableId
+  | .fetchCompleted _ _ =>
+      if result.sentNewTopLevelTraversable then
+        let some traversableId := nextState.startupTraversableId | pure ()
+        notifyStartupTraversableReady nextState.userAgent traversableId
+  pure nextState
+
+partial def runUserAgent
+    (channel : Std.CloseableChannel UserAgentTaskMessage)
+    (enqueueFetchMessage : FetchTaskMessage -> IO Unit)
+    (state : UserAgentTaskState := default) :
+    IO Unit := do
+  let some message ← recvCloseableChannel? channel | pure ()
+  let state ← runUserAgentMessage enqueueFetchMessage state message
+  runUserAgent channel enqueueFetchMessage state
 
 end FormalWeb
