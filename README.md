@@ -27,6 +27,11 @@ The Rust modules are restricted to sequential logic, with the exception of embar
 
 The division of responsibility is principled: Lean handles all concurrent aspects of the engine, while Rust handles modular sequential and embarrassingly parallel algorithms. This keeps the concurrency model entirely within a language and proof system designed to reason about it.
 
+## Motivation
+The immediate historical context for this project is the rise of AI-assisted coding. A central conviction of formal-web is that formal methods are what allow these tools to be used to their full potential. Given a formal Lean spec, an AI can write the implementation and produce a proof that it respects the constraints of the higher-level spec — work that would otherwise require significant human effort. 
+
+Given vague natural language input, an AI can also draft the spec itself. In that case, the human's role shifts from writing to reviewing — checking that the spec faithfully captures the intended behavior. This is a much more tractable task, and a robust one: a reviewed formal spec is a precise, machine-checkable record of intent.
+
 ## Example
 
 All Web engines today run some kind of *content process* — roughly, one per tab. These processes perform a significant amount of cross-process coordination, which is a major source of complexity and bugs.
