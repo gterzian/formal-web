@@ -282,6 +282,7 @@ theorem runNextPendingUserAgentMessage_fetchCompleted_updatesUserAgent
     userAgentState := {
       userAgent := processNavigationFetchResponse state.userAgent navigationId response
       startupTraversableId := state.startupTraversableId
+      lastDispatchedEvent := state.lastDispatchedEvent
     }
     fetch := default
     pendingUserAgentMessages := []

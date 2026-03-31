@@ -26,6 +26,14 @@
         padding: 2rem;
       }
 
+      .controls {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+
       h1 {
         margin: 0;
         font-size: 2rem;
@@ -41,6 +49,32 @@
 
       svg {
         display: block;
+      }
+
+      button {
+        appearance: none;
+        border: 1px solid #163728;
+        border-radius: 999px;
+        background: #163728;
+        color: #f4e8d2;
+        padding: 0.75rem 1.2rem;
+        font: inherit;
+        font-size: 1rem;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #24523c;
+      }
+
+      button:focus-visible {
+        outline: 3px solid #fcb040;
+        outline-offset: 3px;
+      }
+
+      .hint {
+        font-size: 0.95rem;
+        opacity: 0.85;
       }
     </style>
   </head>
@@ -81,6 +115,10 @@
         which fetches this checked-in artifact and then resumes
         <code>processNavigationFetchResponse</code>.
       </p>
+      <div class="controls">
+        <button type="button">Test Interaction</button>
+        <span class="hint">Click it or tab to it to exercise pointer and keyboard focus handling.</span>
+      </div>
     </main>
   </body>
 </html>

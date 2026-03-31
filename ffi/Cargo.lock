@@ -913,6 +913,7 @@ dependencies = [
  "blitz-traits",
  "cc",
  "data-url",
+ "keyboard-types",
  "peniko",
  "winit",
 ]

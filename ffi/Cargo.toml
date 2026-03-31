@@ -16,6 +16,7 @@ blitz-html = { path = "vendor/blitz/packages/blitz-html", default-features = fal
 blitz-paint = { path = "vendor/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
 blitz-traits = { path = "vendor/blitz/packages/blitz-traits", default-features = false }
 data-url = "0.3"
+keyboard-types = "0.7"
 peniko = "0.6.0"
 winit = "0.30"
 

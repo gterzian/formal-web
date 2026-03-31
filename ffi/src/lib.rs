@@ -1,20 +1,33 @@
 use anyrender::WindowRenderer;
 use anyrender_vello::VelloWindowRenderer;
-use blitz_dom::BaseDocument;
-use blitz_dom::DocumentConfig;
+use blitz_dom::{BaseDocument, Document as BlitzDocument, DocumentConfig};
 use blitz_paint::paint_scene;
+use blitz_traits::events::{
+    BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
+    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords,
+    PointerDetails, UiEvent,
+};
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, ShellProvider, Viewport};
 use blitz_html::HtmlDocument;
 use data_url::DataUrl;
+use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use std::ffi::{CStr, c_char};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::dpi::{LogicalPosition, PhysicalPosition};
+use winit::event::{
+    ElementState, Ime, KeyEvent as WinitKeyEvent, Modifiers, MouseButton, MouseScrollDelta,
+    Touch, TouchPhase, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::keyboard::{
+    Key as WinitKey, KeyCode as WinitKeyCode, KeyLocation as WinitKeyLocation,
+    ModifiersState as WinitModifiersState, NamedKey, PhysicalKey,
+};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 #[repr(C)]
@@ -38,8 +51,7 @@ unsafe extern "C" {
 }
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
-const LOADED_HTML_DOCUMENT: &str =
-    "<!DOCTYPE html><html><head><style type=\"text/css\">html, body { height: 100%; margin: 0; } body { display: grid; place-items: center; background: #f4e8d2; }</style></head><body><svg width=\"368\" height=\"106\" viewBox=\"0 0 368 106\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" style=\"display:block;fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;\"><g><path d=\"M131.548,97.488L131.548,8.369L144.939,8.369C150.903,8.369 155.656,8.831 159.196,9.755C162.774,10.678 165.795,12.236 168.258,14.43C170.759,16.7 172.741,19.528 174.203,22.915C175.703,26.339 176.454,29.802 176.454,33.304C176.454,39.692 174.01,45.098 169.123,49.523C173.856,51.139 177.589,53.967 180.321,58.008C183.091,62.01 184.477,66.666 184.477,71.976C184.477,78.941 182.014,84.828 177.089,89.638C174.126,92.601 170.797,94.66 167.103,95.814C163.063,96.93 158.003,97.488 151.923,97.488L131.548,97.488ZM144.997,46.637L149.21,46.637C154.213,46.637 157.878,45.531 160.206,43.318C162.534,41.106 163.698,37.845 163.698,33.535C163.698,29.341 162.505,26.156 160.119,23.982C157.734,21.808 154.27,20.721 149.73,20.721L144.997,20.721L144.997,46.637ZM144.997,84.847L153.308,84.847C159.388,84.847 163.852,83.654 166.699,81.269C169.701,78.691 171.201,75.42 171.201,71.456C171.201,67.608 169.758,64.376 166.872,61.76C164.063,59.181 159.042,57.892 151.808,57.892L144.997,57.892L144.997,84.847Z\" style=\"fill-rule:nonzero;\"/><rect x=\"202.173\" y=\"0\" width=\"12.987\" height=\"97.488\" style=\"fill-rule:nonzero;\"/><path d=\"M247.806,41.269L247.806,97.488L234.819,97.488L234.819,41.269L247.806,41.269ZM232.857,17.893C232.857,15.623 233.684,13.66 235.338,12.006C236.993,10.351 238.975,9.524 241.284,9.524C243.631,9.524 245.632,10.351 247.286,12.006C248.941,13.622 249.768,15.603 249.768,17.951C249.768,20.298 248.941,22.299 247.286,23.953C245.67,25.608 243.689,26.435 241.341,26.435C238.994,26.435 236.993,25.608 235.338,23.953C233.684,22.299 232.857,20.279 232.857,17.893Z\" style=\"fill-rule:nonzero;\"/><path d=\"M285.856,53.39L285.856,97.488L272.869,97.488L272.869,53.39L267.328,53.39L267.328,41.269L272.869,41.269L272.869,20.663L285.856,20.663L285.856,41.269L295.957,41.269L295.957,53.39L285.856,53.39Z\" style=\"fill-rule:nonzero;\"/><path d=\"M331.64,85.251L365.059,85.251L365.059,97.488L305.897,97.488L342.318,53.39L313.631,53.39L313.631,41.269L368.003,41.269L331.64,85.251Z\" style=\"fill-rule:nonzero;\"/></g><g><g><circle cx=\"53\" cy=\"53\" r=\"53\" style=\"fill:rgb(1,99,63);\"/><circle cx=\"53\" cy=\"53\" r=\"45.773\" style=\"fill:rgb(0,118,114);\"/><circle cx=\"53\" cy=\"53\" r=\"38.545\" style=\"fill:rgb(62,149,147);\"/><circle cx=\"53\" cy=\"53\" r=\"31.318\" style=\"fill:rgb(252,176,64);\"/><circle cx=\"53\" cy=\"53\" r=\"24.091\" style=\"fill:rgb(233,86,41);\"/><circle cx=\"53\" cy=\"53\" r=\"16.864\" style=\"fill:rgb(230,29,50);\"/></g><g><path d=\"M39.759,90.287C39.549,90.287 39.338,90.241 39.137,90.144C38.49,89.83 38.177,89.087 38.404,88.405L49.211,55.986L38.33,55.986C37.853,55.986 37.407,55.747 37.141,55.35C36.875,54.953 36.826,54.448 37.011,54.008L51.303,19.707C51.524,19.174 52.045,18.826 52.622,18.826L66.2,18.826C66.684,18.826 67.136,19.072 67.399,19.478C67.663,19.886 67.702,20.397 67.504,20.839L56.257,45.982L66.914,45.982C67.439,45.982 67.922,46.27 68.172,46.73C68.422,47.192 68.398,47.754 68.11,48.193L40.955,89.64C40.682,90.057 40.228,90.287 39.759,90.287Z\" style=\"fill:rgb(244,232,210);fill-rule:nonzero;\"/></g></g></svg></body></html>";
+const LOADED_HTML_DOCUMENT: &str = include_str!("../../artifacts/StartupExample.html");
 
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -48,6 +60,7 @@ static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorSche
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
 const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE: &str = "NewTopLevelTraversable";
+const DISPATCH_EVENT_MESSAGE_PREFIX: &str = "DispatchEvent|";
 
 enum FormalWebUserEvent {
     Paint(usize),
@@ -102,6 +115,200 @@ fn create_html_document_pointer(html: &str) -> usize {
         },
     );
     Box::into_raw(Box::new(document)) as usize
+}
+
+fn theme_to_color_scheme(theme: winit::window::Theme) -> ColorScheme {
+    match theme {
+        winit::window::Theme::Light => ColorScheme::Light,
+        winit::window::Theme::Dark => ColorScheme::Dark,
+    }
+}
+
+fn viewport_for_window(window: &Window) -> Viewport {
+    let size = window.inner_size();
+    let scale = window.scale_factor() as f32;
+    let color_scheme = theme_to_color_scheme(window.theme().unwrap_or(winit::window::Theme::Light));
+    Viewport::new(size.width, size.height, scale, color_scheme)
+}
+
+fn winit_ime_to_blitz(event: Ime) -> BlitzImeEvent {
+    match event {
+        Ime::Enabled => BlitzImeEvent::Enabled,
+        Ime::Disabled => BlitzImeEvent::Disabled,
+        Ime::Preedit(text, cursor) => BlitzImeEvent::Preedit(text, cursor),
+        Ime::Commit(text) => BlitzImeEvent::Commit(text),
+    }
+}
+
+fn touch_pointer_details(force: Option<winit::event::Force>) -> PointerDetails {
+    PointerDetails {
+        pressure: force.map(|value| value.normalized()).unwrap_or(0.0),
+        ..PointerDetails::default()
+    }
+}
+
+fn winit_modifiers_to_kbt_modifiers(winit_modifiers: WinitModifiersState) -> KeyboardModifiers {
+    let mut modifiers = KeyboardModifiers::default();
+    if winit_modifiers.contains(WinitModifiersState::CONTROL) {
+        modifiers.insert(KeyboardModifiers::CONTROL);
+    }
+    if winit_modifiers.contains(WinitModifiersState::ALT) {
+        modifiers.insert(KeyboardModifiers::ALT);
+    }
+    if winit_modifiers.contains(WinitModifiersState::SHIFT) {
+        modifiers.insert(KeyboardModifiers::SHIFT);
+    }
+    if winit_modifiers.contains(WinitModifiersState::SUPER) {
+        modifiers.insert(KeyboardModifiers::SUPER);
+    }
+    modifiers
+}
+
+fn winit_key_location_to_kbt_location(location: WinitKeyLocation) -> Location {
+    match location {
+        WinitKeyLocation::Standard => Location::Standard,
+        WinitKeyLocation::Left => Location::Left,
+        WinitKeyLocation::Right => Location::Right,
+        WinitKeyLocation::Numpad => Location::Numpad,
+    }
+}
+
+fn winit_key_to_kbt_key(key: &WinitKey) -> Key {
+    match key {
+        WinitKey::Character(value) => Key::Character(value.to_string()),
+        WinitKey::Named(named) => match named {
+            NamedKey::Alt => Key::Alt,
+            NamedKey::Backspace => Key::Backspace,
+            NamedKey::Control => Key::Control,
+            NamedKey::Delete => Key::Delete,
+            NamedKey::ArrowDown => Key::ArrowDown,
+            NamedKey::End => Key::End,
+            NamedKey::Enter => Key::Enter,
+            NamedKey::Escape => Key::Escape,
+            NamedKey::Home => Key::Home,
+            NamedKey::ArrowLeft => Key::ArrowLeft,
+            NamedKey::Meta => Key::Meta,
+            NamedKey::PageDown => Key::PageDown,
+            NamedKey::PageUp => Key::PageUp,
+            NamedKey::ArrowRight => Key::ArrowRight,
+            NamedKey::Shift => Key::Shift,
+            NamedKey::Space => Key::Character(" ".to_owned()),
+            NamedKey::Tab => Key::Tab,
+            NamedKey::ArrowUp => Key::ArrowUp,
+            NamedKey::Super => Key::Super,
+            _ => Key::Unidentified,
+        },
+        _ => Key::Unidentified,
+    }
+}
+
+fn winit_physical_key_to_kbt_code(physical_key: &PhysicalKey) -> Code {
+    match physical_key {
+        PhysicalKey::Code(code) => match code {
+            WinitKeyCode::Backquote => Code::Backquote,
+            WinitKeyCode::Backslash => Code::Backslash,
+            WinitKeyCode::Backspace => Code::Backspace,
+            WinitKeyCode::BracketLeft => Code::BracketLeft,
+            WinitKeyCode::BracketRight => Code::BracketRight,
+            WinitKeyCode::Comma => Code::Comma,
+            WinitKeyCode::ControlLeft => Code::ControlLeft,
+            WinitKeyCode::ControlRight => Code::ControlRight,
+            WinitKeyCode::Delete => Code::Delete,
+            WinitKeyCode::Digit0 => Code::Digit0,
+            WinitKeyCode::Digit1 => Code::Digit1,
+            WinitKeyCode::Digit2 => Code::Digit2,
+            WinitKeyCode::Digit3 => Code::Digit3,
+            WinitKeyCode::Digit4 => Code::Digit4,
+            WinitKeyCode::Digit5 => Code::Digit5,
+            WinitKeyCode::Digit6 => Code::Digit6,
+            WinitKeyCode::Digit7 => Code::Digit7,
+            WinitKeyCode::Digit8 => Code::Digit8,
+            WinitKeyCode::Digit9 => Code::Digit9,
+            WinitKeyCode::ArrowDown => Code::ArrowDown,
+            WinitKeyCode::End => Code::End,
+            WinitKeyCode::Enter => Code::Enter,
+            WinitKeyCode::Equal => Code::Equal,
+            WinitKeyCode::Escape => Code::Escape,
+            WinitKeyCode::Home => Code::Home,
+            WinitKeyCode::KeyA => Code::KeyA,
+            WinitKeyCode::KeyB => Code::KeyB,
+            WinitKeyCode::KeyC => Code::KeyC,
+            WinitKeyCode::KeyD => Code::KeyD,
+            WinitKeyCode::KeyE => Code::KeyE,
+            WinitKeyCode::KeyF => Code::KeyF,
+            WinitKeyCode::KeyG => Code::KeyG,
+            WinitKeyCode::KeyH => Code::KeyH,
+            WinitKeyCode::KeyI => Code::KeyI,
+            WinitKeyCode::KeyJ => Code::KeyJ,
+            WinitKeyCode::KeyK => Code::KeyK,
+            WinitKeyCode::KeyL => Code::KeyL,
+            WinitKeyCode::KeyM => Code::KeyM,
+            WinitKeyCode::KeyN => Code::KeyN,
+            WinitKeyCode::KeyO => Code::KeyO,
+            WinitKeyCode::KeyP => Code::KeyP,
+            WinitKeyCode::KeyQ => Code::KeyQ,
+            WinitKeyCode::KeyR => Code::KeyR,
+            WinitKeyCode::KeyS => Code::KeyS,
+            WinitKeyCode::KeyT => Code::KeyT,
+            WinitKeyCode::KeyU => Code::KeyU,
+            WinitKeyCode::KeyV => Code::KeyV,
+            WinitKeyCode::KeyW => Code::KeyW,
+            WinitKeyCode::KeyX => Code::KeyX,
+            WinitKeyCode::KeyY => Code::KeyY,
+            WinitKeyCode::KeyZ => Code::KeyZ,
+            WinitKeyCode::SuperLeft => Code::Super,
+            WinitKeyCode::SuperRight => Code::Super,
+            WinitKeyCode::Minus => Code::Minus,
+            WinitKeyCode::PageDown => Code::PageDown,
+            WinitKeyCode::PageUp => Code::PageUp,
+            WinitKeyCode::Period => Code::Period,
+            WinitKeyCode::Quote => Code::Quote,
+            WinitKeyCode::ArrowLeft => Code::ArrowLeft,
+            WinitKeyCode::ArrowRight => Code::ArrowRight,
+            WinitKeyCode::Semicolon => Code::Semicolon,
+            WinitKeyCode::ShiftLeft => Code::ShiftLeft,
+            WinitKeyCode::ShiftRight => Code::ShiftRight,
+            WinitKeyCode::Slash => Code::Slash,
+            WinitKeyCode::Space => Code::Space,
+            WinitKeyCode::Tab => Code::Tab,
+            WinitKeyCode::ArrowUp => Code::ArrowUp,
+            _ => Code::Unidentified,
+        },
+        PhysicalKey::Unidentified(_) => Code::Unidentified,
+    }
+}
+
+fn winit_key_event_to_blitz(event: &WinitKeyEvent, mods: WinitModifiersState) -> BlitzKeyEvent {
+    BlitzKeyEvent {
+        key: winit_key_to_kbt_key(&event.logical_key),
+        code: winit_physical_key_to_kbt_code(&event.physical_key),
+        modifiers: winit_modifiers_to_kbt_modifiers(mods),
+        location: winit_key_location_to_kbt_location(event.location),
+        is_auto_repeating: event.repeat,
+        is_composing: false,
+        state: match event.state {
+            ElementState::Pressed => KeyState::Pressed,
+            ElementState::Released => KeyState::Released,
+        },
+        text: event.text.as_ref().map(|text| text.as_str().into()),
+    }
+}
+
+fn serialize_ui_event(event: &UiEvent) -> String {
+    match event {
+        UiEvent::PointerMove(data) => format!("PointerMove|{data:?}"),
+        UiEvent::PointerUp(data) => format!("PointerUp|{data:?}"),
+        UiEvent::PointerDown(data) => format!("PointerDown|{data:?}"),
+        UiEvent::Wheel(data) => format!("Wheel|{data:?}"),
+        UiEvent::KeyUp(data) => format!("KeyUp|{data:?}"),
+        UiEvent::KeyDown(data) => format!("KeyDown|{data:?}"),
+        UiEvent::Ime(data) => format!("Ime|{data:?}"),
+    }
+}
+
+fn dispatch_event_runtime_message(event: &UiEvent) {
+    let message = format!("{DISPATCH_EVENT_MESSAGE_PREFIX}{}", serialize_ui_event(event));
+    call_lean_runtime_message_handler(&message);
 }
 
 fn lean_string_from_owned(value: String) -> *mut lean_object {
@@ -179,10 +386,14 @@ fn queue_paint(pointer: usize) -> Result<(), String> {
 struct FormalWebApp {
     window: Option<Arc<Window>>,
     renderer: VelloWindowRenderer,
+    current_base_document: Option<usize>,
     pending_base_document: Option<usize>,
     saw_redraw_requested: bool,
     has_top_level_traversable: bool,
     animation_timer: Option<Instant>,
+    keyboard_modifiers: Modifiers,
+    buttons: MouseEventButtons,
+    pointer_pos: PhysicalPosition<f64>,
 }
 
 impl Default for FormalWebApp {
@@ -190,26 +401,30 @@ impl Default for FormalWebApp {
         Self {
             window: None,
             renderer: VelloWindowRenderer::new(),
+            current_base_document: None,
             pending_base_document: None,
             saw_redraw_requested: false,
             has_top_level_traversable: false,
             animation_timer: None,
+            keyboard_modifiers: Modifiers::default(),
+            buttons: MouseEventButtons::None,
+            pointer_pos: PhysicalPosition::default(),
         }
     }
 }
 
 impl FormalWebApp {
     fn update_window_viewport_snapshot(window: &Window) {
-        let size = window.inner_size();
-        let scale = window.scale_factor() as f32;
-        let color_scheme = match window.theme().unwrap_or(winit::window::Theme::Light) {
-            winit::window::Theme::Light => ColorScheme::Light,
-            winit::window::Theme::Dark => ColorScheme::Dark,
-        };
+        let viewport = viewport_for_window(window);
         let mut snapshot = WINDOW_VIEWPORT_SNAPSHOT
             .lock()
             .expect("window viewport snapshot mutex poisoned");
-        *snapshot = Some((size.width, size.height, scale, color_scheme));
+        *snapshot = Some((
+            viewport.window_size.0,
+            viewport.window_size.1,
+            viewport.hidpi_scale,
+            viewport.color_scheme,
+        ));
     }
 
     fn resume_renderer_for_window(&mut self, window: &Arc<Window>) {
@@ -256,14 +471,7 @@ impl FormalWebApp {
         };
 
         let base_document = unsafe { &mut *(pointer as *mut BaseDocument) };
-        let size = window.inner_size();
-        let scale_factor = window.scale_factor() as f32;
-        base_document.set_viewport(Viewport::new(
-            size.width,
-            size.height,
-            scale_factor,
-            ColorScheme::Light,
-        ));
+        base_document.set_viewport(viewport_for_window(window));
         for pass in 0..3 {
             base_document.resolve(animation_time);
             let _ = pass;
@@ -284,6 +492,68 @@ impl FormalWebApp {
 
         self.renderer.render(|scene| {
             paint_scene(scene, &*base_document, scale, width, height, 0, 0)
+        });
+    }
+
+    fn with_current_base_document<R>(&self, f: impl FnOnce(&BaseDocument) -> R) -> Option<R> {
+        let pointer = self.current_base_document?;
+        let base_document = unsafe { &*(pointer as *const BaseDocument) };
+        Some(f(base_document))
+    }
+
+    fn with_current_base_document_mut<R>(&mut self, f: impl FnOnce(&mut BaseDocument) -> R) -> Option<R> {
+        let pointer = self.current_base_document?;
+        let base_document = unsafe { &mut *(pointer as *mut BaseDocument) };
+        Some(f(base_document))
+    }
+
+    fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
+        if let Some(coords) = self.with_current_base_document(|base_document| {
+            let scale = base_document.viewport().scale_f64();
+            let LogicalPosition::<f32> {
+                x: screen_x,
+                y: screen_y,
+            } = position.to_logical(scale);
+            let viewport_scroll = base_document.viewport_scroll();
+            let client_x = screen_x;
+            let client_y = screen_y;
+            let page_x = client_x + viewport_scroll.x as f32;
+            let page_y = client_y + viewport_scroll.y as f32;
+            PointerCoords {
+                screen_x,
+                screen_y,
+                client_x,
+                client_y,
+                page_x,
+                page_y,
+            }
+        }) {
+            coords
+        } else {
+            let scale = self
+                .window
+                .as_ref()
+                .map(|window| window.scale_factor())
+                .unwrap_or(1.0);
+            let LogicalPosition::<f32> {
+                x: screen_x,
+                y: screen_y,
+            } = position.to_logical(scale);
+            PointerCoords {
+                screen_x,
+                screen_y,
+                client_x: screen_x,
+                client_y: screen_y,
+                page_x: screen_x,
+                page_y: screen_y,
+            }
+        }
+    }
+
+    fn dispatch_ui_event(&mut self, event: UiEvent) {
+        dispatch_event_runtime_message(&event);
+        let _ = self.with_current_base_document_mut(|base_document| {
+            BlitzDocument::handle_ui_event(base_document, event);
         });
     }
 }
@@ -315,11 +585,11 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(window) = self.window.as_ref() else {
+        let Some(current_window_id) = self.window.as_ref().map(|window| window.id()) else {
             return;
         };
 
-        if window.id() != window_id {
+        if current_window_id != window_id {
             return;
         }
 
@@ -335,17 +605,29 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 if let Some(window) = self.window.as_ref() {
                     Self::update_window_viewport_snapshot(window);
                 }
+                let _ = self.with_current_base_document_mut(|base_document| {
+                    let viewport = base_document.viewport().clone();
+                    base_document.set_viewport(Viewport::new(
+                        size.width,
+                        size.height,
+                        viewport.hidpi_scale,
+                        viewport.color_scheme,
+                    ));
+                });
                 if self.renderer.is_active() {
                     self.renderer.set_size(size.width, size.height);
                 }
                 if self.has_top_level_traversable {
-                    window.request_redraw();
-                    user_agent_note_rendering_opportunity("request_redraw");
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                        user_agent_note_rendering_opportunity("request_redraw");
+                    }
                 }
             }
             WindowEvent::CloseRequested => {
                 self.renderer.suspend();
                 self.animation_timer = None;
+                self.current_base_document = None;
                 self.has_top_level_traversable = false;
                 if let Ok(mut snapshot) = WINDOW_VIEWPORT_SNAPSHOT.lock() {
                     *snapshot = None;
@@ -356,12 +638,107 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             WindowEvent::Destroyed => {
                 self.renderer.suspend();
                 self.animation_timer = None;
+                self.current_base_document = None;
                 self.has_top_level_traversable = false;
                 if let Ok(mut snapshot) = WINDOW_VIEWPORT_SNAPSHOT.lock() {
                     *snapshot = None;
                 }
                 self.window = None;
                 event_loop.exit();
+            }
+            WindowEvent::Ime(ime_event) => {
+                self.dispatch_ui_event(UiEvent::Ime(winit_ime_to_blitz(ime_event)));
+            }
+            WindowEvent::ModifiersChanged(new_state) => {
+                self.keyboard_modifiers = new_state;
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let key_event = winit_key_event_to_blitz(&event, self.keyboard_modifiers.state());
+                let event = if event.state.is_pressed() {
+                    UiEvent::KeyDown(key_event)
+                } else {
+                    UiEvent::KeyUp(key_event)
+                };
+                self.dispatch_ui_event(event);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer_pos = position;
+                self.dispatch_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
+                    id: BlitzPointerId::Mouse,
+                    is_primary: true,
+                    coords: self.pointer_coords(position),
+                    button: Default::default(),
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                    details: PointerDetails::default(),
+                }));
+            }
+            WindowEvent::MouseInput { button, state, .. } => {
+                let coords = self.pointer_coords(self.pointer_pos);
+                let mapped_button = match button {
+                    MouseButton::Left => MouseEventButton::Main,
+                    MouseButton::Right => MouseEventButton::Secondary,
+                    MouseButton::Middle => MouseEventButton::Auxiliary,
+                    MouseButton::Back => MouseEventButton::Fourth,
+                    MouseButton::Forward => MouseEventButton::Fifth,
+                    MouseButton::Other(_) => MouseEventButton::Auxiliary,
+                };
+
+                match state {
+                    ElementState::Pressed => self.buttons |= mapped_button.into(),
+                    ElementState::Released => self.buttons ^= mapped_button.into(),
+                }
+
+                let event = BlitzPointerEvent {
+                    id: BlitzPointerId::Mouse,
+                    is_primary: true,
+                    coords,
+                    button: mapped_button,
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                    details: PointerDetails::default(),
+                };
+                self.dispatch_ui_event(match state {
+                    ElementState::Pressed => UiEvent::PointerDown(event),
+                    ElementState::Released => UiEvent::PointerUp(event),
+                });
+            }
+            WindowEvent::Touch(Touch {
+                phase,
+                location,
+                force,
+                id,
+                ..
+            }) => {
+                let coords = self.pointer_coords(location);
+                let event = BlitzPointerEvent {
+                    id: BlitzPointerId::Finger(id),
+                    is_primary: true,
+                    coords,
+                    button: Default::default(),
+                    buttons: MouseEventButtons::None,
+                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                    details: touch_pointer_details(force),
+                };
+                match phase {
+                    TouchPhase::Started => self.dispatch_ui_event(UiEvent::PointerDown(event)),
+                    TouchPhase::Moved => self.dispatch_ui_event(UiEvent::PointerMove(event)),
+                    TouchPhase::Ended | TouchPhase::Cancelled => {
+                        self.dispatch_ui_event(UiEvent::PointerUp(event))
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => BlitzWheelDelta::Lines(x as f64, y as f64),
+                    MouseScrollDelta::PixelDelta(pos) => BlitzWheelDelta::Pixels(pos.x, pos.y),
+                };
+                self.dispatch_ui_event(UiEvent::Wheel(BlitzWheelEvent {
+                    delta,
+                    coords: self.pointer_coords(self.pointer_pos),
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                }));
             }
             _ => {}
         }
@@ -373,6 +750,8 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 let Some(_window) = self.window.as_ref() else {
                     return;
                 };
+
+                self.current_base_document = Some(pointer);
 
                 if self.saw_redraw_requested {
                     self.paint_base_document(pointer);

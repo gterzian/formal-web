@@ -1207,6 +1207,7 @@ def step
 
 inductive UserAgentTaskMessage where
   | freshTopLevelTraversable (destinationURL : String)
+  | dispatchEvent (event : String)
   | renderingOpportunity
   | fetchCompleted (navigationId : Nat) (response : NavigationResponse)
 deriving Repr, DecidableEq
@@ -1214,6 +1215,7 @@ deriving Repr, DecidableEq
 structure UserAgentTaskState where
   userAgent : UserAgent := default
   startupTraversableId : Option Nat := none
+  lastDispatchedEvent : Option String := none
 deriving Repr, Inhabited
 
 structure UserAgentTaskResult where
@@ -1225,8 +1227,11 @@ deriving Repr
 
 def userAgentTaskMessageOfString? (message : String) : Option UserAgentTaskMessage := do
   let messagePrefix := "FreshTopLevelTraversable|"
+  let dispatchEventPrefix := "DispatchEvent|"
   if message.startsWith messagePrefix then
     some (.freshTopLevelTraversable (message.drop messagePrefix.length).toString)
+  else if message.startsWith dispatchEventPrefix then
+    some (.dispatchEvent (message.drop dispatchEventPrefix.length).toString)
   else
     none
 
@@ -1300,6 +1305,10 @@ def handleUserAgentTaskMessagePure
           }
       | .error error =>
           { state, error := some error }
+  | .dispatchEvent event =>
+      {
+        state := { state with lastDispatchedEvent := some event }
+      }
   | .renderingOpportunity =>
       { state }
   | .fetchCompleted navigationId response =>
@@ -1336,6 +1345,9 @@ inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAg
       UserAgentTaskMessageActionShape
         (.freshTopLevelTraversable destinationURL)
         [.createTopLevelTraversable "", .beginNavigation traversableId destinationURL none]
+  | dispatchEvent
+      (event : String) :
+      UserAgentTaskMessageActionShape (.dispatchEvent event) []
   | renderingOpportunity :
       UserAgentTaskMessageActionShape .renderingOpportunity []
   | fetchCompleted
@@ -1444,6 +1456,9 @@ theorem handleUserAgentTaskMessagePure_refines
           ⟩
           simpa [handleUserAgentTaskMessagePure, hbootstrap] using
             startupSuccess_trace state.userAgent result.1 destinationURL result.2.1 result.2.2 hbootstrap
+  | dispatchEvent event =>
+      refine ⟨[], .dispatchEvent event, ?_⟩
+      simp [handleUserAgentTaskMessagePure, TransitionTrace.nil]
   | renderingOpportunity =>
       refine ⟨[], .renderingOpportunity, ?_⟩
       simp [handleUserAgentTaskMessagePure, TransitionTrace.nil]
@@ -1560,6 +1575,8 @@ def runUserAgentMessage
     enqueueFetchMessage fetchMessage
   match message with
   | .freshTopLevelTraversable _ =>
+      pure ()
+    | .dispatchEvent _ =>
       pure ()
   | .renderingOpportunity =>
       let some traversableId := nextState.startupTraversableId | pure ()
