@@ -1,6 +1,8 @@
 import FormalWeb.FFI
+import FormalWeb.EventLoopRuntime
 import FormalWeb.Fetch
 import FormalWeb.UserAgent
+import Std.Data.TreeMap
 import Std.Sync.Channel
 
 open FormalWeb
@@ -10,6 +12,16 @@ initialize userAgentMessageChannelRef : IO.Ref (Option (Std.CloseableChannel Use
 
 initialize fetchMessageChannelRef : IO.Ref (Option (Std.CloseableChannel FetchTaskMessage)) ←
   IO.mkRef (none : Option (Std.CloseableChannel FetchTaskMessage))
+
+initialize eventLoopMessageChannelsRef : IO.Ref (Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage)) ←
+  IO.mkRef
+    (Std.TreeMap.empty : Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage) compare)
+
+initialize eventLoopShutdownChannelsRef : IO.Ref (List (Std.CloseableChannel EventLoopTaskMessage)) ←
+  IO.mkRef ([] : List (Std.CloseableChannel EventLoopTaskMessage))
+
+initialize eventLoopWorkersRef : IO.Ref (List (Task (Except IO.Error Unit))) ←
+  IO.mkRef ([] : List (Task (Except IO.Error Unit)))
 
 def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
@@ -42,6 +54,40 @@ def enqueueUserAgentMessage (message : UserAgentTaskMessage) : IO Unit := do
 def enqueueFetchMessage (message : FetchTaskMessage) : IO Unit := do
   trySendOnRef fetchMessageChannelRef message
 
+def enqueueEventLoopMessage
+    (eventLoopId : Nat)
+    (message : EventLoopTaskMessage) :
+    IO Unit := do
+  let channels ← eventLoopMessageChannelsRef.get
+  let some channel := channels.get? eventLoopId | pure ()
+  let _ ← channel.trySend message
+  pure ()
+
+def ensureEventLoopWorker
+    (userAgentChannel : Std.CloseableChannel UserAgentTaskMessage)
+    (eventLoop : EventLoop) :
+    IO Unit := do
+  let channels ← eventLoopMessageChannelsRef.get
+  match channels.get? eventLoop.id with
+  | some _ =>
+      pure ()
+  | none =>
+      let channel ← Std.CloseableChannel.new
+      eventLoopMessageChannelsRef.modify (·.insert eventLoop.id channel)
+      eventLoopShutdownChannelsRef.modify (fun shutdownChannels => channel :: shutdownChannels)
+      let worker ← IO.asTask <|
+        FormalWeb.runEventLoop
+          channel
+          (fun completion =>
+            trySendAndForget
+              userAgentChannel
+              (.updateTheRenderingCompleted
+                completion.traversableId
+                completion.eventLoopId
+                completion.documentId))
+          { eventLoop := eventLoop }
+      eventLoopWorkersRef.modify (fun workers => worker :: workers)
+
 
 @[export formal_web_user_agent_note_rendering_opportunity]
 def userAgentNoteRenderingOpportunity (message : String) : IO Unit := do
@@ -73,8 +119,16 @@ def main : IO Unit := do
   let fetchChannel ← Std.CloseableChannel.new
   userAgentMessageChannelRef.set (some userAgentChannel)
   fetchMessageChannelRef.set (some fetchChannel)
+  eventLoopMessageChannelsRef.set
+    (Std.TreeMap.empty : Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage) compare)
+  eventLoopShutdownChannelsRef.set ([] : List (Std.CloseableChannel EventLoopTaskMessage))
+  eventLoopWorkersRef.set ([] : List (Task (Except IO.Error Unit)))
   let userAgentWorker ← IO.asTask <|
-    FormalWeb.runUserAgent userAgentChannel (fun message => trySendAndForget fetchChannel message)
+    FormalWeb.runUserAgent
+      userAgentChannel
+      (fun message => trySendAndForget fetchChannel message)
+      (ensureEventLoopWorker userAgentChannel)
+      enqueueEventLoopMessage
   let fetchWorker ← IO.asTask <|
     FormalWeb.runFetch fetchChannel fun notification =>
       match notification with
@@ -84,7 +138,17 @@ def main : IO Unit := do
   userAgentMessageChannelRef.set (none : Option (Std.CloseableChannel UserAgentTaskMessage))
   fetchMessageChannelRef.set (none : Option (Std.CloseableChannel FetchTaskMessage))
   fetchChannel.close
-  userAgentChannel.close
+  let eventLoopShutdownChannels ← eventLoopShutdownChannelsRef.get
+  eventLoopMessageChannelsRef.set
+    (Std.TreeMap.empty : Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage) compare)
+  eventLoopShutdownChannelsRef.set ([] : List (Std.CloseableChannel EventLoopTaskMessage))
+  for channel in eventLoopShutdownChannels do
+    channel.close
   let _ ← IO.wait fetchWorker
+  let eventLoopWorkers ← eventLoopWorkersRef.get
+  eventLoopWorkersRef.set ([] : List (Task (Except IO.Error Unit)))
+  for worker in eventLoopWorkers do
+    let _ ← IO.wait worker
+  userAgentChannel.close
   let _ ← IO.wait userAgentWorker
   pure ()

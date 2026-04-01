@@ -1,4 +1,5 @@
 import Std.Data.TreeMap
+import FormalWeb.EventLoop
 import FormalWeb.Navigation
 
 namespace FormalWeb
@@ -15,70 +16,6 @@ inductive AgentClusterKey
   | site (site : String)
   | origin (origin : Origin)
 deriving Repr, DecidableEq, Ord
-
-/-- https://html.spec.whatwg.org/multipage/#task-source -/
-inductive TaskSource
-  | generic
-deriving Repr, DecidableEq
-
-/-- Model-local summary of the work stored in https://html.spec.whatwg.org/multipage/#concept-task-steps -/
-inductive TaskStep
-  | completeNav (navigationId : Nat)
-  /-- Model-local UpdateTheRendering task step queued when rendering should be updated. -/
-  | updateTheRendering
-  | opaque
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#concept-task -/
-structure Task where
-  /-- Model-local summary of https://html.spec.whatwg.org/multipage/#concept-task-steps -/
-  step : TaskStep
-  /-- https://html.spec.whatwg.org/multipage/#concept-task-source -/
-  source : TaskSource := .generic
-  /-- Model-local reference for https://html.spec.whatwg.org/multipage/#concept-task-document -/
-  documentId : Option Nat := none
-  /-- Model-local placeholder for https://html.spec.whatwg.org/multipage/#script-evaluation-environment-settings-object-set -/
-  scriptEvaluationEnvironmentSettingsObjectSet : List Nat := []
-deriving Repr, DecidableEq
-
-/-- https://html.spec.whatwg.org/multipage/#event-loop -/
-structure EventLoop where
-  /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#event-loop -/
-  id : Nat
-  /-- Model-local collapse of https://html.spec.whatwg.org/multipage/#task-queue to a single queue containing https://html.spec.whatwg.org/multipage/#concept-task values. -/
-  taskQueue : List Task := []
-  /-- https://html.spec.whatwg.org/multipage/#termination-nesting-level -/
-  terminationNestingLevel : Nat := 0
-  /-- Model-local dedup flag: an UpdateTheRendering task is already queued, so further requests are no-ops until it runs. -/
-  hasPendingUpdateTheRendering : Bool := false
-deriving Repr, DecidableEq
-
-namespace EventLoop
-
-def enqueueTask
-    (eventLoop : EventLoop)
-    (task : Task) :
-    EventLoop :=
-  {
-    eventLoop with
-      taskQueue := eventLoop.taskQueue.concat task
-  }
-
-/-- Enqueue an UpdateTheRendering task, deduplicating: a second enqueue is a no-op if one is already pending. -/
-def enqueueUpdateTheRenderingTask (eventLoop : EventLoop) : EventLoop :=
-  if eventLoop.hasPendingUpdateTheRendering then
-    eventLoop
-  else
-    let updated := eventLoop.enqueueTask { step := .updateTheRendering }
-    { updated with hasPendingUpdateTheRendering := true }
-
-/-- Dequeue the UpdateTheRendering task and clear the pending flag. -/
-def dequeueUpdateTheRenderingTask (eventLoop : EventLoop) : EventLoop :=
-  { eventLoop with
-      taskQueue := eventLoop.taskQueue.filter (fun t => t.step ≠ .updateTheRendering)
-      hasPendingUpdateTheRendering := false }
-
-end EventLoop
 
 /-- https://tc39.es/ecma262/#sec-agents -/
 structure Agent where

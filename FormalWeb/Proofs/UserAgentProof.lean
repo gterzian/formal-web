@@ -1,4 +1,5 @@
 import FormalWeb.UserAgent
+import FormalWeb.Proofs.EventLoopProof
 import FormalWeb.TransitionTrace
 
 namespace FormalWeb
@@ -31,12 +32,11 @@ inductive UserAgentAction
   -/
   | queueUpdateTheRendering (traversableId : Nat) (eventLoopId : Nat)
   /--
-  Models the event-loop task running: Rust has extracted the `BaseDocument` pointer
-  from the `HtmlDocument`, stored it, and sent a Paint user event to the winit app.
+  Models the event-loop task running to completion for the active document handle.
   Clears `hasPendingUpdateTheRendering` on the event loop. This requires the
   traversable's navigation to have completed.
   -/
-  | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (baseDocPointer : RustBaseDocumentPointer)
+  | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (documentId : RustDocumentHandle)
 deriving Repr, DecidableEq
 
 /--
@@ -66,12 +66,9 @@ def step
       pure userAgent
   | .abortNavigation traversableId =>
       pure (abortNavigation userAgent traversableId)
-  | .dispatchEvent traversableId _event =>
-      let traversable <- traversable? userAgent traversableId
-      if traversable.toTraversableNavigable.activeDocument.isNone then
-        none
-      else
-        pure userAgent
+  | .dispatchEvent traversableId event =>
+      let (userAgent, _eventLoopId, _message) <- queueDispatchedEvent userAgent traversableId event
+      pure userAgent
   | .navigationFinished traversableId =>
       let traversable <- traversable? userAgent traversableId
       if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
@@ -81,24 +78,13 @@ def step
       else
         pure userAgent
   | .queueUpdateTheRendering traversableId eventLoopId =>
-      let _traversable <- traversable? userAgent traversableId
-      let eventLoop <- userAgent.eventLoop? eventLoopId
-      let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
-      pure (userAgent.setEventLoop eventLoop)
-  | .updateTheRendering traversableId eventLoopId baseDocPointer =>
-      let traversable <- traversable? userAgent traversableId
-      if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
-        none
-      else if traversable.toTraversableNavigable.activeDocument.isNone then
-        none
+      let (userAgent, actualEventLoopId, _message) <- queueUpdateTheRendering userAgent traversableId
+      if actualEventLoopId = eventLoopId then
+        pure userAgent
       else
-        let eventLoop <- userAgent.eventLoop? eventLoopId
-        if !eventLoop.hasPendingUpdateTheRendering then
-          none
-        else
-          let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
-          let userAgent := userAgent.setEventLoop eventLoop
-          pure (userAgent.setBaseDocumentPointer traversableId baseDocPointer)
+        none
+    | .updateTheRendering traversableId eventLoopId documentId =>
+      completeUpdateTheRendering userAgent traversableId eventLoopId documentId
 
 inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAgentAction → Prop where
   | freshTopLevelTraversableError
@@ -123,8 +109,25 @@ inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAg
       (traversableId : Nat)
       (event : String) :
       UserAgentTaskMessageActionShape (.dispatchEvent event) [.dispatchEvent traversableId event]
-  | renderingOpportunity :
+  | renderingOpportunityError :
       UserAgentTaskMessageActionShape .renderingOpportunity []
+  | renderingOpportunity
+      (traversableId eventLoopId : Nat) :
+      UserAgentTaskMessageActionShape
+        .renderingOpportunity
+        [.queueUpdateTheRendering traversableId eventLoopId]
+  | updateTheRenderingCompletedError
+      (traversableId eventLoopId : Nat)
+      (documentId : RustDocumentHandle) :
+      UserAgentTaskMessageActionShape
+        (.updateTheRenderingCompleted traversableId eventLoopId documentId)
+        []
+  | updateTheRenderingCompleted
+      (traversableId eventLoopId : Nat)
+      (documentId : RustDocumentHandle) :
+      UserAgentTaskMessageActionShape
+        (.updateTheRenderingCompleted traversableId eventLoopId documentId)
+        [.updateTheRendering traversableId eventLoopId documentId]
   | fetchCompletedNavigation
       (fetchId : Nat)
       (pendingNavigationFetch : PendingNavigationFetch)
@@ -185,17 +188,17 @@ theorem dispatchEvent_trace
     (userAgent : UserAgent)
     (traversableId : Nat)
     (event : String)
-    (traversable : TopLevelTraversable)
-    (hlookup : traversable? userAgent traversableId = some traversable)
-    (document : Document)
-    (hactive : traversable.toTraversableNavigable.activeDocument = some document) :
+    (nextUserAgent : UserAgent)
+    (eventLoopId : Nat)
+    (message : EventLoopTaskMessage)
+    (hqueue : queueDispatchedEvent userAgent traversableId event = some (nextUserAgent, eventLoopId, message)) :
     TransitionTrace
       step
       userAgent
       [.dispatchEvent traversableId event]
-      userAgent := by
+      nextUserAgent := by
   refine TransitionTrace.single ?_
-  simp [step, hlookup, hactive]
+  simp [step, hqueue]
 
 theorem requestDocumentFetch_trace
     (userAgent : UserAgent)
@@ -223,6 +226,34 @@ theorem finishDocumentFetch_trace
   have hlookup' : userAgent.pendingDocumentFetches[fetchId]? = some pendingDocumentFetch := by
     simpa [UserAgent.pendingDocumentFetch?] using hlookup
   simp [step, UserAgent.takePendingDocumentFetch, UserAgent.pendingDocumentFetch?, hlookup']
+
+theorem queueUpdateTheRendering_step_trace
+    (userAgent nextUserAgent : UserAgent)
+    (traversableId eventLoopId : Nat)
+    (message : EventLoopTaskMessage)
+    (hqueue :
+      queueUpdateTheRendering userAgent traversableId = some (nextUserAgent, eventLoopId, message)) :
+    TransitionTrace
+      step
+      userAgent
+      [.queueUpdateTheRendering traversableId eventLoopId]
+      nextUserAgent := by
+  refine TransitionTrace.single ?_
+  simp [step, hqueue]
+
+theorem updateTheRendering_step_trace
+    (userAgent nextUserAgent : UserAgent)
+    (traversableId eventLoopId : Nat)
+    (documentId : RustDocumentHandle)
+    (hcomplete :
+      completeUpdateTheRendering userAgent traversableId eventLoopId documentId = some nextUserAgent) :
+    TransitionTrace
+      step
+      userAgent
+      [.updateTheRendering traversableId eventLoopId documentId]
+      nextUserAgent := by
+  refine TransitionTrace.single ?_
+  simp [step, hcomplete]
 
 theorem startupSuccess_trace
     (userAgent nextUserAgent : UserAgent)
@@ -313,13 +344,50 @@ theorem handleUserAgentTaskMessagePure_refines
                   refine ⟨[], .dispatchEventError event, ?_⟩
                   simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive] using
                     (TransitionTrace.nil state.userAgent)
-              | some document =>
-                  refine ⟨[.dispatchEvent traversableId event], .dispatchEvent traversableId event, ?_⟩
-                  simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive] using
-                    dispatchEvent_trace state.userAgent traversableId event traversable hlookup document hactive
+              | some _document =>
+                  match hqueue : queueDispatchedEvent state.userAgent traversableId event with
+                  | none =>
+                      refine ⟨[], .dispatchEventError event, ?_⟩
+                      simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive, hqueue] using
+                        (TransitionTrace.nil state.userAgent)
+                  | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
+                      refine ⟨[.dispatchEvent traversableId event], .dispatchEvent traversableId event, ?_⟩
+                      simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive, hqueue] using
+                        dispatchEvent_trace state.userAgent traversableId event nextUserAgent eventLoopId eventLoopMessage hqueue
   | renderingOpportunity =>
-      refine ⟨[], .renderingOpportunity, ?_⟩
-      simp [handleUserAgentTaskMessagePure, TransitionTrace.nil]
+      match hstartup : state.startupTraversableId with
+      | none =>
+          refine ⟨[], .renderingOpportunityError, ?_⟩
+          simpa [handleUserAgentTaskMessagePure, hstartup] using
+            (TransitionTrace.nil state.userAgent)
+      | some traversableId =>
+          match hqueue : queueUpdateTheRendering state.userAgent traversableId with
+          | none =>
+              refine ⟨[], .renderingOpportunityError, ?_⟩
+              simpa [handleUserAgentTaskMessagePure, hstartup, hqueue] using
+                (TransitionTrace.nil state.userAgent)
+          | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
+              refine ⟨
+                [.queueUpdateTheRendering traversableId eventLoopId],
+                .renderingOpportunity traversableId eventLoopId,
+                ?_
+              ⟩
+              simpa [handleUserAgentTaskMessagePure, hstartup, hqueue] using
+                queueUpdateTheRendering_step_trace state.userAgent nextUserAgent traversableId eventLoopId eventLoopMessage hqueue
+  | updateTheRenderingCompleted traversableId eventLoopId documentId =>
+      match hcomplete : completeUpdateTheRendering state.userAgent traversableId eventLoopId documentId with
+      | none =>
+          refine ⟨[], .updateTheRenderingCompletedError traversableId eventLoopId documentId, ?_⟩
+          simpa [handleUserAgentTaskMessagePure, hcomplete] using
+            (TransitionTrace.nil state.userAgent)
+      | some nextUserAgent =>
+          refine ⟨
+            [.updateTheRendering traversableId eventLoopId documentId],
+            .updateTheRenderingCompleted traversableId eventLoopId documentId,
+            ?_
+          ⟩
+          simpa [handleUserAgentTaskMessagePure, hcomplete] using
+            updateTheRendering_step_trace state.userAgent nextUserAgent traversableId eventLoopId documentId hcomplete
   | fetchCompleted fetchId response =>
       match hnavigation : UserAgent.pendingNavigationFetchByFetchId? state.userAgent fetchId with
       | some pendingNavigationFetch =>
@@ -338,9 +406,14 @@ theorem handleUserAgentTaskMessagePure_refines
           | some pendingDocumentFetch =>
               have hdocument' : state.userAgent.pendingDocumentFetches[fetchId]? = some pendingDocumentFetch := by
                 simpa [UserAgent.pendingDocumentFetch?] using hdocument
+              have hstate :
+                  (handleUserAgentTaskMessagePure state (.fetchCompleted fetchId response)).state.userAgent =
+                    (state.userAgent.takePendingDocumentFetch fetchId).1 := by
+                simp [handleUserAgentTaskMessagePure, hnavigation, UserAgent.takePendingDocumentFetch,
+                  UserAgent.pendingDocumentFetch?, hdocument']
+                split <;> rfl
               refine ⟨[.finishDocumentFetch fetchId], .fetchCompletedDocument fetchId response, ?_⟩
-              simpa [handleUserAgentTaskMessagePure, hnavigation, UserAgent.takePendingDocumentFetch,
-                UserAgent.pendingDocumentFetch?, hdocument'] using
+              simpa [hstate] using
                 finishDocumentFetch_trace state.userAgent fetchId pendingDocumentFetch hdocument
           | none =>
               refine ⟨[], .fetchCompletedMissing fetchId response, ?_⟩

@@ -98,6 +98,8 @@ structure Document where
   origin : Origin
   /-- https://html.spec.whatwg.org/multipage/#concept-document-bc -/
   browsingContextId : Nat
+  /-- Model-local reference to the https://html.spec.whatwg.org/multipage/#concept-agent-event-loop used by the document's relevant global object. -/
+  eventLoopId : Nat
   /-- https://html.spec.whatwg.org/multipage/#concept-document-permissions-policy -/
   permissionsPolicy : PermissionsPolicy := {}
   /-- https://html.spec.whatwg.org/multipage/#active-sandboxing-flag-set -/

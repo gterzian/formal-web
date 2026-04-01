@@ -1,5 +1,5 @@
 # formal-web
-### A formalization of the Web.
+### The Formalized Web Engine
 
 Modern Web engines are among the most complex concurrent systems in existence. Cross-process coordination, race conditions, and the sheer scale of the Web platform have made browser engines a persistent source of security vulnerabilities and correctness bugs. formal-web is an attempt to address this at the root: by formalizing the Web and building a verified Web engine on top of that foundation.
 
