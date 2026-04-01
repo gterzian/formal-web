@@ -16,13 +16,21 @@ deriving Repr, DecidableEq, Inhabited
 def RustBaseDocumentPointer.null : RustBaseDocumentPointer :=
   { raw := 0 }
 
+/-- Opaque pointer to a boxed Rust-side Blitz `NetHandler`. -/
+structure RustNetHandlerPointer where
+  raw : USize
+deriving Repr, DecidableEq, Inhabited
+
+def RustNetHandlerPointer.null : RustNetHandlerPointer :=
+  { raw := 0 }
+
 /-- Allocates a host-side `HtmlDocument` for a fixed `html/head/body` skeleton. -/
 @[extern "formal_web_create_empty_html_document"]
 opaque createEmptyHtmlDocument : Unit → RustDocumentPointer
 
-/-- Allocates a host-side `HtmlDocument` for a fixed loaded-page HTML document. -/
+/-- Allocates a host-side `HtmlDocument` from fetched HTML and a base URL. -/
 @[extern "formal_web_create_loaded_html_document"]
-opaque createLoadedHtmlDocument : Unit → RustDocumentPointer
+opaque createLoadedHtmlDocument : @& String → @& String → RustDocumentPointer
 
 /-- Renders a host-side `HtmlDocument` as an HTML string for debugging. -/
 @[extern "formal_web_render_html_document"]
@@ -47,5 +55,9 @@ opaque queuePaint : USize → IO Unit
 /-- Applies a serialized host-side UI event to the given `BaseDocument`. -/
 @[extern "formal_web_apply_ui_event"]
 opaque applyUiEvent : USize → @& String → IO Unit
+
+/-- Completes a queued document fetch by calling the boxed Rust-side Blitz `NetHandler`. -/
+@[extern "formal_web_complete_document_fetch"]
+opaque completeDocumentFetch : USize → @& String → ByteArray → IO Unit
 
 end FormalWeb

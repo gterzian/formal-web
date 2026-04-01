@@ -12,26 +12,41 @@
       }
 
       body {
+        position: relative;
         display: grid;
         place-items: center;
         background: #f4e8d2;
         color: #163728;
         font-family: Georgia, "Times New Roman", serif;
+        overflow: hidden;
+        transition: color 180ms ease;
+      }
+
+      body::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, #f4e8d2 0%, #f0e1c7 100%);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 180ms ease;
+      }
+
+      body:hover::before {
+        opacity: 1;
+      }
+
+      body:hover {
+        color: #123022;
       }
 
       main {
+        position: relative;
+        z-index: 1;
         display: grid;
         gap: 1rem;
         justify-items: center;
         padding: 2rem;
-      }
-
-      .controls {
-        display: flex;
-        gap: 0.75rem;
-        align-items: center;
-        flex-wrap: wrap;
-        justify-content: center;
       }
 
       h1 {
@@ -51,25 +66,20 @@
         display: block;
       }
 
-      button {
-        appearance: none;
-        border: 1px solid #163728;
-        border-radius: 999px;
-        background: #163728;
-        color: #f4e8d2;
-        padding: 0.75rem 1.2rem;
-        font: inherit;
-        font-size: 1rem;
-        cursor: pointer;
+      img {
+        display: block;
+        width: min(22rem, 100%);
+        height: auto;
+        border-radius: 1rem;
+        box-shadow: 0 18px 40px rgba(22, 55, 40, 0.18);
+        background: rgba(255, 255, 255, 0.45);
+        padding: 0.5rem;
+        transition: box-shadow 180ms ease, transform 180ms ease;
       }
 
-      button:hover {
-        background: #24523c;
-      }
-
-      button:focus-visible {
-        outline: 3px solid #fcb040;
-        outline-offset: 3px;
+      img:hover {
+        box-shadow: 0 28px 58px rgba(22, 55, 40, 0.28);
+        transform: translateY(-2px);
       }
 
       .hint {
@@ -110,15 +120,13 @@
         </g>
       </svg>
       <h1>FormalWeb Fetch Bootstrap</h1>
+      <img src="blitz-landscape.svg" alt="Stylized landscape illustration used to verify document-driven image fetches." />
       <p>
         The startup navigation now completes by going through the fetch worker,
         which fetches this checked-in artifact and then resumes
         <code>processNavigationFetchResponse</code>.
       </p>
-      <div class="controls">
-        <button type="button">Test Interaction</button>
-        <span class="hint">Click it or tab to it to exercise pointer and keyboard focus handling.</span>
-      </div>
+      <p class="hint">Move the pointer across the page to exercise document-driven hover styling.</p>
     </main>
   </body>
 </html>

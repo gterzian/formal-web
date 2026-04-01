@@ -1,9 +1,12 @@
 import Std.Data.TreeMap
 import Std.Sync.Channel
+import FormalWeb.FFI
 import FormalWeb.Navigation
 import FormalWeb.TransitionTrace
 
 namespace FormalWeb
+
+deriving instance Repr for ByteArray
 
 /-- https://fetch.spec.whatwg.org/#fetch-controller -/
 structure FetchController where
@@ -21,14 +24,37 @@ structure PendingFetchRequest where
   request : NavigationRequest
 deriving Repr, DecidableEq
 
+structure DocumentFetchRequest where
+  /-- Model-local opaque pointer to the boxed Rust-side Blitz `NetHandler`. -/
+  handler : RustNetHandlerPointer
+  /-- https://fetch.spec.whatwg.org/#concept-request -/
+  request : NavigationRequest
+deriving Repr, DecidableEq
+
+inductive FetchCompletionTarget
+  | navigation (navigationId : Nat)
+  | document (handler : RustNetHandlerPointer)
+deriving Repr, DecidableEq
+
 /-- Model-local pending state for a started https://fetch.spec.whatwg.org/#concept-fetch. -/
 structure PendingFetch where
-  /-- Model-local reference back to https://html.spec.whatwg.org/multipage/#navigation-params-id -/
-  navigationId : Nat
+  /-- Model-local completion target for the started fetch. -/
+  completionTarget : FetchCompletionTarget
   /-- https://fetch.spec.whatwg.org/#concept-request -/
   request : NavigationRequest
   /-- https://fetch.spec.whatwg.org/#fetch-params-controller -/
   controller : FetchController
+deriving Repr, DecidableEq
+
+structure FetchResponse where
+  /-- https://fetch.spec.whatwg.org/#concept-response-url -/
+  url : String
+  /-- https://fetch.spec.whatwg.org/#concept-response-status -/
+  status : Nat := 200
+  /-- Minimal MIME type surface for loading-a-document dispatch. -/
+  contentType : String := ""
+  /-- Raw response bytes for Rust-side document fetch consumers. -/
+  body : ByteArray := ByteArray.empty
 deriving Repr, DecidableEq
 
 /-- Model-local top-level state for fetch processing. -/
@@ -59,14 +85,15 @@ def isFetchScheme (url : String) : Bool :=
 /-- https://fetch.spec.whatwg.org/#concept-fetch -/
 def conceptFetch
     (fetch : Fetch)
-    (pendingRequest : PendingFetchRequest) :
+    (completionTarget : FetchCompletionTarget)
+    (request : NavigationRequest) :
     Fetch × FetchController :=
   let controller : FetchController := {
     id := fetch.nextFetchControllerId
   }
   let pendingFetch : PendingFetch := {
-    navigationId := pendingRequest.navigationId
-    request := pendingRequest.request
+    completionTarget
+    request
     controller
   }
   let fetch := {
@@ -75,6 +102,28 @@ def conceptFetch
       pendingFetches := fetch.pendingFetches.insert controller.id pendingFetch
   }
   (fetch, controller)
+
+def conceptNavigationFetch
+    (fetch : Fetch)
+    (pendingRequest : PendingFetchRequest) :
+    Fetch × FetchController :=
+  conceptFetch fetch (.navigation pendingRequest.navigationId) pendingRequest.request
+
+def conceptDocumentFetch
+    (fetch : Fetch)
+    (pendingRequest : DocumentFetchRequest) :
+    Fetch × FetchController :=
+  conceptFetch fetch (.document pendingRequest.handler) pendingRequest.request
+
+def navigationResponseOfFetchResponse
+    (response : FetchResponse) :
+    NavigationResponse :=
+  {
+    url := response.url
+    status := response.status
+    contentType := if response.contentType.isEmpty then "text/html" else response.contentType
+    body := (String.fromUTF8? response.body).getD ""
+  }
 
 /-- Model the point where a pending fetch completes and leaves the fetch set. -/
 def completeFetch
@@ -97,6 +146,7 @@ LTS-style actions for the current fetch model.
 -/
 inductive FetchAction
   | startFetch (pendingRequest : PendingFetchRequest)
+  | startDocumentFetch (pendingRequest : DocumentFetchRequest)
   | completeFetch (controllerId : Nat)
 deriving Repr, DecidableEq
 
@@ -112,18 +162,22 @@ def fetchStep
     Option Fetch :=
   match action with
   | .startFetch pendingRequest =>
-      pure (conceptFetch fetch pendingRequest).1
+      pure (conceptNavigationFetch fetch pendingRequest).1
+  | .startDocumentFetch pendingRequest =>
+      pure (conceptDocumentFetch fetch pendingRequest).1
   | .completeFetch controllerId =>
       let (fetch, pendingFetch?) := completeFetch fetch controllerId
       pendingFetch?.map (fun _ => fetch)
 
 inductive FetchTaskMessage where
   | startFetch (pendingRequest : PendingFetchRequest)
-  | finishFetch (controllerId : Nat) (response : NavigationResponse)
+  | startDocumentFetch (pendingRequest : DocumentFetchRequest)
+  | finishFetch (controllerId : Nat) (response : FetchResponse)
 deriving Repr, DecidableEq
 
 inductive FetchNotification where
   | fetchCompleted (navigationId : Nat) (response : NavigationResponse)
+  | documentFetchCompleted (handler : RustNetHandlerPointer) (resolvedUrl : String) (body : ByteArray)
 deriving Repr, DecidableEq
 
 structure SpawnedFetchTask where
@@ -162,7 +216,10 @@ def handleFetchTaskMessagePure
     FetchTaskResult :=
   match message with
   | .startFetch pendingRequest =>
-      let (fetch, controller) := conceptFetch fetch pendingRequest
+      let (fetch, controller) := conceptNavigationFetch fetch pendingRequest
+      .scheduleFetchTasks fetch [{ controllerId := controller.id, request := pendingRequest.request }]
+  | .startDocumentFetch pendingRequest =>
+      let (fetch, controller) := conceptDocumentFetch fetch pendingRequest
       .scheduleFetchTasks fetch [{ controllerId := controller.id, request := pendingRequest.request }]
   | .finishFetch controllerId response =>
       let (fetch, pendingFetch?) := completeFetch fetch controllerId
@@ -170,7 +227,11 @@ def handleFetchTaskMessagePure
       | none =>
           .stateOnly fetch
       | some pendingFetch =>
-          .notify fetch [.fetchCompleted pendingFetch.navigationId response]
+          match pendingFetch.completionTarget with
+          | .navigation navigationId =>
+              .notify fetch [.fetchCompleted navigationId (navigationResponseOfFetchResponse response)]
+          | .document handler =>
+              .notify fetch [.documentFetchCompleted handler response.url response.body]
 
 def fetchTaskStep
     (fetch : Fetch)
@@ -197,7 +258,11 @@ theorem handleFetchTaskMessagePure_refines
   | startFetch pendingRequest =>
       refine ⟨[.startFetch pendingRequest], ?_⟩
       refine TransitionTrace.single ?_
-      simp [handleFetchTaskMessagePure, fetchStep, conceptFetch, FetchTaskResult.state]
+      simp [handleFetchTaskMessagePure, fetchStep, conceptNavigationFetch, conceptFetch, FetchTaskResult.state]
+  | startDocumentFetch pendingRequest =>
+      refine ⟨[.startDocumentFetch pendingRequest], ?_⟩
+      refine TransitionTrace.single ?_
+      simp [handleFetchTaskMessagePure, fetchStep, conceptDocumentFetch, conceptFetch, FetchTaskResult.state]
   | finishFetch controllerId response =>
       cases hlookup : fetch.pendingFetches.get? controllerId with
       | none =>
@@ -213,7 +278,8 @@ theorem handleFetchTaskMessagePure_refines
           have hresult :
               (handleFetchTaskMessagePure fetch (.finishFetch controllerId response)).state =
                 (completeFetch fetch controllerId).1 := by
-            simp [handleFetchTaskMessagePure, completeFetch, hlookup', FetchTaskResult.state]
+            cases htarget : pendingFetch.completionTarget <;>
+              simp [handleFetchTaskMessagePure, completeFetch, hlookup', htarget, FetchTaskResult.state]
           have hstep :
               fetchStep fetch (.completeFetch controllerId) =
                 some ((completeFetch fetch controllerId).1) := by
@@ -263,11 +329,11 @@ theorem default_fetch_has_no_pendingFetch
 theorem fetchTaskExec_startFetch_from_default
     (pendingFetchRequest : PendingFetchRequest) :
     (fetchTaskExec (default : Fetch) [.startFetch pendingFetchRequest]) =
-      (conceptFetch (default : Fetch) pendingFetchRequest).1 ∧
+      (conceptNavigationFetch (default : Fetch) pendingFetchRequest).1 ∧
     (FetchTaskResult.toSpawnFetchTasks
       (handleFetchTaskMessagePure (default : Fetch) (.startFetch pendingFetchRequest))) =
       [{
-        controllerId := (conceptFetch (default : Fetch) pendingFetchRequest).2.id
+        controllerId := (conceptNavigationFetch (default : Fetch) pendingFetchRequest).2.id
         request := pendingFetchRequest.request
       }] ∧
     TransitionTrace
@@ -277,22 +343,24 @@ theorem fetchTaskExec_startFetch_from_default
       (fetchTaskExec (default : Fetch) [.startFetch pendingFetchRequest]) ∧
     Fetch.pendingFetch?
       (fetchTaskExec (default : Fetch) [.startFetch pendingFetchRequest])
-      (conceptFetch (default : Fetch) pendingFetchRequest).2.id =
+      (conceptNavigationFetch (default : Fetch) pendingFetchRequest).2.id =
       some {
-        navigationId := pendingFetchRequest.navigationId
+        completionTarget := .navigation pendingFetchRequest.navigationId
         request := pendingFetchRequest.request
-        controller := (conceptFetch (default : Fetch) pendingFetchRequest).2
+        controller := (conceptNavigationFetch (default : Fetch) pendingFetchRequest).2
       } := by
   refine ⟨?_, ?_, ?_, ?_⟩
-  · simp [fetchTaskExec, fetchTaskStep, handleFetchTaskMessagePure, conceptFetch, FetchTaskResult.state]
-  · simp [handleFetchTaskMessagePure, conceptFetch, FetchTaskResult.toSpawnFetchTasks]
+  · simp [fetchTaskExec, fetchTaskStep, handleFetchTaskMessagePure,
+      conceptNavigationFetch, conceptFetch, FetchTaskResult.state]
+  · simp [handleFetchTaskMessagePure, conceptNavigationFetch, conceptFetch, FetchTaskResult.toSpawnFetchTasks]
   · refine TransitionTrace.single ?_
     simpa [fetchTaskExec, fetchTaskStep, handleFetchTaskMessagePure, FetchTaskResult.state] using
       (show
         fetchStep (default : Fetch) (.startFetch pendingFetchRequest) =
-          some ((conceptFetch (default : Fetch) pendingFetchRequest).1) by
-            simp [fetchStep, conceptFetch])
-  · simp [Fetch.pendingFetch?, fetchTaskExec, fetchTaskStep, handleFetchTaskMessagePure, conceptFetch, FetchTaskResult.state]
+          some ((conceptNavigationFetch (default : Fetch) pendingFetchRequest).1) by
+            simp [fetchStep, conceptNavigationFetch, conceptFetch])
+  · simp [Fetch.pendingFetch?, fetchTaskExec, fetchTaskStep, handleFetchTaskMessagePure,
+      conceptNavigationFetch, conceptFetch, FetchTaskResult.state]
 
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
@@ -311,24 +379,88 @@ private def spawnDetached (action : IO Unit) : IO Unit := do
   let _ ← IO.asTask action
   pure ()
 
+private def withTempOutputPath
+    (action : System.FilePath → IO α) :
+    IO α := do
+  let output ← IO.Process.output { cmd := "mktemp" }
+  if output.exitCode != 0 then
+    throw <| IO.userError s!"mktemp failed: {output.stderr.trimAscii.toString}"
+  let outputPath : System.FilePath := output.stdout.trimAscii.toString
+  try
+    action outputPath
+  finally
+    let _ ← IO.Process.output {
+      cmd := "rm"
+      args := #["-f", outputPath.toString]
+    }
+    pure ()
+
+private def curlArgsForRequest
+    (outputPath : System.FilePath)
+    (request : NavigationRequest) :
+    Array String :=
+  let args := #[
+    "-L",
+    "--silent",
+    "--show-error",
+    "-o",
+    outputPath.toString,
+    "--write-out",
+    "%{http_code}\n%{content_type}\n%{url_effective}"
+  ]
+  let args :=
+    if request.method = "GET" then
+      args
+    else
+      args ++ #["-X", request.method]
+  let args :=
+    match request.body with
+    | some body => args ++ #["--data-binary", body]
+    | none => args
+  args ++ #[request.url]
+
 def fetchResponseForRequest
     (request : NavigationRequest) :
-    IO NavigationResponse := do
-  let output ← IO.Process.output {
-    cmd := "curl"
-    args := #["-L", "--silent", "--show-error", request.url]
-  }
-  if output.exitCode == 0 then
-    pure {
-      url := request.url
-      body := output.stdout
-    }
-  else
+    IO FetchResponse := do
+  try
+    withTempOutputPath fun outputPath => do
+      let output ← IO.Process.output {
+        cmd := "curl"
+        args := curlArgsForRequest outputPath request
+      }
+      if output.exitCode == 0 then
+        let body ← IO.FS.readBinFile outputPath
+        let metadata := output.stdout.splitOn "\n"
+        let (statusLine, contentTypeLine, resolvedUrlLine) :=
+          match metadata with
+          | statusLine :: contentTypeLine :: resolvedUrlLine :: _ =>
+              (statusLine, contentTypeLine, resolvedUrlLine)
+          | _ =>
+              ("200", "", request.url)
+        let resolvedUrlLine := resolvedUrlLine.trimAscii.toString
+        let statusLine := statusLine.trimAscii.toString
+        let contentTypeLine := contentTypeLine.trimAscii.toString
+        pure {
+          url := if resolvedUrlLine.isEmpty then request.url else resolvedUrlLine
+          status := (statusLine.toNat?).getD 200
+          contentType := contentTypeLine
+          body
+        }
+      else
+        pure {
+          url := request.url
+          status := 599
+          contentType := "text/html"
+          body :=
+            s!"<!DOCTYPE html><html><head><title>Fetch failed</title></head><body><pre>{output.stderr}</pre></body></html>".toUTF8
+        }
+  catch error =>
     pure {
       url := request.url
       status := 599
+      contentType := "text/html"
       body :=
-        s!"<!DOCTYPE html><html><head><title>Fetch failed</title></head><body><pre>{output.stderr}</pre></body></html>"
+        s!"<!DOCTYPE html><html><head><title>Fetch failed</title></head><body><pre>{error.toString}</pre></body></html>".toUTF8
     }
 
 private def spawnFetchRequestTask

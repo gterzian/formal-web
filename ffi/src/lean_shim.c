@@ -25,6 +25,14 @@ LEAN_EXPORT const char * formal_web_lean_string_cstr(b_lean_obj_arg value) {
     return lean_string_cstr(value);
 }
 
+LEAN_EXPORT size_t formal_web_lean_byte_array_size(b_lean_obj_arg value) {
+    return lean_sarray_size(value);
+}
+
+LEAN_EXPORT const uint8_t * formal_web_lean_byte_array_cptr(b_lean_obj_arg value) {
+    return lean_sarray_cptr(value);
+}
+
 LEAN_EXPORT void formal_web_lean_dec(lean_obj_arg value) {
     lean_dec(value);
 }

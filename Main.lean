@@ -8,6 +8,9 @@ open FormalWeb
 initialize userAgentMessageChannelRef : IO.Ref (Option (Std.CloseableChannel UserAgentTaskMessage)) ←
   IO.mkRef (none : Option (Std.CloseableChannel UserAgentTaskMessage))
 
+initialize fetchMessageChannelRef : IO.Ref (Option (Std.CloseableChannel FetchTaskMessage)) ←
+  IO.mkRef (none : Option (Std.CloseableChannel FetchTaskMessage))
+
 def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
     IO (Option α) := do
@@ -36,6 +39,9 @@ def spawnDetached (action : IO Unit) : IO Unit := do
 def enqueueUserAgentMessage (message : UserAgentTaskMessage) : IO Unit := do
   trySendOnRef userAgentMessageChannelRef message
 
+def enqueueFetchMessage (message : FetchTaskMessage) : IO Unit := do
+  trySendOnRef fetchMessageChannelRef message
+
 
 @[export formal_web_user_agent_note_rendering_opportunity]
 def userAgentNoteRenderingOpportunity (message : String) : IO Unit := do
@@ -47,10 +53,29 @@ def handleRuntimeMessageFromRust (message : String) : IO Unit := do
   let some userAgentMessage := FormalWeb.userAgentTaskMessageOfString? message | pure ()
   spawnDetached <| enqueueUserAgentMessage userAgentMessage
 
+@[export formal_web_start_document_fetch]
+def startDocumentFetchFromRust
+    (handlerPointer : USize)
+    (url : String)
+    (method : String)
+    (body : String) :
+    IO Unit := do
+  let request : NavigationRequest := {
+    url
+    method
+    body := if body.isEmpty then none else some body
+  }
+  spawnDetached <| enqueueFetchMessage <|
+    .startDocumentFetch {
+      handler := { raw := handlerPointer }
+      request
+    }
+
 def main : IO Unit := do
   let userAgentChannel ← Std.CloseableChannel.new
   let fetchChannel ← Std.CloseableChannel.new
   userAgentMessageChannelRef.set (some userAgentChannel)
+  fetchMessageChannelRef.set (some fetchChannel)
   let userAgentWorker ← IO.asTask <|
     FormalWeb.runUserAgent userAgentChannel (fun message => trySendAndForget fetchChannel message)
   let fetchWorker ← IO.asTask <|
@@ -58,8 +83,11 @@ def main : IO Unit := do
       match notification with
       | .fetchCompleted navigationId response =>
           trySendAndForget userAgentChannel (.fetchCompleted navigationId response)
+      | .documentFetchCompleted handler resolvedUrl body =>
+          FormalWeb.completeDocumentFetch handler.raw resolvedUrl body
   FormalWeb.runWinitEventLoop ()
   userAgentMessageChannelRef.set (none : Option (Std.CloseableChannel UserAgentTaskMessage))
+  fetchMessageChannelRef.set (none : Option (Std.CloseableChannel FetchTaskMessage))
   fetchChannel.close
   userAgentChannel.close
   let _ ← IO.wait fetchWorker

@@ -307,12 +307,13 @@ def populateWithHtmlHeadBody
   -- Notes: Store the resulting opaque Rust document pointer on the Lean-side document handle.
   userAgent.setRustDocumentPointer document.ffiHandle pointer
 
-/-- Model-local helper that installs a fixed fetched HTML document for navigation demos. -/
+/-- Model-local helper that installs a fetched HTML document from the response body. -/
 def populateWithLoadedHtmlDocument
     (userAgent : UserAgent)
-    (document : Document) :
+    (document : Document)
+    (response : NavigationResponse) :
     UserAgent :=
-  let pointer := createLoadedHtmlDocument ()
+  let pointer := createLoadedHtmlDocument response.url response.body
   userAgent.setRustDocumentPointer document.ffiHandle pointer
 
 /-- https://html.spec.whatwg.org/multipage/#create-an-agent -/
@@ -420,9 +421,9 @@ def loadHtmlDocument
     (userAgent, document)
   else
     -- Step 3: Otherwise, create an HTML parser and associate it with the document.
-    -- Notes: The current model stubs the parser-driven branch by installing a fixed Rust-side HTML document that contains the text "Loaded!".
-    let userAgent := populateWithLoadedHtmlDocument userAgent document
-    -- Notes: Fetch delivery and incremental parser input remain future work.
+    -- Notes: The current model forwards the fetched response body into a Rust-side HTML document.
+    let userAgent := populateWithLoadedHtmlDocument userAgent document navigationParams.response
+    -- Notes: Incremental parser input and streaming fetch delivery remain future work.
     (userAgent, document)
 
 /-- https://html.spec.whatwg.org/multipage/#loading-a-document -/

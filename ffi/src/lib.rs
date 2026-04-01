@@ -7,7 +7,7 @@ use blitz_traits::events::{
     BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords,
     PointerDetails, UiEvent,
 };
-use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
+use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, ShellProvider, Viewport};
 use blitz_html::HtmlDocument;
 use data_url::DataUrl;
@@ -39,6 +39,12 @@ pub struct lean_object {
 unsafe extern "C" {
     fn lean_mk_string_from_bytes(value: *const c_char, size: usize) -> *mut lean_object;
     fn formal_web_handle_runtime_message(message: *mut lean_object) -> *mut lean_object;
+    fn formal_web_start_document_fetch(
+        handler: usize,
+        url: *mut lean_object,
+        method: *mut lean_object,
+        body: *mut lean_object,
+    ) -> *mut lean_object;
     fn formal_web_user_agent_note_rendering_opportunity(message: *mut lean_object) -> *mut lean_object;
     fn formal_web_lean_io_result_mk_ok_unit() -> *mut lean_object;
     fn formal_web_lean_io_result_mk_error_from_bytes(
@@ -48,12 +54,12 @@ unsafe extern "C" {
     fn formal_web_lean_io_result_is_ok(result: *mut lean_object) -> u8;
     fn formal_web_lean_io_result_show_error(result: *mut lean_object);
     fn formal_web_lean_string_cstr(value: *mut lean_object) -> *const c_char;
+    fn formal_web_lean_byte_array_size(value: *mut lean_object) -> usize;
+    fn formal_web_lean_byte_array_cptr(value: *mut lean_object) -> *const u8;
     fn formal_web_lean_dec(value: *mut lean_object);
 }
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
-const LOADED_HTML_DOCUMENT: &str = include_str!("../../artifacts/StartupExample.html");
-
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
     LazyLock::new(|| Mutex::new(None));
 static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
@@ -70,6 +76,10 @@ enum FormalWebUserEvent {
 }
 
 struct DataOnlyNetProvider;
+
+struct DocumentFetchHandler {
+    handler: Box<dyn NetHandler>,
+}
 
 struct FormalWebShellProvider;
 
@@ -93,12 +103,44 @@ impl NetProvider for DataOnlyNetProvider {
                 },
                 Err(_error) => {}
             },
-            _scheme => {}
+            _scheme => {
+                let handler = document_fetch_handler_pointer(handler);
+                if let Err(error) = call_lean_document_fetch_start(handler, &request) {
+                    drop_document_fetch_handler(handler);
+                    eprintln!("failed to start document fetch: {error}");
+                }
+            }
         }
     }
 }
 
+fn document_fetch_handler_pointer(handler: Box<dyn NetHandler>) -> usize {
+    Box::into_raw(Box::new(DocumentFetchHandler { handler })) as usize
+}
+
+fn drop_document_fetch_handler(pointer: usize) {
+    if pointer == 0 {
+        return;
+    }
+
+    unsafe {
+        drop(Box::from_raw(pointer as *mut DocumentFetchHandler));
+    }
+}
+
+fn request_body_string(body: &Body) -> String {
+    match body {
+        Body::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        Body::Form(form) => serde_json::to_string(form).unwrap_or_default(),
+        Body::Empty => String::new(),
+    }
+}
+
 fn create_html_document_pointer(html: &str) -> usize {
+    create_html_document_pointer_with_base_url(html, None)
+}
+
+fn create_html_document_pointer_with_base_url(html: &str, base_url: Option<String>) -> usize {
     let viewport = WINDOW_VIEWPORT_SNAPSHOT
         .lock()
         .expect("window viewport snapshot mutex poisoned")
@@ -110,6 +152,7 @@ fn create_html_document_pointer(html: &str) -> usize {
         html,
         DocumentConfig {
             viewport,
+            base_url,
             net_provider: Some(Arc::new(DataOnlyNetProvider)),
             shell_provider: Some(Arc::new(FormalWebShellProvider)),
             ..DocumentConfig::default()
@@ -908,17 +951,37 @@ fn call_lean_runtime_message_handler(message: &str) {
     unsafe { formal_web_lean_dec(io_result) };
 }
 
+fn call_lean_document_fetch_start(handler: usize, request: &Request) -> Result<(), String> {
+    let lean_url = lean_string_from_owned(request.url.to_string());
+    let lean_method = lean_string_from_owned(request.method.to_string());
+    let lean_body = lean_string_from_owned(request_body_string(&request.body));
+    let io_result = unsafe {
+        formal_web_start_document_fetch(handler, lean_url, lean_method, lean_body)
+    };
+
+    let is_ok = unsafe { formal_web_lean_io_result_is_ok(io_result) } != 0;
+    if !is_ok {
+        unsafe { formal_web_lean_io_result_show_error(io_result) };
+        unsafe { formal_web_lean_dec(io_result) };
+        return Err(String::from("Lean document fetch start failed"));
+    }
+
+    unsafe { formal_web_lean_dec(io_result) };
+    Ok(())
+}
+
 fn startup_runtime_message() -> Result<String, String> {
+    let artifact_path = startup_artifact_path()?;
+    Ok(format!("FreshTopLevelTraversable|file://{}", artifact_path.display()))
+}
+
+fn startup_artifact_path() -> Result<PathBuf, String> {
     let current_dir = std::env::current_dir()
         .map_err(|error| format!("failed to determine current directory: {error}"))?;
     let artifact_path: PathBuf = current_dir.join(STARTUP_ARTIFACT_RELATIVE_PATH);
-    let artifact_path = artifact_path
+    artifact_path
         .canonicalize()
-        .map_err(|error| format!("failed to resolve startup artifact path: {error}"))?;
-    Ok(format!(
-        "FreshTopLevelTraversable|file://{}",
-        artifact_path.display()
-    ))
+        .map_err(|error| format!("failed to resolve startup artifact path: {error}"))
 }
 
 fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
@@ -1356,9 +1419,22 @@ pub extern "C" fn formal_web_create_empty_html_document(_: *mut lean_object) -> 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_create_loaded_html_document(_: *mut lean_object) -> usize {
-    panic::catch_unwind(AssertUnwindSafe(|| create_html_document_pointer(LOADED_HTML_DOCUMENT)))
-        .unwrap_or(0)
+pub extern "C" fn formal_web_create_loaded_html_document(
+    base_url: *mut lean_object,
+    html: *mut lean_object,
+) -> usize {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        let c_base_url = unsafe { formal_web_lean_string_cstr(base_url) };
+        let base_url = unsafe { CStr::from_ptr(c_base_url) }
+            .to_string_lossy()
+            .into_owned();
+        let c_html = unsafe { formal_web_lean_string_cstr(html) };
+        let html = unsafe { CStr::from_ptr(c_html) }
+            .to_string_lossy()
+            .into_owned();
+        create_html_document_pointer_with_base_url(&html, Some(base_url))
+    }))
+    .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
@@ -1422,6 +1498,40 @@ pub extern "C" fn formal_web_apply_ui_event(
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic applying UI event"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn formal_web_complete_document_fetch(
+    handler: usize,
+    resolved_url: *mut lean_object,
+    bytes: *mut lean_object,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        if handler == 0 {
+            return Err(String::from(
+                "cannot complete document fetch with null handler pointer",
+            ));
+        }
+
+        let c_resolved_url = unsafe { formal_web_lean_string_cstr(resolved_url) };
+        let resolved_url = unsafe { CStr::from_ptr(c_resolved_url) }
+            .to_string_lossy()
+            .into_owned();
+
+        let size = unsafe { formal_web_lean_byte_array_size(bytes) };
+        let bytes_ptr = unsafe { formal_web_lean_byte_array_cptr(bytes) };
+        let payload = unsafe { std::slice::from_raw_parts(bytes_ptr, size) };
+
+        let handler = unsafe { Box::from_raw(handler as *mut DocumentFetchHandler) };
+        handler
+            .handler
+            .bytes(resolved_url, Bytes::copy_from_slice(payload));
+        Ok(())
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic completing document fetch"),
     }
 }
 

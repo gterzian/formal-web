@@ -22,6 +22,8 @@ def userAgentMessagesOfFetchNotification
   match notification with
   | .fetchCompleted navigationId response =>
       [.fetchCompleted navigationId response]
+  | .documentFetchCompleted _ _ _ =>
+      []
 
 def userAgentMessagesOfFetchNotifications
     (notifications : List FetchNotification) :
@@ -247,18 +249,20 @@ theorem runtimeStep_freshTopLevelTraversable_enqueuesFetch_from_default
 theorem runtimeStep_finishFetch_enqueuesFetchCompleted_from_started
     (userAgentState : UserAgentTaskState)
     (pendingFetchRequest : PendingFetchRequest)
-    (response : NavigationResponse) :
-    let controller := (conceptFetch (default : Fetch) pendingFetchRequest).2
+    (response : FetchResponse) :
+    let controller := (conceptNavigationFetch (default : Fetch) pendingFetchRequest).2
     let state : RuntimeState := {
       userAgentState
-      fetch := (conceptFetch (default : Fetch) pendingFetchRequest).1
+      fetch := (conceptNavigationFetch (default : Fetch) pendingFetchRequest).1
       pendingUserAgentMessages := []
       pendingFetchMessages := []
     }
     let afterFetchDone := runtimeStep state (.fetch (.finishFetch controller.id response))
-    afterFetchDone.pendingUserAgentMessages = [.fetchCompleted pendingFetchRequest.navigationId response] ∧
+    afterFetchDone.pendingUserAgentMessages =
+      [.fetchCompleted pendingFetchRequest.navigationId (navigationResponseOfFetchResponse response)] ∧
     afterFetchDone.pendingFetchMessages = [] := by
-  simp [runtimeStep, handleRuntimeMessagePure, handleFetchTaskMessagePure, completeFetch, conceptFetch,
+  simp [runtimeStep, handleRuntimeMessagePure, handleFetchTaskMessagePure, completeFetch,
+    conceptNavigationFetch, conceptFetch, navigationResponseOfFetchResponse,
     FetchTaskResult.notifications, userAgentMessagesOfFetchNotifications,
     userAgentMessagesOfFetchNotification]
 
