@@ -18,6 +18,8 @@ blitz-traits = { path = "vendor/blitz/packages/blitz-traits", default-features =
 data-url = "0.3"
 keyboard-types = "0.7"
 peniko = "0.6.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 winit = "0.30"
 
 [build-dependencies]

@@ -41,3 +41,42 @@ In formal-web, the engine would manage all tabs on the main process. For each ta
 This architecture keeps Rust's role narrow and well-defined, while Lean owns the coordination logic that is hardest to get right.
 
 > **Note:** One could imagine going further and running the event loop, DOM management, and layout entirely in Lean — the DOM's recursive structure maps naturally onto inductive types, making it a strong candidate for verified Lean code. The use of Rust here is a practical choice: it allows existing code from [Servo](https://servo.org) to be reused, rather than reimplementing a rendering engine from scratch.
+
+## Build
+
+The project uses Lean via Lake for the main build, and a pinned Rust toolchain for the FFI crate.
+
+Prerequisites:
+
+- `elan` installed so the Lean toolchain in `lean-toolchain` is picked up automatically.
+- `rustup` installed.
+- Rust toolchain `1.92.0` installed: `rustup toolchain install 1.92.0`
+- On macOS, Xcode and the macOS SDK available at the path referenced in `lakefile.lean`.
+
+Build the full project:
+
+```bash
+lake build
+```
+
+Build just the user-agent Lean module:
+
+```bash
+lake build FormalWeb.UserAgent
+```
+
+Check the Rust FFI crate directly with the pinned toolchain:
+
+```bash
+rustup run 1.92.0 cargo check --manifest-path ffi/Cargo.toml
+```
+
+## Run
+
+Run the demo executable through Lake:
+
+```bash
+lake exe formal-web
+```
+
+This starts the Rust `winit` event loop and the Lean runtime workers together. The current startup path loads the checked-in demo page from `artifacts/StartupExample.html`.

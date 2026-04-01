@@ -295,4 +295,71 @@ theorem runNextPendingUserAgentMessage_fetchCompleted_updatesUserAgent
   · simp [afterResume]
   · simp [afterResume]
 
+theorem runNextPendingUserAgentMessage_dispatchEvent_updatesLastDispatchedEvent
+    (state : UserAgentTaskState)
+  (event : String)
+  (traversableId : Nat)
+  (traversable : TopLevelTraversable)
+  (document : Document)
+  (hstartup : state.startupTraversableId = some traversableId)
+  (hlookup : traversable? state.userAgent traversableId = some traversable)
+  (hactive : traversable.toTraversableNavigable.activeDocument = some document) :
+    let runtimeState : RuntimeState := {
+      userAgentState := state
+      fetch := default
+      pendingUserAgentMessages := [.dispatchEvent event]
+      pendingFetchMessages := []
+    }
+    ∃ afterResume,
+      runNextPendingUserAgentMessage runtimeState = some afterResume ∧
+      afterResume.pendingUserAgentMessages = [] ∧
+      afterResume.pendingFetchMessages = [] ∧
+      afterResume.userAgentState.userAgent = state.userAgent ∧
+      afterResume.userAgentState.startupTraversableId = state.startupTraversableId ∧
+      afterResume.userAgentState.lastDispatchedEvent = some event := by
+  cases state with
+  | mk userAgent startupTraversableId lastDispatchedEvent =>
+      simp at hstartup
+      subst startupTraversableId
+      have hdispatchState :
+          (handleUserAgentTaskMessagePure
+              {
+                userAgent := userAgent
+                startupTraversableId := some traversableId
+                lastDispatchedEvent := lastDispatchedEvent
+              }
+              (.dispatchEvent event)).state =
+            {
+              userAgent := userAgent
+              startupTraversableId := some traversableId
+              lastDispatchedEvent := some event
+            } := by
+        simp [handleUserAgentTaskMessagePure, hlookup, hactive]
+      have hdispatchFetchMessages :
+          (handleUserAgentTaskMessagePure
+              {
+                userAgent := userAgent
+                startupTraversableId := some traversableId
+                lastDispatchedEvent := lastDispatchedEvent
+              }
+              (.dispatchEvent event)).fetchMessages = [] := by
+        simp [handleUserAgentTaskMessagePure, hlookup, hactive]
+      let afterResume : RuntimeState := {
+        userAgentState := {
+          userAgent := userAgent
+          startupTraversableId := some traversableId
+          lastDispatchedEvent := some event
+        }
+        fetch := default
+        pendingUserAgentMessages := []
+        pendingFetchMessages := []
+      }
+      refine ⟨afterResume, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      · simp [afterResume, runNextPendingUserAgentMessage, hdispatchState, hdispatchFetchMessages]
+      · simp [afterResume]
+      · simp [afterResume]
+      · simp [afterResume]
+      · simp [afterResume]
+      · simp [afterResume]
+
 end FormalWeb

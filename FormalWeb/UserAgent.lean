@@ -225,6 +225,20 @@ def noteRenderingOpportunity
     let baseDocumentPointer := FormalWeb.extractBaseDocument pointer.raw
     FormalWeb.queuePaint baseDocumentPointer.raw
 
+def applyDispatchedEvent
+    (userAgent : UserAgent)
+    (traversableId : Nat)
+    (event : String) :
+    IO Unit := do
+  let some traversable := traversable? userAgent traversableId | pure ()
+  let some document := traversable.toTraversableNavigable.activeDocument | pure ()
+  let some pointer := userAgent.rustDocumentPointer? document.ffiHandle | pure ()
+  if pointer = RustDocumentPointer.null then
+    pure ()
+  else
+    let baseDocumentPointer := FormalWeb.extractBaseDocument pointer.raw
+    FormalWeb.applyUiEvent baseDocumentPointer.raw event
+
 /-- https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags -/
 def determineCreationSandboxingFlags
     (_browsingContext : BrowsingContext)
@@ -1128,6 +1142,8 @@ inductive UserAgentAction
       (documentResource : Option DocumentResource := none)
   | completeNavigation (navigationId : Nat) (response : NavigationResponse)
   | abortNavigation (traversableId : Nat)
+  /-- Models the user agent applying a serialized input event to the active document of a traversable. -/
+  | dispatchEvent (traversableId : Nat) (event : String)
   /--
   Models the user agent sending a NavigationFinished user event to the winit app.
   Pre-condition: the traversable has an active document and no ongoing navigation.
@@ -1170,6 +1186,12 @@ def step
       pure (processNavigationFetchResponse userAgent navigationId response)
   | .abortNavigation traversableId =>
       pure (abortNavigation userAgent traversableId)
+  | .dispatchEvent traversableId _event =>
+      let traversable <- traversable? userAgent traversableId
+      if traversable.toTraversableNavigable.activeDocument.isNone then
+        none
+      else
+        pure userAgent
   | .navigationFinished traversableId =>
       -- Pre-condition: traversable exists, has an active document, and has no ongoing navigation.
       -- The action label models the UA sending NavigationFinished to the winit app.
@@ -1287,6 +1309,23 @@ def startupTraversableReadyHtml?
     let document <- traversable.toTraversableNavigable.activeDocument
     pure (UserAgent.documentHtml userAgent document)
 
+def dispatchEventFailureDetails
+    (state : UserAgentTaskState)
+    (event : String) :
+    String :=
+  match state.startupTraversableId with
+  | none =>
+      s!"cannot dispatch event before startup traversable exists: event={event}"
+  | some traversableId =>
+      match traversable? state.userAgent traversableId with
+      | none =>
+          s!"cannot dispatch event for missing startup traversable {traversableId}: event={event}"
+      | some traversable =>
+          if traversable.toTraversableNavigable.activeDocument.isNone then
+            s!"cannot dispatch event for startup traversable {traversableId} without an active document: event={event}"
+          else
+            s!"cannot dispatch event for startup traversable {traversableId}: unknown dispatch precondition failure, event={event}"
+
 def handleUserAgentTaskMessagePure
     (state : UserAgentTaskState)
     (message : UserAgentTaskMessage) :
@@ -1306,9 +1345,21 @@ def handleUserAgentTaskMessagePure
       | .error error =>
           { state, error := some error }
   | .dispatchEvent event =>
-      {
-        state := { state with lastDispatchedEvent := some event }
-      }
+        match state.startupTraversableId with
+        | none =>
+          { state, error := some (dispatchEventFailureDetails state event) }
+        | some traversableId =>
+          match traversable? state.userAgent traversableId with
+          | none =>
+            { state, error := some (dispatchEventFailureDetails state event) }
+          | some traversable =>
+            match traversable.toTraversableNavigable.activeDocument with
+            | none =>
+              { state, error := some (dispatchEventFailureDetails state event) }
+            | some _document =>
+              {
+              state := { state with lastDispatchedEvent := some event }
+              }
   | .renderingOpportunity =>
       { state }
   | .fetchCompleted navigationId response =>
@@ -1345,9 +1396,13 @@ inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAg
       UserAgentTaskMessageActionShape
         (.freshTopLevelTraversable destinationURL)
         [.createTopLevelTraversable "", .beginNavigation traversableId destinationURL none]
-  | dispatchEvent
+  | dispatchEventError
       (event : String) :
       UserAgentTaskMessageActionShape (.dispatchEvent event) []
+  | dispatchEvent
+      (traversableId : Nat)
+      (event : String) :
+      UserAgentTaskMessageActionShape (.dispatchEvent event) [.dispatchEvent traversableId event]
   | renderingOpportunity :
       UserAgentTaskMessageActionShape .renderingOpportunity []
   | fetchCompleted
@@ -1392,6 +1447,22 @@ theorem beginNavigation_after_createTopLevelTraversable_trace
   have hlookup : traversable? created.1 created.2.id = some created.2 := by
     simpa [created] using createNewTopLevelTraversable_lookup userAgent targetName
   simp [step, navigate, hlookup]
+
+theorem dispatchEvent_trace
+    (userAgent : UserAgent)
+    (traversableId : Nat)
+    (event : String)
+    (traversable : TopLevelTraversable)
+    (hlookup : traversable? userAgent traversableId = some traversable)
+    (document : Document)
+    (hactive : traversable.toTraversableNavigable.activeDocument = some document) :
+    TransitionTrace
+      step
+      userAgent
+      [.dispatchEvent traversableId event]
+      userAgent := by
+  refine TransitionTrace.single ?_
+  simp [step, hlookup, hactive]
 
 theorem startupSuccess_trace
     (userAgent nextUserAgent : UserAgent)
@@ -1456,9 +1527,28 @@ theorem handleUserAgentTaskMessagePure_refines
           ⟩
           simpa [handleUserAgentTaskMessagePure, hbootstrap] using
             startupSuccess_trace state.userAgent result.1 destinationURL result.2.1 result.2.2 hbootstrap
-  | dispatchEvent event =>
-      refine ⟨[], .dispatchEvent event, ?_⟩
-      simp [handleUserAgentTaskMessagePure, TransitionTrace.nil]
+    | dispatchEvent event =>
+      match hstartup : state.startupTraversableId with
+      | none =>
+        refine ⟨[], .dispatchEventError event, ?_⟩
+        simpa [handleUserAgentTaskMessagePure, hstartup] using
+          (TransitionTrace.nil state.userAgent)
+      | some traversableId =>
+        match hlookup : traversable? state.userAgent traversableId with
+        | none =>
+          refine ⟨[], .dispatchEventError event, ?_⟩
+          simpa [handleUserAgentTaskMessagePure, hstartup, hlookup] using
+            (TransitionTrace.nil state.userAgent)
+        | some traversable =>
+          match hactive : traversable.toTraversableNavigable.activeDocument with
+          | none =>
+              refine ⟨[], .dispatchEventError event, ?_⟩
+              simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive] using
+                (TransitionTrace.nil state.userAgent)
+          | some document =>
+              refine ⟨[.dispatchEvent traversableId event], .dispatchEvent traversableId event, ?_⟩
+              simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive] using
+                dispatchEvent_trace state.userAgent traversableId event traversable hlookup document hactive
   | renderingOpportunity =>
       refine ⟨[], .renderingOpportunity, ?_⟩
       simp [handleUserAgentTaskMessagePure, TransitionTrace.nil]
@@ -1576,8 +1666,9 @@ def runUserAgentMessage
   match message with
   | .freshTopLevelTraversable _ =>
       pure ()
-    | .dispatchEvent _ =>
-      pure ()
+    | .dispatchEvent event =>
+      let some traversableId := nextState.startupTraversableId | pure ()
+      applyDispatchedEvent nextState.userAgent traversableId event
   | .renderingOpportunity =>
       let some traversableId := nextState.startupTraversableId | pure ()
       noteRenderingOpportunity nextState.userAgent traversableId

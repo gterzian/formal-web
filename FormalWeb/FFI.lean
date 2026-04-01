@@ -44,4 +44,8 @@ opaque extractBaseDocument : USize → RustBaseDocumentPointer
 @[extern "formal_web_queue_paint"]
 opaque queuePaint : USize → IO Unit
 
+/-- Applies a serialized host-side UI event to the given `BaseDocument`. -/
+@[extern "formal_web_apply_ui_event"]
+opaque applyUiEvent : USize → @& String → IO Unit
+
 end FormalWeb
