@@ -2,7 +2,6 @@ import Std.Data.TreeMap
 import Std.Sync.Channel
 import FormalWeb.FFI
 import FormalWeb.Navigation
-import FormalWeb.TransitionTrace
 
 namespace FormalWeb
 
@@ -18,6 +17,8 @@ deriving Repr, DecidableEq
 
 /-- Model-local bridge from an HTML navigation wait to https://fetch.spec.whatwg.org/#concept-fetch. -/
 structure PendingFetchRequest where
+  /-- Model-local identifier corresponding to https://fetch.spec.whatwg.org/#fetch-controller -/
+  fetchId : Nat
   /-- Model-local reference back to https://html.spec.whatwg.org/multipage/#navigation-params-id -/
   navigationId : Nat
   /-- https://fetch.spec.whatwg.org/#concept-request -/
@@ -25,21 +26,14 @@ structure PendingFetchRequest where
 deriving Repr, DecidableEq
 
 structure DocumentFetchRequest where
-  /-- Model-local opaque pointer to the boxed Rust-side Blitz `NetHandler`. -/
-  handler : RustNetHandlerPointer
+  /-- Model-local identifier corresponding to https://fetch.spec.whatwg.org/#fetch-controller -/
+  fetchId : Nat
   /-- https://fetch.spec.whatwg.org/#concept-request -/
   request : NavigationRequest
 deriving Repr, DecidableEq
 
-inductive FetchCompletionTarget
-  | navigation (navigationId : Nat)
-  | document (handler : RustNetHandlerPointer)
-deriving Repr, DecidableEq
-
 /-- Model-local pending state for a started https://fetch.spec.whatwg.org/#concept-fetch. -/
 structure PendingFetch where
-  /-- Model-local completion target for the started fetch. -/
-  completionTarget : FetchCompletionTarget
   /-- https://fetch.spec.whatwg.org/#concept-request -/
   request : NavigationRequest
   /-- https://fetch.spec.whatwg.org/#fetch-params-controller -/
@@ -59,8 +53,6 @@ deriving Repr, DecidableEq
 
 /-- Model-local top-level state for fetch processing. -/
 structure Fetch where
-  /-- Model-local allocator state for https://fetch.spec.whatwg.org/#fetch-controller -/
-  nextFetchControllerId : Nat := 0
   /-- Model-local map of started fetches keyed by controller identifier. -/
   pendingFetches : Std.TreeMap Nat PendingFetch := Std.TreeMap.empty
 deriving Repr
@@ -85,20 +77,18 @@ def isFetchScheme (url : String) : Bool :=
 /-- https://fetch.spec.whatwg.org/#concept-fetch -/
 def conceptFetch
     (fetch : Fetch)
-    (completionTarget : FetchCompletionTarget)
+    (fetchId : Nat)
     (request : NavigationRequest) :
     Fetch × FetchController :=
   let controller : FetchController := {
-    id := fetch.nextFetchControllerId
+    id := fetchId
   }
   let pendingFetch : PendingFetch := {
-    completionTarget
     request
     controller
   }
   let fetch := {
     fetch with
-      nextFetchControllerId := fetch.nextFetchControllerId + 1
       pendingFetches := fetch.pendingFetches.insert controller.id pendingFetch
   }
   (fetch, controller)
@@ -107,13 +97,13 @@ def conceptNavigationFetch
     (fetch : Fetch)
     (pendingRequest : PendingFetchRequest) :
     Fetch × FetchController :=
-  conceptFetch fetch (.navigation pendingRequest.navigationId) pendingRequest.request
+  conceptFetch fetch pendingRequest.fetchId pendingRequest.request
 
 def conceptDocumentFetch
     (fetch : Fetch)
     (pendingRequest : DocumentFetchRequest) :
     Fetch × FetchController :=
-  conceptFetch fetch (.document pendingRequest.handler) pendingRequest.request
+  conceptFetch fetch pendingRequest.fetchId pendingRequest.request
 
 def navigationResponseOfFetchResponse
     (response : FetchResponse) :
@@ -141,34 +131,6 @@ def completeFetch
   }
   (fetch, pendingFetch)
 
-/--
-LTS-style actions for the current fetch model.
--/
-inductive FetchAction
-  | startFetch (pendingRequest : PendingFetchRequest)
-  | startDocumentFetch (pendingRequest : DocumentFetchRequest)
-  | completeFetch (controllerId : Nat)
-deriving Repr, DecidableEq
-
-/--
-Apply one fetch transition.
-
-This sits above helper algorithms such as `conceptFetch` and `completeFetch`,
-which implement the details of each labeled step.
--/
-def fetchStep
-    (fetch : Fetch)
-    (action : FetchAction) :
-    Option Fetch :=
-  match action with
-  | .startFetch pendingRequest =>
-      pure (conceptNavigationFetch fetch pendingRequest).1
-  | .startDocumentFetch pendingRequest =>
-      pure (conceptDocumentFetch fetch pendingRequest).1
-  | .completeFetch controllerId =>
-      let (fetch, pendingFetch?) := completeFetch fetch controllerId
-      pendingFetch?.map (fun _ => fetch)
-
 inductive FetchTaskMessage where
   | startFetch (pendingRequest : PendingFetchRequest)
   | startDocumentFetch (pendingRequest : DocumentFetchRequest)
@@ -176,8 +138,7 @@ inductive FetchTaskMessage where
 deriving Repr, DecidableEq
 
 inductive FetchNotification where
-  | fetchCompleted (navigationId : Nat) (response : NavigationResponse)
-  | documentFetchCompleted (handler : RustNetHandlerPointer) (resolvedUrl : String) (body : ByteArray)
+  | fetchCompleted (fetchId : Nat) (response : FetchResponse)
 deriving Repr, DecidableEq
 
 structure SpawnedFetchTask where
@@ -226,12 +187,8 @@ def handleFetchTaskMessagePure
       match pendingFetch? with
       | none =>
           .stateOnly fetch
-      | some pendingFetch =>
-          match pendingFetch.completionTarget with
-          | .navigation navigationId =>
-              .notify fetch [.fetchCompleted navigationId (navigationResponseOfFetchResponse response)]
-          | .document handler =>
-              .notify fetch [.documentFetchCompleted handler response.url response.body]
+      | some _pendingFetch =>
+        .notify fetch [.fetchCompleted controllerId response]
 
 def fetchTaskStep
     (fetch : Fetch)
@@ -244,123 +201,6 @@ def fetchTaskExec
     (messages : List FetchTaskMessage) :
     Fetch :=
   messages.foldl fetchTaskStep fetch
-
-theorem handleFetchTaskMessagePure_refines
-    (fetch : Fetch)
-    (message : FetchTaskMessage) :
-    ∃ actions,
-      TransitionTrace
-        fetchStep
-        fetch
-        actions
-        (handleFetchTaskMessagePure fetch message).state := by
-  cases message with
-  | startFetch pendingRequest =>
-      refine ⟨[.startFetch pendingRequest], ?_⟩
-      refine TransitionTrace.single ?_
-      simp [handleFetchTaskMessagePure, fetchStep, conceptNavigationFetch, conceptFetch, FetchTaskResult.state]
-  | startDocumentFetch pendingRequest =>
-      refine ⟨[.startDocumentFetch pendingRequest], ?_⟩
-      refine TransitionTrace.single ?_
-      simp [handleFetchTaskMessagePure, fetchStep, conceptDocumentFetch, conceptFetch, FetchTaskResult.state]
-  | finishFetch controllerId response =>
-      cases hlookup : fetch.pendingFetches.get? controllerId with
-      | none =>
-          refine ⟨[], ?_⟩
-          have hlookup' : fetch.pendingFetches[controllerId]? = none := by
-            simpa using hlookup
-          simpa [handleFetchTaskMessagePure, completeFetch, hlookup', FetchTaskResult.state] using
-            (TransitionTrace.nil fetch)
-      | some pendingFetch =>
-          refine ⟨[.completeFetch controllerId], ?_⟩
-          have hlookup' : fetch.pendingFetches[controllerId]? = some pendingFetch := by
-            simpa using hlookup
-          have hresult :
-              (handleFetchTaskMessagePure fetch (.finishFetch controllerId response)).state =
-                (completeFetch fetch controllerId).1 := by
-            cases htarget : pendingFetch.completionTarget <;>
-              simp [handleFetchTaskMessagePure, completeFetch, hlookup', htarget, FetchTaskResult.state]
-          have hstep :
-              fetchStep fetch (.completeFetch controllerId) =
-                some ((completeFetch fetch controllerId).1) := by
-            simp [fetchStep, completeFetch, hlookup']
-          simpa [hresult] using TransitionTrace.single hstep
-
-theorem fetchTaskStep_refines
-    (fetch : Fetch)
-    (message : FetchTaskMessage) :
-    ∃ actions,
-      TransitionTrace
-        fetchStep
-        fetch
-        actions
-        (fetchTaskStep fetch message) := by
-  simpa [fetchTaskStep] using handleFetchTaskMessagePure_refines fetch message
-
-theorem fetchTaskExec_refines
-    (fetch : Fetch)
-    (messages : List FetchTaskMessage) :
-    ∃ actions,
-      TransitionTrace
-        fetchStep
-        fetch
-        actions
-        (fetchTaskExec fetch messages) := by
-  induction messages generalizing fetch with
-  | nil =>
-      refine ⟨[], ?_⟩
-      simp [fetchTaskExec, TransitionTrace.nil]
-  | cons message messages ih =>
-      have hstep := fetchTaskStep_refines fetch message
-      have htail := ih (fetchTaskStep fetch message)
-      rcases hstep with ⟨actions₁, htrace₁⟩
-      rcases htail with ⟨actions₂, htrace₂⟩
-      refine ⟨actions₁ ++ actions₂, ?_⟩
-      simpa [fetchTaskExec] using TransitionTrace.append htrace₁ htrace₂
-
-theorem default_fetch_has_no_pendingFetch
-    (controllerId : Nat) :
-    (Fetch.pendingFetch? (default : Fetch) controllerId).isNone = true := by
-  change (match (Std.TreeMap.empty : Std.TreeMap Nat PendingFetch)[controllerId]? with
-    | some _ => false
-    | none => true) = true
-  simp
-
-theorem fetchTaskExec_startFetch_from_default
-    (pendingFetchRequest : PendingFetchRequest) :
-    (fetchTaskExec (default : Fetch) [.startFetch pendingFetchRequest]) =
-      (conceptNavigationFetch (default : Fetch) pendingFetchRequest).1 ∧
-    (FetchTaskResult.toSpawnFetchTasks
-      (handleFetchTaskMessagePure (default : Fetch) (.startFetch pendingFetchRequest))) =
-      [{
-        controllerId := (conceptNavigationFetch (default : Fetch) pendingFetchRequest).2.id
-        request := pendingFetchRequest.request
-      }] ∧
-    TransitionTrace
-      fetchStep
-      (default : Fetch)
-      [.startFetch pendingFetchRequest]
-      (fetchTaskExec (default : Fetch) [.startFetch pendingFetchRequest]) ∧
-    Fetch.pendingFetch?
-      (fetchTaskExec (default : Fetch) [.startFetch pendingFetchRequest])
-      (conceptNavigationFetch (default : Fetch) pendingFetchRequest).2.id =
-      some {
-        completionTarget := .navigation pendingFetchRequest.navigationId
-        request := pendingFetchRequest.request
-        controller := (conceptNavigationFetch (default : Fetch) pendingFetchRequest).2
-      } := by
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · simp [fetchTaskExec, fetchTaskStep, handleFetchTaskMessagePure,
-      conceptNavigationFetch, conceptFetch, FetchTaskResult.state]
-  · simp [handleFetchTaskMessagePure, conceptNavigationFetch, conceptFetch, FetchTaskResult.toSpawnFetchTasks]
-  · refine TransitionTrace.single ?_
-    simpa [fetchTaskExec, fetchTaskStep, handleFetchTaskMessagePure, FetchTaskResult.state] using
-      (show
-        fetchStep (default : Fetch) (.startFetch pendingFetchRequest) =
-          some ((conceptNavigationFetch (default : Fetch) pendingFetchRequest).1) by
-            simp [fetchStep, conceptNavigationFetch, conceptFetch])
-  · simp [Fetch.pendingFetch?, fetchTaskExec, fetchTaskStep, handleFetchTaskMessagePure,
-      conceptNavigationFetch, conceptFetch, FetchTaskResult.state]
 
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :

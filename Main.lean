@@ -65,11 +65,8 @@ def startDocumentFetchFromRust
     method
     body := if body.isEmpty then none else some body
   }
-  spawnDetached <| enqueueFetchMessage <|
-    .startDocumentFetch {
-      handler := { raw := handlerPointer }
-      request
-    }
+  spawnDetached <| enqueueUserAgentMessage <|
+    .documentFetchRequested { raw := handlerPointer } request
 
 def main : IO Unit := do
   let userAgentChannel ← Std.CloseableChannel.new
@@ -81,10 +78,8 @@ def main : IO Unit := do
   let fetchWorker ← IO.asTask <|
     FormalWeb.runFetch fetchChannel fun notification =>
       match notification with
-      | .fetchCompleted navigationId response =>
-          trySendAndForget userAgentChannel (.fetchCompleted navigationId response)
-      | .documentFetchCompleted handler resolvedUrl body =>
-          FormalWeb.completeDocumentFetch handler.raw resolvedUrl body
+      | .fetchCompleted fetchId response =>
+          trySendAndForget userAgentChannel (.fetchCompleted fetchId response)
   FormalWeb.runWinitEventLoop ()
   userAgentMessageChannelRef.set (none : Option (Std.CloseableChannel UserAgentTaskMessage))
   fetchMessageChannelRef.set (none : Option (Std.CloseableChannel FetchTaskMessage))

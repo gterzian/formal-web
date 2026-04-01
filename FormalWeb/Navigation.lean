@@ -97,6 +97,8 @@ deriving Repr, DecidableEq
 
 /-- Pending fetch-backed navigation paused at the spec's wait-for-response point. -/
 structure PendingNavigationFetch where
+  /-- Model-local identifier corresponding to https://fetch.spec.whatwg.org/#fetch-controller -/
+  fetchId : Nat
   /-- Model-local identifier corresponding to https://html.spec.whatwg.org/multipage/#navigation-params-id -/
   navigationId : Nat
   /-- Model-local reference to https://html.spec.whatwg.org/multipage/#navigation-params-navigable -/

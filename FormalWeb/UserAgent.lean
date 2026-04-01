@@ -2,10 +2,19 @@ import Std.Data.TreeMap
 import Std.Sync.Channel
 import FormalWeb.FFI
 import FormalWeb.Fetch
-import FormalWeb.TransitionTrace
 import FormalWeb.Traversable
 
 namespace FormalWeb
+
+/-- Model-local routing metadata for a document-driven fetch initiated by the host runtime. -/
+structure PendingDocumentFetch where
+  /-- Model-local identifier corresponding to https://fetch.spec.whatwg.org/#fetch-controller -/
+  fetchId : Nat
+  /-- Model-local opaque pointer to the boxed Rust-side Blitz `NetHandler`. -/
+  handler : RustNetHandlerPointer
+  /-- https://fetch.spec.whatwg.org/#concept-request -/
+  request : NavigationRequest
+deriving Repr, DecidableEq
 
 /--
 The user agent is the top-level global state for the browser model.
@@ -23,6 +32,8 @@ structure UserAgent where
   nextEventLoopId : Nat := 0
   /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
   nextNavigationId : Nat := 0
+  /-- Model-local allocator state for https://fetch.spec.whatwg.org/#fetch-controller -/
+  nextFetchId : Nat := 0
   /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
   browsingContextGroupSet : BrowsingContextGroupSet := {}
   /-- https://html.spec.whatwg.org/multipage/#top-level-traversable-set -/
@@ -31,6 +42,10 @@ structure UserAgent where
   eventLoops : Std.TreeMap Nat EventLoop := Std.TreeMap.empty
   /-- Model-local queue of fetch-backed navigations suspended in https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching -/
   pendingNavigationFetches : Std.TreeMap Nat PendingNavigationFetch := Std.TreeMap.empty
+  /-- Model-local reverse index from https://fetch.spec.whatwg.org/#fetch-controller identifiers to pending navigation ids. -/
+  pendingNavigationFetchIdsByFetchId : Std.TreeMap Nat Nat := Std.TreeMap.empty
+  /-- Model-local queue of document-driven fetches waiting to hand results back to host-side handlers. -/
+  pendingDocumentFetches : Std.TreeMap Nat PendingDocumentFetch := Std.TreeMap.empty
   /-- Model-local map from traversable id to the latest `BaseDocument` pointer produced by an UpdateTheRendering task. -/
   baseDocumentPointers : Std.TreeMap Nat RustBaseDocumentPointer := Std.TreeMap.empty
 deriving Repr
@@ -117,6 +132,11 @@ def allocateNavigationId (userAgent : UserAgent) : UserAgent × Nat :=
   let userAgent := { userAgent with nextNavigationId := userAgent.nextNavigationId + 1 }
   (userAgent, navigationId)
 
+def allocateFetchId (userAgent : UserAgent) : UserAgent × Nat :=
+  let fetchId := userAgent.nextFetchId
+  let userAgent := { userAgent with nextFetchId := userAgent.nextFetchId + 1 }
+  (userAgent, fetchId)
+
 def appendPendingNavigationFetch
     (userAgent : UserAgent)
     (pendingNavigationFetch : PendingNavigationFetch) :
@@ -127,6 +147,10 @@ def appendPendingNavigationFetch
         userAgent.pendingNavigationFetches.insert
           pendingNavigationFetch.navigationId
           pendingNavigationFetch
+      pendingNavigationFetchIdsByFetchId :=
+        userAgent.pendingNavigationFetchIdsByFetchId.insert
+          pendingNavigationFetch.fetchId
+          pendingNavigationFetch.navigationId
   }
 
 def takePendingNavigationFetch
@@ -134,7 +158,16 @@ def takePendingNavigationFetch
     (navigationId : Nat) :
     UserAgent × Option PendingNavigationFetch :=
   let result := userAgent.pendingNavigationFetches.get? navigationId
-  let userAgent := { userAgent with pendingNavigationFetches := userAgent.pendingNavigationFetches.erase navigationId }
+  let userAgent := {
+    userAgent with
+      pendingNavigationFetches := userAgent.pendingNavigationFetches.erase navigationId
+      pendingNavigationFetchIdsByFetchId :=
+        match result with
+        | some pendingNavigationFetch =>
+            userAgent.pendingNavigationFetchIdsByFetchId.erase pendingNavigationFetch.fetchId
+        | none =>
+            userAgent.pendingNavigationFetchIdsByFetchId
+  }
   (userAgent, result)
 
 def pendingNavigationFetch?
@@ -143,6 +176,13 @@ def pendingNavigationFetch?
     Option PendingNavigationFetch :=
   userAgent.pendingNavigationFetches.get? navigationId
 
+def pendingNavigationFetchByFetchId?
+    (userAgent : UserAgent)
+    (fetchId : Nat) :
+    Option PendingNavigationFetch := do
+  let navigationId <- userAgent.pendingNavigationFetchIdsByFetchId.get? fetchId
+  userAgent.pendingNavigationFetch? navigationId
+
 /-- Model-local bridge from the HTML navigation wait state to the runtime fetch worker. -/
 def pendingNavigationFetchRequest?
     (userAgent : UserAgent)
@@ -150,9 +190,37 @@ def pendingNavigationFetchRequest?
     Option PendingFetchRequest := do
   let pendingNavigationFetch <- userAgent.pendingNavigationFetch? navigationId
   pure {
+    fetchId := pendingNavigationFetch.fetchId
     navigationId := pendingNavigationFetch.navigationId
     request := pendingNavigationFetch.request
   }
+
+def appendPendingDocumentFetch
+    (userAgent : UserAgent)
+    (pendingDocumentFetch : PendingDocumentFetch) :
+    UserAgent :=
+  {
+    userAgent with
+      pendingDocumentFetches :=
+        userAgent.pendingDocumentFetches.insert pendingDocumentFetch.fetchId pendingDocumentFetch
+  }
+
+def pendingDocumentFetch?
+    (userAgent : UserAgent)
+    (fetchId : Nat) :
+    Option PendingDocumentFetch :=
+  userAgent.pendingDocumentFetches.get? fetchId
+
+def takePendingDocumentFetch
+    (userAgent : UserAgent)
+    (fetchId : Nat) :
+    UserAgent × Option PendingDocumentFetch :=
+  let result := userAgent.pendingDocumentFetch? fetchId
+  let userAgent := {
+    userAgent with
+      pendingDocumentFetches := userAgent.pendingDocumentFetches.erase fetchId
+  }
+  (userAgent, result)
 
 def setBaseDocumentPointer
     (userAgent : UserAgent)
@@ -173,6 +241,12 @@ private def allocateRustDocumentHandleM : M RustDocumentHandle := do
   let (userAgent, handle) := userAgent.allocateRustDocumentHandle
   set userAgent
   pure handle
+
+private def allocateFetchIdM : M Nat := do
+  let userAgent ← get
+  let (userAgent, fetchId) := userAgent.allocateFetchId
+  set userAgent
+  pure fetchId
 
 private def allocateAgentIdM : M Nat := do
   let userAgent ← get
@@ -238,6 +312,24 @@ def applyDispatchedEvent
   else
     let baseDocumentPointer := FormalWeb.extractBaseDocument pointer.raw
     FormalWeb.applyUiEvent baseDocumentPointer.raw event
+
+def requestDocumentFetch
+    (userAgent : UserAgent)
+    (handler : RustNetHandlerPointer)
+    (request : NavigationRequest) :
+    UserAgent × PendingDocumentFetch × DocumentFetchRequest :=
+  let (userAgent, fetchId) := userAgent.allocateFetchId
+  let pendingDocumentFetch : PendingDocumentFetch := {
+    fetchId
+    handler
+    request
+  }
+  let userAgent := userAgent.appendPendingDocumentFetch pendingDocumentFetch
+  let documentFetchRequest : DocumentFetchRequest := {
+    fetchId
+    request
+  }
+  (userAgent, pendingDocumentFetch, documentFetchRequest)
 
 /-- https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags -/
 def determineCreationSandboxingFlags
@@ -454,6 +546,7 @@ def createNavigationParamsFromResponse
     traversableId := pendingNavigationFetch.traversableId
     request := some pendingNavigationFetch.request
     response
+    fetchControllerId := some pendingNavigationFetch.fetchId
     origin
     policyContainer := pendingNavigationFetch.sourceSnapshotParams.sourcePolicyContainer
     finalSandboxingFlagSet
@@ -499,7 +592,9 @@ def createNavigationParamsByFetching
 
   -- Steps 3-18: Reserved-environment, CSP, redirect-loop, and fetch-controller orchestration.
   -- For now we stop at the asynchronous boundary where fetch has been initiated and the algorithm waits for response to become non-null.
+  let (userAgent, fetchId) := userAgent.allocateFetchId
   let pendingNavigationFetch : PendingNavigationFetch := {
+    fetchId
     navigationId
     traversableId := traversable.id
     historyEntry := entry
@@ -1132,107 +1227,12 @@ where
     -- Step 13: Return traversable.
     pure traversable
 
-/--
-LTS-style actions for the current user-agent navigation model.
--/
-inductive UserAgentAction
-  | createTopLevelTraversable (targetName : String := "")
-  | beginNavigation
-      (traversableId : Nat)
-      (destinationURL : String)
-      (documentResource : Option DocumentResource := none)
-  | completeNavigation (navigationId : Nat) (response : NavigationResponse)
-  | abortNavigation (traversableId : Nat)
-  /-- Models the user agent applying a serialized input event to the active document of a traversable. -/
-  | dispatchEvent (traversableId : Nat) (event : String)
-  /--
-  Models the user agent sending a NavigationFinished user event to the winit app.
-  Pre-condition: the traversable has an active document and no ongoing navigation.
-  The app responds by calling `request_redraw()` and sending an UpdateTheRendering message.
-  -/
-  | navigationFinished (traversableId : Nat)
-  /--
-  Models the user agent receiving an UpdateTheRendering message from the winit app
-  and enqueuing an UpdateTheRendering task on the given event loop, deduplicating if
-  one is already pending. This can happen at any time, but only if the event loop exists.
-  -/
-  | queueUpdateTheRendering (traversableId : Nat) (eventLoopId : Nat)
-  /--
-  Models the event-loop task running: Rust has extracted the `BaseDocument` pointer
-  from the `HtmlDocument`, stored it, and sent a Paint user event to the winit app.
-  Clears `hasPendingUpdateTheRendering` on the event loop. This requires the
-  traversable's navigation to have completed.
-  -/
-  | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (baseDocPointer : RustBaseDocumentPointer)
-deriving Repr, DecidableEq
-
-/--
-Apply one user-agent transition.
-
-This sits above helper algorithms such as `navigate` and
-`processNavigationFetchResponse`, which implement the details of each labeled step.
--/
-def step
-    (userAgent : UserAgent)
-    (action : UserAgentAction) :
-    Option UserAgent := do
-  match action with
-  | .createTopLevelTraversable targetName =>
-      let (userAgent, _traversable) := createNewTopLevelTraversable userAgent none targetName
-      pure userAgent
-  | .beginNavigation traversableId destinationURL documentResource =>
-      let traversable <- traversable? userAgent traversableId
-      pure (navigate userAgent traversable destinationURL documentResource)
-  | .completeNavigation navigationId response =>
-      pure (processNavigationFetchResponse userAgent navigationId response)
-  | .abortNavigation traversableId =>
-      pure (abortNavigation userAgent traversableId)
-  | .dispatchEvent traversableId _event =>
-      let traversable <- traversable? userAgent traversableId
-      if traversable.toTraversableNavigable.activeDocument.isNone then
-        none
-      else
-        pure userAgent
-  | .navigationFinished traversableId =>
-      -- Pre-condition: traversable exists, has an active document, and has no ongoing navigation.
-      -- The action label models the UA sending NavigationFinished to the winit app.
-      let traversable <- traversable? userAgent traversableId
-      if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
-        none
-      else if traversable.toTraversableNavigable.activeDocument.isNone then
-        none
-      else
-        pure userAgent
-  | .queueUpdateTheRendering traversableId eventLoopId =>
-      -- Models the UA receiving UpdateTheRendering from the winit app and enqueuing the task (dedup).
-      -- This action is allowed regardless of navigation state, but only if the referenced event loop exists.
-      let _traversable <- traversable? userAgent traversableId
-      let eventLoop <- userAgent.eventLoop? eventLoopId
-      let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
-      pure (userAgent.setEventLoop eventLoop)
-  | .updateTheRendering traversableId eventLoopId baseDocPointer =>
-      -- Models the event-loop task running: BaseDocument extracted, Paint user event sent to winit.
-      -- Clears hasPendingUpdateTheRendering and records the latest base document pointer.
-      -- This requires the traversable to have an active document and no ongoing navigation.
-      let traversable <- traversable? userAgent traversableId
-      if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
-        none
-      else if traversable.toTraversableNavigable.activeDocument.isNone then
-        none
-      else
-        let eventLoop <- userAgent.eventLoop? eventLoopId
-        if !eventLoop.hasPendingUpdateTheRendering then
-          none
-        else
-          let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
-          let userAgent := userAgent.setEventLoop eventLoop
-          pure (userAgent.setBaseDocumentPointer traversableId baseDocPointer)
-
 inductive UserAgentTaskMessage where
   | freshTopLevelTraversable (destinationURL : String)
+  | documentFetchRequested (handler : RustNetHandlerPointer) (request : NavigationRequest)
   | dispatchEvent (event : String)
   | renderingOpportunity
-  | fetchCompleted (navigationId : Nat) (response : NavigationResponse)
+  | fetchCompleted (fetchId : Nat) (response : FetchResponse)
 deriving Repr, DecidableEq
 
 structure UserAgentTaskState where
@@ -1241,9 +1241,16 @@ structure UserAgentTaskState where
   lastDispatchedEvent : Option String := none
 deriving Repr, Inhabited
 
+structure DocumentFetchCompletion where
+  handler : RustNetHandlerPointer
+  resolvedUrl : String
+  body : ByteArray
+deriving Repr
+
 structure UserAgentTaskResult where
   state : UserAgentTaskState
   fetchMessages : List FetchTaskMessage := []
+  documentFetchCompletions : List DocumentFetchCompletion := []
   sentNewTopLevelTraversable : Bool := false
   error : Option String := none
 deriving Repr
@@ -1345,6 +1352,13 @@ def handleUserAgentTaskMessagePure
           }
       | .error error =>
           { state, error := some error }
+  | .documentFetchRequested handler request =>
+      let (userAgent, _pendingDocumentFetch, documentFetchRequest) :=
+        requestDocumentFetch state.userAgent handler request
+      {
+        state := { state with userAgent }
+        fetchMessages := [.startDocumentFetch documentFetchRequest]
+      }
   | .dispatchEvent event =>
         match state.startupTraversableId with
         | none =>
@@ -1363,17 +1377,35 @@ def handleUserAgentTaskMessagePure
               }
   | .renderingOpportunity =>
       { state }
-  | .fetchCompleted navigationId response =>
-      let userAgent := processNavigationFetchResponse state.userAgent navigationId response
-      let sentNewTopLevelTraversable :=
-        match state.startupTraversableId with
-        | none => false
-        | some traversableId =>
-            (startupTraversableReadyHtml? userAgent traversableId).isSome
-      {
-        state := { state with userAgent }
-        sentNewTopLevelTraversable
-      }
+  | .fetchCompleted fetchId response =>
+      match UserAgent.pendingNavigationFetchByFetchId? state.userAgent fetchId with
+      | some pendingNavigationFetch =>
+          let navigationResponse := navigationResponseOfFetchResponse response
+          let userAgent :=
+            processNavigationFetchResponse state.userAgent pendingNavigationFetch.navigationId navigationResponse
+          let sentNewTopLevelTraversable :=
+            match state.startupTraversableId with
+            | none => false
+            | some traversableId =>
+                (startupTraversableReadyHtml? userAgent traversableId).isSome
+          {
+            state := { state with userAgent }
+            sentNewTopLevelTraversable
+          }
+      | none =>
+          match UserAgent.pendingDocumentFetch? state.userAgent fetchId with
+          | some pendingDocumentFetch =>
+              let userAgent := (state.userAgent.takePendingDocumentFetch fetchId).1
+              {
+                state := { state with userAgent }
+                documentFetchCompletions := [{
+                  handler := pendingDocumentFetch.handler
+                  resolvedUrl := response.url
+                  body := response.body
+                }]
+              }
+          | none =>
+              { state }
 
 def userAgentTaskStep
     (state : UserAgentTaskState)
@@ -1386,259 +1418,6 @@ def userAgentTaskExec
     (messages : List UserAgentTaskMessage) :
     UserAgentTaskState :=
   messages.foldl userAgentTaskStep state
-
-inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAgentAction → Prop where
-  | freshTopLevelTraversableError
-      (destinationURL : String) :
-      UserAgentTaskMessageActionShape (.freshTopLevelTraversable destinationURL) []
-  | freshTopLevelTraversableSuccess
-      (destinationURL : String)
-      (traversableId : Nat) :
-      UserAgentTaskMessageActionShape
-        (.freshTopLevelTraversable destinationURL)
-        [.createTopLevelTraversable "", .beginNavigation traversableId destinationURL none]
-  | dispatchEventError
-      (event : String) :
-      UserAgentTaskMessageActionShape (.dispatchEvent event) []
-  | dispatchEvent
-      (traversableId : Nat)
-      (event : String) :
-      UserAgentTaskMessageActionShape (.dispatchEvent event) [.dispatchEvent traversableId event]
-  | renderingOpportunity :
-      UserAgentTaskMessageActionShape .renderingOpportunity []
-  | fetchCompleted
-      (navigationId : Nat)
-      (response : NavigationResponse) :
-      UserAgentTaskMessageActionShape
-        (.fetchCompleted navigationId response)
-        [.completeNavigation navigationId response]
-
-theorem createTopLevelTraversable_trace
-    (userAgent : UserAgent)
-    (targetName : String := "") :
-    TransitionTrace
-      step
-      userAgent
-      [.createTopLevelTraversable targetName]
-      (createNewTopLevelTraversable userAgent none targetName).1 := by
-  refine TransitionTrace.single ?_
-  simp [step, createNewTopLevelTraversable]
-
-theorem createNewTopLevelTraversable_lookup
-    (userAgent : UserAgent)
-    (targetName : String := "") :
-    let result := createNewTopLevelTraversable userAgent none targetName
-    traversable? result.1 result.2.id = some result.2 := by
-  simp [createNewTopLevelTraversable, traversable?, TopLevelTraversableSet.find?]
-  unfold createNewTopLevelTraversable.createNewTopLevelTraversableImpl
-  simp [TopLevelTraversableSet.appendFresh, TopLevelTraversableSet.nextId, TopLevelTraversableSet.replace]
-
-theorem beginNavigation_after_createTopLevelTraversable_trace
-    (userAgent : UserAgent)
-    (destinationURL : String)
-    (targetName : String := "") :
-    let created := createNewTopLevelTraversable userAgent none targetName
-    TransitionTrace
-      step
-      created.1
-      [.beginNavigation created.2.id destinationURL none]
-      (navigate created.1 created.2 destinationURL) := by
-  intro created
-  refine TransitionTrace.single ?_
-  have hlookup : traversable? created.1 created.2.id = some created.2 := by
-    simpa [created] using createNewTopLevelTraversable_lookup userAgent targetName
-  simp [step, navigate, hlookup]
-
-theorem dispatchEvent_trace
-    (userAgent : UserAgent)
-    (traversableId : Nat)
-    (event : String)
-    (traversable : TopLevelTraversable)
-    (hlookup : traversable? userAgent traversableId = some traversable)
-    (document : Document)
-    (hactive : traversable.toTraversableNavigable.activeDocument = some document) :
-    TransitionTrace
-      step
-      userAgent
-      [.dispatchEvent traversableId event]
-      userAgent := by
-  refine TransitionTrace.single ?_
-  simp [step, hlookup, hactive]
-
-theorem startupSuccess_trace
-    (userAgent nextUserAgent : UserAgent)
-    (destinationURL : String)
-    (traversableId : Nat)
-    (pendingFetchRequest : PendingFetchRequest)
-    (hbootstrap :
-      bootstrapFreshTopLevelTraversable destinationURL userAgent =
-        .ok (nextUserAgent, traversableId, pendingFetchRequest)) :
-    TransitionTrace
-      step
-      userAgent
-      [
-        .createTopLevelTraversable "",
-        .beginNavigation traversableId destinationURL none
-      ]
-      nextUserAgent := by
-  unfold bootstrapFreshTopLevelTraversable at hbootstrap
-  let created := createNewTopLevelTraversable userAgent none ""
-  let navigated := navigateWithPendingFetchRequest created.1 created.2 destinationURL
-  cases hpending : navigated.2 with
-  | none =>
-      simp [created, navigated, hpending] at hbootstrap
-  | some actualPendingFetchRequest =>
-      cases hnav : navigated with
-      | mk actualNextUserAgent actualPendingFetchRequest? =>
-          have hpending' : actualPendingFetchRequest? = some actualPendingFetchRequest := by
-            simpa [hnav] using hpending
-          simp [created, navigated, hnav, hpending'] at hbootstrap
-          rcases hbootstrap with ⟨hnextUserAgent, htraversableId, hpendingFetchRequest⟩
-          subst hnextUserAgent
-          subst htraversableId
-          subst hpendingFetchRequest
-          refine TransitionTrace.cons (intermediate := created.1) ?_ ?_
-          · simpa [created] using
-              (show step userAgent (.createTopLevelTraversable "") = some (createNewTopLevelTraversable userAgent none "").1 by
-                simp [step, createNewTopLevelTraversable])
-          · simpa [created, navigate, navigated, hnav] using
-              beginNavigation_after_createTopLevelTraversable_trace userAgent destinationURL ""
-
-theorem handleUserAgentTaskMessagePure_refines
-    (state : UserAgentTaskState)
-    (message : UserAgentTaskMessage) :
-    ∃ actions,
-      UserAgentTaskMessageActionShape message actions ∧
-      TransitionTrace
-        step
-        state.userAgent
-        actions
-        (handleUserAgentTaskMessagePure state message).state.userAgent := by
-  cases message with
-  | freshTopLevelTraversable destinationURL =>
-      cases hbootstrap : bootstrapFreshTopLevelTraversable destinationURL state.userAgent with
-      | error _ =>
-          refine ⟨[], .freshTopLevelTraversableError destinationURL, ?_⟩
-          simp [handleUserAgentTaskMessagePure, hbootstrap, TransitionTrace.nil]
-      | ok result =>
-          refine ⟨
-            [.createTopLevelTraversable "", .beginNavigation result.2.1 destinationURL none],
-            .freshTopLevelTraversableSuccess destinationURL result.2.1,
-            ?_
-          ⟩
-          simpa [handleUserAgentTaskMessagePure, hbootstrap] using
-            startupSuccess_trace state.userAgent result.1 destinationURL result.2.1 result.2.2 hbootstrap
-    | dispatchEvent event =>
-      match hstartup : state.startupTraversableId with
-      | none =>
-        refine ⟨[], .dispatchEventError event, ?_⟩
-        simpa [handleUserAgentTaskMessagePure, hstartup] using
-          (TransitionTrace.nil state.userAgent)
-      | some traversableId =>
-        match hlookup : traversable? state.userAgent traversableId with
-        | none =>
-          refine ⟨[], .dispatchEventError event, ?_⟩
-          simpa [handleUserAgentTaskMessagePure, hstartup, hlookup] using
-            (TransitionTrace.nil state.userAgent)
-        | some traversable =>
-          match hactive : traversable.toTraversableNavigable.activeDocument with
-          | none =>
-              refine ⟨[], .dispatchEventError event, ?_⟩
-              simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive] using
-                (TransitionTrace.nil state.userAgent)
-          | some document =>
-              refine ⟨[.dispatchEvent traversableId event], .dispatchEvent traversableId event, ?_⟩
-              simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive] using
-                dispatchEvent_trace state.userAgent traversableId event traversable hlookup document hactive
-  | renderingOpportunity =>
-      refine ⟨[], .renderingOpportunity, ?_⟩
-      simp [handleUserAgentTaskMessagePure, TransitionTrace.nil]
-  | fetchCompleted navigationId response =>
-      refine ⟨[.completeNavigation navigationId response], .fetchCompleted navigationId response, ?_⟩
-      refine TransitionTrace.single ?_
-      simp [handleUserAgentTaskMessagePure, step, processNavigationFetchResponse]
-
-theorem userAgentTaskStep_refines
-    (state : UserAgentTaskState)
-    (message : UserAgentTaskMessage) :
-    ∃ actions,
-      UserAgentTaskMessageActionShape message actions ∧
-      TransitionTrace
-        step
-        state.userAgent
-        actions
-        (userAgentTaskStep state message).userAgent := by
-  simpa [userAgentTaskStep] using handleUserAgentTaskMessagePure_refines state message
-
-theorem userAgentTaskExec_refines
-    (state : UserAgentTaskState)
-    (messages : List UserAgentTaskMessage) :
-    ∃ actions,
-      TransitionTrace
-        step
-        state.userAgent
-        actions
-        (userAgentTaskExec state messages).userAgent := by
-  induction messages generalizing state with
-  | nil =>
-      refine ⟨[], ?_⟩
-      simp [userAgentTaskExec, TransitionTrace.nil]
-  | cons message messages ih =>
-      have hstep := userAgentTaskStep_refines state message
-      have htail := ih (userAgentTaskStep state message)
-      rcases hstep with ⟨actions₁, _shape, htrace₁⟩
-      rcases htail with ⟨actions₂, htrace₂⟩
-      refine ⟨actions₁ ++ actions₂, ?_⟩
-      simpa [userAgentTaskExec] using TransitionTrace.append htrace₁ htrace₂
-
-theorem default_userAgentTaskState_empty
-    (traversableId navigationId : Nat) :
-    (default : UserAgentTaskState).startupTraversableId = none ∧
-    (traversable? (default : UserAgentTaskState).userAgent traversableId).isNone = true ∧
-    (UserAgent.pendingNavigationFetch? (default : UserAgentTaskState).userAgent navigationId).isNone = true := by
-  refine ⟨rfl, ?_, ?_⟩
-  · change
-      (match (Std.TreeMap.empty : Std.TreeMap Nat TopLevelTraversable)[traversableId]? with
-        | some _ => false
-        | none => true) = true
-    simp
-  · change
-      (match (Std.TreeMap.empty : Std.TreeMap Nat PendingNavigationFetch)[navigationId]? with
-        | some _ => false
-        | none => true) = true
-    simp
-
-theorem userAgentTaskExec_startup_from_default_success
-    (destinationURL : String)
-    (nextUserAgent : UserAgent)
-    (traversableId : Nat)
-    (pendingFetchRequest : PendingFetchRequest)
-    (hbootstrap :
-      bootstrapFreshTopLevelTraversable destinationURL (default : UserAgentTaskState).userAgent =
-        .ok (nextUserAgent, traversableId, pendingFetchRequest)) :
-    (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).startupTraversableId = some traversableId ∧
-    (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).userAgent = nextUserAgent ∧
-    (handleUserAgentTaskMessagePure (default : UserAgentTaskState) (.freshTopLevelTraversable destinationURL)).fetchMessages =
-      [.startFetch pendingFetchRequest] ∧
-    (handleUserAgentTaskMessagePure (default : UserAgentTaskState) (.freshTopLevelTraversable destinationURL)).error = none ∧
-    TransitionTrace
-      step
-      (default : UserAgentTaskState).userAgent
-      [.createTopLevelTraversable "", .beginNavigation traversableId destinationURL none]
-      (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).userAgent := by
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
-  · simp [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap]
-  · simp [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap]
-  · simp [handleUserAgentTaskMessagePure, hbootstrap]
-  · simp [handleUserAgentTaskMessagePure, hbootstrap]
-  · simpa [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap] using
-      startupSuccess_trace
-        (default : UserAgentTaskState).userAgent
-        nextUserAgent
-        destinationURL
-        traversableId
-        pendingFetchRequest
-        hbootstrap
 
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
@@ -1664,8 +1443,15 @@ def runUserAgentMessage
     IO.eprintln s!"handleUserAgentTaskMessagePure failed: {error}"
   for fetchMessage in result.fetchMessages do
     enqueueFetchMessage fetchMessage
+  for documentFetchCompletion in result.documentFetchCompletions do
+    FormalWeb.completeDocumentFetch
+      documentFetchCompletion.handler.raw
+      documentFetchCompletion.resolvedUrl
+      documentFetchCompletion.body
   match message with
   | .freshTopLevelTraversable _ =>
+      pure ()
+  | .documentFetchRequested _ _ =>
       pure ()
     | .dispatchEvent event =>
       let some traversableId := nextState.startupTraversableId | pure ()

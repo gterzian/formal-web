@@ -6,6 +6,7 @@ import FormalWeb.SessionHistory
 import FormalWeb.Navigation
 import FormalWeb.TransitionTrace
 import FormalWeb.Fetch
+import FormalWeb.Proofs.FetchProof
+import FormalWeb.Proofs.UserAgentProof
 import FormalWeb.Traversable
 import FormalWeb.UserAgent
-import FormalWeb.RuntimeProof
