@@ -183,7 +183,7 @@ target formalwebffiStatic pkg : FilePath := do
     return libFile
 
 lean_lib FormalWeb where
-  precompileModules := true
+  precompileModules := false
   moreLinkObjs := #[formalwebffiStatic]
   moreLinkArgs := ffiMacOSLinkArgs
 

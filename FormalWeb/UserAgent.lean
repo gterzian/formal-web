@@ -1,6 +1,6 @@
 import Std.Data.TreeMap
 import Std.Sync.Channel
-import FormalWeb.EventLoopMessage
+import FormalWeb.EventLoop
 import FormalWeb.FFI
 import FormalWeb.Fetch
 import FormalWeb.Traversable

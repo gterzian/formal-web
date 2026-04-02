@@ -1,5 +1,5 @@
 import FormalWeb.FFI
-import FormalWeb.EventLoopRuntime
+import FormalWeb.EventLoop
 import FormalWeb.Fetch
 import FormalWeb.UserAgent
 import Std.Data.TreeMap

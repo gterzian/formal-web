@@ -2,7 +2,6 @@
 -- Import modules here that should be built as part of the library.
 import FormalWeb.Document
 import FormalWeb.EventLoop
-import FormalWeb.EventLoopMessage
 import FormalWeb.FFI
 import FormalWeb.SessionHistory
 import FormalWeb.Navigation
