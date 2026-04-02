@@ -51,6 +51,9 @@ structure EventLoop where
   hasPendingUpdateTheRendering : Bool := false
 deriving Repr, DecidableEq
 
+instance : Inhabited EventLoop where
+  default := { id := 0 }
+
 inductive EventLoopTaskMessage where
   | createEmptyDocument (documentId : RustDocumentHandle)
   | createLoadedDocument (documentId : RustDocumentHandle) (url : String) (body : String)

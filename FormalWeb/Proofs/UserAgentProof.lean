@@ -44,7 +44,7 @@ This sits above helper algorithms such as `navigate` and
 `processNavigationFetchResponse`, which implement the details of each labeled step.
 -/
 def userAgentLTS : TransitionSystem.LTS UserAgent UserAgentAction where
-  init := fun _ => True
+  init := fun userAgent => userAgent = default
   trans := fun userAgent action userAgent' =>
     match action with
     | .createTopLevelTraversable targetName =>

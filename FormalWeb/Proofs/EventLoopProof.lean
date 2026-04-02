@@ -11,7 +11,7 @@ deriving Repr, DecidableEq
 
 /-- Relational LTS for the standalone event-loop task queue model. -/
 def eventLoopLTS : TransitionSystem.LTS EventLoop EventLoopAction where
-  init := fun _ => True
+  init := fun eventLoop => eventLoop = default
   trans := fun eventLoop action eventLoop' =>
     match action with
     | .queueTask task =>

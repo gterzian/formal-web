@@ -11,7 +11,7 @@ deriving Repr, DecidableEq
 
 /-- Relational LTS for the fetch state machine. -/
 def fetchLTS : TransitionSystem.LTS Fetch FetchAction where
-  init := fun _ => True
+  init := fun fetch => fetch = default
   trans := fun fetch action fetch' =>
     match action with
     | .startFetch pendingRequest =>
