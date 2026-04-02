@@ -6,10 +6,11 @@ import FormalWeb.EventLoopMessage
 import FormalWeb.FFI
 import FormalWeb.SessionHistory
 import FormalWeb.Navigation
-import FormalWeb.TransitionTrace
 import FormalWeb.Fetch
+import FormalWeb.Proofs.TransitionSystem
 import FormalWeb.Proofs.EventLoopProof
 import FormalWeb.Proofs.FetchProof
+import FormalWeb.Proofs.TransitionTrace
 import FormalWeb.Proofs.UserAgentProof
 import FormalWeb.Traversable
 import FormalWeb.UserAgent
