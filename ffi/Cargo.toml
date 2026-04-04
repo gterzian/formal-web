@@ -1,5 +1,5 @@
 [package]
-name = "formalwebffi"
+name = "ffi"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -9,23 +9,8 @@ build = "build.rs"
 crate-type = ["staticlib"]
 
 [dependencies]
-anyrender = { version = "0.8", features = ["serde"] }
-anyrender_vello = "0.8.0"
-blitz-dom = { path = "vendor/blitz/packages/blitz-dom", default-features = false, features = ["svg"] }
-blitz-html = { path = "vendor/blitz/packages/blitz-html", default-features = false }
-blitz-paint = { path = "vendor/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
-blitz-traits = { path = "vendor/blitz/packages/blitz-traits", default-features = false }
-content-process-protocol = { package = "formalweb-content-process-protocol", path = "../content_process_protocol" }
-data-url = "0.3"
-http = "1"
-ipc-channel = "0.21"
-keyboard-types = "0.7"
-kurbo = "0.13"
-peniko = "0.6.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-url = "2"
-winit = "0.30"
+embedder = { path = "../embedder" }
+ipc_messages = { path = "../ipc_messages" }
 
 [build-dependencies]
 cc = "1.2"

@@ -1,21 +1,5 @@
 namespace FormalWeb
 
-/-- Opaque pointer to a Rust-side document object. -/
-structure RustDocumentPointer where
-  raw : USize
-deriving Repr, DecidableEq, Inhabited
-
-def RustDocumentPointer.null : RustDocumentPointer :=
-  { raw := 0 }
-
-/-- Opaque pointer to a Rust-side `BaseDocument` extracted from an `HtmlDocument`. -/
-structure RustBaseDocumentPointer where
-  raw : USize
-deriving Repr, DecidableEq, Inhabited
-
-def RustBaseDocumentPointer.null : RustBaseDocumentPointer :=
-  { raw := 0 }
-
 /-- Opaque pointer to an embedder-side content-process bridge for one event loop. -/
 structure RustContentProcessPointer where
   raw : USize
@@ -31,18 +15,6 @@ deriving Repr, DecidableEq, Inhabited
 
 def RustNetHandlerPointer.null : RustNetHandlerPointer :=
   { raw := 0 }
-
-/-- Allocates an embedder-side `HtmlDocument` for a fixed `html/head/body` skeleton. -/
-@[extern "createEmptyHtmlDocument"]
-opaque createEmptyHtmlDocument : Unit → RustDocumentPointer
-
-/-- Allocates an embedder-side `HtmlDocument` from fetched HTML and a base URL. -/
-@[extern "createLoadedHtmlDocument"]
-opaque createLoadedHtmlDocument : @& String → @& String → RustDocumentPointer
-
-/-- Renders an embedder-side `HtmlDocument` as an HTML string for debugging. -/
-@[extern "renderHtmlDocument"]
-opaque renderHtmlDocument : USize → String
 
 /-- Sends a runtime message to the Rust embedder runtime. -/
 @[extern "sendEmbedderMessage"]
@@ -79,21 +51,5 @@ opaque contentProcessUpdateTheRendering : USize → USize → IO Unit
 /-- Completes a queued document fetch inside the event loop's content process. -/
 @[extern "contentProcessCompleteDocumentFetch"]
 opaque contentProcessCompleteDocumentFetch : USize → USize → @& String → ByteArray → IO Unit
-
-/-- Extracts the `BaseDocument` pointer from an `HtmlDocument` pointer. Called by event-loop tasks to prepare for rendering. -/
-@[extern "extractBaseDocument"]
-opaque extractBaseDocument : USize → RustBaseDocumentPointer
-
-/-- Queues a `Paint(BaseDocument)` user event onto the winit event loop proxy. -/
-@[extern "queuePaint"]
-opaque queuePaint : USize → IO Unit
-
-/-- Applies a serialized embedder-side UI event to the given `BaseDocument`. -/
-@[extern "applyUiEvent"]
-opaque applyUiEvent : USize → @& String → IO Unit
-
-/-- Completes a queued document fetch by calling the boxed Rust-side Blitz `NetHandler`. -/
-@[extern "completeDocumentFetch"]
-opaque completeDocumentFetch : USize → @& String → ByteArray → IO Unit
 
 end FormalWeb

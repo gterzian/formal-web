@@ -147,7 +147,6 @@ deriving DecidableEq
 structure EventLoopTaskState where
   eventLoop : EventLoop
   contentProcess : RustContentProcessPointer := { raw := 0 }
-  documentPointers : Std.TreeMap RustDocumentHandle RustDocumentPointer := Std.TreeMap.empty
   pendingCreateEmptyDocumentTasks : List PendingCreateEmptyDocumentTask := []
   pendingCreateLoadedDocumentTasks : List PendingCreateLoadedDocumentTask := []
   pendingUpdateTheRenderingTasks : List PendingUpdateTheRenderingTask := []

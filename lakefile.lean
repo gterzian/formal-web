@@ -9,9 +9,10 @@ require mathlib from git
   "https://github.com/leanprover-community/mathlib4.git" @ "db6ec05280dd7ea0c2da72315667cca743e5832d"
 
 def ffiDir : FilePath := "ffi"
-def contentProcessDir : FilePath := "content_process"
-def contentProcessProtocolDir : FilePath := "content_process_protocol"
-def vendoredBlitzDir : FilePath := ffiDir / "vendor" / "blitz"
+def embedderDir : FilePath := "embedder"
+def contentProcessDir : FilePath := "content"
+def contentProcessProtocolDir : FilePath := "ipc_messages"
+def vendoredBlitzDir : FilePath := "scratchpad" / "blitz"
 def rustToolchain := "1.92.0"
 def macOSSDKPath : FilePath :=
   "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
@@ -56,6 +57,15 @@ input_dir ffiRustSources where
 input_dir ffiCSources where
   path := ffiDir / "src"
   filter := .extension <| .mem #["c", "h", "m"]
+  text := true
+
+input_file embedderCargoToml where
+  path := embedderDir / "Cargo.toml"
+  text := true
+
+input_dir embedderRustSources where
+  path := embedderDir / "src"
+  filter := .extension <| .mem #["rs"]
   text := true
 
 input_file contentProcessCargoToml where
@@ -138,11 +148,13 @@ input_dir vendoredStyloTaffySources where
   filter := .extension <| .mem #["rs"]
   text := true
 
-target formalwebffiStatic pkg : FilePath := do
+target ffiStatic pkg : FilePath := do
   let ffiManifest ← ffiCargoToml.fetch
   let ffiBuild ← ffiBuildScript.fetch
   let ffiSources ← ffiRustSources.fetch
   let ffiCSrcs ← ffiCSources.fetch
+  let embedderManifest ← embedderCargoToml.fetch
+  let embedderSources ← embedderRustSources.fetch
   let contentProcessManifest ← contentProcessCargoToml.fetch
   let contentProcessSrcs ← contentProcessSources.fetch
   let contentProcessProtocolManifest ← contentProcessProtocolCargoToml.fetch
@@ -161,12 +173,12 @@ target formalwebffiStatic pkg : FilePath := do
   let vendoredDebugTimerSrcs ← vendoredDebugTimerSources.fetch
   let vendoredStyloTaffyManifest ← vendoredStyloTaffyCargoToml.fetch
   let vendoredStyloTaffySrcs ← vendoredStyloTaffySources.fetch
-  let libName := nameToStaticLib "formalwebffi"
+  let libName := nameToStaticLib "ffi"
   let contentProcessBinName :=
     if System.Platform.isWindows then
-      "formalweb-content-process.exe"
+      "content.exe"
     else
-      "formalweb-content-process"
+      "content"
   let libFile := pkg.staticLibDir / libName
   let manifestPath := pkg.dir / ffiDir / "Cargo.toml"
   let builtLib := pkg.dir / ffiDir / "target" / "release" / libName
@@ -177,6 +189,8 @@ target formalwebffiStatic pkg : FilePath := do
   ffiBuild.bindM (sync := true) fun _ =>
   ffiSources.bindM (sync := true) fun _ =>
   ffiCSrcs.bindM (sync := true) fun _ =>
+  embedderManifest.bindM (sync := true) fun _ =>
+  embedderSources.bindM (sync := true) fun _ =>
   contentProcessManifest.bindM (sync := true) fun _ =>
   contentProcessSrcs.bindM (sync := true) fun _ =>
   contentProcessProtocolManifest.bindM (sync := true) fun _ =>
@@ -238,7 +252,7 @@ target formalwebffiStatic pkg : FilePath := do
 
 lean_lib FormalWeb where
   precompileModules := false
-  moreLinkObjs := #[formalwebffiStatic]
+  moreLinkObjs := #[ffiStatic]
   moreLinkArgs := ffiMacOSLinkArgs
 
 @[default_target]

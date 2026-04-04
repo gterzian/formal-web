@@ -1,6 +1,7 @@
 use blitz_traits::shell::ColorScheme;
-use content_process_protocol::{
-    ContentBootstrap, ContentColorScheme, ContentCommand, ContentEvent, ViewportSnapshot,
+use ipc_messages::content::{
+    Bootstrap, ColorScheme as MessageColorScheme, Command as ContentCommand,
+    Event as ContentEvent, ViewportSnapshot,
 };
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use std::collections::HashMap;
@@ -10,15 +11,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 
-struct ContentProcessBridge {
+struct ContentBridge {
     command_sender: IpcSender<ContentCommand>,
     child: Mutex<Option<Child>>,
     listener: Mutex<Option<JoinHandle<()>>>,
 }
 
-static CONTENT_PROCESS_REGISTRY: LazyLock<Mutex<HashMap<usize, Arc<ContentProcessBridge>>>> =
+static CONTENT_REGISTRY: LazyLock<Mutex<HashMap<usize, Arc<ContentBridge>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static NEXT_CONTENT_PROCESS_HANDLE: AtomicUsize = AtomicUsize::new(1);
+static NEXT_CONTENT_HANDLE: AtomicUsize = AtomicUsize::new(1);
 
 fn executable_file_name(stem: &str) -> String {
     if std::env::consts::EXE_EXTENSION.is_empty() {
@@ -28,23 +29,23 @@ fn executable_file_name(stem: &str) -> String {
     }
 }
 
-fn content_process_executable_path() -> Result<PathBuf, String> {
+fn content_executable_path() -> Result<PathBuf, String> {
     let current_exe =
         std::env::current_exe().map_err(|error| format!("failed to resolve current executable: {error}"))?;
     let parent = current_exe
         .parent()
         .ok_or_else(|| String::from("failed to resolve executable directory"))?;
-    Ok(parent.join(executable_file_name("formalweb-content-process")))
+    Ok(parent.join(executable_file_name("content")))
 }
 
 fn setup_common(command: &mut Command, token: &str) {
-    command.arg("--content-process-token").arg(token);
+    command.arg("--content-token").arg(token);
 }
 
-fn content_color_scheme(color_scheme: ColorScheme) -> ContentColorScheme {
+fn content_color_scheme(color_scheme: ColorScheme) -> MessageColorScheme {
     match color_scheme {
-        ColorScheme::Light => ContentColorScheme::Light,
-        ColorScheme::Dark => ContentColorScheme::Dark,
+        ColorScheme::Light => MessageColorScheme::Light,
+        ColorScheme::Dark => MessageColorScheme::Dark,
     }
 }
 
@@ -82,30 +83,30 @@ fn spawn_listener(event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>) -
     })
 }
 
-fn send_command_inner(bridge: &ContentProcessBridge, command: ContentCommand) -> Result<(), String> {
+fn send_command_inner(bridge: &ContentBridge, command: ContentCommand) -> Result<(), String> {
     bridge
         .command_sender
         .send(command)
-        .map_err(|error| format!("failed to send content-process IPC message: {error}"))
+        .map_err(|error| format!("failed to send content IPC message: {error}"))
 }
 
 pub fn start(_event_loop_id: usize) -> Result<usize, String> {
-    let executable_path = content_process_executable_path()?;
+    let executable_path = content_executable_path()?;
     let (server, token) =
-        IpcOneShotServer::<ContentBootstrap>::new().map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
+        IpcOneShotServer::<Bootstrap>::new().map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
 
     let mut child_process = Command::new(executable_path);
     setup_common(&mut child_process, &token);
 
     let child = child_process
         .spawn()
-        .map_err(|error| format!("failed to start content process: {error}"))?;
+        .map_err(|error| format!("failed to start content: {error}"))?;
     let (_receiver, bootstrap) = server
         .accept()
-        .map_err(|error| format!("failed to accept content-process bootstrap: {error}"))?;
+        .map_err(|error| format!("failed to accept content bootstrap: {error}"))?;
 
     let listener = spawn_listener(bootstrap.event_receiver);
-    let bridge = Arc::new(ContentProcessBridge {
+    let bridge = Arc::new(ContentBridge {
         command_sender: bootstrap.command_sender,
         child: Mutex::new(Some(child)),
         listener: Mutex::new(Some(listener)),
@@ -117,26 +118,26 @@ pub fn start(_event_loop_id: usize) -> Result<usize, String> {
         }
     }
 
-    let handle = NEXT_CONTENT_PROCESS_HANDLE.fetch_add(1, Ordering::Relaxed);
-    CONTENT_PROCESS_REGISTRY
+    let handle = NEXT_CONTENT_HANDLE.fetch_add(1, Ordering::Relaxed);
+    CONTENT_REGISTRY
         .lock()
-        .expect("content-process registry mutex poisoned")
+        .expect("content registry mutex poisoned")
         .insert(handle, bridge);
     Ok(handle)
 }
 
 pub fn stop(handle: usize) -> Result<(), String> {
-    let bridge = CONTENT_PROCESS_REGISTRY
+    let bridge = CONTENT_REGISTRY
         .lock()
-        .expect("content-process registry mutex poisoned")
+        .expect("content registry mutex poisoned")
         .remove(&handle)
-        .ok_or_else(|| format!("unknown content-process handle: {handle}"))?;
+        .ok_or_else(|| format!("unknown content handle: {handle}"))?;
 
     let _ = send_command_inner(&bridge, ContentCommand::Shutdown);
     if let Some(listener) = bridge
         .listener
         .lock()
-        .expect("content-process listener mutex poisoned")
+        .expect("content listener mutex poisoned")
         .take()
     {
         let _ = listener.join();
@@ -144,7 +145,7 @@ pub fn stop(handle: usize) -> Result<(), String> {
     if let Some(mut child) = bridge
         .child
         .lock()
-        .expect("content-process child mutex poisoned")
+        .expect("content child mutex poisoned")
         .take()
     {
         let _ = child.wait();
@@ -153,12 +154,12 @@ pub fn stop(handle: usize) -> Result<(), String> {
 }
 
 pub fn send_command(handle: usize, command: ContentCommand) -> Result<(), String> {
-    let bridge = CONTENT_PROCESS_REGISTRY
+    let bridge = CONTENT_REGISTRY
         .lock()
-        .expect("content-process registry mutex poisoned")
+        .expect("content registry mutex poisoned")
         .get(&handle)
         .cloned()
-        .ok_or_else(|| format!("unknown content-process handle: {handle}"))?;
+        .ok_or_else(|| format!("unknown content handle: {handle}"))?;
     send_command_inner(&bridge, command)
 }
 
@@ -167,9 +168,9 @@ pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
         return;
     };
     let command = viewport_command(snapshot);
-    let bridges = CONTENT_PROCESS_REGISTRY
+    let bridges = CONTENT_REGISTRY
         .lock()
-        .expect("content-process registry mutex poisoned")
+        .expect("content registry mutex poisoned")
         .values()
         .cloned()
         .collect::<Vec<_>>();

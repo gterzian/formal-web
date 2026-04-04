@@ -7,7 +7,7 @@ use peniko::FontData;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum ContentColorScheme {
+pub enum ColorScheme {
     Light,
     Dark,
 }
@@ -17,17 +17,17 @@ pub struct ViewportSnapshot {
     pub width: u32,
     pub height: u32,
     pub scale: f32,
-    pub color_scheme: ContentColorScheme,
+    pub color_scheme: ColorScheme,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ContentBootstrap {
-    pub command_sender: IpcSender<ContentCommand>,
-    pub event_receiver: IpcReceiver<ContentEvent>,
+pub struct Bootstrap {
+    pub command_sender: IpcSender<Command>,
+    pub event_receiver: IpcReceiver<Event>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContentFetchRequest {
+pub struct FetchRequest {
     pub handler_id: u64,
     pub url: String,
     pub method: String,
@@ -147,7 +147,7 @@ pub struct PaintFrame {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ContentCommand {
+pub enum Command {
     SetViewport(ViewportSnapshot),
     CreateEmptyDocument { document_id: u64 },
     CreateLoadedDocument {
@@ -169,7 +169,7 @@ pub enum ContentCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ContentEvent {
-    DocumentFetchRequested(ContentFetchRequest),
+pub enum Event {
+    DocumentFetchRequested(FetchRequest),
     PaintReady(PaintFrame),
 }

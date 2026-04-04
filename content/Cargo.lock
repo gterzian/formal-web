@@ -266,6 +266,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
+name = "content"
+version = "0.1.0"
+dependencies = [
+ "anyrender",
+ "blitz-dom",
+ "blitz-html",
+ "blitz-paint",
+ "blitz-traits",
+ "data-url",
+ "ipc-channel",
+ "ipc_messages",
+ "keyboard-types",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "core_maths"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -592,34 +610,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "formalweb-content-process"
-version = "0.1.0"
-dependencies = [
- "anyrender",
- "blitz-dom",
- "blitz-html",
- "blitz-paint",
- "blitz-traits",
- "data-url",
- "formalweb-content-process-protocol",
- "ipc-channel",
- "keyboard-types",
- "serde",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "formalweb-content-process-protocol"
-version = "0.1.0"
-dependencies = [
- "anyrender",
- "ipc-channel",
- "peniko",
- "serde",
 ]
 
 [[package]]
@@ -958,6 +948,16 @@ dependencies = [
  "thiserror",
  "uuid",
  "windows",
+]
+
+[[package]]
+name = "ipc_messages"
+version = "0.1.0"
+dependencies = [
+ "anyrender",
+ "ipc-channel",
+ "peniko",
+ "serde",
 ]
 
 [[package]]

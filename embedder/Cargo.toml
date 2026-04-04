@@ -1,0 +1,17 @@
+[package]
+name = "embedder"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyrender = { version = "0.8", features = ["serde"] }
+anyrender_vello = "0.8.0"
+blitz-traits = { path = "../scratchpad/blitz/packages/blitz-traits", default-features = false }
+ipc-channel = "0.21"
+ipc_messages = { path = "../ipc_messages" }
+keyboard-types = "0.7"
+kurbo = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+winit = "0.30"

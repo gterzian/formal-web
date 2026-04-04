@@ -44,11 +44,12 @@ Prerequisites:
 ```bash
 lake build                                                        # full build
 lake build FormalWeb.UserAgent                                    # user-agent module only
-rustup run 1.92.0 cargo check --manifest-path ffi/Cargo.toml     # embedder-side Rust staticlib
-rustup run 1.92.0 cargo check --manifest-path content_process/Cargo.toml  # child content-process binary
+rustup run 1.92.0 cargo check --manifest-path ffi/Cargo.toml      # Lean-facing Rust staticlib
+rustup run 1.92.0 cargo check --manifest-path embedder/Cargo.toml # main-thread embedder runtime library
+rustup run 1.92.0 cargo check --manifest-path content/Cargo.toml  # child content-process binary
 ```
 
-`lake build` builds the Lean code, the Rust static library under `ffi/`, and the `formalweb-content-process` child executable, then copies the child binary into `.lake/build/bin/` so the embedder can spawn it at runtime.
+`lake build` builds the Lean code, the Rust static library under `ffi/`, and the `content` child executable, then copies the child binary into `.lake/build/bin/` so the embedder can spawn it at runtime.
 
 ## Run
 
@@ -56,7 +57,7 @@ rustup run 1.92.0 cargo check --manifest-path content_process/Cargo.toml  # chil
 lake exe formal-web
 ```
 
-Starts the Rust embedder event loop plus the Lean runtime workers. As event loops come up, the embedder spawns the `formalweb-content-process` child executable and communicates with it over `ipc-channel`. The startup flow loads the demo page from `artifacts/StartupExample.html`.
+Starts the Rust embedder event loop plus the Lean runtime workers. As event loops come up, the embedder spawns the `content` child executable and communicates with it over `ipc-channel`. The startup flow loads the demo page from `artifacts/StartupExample.html`.
 
 You can also run the built executable directly:
 
@@ -64,4 +65,4 @@ You can also run the built executable directly:
 ./.lake/build/bin/formal-web
 ```
 
-This expects the sibling child binary `./.lake/build/bin/formalweb-content-process` produced by `lake build` to still be present.
+This expects the sibling child binary `./.lake/build/bin/content` produced by `lake build` to still be present.

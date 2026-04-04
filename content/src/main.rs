@@ -1,5 +1,5 @@
 #[allow(dead_code)]
-#[path = "../../ffi/src/ui_event.rs"]
+#[path = "../../embedder/src/ui_event.rs"]
 mod ui_event;
 
 use anyrender::Scene as RenderScene;
@@ -8,8 +8,9 @@ use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
-use content_process_protocol::{
-    ContentBootstrap, ContentColorScheme, ContentCommand, ContentEvent, ContentFetchRequest,
+use ipc_messages::content::{
+    Bootstrap, ColorScheme as MessageColorScheme, Command as ContentCommand,
+    Event as ContentEvent, FetchRequest as ContentFetchRequest,
     PaintFrame, RecordedScene, ScrollOffset, ViewportSnapshot,
 };
 use data_url::DataUrl;
@@ -38,8 +39,8 @@ fn request_body_string(body: &Body) -> String {
 
 fn viewport_of_snapshot(snapshot: &ViewportSnapshot) -> Viewport {
     let color_scheme = match snapshot.color_scheme {
-        ContentColorScheme::Light => ColorScheme::Light,
-        ContentColorScheme::Dark => ColorScheme::Dark,
+        MessageColorScheme::Light => ColorScheme::Light,
+        MessageColorScheme::Dark => ColorScheme::Dark,
     };
     Viewport::new(snapshot.width, snapshot.height, snapshot.scale, color_scheme)
 }
@@ -254,28 +255,28 @@ impl ContentRuntime {
     }
 }
 
-fn content_process_token() -> Result<String, String> {
+fn content_token() -> Result<String, String> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--content-process-token" {
+        if arg == "--content-token" {
             return args
                 .next()
-                .ok_or_else(|| String::from("missing content-process token value"));
+                .ok_or_else(|| String::from("missing content token value"));
         }
     }
-    Err(String::from("missing --content-process-token argument"))
+    Err(String::from("missing --content-token argument"))
 }
 
 fn main() -> Result<(), String> {
-    let token = content_process_token()?;
+    let token = content_token()?;
     let (command_sender, command_receiver) =
         ipc::channel::<ContentCommand>().map_err(|error| error.to_string())?;
     let (event_sender, event_receiver) =
         ipc::channel::<ContentEvent>().map_err(|error| error.to_string())?;
     let bootstrap =
-        IpcSender::<ContentBootstrap>::connect(token).map_err(|error| error.to_string())?;
+        IpcSender::<Bootstrap>::connect(token).map_err(|error| error.to_string())?;
     bootstrap
-        .send(ContentBootstrap {
+        .send(Bootstrap {
             command_sender,
             event_receiver,
         })
@@ -290,7 +291,7 @@ fn main() -> Result<(), String> {
         match runtime.handle_command(command) {
             Ok(true) => {}
             Ok(false) => break,
-            Err(error) => eprintln!("content process error: {error}"),
+            Err(error) => eprintln!("content error: {error}"),
         }
     }
 

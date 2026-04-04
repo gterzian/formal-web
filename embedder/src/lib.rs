@@ -1,0 +1,744 @@
+mod content_bridge;
+pub mod ui_event;
+
+use anyrender::{PaintScene, Scene as RenderScene, WindowRenderer};
+use anyrender_vello::VelloWindowRenderer;
+use blitz_traits::events::{
+    BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
+    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords,
+    PointerDetails, UiEvent,
+};
+use blitz_traits::shell::ColorScheme;
+use ipc_messages::content::{Command as ContentCommand, PaintFrame, ScrollOffset};
+use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
+use kurbo::Affine;
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
+use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalPosition, PhysicalPosition};
+use winit::event::{
+    ElementState, Ime, KeyEvent as WinitKeyEvent, Modifiers, MouseButton, MouseScrollDelta,
+    Touch, TouchPhase, WindowEvent,
+};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::keyboard::{
+    Key as WinitKey, KeyCode as WinitKeyCode, KeyLocation as WinitKeyLocation,
+    ModifiersState as WinitModifiersState, NamedKey, PhysicalKey,
+};
+use winit::window::{Window, WindowAttributes, WindowId};
+
+const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
+const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE: &str = "NewTopLevelTraversable";
+const DISPATCH_EVENT_MESSAGE_PREFIX: &str = "DispatchEvent|";
+
+#[derive(Clone, Copy)]
+pub struct RuntimeHooks {
+    pub handle_runtime_message: fn(&str),
+    pub start_document_fetch_parts: fn(usize, &str, &str, &str) -> Result<(), String>,
+    pub note_rendering_opportunity: fn(&str),
+}
+
+#[derive(Clone)]
+struct EmbedderPaintFrame {
+    scene: RenderScene,
+    viewport_scroll: ScrollOffset,
+}
+
+pub(crate) enum FormalWebUserEvent {
+    Paint(PaintFrame),
+    EmbedderRequestRedraw,
+    NewTopLevelTraversable,
+}
+
+struct FormalWebApp {
+    window: Option<Arc<Window>>,
+    renderer: VelloWindowRenderer,
+    current_paint_frame: Option<EmbedderPaintFrame>,
+    saw_redraw_requested: bool,
+    has_top_level_traversable: bool,
+    window_occluded: bool,
+    animation_timer: Option<Instant>,
+    keyboard_modifiers: Modifiers,
+    buttons: MouseEventButtons,
+    pointer_pos: PhysicalPosition<f64>,
+}
+
+static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
+    LazyLock::new(|| Mutex::new(None));
+pub(crate) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
+    LazyLock::new(|| Mutex::new(None));
+static RUNTIME_HOOKS: LazyLock<Mutex<Option<RuntimeHooks>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+pub fn set_runtime_hooks(hooks: RuntimeHooks) {
+    let mut guard = RUNTIME_HOOKS.lock().expect("runtime hooks mutex poisoned");
+    *guard = Some(hooks);
+}
+
+fn runtime_hooks() -> Result<RuntimeHooks, String> {
+    RUNTIME_HOOKS
+        .lock()
+        .expect("runtime hooks mutex poisoned")
+        .as_ref()
+        .copied()
+        .ok_or_else(|| String::from("embedder runtime hooks are not initialized"))
+}
+
+fn call_lean_runtime_message_handler(message: &str) {
+    if let Ok(hooks) = runtime_hooks() {
+        (hooks.handle_runtime_message)(message);
+    }
+}
+
+pub(crate) fn call_lean_document_fetch_start_parts(
+    handler: usize,
+    url: &str,
+    method: &str,
+    body: &str,
+) -> Result<(), String> {
+    let hooks = runtime_hooks()?;
+    (hooks.start_document_fetch_parts)(handler, url, method, body)
+}
+
+fn user_agent_note_rendering_opportunity(message: &str) {
+    if let Ok(hooks) = runtime_hooks() {
+        (hooks.note_rendering_opportunity)(message);
+    }
+}
+
+pub fn send_runtime_message(message: &str) -> Result<(), String> {
+    let user_event = user_event_of_runtime_message(message)?;
+    with_event_loop_proxy(|proxy| match proxy {
+        Some(proxy) => proxy
+            .send_event(user_event)
+            .map_err(|error| format!("failed to send runtime message event: {error}")),
+        None => Err(String::from("winit event loop proxy is not initialized")),
+    })
+}
+
+pub fn run_event_loop() -> Result<(), String> {
+    let event_loop = EventLoop::<FormalWebUserEvent>::with_user_event()
+        .build()
+        .map_err(|error| format!("failed to create event loop: {error}"))?;
+    {
+        let mut guard = EVENT_LOOP_PROXY
+            .lock()
+            .expect("event loop proxy mutex poisoned");
+        *guard = Some(event_loop.create_proxy());
+    }
+
+    let mut app = FormalWebApp::default();
+    let run_result = event_loop
+        .run_app(&mut app)
+        .map_err(|error| format!("winit event loop failed: {error}"));
+
+    {
+        let mut guard = EVENT_LOOP_PROXY
+            .lock()
+            .expect("event loop proxy mutex poisoned");
+        guard.take();
+    }
+
+    run_result
+}
+
+pub fn request_redraw() {
+    with_event_loop_proxy(|proxy| {
+        if let Some(proxy) = proxy {
+            let _ = proxy.send_event(FormalWebUserEvent::EmbedderRequestRedraw);
+        }
+    });
+}
+
+pub fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
+    WINDOW_VIEWPORT_SNAPSHOT
+        .lock()
+        .expect("window viewport snapshot mutex poisoned")
+        .as_ref()
+        .copied()
+}
+
+pub fn start_content(event_loop_id: usize) -> Result<usize, String> {
+    content_bridge::start(event_loop_id)
+}
+
+pub fn stop_content(handle: usize) -> Result<(), String> {
+    content_bridge::stop(handle)
+}
+
+pub fn send_content_command(handle: usize, command: ContentCommand) -> Result<(), String> {
+    content_bridge::send_command(handle, command)
+}
+
+fn startup_runtime_message() -> Result<String, String> {
+    let artifact_path = startup_artifact_path()?;
+    Ok(format!("FreshTopLevelTraversable|file://{}", artifact_path.display()))
+}
+
+fn startup_artifact_path() -> Result<PathBuf, String> {
+    let current_dir = std::env::current_dir()
+        .map_err(|error| format!("failed to determine current directory: {error}"))?;
+    let artifact_path: PathBuf = current_dir.join(STARTUP_ARTIFACT_RELATIVE_PATH);
+    artifact_path
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve startup artifact path: {error}"))
+}
+
+fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
+    match message {
+        NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE => Ok(FormalWebUserEvent::NewTopLevelTraversable),
+        _ => Err(format!("unknown runtime message: {message}")),
+    }
+}
+
+pub(crate) fn with_event_loop_proxy<R>(
+    f: impl FnOnce(&Option<EventLoopProxy<FormalWebUserEvent>>) -> R,
+) -> R {
+    let guard = EVENT_LOOP_PROXY
+        .lock()
+        .expect("event loop proxy mutex poisoned");
+    f(&guard)
+}
+
+fn theme_to_color_scheme(theme: winit::window::Theme) -> ColorScheme {
+    match theme {
+        winit::window::Theme::Light => ColorScheme::Light,
+        winit::window::Theme::Dark => ColorScheme::Dark,
+    }
+}
+
+fn viewport_snapshot_for_window(window: &Window) -> (u32, u32, f32, ColorScheme) {
+    let size = window.inner_size();
+    let scale = window.scale_factor() as f32;
+    let color_scheme = theme_to_color_scheme(window.theme().unwrap_or(winit::window::Theme::Light));
+    (size.width, size.height, scale, color_scheme)
+}
+
+fn winit_ime_to_blitz(event: Ime) -> BlitzImeEvent {
+    match event {
+        Ime::Enabled => BlitzImeEvent::Enabled,
+        Ime::Disabled => BlitzImeEvent::Disabled,
+        Ime::Preedit(text, cursor) => BlitzImeEvent::Preedit(text, cursor),
+        Ime::Commit(text) => BlitzImeEvent::Commit(text),
+    }
+}
+
+fn touch_pointer_details(force: Option<winit::event::Force>) -> PointerDetails {
+    PointerDetails {
+        pressure: force.map(|value| value.normalized()).unwrap_or(0.0),
+        ..PointerDetails::default()
+    }
+}
+
+fn winit_modifiers_to_kbt_modifiers(winit_modifiers: WinitModifiersState) -> KeyboardModifiers {
+    let mut modifiers = KeyboardModifiers::default();
+    if winit_modifiers.contains(WinitModifiersState::CONTROL) {
+        modifiers.insert(KeyboardModifiers::CONTROL);
+    }
+    if winit_modifiers.contains(WinitModifiersState::ALT) {
+        modifiers.insert(KeyboardModifiers::ALT);
+    }
+    if winit_modifiers.contains(WinitModifiersState::SHIFT) {
+        modifiers.insert(KeyboardModifiers::SHIFT);
+    }
+    if winit_modifiers.contains(WinitModifiersState::SUPER) {
+        modifiers.insert(KeyboardModifiers::SUPER);
+    }
+    modifiers
+}
+
+fn winit_key_location_to_kbt_location(location: WinitKeyLocation) -> Location {
+    match location {
+        WinitKeyLocation::Standard => Location::Standard,
+        WinitKeyLocation::Left => Location::Left,
+        WinitKeyLocation::Right => Location::Right,
+        WinitKeyLocation::Numpad => Location::Numpad,
+    }
+}
+
+fn winit_key_to_kbt_key(key: &WinitKey) -> Key {
+    match key {
+        WinitKey::Character(value) => Key::Character(value.to_string()),
+        WinitKey::Named(named) => match named {
+            NamedKey::Alt => Key::Alt,
+            NamedKey::Backspace => Key::Backspace,
+            NamedKey::Control => Key::Control,
+            NamedKey::Delete => Key::Delete,
+            NamedKey::ArrowDown => Key::ArrowDown,
+            NamedKey::End => Key::End,
+            NamedKey::Enter => Key::Enter,
+            NamedKey::Escape => Key::Escape,
+            NamedKey::Home => Key::Home,
+            NamedKey::ArrowLeft => Key::ArrowLeft,
+            NamedKey::Meta => Key::Meta,
+            NamedKey::PageDown => Key::PageDown,
+            NamedKey::PageUp => Key::PageUp,
+            NamedKey::ArrowRight => Key::ArrowRight,
+            NamedKey::Shift => Key::Shift,
+            NamedKey::Space => Key::Character(" ".to_owned()),
+            NamedKey::Tab => Key::Tab,
+            NamedKey::ArrowUp => Key::ArrowUp,
+            NamedKey::Super => Key::Super,
+            _ => Key::Unidentified,
+        },
+        _ => Key::Unidentified,
+    }
+}
+
+fn winit_physical_key_to_kbt_code(physical_key: &PhysicalKey) -> Code {
+    match physical_key {
+        PhysicalKey::Code(code) => match code {
+            WinitKeyCode::Backquote => Code::Backquote,
+            WinitKeyCode::Backslash => Code::Backslash,
+            WinitKeyCode::Backspace => Code::Backspace,
+            WinitKeyCode::BracketLeft => Code::BracketLeft,
+            WinitKeyCode::BracketRight => Code::BracketRight,
+            WinitKeyCode::Comma => Code::Comma,
+            WinitKeyCode::ControlLeft => Code::ControlLeft,
+            WinitKeyCode::ControlRight => Code::ControlRight,
+            WinitKeyCode::Delete => Code::Delete,
+            WinitKeyCode::Digit0 => Code::Digit0,
+            WinitKeyCode::Digit1 => Code::Digit1,
+            WinitKeyCode::Digit2 => Code::Digit2,
+            WinitKeyCode::Digit3 => Code::Digit3,
+            WinitKeyCode::Digit4 => Code::Digit4,
+            WinitKeyCode::Digit5 => Code::Digit5,
+            WinitKeyCode::Digit6 => Code::Digit6,
+            WinitKeyCode::Digit7 => Code::Digit7,
+            WinitKeyCode::Digit8 => Code::Digit8,
+            WinitKeyCode::Digit9 => Code::Digit9,
+            WinitKeyCode::ArrowDown => Code::ArrowDown,
+            WinitKeyCode::End => Code::End,
+            WinitKeyCode::Enter => Code::Enter,
+            WinitKeyCode::Equal => Code::Equal,
+            WinitKeyCode::Escape => Code::Escape,
+            WinitKeyCode::Home => Code::Home,
+            WinitKeyCode::KeyA => Code::KeyA,
+            WinitKeyCode::KeyB => Code::KeyB,
+            WinitKeyCode::KeyC => Code::KeyC,
+            WinitKeyCode::KeyD => Code::KeyD,
+            WinitKeyCode::KeyE => Code::KeyE,
+            WinitKeyCode::KeyF => Code::KeyF,
+            WinitKeyCode::KeyG => Code::KeyG,
+            WinitKeyCode::KeyH => Code::KeyH,
+            WinitKeyCode::KeyI => Code::KeyI,
+            WinitKeyCode::KeyJ => Code::KeyJ,
+            WinitKeyCode::KeyK => Code::KeyK,
+            WinitKeyCode::KeyL => Code::KeyL,
+            WinitKeyCode::KeyM => Code::KeyM,
+            WinitKeyCode::KeyN => Code::KeyN,
+            WinitKeyCode::KeyO => Code::KeyO,
+            WinitKeyCode::KeyP => Code::KeyP,
+            WinitKeyCode::KeyQ => Code::KeyQ,
+            WinitKeyCode::KeyR => Code::KeyR,
+            WinitKeyCode::KeyS => Code::KeyS,
+            WinitKeyCode::KeyT => Code::KeyT,
+            WinitKeyCode::KeyU => Code::KeyU,
+            WinitKeyCode::KeyV => Code::KeyV,
+            WinitKeyCode::KeyW => Code::KeyW,
+            WinitKeyCode::KeyX => Code::KeyX,
+            WinitKeyCode::KeyY => Code::KeyY,
+            WinitKeyCode::KeyZ => Code::KeyZ,
+            WinitKeyCode::SuperLeft => Code::Super,
+            WinitKeyCode::SuperRight => Code::Super,
+            WinitKeyCode::Minus => Code::Minus,
+            WinitKeyCode::PageDown => Code::PageDown,
+            WinitKeyCode::PageUp => Code::PageUp,
+            WinitKeyCode::Period => Code::Period,
+            WinitKeyCode::Quote => Code::Quote,
+            WinitKeyCode::ArrowLeft => Code::ArrowLeft,
+            WinitKeyCode::ArrowRight => Code::ArrowRight,
+            WinitKeyCode::Semicolon => Code::Semicolon,
+            WinitKeyCode::ShiftLeft => Code::ShiftLeft,
+            WinitKeyCode::ShiftRight => Code::ShiftRight,
+            WinitKeyCode::Slash => Code::Slash,
+            WinitKeyCode::Space => Code::Space,
+            WinitKeyCode::Tab => Code::Tab,
+            WinitKeyCode::ArrowUp => Code::ArrowUp,
+            _ => Code::Unidentified,
+        },
+        PhysicalKey::Unidentified(_) => Code::Unidentified,
+    }
+}
+
+fn winit_key_event_to_blitz(event: &WinitKeyEvent, mods: WinitModifiersState) -> BlitzKeyEvent {
+    BlitzKeyEvent {
+        key: winit_key_to_kbt_key(&event.logical_key),
+        code: winit_physical_key_to_kbt_code(&event.physical_key),
+        modifiers: winit_modifiers_to_kbt_modifiers(mods),
+        location: winit_key_location_to_kbt_location(event.location),
+        is_auto_repeating: event.repeat,
+        is_composing: false,
+        state: match event.state {
+            ElementState::Pressed => KeyState::Pressed,
+            ElementState::Released => KeyState::Released,
+        },
+        text: event.text.as_ref().map(|text| text.as_str().into()),
+    }
+}
+
+impl Default for FormalWebApp {
+    fn default() -> Self {
+        Self {
+            window: None,
+            renderer: VelloWindowRenderer::new(),
+            current_paint_frame: None,
+            saw_redraw_requested: false,
+            has_top_level_traversable: false,
+            window_occluded: false,
+            animation_timer: None,
+            keyboard_modifiers: Modifiers::default(),
+            buttons: MouseEventButtons::None,
+            pointer_pos: PhysicalPosition::default(),
+        }
+    }
+}
+
+impl FormalWebApp {
+    fn has_visible_viewport(&self) -> bool {
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        if self.window_occluded {
+            return false;
+        }
+        if matches!(window.is_visible(), Some(false)) {
+            return false;
+        }
+        let size = window.inner_size();
+        size.width > 0 && size.height > 0
+    }
+
+    fn pointer_position_in_viewport(&self, position: PhysicalPosition<f64>) -> bool {
+        if !self.has_visible_viewport() {
+            return false;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        let size = window.inner_size();
+        position.x >= 0.0
+            && position.y >= 0.0
+            && position.x < f64::from(size.width)
+            && position.y < f64::from(size.height)
+    }
+
+    fn request_visible_redraw(&self, reason: &str) {
+        if !self.has_visible_viewport() {
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        window.request_redraw();
+        user_agent_note_rendering_opportunity(reason);
+    }
+
+    fn paint_frame(snapshot: PaintFrame) -> EmbedderPaintFrame {
+        EmbedderPaintFrame {
+            scene: snapshot.scene.into(),
+            viewport_scroll: snapshot.viewport_scroll,
+        }
+    }
+
+    fn update_window_viewport_snapshot(window: &Window) {
+        let viewport_snapshot = viewport_snapshot_for_window(window);
+        let mut snapshot = WINDOW_VIEWPORT_SNAPSHOT
+            .lock()
+            .expect("window viewport snapshot mutex poisoned");
+        *snapshot = Some(viewport_snapshot);
+        content_bridge::broadcast_viewport(Some(viewport_snapshot));
+    }
+
+    fn resume_renderer_for_window(&mut self, window: &Arc<Window>) {
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        if self.renderer.is_active() {
+            self.renderer.set_size(size.width, size.height);
+        } else {
+            let window_handle: Arc<dyn anyrender::WindowHandle> = window.clone();
+            self.renderer.resume(window_handle, size.width, size.height);
+        }
+    }
+
+    fn current_animation_time(&mut self) -> f64 {
+        match self.animation_timer {
+            Some(start) => Instant::now().duration_since(start).as_secs_f64(),
+            None => {
+                self.animation_timer = Some(Instant::now());
+                0.0
+            }
+        }
+    }
+
+    fn create_window(event_loop: &ActiveEventLoop) -> Result<Arc<Window>, String> {
+        let attributes: WindowAttributes = Window::default_attributes().with_title("formal-web winit demo");
+        event_loop
+            .create_window(attributes)
+            .map(Arc::new)
+            .map_err(|error| format!("failed to create winit window: {error}"))
+    }
+
+    fn paint_current_frame(&mut self) {
+        if !self.has_visible_viewport() {
+            return;
+        }
+        let _ = self.current_animation_time();
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(current_paint_frame) = self.current_paint_frame.as_ref() else {
+            return;
+        };
+        let size = window.inner_size();
+
+        if self.renderer.is_active() {
+            self.renderer.set_size(size.width, size.height);
+        } else {
+            let window_handle: Arc<dyn anyrender::WindowHandle> = window.clone();
+            self.renderer.resume(window_handle, size.width, size.height);
+        }
+
+        let scene_fragment = current_paint_frame.scene.clone();
+        self.renderer.render(|scene| {
+            scene.append_scene(scene_fragment, Affine::IDENTITY);
+        });
+    }
+
+    fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
+        let scale = self
+            .window
+            .as_ref()
+            .map(|window| window.scale_factor())
+            .unwrap_or(1.0);
+        let LogicalPosition::<f32> { x: screen_x, y: screen_y } = position.to_logical(scale);
+        if let Some(current_paint_frame) = self.current_paint_frame.as_ref() {
+            let client_x = screen_x;
+            let client_y = screen_y;
+            let page_x = client_x + current_paint_frame.viewport_scroll.x;
+            let page_y = client_y + current_paint_frame.viewport_scroll.y;
+            PointerCoords {
+                screen_x,
+                screen_y,
+                client_x,
+                client_y,
+                page_x,
+                page_y,
+            }
+        } else {
+            PointerCoords {
+                screen_x,
+                screen_y,
+                client_x: screen_x,
+                client_y: screen_y,
+                page_x: screen_x,
+                page_y: screen_y,
+            }
+        }
+    }
+
+    fn dispatch_ui_event(&mut self, event: UiEvent) {
+        if !self.has_visible_viewport() {
+            return;
+        }
+        let Ok(event_message) = ui_event::serialize_ui_event(&event) else {
+            return;
+        };
+        let message = format!("{DISPATCH_EVENT_MESSAGE_PREFIX}{event_message}");
+        call_lean_runtime_message_handler(&message);
+        if self.has_top_level_traversable {
+            self.request_visible_redraw("ui_event");
+        }
+    }
+}
+
+impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            match Self::create_window(event_loop) {
+                Ok(window) => {
+                    Self::update_window_viewport_snapshot(&window);
+                    self.resume_renderer_for_window(&window);
+                    self.window = Some(window);
+                    match startup_runtime_message() {
+                        Ok(message) => call_lean_runtime_message_handler(&message),
+                        Err(_error) => event_loop.exit(),
+                    }
+                }
+                Err(_error) => event_loop.exit(),
+            }
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+        let Some(current_window_id) = self.window.as_ref().map(|window| window.id()) else {
+            return;
+        };
+        if current_window_id != window_id {
+            return;
+        }
+
+        match event {
+            WindowEvent::RedrawRequested => {
+                self.saw_redraw_requested = true;
+                if self.current_paint_frame.is_some() {
+                    self.paint_current_frame();
+                    self.saw_redraw_requested = false;
+                }
+            }
+            WindowEvent::Occluded(occluded) => {
+                self.window_occluded = occluded;
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(window) = self.window.as_ref() {
+                    Self::update_window_viewport_snapshot(window);
+                }
+                if self.renderer.is_active() {
+                    self.renderer.set_size(size.width, size.height);
+                }
+                if self.has_top_level_traversable {
+                    self.request_visible_redraw("request_redraw");
+                }
+            }
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                self.renderer.suspend();
+                self.animation_timer = None;
+                self.current_paint_frame = None;
+                self.has_top_level_traversable = false;
+                self.window_occluded = false;
+                if let Ok(mut snapshot) = WINDOW_VIEWPORT_SNAPSHOT.lock() {
+                    *snapshot = None;
+                }
+                content_bridge::broadcast_viewport(None);
+                self.window = None;
+                event_loop.exit();
+            }
+            WindowEvent::Ime(ime_event) => {
+                self.dispatch_ui_event(UiEvent::Ime(winit_ime_to_blitz(ime_event)));
+            }
+            WindowEvent::ModifiersChanged(new_state) => {
+                self.keyboard_modifiers = new_state;
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let key_event = winit_key_event_to_blitz(&event, self.keyboard_modifiers.state());
+                let event = if event.state.is_pressed() {
+                    UiEvent::KeyDown(key_event)
+                } else {
+                    UiEvent::KeyUp(key_event)
+                };
+                self.dispatch_ui_event(event);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer_pos = position;
+                if !self.pointer_position_in_viewport(position) {
+                    return;
+                }
+                self.dispatch_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
+                    id: BlitzPointerId::Mouse,
+                    is_primary: true,
+                    coords: self.pointer_coords(position),
+                    button: Default::default(),
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                    details: PointerDetails::default(),
+                }));
+            }
+            WindowEvent::MouseInput { button, state, .. } => {
+                if !self.pointer_position_in_viewport(self.pointer_pos) {
+                    return;
+                }
+                let coords = self.pointer_coords(self.pointer_pos);
+                let mapped_button = match button {
+                    MouseButton::Left => MouseEventButton::Main,
+                    MouseButton::Right => MouseEventButton::Secondary,
+                    MouseButton::Middle => MouseEventButton::Auxiliary,
+                    MouseButton::Back => MouseEventButton::Fourth,
+                    MouseButton::Forward => MouseEventButton::Fifth,
+                    MouseButton::Other(_) => MouseEventButton::Auxiliary,
+                };
+                match state {
+                    ElementState::Pressed => self.buttons |= mapped_button.into(),
+                    ElementState::Released => self.buttons ^= mapped_button.into(),
+                }
+                let event = BlitzPointerEvent {
+                    id: BlitzPointerId::Mouse,
+                    is_primary: true,
+                    coords,
+                    button: mapped_button,
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                    details: PointerDetails::default(),
+                };
+                self.dispatch_ui_event(match state {
+                    ElementState::Pressed => UiEvent::PointerDown(event),
+                    ElementState::Released => UiEvent::PointerUp(event),
+                });
+            }
+            WindowEvent::Touch(Touch { phase, location, force, id, .. }) => {
+                if !self.pointer_position_in_viewport(location) {
+                    return;
+                }
+                let coords = self.pointer_coords(location);
+                let event = BlitzPointerEvent {
+                    id: BlitzPointerId::Finger(id),
+                    is_primary: true,
+                    coords,
+                    button: Default::default(),
+                    buttons: MouseEventButtons::None,
+                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                    details: touch_pointer_details(force),
+                };
+                match phase {
+                    TouchPhase::Started => self.dispatch_ui_event(UiEvent::PointerDown(event)),
+                    TouchPhase::Moved => self.dispatch_ui_event(UiEvent::PointerMove(event)),
+                    TouchPhase::Ended | TouchPhase::Cancelled => self.dispatch_ui_event(UiEvent::PointerUp(event)),
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if !self.pointer_position_in_viewport(self.pointer_pos) {
+                    return;
+                }
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => BlitzWheelDelta::Lines(x as f64, y as f64),
+                    MouseScrollDelta::PixelDelta(pos) => BlitzWheelDelta::Pixels(pos.x, pos.y),
+                };
+                self.dispatch_ui_event(UiEvent::Wheel(BlitzWheelEvent {
+                    delta,
+                    coords: self.pointer_coords(self.pointer_pos),
+                    buttons: self.buttons,
+                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
+        match event {
+            FormalWebUserEvent::Paint(snapshot) => {
+                let Some(_window) = self.window.as_ref() else {
+                    return;
+                };
+                self.current_paint_frame = Some(Self::paint_frame(snapshot));
+                if self.saw_redraw_requested {
+                    self.paint_current_frame();
+                    self.saw_redraw_requested = false;
+                }
+            }
+            FormalWebUserEvent::EmbedderRequestRedraw => {
+                if self.has_visible_viewport() {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
+            FormalWebUserEvent::NewTopLevelTraversable => {
+                self.has_top_level_traversable = true;
+                self.request_visible_redraw("request_redraw");
+            }
+        }
+    }
+}

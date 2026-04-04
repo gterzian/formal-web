@@ -29,7 +29,7 @@ fn main() {
         build.file("src/macos_compat.m");
     }
 
-    build.compile("formalwebffi_lean_shim");
+    build.compile("ffi_lean_shim");
 
     if let Ok(target) = env::var("TARGET") {
         println!("cargo:warning=building Lean shim for {target}");
