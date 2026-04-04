@@ -7,7 +7,7 @@ import FormalWeb.Traversable
 
 namespace FormalWeb
 
-/-- Model-local routing metadata for a document-driven fetch initiated by the host runtime. -/
+/-- Model-local routing metadata for a document-driven fetch initiated by the embedder runtime. -/
 structure PendingDocumentFetch where
   /-- Model-local identifier corresponding to https://fetch.spec.whatwg.org/#fetch-controller -/
   fetchId : Nat
@@ -43,7 +43,7 @@ structure UserAgent where
   pendingNavigationFetches : Std.TreeMap Nat PendingNavigationFetch := Std.TreeMap.empty
   /-- Model-local reverse index from https://fetch.spec.whatwg.org/#fetch-controller identifiers to pending navigation ids. -/
   pendingNavigationFetchIdsByFetchId : Std.TreeMap Nat Nat := Std.TreeMap.empty
-  /-- Model-local queue of document-driven fetches waiting to hand results back to host-side handlers. -/
+  /-- Model-local queue of document-driven fetches waiting to hand results back to embedder-side handlers. -/
   pendingDocumentFetches : Std.TreeMap Nat PendingDocumentFetch := Std.TreeMap.empty
 deriving Repr
 
@@ -277,12 +277,15 @@ def queueUpdateTheRendering
   let document <- traversable.toTraversableNavigable.activeDocument
   let documentId <- activeDocumentHandle? userAgent traversableId
   let eventLoop <- userAgent.eventLoop? document.eventLoopId
-  let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
-  pure (
-    userAgent.setEventLoop eventLoop,
-    document.eventLoopId,
-    EventLoopTaskMessage.queueUpdateTheRendering traversableId documentId
-  )
+  if eventLoop.hasPendingUpdateTheRendering then
+    none
+  else
+    let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
+    pure (
+      userAgent.setEventLoop eventLoop,
+      document.eventLoopId,
+      EventLoopTaskMessage.queueUpdateTheRendering traversableId documentId
+    )
 
 def queueDispatchedEvent
     (userAgent : UserAgent)
@@ -320,6 +323,17 @@ def completeUpdateTheRendering
       else
         let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
         pure (userAgent.setEventLoop eventLoop)
+
+def dropPendingUpdateTheRenderingCompletion
+    (userAgent : UserAgent)
+    (eventLoopId : Nat) :
+    Option UserAgent := do
+  let eventLoop <- userAgent.eventLoop? eventLoopId
+  if !eventLoop.hasPendingUpdateTheRendering then
+    none
+  else
+    let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
+    pure (userAgent.setEventLoop eventLoop)
 
 def requestDocumentFetch
     (userAgent : UserAgent)
@@ -402,7 +416,7 @@ def populateWithHtmlHeadBody
   -- Step 4: Append html to document.
   -- Step 5: Append head to html.
   -- Step 6: Append body to html.
-  -- Notes: The executable runtime now performs this host-side document allocation inside the owning event loop.
+  -- Notes: The executable runtime now performs this embedder-side document allocation inside the owning event loop.
   let _ := document
   userAgent
 
@@ -1470,14 +1484,18 @@ def handleUserAgentTaskMessagePure
       | none =>
           { state, error := some (renderingOpportunityFailureDetails state) }
       | some traversableId =>
+        match startupTraversableReady? state.userAgent traversableId with
+        | none =>
+          { state }
+        | some _ =>
           match queueUpdateTheRendering state.userAgent traversableId with
           | some (userAgent, eventLoopId, eventLoopMessage) =>
-              {
-                state := { state with userAgent }
-                eventLoopDispatches := [{ eventLoopId, message := eventLoopMessage }]
-              }
+            {
+            state := { state with userAgent }
+            eventLoopDispatches := [{ eventLoopId, message := eventLoopMessage }]
+            }
           | none =>
-              { state, error := some (renderingOpportunityFailureDetails state) }
+                  { state }
   | .updateTheRenderingCompleted traversableId eventLoopId documentId =>
       match completeUpdateTheRendering state.userAgent traversableId eventLoopId documentId with
       | some userAgent =>
@@ -1493,10 +1511,14 @@ def handleUserAgentTaskMessagePure
                 error := some (updateTheRenderingCompletionFailureDetails traversableId eventLoopId)
               }
       | none =>
-          {
-            state
-            error := some (updateTheRenderingCompletionFailureDetails traversableId eventLoopId)
-          }
+          match dropPendingUpdateTheRenderingCompletion state.userAgent eventLoopId with
+          | some userAgent =>
+              { state := { state with userAgent } }
+          | none =>
+              {
+                state
+                error := some (updateTheRenderingCompletionFailureDetails traversableId eventLoopId)
+              }
   | .fetchCompleted fetchId response =>
       match UserAgent.pendingNavigationFetchByFetchId? state.userAgent fetchId with
       | some pendingNavigationFetch =>
@@ -1557,7 +1579,7 @@ private def notifyStartupTraversableReady
     (traversableId : Nat) :
     IO Unit := do
   let some _ := startupTraversableReady? userAgent traversableId | pure ()
-  FormalWeb.sendRuntimeMessage "NewTopLevelTraversable"
+  FormalWeb.sendEmbedderMessage "NewTopLevelTraversable"
 
 def runUserAgentMessage
     (enqueueFetchMessage : FetchTaskMessage -> IO Unit)

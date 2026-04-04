@@ -86,7 +86,7 @@ deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#document -/
 structure Document where
-  /-- Model-local handle for the host-side DOM object for https://dom.spec.whatwg.org/#concept-document -/
+  /-- Model-local handle for the embedder-side DOM object for https://dom.spec.whatwg.org/#concept-document -/
   ffiHandle : RustDocumentHandle
   /-- https://dom.spec.whatwg.org/#concept-document-type -/
   type : String := "html"

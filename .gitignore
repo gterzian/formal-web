@@ -7,3 +7,5 @@
 /scratchpad/
 /ffi/target/
 /servo/
+content_process/target/
+content_process_protocol/target/

@@ -18,7 +18,7 @@ inductive TaskStep
   | completeNav (navigationId : Nat)
   /-- Model-local UpdateTheRendering task step queued when rendering should be updated. -/
   | updateTheRendering
-  /-- Model-local task step queued when the host runtime dispatches a serialized UI event. -/
+  /-- Model-local task step queued when the embedder runtime dispatches a serialized UI event. -/
   | dispatchEvent
   /-- Model-local task step queued when the user agent requests a paint for the active document. -/
   | paint
@@ -146,6 +146,7 @@ deriving DecidableEq
 
 structure EventLoopTaskState where
   eventLoop : EventLoop
+  contentProcess : RustContentProcessPointer := { raw := 0 }
   documentPointers : Std.TreeMap RustDocumentHandle RustDocumentPointer := Std.TreeMap.empty
   pendingCreateEmptyDocumentTasks : List PendingCreateEmptyDocumentTask := []
   pendingCreateLoadedDocumentTasks : List PendingCreateLoadedDocumentTask := []
@@ -382,17 +383,13 @@ def runEventLoopMessage
   let result := handleEventLoopTaskMessagePure state message
   let mut nextState := result.state
   for effect in result.createEmptyDocumentEffects do
-    let pointer := createEmptyHtmlDocument ()
-    nextState := {
-      nextState with
-        documentPointers := nextState.documentPointers.insert effect.documentId pointer
-    }
+    contentProcessCreateEmptyDocument nextState.contentProcess.raw (USize.ofNat effect.documentId.id)
   for effect in result.createLoadedDocumentEffects do
-    let pointer := createLoadedHtmlDocument effect.url effect.body
-    nextState := {
-      nextState with
-        documentPointers := nextState.documentPointers.insert effect.documentId pointer
-    }
+    contentProcessCreateLoadedDocument
+      nextState.contentProcess.raw
+      (USize.ofNat effect.documentId.id)
+      effect.url
+      effect.body
   for effect in result.updateTheRenderingEffects do
     reportCompletion {
       traversableId := effect.traversableId
@@ -400,30 +397,42 @@ def runEventLoopMessage
       documentId := effect.documentId
     }
   for effect in result.dispatchEventEffects do
-    let some documentPointer := nextState.documentPointers.get? effect.documentId | pure ()
-    if documentPointer = RustDocumentPointer.null then
-      pure ()
-    else
-      let baseDocumentPointer := extractBaseDocument documentPointer.raw
-      applyUiEvent baseDocumentPointer.raw effect.event
+    contentProcessDispatchEvent
+      nextState.contentProcess.raw
+      (USize.ofNat effect.documentId.id)
+      effect.event
   for effect in result.paintEffects do
-    let some documentPointer := nextState.documentPointers.get? effect.documentId | pure ()
-    if documentPointer = RustDocumentPointer.null then
-      pure ()
-    else
-      let baseDocumentPointer := extractBaseDocument documentPointer.raw
-      queuePaint baseDocumentPointer.raw
+    contentProcessUpdateTheRendering
+      nextState.contentProcess.raw
+      (USize.ofNat effect.documentId.id)
   for effect in result.documentFetchCompletionEffects do
-    completeDocumentFetch effect.handler.raw effect.resolvedUrl effect.body
+    contentProcessCompleteDocumentFetch
+      nextState.contentProcess.raw
+      effect.handler.raw
+      effect.resolvedUrl
+      effect.body
   pure nextState
 
-partial def runEventLoop
+partial def runEventLoopLoop
     (channel : Std.CloseableChannel EventLoopTaskMessage)
     (reportCompletion : EventLoopTaskCompletion → IO Unit)
     (state : EventLoopTaskState) :
     IO Unit := do
   let some message ← recvCloseableChannel? channel | pure ()
   let state ← runEventLoopMessage reportCompletion state message
-  runEventLoop channel reportCompletion state
+  runEventLoopLoop channel reportCompletion state
+
+def runEventLoop
+    (channel : Std.CloseableChannel EventLoopTaskMessage)
+    (reportCompletion : EventLoopTaskCompletion → IO Unit)
+    (state : EventLoopTaskState) :
+    IO Unit := do
+  let contentProcess ← contentProcessStart (USize.ofNat state.eventLoop.id)
+  let state := { state with contentProcess }
+  try
+    runEventLoopLoop channel reportCompletion state
+  finally
+    if contentProcess.raw ≠ 0 then
+      contentProcessStop contentProcess.raw
 
 end FormalWeb

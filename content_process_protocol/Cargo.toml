@@ -1,0 +1,11 @@
+[package]
+name = "formalweb-content-process-protocol"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyrender = { version = "0.8", features = ["serde"] }
+ipc-channel = "0.21"
+peniko = "0.6.0"
+serde = { version = "1", features = ["derive"] }

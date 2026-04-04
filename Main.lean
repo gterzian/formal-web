@@ -89,17 +89,17 @@ def ensureEventLoopWorker
       eventLoopWorkersRef.modify (fun workers => worker :: workers)
 
 
-@[export formal_web_user_agent_note_rendering_opportunity]
+@[export userAgentNoteRenderingOpportunity]
 def userAgentNoteRenderingOpportunity (message : String) : IO Unit := do
   let _ := message
   spawnDetached <| enqueueUserAgentMessage .renderingOpportunity
 
-@[export formal_web_handle_runtime_message]
+@[export handleRuntimeMessage]
 def handleRuntimeMessageFromRust (message : String) : IO Unit := do
   let some userAgentMessage := FormalWeb.userAgentTaskMessageOfString? message | pure ()
   spawnDetached <| enqueueUserAgentMessage userAgentMessage
 
-@[export formal_web_start_document_fetch]
+@[export startDocumentFetch]
 def startDocumentFetchFromRust
     (handlerPointer : USize)
     (url : String)
@@ -134,7 +134,7 @@ def main : IO Unit := do
       match notification with
       | .fetchCompleted fetchId response =>
           trySendAndForget userAgentChannel (.fetchCompleted fetchId response)
-  FormalWeb.runWinitEventLoop ()
+  FormalWeb.runEmbedderEventLoop ()
   userAgentMessageChannelRef.set (none : Option (Std.CloseableChannel UserAgentTaskMessage))
   fetchMessageChannelRef.set (none : Option (Std.CloseableChannel FetchTaskMessage))
   fetchChannel.close

@@ -86,6 +86,53 @@
         font-size: 0.95rem;
         opacity: 0.85;
       }
+
+      .hover-probe {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.85rem 1.15rem;
+        border: 2px solid rgba(22, 55, 40, 0.28);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.58);
+        box-shadow: 0 10px 24px rgba(22, 55, 40, 0.1);
+        font-size: 0.98rem;
+        line-height: 1;
+        transition:
+          background 180ms ease,
+          border-color 180ms ease,
+          box-shadow 180ms ease,
+          transform 180ms ease,
+          color 180ms ease;
+      }
+
+      .hover-probe::before {
+        content: "Idle";
+        display: inline-grid;
+        place-items: center;
+        min-width: 3.5rem;
+        padding: 0.35rem 0.55rem;
+        border-radius: 999px;
+        background: rgba(22, 55, 40, 0.12);
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        transition: background 180ms ease, color 180ms ease;
+      }
+
+      .hover-probe:hover {
+        color: #fff7ea;
+        background: #1c5a45;
+        border-color: #1c5a45;
+        box-shadow: 0 18px 34px rgba(22, 55, 40, 0.22);
+        transform: translateY(-2px) scale(1.01);
+      }
+
+      .hover-probe:hover::before {
+        content: "Hover";
+        background: rgba(255, 247, 234, 0.2);
+        color: #fff7ea;
+      }
     </style>
   </head>
   <body>
@@ -126,6 +173,9 @@
         which fetches this checked-in artifact and then resumes
         <code>processNavigationFetchResponse</code>.
       </p>
+      <div class="hover-probe">
+        Static hover probe
+      </div>
       <p class="hint">Move the pointer across the page to exercise document-driven hover styling.</p>
     </main>
   </body>

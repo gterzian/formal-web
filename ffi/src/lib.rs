@@ -1,7 +1,10 @@
-use anyrender::WindowRenderer;
+mod content_bridge;
+#[allow(dead_code)]
+mod ui_event;
+
+use anyrender::{PaintScene, Scene as RenderScene, WindowRenderer};
 use anyrender_vello::VelloWindowRenderer;
 use blitz_dom::{BaseDocument, Document as BlitzDocument, DocumentConfig};
-use blitz_paint::paint_scene;
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
     BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords,
@@ -10,8 +13,10 @@ use blitz_traits::events::{
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, ShellProvider, Viewport};
 use blitz_html::HtmlDocument;
+use content_process_protocol::{ContentCommand, PaintFrame, ScrollOffset};
 use data_url::DataUrl;
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
+use kurbo::Affine;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, c_char};
 use std::panic::{self, AssertUnwindSafe};
@@ -38,25 +43,26 @@ pub struct lean_object {
 
 unsafe extern "C" {
     fn lean_mk_string_from_bytes(value: *const c_char, size: usize) -> *mut lean_object;
-    fn formal_web_handle_runtime_message(message: *mut lean_object) -> *mut lean_object;
-    fn formal_web_start_document_fetch(
+    fn handleRuntimeMessage(message: *mut lean_object) -> *mut lean_object;
+    fn startDocumentFetch(
         handler: usize,
         url: *mut lean_object,
         method: *mut lean_object,
         body: *mut lean_object,
     ) -> *mut lean_object;
-    fn formal_web_user_agent_note_rendering_opportunity(message: *mut lean_object) -> *mut lean_object;
-    fn formal_web_lean_io_result_mk_ok_unit() -> *mut lean_object;
-    fn formal_web_lean_io_result_mk_error_from_bytes(
+    fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
+    fn leanIoResultMkOkUnit() -> *mut lean_object;
+    fn leanIoResultMkOkUsize(value: usize) -> *mut lean_object;
+    fn leanIoResultMkErrorFromBytes(
         value: *const c_char,
         size: usize,
     ) -> *mut lean_object;
-    fn formal_web_lean_io_result_is_ok(result: *mut lean_object) -> u8;
-    fn formal_web_lean_io_result_show_error(result: *mut lean_object);
-    fn formal_web_lean_string_cstr(value: *mut lean_object) -> *const c_char;
-    fn formal_web_lean_byte_array_size(value: *mut lean_object) -> usize;
-    fn formal_web_lean_byte_array_cptr(value: *mut lean_object) -> *const u8;
-    fn formal_web_lean_dec(value: *mut lean_object);
+    fn leanIoResultIsOk(result: *mut lean_object) -> u8;
+    fn leanIoResultShowError(result: *mut lean_object);
+    fn leanStringCstr(value: *mut lean_object) -> *const c_char;
+    fn leanByteArraySize(value: *mut lean_object) -> usize;
+    fn leanByteArrayCptr(value: *mut lean_object) -> *const u8;
+    fn leanDec(value: *mut lean_object);
 }
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
@@ -70,9 +76,14 @@ const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE: &str = "NewTopLevelTraversable";
 const DISPATCH_EVENT_MESSAGE_PREFIX: &str = "DispatchEvent|";
 
 enum FormalWebUserEvent {
-    Paint(usize),
-    DocumentRequestRedraw,
+    Paint(PaintFrame),
+    EmbedderRequestRedraw,
     NewTopLevelTraversable,
+}
+
+struct EmbedderPaintFrame {
+    scene: RenderScene,
+    viewport_scroll: ScrollOffset,
 }
 
 struct DataOnlyNetProvider;
@@ -87,7 +98,7 @@ impl ShellProvider for FormalWebShellProvider {
     fn request_redraw(&self) {
         with_event_loop_proxy(|proxy| {
             if let Some(proxy) = proxy {
-                let _ = proxy.send_event(FormalWebUserEvent::DocumentRequestRedraw);
+                let _ = proxy.send_event(FormalWebUserEvent::EmbedderRequestRedraw);
             }
         });
     }
@@ -932,42 +943,60 @@ fn lean_string_from_owned(value: String) -> *mut lean_object {
 }
 
 fn ok_unit_result() -> *mut lean_object {
-    unsafe { formal_web_lean_io_result_mk_ok_unit() }
+    unsafe { leanIoResultMkOkUnit() }
+}
+
+fn ok_usize_result(value: usize) -> *mut lean_object {
+    unsafe { leanIoResultMkOkUsize(value) }
 }
 
 fn error_result(message: &str) -> *mut lean_object {
-    unsafe { formal_web_lean_io_result_mk_error_from_bytes(message.as_ptr() as *const c_char, message.len()) }
+    unsafe { leanIoResultMkErrorFromBytes(message.as_ptr() as *const c_char, message.len()) }
 }
 
 fn call_lean_runtime_message_handler(message: &str) {
     let lean_message = lean_string_from_owned(message.to_owned());
-    let io_result = unsafe { formal_web_handle_runtime_message(lean_message) };
+    let io_result = unsafe { handleRuntimeMessage(lean_message) };
 
-    let is_ok = unsafe { formal_web_lean_io_result_is_ok(io_result) } != 0;
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
     if !is_ok {
-        unsafe { formal_web_lean_io_result_show_error(io_result) };
+        unsafe { leanIoResultShowError(io_result) };
     }
 
-    unsafe { formal_web_lean_dec(io_result) };
+    unsafe { leanDec(io_result) };
 }
 
-fn call_lean_document_fetch_start(handler: usize, request: &Request) -> Result<(), String> {
-    let lean_url = lean_string_from_owned(request.url.to_string());
-    let lean_method = lean_string_from_owned(request.method.to_string());
-    let lean_body = lean_string_from_owned(request_body_string(&request.body));
+fn call_lean_document_fetch_start_parts(
+    handler: usize,
+    url: &str,
+    method: &str,
+    body: &str,
+) -> Result<(), String> {
+    let lean_url = lean_string_from_owned(url.to_owned());
+    let lean_method = lean_string_from_owned(method.to_owned());
+    let lean_body = lean_string_from_owned(body.to_owned());
     let io_result = unsafe {
-        formal_web_start_document_fetch(handler, lean_url, lean_method, lean_body)
+        startDocumentFetch(handler, lean_url, lean_method, lean_body)
     };
 
-    let is_ok = unsafe { formal_web_lean_io_result_is_ok(io_result) } != 0;
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
     if !is_ok {
-        unsafe { formal_web_lean_io_result_show_error(io_result) };
-        unsafe { formal_web_lean_dec(io_result) };
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
         return Err(String::from("Lean document fetch start failed"));
     }
 
-    unsafe { formal_web_lean_dec(io_result) };
+    unsafe { leanDec(io_result) };
     Ok(())
+}
+
+fn call_lean_document_fetch_start(handler: usize, request: &Request) -> Result<(), String> {
+    call_lean_document_fetch_start_parts(
+        handler,
+        &request.url.to_string(),
+        &request.method.to_string(),
+        &request_body_string(&request.body),
+    )
 }
 
 fn startup_runtime_message() -> Result<String, String> {
@@ -993,14 +1022,14 @@ fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, St
 
 fn user_agent_note_rendering_opportunity(message: &str) {
     let lean_message = lean_string_from_owned(message.to_owned());
-    let io_result = unsafe { formal_web_user_agent_note_rendering_opportunity(lean_message) };
+    let io_result = unsafe { userAgentNoteRenderingOpportunity(lean_message) };
 
-    let is_ok = unsafe { formal_web_lean_io_result_is_ok(io_result) } != 0;
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
     if !is_ok {
-        unsafe { formal_web_lean_io_result_show_error(io_result) };
+        unsafe { leanIoResultShowError(io_result) };
     }
 
-    unsafe { formal_web_lean_dec(io_result) };
+    unsafe { leanDec(io_result) };
 }
 
 fn with_event_loop_proxy<R>(f: impl FnOnce(&Option<EventLoopProxy<FormalWebUserEvent>>) -> R) -> R {
@@ -1011,21 +1040,19 @@ fn with_event_loop_proxy<R>(f: impl FnOnce(&Option<EventLoopProxy<FormalWebUserE
 }
 
 fn queue_paint(pointer: usize) -> Result<(), String> {
-    with_event_loop_proxy(|proxy| match proxy {
-        Some(proxy) => proxy
-            .send_event(FormalWebUserEvent::Paint(pointer))
-            .map_err(|error| format!("failed to queue paint event: {error}")),
-        None => Err(String::from("winit event loop proxy is not initialized")),
-    })
+    let _ = pointer;
+    Err(String::from(
+        "legacy in-process paint is unsupported; use content-process recorded paint frames",
+    ))
 }
 
 struct FormalWebApp {
     window: Option<Arc<Window>>,
     renderer: VelloWindowRenderer,
-    current_base_document: Option<usize>,
-    pending_base_document: Option<usize>,
+    current_paint_frame: Option<EmbedderPaintFrame>,
     saw_redraw_requested: bool,
     has_top_level_traversable: bool,
+    window_occluded: bool,
     animation_timer: Option<Instant>,
     keyboard_modifiers: Modifiers,
     buttons: MouseEventButtons,
@@ -1037,10 +1064,10 @@ impl Default for FormalWebApp {
         Self {
             window: None,
             renderer: VelloWindowRenderer::new(),
-            current_base_document: None,
-            pending_base_document: None,
+            current_paint_frame: None,
             saw_redraw_requested: false,
             has_top_level_traversable: false,
+            window_occluded: false,
             animation_timer: None,
             keyboard_modifiers: Modifiers::default(),
             buttons: MouseEventButtons::None,
@@ -1050,17 +1077,70 @@ impl Default for FormalWebApp {
 }
 
 impl FormalWebApp {
+    fn has_visible_viewport(&self) -> bool {
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+
+        if self.window_occluded {
+            return false;
+        }
+
+        if matches!(window.is_visible(), Some(false)) {
+            return false;
+        }
+
+        let size = window.inner_size();
+        size.width > 0 && size.height > 0
+    }
+
+    fn pointer_position_in_viewport(&self, position: PhysicalPosition<f64>) -> bool {
+        if !self.has_visible_viewport() {
+            return false;
+        }
+
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        let size = window.inner_size();
+        position.x >= 0.0
+            && position.y >= 0.0
+            && position.x < f64::from(size.width)
+            && position.y < f64::from(size.height)
+    }
+
+    fn request_visible_redraw(&self, reason: &str) {
+        if !self.has_visible_viewport() {
+            return;
+        }
+
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        window.request_redraw();
+        user_agent_note_rendering_opportunity(reason);
+    }
+
+    fn paint_frame(snapshot: PaintFrame) -> EmbedderPaintFrame {
+        EmbedderPaintFrame {
+            scene: snapshot.scene.into(),
+            viewport_scroll: snapshot.viewport_scroll,
+        }
+    }
+
     fn update_window_viewport_snapshot(window: &Window) {
         let viewport = viewport_for_window(window);
-        let mut snapshot = WINDOW_VIEWPORT_SNAPSHOT
-            .lock()
-            .expect("window viewport snapshot mutex poisoned");
-        *snapshot = Some((
+        let viewport_snapshot = (
             viewport.window_size.0,
             viewport.window_size.1,
             viewport.hidpi_scale,
             viewport.color_scheme,
-        ));
+        );
+        let mut snapshot = WINDOW_VIEWPORT_SNAPSHOT
+            .lock()
+            .expect("window viewport snapshot mutex poisoned");
+        *snapshot = Some(viewport_snapshot);
+        content_bridge::broadcast_viewport(Some(viewport_snapshot));
     }
 
     fn resume_renderer_for_window(&mut self, window: &Arc<Window>) {
@@ -1096,65 +1176,48 @@ impl FormalWebApp {
             .map_err(|error| format!("failed to create winit window: {error}"))
     }
 
-    fn paint_base_document(&mut self, pointer: usize) {
-        if pointer == 0 {
+    fn paint_current_frame(&mut self) {
+        if !self.has_visible_viewport() {
             return;
         }
 
-        let animation_time = self.current_animation_time();
+        let _ = self.current_animation_time();
         let Some(window) = self.window.as_ref() else {
             return;
         };
-
-        let base_document = unsafe { &mut *(pointer as *mut BaseDocument) };
-        base_document.set_viewport(viewport_for_window(window));
-        for pass in 0..3 {
-            base_document.resolve(animation_time);
-            let _ = pass;
-            if !base_document.has_pending_critical_resources() {
-                break;
-            }
-        }
-
-        let (width, height) = base_document.viewport().window_size;
-        let scale = base_document.viewport().scale_f64();
+        let Some(current_paint_frame) = self.current_paint_frame.as_ref() else {
+            return;
+        };
+        let size = window.inner_size();
 
         if self.renderer.is_active() {
-            self.renderer.set_size(width, height);
+            self.renderer.set_size(size.width, size.height);
         } else {
             let window_handle: Arc<dyn anyrender::WindowHandle> = window.clone();
-            self.renderer.resume(window_handle, width, height);
+            self.renderer.resume(window_handle, size.width, size.height);
         }
 
+        let scene_fragment = current_paint_frame.scene.clone();
         self.renderer.render(|scene| {
-            paint_scene(scene, &*base_document, scale, width, height, 0, 0)
+            scene.append_scene(scene_fragment, Affine::IDENTITY);
         });
     }
 
-    fn with_current_base_document<R>(&self, f: impl FnOnce(&BaseDocument) -> R) -> Option<R> {
-        let pointer = self.current_base_document?;
-        let base_document = unsafe { &*(pointer as *const BaseDocument) };
-        Some(f(base_document))
-    }
-
-    fn with_current_base_document_mut<R>(&mut self, f: impl FnOnce(&mut BaseDocument) -> R) -> Option<R> {
-        let pointer = self.current_base_document?;
-        let base_document = unsafe { &mut *(pointer as *mut BaseDocument) };
-        Some(f(base_document))
-    }
-
     fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
-        if let Some(coords) = self.with_current_base_document(|base_document| {
-            let scale = base_document.viewport().scale_f64();
+        if let Some(current_paint_frame) = self.current_paint_frame.as_ref() {
+            let scale = self
+                .window
+                .as_ref()
+                .map(|window| window.scale_factor())
+                .unwrap_or(1.0);
             let LogicalPosition::<f32> {
                 x: screen_x,
                 y: screen_y,
             } = position.to_logical(scale);
-            let viewport_scroll = base_document.viewport_scroll();
             let client_x = screen_x;
             let client_y = screen_y;
-            let page_x = client_x + viewport_scroll.x as f32;
-            let page_y = client_y + viewport_scroll.y as f32;
+            let page_x = client_x + current_paint_frame.viewport_scroll.x;
+            let page_y = client_y + current_paint_frame.viewport_scroll.y;
             PointerCoords {
                 screen_x,
                 screen_y,
@@ -1163,8 +1226,6 @@ impl FormalWebApp {
                 page_x,
                 page_y,
             }
-        }) {
-            coords
         } else {
             let scale = self
                 .window
@@ -1187,7 +1248,13 @@ impl FormalWebApp {
     }
 
     fn dispatch_ui_event(&mut self, event: UiEvent) {
+        if !self.has_visible_viewport() {
+            return;
+        }
         dispatch_event_runtime_message(event);
+        if self.has_top_level_traversable {
+            self.request_visible_redraw("ui_event");
+        }
     }
 }
 
@@ -1229,53 +1296,48 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
         match event {
             WindowEvent::RedrawRequested => {
                 self.saw_redraw_requested = true;
-                if let Some(pointer) = self.pending_base_document.take() {
-                    self.paint_base_document(pointer);
+                if self.current_paint_frame.is_some() {
+                    self.paint_current_frame();
                     self.saw_redraw_requested = false;
                 }
+            }
+            WindowEvent::Occluded(occluded) => {
+                self.window_occluded = occluded;
             }
             WindowEvent::Resized(size) => {
                 if let Some(window) = self.window.as_ref() {
                     Self::update_window_viewport_snapshot(window);
                 }
-                let _ = self.with_current_base_document_mut(|base_document| {
-                    let viewport = base_document.viewport().clone();
-                    base_document.set_viewport(Viewport::new(
-                        size.width,
-                        size.height,
-                        viewport.hidpi_scale,
-                        viewport.color_scheme,
-                    ));
-                });
                 if self.renderer.is_active() {
                     self.renderer.set_size(size.width, size.height);
                 }
                 if self.has_top_level_traversable {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                        user_agent_note_rendering_opportunity("request_redraw");
-                    }
+                    self.request_visible_redraw("request_redraw");
                 }
             }
             WindowEvent::CloseRequested => {
                 self.renderer.suspend();
                 self.animation_timer = None;
-                self.current_base_document = None;
+                self.current_paint_frame = None;
                 self.has_top_level_traversable = false;
+                self.window_occluded = false;
                 if let Ok(mut snapshot) = WINDOW_VIEWPORT_SNAPSHOT.lock() {
                     *snapshot = None;
                 }
+                content_bridge::broadcast_viewport(None);
                 self.window = None;
                 event_loop.exit();
             }
             WindowEvent::Destroyed => {
                 self.renderer.suspend();
                 self.animation_timer = None;
-                self.current_base_document = None;
+                self.current_paint_frame = None;
                 self.has_top_level_traversable = false;
+                self.window_occluded = false;
                 if let Ok(mut snapshot) = WINDOW_VIEWPORT_SNAPSHOT.lock() {
                     *snapshot = None;
                 }
+                content_bridge::broadcast_viewport(None);
                 self.window = None;
                 event_loop.exit();
             }
@@ -1296,6 +1358,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer_pos = position;
+                if !self.pointer_position_in_viewport(position) {
+                    return;
+                }
                 self.dispatch_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
                     id: BlitzPointerId::Mouse,
                     is_primary: true,
@@ -1307,6 +1372,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 }));
             }
             WindowEvent::MouseInput { button, state, .. } => {
+                if !self.pointer_position_in_viewport(self.pointer_pos) {
+                    return;
+                }
                 let coords = self.pointer_coords(self.pointer_pos);
                 let mapped_button = match button {
                     MouseButton::Left => MouseEventButton::Main,
@@ -1343,6 +1411,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 id,
                 ..
             }) => {
+                if !self.pointer_position_in_viewport(location) {
+                    return;
+                }
                 let coords = self.pointer_coords(location);
                 let event = BlitzPointerEvent {
                     id: BlitzPointerId::Finger(id),
@@ -1362,6 +1433,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if !self.pointer_position_in_viewport(self.pointer_pos) {
+                    return;
+                }
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(x, y) => BlitzWheelDelta::Lines(x as f64, y as f64),
                     MouseScrollDelta::PixelDelta(pos) => BlitzWheelDelta::Pixels(pos.x, pos.y),
@@ -1379,56 +1453,50 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
-            FormalWebUserEvent::Paint(pointer) => {
+            FormalWebUserEvent::Paint(snapshot) => {
                 let Some(_window) = self.window.as_ref() else {
                     return;
                 };
 
-                self.current_base_document = Some(pointer);
+                self.current_paint_frame = Some(Self::paint_frame(snapshot));
 
                 if self.saw_redraw_requested {
-                    self.paint_base_document(pointer);
+                    self.paint_current_frame();
                     self.saw_redraw_requested = false;
-                } else {
-                    self.pending_base_document = Some(pointer);
                 }
             }
-            FormalWebUserEvent::DocumentRequestRedraw => {
-                if self.has_top_level_traversable {
+            FormalWebUserEvent::EmbedderRequestRedraw => {
+                if self.has_visible_viewport() {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
-                        user_agent_note_rendering_opportunity("request_redraw");
                     }
                 }
             }
             FormalWebUserEvent::NewTopLevelTraversable => {
                 self.has_top_level_traversable = true;
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
-                    user_agent_note_rendering_opportunity("request_redraw");
-                }
+                self.request_visible_redraw("request_redraw");
             }
         }
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_create_empty_html_document(_: *mut lean_object) -> usize {
+pub extern "C" fn createEmptyHtmlDocument(_: *mut lean_object) -> usize {
     panic::catch_unwind(AssertUnwindSafe(|| create_html_document_pointer(EMPTY_HTML_DOCUMENT)))
         .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_create_loaded_html_document(
+pub extern "C" fn createLoadedHtmlDocument(
     base_url: *mut lean_object,
     html: *mut lean_object,
 ) -> usize {
     panic::catch_unwind(AssertUnwindSafe(|| {
-        let c_base_url = unsafe { formal_web_lean_string_cstr(base_url) };
+        let c_base_url = unsafe { leanStringCstr(base_url) };
         let base_url = unsafe { CStr::from_ptr(c_base_url) }
             .to_string_lossy()
             .into_owned();
-        let c_html = unsafe { formal_web_lean_string_cstr(html) };
+        let c_html = unsafe { leanStringCstr(html) };
         let html = unsafe { CStr::from_ptr(c_html) }
             .to_string_lossy()
             .into_owned();
@@ -1438,7 +1506,7 @@ pub extern "C" fn formal_web_create_loaded_html_document(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_render_html_document(pointer: usize) -> *mut lean_object {
+pub extern "C" fn renderHtmlDocument(pointer: usize) -> *mut lean_object {
     let html = panic::catch_unwind(AssertUnwindSafe(|| {
         if pointer == 0 {
             String::from("<null rust document pointer>")
@@ -1453,7 +1521,7 @@ pub extern "C" fn formal_web_render_html_document(pointer: usize) -> *mut lean_o
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_extract_base_document(pointer: usize) -> usize {
+pub extern "C" fn extractBaseDocument(pointer: usize) -> usize {
     panic::catch_unwind(AssertUnwindSafe(|| {
         if pointer == 0 {
             0
@@ -1467,7 +1535,7 @@ pub extern "C" fn formal_web_extract_base_document(pointer: usize) -> usize {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_queue_paint(pointer: usize, _: *mut lean_object) -> *mut lean_object {
+pub extern "C" fn queuePaint(pointer: usize, _: *mut lean_object) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| queue_paint(pointer))) {
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
@@ -1476,7 +1544,7 @@ pub extern "C" fn formal_web_queue_paint(pointer: usize, _: *mut lean_object) ->
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_apply_ui_event(
+pub extern "C" fn applyUiEvent(
     pointer: usize,
     event: *mut lean_object,
 ) -> *mut lean_object {
@@ -1485,7 +1553,7 @@ pub extern "C" fn formal_web_apply_ui_event(
             return Err(String::from("cannot apply UI event to null BaseDocument pointer"));
         }
 
-        let c_event = unsafe { formal_web_lean_string_cstr(event) };
+        let c_event = unsafe { leanStringCstr(event) };
         let event = unsafe { CStr::from_ptr(c_event) }
             .to_string_lossy()
             .into_owned();
@@ -1502,7 +1570,7 @@ pub extern "C" fn formal_web_apply_ui_event(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_complete_document_fetch(
+pub extern "C" fn completeDocumentFetch(
     handler: usize,
     resolved_url: *mut lean_object,
     bytes: *mut lean_object,
@@ -1514,13 +1582,13 @@ pub extern "C" fn formal_web_complete_document_fetch(
             ));
         }
 
-        let c_resolved_url = unsafe { formal_web_lean_string_cstr(resolved_url) };
+        let c_resolved_url = unsafe { leanStringCstr(resolved_url) };
         let resolved_url = unsafe { CStr::from_ptr(c_resolved_url) }
             .to_string_lossy()
             .into_owned();
 
-        let size = unsafe { formal_web_lean_byte_array_size(bytes) };
-        let bytes_ptr = unsafe { formal_web_lean_byte_array_cptr(bytes) };
+        let size = unsafe { leanByteArraySize(bytes) };
+        let bytes_ptr = unsafe { leanByteArrayCptr(bytes) };
         let payload = unsafe { std::slice::from_raw_parts(bytes_ptr, size) };
 
         let handler = unsafe { Box::from_raw(handler as *mut DocumentFetchHandler) };
@@ -1536,9 +1604,9 @@ pub extern "C" fn formal_web_complete_document_fetch(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_send_runtime_message(message: *mut lean_object) -> *mut lean_object {
+pub extern "C" fn sendEmbedderMessage(message: *mut lean_object) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        let c_message = unsafe { formal_web_lean_string_cstr(message) };
+        let c_message = unsafe { leanStringCstr(message) };
         let message = unsafe { CStr::from_ptr(c_message) }
             .to_string_lossy()
             .into_owned();
@@ -1557,7 +1625,7 @@ pub extern "C" fn formal_web_send_runtime_message(message: *mut lean_object) -> 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn formal_web_run_winit_event_loop(_: *mut lean_object) -> *mut lean_object {
+pub extern "C" fn runEmbedderEventLoop(_: *mut lean_object) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
         let event_loop = EventLoop::<FormalWebUserEvent>::with_user_event()
             .build()
@@ -1585,5 +1653,147 @@ pub extern "C" fn formal_web_run_winit_event_loop(_: *mut lean_object) -> *mut l
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic running winit event loop"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessStart(
+    event_loop_id: usize,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        content_bridge::start(event_loop_id)
+    })) {
+        Ok(Ok(handle)) => ok_usize_result(handle),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic starting content process"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessStop(
+    handle: usize,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| content_bridge::stop(handle))) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic stopping content process"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessCreateEmptyDocument(
+    handle: usize,
+    document_id: usize,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        content_bridge::send_command(
+            handle,
+            ContentCommand::CreateEmptyDocument {
+                document_id: document_id as u64,
+            },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic creating content-process document"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessCreateLoadedDocument(
+    handle: usize,
+    document_id: usize,
+    url: *mut lean_object,
+    body: *mut lean_object,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        let c_url = unsafe { leanStringCstr(url) };
+        let url = unsafe { CStr::from_ptr(c_url) }.to_string_lossy().into_owned();
+        let c_body = unsafe { leanStringCstr(body) };
+        let body = unsafe { CStr::from_ptr(c_body) }.to_string_lossy().into_owned();
+        content_bridge::send_command(
+            handle,
+            ContentCommand::CreateLoadedDocument {
+                document_id: document_id as u64,
+                url,
+                body,
+            },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic creating loaded content-process document"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessDispatchEvent(
+    handle: usize,
+    document_id: usize,
+    event: *mut lean_object,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        let c_event = unsafe { leanStringCstr(event) };
+        let event = unsafe { CStr::from_ptr(c_event) }.to_string_lossy().into_owned();
+        content_bridge::send_command(
+            handle,
+            ContentCommand::DispatchEvent {
+                document_id: document_id as u64,
+                event,
+            },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic dispatching content-process event"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessUpdateTheRendering(
+    handle: usize,
+    document_id: usize,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        content_bridge::send_command(
+            handle,
+            ContentCommand::UpdateTheRendering {
+                document_id: document_id as u64,
+            },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic running content-process update-the-rendering"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessCompleteDocumentFetch(
+    handle: usize,
+    handler_id: usize,
+    resolved_url: *mut lean_object,
+    bytes: *mut lean_object,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        let c_resolved_url = unsafe { leanStringCstr(resolved_url) };
+        let resolved_url = unsafe { CStr::from_ptr(c_resolved_url) }
+            .to_string_lossy()
+            .into_owned();
+        let size = unsafe { leanByteArraySize(bytes) };
+        let bytes_ptr = unsafe { leanByteArrayCptr(bytes) };
+        let payload = unsafe { std::slice::from_raw_parts(bytes_ptr, size) };
+        content_bridge::send_command(
+            handle,
+            ContentCommand::CompleteDocumentFetch {
+                handler_id: handler_id as u64,
+                resolved_url,
+                body: payload.to_vec(),
+            },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic completing content-process fetch"),
     }
 }

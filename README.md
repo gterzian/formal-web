@@ -10,17 +10,17 @@ Web engines require complicated concurrent coordination, which formal methods ca
 ├─────────────────────────────────┤
 │      Lean implementations       │  concurrent logic, I/O
 ├─────────────────────────────────┤
-│         Rust modules            │  algorithms, called via FFI ◀─┐
+│  Rust embedder + child procs   │  rendering, DOM/runtime I/O ◀─┐
 └─────────────────────────────────┘                               │
-                                        Lean impl ──FFI──────────▶┘
+                                        Lean impl ──FFI / IPC────▶┘
 ```
 
 - **TLA+ specs** for high-level design.
 - **Lean specs** model labeled transition systems — *what* the system does, as state transitions, without committing to an implementation.
 - **Lean implementations** use Lean's IO monad to implement the specs — *how* the system does it, with all concurrent logic handled here.
-- **Rust modules**, invoked from Lean via FFI, handle sequential and embarrassingly parallel algorithms. Each module is a referentially transparent function treated as atomic from Lean's perspective, and can be verified separately against its input/output contract.
+- **Rust embedder and content processes** handle window-system integration, DOM/runtime execution, and recorded paint-scene production. Lean starts them through a thin FFI layer and coordinates them with explicit messages.
 
-Lean handles all concurrent aspects of the engine; Rust handles modular sequential algorithms.
+Lean handles the engine-wide concurrent coordination; Rust handles embedder integration plus the per-event-loop content-process work.
 
 ## Motivation
 
@@ -28,7 +28,7 @@ Formal specs pair well with AI-assisted coding: given a Lean spec, an AI can wri
 
 ## Example
 
-In formal-web, all tabs run on the main process. Each tab gets a separate process running the event loop in Rust — managing the DOM, calling into JavaScript, and producing a display list. All coordination between the event loop and the rest of the engine is handled in Lean on the main process.
+In formal-web, the top-level windowing runtime lives in an embedder process. Each event loop then starts its own Rust content process, which owns the DOM/runtime work for that event loop and returns recorded paint scenes over IPC. All coordination between event loops, fetch, navigation, and the rest of the engine is handled in Lean.
 
 > **Note:** The DOM's recursive structure maps naturally onto inductive types, so running the event loop and layout entirely in Lean is feasible. Rust is used here as a practical choice to reuse existing code from [Servo](https://servo.org).
 
@@ -44,8 +44,11 @@ Prerequisites:
 ```bash
 lake build                                                        # full build
 lake build FormalWeb.UserAgent                                    # user-agent module only
-rustup run 1.92.0 cargo check --manifest-path ffi/Cargo.toml     # Rust FFI crate
+rustup run 1.92.0 cargo check --manifest-path ffi/Cargo.toml     # embedder-side Rust staticlib
+rustup run 1.92.0 cargo check --manifest-path content_process/Cargo.toml  # child content-process binary
 ```
+
+`lake build` builds the Lean code, the Rust static library under `ffi/`, and the `formalweb-content-process` child executable, then copies the child binary into `.lake/build/bin/` so the embedder can spawn it at runtime.
 
 ## Run
 
@@ -53,4 +56,12 @@ rustup run 1.92.0 cargo check --manifest-path ffi/Cargo.toml     # Rust FFI crat
 lake exe formal-web
 ```
 
-Starts the Rust `winit` event loop and the Lean runtime workers. Loads the demo page from `artifacts/StartupExample.html`.
+Starts the Rust embedder event loop plus the Lean runtime workers. As event loops come up, the embedder spawns the `formalweb-content-process` child executable and communicates with it over `ipc-channel`. The startup flow loads the demo page from `artifacts/StartupExample.html`.
+
+You can also run the built executable directly:
+
+```bash
+./.lake/build/bin/formal-web
+```
+
+This expects the sibling child binary `./.lake/build/bin/formalweb-content-process` produced by `lake build` to still be present.

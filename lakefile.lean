@@ -9,6 +9,8 @@ require mathlib from git
   "https://github.com/leanprover-community/mathlib4.git" @ "db6ec05280dd7ea0c2da72315667cca743e5832d"
 
 def ffiDir : FilePath := "ffi"
+def contentProcessDir : FilePath := "content_process"
+def contentProcessProtocolDir : FilePath := "content_process_protocol"
 def vendoredBlitzDir : FilePath := ffiDir / "vendor" / "blitz"
 def rustToolchain := "1.92.0"
 def macOSSDKPath : FilePath :=
@@ -54,6 +56,24 @@ input_dir ffiRustSources where
 input_dir ffiCSources where
   path := ffiDir / "src"
   filter := .extension <| .mem #["c", "h", "m"]
+  text := true
+
+input_file contentProcessCargoToml where
+  path := contentProcessDir / "Cargo.toml"
+  text := true
+
+input_dir contentProcessSources where
+  path := contentProcessDir / "src"
+  filter := .extension <| .mem #["rs"]
+  text := true
+
+input_file contentProcessProtocolCargoToml where
+  path := contentProcessProtocolDir / "Cargo.toml"
+  text := true
+
+input_dir contentProcessProtocolSources where
+  path := contentProcessProtocolDir / "src"
+  filter := .extension <| .mem #["rs"]
   text := true
 
 input_file vendoredBlitzWorkspaceCargoToml where
@@ -123,6 +143,10 @@ target formalwebffiStatic pkg : FilePath := do
   let ffiBuild ← ffiBuildScript.fetch
   let ffiSources ← ffiRustSources.fetch
   let ffiCSrcs ← ffiCSources.fetch
+  let contentProcessManifest ← contentProcessCargoToml.fetch
+  let contentProcessSrcs ← contentProcessSources.fetch
+  let contentProcessProtocolManifest ← contentProcessProtocolCargoToml.fetch
+  let contentProcessProtocolSrcs ← contentProcessProtocolSources.fetch
   let vendoredBlitzWorkspaceManifest ← vendoredBlitzWorkspaceCargoToml.fetch
   let vendoredBlitzHtmlManifest ← vendoredBlitzHtmlCargoToml.fetch
   let vendoredBlitzPaintManifest ← vendoredBlitzPaintCargoToml.fetch
@@ -138,13 +162,25 @@ target formalwebffiStatic pkg : FilePath := do
   let vendoredStyloTaffyManifest ← vendoredStyloTaffyCargoToml.fetch
   let vendoredStyloTaffySrcs ← vendoredStyloTaffySources.fetch
   let libName := nameToStaticLib "formalwebffi"
+  let contentProcessBinName :=
+    if System.Platform.isWindows then
+      "formalweb-content-process.exe"
+    else
+      "formalweb-content-process"
   let libFile := pkg.staticLibDir / libName
   let manifestPath := pkg.dir / ffiDir / "Cargo.toml"
   let builtLib := pkg.dir / ffiDir / "target" / "release" / libName
+  let contentProcessManifestPath := pkg.dir / contentProcessDir / "Cargo.toml"
+  let builtContentProcess := pkg.dir / contentProcessDir / "target" / "release" / contentProcessBinName
+  let copiedContentProcess := pkg.binDir / contentProcessBinName
   ffiManifest.bindM (sync := true) fun _ =>
   ffiBuild.bindM (sync := true) fun _ =>
   ffiSources.bindM (sync := true) fun _ =>
   ffiCSrcs.bindM (sync := true) fun _ =>
+  contentProcessManifest.bindM (sync := true) fun _ =>
+  contentProcessSrcs.bindM (sync := true) fun _ =>
+  contentProcessProtocolManifest.bindM (sync := true) fun _ =>
+  contentProcessProtocolSrcs.bindM (sync := true) fun _ =>
   vendoredBlitzWorkspaceManifest.bindM (sync := true) fun _ =>
   vendoredBlitzHtmlManifest.bindM (sync := true) fun _ =>
   vendoredBlitzPaintManifest.bindM (sync := true) fun _ =>
@@ -175,10 +211,28 @@ target formalwebffiStatic pkg : FilePath := do
         ]
         cwd := some pkg.dir
       }
+      proc {
+        cmd := "rustup"
+        args := #[
+          "run",
+          rustToolchain,
+          "cargo",
+          "build",
+          "--manifest-path",
+          contentProcessManifestPath.toString,
+          "--release"
+        ]
+        cwd := some pkg.dir
+      }
       createParentDirs libFile
+      createParentDirs copiedContentProcess
       proc {
         cmd := "cp"
         args := #[builtLib.toString, libFile.toString]
+      }
+      proc {
+        cmd := "cp"
+        args := #[builtContentProcess.toString, copiedContentProcess.toString]
       }
     return libFile
 
