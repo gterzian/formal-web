@@ -1,5 +1,6 @@
 import Std.Data.TreeMap
 import Std.Sync.Channel
+import Mathlib.Control.Monad.Writer
 import FormalWeb.FFI
 import FormalWeb.Navigation
 
@@ -146,55 +147,144 @@ structure SpawnedFetchTask where
   request : NavigationRequest
 deriving Repr, DecidableEq
 
-inductive FetchTaskResult where
-  | stateOnly (state : Fetch)
-  | notify (state : Fetch) (notifications : List FetchNotification)
-  | scheduleFetchTasks (state : Fetch) (toSpawnFetchTasks : List SpawnedFetchTask)
-deriving Repr
+inductive FetchEffect where
+  | startFetch (pendingRequest : PendingFetchRequest) (task : SpawnedFetchTask)
+  | startDocumentFetch (pendingRequest : DocumentFetchRequest) (task : SpawnedFetchTask)
+  | completeFetch (controllerId : Nat) (response : FetchResponse) (notification : FetchNotification)
+deriving Repr, DecidableEq
 
-namespace FetchTaskResult
+abbrev FetchM := WriterT (Array FetchEffect) (StateM Fetch)
 
-def state : FetchTaskResult → Fetch
-  | .stateOnly state => state
-  | .notify state _ => state
-  | .scheduleFetchTasks state _ => state
+namespace FetchM
 
-def notifications : FetchTaskResult → List FetchNotification
-  | .stateOnly _ => []
-  | .notify _ notifications => notifications
-  | .scheduleFetchTasks _ _ => []
+def emit (effect : FetchEffect) : FetchM Unit :=
+  tell #[effect]
 
-def toSpawnFetchTasks : FetchTaskResult → List SpawnedFetchTask
-  | .stateOnly _ => []
-  | .notify _ _ => []
-  | .scheduleFetchTasks _ toSpawnFetchTasks => toSpawnFetchTasks
+def startFetch
+    (pendingRequest : PendingFetchRequest)
+    (task : SpawnedFetchTask) : FetchM Unit :=
+  emit (.startFetch pendingRequest task)
 
-end FetchTaskResult
+def startDocumentFetch
+    (pendingRequest : DocumentFetchRequest)
+    (task : SpawnedFetchTask) : FetchM Unit :=
+  emit (.startDocumentFetch pendingRequest task)
 
-def handleFetchTaskMessagePure
-    (fetch : Fetch)
+def completeFetch
+    (controllerId : Nat)
+    (response : FetchResponse)
+    (notification : FetchNotification) : FetchM Unit :=
+  emit (.completeFetch controllerId response notification)
+
+end FetchM
+
+def startNavigationFetchM
+    (pendingRequest : PendingFetchRequest) :
+    FetchM Unit := fun fetch =>
+  let (nextFetch, controller) := conceptNavigationFetch fetch pendingRequest
+  (((), #[FetchEffect.startFetch pendingRequest {
+    controllerId := controller.id
+    request := pendingRequest.request
+  }]), nextFetch)
+
+def startDocumentFetchM
+    (pendingRequest : DocumentFetchRequest) :
+    FetchM Unit := fun fetch =>
+  let (nextFetch, controller) := conceptDocumentFetch fetch pendingRequest
+  (((), #[FetchEffect.startDocumentFetch pendingRequest {
+    controllerId := controller.id
+    request := pendingRequest.request
+  }]), nextFetch)
+
+def finishFetchM
+    (controllerId : Nat)
+    (response : FetchResponse) :
+    FetchM Unit := fun fetch =>
+  let (nextFetch, pendingFetch?) := completeFetch fetch controllerId
+  match pendingFetch? with
+  | none =>
+      (((), #[]), nextFetch)
+  | some _ =>
+      (((), #[FetchEffect.completeFetch controllerId response (.fetchCompleted controllerId response)]), nextFetch)
+
+def handleFetchTaskMessage
     (message : FetchTaskMessage) :
-    FetchTaskResult :=
+    FetchM Unit :=
   match message with
   | .startFetch pendingRequest =>
-      let (fetch, controller) := conceptNavigationFetch fetch pendingRequest
-      .scheduleFetchTasks fetch [{ controllerId := controller.id, request := pendingRequest.request }]
+      startNavigationFetchM pendingRequest
   | .startDocumentFetch pendingRequest =>
-      let (fetch, controller) := conceptDocumentFetch fetch pendingRequest
-      .scheduleFetchTasks fetch [{ controllerId := controller.id, request := pendingRequest.request }]
+      startDocumentFetchM pendingRequest
   | .finishFetch controllerId response =>
-      let (fetch, pendingFetch?) := completeFetch fetch controllerId
-      match pendingFetch? with
-      | none =>
-          .stateOnly fetch
-      | some _pendingFetch =>
-        .notify fetch [.fetchCompleted controllerId response]
+      finishFetchM controllerId response
+
+def runFetchMonadic
+    (fetch : Fetch)
+    (message : FetchTaskMessage) :
+    Array FetchEffect × Fetch :=
+  let (((), effects), nextFetch) :=
+    (handleFetchTaskMessage message).run fetch
+  (effects, nextFetch)
+
+@[simp] theorem runFetchMonadic_startFetch
+    (fetch : Fetch)
+    (pendingRequest : PendingFetchRequest) :
+    runFetchMonadic fetch (.startFetch pendingRequest) =
+      (
+        #[
+          FetchEffect.startFetch
+            pendingRequest
+            {
+              controllerId := (conceptNavigationFetch fetch pendingRequest).2.id
+              request := pendingRequest.request
+            }
+        ],
+        (conceptNavigationFetch fetch pendingRequest).1
+      ) := by
+  rfl
+
+@[simp] theorem runFetchMonadic_startDocumentFetch
+    (fetch : Fetch)
+    (pendingRequest : DocumentFetchRequest) :
+    runFetchMonadic fetch (.startDocumentFetch pendingRequest) =
+      (
+        #[
+          FetchEffect.startDocumentFetch
+            pendingRequest
+            {
+              controllerId := (conceptDocumentFetch fetch pendingRequest).2.id
+              request := pendingRequest.request
+            }
+        ],
+        (conceptDocumentFetch fetch pendingRequest).1
+      ) := by
+  rfl
+
+    @[simp] theorem completeFetch_none
+      (fetch : Fetch)
+      (controllerId : Nat)
+      (hlookup : fetch.pendingFetches[controllerId]? = none) :
+      completeFetch fetch controllerId = (fetch, none) := by
+      cases fetch with
+      | mk pendingFetches =>
+        simp [completeFetch, hlookup]
+
+    @[simp] theorem completeFetch_some
+      (fetch : Fetch)
+      (controllerId : Nat)
+      (pendingFetch : PendingFetch)
+      (hlookup : fetch.pendingFetches[controllerId]? = some pendingFetch) :
+      completeFetch fetch controllerId =
+        ({ fetch with pendingFetches := fetch.pendingFetches.erase controllerId }, some pendingFetch) := by
+      cases fetch with
+      | mk pendingFetches =>
+        simp [completeFetch, hlookup]
 
 def fetchTaskStep
     (fetch : Fetch)
     (message : FetchTaskMessage) :
     Fetch :=
-  (handleFetchTaskMessagePure fetch message).state
+  (runFetchMonadic fetch message).2
 
 def fetchTaskExec
     (fetch : Fetch)
@@ -318,18 +408,16 @@ def runFetchMessage
     (fetch : Fetch)
     (message : FetchTaskMessage) :
     IO Fetch := do
-  let result := handleFetchTaskMessagePure fetch message
-  match result with
-  | .stateOnly nextFetch =>
-      pure nextFetch
-  | .notify nextFetch notifications =>
-      for notification in notifications do
+  let (effects, nextFetch) := runFetchMonadic fetch message
+  for effect in effects do
+    match effect with
+    | .startFetch _ task =>
+        spawnFetchRequestTask channel task.controllerId task.request
+    | .startDocumentFetch _ task =>
+        spawnFetchRequestTask channel task.controllerId task.request
+    | .completeFetch _ _ notification =>
         onNotification notification
-      pure nextFetch
-  | .scheduleFetchTasks nextFetch toSpawnFetchTasks =>
-      for toSpawnFetchTask in toSpawnFetchTasks do
-        spawnFetchRequestTask channel toSpawnFetchTask.controllerId toSpawnFetchTask.request
-      pure nextFetch
+  pure nextFetch
 
 /-- Process fetch-task messages until the channel is closed. -/
 partial def runFetch

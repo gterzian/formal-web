@@ -1,5 +1,6 @@
 import Std.Data.TreeMap
 import Std.Sync.Channel
+import Mathlib.Control.Monad.Writer
 import FormalWeb.Document
 import FormalWeb.FFI
 import FormalWeb.Fetch
@@ -70,7 +71,7 @@ structure EventLoopTaskCompletion where
   traversableId : Nat
   eventLoopId : Nat
   documentId : DocumentId
-deriving DecidableEq
+deriving Repr, DecidableEq
 
 namespace EventLoop
 
@@ -157,180 +158,140 @@ structure EventLoopTaskState where
 instance : Inhabited EventLoopTaskState where
   default := { eventLoop := { id := 0 } }
 
-structure CreateEmptyDocumentEffect where
-  documentId : DocumentId
-deriving DecidableEq
+inductive EventLoopRuntimeEffect where
+  | createEmptyDocument (documentId : DocumentId)
+  | createLoadedDocument (documentId : DocumentId) (url : String) (body : String)
+  | updateTheRendering (completion : EventLoopTaskCompletion)
+  | dispatchEvent (documentId : DocumentId) (event : String)
+  | paint (documentId : DocumentId)
+  | documentFetchCompletion
+      (handler : RustNetHandlerPointer)
+      (resolvedUrl : String)
+      (body : ByteArray)
+deriving Repr, DecidableEq
 
-structure CreateLoadedDocumentEffect where
-  documentId : DocumentId
-  url : String
-  body : String
-deriving DecidableEq
+inductive EventLoopEffect where
+  | queueTask (task : Task)
+  | runNextTask (task : Task) (runtimeEffect? : Option EventLoopRuntimeEffect)
+deriving Repr, DecidableEq
 
-structure UpdateTheRenderingEffect where
-  traversableId : Nat
-  eventLoopId : Nat
-  documentId : DocumentId
-deriving DecidableEq
+abbrev EventLoopM := WriterT (Array EventLoopEffect) (StateM EventLoopTaskState)
 
-structure DispatchEventEffect where
-  documentId : DocumentId
-  event : String
-deriving DecidableEq
+namespace EventLoopM
 
-structure PaintEffect where
-  documentId : DocumentId
-deriving DecidableEq
+def emit (effect : EventLoopEffect) : EventLoopM Unit :=
+  tell #[effect]
 
-structure DocumentFetchCompletionEffect where
-  handler : RustNetHandlerPointer
-  resolvedUrl : String
-  body : ByteArray
-deriving DecidableEq
+def queueTask (task : Task) : EventLoopM Unit :=
+  emit (.queueTask task)
 
-structure EventLoopTaskResult where
-  state : EventLoopTaskState
-  createEmptyDocumentEffects : List CreateEmptyDocumentEffect := []
-  createLoadedDocumentEffects : List CreateLoadedDocumentEffect := []
-  updateTheRenderingEffects : List UpdateTheRenderingEffect := []
-  dispatchEventEffects : List DispatchEventEffect := []
-  paintEffects : List PaintEffect := []
-  documentFetchCompletionEffects : List DocumentFetchCompletionEffect := []
+def runNextTask (task : Task) (runtimeEffect? : Option EventLoopRuntimeEffect) : EventLoopM Unit :=
+  emit (.runNextTask task runtimeEffect?)
 
-private def runNextQueuedTask
-    (state : EventLoopTaskState) :
-    EventLoopTaskResult :=
+end EventLoopM
+
+def runNextQueuedTaskM : EventLoopM Unit := fun state =>
   match state.eventLoop.takeNextTask? with
   | none =>
-      { state }
+      (((), #[]), state)
   | some (task, eventLoop) =>
-      let state := { state with eventLoop }
-      match task.step with
-      | .createEmptyDocument =>
-          match state.pendingCreateEmptyDocumentTasks with
-          | [] =>
-              { state }
-          | pendingTask :: pendingTasks =>
-              {
-                state := {
-                  state with
-                    pendingCreateEmptyDocumentTasks := pendingTasks
-                }
-                createEmptyDocumentEffects := [{ documentId := pendingTask.documentId }]
-              }
-      | .createLoadedDocument =>
-          match state.pendingCreateLoadedDocumentTasks with
-          | [] =>
-              { state }
-          | pendingTask :: pendingTasks =>
-              {
-                state := {
-                  state with
-                    pendingCreateLoadedDocumentTasks := pendingTasks
-                }
-                createLoadedDocumentEffects := [{
-                  documentId := pendingTask.documentId
-                  url := pendingTask.url
-                  body := pendingTask.body
-                }]
-              }
-      | .updateTheRendering =>
-          match state.pendingUpdateTheRenderingTasks with
-          | [] =>
-              { state }
-          | pendingTask :: pendingTasks =>
-              {
-                state := {
-                  state with
-                    pendingUpdateTheRenderingTasks := pendingTasks
-                }
-                updateTheRenderingEffects := [{
+      let baseState := { state with eventLoop }
+      let (runtimeEffect?, nextState) :=
+        match task.step with
+        | .createEmptyDocument =>
+            match state.pendingCreateEmptyDocumentTasks with
+            | [] =>
+                (none, baseState)
+            | pendingTask :: pendingTasks =>
+                (some (.createEmptyDocument pendingTask.documentId),
+                  { baseState with pendingCreateEmptyDocumentTasks := pendingTasks })
+        | .createLoadedDocument =>
+            match state.pendingCreateLoadedDocumentTasks with
+            | [] =>
+                (none, baseState)
+            | pendingTask :: pendingTasks =>
+                (some (.createLoadedDocument pendingTask.documentId pendingTask.url pendingTask.body),
+                  { baseState with pendingCreateLoadedDocumentTasks := pendingTasks })
+        | .updateTheRendering =>
+            match state.pendingUpdateTheRenderingTasks with
+            | [] =>
+                (none, baseState)
+            | pendingTask :: pendingTasks =>
+                let completion : EventLoopTaskCompletion := {
                   traversableId := pendingTask.traversableId
                   eventLoopId := eventLoop.id
                   documentId := pendingTask.documentId
-                }]
-              }
-      | .dispatchEvent =>
-          match state.pendingDispatchEventTasks with
-          | [] =>
-              { state }
-          | pendingTask :: pendingTasks =>
-              {
-                state := {
-                  state with
-                    pendingDispatchEventTasks := pendingTasks
                 }
-                dispatchEventEffects := [{
-                  documentId := pendingTask.documentId
-                  event := pendingTask.event
-                }]
-              }
-      | .paint =>
-          match state.pendingPaintTasks with
-          | [] =>
-              { state }
-          | pendingTask :: pendingTasks =>
-              {
-                state := {
-                  state with
-                    pendingPaintTasks := pendingTasks
-                }
-                paintEffects := [{ documentId := pendingTask.documentId }]
-              }
-      | .completeDocumentFetch =>
-          match state.pendingDocumentFetchCompletionTasks with
-          | [] =>
-              { state }
-          | pendingTask :: pendingTasks =>
-              {
-                state := {
-                  state with
-                    pendingDocumentFetchCompletionTasks := pendingTasks
-                }
-                documentFetchCompletionEffects := [{
-                  handler := pendingTask.handler
-                  resolvedUrl := pendingTask.resolvedUrl
-                  body := pendingTask.body
-                }]
-              }
-      | _ =>
-          { state }
+                (some (.updateTheRendering completion),
+                  { baseState with pendingUpdateTheRenderingTasks := pendingTasks })
+        | .dispatchEvent =>
+            match state.pendingDispatchEventTasks with
+            | [] =>
+                (none, baseState)
+            | pendingTask :: pendingTasks =>
+                (some (.dispatchEvent pendingTask.documentId pendingTask.event),
+                  { baseState with pendingDispatchEventTasks := pendingTasks })
+        | .paint =>
+            match state.pendingPaintTasks with
+            | [] =>
+                (none, baseState)
+            | pendingTask :: pendingTasks =>
+                (some (.paint pendingTask.documentId),
+                  { baseState with pendingPaintTasks := pendingTasks })
+        | .completeDocumentFetch =>
+            match state.pendingDocumentFetchCompletionTasks with
+            | [] =>
+                (none, baseState)
+            | pendingTask :: pendingTasks =>
+                (some (.documentFetchCompletion pendingTask.handler pendingTask.resolvedUrl pendingTask.body),
+                  { baseState with pendingDocumentFetchCompletionTasks := pendingTasks })
+        | _ =>
+            (none, baseState)
+      (((), #[EventLoopEffect.runNextTask task runtimeEffect?]), nextState)
 
-def handleEventLoopTaskMessagePure
+def enqueueAndRunNext
     (state : EventLoopTaskState)
+    (task : Task) :
+    Array EventLoopEffect × EventLoopTaskState :=
+  let (((), nextEffects), nextState) := runNextQueuedTaskM state
+  (#[EventLoopEffect.queueTask task] ++ nextEffects, nextState)
+
+def handleEventLoopTaskMessage
     (message : EventLoopTaskMessage) :
-    EventLoopTaskResult :=
+    EventLoopM Unit := fun state =>
   match message with
   | .createEmptyDocument documentId =>
+      let task : Task := {
+        step := .createEmptyDocument
+        documentId := some documentId.id
+      }
       let state := {
         state with
-          eventLoop := state.eventLoop.enqueueTask {
-            step := .createEmptyDocument
-            documentId := some documentId.id
-          }
+          eventLoop := state.eventLoop.enqueueTask task
           pendingCreateEmptyDocumentTasks :=
             state.pendingCreateEmptyDocumentTasks.concat { documentId }
       }
-      runNextQueuedTask state
+      let (effects, nextState) := enqueueAndRunNext state task
+      (((), effects), nextState)
   | .createLoadedDocument documentId url body =>
+      let task : Task := {
+        step := .createLoadedDocument
+        documentId := some documentId.id
+      }
       let state := {
         state with
-          eventLoop := state.eventLoop.enqueueTask {
-            step := .createLoadedDocument
-            documentId := some documentId.id
-          }
+          eventLoop := state.eventLoop.enqueueTask task
           pendingCreateLoadedDocumentTasks :=
             state.pendingCreateLoadedDocumentTasks.concat { documentId, url, body }
       }
-      runNextQueuedTask state
+      let (effects, nextState) := enqueueAndRunNext state task
+      (((), effects), nextState)
   | .queueUpdateTheRendering traversableId documentId =>
+      let task : Task := { step := .updateTheRendering }
       let shouldAppendTask := !state.eventLoop.hasPendingUpdateTheRendering
       let pendingUpdateTheRenderingTasks :=
         if shouldAppendTask then
-          state.pendingUpdateTheRenderingTasks.concat {
-            traversableId
-            documentId
-          }
+          state.pendingUpdateTheRenderingTasks.concat { traversableId, documentId }
         else
           state.pendingUpdateTheRenderingTasks
       let state := {
@@ -338,35 +299,50 @@ def handleEventLoopTaskMessagePure
           eventLoop := state.eventLoop.enqueueUpdateTheRenderingTask
           pendingUpdateTheRenderingTasks
       }
-      runNextQueuedTask state
+      let (effects, nextState) := enqueueAndRunNext state task
+      (((), effects), nextState)
   | .queueDispatchEvent documentId event =>
+      let task : Task := {
+        step := .dispatchEvent
+        documentId := some documentId.id
+      }
       let state := {
         state with
-          eventLoop := state.eventLoop.enqueueTask {
-            step := .dispatchEvent
-            documentId := some documentId.id
-          }
+          eventLoop := state.eventLoop.enqueueTask task
           pendingDispatchEventTasks := state.pendingDispatchEventTasks.concat { documentId, event }
       }
-      runNextQueuedTask state
+      let (effects, nextState) := enqueueAndRunNext state task
+      (((), effects), nextState)
   | .queuePaint documentId =>
+      let task : Task := {
+        step := .paint
+        documentId := some documentId.id
+      }
       let state := {
         state with
-          eventLoop := state.eventLoop.enqueueTask {
-            step := .paint
-            documentId := some documentId.id
-          }
+          eventLoop := state.eventLoop.enqueueTask task
           pendingPaintTasks := state.pendingPaintTasks.concat { documentId }
       }
-      runNextQueuedTask state
+      let (effects, nextState) := enqueueAndRunNext state task
+      (((), effects), nextState)
   | .queueDocumentFetchCompletion handler resolvedUrl body =>
+      let task : Task := { step := .completeDocumentFetch }
       let state := {
         state with
-          eventLoop := state.eventLoop.enqueueTask { step := .completeDocumentFetch }
+          eventLoop := state.eventLoop.enqueueTask task
           pendingDocumentFetchCompletionTasks :=
             state.pendingDocumentFetchCompletionTasks.concat { handler, resolvedUrl, body }
       }
-      runNextQueuedTask state
+      let (effects, nextState) := enqueueAndRunNext state task
+      (((), effects), nextState)
+
+def runEventLoopMonadic
+    (state : EventLoopTaskState)
+    (message : EventLoopTaskMessage) :
+    Array EventLoopEffect × EventLoopTaskState :=
+  let (((), effects), nextState) :=
+    (handleEventLoopTaskMessage message).run state
+  (effects, nextState)
 
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
@@ -379,37 +355,40 @@ def runEventLoopMessage
     (state : EventLoopTaskState)
     (message : EventLoopTaskMessage) :
     IO EventLoopTaskState := do
-  let result := handleEventLoopTaskMessagePure state message
-  let mut nextState := result.state
-  for effect in result.createEmptyDocumentEffects do
-    contentProcessCreateEmptyDocument nextState.contentProcess.raw (USize.ofNat effect.documentId.id)
-  for effect in result.createLoadedDocumentEffects do
-    contentProcessCreateLoadedDocument
-      nextState.contentProcess.raw
-      (USize.ofNat effect.documentId.id)
-      effect.url
-      effect.body
-  for effect in result.updateTheRenderingEffects do
-    reportCompletion {
-      traversableId := effect.traversableId
-      eventLoopId := effect.eventLoopId
-      documentId := effect.documentId
-    }
-  for effect in result.dispatchEventEffects do
-    contentProcessDispatchEvent
-      nextState.contentProcess.raw
-      (USize.ofNat effect.documentId.id)
-      effect.event
-  for effect in result.paintEffects do
-    contentProcessUpdateTheRendering
-      nextState.contentProcess.raw
-      (USize.ofNat effect.documentId.id)
-  for effect in result.documentFetchCompletionEffects do
-    contentProcessCompleteDocumentFetch
-      nextState.contentProcess.raw
-      effect.handler.raw
-      effect.resolvedUrl
-      effect.body
+  let (effects, nextState) := runEventLoopMonadic state message
+  for effect in effects do
+    match effect with
+    | .queueTask _ =>
+        pure ()
+    | .runNextTask _ runtimeEffect? =>
+        match runtimeEffect? with
+        | none =>
+            pure ()
+        | some (.createEmptyDocument documentId) =>
+            contentProcessCreateEmptyDocument nextState.contentProcess.raw (USize.ofNat documentId.id)
+        | some (.createLoadedDocument documentId url body) =>
+            contentProcessCreateLoadedDocument
+              nextState.contentProcess.raw
+              (USize.ofNat documentId.id)
+              url
+              body
+        | some (.updateTheRendering completion) =>
+            reportCompletion completion
+        | some (.dispatchEvent documentId event) =>
+            contentProcessDispatchEvent
+              nextState.contentProcess.raw
+              (USize.ofNat documentId.id)
+              event
+        | some (.paint documentId) =>
+            contentProcessUpdateTheRendering
+              nextState.contentProcess.raw
+              (USize.ofNat documentId.id)
+        | some (.documentFetchCompletion handler resolvedUrl body) =>
+            contentProcessCompleteDocumentFetch
+              nextState.contentProcess.raw
+              handler.raw
+              resolvedUrl
+              body
   pure nextState
 
 partial def runEventLoopLoop
