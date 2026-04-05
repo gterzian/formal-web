@@ -7,6 +7,5 @@
 /scratchpad/
 /ffi/target/
 /embedder/target/
-/servo/
 content/target/
 ipc_messages/target/

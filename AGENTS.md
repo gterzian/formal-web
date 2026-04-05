@@ -67,6 +67,7 @@ This file is for durable project-wide lessons and guidance only, not task-by-tas
 - When a runtime worker wraps a pure `handle...Pure` transition that already returns the next state plus side-effect intents, reuse `result.state` in the IO wrapper instead of recomputing the same single-message step separately.
 - If fetch work is spawned directly as an external side effect of handling runtime messages, keep the runtime queue typed by `RuntimeMessage`, update `RuntimeState.fetch` inside `handleRuntimeMessagePure`, and have background fetch tasks report completion with a `fetchCompleted controllerId ...` runtime message.
 - Keep executable runtime plumbing in `FormalWeb/UserAgent.lean` and `FormalWeb/Fetch.lean`, and keep proof-only LTS layers plus refinement theorems in `FormalWeb/Proofs/*Proof.lean` companion modules.
+- Track the currently selected top-level tab/window on `TopLevelTraversable` itself via an active flag in `UserAgent.topLevelTraversableSet`; do not keep that selection in separate runtime wrapper state.
 - Prefer a shared relational `TransitionSystem.LTS` layer for proof-facing models, with subsystem-specific action types and `TransitionTrace` proofs over the relation rather than ad hoc partial-step functions per proof file.
 - Keep proof-only transition helper modules such as `TransitionSystem` and `TransitionTrace` under `FormalWeb/Proofs/`, not at the top level.
 - Use `lean-lsp-mcp` when working in Lean, it is documented at `/scratchpad/lean-lsp-mcp/README.md`. Read the documentation before attempting to prove anything in Lean.

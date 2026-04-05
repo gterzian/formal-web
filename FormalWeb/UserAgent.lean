@@ -22,7 +22,7 @@ The user agent is the top-level global state for the browser model.
 -/
 structure UserAgent where
   /-- Model-local allocator state for https://dom.spec.whatwg.org/#concept-document -/
-  nextRustDocumentHandleId : Nat := 0
+  nextDocumentId : Nat := 0
   /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#agent-cluster -/
   nextAgentClusterId : Nat := 0
   /-- Model-local allocator state for https://tc39.es/ecma262/#sec-agents -/
@@ -69,13 +69,13 @@ def eventLoop?
     Option EventLoop :=
   userAgent.eventLoops.get? eventLoopId
 
-def allocateRustDocumentHandle (userAgent : UserAgent) : UserAgent × RustDocumentHandle :=
-  let handle : RustDocumentHandle := { id := userAgent.nextRustDocumentHandleId }
+def allocateDocumentId (userAgent : UserAgent) : UserAgent × DocumentId :=
+  let documentId : DocumentId := { id := userAgent.nextDocumentId }
   let userAgent := {
     userAgent with
-      nextRustDocumentHandleId := userAgent.nextRustDocumentHandleId + 1
+      nextDocumentId := userAgent.nextDocumentId + 1
   }
-  (userAgent, handle)
+  (userAgent, documentId)
 
 def allocateAgentClusterId (userAgent : UserAgent) : UserAgent × Nat :=
   let agentClusterId := userAgent.nextAgentClusterId
@@ -190,11 +190,11 @@ def takePendingDocumentFetch
   }
   (userAgent, result)
 
-private def allocateRustDocumentHandleM : M RustDocumentHandle := do
+private def allocateDocumentIdM : M DocumentId := do
   let userAgent ← get
-  let (userAgent, handle) := userAgent.allocateRustDocumentHandle
+  let (userAgent, documentId) := userAgent.allocateDocumentId
   set userAgent
-  pure handle
+  pure documentId
 
 private def allocateFetchIdM : M Nat := do
   let userAgent ← get
@@ -240,20 +240,64 @@ def traversable?
     Option TopLevelTraversable :=
   userAgent.topLevelTraversableSet.find? traversableId
 
-def activeDocumentHandle?
+def activeTraversable?
+    (userAgent : UserAgent) :
+    Option TopLevelTraversable :=
+  let rec loop (index remaining : Nat) : Option TopLevelTraversable :=
+    match remaining with
+    | 0 => none
+    | remaining + 1 =>
+        match traversable? userAgent index with
+        | some traversable =>
+            if traversable.isActive then
+              some traversable
+            else
+              loop (index + 1) remaining
+        | none =>
+            loop (index + 1) remaining
+  loop 0 userAgent.topLevelTraversableSet.members.size
+
+def activeTraversableId?
+    (userAgent : UserAgent) :
+    Option Nat :=
+  (activeTraversable? userAgent).map (·.id)
+
+def setActiveTraversable
+    (userAgent : UserAgent)
+    (activeTraversableId : Nat) :
+    UserAgent :=
+  let userAgent :=
+    match activeTraversable? userAgent with
+    | some activeTraversable =>
+        if activeTraversable.id = activeTraversableId then
+          userAgent
+        else
+          replaceTraversable userAgent { activeTraversable with isActive := false }
+    | none =>
+        userAgent
+  match traversable? userAgent activeTraversableId with
+  | some traversable =>
+      if traversable.isActive then
+        userAgent
+      else
+        replaceTraversable userAgent { traversable with isActive := true }
+  | none =>
+      userAgent
+
+def activeDocumentId?
     (userAgent : UserAgent)
     (traversableId : Nat) :
-    Option RustDocumentHandle := do
+    Option DocumentId := do
   let some traversable := traversable? userAgent traversableId | none
   let some document := traversable.toTraversableNavigable.activeDocument | none
-  pure document.ffiHandle
+  pure document.documentId
 
 def queueCreateEmptyDocument
     (userAgent : UserAgent)
     (document : Document) :
     Option (Nat × EventLoopTaskMessage) := do
   let _eventLoop <- userAgent.eventLoop? document.eventLoopId
-  pure (document.eventLoopId, .createEmptyDocument document.ffiHandle)
+  pure (document.eventLoopId, .createEmptyDocument document.documentId)
 
 def queueCreateLoadedDocument
     (userAgent : UserAgent)
@@ -261,11 +305,11 @@ def queueCreateLoadedDocument
     (response : NavigationResponse) :
     Option (Nat × EventLoopTaskMessage) := do
   let _eventLoop <- userAgent.eventLoop? document.eventLoopId
-  pure (document.eventLoopId, .createLoadedDocument document.ffiHandle response.url response.body)
+  pure (document.eventLoopId, .createLoadedDocument document.documentId response.url response.body)
 
 def queuePaintDocument
     (eventLoopId : Nat)
-    (documentId : RustDocumentHandle) :
+  (documentId : DocumentId) :
     Option (Nat × EventLoopTaskMessage) :=
   some (eventLoopId, .queuePaint documentId)
 
@@ -275,7 +319,7 @@ def queueUpdateTheRendering
     Option (UserAgent × Nat × EventLoopTaskMessage) := do
   let traversable <- traversable? userAgent traversableId
   let document <- traversable.toTraversableNavigable.activeDocument
-  let documentId <- activeDocumentHandle? userAgent traversableId
+  let documentId <- activeDocumentId? userAgent traversableId
   let eventLoop <- userAgent.eventLoop? document.eventLoopId
   if eventLoop.hasPendingUpdateTheRendering then
     none
@@ -294,7 +338,7 @@ def queueDispatchedEvent
     Option (UserAgent × Nat × EventLoopTaskMessage) := do
   let traversable <- traversable? userAgent traversableId
   let document <- traversable.toTraversableNavigable.activeDocument
-  let documentId <- activeDocumentHandle? userAgent traversableId
+  let documentId <- activeDocumentId? userAgent traversableId
   let eventLoop <- userAgent.eventLoop? document.eventLoopId
   let eventLoop := eventLoop.enqueueTask { step := .dispatchEvent }
   pure (
@@ -307,14 +351,14 @@ def completeUpdateTheRendering
     (userAgent : UserAgent)
     (traversableId : Nat)
     (eventLoopId : Nat)
-    (documentId : RustDocumentHandle) :
+  (documentId : DocumentId) :
     Option UserAgent := do
   let traversable <- traversable? userAgent traversableId
   if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
     none
   else
     let document <- traversable.toTraversableNavigable.activeDocument
-    if document.eventLoopId != eventLoopId || document.ffiHandle != documentId then
+    if document.eventLoopId != eventLoopId || document.documentId != documentId then
       none
     else
       let eventLoop <- userAgent.eventLoop? eventLoopId
@@ -492,9 +536,9 @@ where
       (traversable.toTraversableNavigable.activeDocument.map (·.eventLoopId)).getD 0
 
     -- Step 12: Let document be a new Document, with:
-    let ffiHandle ← UserAgent.allocateRustDocumentHandleM
+    let documentId ← UserAgent.allocateDocumentIdM
     let document : Document := {
-      ffiHandle
+      documentId
       origin := navigationParams.origin
       browsingContextId
       eventLoopId
@@ -1032,9 +1076,9 @@ where
     -- TODO: Model coarsen time once the environment settings object exists.
 
     -- Step 15: Let document be a new Document, with:
-    let ffiHandle ← UserAgent.allocateRustDocumentHandleM
+    let documentId ← UserAgent.allocateDocumentIdM
     let document : Document := {
-      ffiHandle
+      documentId
       origin
       browsingContextId := browsingContext.id
       eventLoopId := agent.eventLoop.id
@@ -1238,10 +1282,17 @@ where
             }
             sessionHistoryEntries := initialHistoryEntry.toList
         }
+        isActive := true
         targetName
     }
     modify fun userAgent =>
-      { userAgent with topLevelTraversableSet := userAgent.topLevelTraversableSet.replace traversable }
+      setActiveTraversable
+        { userAgent with topLevelTraversableSet := userAgent.topLevelTraversableSet.replace traversable }
+        traversable.id
+
+    let userAgent ← get
+    let some traversable := traversable? userAgent traversable.id
+      | pure traversable
 
     -- Step 10: If opener is non-null, then legacy-clone a traversable storage shed given opener's top-level traversable and traversable.
     -- TODO: Model legacy-clone a traversable storage shed.
@@ -1263,35 +1314,9 @@ inductive UserAgentTaskMessage where
   | updateTheRenderingCompleted
       (traversableId : Nat)
       (eventLoopId : Nat)
-      (documentId : RustDocumentHandle)
+      (documentId : DocumentId)
   | fetchCompleted (fetchId : Nat) (response : FetchResponse)
 deriving Repr, DecidableEq
-
-structure UserAgentTaskState where
-  userAgent : UserAgent := default
-  startupTraversableId : Option Nat := none
-  lastDispatchedEvent : Option String := none
-deriving Repr, Inhabited
-
-structure DocumentFetchCompletion where
-  handler : RustNetHandlerPointer
-  resolvedUrl : String
-  body : ByteArray
-deriving Repr
-
-structure EventLoopDispatch where
-  eventLoopId : Nat
-  message : EventLoopTaskMessage
-deriving Repr, DecidableEq
-
-structure UserAgentTaskResult where
-  state : UserAgentTaskState
-  fetchMessages : List FetchTaskMessage := []
-  eventLoopDispatches : List EventLoopDispatch := []
-  documentFetchCompletions : List DocumentFetchCompletion := []
-  sentNewTopLevelTraversable : Bool := false
-  error : Option String := none
-deriving Repr
 
 def userAgentTaskMessageOfString? (message : String) : Option UserAgentTaskMessage := do
   let messagePrefix := "FreshTopLevelTraversable|"
@@ -1344,11 +1369,10 @@ def bootstrapFreshTopLevelTraversable
   | some pendingFetchRequest => .ok (userAgent, traversable.id, pendingFetchRequest)
   | none => .error (startupNavigationFailureDetails destinationURL userAgent traversable.id)
 
-def startupDocumentDispatch?
-    (userAgent : UserAgent)
-    (traversableId : Nat) :
+def activeDocumentDispatch?
+    (userAgent : UserAgent) :
   Option (Nat × EventLoopTaskMessage) := do
-  let traversable <- traversable? userAgent traversableId
+  let traversable <- activeTraversable? userAgent
   let document <- traversable.toTraversableNavigable.activeDocument
   queueCreateEmptyDocument userAgent document
 
@@ -1364,42 +1388,41 @@ def navigationDocumentDispatch?
   else
     queueCreateLoadedDocument userAgent document response
 
-def startupTraversableReady?
-    (userAgent : UserAgent)
-    (traversableId : Nat) :
-    Option Unit := do
-  let traversable <- traversable? userAgent traversableId
+def activeTraversableReady?
+    (userAgent : UserAgent) :
+    Option Nat := do
+  let traversable <- activeTraversable? userAgent
   if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
     none
   else
     let _document <- traversable.toTraversableNavigable.activeDocument
-    pure ()
+    pure traversable.id
 
 def dispatchEventFailureDetails
-    (state : UserAgentTaskState)
+    (userAgent : UserAgent)
     (event : String) :
     String :=
-  match state.startupTraversableId with
+  match activeTraversableId? userAgent with
   | none =>
-      s!"cannot dispatch event before startup traversable exists: event={event}"
+      s!"cannot dispatch event before an active traversable exists: event={event}"
   | some traversableId =>
-      match traversable? state.userAgent traversableId with
+      match traversable? userAgent traversableId with
       | none =>
-          s!"cannot dispatch event for missing startup traversable {traversableId}: event={event}"
+          s!"cannot dispatch event for missing active traversable {traversableId}: event={event}"
       | some traversable =>
           if traversable.toTraversableNavigable.activeDocument.isNone then
-            s!"cannot dispatch event for startup traversable {traversableId} without an active document: event={event}"
+            s!"cannot dispatch event for active traversable {traversableId} without an active document: event={event}"
           else
-            s!"cannot dispatch event for startup traversable {traversableId}: unknown dispatch precondition failure, event={event}"
+            s!"cannot dispatch event for active traversable {traversableId}: unknown dispatch precondition failure, event={event}"
 
 def renderingOpportunityFailureDetails
-    (state : UserAgentTaskState) :
+    (userAgent : UserAgent) :
     String :=
-  match state.startupTraversableId with
+  match activeTraversableId? userAgent with
   | none =>
-      "cannot queue update-the-rendering before startup traversable exists"
+      "cannot queue update-the-rendering before an active traversable exists"
   | some traversableId =>
-      s!"cannot queue update-the-rendering for startup traversable {traversableId}"
+      s!"cannot queue update-the-rendering for active traversable {traversableId}"
 
 def updateTheRenderingCompletionFailureDetails
     (traversableId : Nat)
@@ -1408,165 +1431,68 @@ def updateTheRenderingCompletionFailureDetails
   s!"cannot apply completed update-the-rendering for traversable {traversableId} on event loop {eventLoopId}"
 
 def documentFetchCompletionDispatch?
-    (state : UserAgentTaskState)
-  (_fetchId : Nat)
+    (userAgent : UserAgent)
     (pendingDocumentFetch : PendingDocumentFetch)
     (response : FetchResponse) :
     Option (Nat × EventLoopTaskMessage) := do
-  let traversableId <- state.startupTraversableId
-  let traversable <- traversable? state.userAgent traversableId
+  let traversable <- activeTraversable? userAgent
   let document <- traversable.toTraversableNavigable.activeDocument
-  let _eventLoop <- state.userAgent.eventLoop? document.eventLoopId
+  let _eventLoop <- userAgent.eventLoop? document.eventLoopId
   pure (
     document.eventLoopId,
     .queueDocumentFetchCompletion pendingDocumentFetch.handler response.url response.body
   )
 
-def handleUserAgentTaskMessagePure
-    (state : UserAgentTaskState)
+def handleUserAgentTaskMessage
+    (userAgent : UserAgent)
     (message : UserAgentTaskMessage) :
-    UserAgentTaskResult :=
+    UserAgent :=
   match message with
   | .freshTopLevelTraversable destinationURL =>
-      match bootstrapFreshTopLevelTraversable destinationURL state.userAgent with
-      | .ok (userAgent, traversableId, pendingFetchRequest) =>
-          let eventLoopDispatches :=
-          match startupDocumentDispatch? userAgent traversableId with
-          | some (eventLoopId, eventLoopMessage) =>
-            [{ eventLoopId, message := eventLoopMessage }]
-          | none =>
-            []
-          {
-            state := {
-              state with
-                userAgent
-                startupTraversableId := some traversableId
-            }
-            fetchMessages := [.startFetch pendingFetchRequest]
-            eventLoopDispatches
-          }
-      | .error error =>
-          { state, error := some error }
+      match bootstrapFreshTopLevelTraversable destinationURL userAgent with
+      | .ok (nextUserAgent, _traversableId, _pendingFetchRequest) =>
+          nextUserAgent
+      | .error _ =>
+          userAgent
   | .documentFetchRequested handler request =>
-      let (userAgent, _pendingDocumentFetch, documentFetchRequest) :=
-        requestDocumentFetch state.userAgent handler request
-      {
-        state := { state with userAgent }
-        fetchMessages := [.startDocumentFetch documentFetchRequest]
-      }
+      (requestDocumentFetch userAgent handler request).1
   | .dispatchEvent event =>
-        match state.startupTraversableId with
-        | none =>
-          { state, error := some (dispatchEventFailureDetails state event) }
-        | some traversableId =>
-          match traversable? state.userAgent traversableId with
-          | none =>
-            { state, error := some (dispatchEventFailureDetails state event) }
-          | some traversable =>
-            match traversable.toTraversableNavigable.activeDocument with
-            | none =>
-              { state, error := some (dispatchEventFailureDetails state event) }
-            | some _document =>
-              match queueDispatchedEvent state.userAgent traversableId event with
-              | some (userAgent, eventLoopId, eventLoopMessage) =>
-                  {
-                    state := {
-                      state with
-                        userAgent
-                        lastDispatchedEvent := some event
-                    }
-                    eventLoopDispatches := [{ eventLoopId, message := eventLoopMessage }]
-                  }
-              | none =>
-                  { state, error := some (dispatchEventFailureDetails state event) }
-  | .renderingOpportunity =>
-      match state.startupTraversableId with
+      match activeTraversableId? userAgent with
       | none =>
-          { state, error := some (renderingOpportunityFailureDetails state) }
+          userAgent
       | some traversableId =>
-        match startupTraversableReady? state.userAgent traversableId with
-        | none =>
-          { state }
-        | some _ =>
-          match queueUpdateTheRendering state.userAgent traversableId with
-          | some (userAgent, eventLoopId, eventLoopMessage) =>
-            {
-            state := { state with userAgent }
-            eventLoopDispatches := [{ eventLoopId, message := eventLoopMessage }]
-            }
+          match queueDispatchedEvent userAgent traversableId event with
+          | some (nextUserAgent, _eventLoopId, _eventLoopMessage) =>
+              nextUserAgent
           | none =>
-                  { state }
-  | .updateTheRenderingCompleted traversableId eventLoopId documentId =>
-      match completeUpdateTheRendering state.userAgent traversableId eventLoopId documentId with
-      | some userAgent =>
-          match queuePaintDocument eventLoopId documentId with
-          | some (paintEventLoopId, eventLoopMessage) =>
-              {
-                state := { state with userAgent }
-                eventLoopDispatches := [{ eventLoopId := paintEventLoopId, message := eventLoopMessage }]
-              }
-          | none =>
-              {
-                state := { state with userAgent }
-                error := some (updateTheRenderingCompletionFailureDetails traversableId eventLoopId)
-              }
+              userAgent
+  | .renderingOpportunity =>
+      match activeTraversableReady? userAgent with
       | none =>
-          match dropPendingUpdateTheRenderingCompletion state.userAgent eventLoopId with
-          | some userAgent =>
-              { state := { state with userAgent } }
+          userAgent
+      | some traversableId =>
+          match queueUpdateTheRendering userAgent traversableId with
+          | some (nextUserAgent, _eventLoopId, _eventLoopMessage) =>
+              nextUserAgent
           | none =>
-              {
-                state
-                error := some (updateTheRenderingCompletionFailureDetails traversableId eventLoopId)
-              }
+              userAgent
+  | .updateTheRenderingCompleted traversableId eventLoopId documentId =>
+      match completeUpdateTheRendering userAgent traversableId eventLoopId documentId with
+      | some nextUserAgent =>
+          nextUserAgent
+      | none =>
+        userAgent
   | .fetchCompleted fetchId response =>
-      match UserAgent.pendingNavigationFetchByFetchId? state.userAgent fetchId with
+      match UserAgent.pendingNavigationFetchByFetchId? userAgent fetchId with
       | some pendingNavigationFetch =>
           let navigationResponse := navigationResponseOfFetchResponse response
-          let userAgent :=
-            processNavigationFetchResponse state.userAgent pendingNavigationFetch.navigationId navigationResponse
-          let eventLoopDispatches :=
-            match navigationDocumentDispatch? userAgent pendingNavigationFetch.traversableId navigationResponse with
-            | some (eventLoopId, eventLoopMessage) =>
-                [{ eventLoopId, message := eventLoopMessage }]
-            | none =>
-                []
-          let sentNewTopLevelTraversable :=
-            match state.startupTraversableId with
-            | none => false
-            | some traversableId =>
-                (startupTraversableReady? userAgent traversableId).isSome
-          {
-            state := { state with userAgent }
-            eventLoopDispatches
-            sentNewTopLevelTraversable
-          }
+          processNavigationFetchResponse userAgent pendingNavigationFetch.navigationId navigationResponse
       | none =>
-          match UserAgent.pendingDocumentFetch? state.userAgent fetchId with
-          | some pendingDocumentFetch =>
-            let userAgent := (state.userAgent.takePendingDocumentFetch fetchId).1
-            match documentFetchCompletionDispatch? state fetchId pendingDocumentFetch response with
-            | some (eventLoopId, eventLoopMessage) =>
-              {
-              state := { state with userAgent }
-              eventLoopDispatches := [{ eventLoopId, message := eventLoopMessage }]
-              }
-            | none =>
-              { state := { state with userAgent } }
+          match UserAgent.pendingDocumentFetch? userAgent fetchId with
+          | some _pendingDocumentFetch =>
+            (userAgent.takePendingDocumentFetch fetchId).1
           | none =>
-              { state }
-
-def userAgentTaskStep
-    (state : UserAgentTaskState)
-    (message : UserAgentTaskMessage) :
-    UserAgentTaskState :=
-  (handleUserAgentTaskMessagePure state message).state
-
-def userAgentTaskExec
-    (state : UserAgentTaskState)
-    (messages : List UserAgentTaskMessage) :
-    UserAgentTaskState :=
-  messages.foldl userAgentTaskStep state
+              userAgent
 
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
@@ -1574,56 +1500,122 @@ private def recvCloseableChannel?
   let receiveTask ← channel.recv
   IO.wait receiveTask
 
-private def notifyStartupTraversableReady
+private def notifyActiveTraversableReady
     (userAgent : UserAgent)
     (traversableId : Nat) :
     IO Unit := do
-  let some _ := startupTraversableReady? userAgent traversableId | pure ()
-  FormalWeb.sendEmbedderMessage "NewTopLevelTraversable"
+  let some readyTraversableId := activeTraversableReady? userAgent | pure ()
+  if readyTraversableId != traversableId then
+    pure ()
+  else
+    FormalWeb.sendEmbedderMessage "NewTopLevelTraversable"
+
+private def sendEventLoopTaskMessage
+  (ensureEventLoopWorker : EventLoop -> IO Unit)
+  (enqueueEventLoopMessage : Nat -> EventLoopTaskMessage -> IO Unit)
+  (userAgent : UserAgent)
+  (eventLoopId : Nat)
+  (message : EventLoopTaskMessage) :
+  IO Unit := do
+  let some eventLoop := userAgent.eventLoop? eventLoopId | pure ()
+  ensureEventLoopWorker eventLoop
+  enqueueEventLoopMessage eventLoopId message
 
 def runUserAgentMessage
     (enqueueFetchMessage : FetchTaskMessage -> IO Unit)
-  (ensureEventLoopWorker : EventLoop -> IO Unit)
-  (enqueueEventLoopMessage : Nat -> EventLoopTaskMessage -> IO Unit)
-    (state : UserAgentTaskState)
+    (ensureEventLoopWorker : EventLoop -> IO Unit)
+    (enqueueEventLoopMessage : Nat -> EventLoopTaskMessage -> IO Unit)
+  (userAgent : UserAgent)
     (message : UserAgentTaskMessage) :
-    IO UserAgentTaskState := do
-  let result := handleUserAgentTaskMessagePure state message
-  let nextState := result.state
-  if let some error := result.error then
-    IO.eprintln s!"handleUserAgentTaskMessagePure failed: {error}"
-  for fetchMessage in result.fetchMessages do
-    enqueueFetchMessage fetchMessage
-  for eventLoopDispatch in result.eventLoopDispatches do
-    let some eventLoop := nextState.userAgent.eventLoop? eventLoopDispatch.eventLoopId | pure ()
-    ensureEventLoopWorker eventLoop
-    enqueueEventLoopMessage eventLoopDispatch.eventLoopId eventLoopDispatch.message
+  IO UserAgent := do
+  let previouslyReadyTraversableId? := activeTraversableReady? userAgent
+  let nextUserAgent := handleUserAgentTaskMessage userAgent message
   match message with
-  | .freshTopLevelTraversable _ =>
-      pure ()
-  | .documentFetchRequested _ _ =>
-      pure ()
-  | .dispatchEvent _event =>
-      pure ()
+  | .freshTopLevelTraversable destinationURL =>
+      match bootstrapFreshTopLevelTraversable destinationURL userAgent with
+      | .ok (bootstrappedUserAgent, _traversableId, pendingFetchRequest) =>
+          enqueueFetchMessage (.startFetch pendingFetchRequest)
+          match activeDocumentDispatch? bootstrappedUserAgent with
+          | some (eventLoopId, eventLoopMessage) =>
+              sendEventLoopTaskMessage ensureEventLoopWorker enqueueEventLoopMessage bootstrappedUserAgent eventLoopId eventLoopMessage
+          | none =>
+              pure ()
+      | .error _ =>
+          IO.eprintln s!"handleUserAgentTaskMessage failed to bootstrap top-level traversable for {destinationURL}"
+          pure ()
+  | .documentFetchRequested handler request =>
+      let (_nextUserAgent, _pendingDocumentFetch, documentFetchRequest) :=
+        requestDocumentFetch userAgent handler request
+      enqueueFetchMessage (.startDocumentFetch documentFetchRequest)
+  | .dispatchEvent event =>
+      match activeTraversableId? userAgent with
+      | none =>
+          IO.eprintln (dispatchEventFailureDetails userAgent event)
+          pure ()
+      | some traversableId =>
+          match queueDispatchedEvent userAgent traversableId event with
+          | some (queuedUserAgent, eventLoopId, eventLoopMessage) =>
+              sendEventLoopTaskMessage ensureEventLoopWorker enqueueEventLoopMessage queuedUserAgent eventLoopId eventLoopMessage
+          | none =>
+              IO.eprintln (dispatchEventFailureDetails userAgent event)
+              pure ()
   | .renderingOpportunity =>
-      pure ()
-  | .updateTheRenderingCompleted _ _ _ =>
-      pure ()
-  | .fetchCompleted _ _ =>
-      if result.sentNewTopLevelTraversable then
-        let some traversableId := nextState.startupTraversableId | pure ()
-        notifyStartupTraversableReady nextState.userAgent traversableId
-  pure nextState
+      match activeTraversableReady? userAgent with
+      | none =>
+          IO.eprintln (renderingOpportunityFailureDetails userAgent)
+          pure ()
+      | some traversableId =>
+          match queueUpdateTheRendering userAgent traversableId with
+          | some (queuedUserAgent, eventLoopId, eventLoopMessage) =>
+              sendEventLoopTaskMessage ensureEventLoopWorker enqueueEventLoopMessage queuedUserAgent eventLoopId eventLoopMessage
+          | none =>
+              pure ()
+  | .updateTheRenderingCompleted traversableId eventLoopId documentId =>
+      match completeUpdateTheRendering userAgent traversableId eventLoopId documentId with
+      | some completedUserAgent =>
+          match queuePaintDocument eventLoopId documentId with
+          | some (paintEventLoopId, eventLoopMessage) =>
+              sendEventLoopTaskMessage ensureEventLoopWorker enqueueEventLoopMessage completedUserAgent paintEventLoopId eventLoopMessage
+          | none =>
+              IO.eprintln (updateTheRenderingCompletionFailureDetails traversableId eventLoopId)
+              pure ()
+      | none =>
+          pure ()
+  | .fetchCompleted fetchId response =>
+      match UserAgent.pendingNavigationFetchByFetchId? userAgent fetchId with
+      | some pendingNavigationFetch =>
+          let navigationResponse := navigationResponseOfFetchResponse response
+          match navigationDocumentDispatch? nextUserAgent pendingNavigationFetch.traversableId navigationResponse with
+          | some (eventLoopId, eventLoopMessage) =>
+              sendEventLoopTaskMessage ensureEventLoopWorker enqueueEventLoopMessage nextUserAgent eventLoopId eventLoopMessage
+          | none =>
+              pure ()
+      | none =>
+          match UserAgent.pendingDocumentFetch? userAgent fetchId with
+          | some pendingDocumentFetch =>
+              match documentFetchCompletionDispatch? nextUserAgent pendingDocumentFetch response with
+              | some (eventLoopId, eventLoopMessage) =>
+                  sendEventLoopTaskMessage ensureEventLoopWorker enqueueEventLoopMessage nextUserAgent eventLoopId eventLoopMessage
+              | none =>
+                  pure ()
+          | none =>
+              pure ()
+  match previouslyReadyTraversableId?, activeTraversableReady? nextUserAgent with
+  | none, some traversableId =>
+    notifyActiveTraversableReady nextUserAgent traversableId
+  | _, _ =>
+    pure ()
+  pure nextUserAgent
 
 partial def runUserAgent
     (channel : Std.CloseableChannel UserAgentTaskMessage)
     (enqueueFetchMessage : FetchTaskMessage -> IO Unit)
     (ensureEventLoopWorker : EventLoop -> IO Unit)
     (enqueueEventLoopMessage : Nat -> EventLoopTaskMessage -> IO Unit)
-    (state : UserAgentTaskState := default) :
+    (userAgent : UserAgent := default) :
     IO Unit := do
   let some message ← recvCloseableChannel? channel | pure ()
-  let state ← runUserAgentMessage enqueueFetchMessage ensureEventLoopWorker enqueueEventLoopMessage state message
-  runUserAgent channel enqueueFetchMessage ensureEventLoopWorker enqueueEventLoopMessage state
+  let userAgent ← runUserAgentMessage enqueueFetchMessage ensureEventLoopWorker enqueueEventLoopMessage userAgent message
+  runUserAgent channel enqueueFetchMessage ensureEventLoopWorker enqueueEventLoopMessage userAgent
 
 end FormalWeb

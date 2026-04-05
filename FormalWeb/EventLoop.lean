@@ -55,11 +55,11 @@ instance : Inhabited EventLoop where
   default := { id := 0 }
 
 inductive EventLoopTaskMessage where
-  | createEmptyDocument (documentId : RustDocumentHandle)
-  | createLoadedDocument (documentId : RustDocumentHandle) (url : String) (body : String)
-  | queueUpdateTheRendering (traversableId : Nat) (documentId : RustDocumentHandle)
-  | queueDispatchEvent (documentId : RustDocumentHandle) (event : String)
-  | queuePaint (documentId : RustDocumentHandle)
+  | createEmptyDocument (documentId : DocumentId)
+  | createLoadedDocument (documentId : DocumentId) (url : String) (body : String)
+  | queueUpdateTheRendering (traversableId : Nat) (documentId : DocumentId)
+  | queueDispatchEvent (documentId : DocumentId) (event : String)
+  | queuePaint (documentId : DocumentId)
   | queueDocumentFetchCompletion
       (handler : RustNetHandlerPointer)
       (resolvedUrl : String)
@@ -69,7 +69,7 @@ deriving Repr, DecidableEq
 structure EventLoopTaskCompletion where
   traversableId : Nat
   eventLoopId : Nat
-  documentId : RustDocumentHandle
+  documentId : DocumentId
 deriving DecidableEq
 
 namespace EventLoop
@@ -114,11 +114,11 @@ def dequeueUpdateTheRenderingTask (eventLoop : EventLoop) : EventLoop :=
 end EventLoop
 
 structure PendingCreateEmptyDocumentTask where
-  documentId : RustDocumentHandle
+  documentId : DocumentId
 deriving DecidableEq
 
 structure PendingCreateLoadedDocumentTask where
-  documentId : RustDocumentHandle
+  documentId : DocumentId
   url : String
   body : String
 deriving DecidableEq
@@ -126,16 +126,16 @@ deriving DecidableEq
 /-- Model-local runtime payload for an UpdateTheRendering task. -/
 structure PendingUpdateTheRenderingTask where
   traversableId : Nat
-  documentId : RustDocumentHandle
+  documentId : DocumentId
 deriving DecidableEq
 
 structure PendingDispatchEventTask where
-  documentId : RustDocumentHandle
+  documentId : DocumentId
   event : String
 deriving DecidableEq
 
 structure PendingPaintTask where
-  documentId : RustDocumentHandle
+  documentId : DocumentId
 deriving DecidableEq
 
 structure PendingDocumentFetchCompletionTask where
@@ -158,11 +158,11 @@ instance : Inhabited EventLoopTaskState where
   default := { eventLoop := { id := 0 } }
 
 structure CreateEmptyDocumentEffect where
-  documentId : RustDocumentHandle
+  documentId : DocumentId
 deriving DecidableEq
 
 structure CreateLoadedDocumentEffect where
-  documentId : RustDocumentHandle
+  documentId : DocumentId
   url : String
   body : String
 deriving DecidableEq
@@ -170,16 +170,16 @@ deriving DecidableEq
 structure UpdateTheRenderingEffect where
   traversableId : Nat
   eventLoopId : Nat
-  documentId : RustDocumentHandle
+  documentId : DocumentId
 deriving DecidableEq
 
 structure DispatchEventEffect where
-  documentId : RustDocumentHandle
+  documentId : DocumentId
   event : String
 deriving DecidableEq
 
 structure PaintEffect where
-  documentId : RustDocumentHandle
+  documentId : DocumentId
 deriving DecidableEq
 
 structure DocumentFetchCompletionEffect where

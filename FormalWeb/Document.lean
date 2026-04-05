@@ -13,9 +13,9 @@ deriving Repr, DecidableEq, Ord
 def aboutBlankOrigin : Origin :=
   { serialization := "about:blank", site := "about:blank" }
 
-/-- Placeholder for the Rust-side DOM object backing a spec-level document. -/
-structure RustDocumentHandle where
-  /-- Model-local handle for https://dom.spec.whatwg.org/#concept-document -/
+/-- Model-local identifier for a runtime document instance. -/
+structure DocumentId where
+  /-- Model-local identifier for https://dom.spec.whatwg.org/#concept-document -/
   id : Nat
 deriving Repr, DecidableEq, Ord
 
@@ -86,8 +86,8 @@ deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#document -/
 structure Document where
-  /-- Model-local handle for the embedder-side DOM object for https://dom.spec.whatwg.org/#concept-document -/
-  ffiHandle : RustDocumentHandle
+  /-- Model-local identifier for the runtime document corresponding to https://dom.spec.whatwg.org/#concept-document -/
+  documentId : DocumentId
   /-- https://dom.spec.whatwg.org/#concept-document-type -/
   type : String := "html"
   /-- https://dom.spec.whatwg.org/#concept-document-content-type -/

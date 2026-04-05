@@ -104,6 +104,8 @@ structure TopLevelTraversable where
   toTraversableNavigable : TraversableNavigable := {}
   /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#top-level-traversable -/
   id : Nat
+  /-- Model-local browser-ui flag selecting the currently active top-level traversable. -/
+  isActive : Bool := false
   /-- Model-local mirror of https://html.spec.whatwg.org/multipage/#document-state-nav-target-name for the active entry. -/
   targetName : String := ""
   /-- https://html.spec.whatwg.org/multipage/#nav-parent -/

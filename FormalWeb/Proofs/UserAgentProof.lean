@@ -34,7 +34,7 @@ inductive UserAgentAction
   Clears `hasPendingUpdateTheRendering` on the event loop. This requires the
   traversable's navigation to have completed.
   -/
-  | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (documentId : RustDocumentHandle)
+  | updateTheRendering (traversableId : Nat) (eventLoopId : Nat) (documentId : DocumentId)
 deriving Repr, DecidableEq
 
 /--
@@ -112,13 +112,13 @@ inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAg
         [.queueUpdateTheRendering traversableId eventLoopId]
   | updateTheRenderingCompletedError
       (traversableId eventLoopId : Nat)
-      (documentId : RustDocumentHandle) :
+      (documentId : DocumentId) :
       UserAgentTaskMessageActionShape
         (.updateTheRenderingCompleted traversableId eventLoopId documentId)
         []
   | updateTheRenderingCompleted
       (traversableId eventLoopId : Nat)
-      (documentId : RustDocumentHandle) :
+      (documentId : DocumentId) :
       UserAgentTaskMessageActionShape
         (.updateTheRenderingCompleted traversableId eventLoopId documentId)
         [.updateTheRendering traversableId eventLoopId documentId]
@@ -159,7 +159,8 @@ theorem createNewTopLevelTraversable_lookup
     traversable? result.1 result.2.id = some result.2 := by
   simp [createNewTopLevelTraversable, traversable?, TopLevelTraversableSet.find?]
   unfold createNewTopLevelTraversable.createNewTopLevelTraversableImpl
-  simp [TopLevelTraversableSet.appendFresh, TopLevelTraversableSet.nextId, TopLevelTraversableSet.replace]
+  simp [TopLevelTraversableSet.appendFresh, TopLevelTraversableSet.nextId, TopLevelTraversableSet.replace,
+    setActiveTraversable]
 
 theorem beginNavigation_after_createTopLevelTraversable_trace
     (userAgent : UserAgent)
@@ -230,7 +231,7 @@ theorem queueUpdateTheRendering_step_trace
 theorem updateTheRendering_step_trace
     (userAgent nextUserAgent : UserAgent)
     (traversableId eventLoopId : Nat)
-    (documentId : RustDocumentHandle)
+  (documentId : DocumentId)
     (hcomplete :
       completeUpdateTheRendering userAgent traversableId eventLoopId documentId = some nextUserAgent) :
     UserAgentTrace
@@ -280,101 +281,89 @@ theorem startupSuccess_trace
             refine TransitionSystem.TransitionTrace.single ?_
             exact ⟨created.2, hlookup, hnext⟩
 
-theorem handleUserAgentTaskMessagePure_refines
-    (state : UserAgentTaskState)
+theorem handleUserAgentTaskMessageTransition_refines
+    (userAgent : UserAgent)
     (message : UserAgentTaskMessage) :
     ∃ actions,
       UserAgentTaskMessageActionShape message actions ∧
       UserAgentTrace
-        state.userAgent
+        userAgent
         actions
-        (handleUserAgentTaskMessagePure state message).state.userAgent := by
+        (handleUserAgentTaskMessage userAgent message) := by
   cases message with
   | freshTopLevelTraversable destinationURL =>
-      cases hbootstrap : bootstrapFreshTopLevelTraversable destinationURL state.userAgent with
+      cases hbootstrap : bootstrapFreshTopLevelTraversable destinationURL userAgent with
       | error _ =>
           refine ⟨[], .freshTopLevelTraversableError destinationURL, ?_⟩
-          simp [handleUserAgentTaskMessagePure, hbootstrap, TransitionSystem.TransitionTrace.nil]
+          simp [handleUserAgentTaskMessage, hbootstrap, TransitionSystem.TransitionTrace.nil]
       | ok result =>
           refine ⟨
             [.createTopLevelTraversable "", .beginNavigation result.2.1 destinationURL none],
             .freshTopLevelTraversableSuccess destinationURL result.2.1,
             ?_
           ⟩
-          simpa [handleUserAgentTaskMessagePure, hbootstrap] using
-            startupSuccess_trace state.userAgent result.1 destinationURL result.2.1 result.2.2 hbootstrap
+          simpa [handleUserAgentTaskMessage, hbootstrap] using
+            startupSuccess_trace userAgent result.1 destinationURL result.2.1 result.2.2 hbootstrap
   | documentFetchRequested handler request =>
       refine ⟨
         [.requestDocumentFetch handler request],
         .documentFetchRequested handler request,
         ?_
       ⟩
-      simpa [handleUserAgentTaskMessagePure, requestDocumentFetch] using
-        requestDocumentFetch_trace state.userAgent handler request
+      simpa [handleUserAgentTaskMessage, requestDocumentFetch] using
+        requestDocumentFetch_trace userAgent handler request
   | dispatchEvent event =>
-      match hstartup : state.startupTraversableId with
+      match hactiveId : activeTraversableId? userAgent with
       | none =>
           refine ⟨[], .dispatchEventError event, ?_⟩
-          simpa [handleUserAgentTaskMessagePure, hstartup] using
-          (TransitionSystem.TransitionTrace.nil state.userAgent)
+          simpa [handleUserAgentTaskMessage, hactiveId] using
+          (TransitionSystem.TransitionTrace.nil userAgent)
       | some traversableId =>
-          match hlookup : traversable? state.userAgent traversableId with
+          match hqueue : queueDispatchedEvent userAgent traversableId event with
           | none =>
               refine ⟨[], .dispatchEventError event, ?_⟩
-              simpa [handleUserAgentTaskMessagePure, hstartup, hlookup] using
-            (TransitionSystem.TransitionTrace.nil state.userAgent)
-          | some traversable =>
-              match hactive : traversable.toTraversableNavigable.activeDocument with
-              | none =>
-                  refine ⟨[], .dispatchEventError event, ?_⟩
-                  simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive] using
-              (TransitionSystem.TransitionTrace.nil state.userAgent)
-              | some _document =>
-                  match hqueue : queueDispatchedEvent state.userAgent traversableId event with
-                  | none =>
-                      refine ⟨[], .dispatchEventError event, ?_⟩
-                      simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive, hqueue] using
-                (TransitionSystem.TransitionTrace.nil state.userAgent)
-                  | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
-                      refine ⟨[.dispatchEvent traversableId event], .dispatchEvent traversableId event, ?_⟩
-                      simpa [handleUserAgentTaskMessagePure, hstartup, hlookup, hactive, hqueue] using
-                        dispatchEvent_trace state.userAgent traversableId event nextUserAgent eventLoopId eventLoopMessage hqueue
+              simpa [handleUserAgentTaskMessage, hactiveId, hqueue] using
+                (TransitionSystem.TransitionTrace.nil userAgent)
+          | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
+              refine ⟨[.dispatchEvent traversableId event], .dispatchEvent traversableId event, ?_⟩
+              simpa [handleUserAgentTaskMessage, hactiveId, hqueue] using
+                dispatchEvent_trace userAgent traversableId event nextUserAgent eventLoopId eventLoopMessage hqueue
   | renderingOpportunity =>
-      match hstartup : state.startupTraversableId with
+      match hready : activeTraversableReady? userAgent with
       | none =>
           refine ⟨[], .renderingOpportunityError, ?_⟩
-          simpa [handleUserAgentTaskMessagePure, hstartup] using
-            (TransitionSystem.TransitionTrace.nil state.userAgent)
+          simpa [handleUserAgentTaskMessage, hready] using
+            (TransitionSystem.TransitionTrace.nil userAgent)
       | some traversableId =>
-          match hqueue : queueUpdateTheRendering state.userAgent traversableId with
+          match hqueue : queueUpdateTheRendering userAgent traversableId with
           | none =>
               refine ⟨[], .renderingOpportunityError, ?_⟩
-              simpa [handleUserAgentTaskMessagePure, hstartup, hqueue] using
-                (TransitionSystem.TransitionTrace.nil state.userAgent)
+              simpa [handleUserAgentTaskMessage, hready, hqueue] using
+                (TransitionSystem.TransitionTrace.nil userAgent)
           | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
               refine ⟨
                 [.queueUpdateTheRendering traversableId eventLoopId],
                 .renderingOpportunity traversableId eventLoopId,
                 ?_
               ⟩
-              simpa [handleUserAgentTaskMessagePure, hstartup, hqueue] using
-                queueUpdateTheRendering_step_trace state.userAgent nextUserAgent traversableId eventLoopId eventLoopMessage hqueue
+              simpa [handleUserAgentTaskMessage, hready, hqueue] using
+                queueUpdateTheRendering_step_trace userAgent nextUserAgent traversableId eventLoopId eventLoopMessage hqueue
   | updateTheRenderingCompleted traversableId eventLoopId documentId =>
-      match hcomplete : completeUpdateTheRendering state.userAgent traversableId eventLoopId documentId with
+      match hcomplete : completeUpdateTheRendering userAgent traversableId eventLoopId documentId with
       | none =>
           refine ⟨[], .updateTheRenderingCompletedError traversableId eventLoopId documentId, ?_⟩
-          simpa [handleUserAgentTaskMessagePure, hcomplete] using
-            (TransitionSystem.TransitionTrace.nil state.userAgent)
+          simpa [handleUserAgentTaskMessage, hcomplete] using
+            (TransitionSystem.TransitionTrace.nil userAgent)
       | some nextUserAgent =>
           refine ⟨
             [.updateTheRendering traversableId eventLoopId documentId],
             .updateTheRenderingCompleted traversableId eventLoopId documentId,
             ?_
           ⟩
-          simpa [handleUserAgentTaskMessagePure, hcomplete] using
-            updateTheRendering_step_trace state.userAgent nextUserAgent traversableId eventLoopId documentId hcomplete
+          simpa [handleUserAgentTaskMessage, hcomplete] using
+            updateTheRendering_step_trace userAgent nextUserAgent traversableId eventLoopId documentId hcomplete
   | fetchCompleted fetchId response =>
-      match hnavigation : UserAgent.pendingNavigationFetchByFetchId? state.userAgent fetchId with
+      match hnavigation : UserAgent.pendingNavigationFetchByFetchId? userAgent fetchId with
       | some pendingNavigationFetch =>
           refine ⟨
             [.completeNavigation
@@ -384,67 +373,27 @@ theorem handleUserAgentTaskMessagePure_refines
             ?_
           ⟩
           refine TransitionSystem.TransitionTrace.single ?_
-          simp [handleUserAgentTaskMessagePure, userAgentLTS, hnavigation, processNavigationFetchResponse,
+          simp [handleUserAgentTaskMessage, userAgentLTS, hnavigation, processNavigationFetchResponse,
             navigationResponseOfFetchResponse]
       | none =>
-          match hdocument : UserAgent.pendingDocumentFetch? state.userAgent fetchId with
+          match hdocument : UserAgent.pendingDocumentFetch? userAgent fetchId with
           | some pendingDocumentFetch =>
-              have hdocument' : state.userAgent.pendingDocumentFetches[fetchId]? = some pendingDocumentFetch := by
+              have hdocument' : userAgent.pendingDocumentFetches[fetchId]? = some pendingDocumentFetch := by
                 simpa [UserAgent.pendingDocumentFetch?] using hdocument
-              have hstateField :
-                  (handleUserAgentTaskMessagePure state (.fetchCompleted fetchId response)).state =
-                    { state with userAgent := (state.userAgent.takePendingDocumentFetch fetchId).1 } := by
-                cases hdispatch : documentFetchCompletionDispatch? state fetchId pendingDocumentFetch response <;>
-                  simp [handleUserAgentTaskMessagePure, hnavigation, UserAgent.takePendingDocumentFetch,
-                    UserAgent.pendingDocumentFetch?, hdocument', hdispatch]
-              have hstate :
-                  (handleUserAgentTaskMessagePure state (.fetchCompleted fetchId response)).state.userAgent =
-                    (state.userAgent.takePendingDocumentFetch fetchId).1 := by
-                simpa using congrArg UserAgentTaskState.userAgent hstateField
               refine ⟨[.finishDocumentFetch fetchId], .fetchCompletedDocument fetchId response, ?_⟩
-              simpa [hstate] using
-                finishDocumentFetch_trace state.userAgent fetchId pendingDocumentFetch hdocument
+              simpa [handleUserAgentTaskMessage, hnavigation, UserAgent.takePendingDocumentFetch,
+                UserAgent.pendingDocumentFetch?, hdocument'] using
+                finishDocumentFetch_trace userAgent fetchId pendingDocumentFetch hdocument
           | none =>
               refine ⟨[], .fetchCompletedMissing fetchId response, ?_⟩
-              simpa [handleUserAgentTaskMessagePure, hnavigation, hdocument] using
-                (TransitionSystem.TransitionTrace.nil state.userAgent)
+              simpa [handleUserAgentTaskMessage, hnavigation, hdocument] using
+                (TransitionSystem.TransitionTrace.nil userAgent)
 
-theorem userAgentTaskStep_refines
-    (state : UserAgentTaskState)
-    (message : UserAgentTaskMessage) :
-    ∃ actions,
-      UserAgentTaskMessageActionShape message actions ∧
-      UserAgentTrace
-        state.userAgent
-        actions
-        (userAgentTaskStep state message).userAgent := by
-  simpa [userAgentTaskStep] using handleUserAgentTaskMessagePure_refines state message
-
-theorem userAgentTaskExec_refines
-    (state : UserAgentTaskState)
-    (messages : List UserAgentTaskMessage) :
-    ∃ actions,
-      UserAgentTrace
-        state.userAgent
-        actions
-        (userAgentTaskExec state messages).userAgent := by
-  induction messages generalizing state with
-  | nil =>
-      refine ⟨[], ?_⟩
-      simp [userAgentTaskExec, TransitionSystem.TransitionTrace.nil]
-  | cons message messages ih =>
-      have hstep := userAgentTaskStep_refines state message
-      have htail := ih (userAgentTaskStep state message)
-      rcases hstep with ⟨actions₁, _shape, htrace₁⟩
-      rcases htail with ⟨actions₂, htrace₂⟩
-      refine ⟨actions₁ ++ actions₂, ?_⟩
-      simpa [userAgentTaskExec] using TransitionSystem.TransitionTrace.append htrace₁ htrace₂
-
-theorem default_userAgentTaskState_empty
+theorem default_userAgent_empty
     (traversableId navigationId : Nat) :
-    (default : UserAgentTaskState).startupTraversableId = none ∧
-    (traversable? (default : UserAgentTaskState).userAgent traversableId).isNone = true ∧
-    (UserAgent.pendingNavigationFetch? (default : UserAgentTaskState).userAgent navigationId).isNone = true := by
+    (activeTraversableId? (default : UserAgent)).isNone = true ∧
+    (traversable? (default : UserAgent) traversableId).isNone = true ∧
+    (UserAgent.pendingNavigationFetch? (default : UserAgent) navigationId).isNone = true := by
   refine ⟨rfl, ?_, ?_⟩
   · change
       (match (Std.TreeMap.empty : Std.TreeMap Nat TopLevelTraversable)[traversableId]? with
@@ -457,31 +406,25 @@ theorem default_userAgentTaskState_empty
         | none => true) = true
     simp
 
-theorem userAgentTaskExec_startup_from_default_success
+theorem handleUserAgentTaskMessage_startup_from_default_success
     (destinationURL : String)
     (nextUserAgent : UserAgent)
     (traversableId : Nat)
     (pendingFetchRequest : PendingFetchRequest)
     (hbootstrap :
-      bootstrapFreshTopLevelTraversable destinationURL (default : UserAgentTaskState).userAgent =
+      bootstrapFreshTopLevelTraversable destinationURL (default : UserAgent) =
         .ok (nextUserAgent, traversableId, pendingFetchRequest)) :
-    (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).startupTraversableId = some traversableId ∧
-    (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).userAgent = nextUserAgent ∧
-    (handleUserAgentTaskMessagePure (default : UserAgentTaskState) (.freshTopLevelTraversable destinationURL)).fetchMessages =
-      [.startFetch pendingFetchRequest] ∧
-    (handleUserAgentTaskMessagePure (default : UserAgentTaskState) (.freshTopLevelTraversable destinationURL)).error = none ∧
+    handleUserAgentTaskMessage (default : UserAgent) (.freshTopLevelTraversable destinationURL) = nextUserAgent ∧
     UserAgentTrace
-      (default : UserAgentTaskState).userAgent
+      (default : UserAgent)
       [.createTopLevelTraversable "", .beginNavigation traversableId destinationURL none]
-      (userAgentTaskExec (default : UserAgentTaskState) [.freshTopLevelTraversable destinationURL]).userAgent := by
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
-  · simp [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap]
-  · simp [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap]
-  · simp [handleUserAgentTaskMessagePure, hbootstrap]
-  · simp [handleUserAgentTaskMessagePure, hbootstrap]
-  · simpa [userAgentTaskExec, userAgentTaskStep, handleUserAgentTaskMessagePure, hbootstrap] using
+      (handleUserAgentTaskMessage (default : UserAgent) (.freshTopLevelTraversable destinationURL)) := by
+  let _ := pendingFetchRequest
+  refine ⟨?_, ?_⟩
+  · simp [handleUserAgentTaskMessage, hbootstrap]
+  · simpa [handleUserAgentTaskMessage, hbootstrap] using
       startupSuccess_trace
-        (default : UserAgentTaskState).userAgent
+        (default : UserAgent)
         nextUserAgent
         destinationURL
         traversableId
