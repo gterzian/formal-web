@@ -160,7 +160,7 @@ theorem createNewTopLevelTraversable_lookup
   simp [createNewTopLevelTraversable, traversable?, TopLevelTraversableSet.find?]
   unfold createNewTopLevelTraversable.createNewTopLevelTraversableImpl
   simp [TopLevelTraversableSet.appendFresh, TopLevelTraversableSet.nextId, TopLevelTraversableSet.replace,
-    setActiveTraversable]
+    replaceTraversable, activeTraversable?, setActiveTraversable]
 
 theorem beginNavigation_after_createTopLevelTraversable_trace
     (userAgent : UserAgent)
