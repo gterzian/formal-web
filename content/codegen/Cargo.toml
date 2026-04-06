@@ -1,0 +1,11 @@
+[package]
+name = "content-codegen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+weedle2 = "5"

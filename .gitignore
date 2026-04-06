@@ -9,3 +9,4 @@
 /embedder/target/
 content/target/
 ipc_messages/target/
+content/codegen/target/

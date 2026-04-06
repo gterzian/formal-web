@@ -1,7 +1,7 @@
 **Documenting your work:**
 Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
-- Web standards are present under `web_standards`, currently those are: Console, Dom, Fetch, and HTML. 
+- Web standards are present under the top-level directory `/web_standards/`, currently those are: Console, Dom, Fetch, and HTML. 
 
 - Method- & type-level doc
   - Method-level: the method's top doc-comment must contain *only* the canonical spec anchor (e.g. `/// <https://webmachinelearning.github.io/webnn/#dom-ml-createcontext>`).
@@ -10,7 +10,6 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
   - Functions & spec-algorithms
     - Follow the structure of the spec. For example, if the spec defines an interface method and then from it calls into another algorithm, then you should also implement that algorithm either with a seperate method(if you need to access state of the dom struct), or just a function.
-    - Naming & visibility: name the function to reflect the spec algorithm (`create_an_mloperand`), keep it private by default, and move it to a shared module only if genuinely reused across components.
 
 - In-body per-line spec mapping
   - Inside the function body annotate *each relevant line of code* with a
@@ -41,17 +40,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
       accelerated: Cell<bool>,
       ```
 
-    - Distinction: generated trait *methods/attributes* map to WebIDL anchors
-      like `#dom-mlcontext-accelerated` (the attribute getter); struct fields
-      that back *internal slots* should link to the internal-slot anchor where
-      available, otherwise link to the attribute/getter or interface anchor.
-    - Do not add additional prose when documenting internal-slot fields.
-
-    - DOM struct fields must remain private. Always add `pub(crate)` accessor
-      methods (getters/setters) on the `#[dom_struct]` type for other code to
-      read or modify internal-slot values. Consumers outside the defining
-      module must call these accessors — do *not* access struct fields
-      directly from other modules.
+    - Do not add additional prose when documenting internal-slot fields, unless necessary to explain something that doesn't map directly to a spec concept. For example, you can document that a member represents an interface implementation but implemented using composition.
 
     - When a stored value comes from a WebIDL dictionary (for example
       `MLTensorDescriptor`), link the field to the specific dictionary-member
@@ -82,3 +71,15 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
     closing brace solely to satisfy this rule.)
   - Keep comments short and place them on their own line above the code they
     document.
+
+**JavaScript runtime**
+
+- `content/src/boa` owns Boa context setup, HTML parsing, task draining, microtask checkpoints, and the bridge from Blitz UI events into JavaScript event dispatch.
+
+- `content/src/dom` stores the native data carried by JavaScript-visible `Window`, `Node`, `Document`, `Element`, `EventTarget`, `Event`, and `UIEvent` objects. `BaseDocument` remains the authoritative DOM state; the JavaScript wrappers do not store shadow DOM data.
+
+- When a JavaScript-visible Web IDL attribute or algorithm is implemented for a DOM type, keep the spec-linked method on the corresponding `content/src/dom` type and have `content/src/boa/bindings` delegate to that method instead of embedding the algorithm in the binding layer.
+
+- When a content runtime type models an HTML execution concept, document it against the corresponding HTML concept anchor such as `#environment`, `#environment-settings-object`, or `#global-object` instead of folding that state into the nearest exposed interface name.
+
+- Initial document parsing queues classic inline scripts after the tree build and drains them before the `load` event fires. `innerHTML` parsing uses the same sink with scripting disabled so fragment parsing does not execute scripts.

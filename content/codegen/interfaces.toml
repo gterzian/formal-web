@@ -1,0 +1,2 @@
+concrete = ["Event", "UIEvent", "EventTarget", "Node", "Document", "Element", "Window"]
+abstract_interfaces = []

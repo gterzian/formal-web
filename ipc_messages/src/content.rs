@@ -147,6 +147,12 @@ pub struct PaintFrame {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CallbackData {
+    ScriptSource(String),
+    Bytes(Vec<u8>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetViewport(ViewportSnapshot),
     CreateEmptyDocument { document_id: u64 },
@@ -155,9 +161,18 @@ pub enum Command {
         url: String,
         body: String,
     },
+    EvaluateScript {
+        document_id: u64,
+        source: String,
+    },
     DispatchEvent {
         document_id: u64,
         event: String,
+    },
+    CallbackReady {
+        document_id: u64,
+        callback_id: u64,
+        data: CallbackData,
     },
     UpdateTheRendering { document_id: u64 },
     CompleteDocumentFetch {
