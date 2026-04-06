@@ -1,0 +1,29 @@
+- `sratchpad/zero-to-qed` contains excellent idiomatic Lean examples: use those.
+- Use `lean-lsp-mcp` when working in Lean, it is documented at `/scratchpad/lean-lsp-mcp/README.md`. Read the documentation before attempting to prove anything in Lean.
+- Use CamelCase filenames such as `FormalWeb/UserAgent.lean` for modules like `FormalWeb.UserAgent`.
+- Keep structure docstrings tied to the spec only when the type itself has a direct spec concept; put spec links on individual structure fields when the spec concept belongs to the member.
+- Prefer single-line doc comments for spec-only documentation such as `/-- https://html.spec.whatwg.org/multipage/#anchor -/`.
+- Keep docs minimal: default to just the spec link when a precise spec anchor exists, and add prose only when it carries real modeling information.
+- Document structure fields with spec-slot links wherever the standard exposes a corresponding slot; if a field is model-local, say so explicitly and link the closest relevant spec concept.
+- For spec algorithms, document the Lean function with the spec link and annotate the body with `Step n: ...` comments using verbatim spec prose.
+- For spec algorithms, keep `Step n:` comments for spec prose only; add separate `Notes:` comments for concrete modeling or implementation details.
+- Model shared spec algorithms at the least-specific spec type that the standard uses; for example, `initialize-the-navigable` should take a `Navigable`, not a `TraversableNavigable`, since the spec reuses it for child navigables.
+- For partially implemented algorithm steps in Lean, put a `-- TODO:` comment immediately below the corresponding step comment.
+- When a spec algorithm calls another algorithm, model that callee as a separate Lean function.
+- The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
+- Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
+- Prefer a custom Lake `target` plus `moreLinkObjs` for repo-local Rust static libraries; reserve `extern_lib` for cases that truly need it.
+- For Lean FFI callbacks from Rust, prefer exporting a Lean function and calling it from Rust through a tiny C shim that includes `lean/lean.h`; Rust alone cannot directly use Lean's many inline runtime helpers such as `lean_dec`, `lean_string_cstr`, and `lean_io_result_*`.
+- Web standards are present under `web_standards`, currently those are: Console, Dom, Fetch, and HTML. 
+- When searching a local standard, search for the exact spec anchor string first, such as `creating-a-new-top-level-traversable`.
+- For concurrent spec algorithms such as fetch-and-wait navigation steps, prefer modeling the pause point as explicit pending state on `UserAgent` plus a separate resume transition before introducing real runtime tasks or I/O.
+- When a spec algorithm pauses and later resumes after a wait point, model the resumed portion as an explicit continuation helper instead of re-entering the top-level algorithm at a later argument state.
+- When a spec wait has multiple wakeup conditions, model each wakeup reason explicitly in the LTS; if one branch produces no result and just returns, represent that as its own continuation path instead of folding it into the response-arrival case.
+- Introduce a small LTS action type above navigation helpers so spec-visible concurrent steps such as "begin navigation" and "fetch response arrives" are explicit labels, while helper functions remain implementation detail under those labels.
+- It is acceptable for the LTS layer to factor a convenience spec helper into multiple explicit labels, such as separating top-level traversable creation from the later begin-navigation and fetch-completion steps.
+- If a spec convenience helper only bundles multiple LTS-visible steps, prefer modeling those steps directly in the action system and omit the convenience helper unless it still carries independent explanatory value.
+- If a spec algorithm is only a top-level entry point and is not referenced by other spec algorithms, it does not need to be preserved as a separate helper in the model when the LTS already captures its intended behavior.
+- For WriterT/state refinement proofs, keep runtime helpers definitionally transparent and prove small projection lemmas for packed returns such as emitted-effect arrays or next-state fields instead of fighting large `simp` goals over the whole monadic term.
+- A guide on Lean FFI can be found in `/scratchpad/ffi_guide/md`.
+- Keep proof-only transition helper modules such as `TransitionSystem` and `TransitionTrace` under `FormalWeb/Proofs/`.
+- AGAIN: Use `lean-lsp-mcp` when working in Lean, it is documented at `/scratchpad/lean-lsp-mcp/README.md`. Read the documentation before attempting to do anything in Lean.

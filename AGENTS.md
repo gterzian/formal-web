@@ -1,40 +1,26 @@
-When learning something general about the project, update this file with the lesson.
+**README Documentation Chain (read in order)**
+- `AGENTS.md` — top-level agent orientation and cross-cutting rules (this file).
+- `<component>/README.md` — component-level guidance and the consolidation point for component-wide lessons (for example `components/script/README.md`).
+- `<component>/<subdir>/README.md` — subsystem-level guidance.
 
-When the user gives general project or documentation instructions, record them here proactively even
-if they may later be split into more modular instruction files.
+**Agent pre-task checklist (MANDATORY)**
+- Read and add to your working context the README chain *for the task* in this order: `AGENTS.md` → `<component>/README.md` → `<component>/<subdir>/README.md` .
+- Follow the documented conventions in those READMEs (for example the `components/script/README.md` "Documenting your work" rules) when implementing and commenting code.
 
-This file is for durable project-wide lessons and guidance only, not task-by-task work logs or progress notes.
+Example — working on `content`
+- Read in order: `AGENTS.md` → `content/README.md`.
+- Add content-specific lessons to `content/README.md`.
+- If a lesson applies to the project as a whole, add a single short line to `AGENTS.md` (do not copy the full prose into the subsystem README).
+- Do not write changelogs in those files, only long-lasting documentation.
 
-- `sratchpad/zero-to-qed` contains excellent idiomatic Lean examples: use those.
-- Use `lean-lsp-mcp` when working in Lean, it is documented at `/scratchpad/lean-lsp-mcp/README.md`. Read the documentation before attempting to prove anything in Lean.
-- Use CamelCase filenames such as `FormalWeb/UserAgent.lean` for modules like `FormalWeb.UserAgent`.
-- Keep structure docstrings tied to the spec only when the type itself has a direct spec concept; put spec links on individual structure fields when the spec concept belongs to the member.
-- Prefer single-line doc comments for spec-only documentation such as `/-- https://html.spec.whatwg.org/multipage/#anchor -/`.
-- Keep docs minimal: default to just the spec link when a precise spec anchor exists, and add prose only when it carries real modeling information.
-- Document structure fields with spec-slot links wherever the standard exposes a corresponding slot; if a field is model-local, say so explicitly and link the closest relevant spec concept.
-- For spec algorithms, document the Lean function with the spec link and annotate the body with `Step n: ...` comments using verbatim spec prose.
-- For spec algorithms, keep `Step n:` comments for spec prose only; add separate `Notes:` comments for concrete modeling or implementation details.
-- Model shared spec algorithms at the least-specific spec type that the standard uses; for example, `initialize-the-navigable` should take a `Navigable`, not a `TraversableNavigable`, since the spec reuses it for child navigables.
-- For partially implemented algorithm steps in Lean, put a `-- TODO:` comment immediately below the corresponding step comment.
-- When a spec algorithm calls another algorithm, model that callee as a separate Lean function.
-- The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
-- Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
-- Prefer a custom Lake `target` plus `moreLinkObjs` for repo-local Rust static libraries; reserve `extern_lib` for cases that truly need it.
-- For Lean FFI callbacks from Rust, prefer exporting a Lean function and calling it from Rust through a tiny C shim that includes `lean/lean.h`; Rust alone cannot directly use Lean's many inline runtime helpers such as `lean_dec`, `lean_string_cstr`, and `lean_io_result_*`.
-- When searching the local HTML standard, search for the exact spec anchor string first, such as `creating-a-new-top-level-traversable`.
-- For concurrent spec algorithms such as fetch-and-wait navigation steps, prefer modeling the pause point as explicit pending state on `UserAgent` plus a separate resume transition before introducing real runtime tasks or I/O.
-- When a spec algorithm pauses and later resumes after a wait point, model the resumed portion as an explicit continuation helper instead of re-entering the top-level algorithm at a later argument state.
-- When a spec wait has multiple wakeup conditions, model each wakeup reason explicitly in the LTS; if one branch produces no result and just returns, represent that as its own continuation path instead of folding it into the response-arrival case.
-- Introduce a small LTS action type above navigation helpers so spec-visible concurrent steps such as "begin navigation" and "fetch response arrives" are explicit labels, while helper functions remain implementation detail under those labels.
-- It is acceptable for the LTS layer to factor a convenience spec helper into multiple explicit labels, such as separating top-level traversable creation from the later begin-navigation and fetch-completion steps.
-- If a spec convenience helper only bundles multiple LTS-visible steps, prefer modeling those steps directly in the action system and omit the convenience helper unless it still carries independent explanatory value.
-- If a spec algorithm is only a top-level entry point and is not referenced by other spec algorithms, it does not need to be preserved as a separate helper in the model when the LTS already captures its intended behavior.
-- For WriterT/state refinement proofs, keep runtime helpers definitionally transparent and prove small projection lemmas for packed returns such as emitted-effect arrays or next-state fields instead of fighting large `simp` goals over the whole monadic term.
-- A guide on Lean FFI can be found in `/scratchpad/ffi_guide/md`.
-- For main-thread callbacks such as winit handlers, prefer non-blocking `Channel.trySend` on unbounded channels over waiting on `Channel.send`, to avoid stalling UI event delivery.
-- For Rust-to-Lean UI callbacks, keep the callback body minimal and offload follow-up work with `IO.asTask` so the embedder event loop can return promptly.
-- If a Lean background worker must stop when `main` exits, use `Std.CloseableChannel` rather than `Std.Channel`, close it after the embedder event loop returns, and wait for the worker task to finish.
-- Validated runtime pattern: start background Lean workers with `IO.asTask`, feed them from UI callbacks via non-blocking `trySend`, have the worker loop terminate on `CloseableChannel.recv = none`, and in `main` clear shared refs, close the channel, and `IO.wait` the worker after `runEmbedderEventLoop` returns.
-- In the content-process runtime, do not add `unsafe impl Send`/`Sync` just to satisfy provider trait bounds; if a provider must cross a thread-safe API boundary such as Blitz's `NetProvider`, use a genuinely thread-safe wrapper such as `Arc<Mutex<...>>`. Also do not let the child process drive redraw timing at all: the embedder should note rendering opportunities and request `UpdateTheRendering`, while the content process only performs the resulting DOM/render I/O and returns recorded paint scenes.
-- Keep proof-only transition helper modules such as `TransitionSystem` and `TransitionTrace` under `FormalWeb/Proofs/`, not at the top level.
-- AGAIN: Use `lean-lsp-mcp` when working in Lean, it is documented at `/scratchpad/lean-lsp-mcp/README.md`. Read the documentation before attempting to do anything in Lean.
+**Guidance on adding documentation**
+Whenever the user corrects your code, besides fixing the code, if there
+is a general lesson to document, add prose to the lowest-level possible `{README, AGENTS}.md` file. 
+
+Principle: add lessons to the *lowest* README that makes sense. Do **not** duplicate or copy the same prose across multiple README files — put the lesson where it belongs.
+
+**Prose & README style:**
+- Document the *current* design/state only — do **not** leave change‑history or "I did X" comments in source or README files (for example, avoid comments like "create a single sender"). Historical context belongs in the PR description or a changelog, not inline.
+- Use neutral, factual language. Avoid subjective or minimizing words such as "small", "tiny", "minimal", "just", or "only" when describing a component or its responsibilities.
+
+Plans and TODOS belong in `scratchpad`. 
