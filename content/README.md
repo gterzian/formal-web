@@ -82,4 +82,6 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - When a content runtime type models an HTML execution concept, document it against the corresponding HTML concept anchor such as `#environment`, `#environment-settings-object`, or `#global-object` instead of folding that state into the nearest exposed interface name.
 
+- Keep binding-related tooling in `content` only when it is part of the maintained workflow. Remove inactive generators, generated outputs, and orphaned Web IDL inputs instead of leaving them in the tree.
+
 - Initial document parsing queues classic inline scripts after the tree build and drains them before the `load` event fires. `innerHTML` parsing uses the same sink with scripting disabled so fragment parsing does not execute scripts.
