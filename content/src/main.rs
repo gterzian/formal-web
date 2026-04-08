@@ -4,30 +4,47 @@ mod ui_event;
 
 mod boa;
 mod dom;
+mod html;
+mod webidl;
 
+use crate::boa::{JsHtmlParserProvider, JsState, parse_html_into_document};
+use crate::dom::{dispatch_ui_event, fire_event};
+use crate::html::run_animation_frame_callbacks;
+use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
-use ipc_messages::content::{
-    Bootstrap, ColorScheme as MessageColorScheme, Command as ContentCommand,
-    Event as ContentEvent, FetchRequest as ContentFetchRequest,
-    PaintFrame, RecordedScene, ScrollOffset, ViewportSnapshot,
-};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
-use std::collections::HashMap;
-use std::env;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use ipc_messages::content::Command::{
+    CallbackReady, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DispatchEvent,
+    EvaluateScript, SetViewport, Shutdown, UpdateTheRendering,
+};
+use ipc_messages::content::{
+    Bootstrap, CallbackData, ColorScheme as MessageColorScheme, Command, Event as ContentEvent,
+    FetchRequest as ContentFetchRequest, PaintFrame, RecordedScene, ScrollOffset, ViewportSnapshot,
+};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    env,
+    rc::Rc,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
 
+struct PendingDocumentHandler {
+    document_id: u64,
+    handler: Box<dyn NetHandler>,
+}
+
 struct LocalContentState {
-    pending_handlers: HashMap<u64, Box<dyn NetHandler>>,
+    pending_handlers: HashMap<u64, PendingDocumentHandler>,
     next_handler_id: u64,
 }
 
@@ -46,13 +63,19 @@ fn viewport_of_snapshot(snapshot: &ViewportSnapshot) -> Viewport {
         MessageColorScheme::Light => ColorScheme::Light,
         MessageColorScheme::Dark => ColorScheme::Dark,
     };
-    Viewport::new(snapshot.width, snapshot.height, snapshot.scale, color_scheme)
+    Viewport::new(
+        snapshot.width,
+        snapshot.height,
+        snapshot.scale,
+        color_scheme,
+    )
 }
 
 #[derive(Clone)]
 struct ContentNetProvider {
     event_sender: IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
+    content_document_id: u64,
 }
 
 impl NetProvider for ContentNetProvider {
@@ -74,19 +97,22 @@ impl NetProvider for ContentNetProvider {
                     .expect("local content state mutex poisoned");
                 let handler_id = local_state.next_handler_id;
                 local_state.next_handler_id += 1;
-                local_state
-                    .pending_handlers
-                    .insert(handler_id, handler);
+                local_state.pending_handlers.insert(
+                    handler_id,
+                    PendingDocumentHandler {
+                        document_id: self.content_document_id,
+                        handler,
+                    },
+                );
                 drop(local_state);
-                if let Err(error) = self
-                    .event_sender
-                    .send(ContentEvent::DocumentFetchRequested(ContentFetchRequest {
+                if let Err(error) = self.event_sender.send(ContentEvent::DocumentFetchRequested(
+                    ContentFetchRequest {
                         handler_id,
                         url: request.url.to_string(),
                         method: request.method.to_string(),
                         body: request_body_string(&request.body),
-                    }))
-                {
+                    },
+                )) {
                     eprintln!("failed to send document fetch request to the embedder: {error}");
                 }
             }
@@ -95,8 +121,9 @@ impl NetProvider for ContentNetProvider {
 }
 
 struct ContentDocument {
-    document: std::rc::Rc<std::cell::RefCell<BaseDocument>>,
-    js_state: boa::JsState,
+    document: Rc<RefCell<BaseDocument>>,
+    js_state: JsState,
+    pending_update_the_rendering: bool,
 }
 
 struct ContentRuntime {
@@ -121,15 +148,16 @@ impl ContentRuntime {
         }
     }
 
-    fn document_config(&self, base_url: Option<String>) -> DocumentConfig {
+    fn document_config(&self, document_id: u64, base_url: Option<String>) -> DocumentConfig {
         DocumentConfig {
             viewport: self.viewport.as_ref().map(viewport_of_snapshot),
             base_url,
             net_provider: Some(Arc::new(ContentNetProvider {
                 event_sender: self.event_sender.clone(),
                 local_state: Arc::clone(&self.local_state),
+                content_document_id: document_id,
             })),
-            html_parser_provider: Some(Arc::new(boa::JsHtmlParserProvider)),
+            html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
             ..DocumentConfig::default()
         }
     }
@@ -145,45 +173,109 @@ impl ContentRuntime {
         }
     }
 
+    /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
+    /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, document_id: u64) -> Result<(), String> {
-        let document = std::rc::Rc::new(std::cell::RefCell::new(BaseDocument::new(
-            self.document_config(None),
-        )));
-        let mut js_state = boa::JsState::new(Rc::clone(&document), Url::parse("about:blank").map_err(|error| error.to_string())?)?;
+        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(document_id, None))));
+        let mut js_state = JsState::new(
+            Rc::clone(&document),
+            Url::parse("about:blank").map_err(|error| error.to_string())?,
+        )?;
+
+        // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
+        // Step 7: "Mark document as ready for post-load tasks."
+        // TODO: Persist the document's post-load readiness state in the DOM/runtime model.
+
         {
             let mut document_guard = document.borrow_mut();
-            boa::parse_html_into_document(
+
+            // Step 8: "Populate with html/head/body given document."
+            // Note: The content runtime drives the shared HTML parser with a fixed `about:blank` skeleton instead of constructing the three elements manually.
+            parse_html_into_document(
                 &mut document_guard,
                 EMPTY_HTML_DOCUMENT,
                 &mut js_state.settings.execution_context,
             );
         }
+
+        // Step 10: "Completely finish loading document."
+        // Note: Parser task drainage runs the queued work associated with the initial `about:blank` document.
+        // TODO: Model the rest of the `completely finish loading` bookkeeping explicitly instead of relying on parser task drainage alone.
         js_state.settings.execution_context.drain_tasks()?;
+
+        // Step 9: "Make active document."
+        // Note: The runtime records the document as addressable for future commands by storing it under `document_id` after initialization completes.
         self.documents.insert(
             document_id,
-            ContentDocument { document, js_state },
+            ContentDocument {
+                document,
+                js_state,
+                pending_update_the_rendering: false,
+            },
         );
         Ok(())
     }
 
-    fn create_loaded_document(&mut self, document_id: u64, url: String, body: String) -> Result<(), String> {
-        let document = std::rc::Rc::new(std::cell::RefCell::new(BaseDocument::new(
-            self.document_config(Some(url.clone())),
+    /// <https://html.spec.whatwg.org/#navigate-html>
+    /// Note: This continues the HTML document loading algorithm through the end-of-document load steps and into `completely finish loading`.
+    fn create_loaded_document(
+        &mut self,
+        document_id: u64,
+        url: String,
+        body: String,
+    ) -> Result<(), String> {
+        // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
+        // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
+        // Note: `BaseDocument::new` and `JsState::new` split document creation between the DOM carrier and the JavaScript environment settings object.
+        let document = Rc::new(RefCell::new(BaseDocument::new(
+            self.document_config(document_id, Some(url.clone())),
         )));
-        let mut js_state = boa::JsState::new(Rc::clone(&document), Url::parse(&url).map_err(|error| error.to_string())?)?;
+        let mut js_state = JsState::new(
+            Rc::clone(&document),
+            Url::parse(&url).map_err(|error| error.to_string())?,
+        )?;
+
         {
             let mut document_guard = document.borrow_mut();
-            boa::parse_html_into_document(
+
+            // Step 3: "Otherwise, create an HTML parser and associate it with the document."
+            // Note: The embedder has already buffered the response body, so the content runtime feeds it into the parser immediately instead of waiting on separate networking tasks.
+            parse_html_into_document(
                 &mut document_guard,
                 &body,
                 &mut js_state.settings.execution_context,
             );
         }
+
+        // Note: This block continues <https://html.spec.whatwg.org/#the-end>.
+        // Step 1: "Update the current document readiness to `complete`."
+        // Note: Parser task drainage runs the queued end-of-document work before the load event fires.
         js_state.settings.execution_context.drain_tasks()?;
-        boa::fire_load_event(&mut js_state.settings.execution_context)?;
+
+        // Step 5: "Fire an event named `load` at `window`, with legacy target override flag set."
+        let window = js_state.settings.execution_context.context.global_object();
+        fire_event(
+            &mut js_state.settings.execution_context,
+            &window,
+            "load",
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+
+        // Step 12: "Completely finish loading the `Document`."
+        // Step 12.1: "Set document's completely loaded time to the current time."
+        // TODO: Persist the document's completely loaded time in the DOM/runtime state.
+
+        // Step 12.2: "Let container be document's node navigable's container."
+        // Note: This runtime entry point creates a top-level document, so `container` is null and the container `load` event branch in `completely finish loading` does not run here.
+
         self.documents.insert(
             document_id,
-            ContentDocument { document, js_state },
+            ContentDocument {
+                document,
+                js_state,
+                pending_update_the_rendering: false,
+            },
         );
         Ok(())
     }
@@ -205,52 +297,96 @@ impl ContentRuntime {
             .documents
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document id: {document_id}"))?;
-        let event = ui_event::deserialize_ui_event(&event)?;
-        boa::dispatch_ui_event(
-            &document.document,
+
+        // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event to the content runtime.
+        let event = deserialize_ui_event(&event)?;
+        dispatch_ui_event(
+            Rc::clone(&document.document),
             &mut document.js_state.settings.execution_context,
             event,
         )
     }
 
     fn update_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
+        println!("Update rendering for {:?}", document_id);
         let document = self
             .documents
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        document.pending_update_the_rendering = true;
+        self.continue_updating_the_rendering(document_id)
+    }
 
-        let animation_time = self.animation_start.elapsed().as_secs_f64();
-        for _ in 0..3 {
-            let mut document_guard = document.document.borrow_mut();
-            document_guard.resolve(animation_time);
-            if !document_guard.has_pending_critical_resources() {
-                break;
+    /// <https://html.spec.whatwg.org/#update-the-rendering>
+    /// Note: Lean queues this rendering task via `FormalWeb.UserAgent.queueUpdateTheRendering` and `FormalWeb.EventLoop.runEventLoopMessage`, and the content runtime continues the noted rendering opportunity once critical fetches finish.
+    fn continue_updating_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
+        let frame_timestamp_ms = self.animation_start.elapsed().as_secs_f64() * 1000.0;
+        let event_sender = self.event_sender.clone();
+        let paint_frame = {
+            let document = self
+                .documents
+                .get_mut(&document_id)
+                .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+
+            if document.document.borrow().has_pending_critical_resources() {
+                println!("Doc has pending critical resources: {:?}", document_id);
+                return Ok(());
             }
-        }
 
-        let document_guard = document.document.borrow();
-        let viewport = document_guard.viewport().clone();
-        let (width, height) = viewport.window_size;
-        let mut scene = RenderScene::new();
-        paint_scene(
-            &mut scene,
-            &document_guard,
-            viewport.scale_f64(),
-            width,
-            height,
-            0,
-            0,
-        );
-        let viewport_scroll = document_guard.viewport_scroll();
-        self.event_sender
-            .send(ContentEvent::PaintReady(PaintFrame {
-                document_id,
-                viewport_scroll: ScrollOffset {
-                    x: viewport_scroll.x as f32,
-                    y: viewport_scroll.y as f32,
-                },
-                scene: RecordedScene::from(scene),
-            }))
+            // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
+            // Note: The content runtime currently derives a monotonic frame timestamp from process start instead of the HTML event loop's shared render-opportunity clock.
+
+            // Step 14: "For each `doc` of `docs`, run the animation frame callbacks for `doc`, passing in the relative high resolution time given `frameTimestamp` and `doc`'s relevant global object as the timestamp."
+            // Note: The content runtime collapses `docs` to the single active document for this content process and uses the same monotonic clock value as both the HTML frame timestamp and the callback timestamp.
+            run_animation_frame_callbacks(
+                &mut document.js_state.settings.execution_context,
+                frame_timestamp_ms,
+            )?;
+
+            let animation_time = frame_timestamp_ms / 1000.0;
+            {
+                let mut document_guard = document.document.borrow_mut();
+
+                // Step 16.2.1: "Recalculate styles and update layout for `doc`."
+                // Note: `resolve` advances style, layout, and resource-driven document updates for the current frame.
+                document_guard.resolve(animation_time);
+            }
+
+            let paint_frame = {
+                let document_guard = document.document.borrow();
+                let viewport = document_guard.viewport().clone();
+                let (width, height) = viewport.window_size;
+                let mut scene = RenderScene::new();
+
+                // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
+                // Note: This implementation collapses the HTML rendering task to a single active document and records the painted scene for the embedder.
+                paint_scene(
+                    &mut scene,
+                    &document_guard,
+                    viewport.scale_f64(),
+                    width,
+                    height,
+                    0,
+                    0,
+                );
+                let viewport_scroll = document_guard.viewport_scroll();
+                PaintFrame {
+                    document_id,
+                    viewport_scroll: ScrollOffset {
+                        x: viewport_scroll.x as f32,
+                        y: viewport_scroll.y as f32,
+                    },
+                    scene: RecordedScene::from(scene),
+                }
+            };
+
+            println!("Updated the rendering for {:?}", document_id);
+            document.pending_update_the_rendering = false;
+            paint_frame
+        };
+
+        event_sender
+            .send(ContentEvent::PaintReady(paint_frame))
             .map_err(|error| format!("failed to send paint frame: {error}"))
     }
 
@@ -260,22 +396,25 @@ impl ContentRuntime {
         resolved_url: String,
         body: Vec<u8>,
     ) -> Result<(), String> {
-        let handler = self
+        let pending_handler = self
             .local_state
             .lock()
             .expect("local content state mutex poisoned")
             .pending_handlers
             .remove(&handler_id)
             .ok_or_else(|| format!("unknown fetch handler id: {handler_id}"))?;
-        handler.bytes(resolved_url, Bytes::copy_from_slice(&body));
-        Ok(())
+        pending_handler
+            .handler
+            .bytes(resolved_url, Bytes::copy_from_slice(&body));
+        println!("Completed document fetch for {:?}", pending_handler.document_id);
+        self.continue_updating_the_rendering(pending_handler.document_id)
     }
 
     fn callback_ready(
         &mut self,
         document_id: u64,
         callback_id: u64,
-        data: ipc_messages::content::CallbackData,
+        data: CallbackData,
     ) -> Result<(), String> {
         let document = self
             .documents
@@ -289,17 +428,19 @@ impl ContentRuntime {
         document.js_state.settings.execution_context.drain_tasks()
     }
 
-    fn handle_command(&mut self, command: ContentCommand) -> Result<bool, String> {
+    /// <https://html.spec.whatwg.org/#event-loop-processing-model>
+    /// Note: Lean emits these runtime effects from `FormalWeb.EventLoop.runEventLoopMessage`, and each branch below resumes the corresponding Rust-owned continuation.
+    fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         match command {
-            ContentCommand::SetViewport(viewport) => {
+            SetViewport(viewport) => {
                 self.set_viewport(viewport);
                 Ok(true)
             }
-            ContentCommand::CreateEmptyDocument { document_id } => {
+            CreateEmptyDocument { document_id } => {
                 self.create_empty_document(document_id)?;
                 Ok(true)
             }
-            ContentCommand::CreateLoadedDocument {
+            CreateLoadedDocument {
                 document_id,
                 url,
                 body,
@@ -307,15 +448,18 @@ impl ContentRuntime {
                 self.create_loaded_document(document_id, url, body)?;
                 Ok(true)
             }
-            ContentCommand::EvaluateScript { document_id, source } => {
+            EvaluateScript {
+                document_id,
+                source,
+            } => {
                 self.evaluate_script(document_id, source)?;
                 Ok(true)
             }
-            ContentCommand::DispatchEvent { document_id, event } => {
+            DispatchEvent { document_id, event } => {
                 self.dispatch_event(document_id, event)?;
                 Ok(true)
             }
-            ContentCommand::CallbackReady {
+            CallbackReady {
                 document_id,
                 callback_id,
                 data,
@@ -323,11 +467,11 @@ impl ContentRuntime {
                 self.callback_ready(document_id, callback_id, data)?;
                 Ok(true)
             }
-            ContentCommand::UpdateTheRendering { document_id } => {
+            UpdateTheRendering { document_id } => {
                 self.update_the_rendering(document_id)?;
                 Ok(true)
             }
-            ContentCommand::CompleteDocumentFetch {
+            CompleteDocumentFetch {
                 handler_id,
                 resolved_url,
                 body,
@@ -335,7 +479,7 @@ impl ContentRuntime {
                 self.complete_document_fetch(handler_id, resolved_url, body)?;
                 Ok(true)
             }
-            ContentCommand::Shutdown => Ok(false),
+            Shutdown => Ok(false),
         }
     }
 }
@@ -355,11 +499,10 @@ fn content_token() -> Result<String, String> {
 fn main() -> Result<(), String> {
     let token = content_token()?;
     let (command_sender, command_receiver) =
-        ipc::channel::<ContentCommand>().map_err(|error| error.to_string())?;
+        ipc::channel::<Command>().map_err(|error| error.to_string())?;
     let (event_sender, event_receiver) =
         ipc::channel::<ContentEvent>().map_err(|error| error.to_string())?;
-    let bootstrap =
-        IpcSender::<Bootstrap>::connect(token).map_err(|error| error.to_string())?;
+    let bootstrap = IpcSender::<Bootstrap>::connect(token).map_err(|error| error.to_string())?;
     bootstrap
         .send(Bootstrap {
             command_sender,

@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{JsData, object::JsObject};
@@ -15,6 +18,17 @@ pub struct CachedNodeObject {
     pub object: JsObject,
 }
 
+/// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
+#[derive(Trace, Finalize)]
+pub struct AnimationFrameCallback {
+    /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
+    #[unsafe_ignore_trace]
+    pub handle: u32,
+
+    /// <https://webidl.spec.whatwg.org/#idl-callback-function>
+    pub callback: JsObject,
+}
+
 /// <https://html.spec.whatwg.org/#environment>
 #[derive(Trace, Finalize, JsData)]
 pub struct RuntimeData {
@@ -27,6 +41,13 @@ pub struct RuntimeData {
 
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
     pub node_objects: GcRefCell<Vec<CachedNodeObject>>,
+
+    /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
+    #[unsafe_ignore_trace]
+    pub animation_frame_callback_identifier: Cell<u32>,
+
+    /// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
+    pub animation_frame_callbacks: GcRefCell<Vec<AnimationFrameCallback>>,
 }
 
 impl RuntimeData {
@@ -35,6 +56,8 @@ impl RuntimeData {
             document,
             document_object: GcRefCell::new(None),
             node_objects: GcRefCell::new(Vec::new()),
+            animation_frame_callback_identifier: Cell::new(0),
+            animation_frame_callbacks: GcRefCell::new(Vec::new()),
         }
     }
 }

@@ -6,9 +6,8 @@ use super::execution_context::JsExecutionContext;
 
 type TaskCallback = Box<dyn FnOnce(&mut JsExecutionContext) -> Result<(), String>>;
 /// <https://html.spec.whatwg.org/#queue-a-task>
-pub type PendingCallback = Box<
-    dyn FnOnce(&mut JsExecutionContext, CallbackData) -> Result<(), String>,
->;
+pub type PendingCallback =
+    Box<dyn FnOnce(&mut JsExecutionContext, CallbackData) -> Result<(), String>>;
 
 /// <https://html.spec.whatwg.org/#concept-task>
 pub struct Task {

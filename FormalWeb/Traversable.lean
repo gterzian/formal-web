@@ -92,6 +92,8 @@ structure TraversableNavigable extends Navigable where
   activeBrowsingContextId : Option Nat := none
   /-- Model-local cache of the Document presented via https://html.spec.whatwg.org/multipage/#nav-active-history-entry -/
   activeDocument : Option Document := none
+  /-- Model-local marker for https://html.spec.whatwg.org/multipage/#update-the-rendering requests noted while navigation is still ongoing. -/
+  hasDeferredUpdateTheRendering : Bool := false
   /-- https://html.spec.whatwg.org/multipage/#tn-current-session-history-step -/
   currentSessionHistoryStep : Nat := 0
   /-- https://html.spec.whatwg.org/multipage/#tn-session-history-entries -/

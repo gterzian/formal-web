@@ -1,7 +1,7 @@
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
-    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords,
-    PointerDetails, UiEvent,
+    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails,
+    UiEvent,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,10 @@ enum SerializableKey {
 #[serde(tag = "kind", content = "value")]
 enum SerializableImeEvent {
     Enabled,
-    Preedit { text: String, cursor: Option<(usize, usize)> },
+    Preedit {
+        text: String,
+        cursor: Option<(usize, usize)>,
+    },
     Commit(String),
     Disabled,
 }

@@ -83,7 +83,12 @@ impl Document {
 
     /// <https://html.spec.whatwg.org/#document.title>
     pub(crate) fn set_title(&self, title: &str) {
-        let title_node_id = self.node.document.borrow().find_title_node().map(|node| node.id);
+        let title_node_id = self
+            .node
+            .document
+            .borrow()
+            .find_title_node()
+            .map(|node| node.id);
         if let Some(title_node_id) = title_node_id {
             Node::new(Rc::clone(&self.node.document), title_node_id).set_text_content(Some(title));
         }

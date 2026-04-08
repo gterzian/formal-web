@@ -719,13 +719,15 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
             FormalWebUserEvent::Paint(snapshot) => {
-                let Some(_window) = self.window.as_ref() else {
+                let Some(window) = self.window.as_ref() else {
                     return;
                 };
                 self.current_paint_frame = Some(Self::paint_frame(snapshot));
                 if self.saw_redraw_requested {
                     self.paint_current_frame();
                     self.saw_redraw_requested = false;
+                } else if self.has_visible_viewport() {
+                    window.request_redraw();
                 }
             }
             FormalWebUserEvent::EmbedderRequestRedraw => {

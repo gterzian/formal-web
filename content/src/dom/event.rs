@@ -1,9 +1,8 @@
 use blitz_traits::events::{DomEvent, EventState};
-use boa_engine::{
-    JsData,
-    object::{JsObject, builtins::JsFunction},
-};
+use boa_engine::{JsData, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
+
+use super::{Document, Element, Node, Window};
 
 pub const NONE: u16 = 0;
 pub const CAPTURING_PHASE: u16 = 1;
@@ -18,7 +17,7 @@ pub struct EventListener {
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-callback>
-    pub callback: Option<JsFunction>,
+    pub callback: Option<JsObject>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-capture>
     #[unsafe_ignore_trace]
@@ -49,7 +48,7 @@ impl EventTarget {
     pub(crate) fn add_event_listener(
         &mut self,
         type_: String,
-        callback: JsFunction,
+        callback: JsObject,
         capture: bool,
         once: bool,
         passive: Option<bool>,
@@ -76,7 +75,12 @@ impl EventTarget {
     }
 
     /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
-    pub(crate) fn remove_event_listener_entry(&mut self, type_: &str, callback: &JsFunction, capture: bool) {
+    pub(crate) fn remove_event_listener_entry(
+        &mut self,
+        type_: &str,
+        callback: &JsObject,
+        capture: bool,
+    ) {
         for listener in &mut self.event_listener_list {
             if listener.type_ == type_
                 && listener.capture == capture
@@ -89,7 +93,8 @@ impl EventTarget {
             }
         }
 
-        self.event_listener_list.retain(|listener| !listener.removed);
+        self.event_listener_list
+            .retain(|listener| !listener.removed);
     }
 }
 
@@ -304,4 +309,70 @@ impl UIEvent {
             event_state.prevent_default();
         }
     }
+}
+
+pub(crate) fn with_event_mut<R>(this: &JsValue, f: impl FnOnce(&mut Event) -> R) -> JsResult<R> {
+    let object = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("event receiver is not an object"))?;
+    if let Some(mut event) = object.downcast_mut::<Event>() {
+        return Ok(f(&mut event));
+    }
+    if let Some(mut ui_event) = object.downcast_mut::<UIEvent>() {
+        return Ok(f(&mut ui_event.event));
+    }
+    Err(JsNativeError::typ()
+        .with_message("receiver is not an Event")
+        .into())
+}
+
+pub(crate) fn with_event_target_mut<R>(
+    this: &JsValue,
+    f: impl FnOnce(&mut EventTarget) -> R,
+) -> JsResult<R> {
+    let object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("event target receiver is not an object")
+    })?;
+    if let Some(mut window) = object.downcast_mut::<Window>() {
+        return Ok(f(&mut window.event_target));
+    }
+    if let Some(mut document) = object.downcast_mut::<Document>() {
+        return Ok(f(&mut document.node.event_target));
+    }
+    if let Some(mut element) = object.downcast_mut::<Element>() {
+        return Ok(f(&mut element.node.event_target));
+    }
+    if let Some(mut node) = object.downcast_mut::<Node>() {
+        return Ok(f(&mut node.event_target));
+    }
+    if let Some(mut target) = object.downcast_mut::<EventTarget>() {
+        return Ok(f(&mut target));
+    }
+    Err(JsNativeError::typ()
+        .with_message("receiver is not an EventTarget")
+        .into())
+}
+
+pub(crate) fn with_event_target_ref<R>(
+    object: &JsObject,
+    f: impl FnOnce(&EventTarget) -> R,
+) -> JsResult<R> {
+    if let Some(window) = object.downcast_ref::<Window>() {
+        return Ok(f(&window.event_target));
+    }
+    if let Some(document) = object.downcast_ref::<Document>() {
+        return Ok(f(&document.node.event_target));
+    }
+    if let Some(element) = object.downcast_ref::<Element>() {
+        return Ok(f(&element.node.event_target));
+    }
+    if let Some(node) = object.downcast_ref::<Node>() {
+        return Ok(f(&node.event_target));
+    }
+    if let Some(target) = object.downcast_ref::<EventTarget>() {
+        return Ok(f(&target));
+    }
+    Err(JsNativeError::typ()
+        .with_message("object is not an EventTarget")
+        .into())
 }

@@ -3,8 +3,8 @@ use std::{
     cell::{Cell, Ref, RefCell, RefMut},
 };
 
-use blitz_dom::{BaseDocument, DocumentMutator, HtmlParserProvider, Node};
 use blitz_dom::node::Attribute;
+use blitz_dom::{BaseDocument, DocumentMutator, HtmlParserProvider, Node};
 use html5ever::{
     ParseOpts, QualName,
     tendril::{StrTendril, TendrilSink},
@@ -151,7 +151,9 @@ impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
             NodeOrText::AppendText(text) => {
                 let last_child_id = self.mutr().last_child_id(*parent_id);
                 let appended = if let Some(last_child_id) = last_child_id {
-                    self.mutr().append_text_to_node(last_child_id, &text).is_ok()
+                    self.mutr()
+                        .append_text_to_node(last_child_id, &text)
+                        .is_ok()
                 } else {
                     false
                 };
@@ -169,7 +171,9 @@ impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
             NodeOrText::AppendText(text) => {
                 let previous_sibling_id = self.mutr().previous_sibling_id(*sibling_id);
                 let appended = if let Some(previous_sibling_id) = previous_sibling_id {
-                    self.mutr().append_text_to_node(previous_sibling_id, &text).is_ok()
+                    self.mutr()
+                        .append_text_to_node(previous_sibling_id, &text)
+                        .is_ok()
                 } else {
                     false
                 };
@@ -224,7 +228,8 @@ impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
     }
 
     fn reparent_children(&self, old_parent_id: &Self::Handle, new_parent_id: &Self::Handle) {
-        self.mutr().reparent_children(*old_parent_id, *new_parent_id);
+        self.mutr()
+            .reparent_children(*old_parent_id, *new_parent_id);
     }
 
     fn clone_subtree(&self, target: &Self::Handle) -> Self::Handle {
@@ -278,8 +283,7 @@ pub fn parse_html_into_document(
         if source.trim().is_empty() {
             continue;
         }
-        execution_context.enqueue_task(move |execution_context| {
-            execution_context.evaluate_script(&source)
-        });
+        execution_context
+            .enqueue_task(move |execution_context| execution_context.evaluate_script(&source));
     }
 }

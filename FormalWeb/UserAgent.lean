@@ -421,23 +421,71 @@ def queuePaintDocument
     Option (Nat × EventLoopTaskMessage) :=
   some (eventLoopId, .queuePaint documentId)
 
+def notePendingUpdateTheRendering
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    UserAgent :=
+  match traversable? userAgent traversableId with
+  | none =>
+      userAgent
+  | some traversable =>
+      if traversable.toTraversableNavigable.hasDeferredUpdateTheRendering then
+        userAgent
+      else
+        let traversable := {
+          traversable with
+            toTraversableNavigable := {
+              traversable.toTraversableNavigable with
+                hasDeferredUpdateTheRendering := true
+            }
+        }
+        replaceTraversable userAgent traversable
+
 def queueUpdateTheRendering
     (userAgent : UserAgent)
     (traversableId : Nat) :
-    Option (UserAgent × Nat × EventLoopTaskMessage) := do
-  let traversable <- traversable? userAgent traversableId
-  let document <- traversable.toTraversableNavigable.activeDocument
-  let documentId <- activeDocumentId? userAgent traversableId
-  let eventLoop <- userAgent.eventLoop? document.eventLoopId
+    UserAgent × Option (Nat × EventLoopTaskMessage) := Id.run do
+  let some traversable := traversable? userAgent traversableId
+    | (userAgent, none)
+  let some document := traversable.toTraversableNavigable.activeDocument
+    | (userAgent, none)
+  let some documentId := activeDocumentId? userAgent traversableId
+    | (userAgent, none)
+  let some eventLoop := userAgent.eventLoop? document.eventLoopId
+    | (userAgent, none)
+  let userAgent :=
+    if traversable.toTraversableNavigable.hasDeferredUpdateTheRendering then
+      let traversable := {
+        traversable with
+          toTraversableNavigable := {
+            traversable.toTraversableNavigable with
+              hasDeferredUpdateTheRendering := false
+          }
+      }
+      replaceTraversable userAgent traversable
+    else
+      userAgent
   if eventLoop.hasPendingUpdateTheRendering then
-    none
+    (userAgent, none)
   else
     let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
-    pure (
+    (
       userAgent.setEventLoop eventLoop,
-      document.eventLoopId,
-      EventLoopTaskMessage.queueUpdateTheRendering traversableId documentId
+      some (document.eventLoopId, EventLoopTaskMessage.queueUpdateTheRendering traversableId documentId)
     )
+
+def resumePendingUpdateTheRenderingAfterNavigation
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    UserAgent × Option (Nat × EventLoopTaskMessage) :=
+  match traversable? userAgent traversableId with
+  | some traversable =>
+      if traversable.toTraversableNavigable.hasDeferredUpdateTheRendering then
+        queueUpdateTheRendering userAgent traversableId
+      else
+        (userAgent, none)
+  | none =>
+      (userAgent, none)
 
 def queueDispatchedEvent
     (userAgent : UserAgent)
@@ -1613,16 +1661,22 @@ def dispatchEventM
 
 def queueRenderingOpportunityM : M Unit := do
   let userAgent ← get
-  match activeTraversableReady? userAgent with
+  match activeTraversable? userAgent with
   | none =>
       M.logError (renderingOpportunityFailureDetails userAgent)
-  | some traversableId =>
-      match queueUpdateTheRendering userAgent traversableId with
-      | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
-          set nextUserAgent
-          M.queueUpdateTheRendering traversableId eventLoopId eventLoopMessage
-      | none =>
-          pure ()
+  | some traversable =>
+      if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
+        set (notePendingUpdateTheRendering userAgent traversable.id)
+      else if traversable.toTraversableNavigable.activeDocument.isNone then
+        M.logError (renderingOpportunityFailureDetails userAgent)
+      else
+        let (nextUserAgent, dispatch?) := queueUpdateTheRendering userAgent traversable.id
+        set nextUserAgent
+        match dispatch? with
+        | some (eventLoopId, eventLoopMessage) =>
+            M.queueUpdateTheRendering traversable.id eventLoopId eventLoopMessage
+        | none =>
+            pure ()
 
 def completeUpdateTheRenderingM
     (traversableId : Nat)
@@ -1651,12 +1705,14 @@ def handleFetchCompletedM
   match UserAgent.pendingNavigationFetchByFetchId? userAgent fetchId with
   | some pendingNavigationFetch =>
       let navigationResponse := navigationResponseOfFetchResponse response
-      let nextUserAgent :=
+      let userAgent :=
         processNavigationFetchResponse userAgent pendingNavigationFetch.navigationId navigationResponse
+      let (nextUserAgent, renderingDispatch?) :=
+        resumePendingUpdateTheRenderingAfterNavigation userAgent pendingNavigationFetch.traversableId
       set nextUserAgent
       let dispatch? :=
         navigationDocumentDispatch?
-          nextUserAgent
+          userAgent
           pendingNavigationFetch.traversableId
           navigationResponse
       M.completeNavigation
@@ -1664,6 +1720,11 @@ def handleFetchCompletedM
         pendingNavigationFetch.traversableId
         navigationResponse
         dispatch?
+      match renderingDispatch? with
+      | some (eventLoopId, eventLoopMessage) =>
+          M.queueUpdateTheRendering pendingNavigationFetch.traversableId eventLoopId eventLoopMessage
+      | none =>
+          pure ()
   | none =>
       match UserAgent.pendingDocumentFetch? userAgent fetchId with
       | some pendingDocumentFetch =>

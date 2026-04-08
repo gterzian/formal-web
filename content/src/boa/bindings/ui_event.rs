@@ -19,7 +19,10 @@ impl Class for UIEvent {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
-        let type_ = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+        let type_ = args
+            .get_or_undefined(0)
+            .to_string(context)?
+            .to_std_string_escaped();
         let init = args.get_or_undefined(1);
         let detail = if let Some(object) = init.as_object() {
             object.get(js_string!("detail"), context)?.to_i32(context)?
@@ -73,9 +76,9 @@ pub(crate) fn with_ui_event_ref<R>(
 }
 
 fn get_view(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("UIEvent receiver is not an object")
-    })?;
+    let object = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("UIEvent receiver is not an object"))?;
     with_ui_event_ref(&object, |ui_event| {
         ui_event
             .view_value()
@@ -86,8 +89,8 @@ fn get_view(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue>
 }
 
 fn get_detail(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("UIEvent receiver is not an object")
-    })?;
+    let object = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("UIEvent receiver is not an object"))?;
     with_ui_event_ref(&object, |ui_event| JsValue::from(ui_event.detail_value()))
 }

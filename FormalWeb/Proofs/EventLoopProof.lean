@@ -56,21 +56,21 @@ theorem runNextTask_trace
   refine TransitionSystem.TransitionTrace.single ?_
   exact ⟨task, htake⟩
 
-def interpretEffect : EventLoopEffect → List EventLoopAction
+def interpretEventLoopEffect : EventLoopEffect → List EventLoopAction
   | .queueTask task =>
       [.queueTask task]
   | .runNextTask _ _ =>
       [.runNextTask]
 
-def interpretEffects (effects : Array EventLoopEffect) : List EventLoopAction :=
-  effects.toList.flatMap interpretEffect
+def interpretEventLoopEffects (effects : Array EventLoopEffect) : List EventLoopAction :=
+  effects.toList.flatMap interpretEventLoopEffect
 
 theorem interpretEffects_queueTask_cons
     (task : Task)
     (effects : Array EventLoopEffect) :
-    interpretEffects (#[.queueTask task] ++ effects) =
-      [.queueTask task] ++ interpretEffects effects := by
-  simp [interpretEffects, interpretEffect]
+    interpretEventLoopEffects (#[.queueTask task] ++ effects) =
+      [.queueTask task] ++ interpretEventLoopEffects effects := by
+  simp [interpretEventLoopEffects, interpretEventLoopEffect]
 
 theorem enqueueAndRunNext_eventLoop
   (state : EventLoopTaskState)
@@ -84,8 +84,8 @@ theorem enqueueAndRunNext_eventLoop
 theorem enqueueAndRunNext_effects
   (state : EventLoopTaskState)
   (task : Task) :
-  interpretEffects (enqueueAndRunNext state task).1 =
-    [.queueTask task] ++ interpretEffects (runNextQueuedTaskM state).1.2 := by
+  interpretEventLoopEffects (enqueueAndRunNext state task).1 =
+    [.queueTask task] ++ interpretEventLoopEffects (runNextQueuedTaskM state).1.2 := by
   unfold enqueueAndRunNext
   cases hrun : runNextQueuedTaskM state with
   | mk result nextState =>
@@ -117,21 +117,21 @@ theorem runNextQueuedTaskM_full_refinement
         state.eventLoop
         actions
         (runNextQueuedTaskM state).2.eventLoop ∧
-      interpretEffects (runNextQueuedTaskM state).1.2 = actions := by
+      interpretEventLoopEffects (runNextQueuedTaskM state).1.2 = actions := by
   cases htake : state.eventLoop.takeNextTask? with
   | none =>
       refine ⟨[], ?_, ?_⟩
       · have hstate : (runNextQueuedTaskM state).2.eventLoop = state.eventLoop := by
           simp [runNextQueuedTaskM, htake]
         simpa [hstate] using (TransitionSystem.TransitionTrace.nil state.eventLoop)
-      · simp [runNextQueuedTaskM, interpretEffects, htake]
+      · simp [runNextQueuedTaskM, interpretEventLoopEffects, htake]
   | some result =>
       rcases result with ⟨task, nextEventLoop⟩
       refine ⟨[.runNextTask], ?_, ?_⟩
       · have heventLoop : (runNextQueuedTaskM state).2.eventLoop = nextEventLoop := by
           exact runNextQueuedTaskM_eventLoop state task nextEventLoop htake
         simpa [heventLoop] using runNextTask_trace state.eventLoop nextEventLoop task htake
-      · simp [runNextQueuedTaskM, interpretEffects, interpretEffect, htake]
+      · simp [runNextQueuedTaskM, interpretEventLoopEffects, interpretEventLoopEffect, htake]
 
 theorem handleEventLoopTaskMessage_full_refinement
     (state : EventLoopTaskState)
@@ -142,7 +142,7 @@ theorem handleEventLoopTaskMessage_full_refinement
         state.eventLoop
         actions
         (runEventLoopMonadic state message).2.eventLoop ∧
-      interpretEffects (runEventLoopMonadic state message).1 = actions := by
+      interpretEventLoopEffects (runEventLoopMonadic state message).1 = actions := by
   cases message with
   | createEmptyDocument documentId =>
       let task : Task := {
@@ -172,7 +172,7 @@ theorem handleEventLoopTaskMessage_full_refinement
         rw [enqueueAndRunNext_eventLoop]
         simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
           TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
+      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
         rw [enqueueAndRunNext_effects, hinterp₂]
   | createLoadedDocument documentId url body =>
       let task : Task := {
@@ -202,7 +202,7 @@ theorem handleEventLoopTaskMessage_full_refinement
         rw [enqueueAndRunNext_eventLoop]
         simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
           TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
+      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
         rw [enqueueAndRunNext_effects, hinterp₂]
   | queueUpdateTheRendering traversableId documentId =>
       let task : Task := { step := .updateTheRendering }
@@ -233,7 +233,7 @@ theorem handleEventLoopTaskMessage_full_refinement
         rw [enqueueAndRunNext_eventLoop]
         simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState, shouldAppendTask] using
           TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
+      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
         rw [enqueueAndRunNext_effects, hinterp₂]
   | queueDispatchEvent documentId event =>
       let task : Task := {
@@ -262,7 +262,7 @@ theorem handleEventLoopTaskMessage_full_refinement
         rw [enqueueAndRunNext_eventLoop]
         simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
           TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
+      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
         rw [enqueueAndRunNext_effects, hinterp₂]
   | queuePaint documentId =>
       let task : Task := {
@@ -291,7 +291,7 @@ theorem handleEventLoopTaskMessage_full_refinement
         rw [enqueueAndRunNext_eventLoop]
         simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
           TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
+      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
         rw [enqueueAndRunNext_effects, hinterp₂]
   | queueDocumentFetchCompletion handler resolvedUrl body =>
       let task : Task := { step := .completeDocumentFetch }
@@ -318,5 +318,5 @@ theorem handleEventLoopTaskMessage_full_refinement
         rw [enqueueAndRunNext_eventLoop]
         simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
           TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
+      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
         rw [enqueueAndRunNext_effects, hinterp₂]

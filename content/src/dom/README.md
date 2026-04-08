@@ -8,4 +8,10 @@
 
 - When a Web IDL attribute or algorithm naturally belongs to one of these DOM types, implement it here with spec-linked methods and keep `content/src/boa/bindings` as a thin conversion layer.
 
-- Use the checked-in standards under `/web_standards` for DOM, HTML, and UI Events anchors and verbatim `Step N:` comments.
+- Blitz UI-event integration that turns native `UiEvent` values into DOM dispatch belongs in `content/src/dom`, not in `content/src/boa`.
+
+- Use the checked-in standards under `/web_standards` for DOM, HTML, and UI Events anchors and verbatim `Step N:` comments. Never quote specs from memory: only use the local sources.
+
+- "Missing Feature:" comments identify major missing features in the code. Only address those if given a clear implementation plan.
+
+- "TODO:" comments identify minor missing fixes or features. Those can be addressed in batches when asked to do so.

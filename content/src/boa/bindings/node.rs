@@ -8,7 +8,7 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::dom::Node;
+use crate::dom::{Document, Element, Node};
 
 use super::event_target::register_event_target_methods;
 
@@ -20,7 +20,9 @@ impl Class for Node {
         _args: &[JsValue],
         _context: &mut Context,
     ) -> JsResult<Self> {
-        Err(JsNativeError::typ().with_message("Illegal constructor").into())
+        Err(JsNativeError::typ()
+            .with_message("Illegal constructor")
+            .into())
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
@@ -46,23 +48,22 @@ pub(crate) fn register_node_methods(class: &mut ClassBuilder<'_>) -> JsResult<()
     Ok(())
 }
 
-pub(crate) fn with_node_ref<R>(
-    this: &JsValue,
-    f: impl FnOnce(&Node) -> R,
-) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("node receiver is not an object")
-    })?;
+pub(crate) fn with_node_ref<R>(this: &JsValue, f: impl FnOnce(&Node) -> R) -> JsResult<R> {
+    let object = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("node receiver is not an object"))?;
     if let Some(node) = object.downcast_ref::<Node>() {
         return Ok(f(&node));
     }
-    if let Some(document) = object.downcast_ref::<crate::dom::Document>() {
+    if let Some(document) = object.downcast_ref::<Document>() {
         return Ok(f(&document.node));
     }
-    if let Some(element) = object.downcast_ref::<crate::dom::Element>() {
+    if let Some(element) = object.downcast_ref::<Element>() {
         return Ok(f(&element.node));
     }
-    Err(JsNativeError::typ().with_message("receiver is not a Node").into())
+    Err(JsNativeError::typ()
+        .with_message("receiver is not a Node")
+        .into())
 }
 
 fn get_text_content(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
@@ -101,8 +102,11 @@ fn appendable_node(value: &JsValue) -> JsResult<Node> {
     if let Some(node) = object.downcast_ref::<Node>() {
         return Ok(Node::new(Rc::clone(&node.document), node.node_id));
     }
-    if let Some(element) = object.downcast_ref::<crate::dom::Element>() {
-        return Ok(Node::new(Rc::clone(&element.node.document), element.node.node_id));
+    if let Some(element) = object.downcast_ref::<Element>() {
+        return Ok(Node::new(
+            Rc::clone(&element.node.document),
+            element.node.node_id,
+        ));
     }
     Err(JsNativeError::typ()
         .with_message("appendChild requires a Node")

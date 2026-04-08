@@ -1,4 +1,3 @@
-
 /// <https://html.spec.whatwg.org/#global-object>
 #[derive(Debug, Clone, Copy, Default)]
 pub enum GlobalScopeKind {

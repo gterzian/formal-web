@@ -17,7 +17,7 @@
         place-items: center;
         background: #f4e8d2;
         color: #163728;
-        font-family: Georgia, "Times New Roman", serif;
+        font-family: system-ui, sans-serif;
         overflow: hidden;
         transition: color 180ms ease;
       }
@@ -85,6 +85,72 @@
       .hint {
         font-size: 0.95rem;
         opacity: 0.85;
+      }
+
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.9rem;
+        width: min(28rem, 100%);
+      }
+
+      .status-card {
+        display: grid;
+        gap: 0.35rem;
+        padding: 1rem 1.1rem;
+        border: 1px solid rgba(22, 55, 40, 0.16);
+        border-radius: 1rem;
+        background: rgba(255, 255, 255, 0.62);
+        box-shadow: 0 12px 28px rgba(22, 55, 40, 0.08);
+      }
+
+      .status-label {
+        display: block;
+        margin: 0;
+        font-size: 0.78rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.68;
+      }
+
+      .status-value {
+        display: block;
+        margin: 0;
+        font-size: 1.6rem;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .counter-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 16rem;
+        padding: 0.9rem 1.35rem;
+        border: 0;
+        border-radius: 999px;
+        background: #1c5a45;
+        color: #fff7ea;
+        font: inherit;
+        font-size: 1rem;
+        cursor: pointer;
+        box-shadow: 0 16px 30px rgba(22, 55, 40, 0.18);
+        transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+      }
+
+      .counter-button:hover {
+        background: #164636;
+        transform: translateY(-2px);
+        box-shadow: 0 20px 34px rgba(22, 55, 40, 0.24);
+      }
+
+      .counter-button:active {
+        transform: translateY(0);
+      }
+
+      @media (max-width: 640px) {
+        .status-grid {
+          grid-template-columns: 1fr;
+        }
       }
 
       .hover-probe {
@@ -176,7 +242,64 @@
       <div class="hover-probe">
         Static hover probe
       </div>
+      <div class="status-grid">
+        <div class="status-card">
+          <span class="status-label">Animation FPS</span>
+          <span class="status-value" id="fps-value">0.0</span>
+        </div>
+        <div class="status-card">
+          <span class="status-label">Button Clicks</span>
+          <span class="status-value" id="click-count">0</span>
+        </div>
+      </div>
+      <button
+        class="counter-button"
+        id="click-counter-button"
+        type="button"
+        aria-label="Increment click counter"
+      >
+        Increment Click Counter
+      </button>
       <p class="hint">Move the pointer across the page to exercise document-driven hover styling.</p>
     </main>
+    <script>
+      const fpsValue = document.getElementById("fps-value");
+      const clickCountValue = document.getElementById("click-count");
+      const clickCounterButton = document.getElementById("click-counter-button");
+
+      fpsValue.textContent = "0.0";
+      clickCountValue.textContent = "0";
+
+      let clickCount = 0;
+      let sampleStart = null;
+      let sampledFrames = 0;
+
+      clickCounterButton.addEventListener("click", () => {
+        clickCount += 1;
+        clickCountValue.textContent = String(clickCount);
+      });
+
+      function updateFps(timestamp) {
+        if (sampleStart === null) {
+          sampleStart = timestamp;
+          sampledFrames = 0;
+        }
+
+        sampledFrames += 1;
+        const elapsed = timestamp - sampleStart;
+        if (elapsed >= 250) {
+          const fps = (sampledFrames * 1000) / elapsed;
+          fpsValue.textContent = fps.toFixed(1);
+          sampleStart = timestamp;
+          sampledFrames = 0;
+        }
+
+        window.requestAnimationFrame(updateFps);
+      }
+
+      window.addEventListener("load", () => {
+        window.requestAnimationFrame(updateFps);
+      });
+    </script>
   </body>
 </html>

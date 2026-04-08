@@ -74,7 +74,7 @@ def userAgentLTS : TransitionSystem.LTS UserAgent UserAgentAction where
           userAgent' = userAgent
     | .queueUpdateTheRendering traversableId eventLoopId =>
         ∃ message,
-          queueUpdateTheRendering userAgent traversableId = some (userAgent', eventLoopId, message)
+          queueUpdateTheRendering userAgent traversableId = (userAgent', some (eventLoopId, message))
     | .updateTheRendering traversableId eventLoopId documentId =>
         completeUpdateTheRendering userAgent traversableId eventLoopId documentId = some userAgent'
 
@@ -126,6 +126,17 @@ inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAg
       UserAgentTaskMessageActionShape
         (.fetchCompleted fetchId response)
         [.completeNavigation pendingNavigationFetch.navigationId (navigationResponseOfFetchResponse response)]
+  | fetchCompletedNavigationWithPendingRendering
+      (fetchId : Nat)
+      (pendingNavigationFetch : PendingNavigationFetch)
+      (response : FetchResponse)
+      (eventLoopId : Nat) :
+      UserAgentTaskMessageActionShape
+        (.fetchCompleted fetchId response)
+        [
+          .completeNavigation pendingNavigationFetch.navigationId (navigationResponseOfFetchResponse response),
+          .queueUpdateTheRendering pendingNavigationFetch.traversableId eventLoopId
+        ]
   | fetchCompletedDocument
       (fetchId : Nat)
       (response : FetchResponse) :
@@ -139,7 +150,7 @@ inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAg
         (.fetchCompleted fetchId response)
         []
 
-  def interpretEffect : UserAgentEffect → List UserAgentAction
+  def interpretUserAgentEffect : UserAgentEffect → List UserAgentAction
     | UserAgentEffect.createTopLevelTraversable targetName _ _ =>
       [.createTopLevelTraversable targetName]
     | UserAgentEffect.beginNavigation traversableId destinationURL documentResource _ =>
@@ -159,8 +170,8 @@ inductive UserAgentTaskMessageActionShape : UserAgentTaskMessage → List UserAg
     | UserAgentEffect.logError _ =>
       []
 
-  def interpretEffects (effects : Array UserAgentEffect) : List UserAgentAction :=
-    List.join (effects.toList.map interpretEffect)
+  def interpretUserAgentEffects (effects : Array UserAgentEffect) : List UserAgentAction :=
+    effects.toList.flatMap interpretUserAgentEffect
 
 theorem createTopLevelTraversable_trace
     (userAgent : UserAgent)
@@ -324,7 +335,7 @@ theorem queueUpdateTheRendering_step_trace
     (traversableId eventLoopId : Nat)
     (message : EventLoopTaskMessage)
     (hqueue :
-      queueUpdateTheRendering userAgent traversableId = some (nextUserAgent, eventLoopId, message)) :
+      queueUpdateTheRendering userAgent traversableId = (nextUserAgent, some (eventLoopId, message))) :
     UserAgentTrace
       userAgent
       [.queueUpdateTheRendering traversableId eventLoopId]
@@ -398,9 +409,9 @@ theorem runMonadic_updateTheRenderingCompleted_none_actions
     (traversableId eventLoopId : Nat)
     (documentId : DocumentId)
     (hcomplete : completeUpdateTheRendering userAgent traversableId eventLoopId documentId = none) :
-    interpretEffects (runMonadic userAgent (.updateTheRenderingCompleted traversableId eventLoopId documentId)).1 = [] := by
+    interpretUserAgentEffects (runMonadic userAgent (.updateTheRenderingCompleted traversableId eventLoopId documentId)).1 = [] := by
   simp [runMonadic, handleUserAgentTaskMessage, completeUpdateTheRenderingM, hcomplete,
-    interpretEffects, interpretEffect]
+    interpretUserAgentEffects, interpretUserAgentEffect]
 
 theorem runMonadic_updateTheRenderingCompleted_some_state
     (userAgent : UserAgent)
@@ -417,10 +428,10 @@ theorem runMonadic_updateTheRenderingCompleted_some_actions
     (documentId : DocumentId)
     (nextUserAgent : UserAgent)
     (hcomplete : completeUpdateTheRendering userAgent traversableId eventLoopId documentId = some nextUserAgent) :
-    interpretEffects (runMonadic userAgent (.updateTheRenderingCompleted traversableId eventLoopId documentId)).1 =
+    interpretUserAgentEffects (runMonadic userAgent (.updateTheRenderingCompleted traversableId eventLoopId documentId)).1 =
       [.updateTheRendering traversableId eventLoopId documentId] := by
   simp [runMonadic, handleUserAgentTaskMessage, completeUpdateTheRenderingM, hcomplete,
-    interpretEffects, interpretEffect, queuePaintDocument]
+    interpretUserAgentEffects, interpretUserAgentEffect, queuePaintDocument]
 
 theorem runMonadic_fetchCompletedNavigation_state
     (userAgent : UserAgent)
@@ -439,10 +450,10 @@ theorem runMonadic_fetchCompletedNavigation_actions
     (response : FetchResponse)
     (pendingNavigationFetch : PendingNavigationFetch)
     (hnavigation : userAgent.pendingNavigationFetchByFetchId? fetchId = some pendingNavigationFetch) :
-    interpretEffects (runMonadic userAgent (.fetchCompleted fetchId response)).1 =
+    interpretUserAgentEffects (runMonadic userAgent (.fetchCompleted fetchId response)).1 =
       [.completeNavigation pendingNavigationFetch.navigationId (navigationResponseOfFetchResponse response)] := by
   simp [runMonadic, handleUserAgentTaskMessage, handleFetchCompletedM, hnavigation,
-    interpretEffects, interpretEffect, navigationResponseOfFetchResponse]
+    interpretUserAgentEffects, interpretUserAgentEffect, navigationResponseOfFetchResponse]
 
 theorem runMonadic_fetchCompletedDocument_state
     (userAgent : UserAgent)
@@ -462,10 +473,10 @@ theorem runMonadic_fetchCompletedDocument_actions
     (hnavigation : userAgent.pendingNavigationFetchByFetchId? fetchId = none)
     (pendingDocumentFetch : PendingDocumentFetch)
     (hdocument : userAgent.pendingDocumentFetch? fetchId = some pendingDocumentFetch) :
-    interpretEffects (runMonadic userAgent (.fetchCompleted fetchId response)).1 = [.finishDocumentFetch fetchId] := by
-  change interpretEffects ((handleFetchCompletedM fetchId response).run userAgent).1.2 =
+    interpretUserAgentEffects (runMonadic userAgent (.fetchCompleted fetchId response)).1 = [.finishDocumentFetch fetchId] := by
+  change interpretUserAgentEffects ((handleFetchCompletedM fetchId response).run userAgent).1.2 =
     [.finishDocumentFetch fetchId]
-  change interpretEffects ((match userAgent.pendingNavigationFetchByFetchId? fetchId with
+  change interpretUserAgentEffects ((match userAgent.pendingNavigationFetchByFetchId? fetchId with
       | some pendingNavigationFetch => do
           set (processNavigationFetchResponse userAgent pendingNavigationFetch.navigationId (navigationResponseOfFetchResponse response))
           M.completeNavigation pendingNavigationFetch.navigationId pendingNavigationFetch.traversableId
@@ -482,13 +493,13 @@ theorem runMonadic_fetchCompletedDocument_actions
                 (documentFetchCompletionDispatch? (userAgent.takePendingDocumentFetch fetchId).1 pendingDocumentFetch response)
           | none => pure ()).run userAgent).1.2 = [.finishDocumentFetch fetchId]
   rw [hnavigation, hdocument]
-  change interpretEffects
+  change interpretUserAgentEffects
       (#[UserAgentEffect.finishDocumentFetch
           fetchId
           pendingDocumentFetch
           (documentFetchCompletionDispatch? (userAgent.takePendingDocumentFetch fetchId).1 pendingDocumentFetch response)] :
         Array UserAgentEffect) = [.finishDocumentFetch fetchId]
-  simp [interpretEffects, interpretEffect]
+  simp [interpretUserAgentEffects, interpretUserAgentEffect]
 
 theorem runMonadic_fetchCompletedMissing_state
     (userAgent : UserAgent)
@@ -523,9 +534,9 @@ theorem runMonadic_fetchCompletedMissing_actions
     (response : FetchResponse)
     (hnavigation : userAgent.pendingNavigationFetchByFetchId? fetchId = none)
     (hdocument : userAgent.pendingDocumentFetch? fetchId = none) :
-    interpretEffects (runMonadic userAgent (.fetchCompleted fetchId response)).1 = [] := by
-  change interpretEffects ((handleFetchCompletedM fetchId response).run userAgent).1.2 = []
-  change interpretEffects ((match userAgent.pendingNavigationFetchByFetchId? fetchId with
+    interpretUserAgentEffects (runMonadic userAgent (.fetchCompleted fetchId response)).1 = [] := by
+  change interpretUserAgentEffects ((handleFetchCompletedM fetchId response).run userAgent).1.2 = []
+  change interpretUserAgentEffects ((match userAgent.pendingNavigationFetchByFetchId? fetchId with
       | some pendingNavigationFetch => do
           set (processNavigationFetchResponse userAgent pendingNavigationFetch.navigationId (navigationResponseOfFetchResponse response))
           M.completeNavigation pendingNavigationFetch.navigationId pendingNavigationFetch.traversableId
@@ -542,8 +553,8 @@ theorem runMonadic_fetchCompletedMissing_actions
                 (documentFetchCompletionDispatch? (userAgent.takePendingDocumentFetch fetchId).1 pendingDocumentFetch response)
           | none => pure ()).run userAgent).1.2 = []
   rw [hnavigation, hdocument]
-  change interpretEffects (#[] : Array UserAgentEffect) = []
-  simp [interpretEffects]
+  change interpretUserAgentEffects (#[] : Array UserAgentEffect) = []
+  simp [interpretUserAgentEffects]
 
 theorem runMonadic_dispatchEvent_none_state
     (userAgent : UserAgent)
@@ -566,9 +577,9 @@ theorem runMonadic_dispatchEvent_none_actions
     (userAgent : UserAgent)
     (event : String)
     (hactiveId : activeTraversableId? userAgent = none) :
-    interpretEffects (runMonadic userAgent (.dispatchEvent event)).1 = [] := by
-  change interpretEffects ((dispatchEventM event).run userAgent).1.2 = []
-  change interpretEffects ((match activeTraversableId? userAgent with
+    interpretUserAgentEffects (runMonadic userAgent (.dispatchEvent event)).1 = [] := by
+  change interpretUserAgentEffects ((dispatchEventM event).run userAgent).1.2 = []
+  change interpretUserAgentEffects ((match activeTraversableId? userAgent with
       | none => M.logError (dispatchEventFailureDetails userAgent event)
       | some traversableId =>
           match queueDispatchedEvent userAgent traversableId event with
@@ -577,9 +588,9 @@ theorem runMonadic_dispatchEvent_none_actions
               M.dispatchEvent traversableId eventLoopId event eventLoopMessage
           | none => M.logError (dispatchEventFailureDetails userAgent event)).run userAgent).1.2 = []
   rw [hactiveId]
-        change interpretEffects
+  change interpretUserAgentEffects
           (#[UserAgentEffect.logError (dispatchEventFailureDetails userAgent event)] : Array UserAgentEffect) = []
-        simp [interpretEffects, interpretEffect]
+  simp [interpretUserAgentEffects, interpretUserAgentEffect]
 
 theorem runMonadic_renderingOpportunity_none_state
     (userAgent : UserAgent)
@@ -600,9 +611,9 @@ theorem runMonadic_renderingOpportunity_none_state
 theorem runMonadic_renderingOpportunity_none_actions
     (userAgent : UserAgent)
     (hready : activeTraversableReady? userAgent = none) :
-    interpretEffects (runMonadic userAgent .renderingOpportunity).1 = [] := by
-  change interpretEffects (queueRenderingOpportunityM.run userAgent).1.2 = []
-  change interpretEffects ((match activeTraversableReady? userAgent with
+    interpretUserAgentEffects (runMonadic userAgent .renderingOpportunity).1 = [] := by
+  change interpretUserAgentEffects (queueRenderingOpportunityM.run userAgent).1.2 = []
+  change interpretUserAgentEffects ((match activeTraversableReady? userAgent with
       | none => M.logError (renderingOpportunityFailureDetails userAgent)
       | some traversableId =>
           match queueUpdateTheRendering userAgent traversableId with
@@ -611,16 +622,16 @@ theorem runMonadic_renderingOpportunity_none_actions
               M.queueUpdateTheRendering traversableId eventLoopId eventLoopMessage
           | none => pure ()).run userAgent).1.2 = []
   rw [hready]
-  change interpretEffects
+  change interpretUserAgentEffects
       (#[UserAgentEffect.logError (renderingOpportunityFailureDetails userAgent)] : Array UserAgentEffect) = []
-  simp [interpretEffects, interpretEffect]
+  simp [interpretUserAgentEffects, interpretUserAgentEffect]
 
 theorem runMonadic_freshTopLevelTraversable_actions
     (userAgent : UserAgent)
     (destinationURL : String) :
     let created := createNewTopLevelTraversable userAgent none ""
     let navigated := navigateWithPendingFetchRequest created.1 created.2 destinationURL
-    interpretEffects (runMonadic userAgent (.freshTopLevelTraversable destinationURL)).1 =
+    interpretUserAgentEffects (runMonadic userAgent (.freshTopLevelTraversable destinationURL)).1 =
       [.createTopLevelTraversable "", .beginNavigation created.2.id destinationURL none] := by
   intro created navigated
   let createEffect : UserAgentEffect :=
@@ -630,25 +641,25 @@ theorem runMonadic_freshTopLevelTraversable_actions
   cases hpending : navigated.2 with
   | none =>
       let errorMessage := startupNavigationFailureDetails destinationURL navigated.1 created.2.id
-      change interpretEffects #[createEffect, beginEffect, .logError errorMessage] =
+      change interpretUserAgentEffects #[createEffect, beginEffect, .logError errorMessage] =
         [.createTopLevelTraversable "", .beginNavigation created.2.id destinationURL none]
-      simp [interpretEffects, interpretEffect, createEffect, beginEffect, errorMessage]
+      simp [interpretUserAgentEffects, interpretUserAgentEffect, createEffect, beginEffect, errorMessage]
   | some pendingFetchRequest =>
       let _ := pendingFetchRequest
-      change interpretEffects #[createEffect, beginEffect] =
+      change interpretUserAgentEffects #[createEffect, beginEffect] =
         [.createTopLevelTraversable "", .beginNavigation created.2.id destinationURL none]
-      simp [interpretEffects, interpretEffect, createEffect, beginEffect]
+      simp [interpretUserAgentEffects, interpretUserAgentEffect, createEffect, beginEffect]
 
 theorem runMonadic_documentFetchRequested_actions
     (userAgent : UserAgent)
     (handler : RustNetHandlerPointer)
     (request : NavigationRequest) :
-    interpretEffects (runMonadic userAgent (.documentFetchRequested handler request)).1 =
+    interpretUserAgentEffects (runMonadic userAgent (.documentFetchRequested handler request)).1 =
       [.requestDocumentFetch handler request] := by
   let result := requestDocumentFetch userAgent handler request
-  change interpretEffects #[.requestDocumentFetch handler result.2.2] =
+  change interpretUserAgentEffects #[.requestDocumentFetch handler result.2.2] =
     [.requestDocumentFetch handler request]
-  simp [interpretEffects, interpretEffect, result, requestDocumentFetch]
+  simp [interpretUserAgentEffects, interpretUserAgentEffect, result, requestDocumentFetch]
 
 theorem handleUserAgentTaskMessage_full_refinement
     (userAgent : UserAgent)
@@ -659,7 +670,7 @@ theorem handleUserAgentTaskMessage_full_refinement
         userAgent
         actions
         (runMonadic userAgent message).2 ∧
-      interpretEffects (runMonadic userAgent message).1 = actions := by
+      interpretUserAgentEffects (runMonadic userAgent message).1 = actions := by
   cases message with
   | freshTopLevelTraversable destinationURL =>
       let created := createNewTopLevelTraversable userAgent none ""
@@ -707,13 +718,13 @@ theorem handleUserAgentTaskMessage_full_refinement
               · simpa [runMonadic, handleUserAgentTaskMessage, dispatchEventM, hactiveId, hqueue] using
                   (TransitionSystem.TransitionTrace.nil userAgent)
               · simp [runMonadic, handleUserAgentTaskMessage, dispatchEventM, hactiveId, hqueue,
-                  interpretEffects, interpretEffect]
+                  interpretUserAgentEffects, interpretUserAgentEffect]
           | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
               refine ⟨[.dispatchEvent traversableId event], .dispatchEvent traversableId event, ?_, ?_⟩
               · simpa [runMonadic, handleUserAgentTaskMessage, dispatchEventM, hactiveId, hqueue] using
                   dispatchEvent_trace userAgent traversableId event nextUserAgent eventLoopId eventLoopMessage hqueue
               · simp [runMonadic, handleUserAgentTaskMessage, dispatchEventM, hactiveId, hqueue,
-                  interpretEffects, interpretEffect]
+                  interpretUserAgentEffects, interpretUserAgentEffect]
   | renderingOpportunity =>
       match hready : activeTraversableReady? userAgent with
       | none =>
@@ -728,7 +739,7 @@ theorem handleUserAgentTaskMessage_full_refinement
               · simpa [runMonadic, handleUserAgentTaskMessage, queueRenderingOpportunityM, hready, hqueue] using
                   (TransitionSystem.TransitionTrace.nil userAgent)
               · simp [runMonadic, handleUserAgentTaskMessage, queueRenderingOpportunityM, hready, hqueue,
-                  interpretEffects, interpretEffect]
+                  interpretUserAgentEffects, interpretUserAgentEffect]
           | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
               refine ⟨
                 [.queueUpdateTheRendering traversableId eventLoopId],
@@ -739,7 +750,7 @@ theorem handleUserAgentTaskMessage_full_refinement
               · simpa [runMonadic, handleUserAgentTaskMessage, queueRenderingOpportunityM, hready, hqueue] using
                   queueUpdateTheRendering_step_trace userAgent nextUserAgent traversableId eventLoopId eventLoopMessage hqueue
               · simp [runMonadic, handleUserAgentTaskMessage, queueRenderingOpportunityM, hready, hqueue,
-                  interpretEffects, interpretEffect]
+                  interpretUserAgentEffects, interpretUserAgentEffect]
   | updateTheRenderingCompleted traversableId eventLoopId documentId =>
       match hcomplete : completeUpdateTheRendering userAgent traversableId eventLoopId documentId with
       | none =>

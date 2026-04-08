@@ -7,6 +7,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
   - Method-level: the method's top doc-comment must contain *only* the canonical spec anchor (e.g. `/// <https://webmachinelearning.github.io/webnn/#dom-ml-createcontext>`).
     - Do NOT add parenthetical notes or extra prose in top doc-comments (for example, `(internal helper)`) — these add noise and are disallowed. Keep top-level doc-comments anchor-only.
     If the algorithm implementation is broken-up into multiple method or functions, you can add a note below the anchor to explain which part of the algo the current code corresponds to.
+    - Internal helpers that contain `Step N:` comments must also have an anchor-only top doc-comment for the algorithm they continue.
 
   - Functions & spec-algorithms
     - Follow the structure of the spec. For example, if the spec defines an interface method and then from it calls into another algorithm, then you should also implement that algorithm either with a seperate method(if you need to access state of the dom struct), or just a function.
@@ -74,9 +75,17 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 **JavaScript runtime**
 
+- `content/src/main.rs` and sibling root modules such as `content/src/html.rs` own the HTML Standard entry points that resume embedder-driven algorithms, create documents, and trigger HTML-defined load/rendering steps.
+
 - `content/src/boa` owns Boa context setup, HTML parsing, task draining, microtask checkpoints, and the bridge from Blitz UI events into JavaScript event dispatch.
 
 - `content/src/dom` stores the native data carried by JavaScript-visible `Window`, `Node`, `Document`, `Element`, `EventTarget`, `Event`, and `UIEvent` objects. `BaseDocument` remains the authoritative DOM state; the JavaScript wrappers do not store shadow DOM data.
+
+- `content/src/webidl` owns Web IDL algorithms such as callback-interface conversion and `call a user object's operation`, so DOM dispatch can invoke listeners without reaching into Boa primitives directly.
+
+- Never call into JavaScript while holding a mutable `BaseDocument` borrow or guard that JavaScript bindings could try to re-borrow. Pass a document wrapper into Blitz and let it take short-lived borrows around its own native phases.
+
+- If `update the rendering` is noted while a document still has pending critical resources, keep that rendering opportunity pending and resume it from the corresponding fetch completion instead of painting a stale frame.
 
 - When a JavaScript-visible Web IDL attribute or algorithm is implemented for a DOM type, keep the spec-linked method on the corresponding `content/src/dom` type and have `content/src/boa/bindings` delegate to that method instead of embedding the algorithm in the binding layer.
 

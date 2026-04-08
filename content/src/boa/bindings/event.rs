@@ -1,13 +1,12 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
+    Context, JsArgs, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::JsObject,
     property::Attribute,
 };
 
-use crate::dom::{AT_TARGET, BUBBLING_PHASE, CAPTURING_PHASE, Event, UIEvent};
+use crate::dom::{Event, with_event_mut};
 
 impl Class for Event {
     const NAME: &'static str = "Event";
@@ -18,7 +17,10 @@ impl Class for Event {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
-        let type_ = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+        let type_ = args
+            .get_or_undefined(0)
+            .to_string(context)?
+            .to_std_string_escaped();
         let init = args.get_or_undefined(1);
         Ok(Event::new(
             type_,
@@ -116,35 +118,6 @@ pub(crate) fn register_event_methods(class: &mut ClassBuilder<'_>) -> JsResult<(
     Ok(())
 }
 
-pub(crate) fn with_event_mut<R>(
-    this: &JsValue,
-    f: impl FnOnce(&mut Event) -> R,
-) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("event receiver is not an object")
-    })?;
-    if let Some(mut event) = object.downcast_mut::<Event>() {
-        return Ok(f(&mut event));
-    }
-    if let Some(mut ui_event) = object.downcast_mut::<UIEvent>() {
-        return Ok(f(&mut ui_event.event));
-    }
-    Err(JsNativeError::typ().with_message("receiver is not an Event").into())
-}
-
-pub(crate) fn with_event_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&Event) -> R,
-) -> JsResult<R> {
-    if let Some(event) = object.downcast_ref::<Event>() {
-        return Ok(f(&event));
-    }
-    if let Some(ui_event) = object.downcast_ref::<UIEvent>() {
-        return Ok(f(&ui_event.event));
-    }
-    Err(JsNativeError::typ().with_message("object is not an Event").into())
-}
-
 pub(crate) fn init_flag(init: &JsValue, key: JsString, context: &mut Context) -> JsResult<bool> {
     let Some(object) = init.as_object() else {
         return Ok(false);
@@ -153,7 +126,9 @@ pub(crate) fn init_flag(init: &JsValue, key: JsString, context: &mut Context) ->
 }
 
 fn get_type(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_event_mut(this, |event| JsValue::from(JsString::from(event.type_value())))
+    with_event_mut(this, |event| {
+        JsValue::from(JsString::from(event.type_value()))
+    })
 }
 
 fn get_target(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
@@ -218,11 +193,7 @@ fn stop_propagation(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<
     })
 }
 
-fn stop_immediate_propagation(
-    this: &JsValue,
-    _: &[JsValue],
-    _: &mut Context,
-) -> JsResult<JsValue> {
+fn stop_immediate_propagation(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     with_event_mut(this, |event| {
         event.stop_immediate_propagation();
         JsValue::undefined()
@@ -234,13 +205,4 @@ fn prevent_default(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<J
         event.prevent_default();
         JsValue::undefined()
     })
-}
-
-pub(crate) fn phase_name(phase: u16) -> &'static str {
-    match phase {
-        CAPTURING_PHASE => "capturing",
-        AT_TARGET => "at-target",
-        BUBBLING_PHASE => "bubbling",
-        _ => "none",
-    }
 }

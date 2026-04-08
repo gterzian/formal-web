@@ -33,7 +33,9 @@ impl Node {
     /// <https://dom.spec.whatwg.org/#dom-node-appendchild>
     pub(crate) fn append_child(&self, child: &Node) -> Result<(), String> {
         if self.node_id == 0 {
-            return Err(String::from("appendChild cannot append to a detached Document wrapper"));
+            return Err(String::from(
+                "appendChild cannot append to a detached Document wrapper",
+            ));
         }
 
         if child.node_id == 0 {
@@ -132,6 +134,7 @@ impl Node {
 /// <https://dom.spec.whatwg.org/#string-replace-all>
 fn string_replace_all(document: &Rc<RefCell<BaseDocument>>, parent_node_id: usize, string: &str) {
     let mut document = document.borrow_mut();
+    println!("New val: {:?}", string);
     if document.get_node(parent_node_id).is_none() {
         // Note: Removed nodes are dropped from BaseDocument, so there is no parent to mutate.
         return;
@@ -152,4 +155,6 @@ fn string_replace_all(document: &Rc<RefCell<BaseDocument>>, parent_node_id: usiz
     if let Some(replacement_node_id) = replacement_node_id {
         mutator.append_children(parent_node_id, &[replacement_node_id]);
     }
+    drop(mutator);
+    println!("Node: {:?}", document.get_node(replacement_node_id.unwrap()));
 }

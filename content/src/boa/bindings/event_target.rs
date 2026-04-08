@@ -3,10 +3,11 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::{JsObject, builtins::JsFunction},
+    object::JsObject,
 };
 
-use crate::dom::{Document, Element, EventTarget, Node, Window};
+use crate::dom::{EventTarget, dispatch, with_event_target_mut};
+use crate::webidl::callback_interface_value;
 
 #[derive(Clone, Copy)]
 pub(crate) struct AddEventListenerOptions {
@@ -51,60 +52,16 @@ pub(crate) fn register_event_target_methods(class: &mut ClassBuilder<'_>) -> JsR
     Ok(())
 }
 
-pub(crate) fn with_event_target_mut<R>(
+fn add_event_listener(
     this: &JsValue,
-    f: impl FnOnce(&mut EventTarget) -> R,
-) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("event target receiver is not an object")
-    })?;
-    if let Some(mut window) = object.downcast_mut::<Window>() {
-        return Ok(f(&mut window.event_target));
-    }
-    if let Some(mut document) = object.downcast_mut::<Document>() {
-        return Ok(f(&mut document.node.event_target));
-    }
-    if let Some(mut element) = object.downcast_mut::<Element>() {
-        return Ok(f(&mut element.node.event_target));
-    }
-    if let Some(mut node) = object.downcast_mut::<Node>() {
-        return Ok(f(&mut node.event_target));
-    }
-    if let Some(mut target) = object.downcast_mut::<EventTarget>() {
-        return Ok(f(&mut target));
-    }
-    Err(JsNativeError::typ()
-        .with_message("receiver is not an EventTarget")
-        .into())
-}
-
-pub(crate) fn with_event_target_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&EventTarget) -> R,
-) -> JsResult<R> {
-    if let Some(window) = object.downcast_ref::<Window>() {
-        return Ok(f(&window.event_target));
-    }
-    if let Some(document) = object.downcast_ref::<Document>() {
-        return Ok(f(&document.node.event_target));
-    }
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return Ok(f(&element.node.event_target));
-    }
-    if let Some(node) = object.downcast_ref::<Node>() {
-        return Ok(f(&node.event_target));
-    }
-    if let Some(target) = object.downcast_ref::<EventTarget>() {
-        return Ok(f(&target));
-    }
-    Err(JsNativeError::typ()
-        .with_message("object is not an EventTarget")
-        .into())
-}
-
-fn add_event_listener(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let type_ = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
-    let Some(callback) = callback_from_value(args.get_or_undefined(1))? else {
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let type_ = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let Some(callback) = callback_interface_value(args.get_or_undefined(1))? else {
         return Ok(JsValue::undefined());
     };
     let options = flatten_more(args.get_or_undefined(2), context)?;
@@ -127,8 +84,11 @@ fn remove_event_listener(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let type_ = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
-    let Some(callback) = callback_from_value(args.get_or_undefined(1))? else {
+    let type_ = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let Some(callback) = callback_interface_value(args.get_or_undefined(1))? else {
         return Ok(JsValue::undefined());
     };
     let capture = flatten(args.get_or_undefined(2), context)?;
@@ -148,8 +108,19 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .get_or_undefined(0)
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
-    let canceled = super::dispatch(&target, &event, context)?;
+    let canceled = dispatch_event_with_context(&target, &event, context)?;
     Ok(JsValue::from(!canceled))
+}
+
+fn dispatch_event_with_context(
+    target: &JsObject,
+    event: &JsObject,
+    context: &mut Context,
+) -> JsResult<bool> {
+    use crate::boa::execution_context::ContextEventDispatchHost;
+
+    let mut host = ContextEventDispatchHost::new(context);
+    dispatch(&mut host, target, event, false)
 }
 
 pub(crate) fn flatten(options: &JsValue, context: &mut Context) -> JsResult<bool> {
@@ -188,22 +159,4 @@ pub(crate) fn flatten_more(
         once,
         passive,
     })
-}
-
-pub(crate) fn callback_from_value(value: &JsValue) -> JsResult<Option<JsFunction>> {
-    if value.is_null() || value.is_undefined() {
-        return Ok(None);
-    }
-    let Some(object) = value.as_object() else {
-        return Err(JsNativeError::typ()
-            .with_message("event listener callback is not callable")
-            .into());
-    };
-    JsFunction::from_object(object.clone())
-        .map(Some)
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("event listener callback is not callable")
-                .into()
-        })
 }
