@@ -23,4 +23,7 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 - Document the *current* design/state only — do **not** leave change‑history or "I did X" comments in source or README files (for example, avoid comments like "create a single sender"). Historical context belongs in the PR description or a changelog, not inline.
 - Use neutral, factual language. Avoid subjective or minimizing words such as "small", "tiny", "minimal", "just", or "only" when describing a component or its responsibilities.
 
+- Coalesce high-frequency embedder input such as pointer moves and wheel bursts before forwarding them into Lean/content, and note a rendering opportunity once per flushed batch rather than once per raw event.
+- Move large paint-scene payloads across the content/embedder boundary via `IpcSharedMemory`, and keep the typed IPC message focused on control metadata and shared-memory handles.
+
 Plans and TODOS belong in `scratchpad`. 

@@ -7,24 +7,24 @@
     <style>
       html,
       body {
-        height: 100%;
+        min-height: 100%;
         margin: 0;
       }
 
       body {
         position: relative;
-        display: grid;
-        place-items: center;
         background: #f4e8d2;
         color: #163728;
         font-family: system-ui, sans-serif;
-        overflow: hidden;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
         transition: color 180ms ease;
       }
 
       body::before {
         content: "";
-        position: absolute;
+        position: fixed;
         inset: 0;
         background: linear-gradient(180deg, #f4e8d2 0%, #f0e1c7 100%);
         opacity: 0;
@@ -44,31 +44,63 @@
         position: relative;
         z-index: 1;
         display: grid;
-        gap: 1rem;
+        width: min(64rem, calc(100vw - 1.5rem));
+        min-height: 100vh;
+        margin: 0 auto;
+        box-sizing: border-box;
+        grid-template-columns: minmax(18rem, 22rem) minmax(0, 1fr);
+        gap: 1rem 1.2rem;
+        align-content: center;
+        padding: 1rem 0.75rem 1.5rem;
+      }
+
+      .hero-panel,
+      .control-panel {
+        display: grid;
+        gap: 0.9rem;
+        align-content: start;
+      }
+
+      .hero-panel {
         justify-items: center;
-        padding: 2rem;
+      }
+
+      .intro-card {
+        display: grid;
+        gap: 0.75rem;
+        padding: 1rem 1.1rem;
+        border: 1px solid rgba(22, 55, 40, 0.16);
+        border-radius: 1.1rem;
+        background: rgba(255, 255, 255, 0.54);
+        box-shadow: 0 12px 28px rgba(22, 55, 40, 0.08);
       }
 
       h1 {
         margin: 0;
-        font-size: 2rem;
+        font-size: clamp(1.8rem, 3.8vw, 2.55rem);
         letter-spacing: 0.02em;
+        line-height: 1.04;
       }
 
       p {
         margin: 0;
-        max-width: 32rem;
-        text-align: center;
+        max-width: 40rem;
         line-height: 1.5;
+      }
+
+      .intro-card p {
+        text-align: left;
       }
 
       svg {
         display: block;
+        width: min(18rem, 100%);
+        height: auto;
       }
 
       img {
         display: block;
-        width: min(22rem, 100%);
+        width: min(18rem, 100%);
         height: auto;
         border-radius: 1rem;
         box-shadow: 0 18px 40px rgba(22, 55, 40, 0.18);
@@ -83,7 +115,9 @@
       }
 
       .hint {
-        font-size: 0.95rem;
+        max-width: 18rem;
+        font-size: 0.92rem;
+        text-align: center;
         opacity: 0.85;
       }
 
@@ -91,7 +125,7 @@
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 0.9rem;
-        width: min(28rem, 100%);
+        width: 100%;
       }
 
       .status-card {
@@ -116,25 +150,37 @@
       .status-value {
         display: block;
         margin: 0;
-        font-size: 1.6rem;
+        font-size: clamp(1.45rem, 2.8vw, 1.95rem);
         font-variant-numeric: tabular-nums;
       }
 
-      .counter-button {
+      .button-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+        width: 100%;
+      }
+
+      .counter-button,
+      .accent-button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 16rem;
-        padding: 0.9rem 1.35rem;
+        width: 100%;
+        min-width: 0;
+        padding: 0.9rem 1rem;
         border: 0;
         border-radius: 999px;
-        background: #1c5a45;
-        color: #fff7ea;
         font: inherit;
         font-size: 1rem;
         cursor: pointer;
-        box-shadow: 0 16px 30px rgba(22, 55, 40, 0.18);
         transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+      }
+
+      .counter-button {
+        background: #1c5a45;
+        color: #fff7ea;
+        box-shadow: 0 16px 30px rgba(22, 55, 40, 0.18);
       }
 
       .counter-button:hover {
@@ -147,10 +193,25 @@
         transform: translateY(0);
       }
 
-      @media (max-width: 640px) {
-        .status-grid {
-          grid-template-columns: 1fr;
-        }
+      .accent-button {
+        background: #ffb449;
+        color: #163728;
+        box-shadow: 0 16px 30px rgba(230, 99, 63, 0.18);
+      }
+
+      .accent-button:hover {
+        background: #ff9e2c;
+        transform: translateY(-2px);
+        box-shadow: 0 20px 34px rgba(230, 99, 63, 0.24);
+      }
+
+      .accent-button:active {
+        transform: translateY(0);
+      }
+
+      .accent-button[data-active="true"] {
+        background: #e63b2e;
+        color: #fff7ea;
       }
 
       .hover-probe {
@@ -199,73 +260,169 @@
         background: rgba(255, 247, 234, 0.2);
         color: #fff7ea;
       }
+
+      .signal-card {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        grid-template-areas:
+          "chip title"
+          "chip state";
+        gap: 0.15rem 0.75rem;
+        align-items: center;
+        width: 100%;
+        padding: 0.95rem 1rem;
+        border: 1px solid rgba(22, 55, 40, 0.16);
+        border-radius: 1rem;
+        background: rgba(255, 255, 255, 0.62);
+        box-shadow: 0 12px 28px rgba(22, 55, 40, 0.08);
+        box-sizing: border-box;
+        transition: background 180ms ease, color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+      }
+
+      .signal-card[data-active="true"] {
+        background: #1c5a45;
+        color: #fff7ea;
+        box-shadow: 0 18px 34px rgba(22, 55, 40, 0.2);
+        transform: translateY(-1px);
+      }
+
+      .signal-chip {
+        grid-area: chip;
+        width: 0.95rem;
+        height: 0.95rem;
+        border-radius: 999px;
+        background: #d2c7b4;
+        box-shadow: inset 0 0 0 3px rgba(22, 55, 40, 0.1), 0 0 0 0 rgba(255, 180, 73, 0);
+        transition: background 180ms ease, box-shadow 180ms ease;
+      }
+
+      .signal-card[data-active="true"] .signal-chip {
+        background: #ffb449;
+        box-shadow: inset 0 0 0 3px rgba(255, 247, 234, 0.24), 0 0 0 10px rgba(255, 180, 73, 0.14);
+      }
+
+      .signal-title {
+        grid-area: title;
+        font-size: 0.95rem;
+        font-weight: 700;
+      }
+
+      .signal-state {
+        grid-area: state;
+        font-size: 0.92rem;
+        opacity: 0.85;
+      }
+
+      @media (max-width: 860px) {
+        main {
+          min-height: auto;
+          grid-template-columns: 1fr;
+          align-content: start;
+          padding-top: 0.85rem;
+        }
+
+        .status-grid,
+        .button-row {
+          grid-template-columns: 1fr;
+        }
+
+        .intro-card p,
+        .hint {
+          text-align: center;
+          max-width: none;
+        }
+      }
     </style>
   </head>
   <body>
     <main>
-      <svg
-        width="368"
-        height="106"
-        viewBox="0 0 368 106"
-        version="1.1"
-        xmlns="http://www.w3.org/2000/svg"
-        style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;"
-      >
-        <g>
-          <path d="M131.548,97.488L131.548,8.369L144.939,8.369C150.903,8.369 155.656,8.831 159.196,9.755C162.774,10.678 165.795,12.236 168.258,14.43C170.759,16.7 172.741,19.528 174.203,22.915C175.703,26.339 176.454,29.802 176.454,33.304C176.454,39.692 174.01,45.098 169.123,49.523C173.856,51.139 177.589,53.967 180.321,58.008C183.091,62.01 184.477,66.666 184.477,71.976C184.477,78.941 182.014,84.828 177.089,89.638C174.126,92.601 170.797,94.66 167.103,95.814C163.063,96.93 158.003,97.488 151.923,97.488L131.548,97.488ZM144.997,46.637L149.21,46.637C154.213,46.637 157.878,45.531 160.206,43.318C162.534,41.106 163.698,37.845 163.698,33.535C163.698,29.341 162.505,26.156 160.119,23.982C157.734,21.808 154.27,20.721 149.73,20.721L144.997,20.721L144.997,46.637ZM144.997,84.847L153.308,84.847C159.388,84.847 163.852,83.654 166.699,81.269C169.701,78.691 171.201,75.42 171.201,71.456C171.201,67.608 169.758,64.376 166.872,61.76C164.063,59.181 159.042,57.892 151.808,57.892L144.997,57.892L144.997,84.847Z" style="fill-rule:nonzero;" />
-          <rect x="202.173" y="0" width="12.987" height="97.488" style="fill-rule:nonzero;" />
-          <path d="M247.806,41.269L247.806,97.488L234.819,97.488L234.819,41.269L247.806,41.269ZM232.857,17.893C232.857,15.623 233.684,13.66 235.338,12.006C236.993,10.351 238.975,9.524 241.284,9.524C243.631,9.524 245.632,10.351 247.286,12.006C248.941,13.622 249.768,15.603 249.768,17.951C249.768,20.298 248.941,22.299 247.286,23.953C245.67,25.608 243.689,26.435 241.341,26.435C238.994,26.435 236.993,25.608 235.338,23.953C233.684,22.299 232.857,20.279 232.857,17.893Z" style="fill-rule:nonzero;" />
-          <path d="M285.856,53.39L285.856,97.488L272.869,97.488L272.869,53.39L267.328,53.39L267.328,41.269L272.869,41.269L272.869,20.663L285.856,20.663L285.856,41.269L295.957,41.269L295.957,53.39L285.856,53.39Z" style="fill-rule:nonzero;" />
-          <path d="M331.64,85.251L365.059,85.251L365.059,97.488L305.897,97.488L342.318,53.39L313.631,53.39L313.631,41.269L368.003,41.269L331.64,85.251Z" style="fill-rule:nonzero;" />
-        </g>
-        <g>
+      <section class="hero-panel">
+        <svg
+          width="368"
+          height="106"
+          viewBox="0 0 368 106"
+          version="1.1"
+          xmlns="http://www.w3.org/2000/svg"
+          style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;"
+        >
           <g>
-            <circle cx="53" cy="53" r="53" style="fill:rgb(1,99,63);" />
-            <circle cx="53" cy="53" r="45.773" style="fill:rgb(0,118,114);" />
-            <circle cx="53" cy="53" r="38.545" style="fill:rgb(62,149,147);" />
-            <circle cx="53" cy="53" r="31.318" style="fill:rgb(252,176,64);" />
-            <circle cx="53" cy="53" r="24.091" style="fill:rgb(233,86,41);" />
-            <circle cx="53" cy="53" r="16.864" style="fill:rgb(230,29,50);" />
+            <path d="M131.548,97.488L131.548,8.369L144.939,8.369C150.903,8.369 155.656,8.831 159.196,9.755C162.774,10.678 165.795,12.236 168.258,14.43C170.759,16.7 172.741,19.528 174.203,22.915C175.703,26.339 176.454,29.802 176.454,33.304C176.454,39.692 174.01,45.098 169.123,49.523C173.856,51.139 177.589,53.967 180.321,58.008C183.091,62.01 184.477,66.666 184.477,71.976C184.477,78.941 182.014,84.828 177.089,89.638C174.126,92.601 170.797,94.66 167.103,95.814C163.063,96.93 158.003,97.488 151.923,97.488L131.548,97.488ZM144.997,46.637L149.21,46.637C154.213,46.637 157.878,45.531 160.206,43.318C162.534,41.106 163.698,37.845 163.698,33.535C163.698,29.341 162.505,26.156 160.119,23.982C157.734,21.808 154.27,20.721 149.73,20.721L144.997,20.721L144.997,46.637ZM144.997,84.847L153.308,84.847C159.388,84.847 163.852,83.654 166.699,81.269C169.701,78.691 171.201,75.42 171.201,71.456C171.201,67.608 169.758,64.376 166.872,61.76C164.063,59.181 159.042,57.892 151.808,57.892L144.997,57.892L144.997,84.847Z" style="fill-rule:nonzero;" />
+            <rect x="202.173" y="0" width="12.987" height="97.488" style="fill-rule:nonzero;" />
+            <path d="M247.806,41.269L247.806,97.488L234.819,97.488L234.819,41.269L247.806,41.269ZM232.857,17.893C232.857,15.623 233.684,13.66 235.338,12.006C236.993,10.351 238.975,9.524 241.284,9.524C243.631,9.524 245.632,10.351 247.286,12.006C248.941,13.622 249.768,15.603 249.768,17.951C249.768,20.298 248.941,22.299 247.286,23.953C245.67,25.608 243.689,26.435 241.341,26.435C238.994,26.435 236.993,25.608 235.338,23.953C233.684,22.299 232.857,20.279 232.857,17.893Z" style="fill-rule:nonzero;" />
+            <path d="M285.856,53.39L285.856,97.488L272.869,97.488L272.869,53.39L267.328,53.39L267.328,41.269L272.869,41.269L272.869,20.663L285.856,20.663L285.856,41.269L295.957,41.269L295.957,53.39L285.856,53.39Z" style="fill-rule:nonzero;" />
+            <path d="M331.64,85.251L365.059,85.251L365.059,97.488L305.897,97.488L342.318,53.39L313.631,53.39L313.631,41.269L368.003,41.269L331.64,85.251Z" style="fill-rule:nonzero;" />
           </g>
           <g>
-            <path d="M39.759,90.287C39.549,90.287 39.338,90.241 39.137,90.144C38.49,89.83 38.177,89.087 38.404,88.405L49.211,55.986L38.33,55.986C37.853,55.986 37.407,55.747 37.141,55.35C36.875,54.953 36.826,54.448 37.011,54.008L51.303,19.707C51.524,19.174 52.045,18.826 52.622,18.826L66.2,18.826C66.684,18.826 67.136,19.072 67.399,19.478C67.663,19.886 67.702,20.397 67.504,20.839L56.257,45.982L66.914,45.982C67.439,45.982 67.922,46.27 68.172,46.73C68.422,47.192 68.398,47.754 68.11,48.193L40.955,89.64C40.682,90.057 40.228,90.287 39.759,90.287Z" style="fill:rgb(244,232,210);fill-rule:nonzero;" />
+            <g>
+              <circle cx="53" cy="53" r="53" style="fill:rgb(1,99,63);" />
+              <circle cx="53" cy="53" r="45.773" style="fill:rgb(0,118,114);" />
+              <circle cx="53" cy="53" r="38.545" style="fill:rgb(62,149,147);" />
+              <circle cx="53" cy="53" r="31.318" style="fill:rgb(252,176,64);" />
+              <circle cx="53" cy="53" r="24.091" style="fill:rgb(233,86,41);" />
+              <circle cx="53" cy="53" r="16.864" style="fill:rgb(230,29,50);" />
+            </g>
+            <g>
+              <path d="M39.759,90.287C39.549,90.287 39.338,90.241 39.137,90.144C38.49,89.83 38.177,89.087 38.404,88.405L49.211,55.986L38.33,55.986C37.853,55.986 37.407,55.747 37.141,55.35C36.875,54.953 36.826,54.448 37.011,54.008L51.303,19.707C51.524,19.174 52.045,18.826 52.622,18.826L66.2,18.826C66.684,18.826 67.136,19.072 67.399,19.478C67.663,19.886 67.702,20.397 67.504,20.839L56.257,45.982L66.914,45.982C67.439,45.982 67.922,46.27 68.172,46.73C68.422,47.192 68.398,47.754 68.11,48.193L40.955,89.64C40.682,90.057 40.228,90.287 39.759,90.287Z" style="fill:rgb(244,232,210);fill-rule:nonzero;" />
+            </g>
           </g>
-        </g>
-      </svg>
-      <h1>FormalWeb Fetch Bootstrap</h1>
-      <img src="blitz-landscape.svg" alt="Stylized landscape illustration used to verify document-driven image fetches." />
-      <p>
-        The startup navigation now completes by going through the fetch worker,
-        which fetches this checked-in artifact and then resumes
-        <code>processNavigationFetchResponse</code>.
-      </p>
-      <div class="hover-probe">
-        Static hover probe
-      </div>
-      <div class="status-grid">
-        <div class="status-card">
-          <span class="status-label">Animation FPS</span>
-          <span class="status-value" id="fps-value">0.0</span>
+        </svg>
+        <img src="blitz-landscape.svg" alt="Stylized landscape illustration used to verify document-driven image fetches." />
+        <div class="hover-probe">Static hover probe</div>
+        <p class="hint">Move the pointer across the page to exercise hover styling, then use the wheel or trackpad if the window is shorter than the page.</p>
+      </section>
+      <section class="control-panel">
+        <div class="intro-card">
+          <h1>FormalWeb Fetch Bootstrap</h1>
+          <p>
+            The startup navigation now completes by going through the fetch worker,
+            which fetches this checked-in artifact and then resumes
+            <code>processNavigationFetchResponse</code>.
+          </p>
         </div>
-        <div class="status-card">
-          <span class="status-label">Button Clicks</span>
-          <span class="status-value" id="click-count">0</span>
+        <div class="status-grid">
+          <div class="status-card">
+            <span class="status-label">Animation FPS</span>
+            <span class="status-value" id="fps-value">0.0</span>
+          </div>
+          <div class="status-card">
+            <span class="status-label">Button Clicks</span>
+            <span class="status-value" id="click-count">0</span>
+          </div>
         </div>
-      </div>
-      <button
-        class="counter-button"
-        id="click-counter-button"
-        type="button"
-        aria-label="Increment click counter"
-      >
-        Increment Click Counter
-      </button>
-      <p class="hint">Move the pointer across the page to exercise document-driven hover styling.</p>
+        <div class="button-row">
+          <button
+            class="counter-button"
+            id="click-counter-button"
+            type="button"
+            aria-label="Increment click counter"
+          >
+            Increment Click Counter
+          </button>
+          <button
+            class="accent-button"
+            id="accent-toggle-button"
+            type="button"
+            aria-label="Toggle signal accent"
+            aria-pressed="false"
+            data-active="false"
+          >
+            Toggle Signal Accent
+          </button>
+        </div>
+        <div class="signal-card" id="signal-card" data-active="false">
+          <div class="signal-chip" aria-hidden="true"></div>
+          <span class="signal-title">JS Interaction Probe</span>
+          <span class="signal-state" id="signal-state">Signal idle</span>
+        </div>
+      </section>
     </main>
     <script>
       const fpsValue = document.getElementById("fps-value");
       const clickCountValue = document.getElementById("click-count");
       const clickCounterButton = document.getElementById("click-counter-button");
+      const accentToggleButton = document.getElementById("accent-toggle-button");
+      const signalCard = document.getElementById("signal-card");
+      const signalState = document.getElementById("signal-state");
 
       fpsValue.textContent = "0.0";
       clickCountValue.textContent = "0";
@@ -273,10 +430,20 @@
       let clickCount = 0;
       let sampleStart = null;
       let sampledFrames = 0;
+      let signalActive = false;
 
       clickCounterButton.addEventListener("click", () => {
         clickCount += 1;
         clickCountValue.textContent = String(clickCount);
+      });
+
+      accentToggleButton.addEventListener("click", () => {
+        signalActive = !signalActive;
+        const active = String(signalActive);
+        accentToggleButton.setAttribute("aria-pressed", active);
+        accentToggleButton.dataset.active = active;
+        signalCard.dataset.active = active;
+        signalState.textContent = signalActive ? "Signal armed" : "Signal idle";
       });
 
       function updateFps(timestamp) {

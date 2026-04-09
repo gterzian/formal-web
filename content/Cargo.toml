@@ -6,8 +6,8 @@ publish = false
 
 [dependencies]
 anyrender = { version = "0.8", features = ["serde"] }
-boa_engine = { path = "../scratchpad/boa/core/engine", default-features = false }
-boa_gc = { path = "../scratchpad/boa/core/gc" }
+boa_engine = { path = "../vendor/boa/core/engine", default-features = false }
+boa_gc = { path = "../vendor/boa/core/gc" }
 blitz-dom = { path = "../vendor/blitz/packages/blitz-dom", default-features = false, features = ["svg", "system_fonts"] }
 blitz-paint = { path = "../vendor/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }

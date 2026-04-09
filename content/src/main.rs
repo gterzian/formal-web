@@ -365,7 +365,6 @@ impl ContentRuntime {
     }
 
     fn update_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
-        println!("Update rendering for {:?}", document_id);
         let document = self
             .documents
             .get_mut(&document_id)
@@ -386,7 +385,6 @@ impl ContentRuntime {
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
             if document.document.borrow().has_pending_critical_resources() {
-                println!("Doc has pending critical resources: {:?}", document_id);
                 return Ok(());
             }
 
@@ -429,17 +427,16 @@ impl ContentRuntime {
                 let scene = RecordedScene::from(scene);
                 log_paint_debug(document_id, &document_guard, &scene);
                 let viewport_scroll = document_guard.viewport_scroll();
-                PaintFrame {
+                PaintFrame::new(
                     document_id,
-                    viewport_scroll: ScrollOffset {
+                    ScrollOffset {
                         x: viewport_scroll.x as f32,
                         y: viewport_scroll.y as f32,
                     },
                     scene,
-                }
+                )?
             };
 
-            println!("Updated the rendering for {:?}", document_id);
             document.pending_update_the_rendering = false;
             paint_frame
         };
@@ -465,7 +462,6 @@ impl ContentRuntime {
         pending_handler
             .handler
             .bytes(resolved_url, Bytes::copy_from_slice(&body));
-        println!("Completed document fetch for {:?}", pending_handler.document_id);
         self.continue_updating_the_rendering(pending_handler.document_id)
     }
 

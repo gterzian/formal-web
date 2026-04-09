@@ -8,4 +8,5 @@ publish = false
 anyrender = { version = "0.8", features = ["serde"] }
 ipc-channel = "0.21"
 peniko = "0.6.0"
+postcard = { version = "1", features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
