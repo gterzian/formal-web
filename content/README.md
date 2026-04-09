@@ -81,6 +81,8 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - `content/src/dom` stores the native data carried by JavaScript-visible `Window`, `Node`, `Document`, `Element`, `EventTarget`, `Event`, and `UIEvent` objects. `BaseDocument` remains the authoritative DOM state; the JavaScript wrappers do not store shadow DOM data.
 
+- When `content` disables Blitz default features, keep `blitz-dom/system_fonts` enabled. Without that feature the DOM still mutates and resolves, but Parley shapes zero glyph runs and HTML text paints as empty layouts.
+
 - `content/src/webidl` owns Web IDL algorithms such as callback-interface conversion and `call a user object's operation`, so DOM dispatch can invoke listeners without reaching into Boa primitives directly.
 
 - Never call into JavaScript while holding a mutable `BaseDocument` borrow or guard that JavaScript bindings could try to re-borrow. Pass a document wrapper into Blitz and let it take short-lived borrows around its own native phases.

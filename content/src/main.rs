@@ -12,7 +12,7 @@ use crate::dom::{dispatch_ui_event, fire_event};
 use crate::html::run_animation_frame_callbacks;
 use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
-use blitz_dom::{BaseDocument, DocumentConfig};
+use blitz_dom::{BaseDocument, DocumentConfig, NodeData};
 use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
@@ -69,6 +69,63 @@ fn viewport_of_snapshot(snapshot: &ViewportSnapshot) -> Viewport {
         snapshot.scale,
         color_scheme,
     )
+}
+
+fn render_debug_enabled() -> bool {
+    env::var_os("FORMAL_WEB_DEBUG_RENDER").is_some()
+}
+
+fn log_paint_debug(document_id: u64, document: &BaseDocument, scene: &RecordedScene) {
+    if !render_debug_enabled() {
+        return;
+    }
+
+    let mut text_nodes = 0;
+    let mut non_empty_text_nodes = 0;
+    let mut inline_roots = 0;
+    let mut inline_layouts = 0;
+
+    document.visit(|_node_id, node| {
+        if node.flags.is_inline_root() {
+            inline_roots += 1;
+        }
+        if node
+            .element_data()
+            .and_then(|element| element.inline_layout_data.as_ref())
+            .is_some()
+        {
+            inline_layouts += 1;
+        }
+        if let NodeData::Text(text) = &node.data {
+            text_nodes += 1;
+            if !text.content.trim().is_empty() {
+                non_empty_text_nodes += 1;
+            }
+        }
+    });
+
+    eprintln!(
+        "[render-debug][content] doc={} {} text_nodes={} non_empty_text_nodes={} inline_roots={} inline_layouts={}",
+        document_id,
+        scene.summary().describe(),
+        text_nodes,
+        non_empty_text_nodes,
+        inline_roots,
+        inline_layouts,
+    );
+
+    if scene.summary().glyph_runs == 0 {
+        let mut inline_root_ids = Vec::new();
+        document.visit(|node_id, node| {
+            if node.flags.is_inline_root() {
+                inline_root_ids.push(node_id);
+            }
+        });
+
+        for node_id in inline_root_ids {
+            document.debug_log_node(node_id);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -369,6 +426,8 @@ impl ContentRuntime {
                     0,
                     0,
                 );
+                let scene = RecordedScene::from(scene);
+                log_paint_debug(document_id, &document_guard, &scene);
                 let viewport_scroll = document_guard.viewport_scroll();
                 PaintFrame {
                     document_id,
@@ -376,7 +435,7 @@ impl ContentRuntime {
                         x: viewport_scroll.x as f32,
                         y: viewport_scroll.y as f32,
                     },
-                    scene: RecordedScene::from(scene),
+                    scene,
                 }
             };
 
@@ -524,4 +583,84 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{JsHtmlParserProvider, JsState, log_paint_debug, parse_html_into_document};
+    use anyrender::Scene as RenderScene;
+    use blitz_dom::{BaseDocument, DocumentConfig};
+    use blitz_paint::paint_scene;
+    use blitz_traits::shell::{ColorScheme, Viewport};
+    use ipc_messages::content::RecordedScene;
+    use std::{cell::RefCell, fs, rc::Rc, sync::Arc};
+    use url::Url;
+
+    #[test]
+    fn startup_example_generates_glyph_runs() {
+        let artifact_path = format!(
+            "{}/../artifacts/StartupExample.html",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let html = fs::read_to_string(&artifact_path)
+        .expect("startup artifact should be readable");
+        let artifact_url = Url::from_file_path(&artifact_path)
+            .expect("startup artifact path should convert to a file URL");
+        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(960, 720, 1.0, ColorScheme::Light)),
+            base_url: Some(artifact_url.to_string()),
+            html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
+            ..DocumentConfig::default()
+        })));
+        let mut js_state = JsState::new(
+            Rc::clone(&document),
+            artifact_url,
+        )
+        .expect("js state should initialize");
+
+        {
+            let mut document_guard = document.borrow_mut();
+            parse_html_into_document(&mut document_guard, &html, &mut js_state.settings.execution_context);
+        }
+
+        js_state
+            .settings
+            .execution_context
+            .drain_tasks()
+            .expect("startup scripts should run");
+
+        let mut document_guard = document.borrow_mut();
+        document_guard.resolve(0.0);
+        let viewport = document_guard.viewport().clone();
+        let (width, height) = viewport.window_size;
+        let mut scene = RenderScene::new();
+        paint_scene(
+            &mut scene,
+            &document_guard,
+            viewport.scale_f64(),
+            width,
+            height,
+            0,
+            0,
+        );
+        let recorded_scene = RecordedScene::from(scene);
+        log_paint_debug(1, &document_guard, &recorded_scene);
+
+        let summary = recorded_scene.summary();
+        assert!(
+            summary.glyph_runs > 0,
+            "expected startup scene to include glyph runs, got {}",
+            summary.describe()
+        );
+        assert!(
+            summary.glyphs > 0,
+            "expected startup scene to include glyphs, got {}",
+            summary.describe()
+        );
+        assert!(
+            summary.font_bytes > 0,
+            "expected startup scene to carry font bytes, got {}",
+            summary.describe()
+        );
+    }
 }

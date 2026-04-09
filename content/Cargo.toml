@@ -8,9 +8,9 @@ publish = false
 anyrender = { version = "0.8", features = ["serde"] }
 boa_engine = { path = "../scratchpad/boa/core/engine", default-features = false }
 boa_gc = { path = "../scratchpad/boa/core/gc" }
-blitz-dom = { path = "../scratchpad/blitz/packages/blitz-dom", default-features = false, features = ["svg"] }
-blitz-paint = { path = "../scratchpad/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
-blitz-traits = { path = "../scratchpad/blitz/packages/blitz-traits", default-features = false }
+blitz-dom = { path = "../vendor/blitz/packages/blitz-dom", default-features = false, features = ["svg", "system_fonts"] }
+blitz-paint = { path = "../vendor/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
+blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
 ipc_messages = { path = "../ipc_messages" }
 data-url = "0.3"
 html5ever = "0.37"

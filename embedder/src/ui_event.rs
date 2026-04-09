@@ -16,6 +16,7 @@ enum SerializableUiEvent {
     KeyUp(SerializableKeyEvent),
     KeyDown(SerializableKeyEvent),
     Ime(SerializableImeEvent),
+    AppleStandardKeybinding(String),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -559,6 +560,9 @@ impl From<&UiEvent> for SerializableUiEvent {
             UiEvent::KeyUp(data) => Self::KeyUp(data.into()),
             UiEvent::KeyDown(data) => Self::KeyDown(data.into()),
             UiEvent::Ime(data) => Self::Ime(data.into()),
+            UiEvent::AppleStandardKeybinding(data) => {
+                Self::AppleStandardKeybinding(data.to_string())
+            }
         }
     }
 }
@@ -575,6 +579,9 @@ impl TryFrom<SerializableUiEvent> for UiEvent {
             SerializableUiEvent::KeyUp(data) => Ok(Self::KeyUp(data.try_into()?)),
             SerializableUiEvent::KeyDown(data) => Ok(Self::KeyDown(data.try_into()?)),
             SerializableUiEvent::Ime(data) => Ok(Self::Ime(data.into())),
+            SerializableUiEvent::AppleStandardKeybinding(data) => {
+                Ok(Self::AppleStandardKeybinding(data.into()))
+            }
         }
     }
 }

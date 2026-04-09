@@ -9,7 +9,7 @@ use blitz_traits::events::{
     PointerDetails, UiEvent,
 };
 use blitz_traits::shell::ColorScheme;
-use ipc_messages::content::{Command as ContentCommand, PaintFrame, ScrollOffset};
+use ipc_messages::content::{Command as ContentCommand, PaintFrame, SceneSummary, ScrollOffset};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use std::path::PathBuf;
@@ -41,7 +41,9 @@ pub struct RuntimeHooks {
 
 #[derive(Clone)]
 struct EmbedderPaintFrame {
+    document_id: u64,
     scene: RenderScene,
+    summary: SceneSummary,
     viewport_scroll: ScrollOffset,
 }
 
@@ -206,6 +208,23 @@ fn theme_to_color_scheme(theme: winit::window::Theme) -> ColorScheme {
         winit::window::Theme::Light => ColorScheme::Light,
         winit::window::Theme::Dark => ColorScheme::Dark,
     }
+}
+
+fn render_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_RENDER").is_some()
+}
+
+fn log_embedder_scene(stage: &str, document_id: u64, summary: SceneSummary) {
+    if !render_debug_enabled() {
+        return;
+    }
+
+    eprintln!(
+        "[render-debug][embedder] stage={} doc={} {}",
+        stage,
+        document_id,
+        summary.describe(),
+    );
 }
 
 fn viewport_snapshot_for_window(window: &Window) -> (u32, u32, f32, ColorScheme) {
@@ -436,8 +455,11 @@ impl FormalWebApp {
     }
 
     fn paint_frame(snapshot: PaintFrame) -> EmbedderPaintFrame {
+        let summary = snapshot.scene.summary();
         EmbedderPaintFrame {
+            document_id: snapshot.document_id,
             scene: snapshot.scene.into(),
+            summary,
             viewport_scroll: snapshot.viewport_scroll,
         }
     }
@@ -493,6 +515,11 @@ impl FormalWebApp {
         let Some(current_paint_frame) = self.current_paint_frame.as_ref() else {
             return;
         };
+        log_embedder_scene(
+            "render",
+            current_paint_frame.document_id,
+            current_paint_frame.summary,
+        );
         let size = window.inner_size();
 
         if self.renderer.is_active() {
@@ -722,6 +749,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 let Some(window) = self.window.as_ref() else {
                     return;
                 };
+                log_embedder_scene("received", snapshot.document_id, snapshot.scene.summary());
                 self.current_paint_frame = Some(Self::paint_frame(snapshot));
                 if self.saw_redraw_requested {
                     self.paint_current_frame();
