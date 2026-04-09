@@ -1,0 +1,115 @@
+{
+  // See https://go.microsoft.com/fwlink/?LinkId=733558
+  // for the documentation about the tasks.json format
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "process",
+      "label": "Cargo Build",
+      "command": "cargo",
+      "args": ["build"],
+      "group": "build",
+      "presentation": {
+        "clear": true
+      }
+    },
+    {
+      "type": "process",
+      "label": "Cargo Build boa_cli",
+      "command": "cargo",
+      "args": ["build", "-p", "boa_cli"],
+      "group": "build",
+      "presentation": {
+        "clear": true
+      }
+    },
+    {
+      "type": "process",
+      "label": "Cargo Build boa_tester",
+      "command": "cargo",
+      "args": ["build", "-p", "boa_tester"],
+      "group": "build",
+      "presentation": {
+        "clear": true
+      }
+    },
+    {
+      "type": "process",
+      "label": "Run JS file",
+      "command": "cargo",
+      "args": ["run", "--bin", "boa", "${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "clear": true
+      },
+      "options": {
+        "env": {
+          "RUST_BACKTRACE": "1"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "type": "process",
+      "label": "Run JS file (Profiler)",
+      "command": "cargo",
+      "args": ["run", "--features", "profiler", "${file}"],
+      "group": "build",
+      "options": {
+        "env": {
+          "RUST_BACKTRACE": "full"
+        },
+        "cwd": "${workspaceFolder}/cli"
+      },
+      "presentation": {
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "type": "process",
+      "label": "Run JS file with VM trace",
+      "command": "cargo",
+      "args": ["run", "--bin", "boa", "--", "-t", "${file}"],
+      "group": "build",
+      "presentation": {
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "type": "process",
+      "label": "Get AST for JS file",
+      "command": "cargo",
+      "args": ["run", "--bin", "boa", "--", "-a=Debug", "${file}"],
+      "group": "build",
+      "presentation": {
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "type": "process",
+      "label": "Cargo Test",
+      "command": "cargo",
+      "args": ["test"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "clear": true
+      }
+    },
+    {
+      "type": "process",
+      "label": "Cargo Test Build",
+      "command": "cargo",
+      "args": ["test", "--no-run"],
+      "group": "build"
+    }
+  ]
+}

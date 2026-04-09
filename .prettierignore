@@ -1,0 +1,18 @@
+# Ignore artifacts:
+*.rs
+*.yml
+target
+node_modules
+core/engine/benches/bench_scripts/mini_js.js
+core/engine/benches/bench_scripts/clean_js.js
+ffi/wasm/pkg
+dist
+test262
+playwright-report
+test-results
+
+# For some reason Prettier likes to reformat JSON lock files.
+flake.lock
+
+# Assets that should not be checked.
+benches/scripts/v8-benches

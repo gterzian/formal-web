@@ -1,0 +1,40 @@
+[package]
+name = "boa_tester"
+description = "ECMA-262 tests runner for the Boa JavaScript engine."
+keywords = ["javascript", "ECMAScript", "compiler", "test262", "tester"]
+categories = ["command-line-utilites"]
+publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+boa_engine = { workspace = true, features = ["float16"] }
+boa_runtime = { workspace = true, features = ["test262"] }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_yaml = "0.9.34" # TODO: Track https://github.com/saphyr-rs/saphyr.
+serde_json.workspace = true
+bitflags.workspace = true
+colored.workspace = true
+rustc-hash = { workspace = true, features = ["std"] }
+rayon.workspace = true
+toml.workspace = true
+color-eyre.workspace = true
+phf = { workspace = true, features = ["macros"] }
+comfy-table.workspace = true
+serde_repr.workspace = true
+cow-utils.workspace = true
+
+[features]
+annex-b = ["boa_engine/annex-b", "boa_runtime/annex-b"]
+default = ["boa_engine/intl_bundled", "boa_engine/experimental", "annex-b"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

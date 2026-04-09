@@ -1,0 +1,42 @@
+[package]
+name = "gen-icu4x-data"
+publish = false
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+icu_provider_export = { workspace = true, features = [
+    "blob_exporter",
+    "rayon",
+] }
+icu_provider_source = { workspace = true, features = [
+    "networking",
+    "use_wasm",
+    "unstable"
+] }
+log.workspace = true
+simple_logger.workspace = true
+
+# Components
+
+icu_casemap = { workspace = true, features = ["datagen"] }
+icu_collator = { workspace = true, features = ["datagen"] }
+icu_datetime = { workspace = true, features = ["datagen"] }
+icu_time = { workspace = true, features = ["datagen"] }
+icu_decimal = { workspace = true, features = ["datagen", "unstable"] }
+icu_list = { workspace = true, features = ["datagen"] }
+icu_locale = { workspace = true, features = ["datagen"] }
+icu_normalizer = { workspace = true, features = ["datagen"] }
+icu_plurals = { workspace = true, features = ["datagen", "unstable"] }
+icu_segmenter = { workspace = true, features = ["datagen"] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
