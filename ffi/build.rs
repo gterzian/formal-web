@@ -135,7 +135,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../FormalWeb");
     println!("cargo:rerun-if-changed=../FormalWeb.lean");
     println!("cargo:rerun-if-changed=../FormalWebRuntime.lean");
-    println!("cargo:rerun-if-changed=../Main.lean");
     println!("cargo:rerun-if-changed=../lakefile.lean");
     println!("cargo:rerun-if-changed=src/lean_shim.c");
     println!("cargo:rerun-if-changed=src/macos_compat.m");

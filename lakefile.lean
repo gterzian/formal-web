@@ -250,16 +250,11 @@ target ffiStatic pkg : FilePath := do
       }
     return libFile
 
+@[default_target]
 lean_lib FormalWeb where
   precompileModules := false
   moreLinkArgs := ffiMacOSLinkArgs
 
 lean_lib FormalWebRuntime where
   precompileModules := false
-  moreLinkArgs := ffiMacOSLinkArgs
-
-@[default_target]
-lean_exe "formal-web" where
-  root := `Main
-  moreLinkObjs := #[ffiStatic]
   moreLinkArgs := ffiMacOSLinkArgs

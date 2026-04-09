@@ -32,6 +32,12 @@ const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
 const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE: &str = "NewTopLevelTraversable";
 const DISPATCH_EVENT_MESSAGE_PREFIX: &str = "DispatchEvent|";
 
+#[derive(Clone, Default)]
+pub struct EventLoopOptions {
+    pub startup_url: Option<String>,
+    pub window_title: Option<String>,
+}
+
 #[derive(Clone, Copy)]
 pub struct RuntimeHooks {
     pub handle_runtime_message: fn(&str),
@@ -128,6 +134,29 @@ pub(crate) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32
     LazyLock::new(|| Mutex::new(None));
 static RUNTIME_HOOKS: LazyLock<Mutex<Option<RuntimeHooks>>> =
     LazyLock::new(|| Mutex::new(None));
+static EVENT_LOOP_OPTIONS: LazyLock<Mutex<EventLoopOptions>> =
+    LazyLock::new(|| Mutex::new(EventLoopOptions::default()));
+
+pub fn set_event_loop_options(options: EventLoopOptions) {
+    let mut guard = EVENT_LOOP_OPTIONS
+        .lock()
+        .expect("event loop options mutex poisoned");
+    *guard = options;
+}
+
+pub fn clear_event_loop_options() {
+    let mut options = EVENT_LOOP_OPTIONS
+        .lock()
+        .expect("event loop options mutex poisoned");
+    *options = EventLoopOptions::default();
+}
+
+fn event_loop_options() -> EventLoopOptions {
+    EVENT_LOOP_OPTIONS
+        .lock()
+        .expect("event loop options mutex poisoned")
+        .clone()
+}
 
 pub fn set_runtime_hooks(hooks: RuntimeHooks) {
     let mut guard = RUNTIME_HOOKS.lock().expect("runtime hooks mutex poisoned");
@@ -230,17 +259,21 @@ pub fn send_content_command(handle: usize, command: ContentCommand) -> Result<()
 }
 
 fn startup_runtime_message() -> Result<String, String> {
-    let artifact_path = startup_artifact_path()?;
-    Ok(format!("FreshTopLevelTraversable|file://{}", artifact_path.display()))
+    let startup_url = match event_loop_options().startup_url {
+        Some(url) => url,
+        None => startup_artifact_url()?,
+    };
+    Ok(format!("FreshTopLevelTraversable|{startup_url}"))
 }
 
-fn startup_artifact_path() -> Result<PathBuf, String> {
+fn startup_artifact_url() -> Result<String, String> {
     let current_dir = std::env::current_dir()
         .map_err(|error| format!("failed to determine current directory: {error}"))?;
     let artifact_path: PathBuf = current_dir.join(STARTUP_ARTIFACT_RELATIVE_PATH);
-    artifact_path
+    let artifact_path = artifact_path
         .canonicalize()
-        .map_err(|error| format!("failed to resolve startup artifact path: {error}"))
+        .map_err(|error| format!("failed to resolve startup artifact path: {error}"))?;
+    Ok(format!("file://{}", artifact_path.display()))
 }
 
 fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
@@ -564,7 +597,10 @@ impl FormalWebApp {
     }
 
     fn create_window(event_loop: &ActiveEventLoop) -> Result<Arc<Window>, String> {
-        let attributes: WindowAttributes = Window::default_attributes().with_title("formal-web winit demo");
+        let title = event_loop_options()
+            .window_title
+            .unwrap_or_else(|| String::from("formal-web"));
+        let attributes: WindowAttributes = Window::default_attributes().with_title(title);
         event_loop
             .create_window(attributes)
             .map(Arc::new)
