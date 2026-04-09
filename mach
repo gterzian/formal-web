@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1-}" in
+  "")
+    exec cargo run
+    ;;
+  test-wpt)
+    shift
+    exec cargo run -- test-wpt "$@"
+    ;;
+  *)
+    echo "usage: ./mach [test-wpt ...]" >&2
+    exit 1
+    ;;
+esac

@@ -9,6 +9,10 @@ pub struct lean_object {
 }
 
 unsafe extern "C" {
+    fn formalWebInitializeLeanRuntime() -> *mut lean_object;
+    fn formalWebFinalizeLeanRuntime() -> *mut lean_object;
+    fn formalWebStartKernel() -> *mut lean_object;
+    fn formalWebShutdownKernel() -> *mut lean_object;
     fn lean_mk_string_from_bytes(value: *const c_char, size: usize) -> *mut lean_object;
     fn handleRuntimeMessage(message: *mut lean_object) -> *mut lean_object;
     fn startDocumentFetch(
@@ -43,6 +47,17 @@ fn ok_usize_result(value: usize) -> *mut lean_object {
 
 fn error_result(message: &str) -> *mut lean_object {
     unsafe { leanIoResultMkErrorFromBytes(message.as_ptr() as *const c_char, message.len()) }
+}
+
+fn unit_result_from_lean(io_result: *mut lean_object, context: &str) -> Result<(), String> {
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from(context));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
 }
 
 fn call_lean_runtime_message_handler(message: &str) {
@@ -93,6 +108,30 @@ fn runtime_hooks() -> RuntimeHooks {
     }
 }
 
+pub fn initialize_lean_runtime() -> Result<(), String> {
+    let io_result = unsafe { formalWebInitializeLeanRuntime() };
+    unit_result_from_lean(io_result, "failed to initialize the Lean runtime")
+}
+
+pub fn finalize_lean_runtime() -> Result<(), String> {
+    let io_result = unsafe { formalWebFinalizeLeanRuntime() };
+    unit_result_from_lean(io_result, "failed to finalize the Lean runtime")
+}
+
+pub fn install_runtime_hooks() {
+    embedder::set_runtime_hooks(runtime_hooks());
+}
+
+pub fn start_kernel() -> Result<(), String> {
+    let io_result = unsafe { formalWebStartKernel() };
+    unit_result_from_lean(io_result, "failed to start the Lean kernel")
+}
+
+pub fn shutdown_kernel() -> Result<(), String> {
+    let io_result = unsafe { formalWebShutdownKernel() };
+    unit_result_from_lean(io_result, "failed to shut down the Lean kernel")
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn sendEmbedderMessage(message: *mut lean_object) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
@@ -109,7 +148,7 @@ pub extern "C" fn sendEmbedderMessage(message: *mut lean_object) -> *mut lean_ob
 #[unsafe(no_mangle)]
 pub extern "C" fn runEmbedderEventLoop(_: *mut lean_object) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        embedder::set_runtime_hooks(runtime_hooks());
+        install_runtime_hooks();
         embedder::run_event_loop()
     })) {
         Ok(Ok(())) => ok_unit_result(),

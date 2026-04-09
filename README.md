@@ -18,7 +18,7 @@ Web engines require complicated concurrent coordination, which formal methods ca
 - **TLA+ specs** for high-level design.
 - **Lean specs** model labeled transition systems — *what* the system does, as state transitions, without committing to an implementation.
 - **Lean implementations** use Lean's IO monad to implement the specs — *how* the system does it, with all concurrent logic handled here.
-- **Rust embedder and content processes** handle window-system integration, DOM/runtime execution, and recorded paint-scene production. Lean starts them through a thin FFI layer and coordinates them with explicit messages.
+- **Rust embedder and content processes** handle window-system integration, DOM/runtime execution, and recorded paint-scene production. The Rust entry point starts the Lean kernel through a thin FFI layer and coordinates with it through explicit messages.
 
 Lean handles the engine-wide concurrent coordination; Rust handles embedder integration plus the per-event-loop content-process work.
 
@@ -42,27 +42,38 @@ Prerequisites:
 - On macOS, Xcode and the macOS SDK at the path referenced in `lakefile.lean`
 
 ```bash
-lake build                                                        # full build
+rustup run 1.92.0 cargo run -- --help                            # root runtime entry point
+rustup run 1.92.0 cargo check                                     # root Rust workspace
+lake build                                                        # full Lean workspace
+lake build FormalWeb.Runtime                                      # runtime Lean modules only
 lake build FormalWeb.UserAgent                                    # user-agent module only
 rustup run 1.92.0 cargo check --manifest-path ffi/Cargo.toml      # Lean-facing Rust staticlib
 rustup run 1.92.0 cargo check --manifest-path embedder/Cargo.toml # main-thread embedder runtime library
 rustup run 1.92.0 cargo check --manifest-path content/Cargo.toml  # child content-process binary
 ```
 
-`lake build` builds the Lean code, the Rust static library under `ffi/`, and the `content` child executable, then copies the child binary into `.lake/build/bin/` so the embedder can spawn it at runtime.
+`cargo run` and `cargo check` at the repository root build the Rust entry point, the Lean runtime artifacts needed by `ffi`, and the `content` child executable used by the embedder. `lake build` remains available when you want the broader Lean workspace build.
 
 ## Run
 
 ```bash
-lake exe formal-web
+rustup run 1.92.0 cargo run
 ```
 
-Starts the Rust embedder event loop plus the Lean runtime workers. As event loops come up, the embedder spawns the `content` child executable and communicates with it over `ipc-channel`. The startup flow loads the demo page from `artifacts/StartupExample.html`.
+Starts the Rust embedder event loop, initializes the Lean runtime, and starts the Lean kernel workers. As event loops come up, the embedder spawns the `content` child executable and communicates with it over `ipc-channel`. The startup flow loads the demo page from `artifacts/StartupExample.html`.
 
 You can also run the built executable directly:
 
 ```bash
-./.lake/build/bin/formal-web
+./target/debug/formal-web
 ```
 
-This expects the sibling child binary `./.lake/build/bin/content` produced by `lake build` to still be present.
+This expects the sibling child binary `./target/debug/content` produced by the root build to still be present.
+
+## WPT
+
+```bash
+./mach test-wpt --list html/document-isolation-policy/credentialless-cross-origin-isolated.tentative.window.js
+```
+
+`./mach test-wpt` is a thin wrapper around `cargo run -- test-wpt ...`. Use `tests/wpt/include.ini` to opt suites into a run, and place expectations under `tests/wpt/meta` using Servo-style `.ini` metadata files.

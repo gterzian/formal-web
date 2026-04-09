@@ -1,7 +1,41 @@
+#include <stdbool.h>
 #include <lean/lean.h>
 
+extern void lean_initialize(void);
 extern lean_obj_res lean_mk_string_from_bytes(const char * value, size_t size);
 extern lean_obj_res lean_mk_io_user_error(lean_obj_arg msg);
+extern lean_obj_res initialize_formal_x2dweb_FormalWebRuntime(uint8_t builtin);
+
+static bool formal_web_lean_runtime_initialized = false;
+
+LEAN_EXPORT lean_obj_res formalWebInitializeLeanRuntime(void) {
+    if (formal_web_lean_runtime_initialized) {
+        return lean_io_result_mk_ok(lean_box(0));
+    }
+
+    lean_initialize();
+    lean_set_panic_messages(false);
+    lean_obj_res result = initialize_formal_x2dweb_FormalWebRuntime(1);
+    lean_set_panic_messages(true);
+    if (lean_io_result_is_error(result)) {
+        return result;
+    }
+
+    lean_dec_ref(result);
+    lean_io_mark_end_initialization();
+    lean_init_task_manager();
+    formal_web_lean_runtime_initialized = true;
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
+LEAN_EXPORT lean_obj_res formalWebFinalizeLeanRuntime(void) {
+    if (formal_web_lean_runtime_initialized) {
+        lean_finalize_task_manager();
+        formal_web_lean_runtime_initialized = false;
+    }
+
+    return lean_io_result_mk_ok(lean_box(0));
+}
 
 LEAN_EXPORT lean_obj_res leanIoResultMkOkUnit(void) {
     return lean_io_result_mk_ok(lean_box(0));

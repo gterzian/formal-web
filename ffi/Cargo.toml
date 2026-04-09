@@ -6,7 +6,7 @@ publish = false
 build = "build.rs"
 
 [lib]
-crate-type = ["staticlib"]
+crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 embedder = { path = "../embedder" }
