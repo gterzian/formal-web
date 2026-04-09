@@ -1,0 +1,10 @@
+github_checks:
+  annotations: false
+
+coverage:
+  status:
+    project:
+      default:
+        threshold: 5% # allow 5% coverage variance
+
+    patch: off

@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - "C-Dependencies"
+      - "C-Actions"
+    groups:
+      ci-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types:
+        - "minor"
+        - "patch"
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - "C-Dependencies"
+    groups:
+      rust-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types:
+        - "minor"
+        - "patch"
+  - package-ecosystem: cargo
+    directory: /tests/fuzz/
+    schedule:
+      interval: weekly
+    labels:
+      - "C-Dependencies"
+    groups:
+      fuzz-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types:
+        - "minor"
+        - "patch"

@@ -1,0 +1,67 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Boa (Script mode)",
+      "windows": {
+        "program": "${workspaceFolder}/target/debug/boa.exe"
+      },
+      "program": "${workspaceFolder}/target/debug/boa",
+      "args": ["${workspaceFolder}/${input:filePath}", "--debug-object"],
+      "sourceLanguages": ["rust"],
+      "preLaunchTask": "Cargo Build boa_cli"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Boa (Module mode)",
+      "windows": {
+        "program": "${workspaceFolder}/target/debug/boa.exe"
+      },
+      "program": "${workspaceFolder}/target/debug/boa",
+      "args": [
+        "${workspaceFolder}/${input:filePath}",
+        "--debug-object",
+        "-m",
+        "-r",
+        "${workspaceFolder}/${input:modulePath}"
+      ],
+      "sourceLanguages": ["rust"],
+      "preLaunchTask": "Cargo Build boa_cli"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Boa (Tester)",
+      "windows": {
+        "program": "${workspaceFolder}/target/debug/boa_tester.exe"
+      },
+      "program": "${workspaceFolder}/target/debug/boa_tester",
+      "args": ["run", "-s", "${input:testPath}", "-vvv", "-d"],
+      "sourceLanguages": ["rust"],
+      "preLaunchTask": "Cargo Build boa_tester"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "filePath",
+      "description": "Relative path to the file to run",
+      "type": "promptString"
+    },
+    {
+      "id": "modulePath",
+      "description": "Relative path to the module root directory",
+      "type": "promptString"
+    },
+    {
+      "id": "testPath",
+      "description": "Relative path to the test from the test262 directory",
+      "type": "promptString"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+# IDE
+.idea/
+*.iml
+
+# Vim
+*.*.swp
+*.*.swo
+
+# Build
+target
+dist
+**/*.rs.bk
+node_modules
+.DS_Store
+yarn-error.log
+.vscode/settings.json
+.zed/settings.json
+
+# debug is used for testing changes locally
+/debug
+.boa_history
+
+# test262 testing suite
+test262
+
+# wpt testing suite
+tests_wpt
+
+# Profiling
+*.string_data
+*.string_index
+*.events
+chrome_profiler.json
+*.mm_profdata
+profile.json.gz
+
+# Logs
+*.log
+
+# Yarn
+.yarn
+.yarnrc.yml
+
+# e2e test
+playwright-report
+test-results
+
+# dhat
+dhat-*.json
+perf.data*
+
+# Nix
+/.envrc
+/.direnv

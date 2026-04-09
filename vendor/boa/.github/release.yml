@@ -1,0 +1,24 @@
+# .github/release.yml
+
+changelog:
+  exclude:
+    authors:
+      - dependabot
+  categories:
+    - title: Feature Enhancements
+      labels:
+        - A-Enhancement
+    - title: Bug Fixes
+      labels:
+        - A-Bug
+    - title: Performance Improvements
+      labels:
+        - A-Performance
+        - A-Memory
+    - title: Internal Improvements
+      labels:
+        - A-Internal
+        - A-Technical Debt
+    - title: Other Changes
+      labels:
+        - "*"

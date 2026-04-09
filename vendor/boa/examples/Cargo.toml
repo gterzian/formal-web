@@ -1,0 +1,64 @@
+[package]
+name = "boa_examples"
+description = "Usage examples of the Boa JavaScript engine."
+publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+boa_engine = { workspace = true, features = ["annex-b", "float16", "xsum", "temporal"] }
+boa_ast.workspace = true
+boa_interner.workspace = true
+boa_gc.workspace = true
+boa_parser.workspace = true
+boa_runtime.workspace = true
+time.workspace = true
+smol.workspace = true
+futures-concurrency.workspace = true
+futures-lite.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros"] }
+reqwest.workspace = true
+rustls.workspace = true
+
+# use explicit lints for examples, since we don't need to lint for docs
+[lints.rust]
+# rustc lint groups https://doc.rust-lang.org/rustc/lints/groups.html
+warnings = "warn"
+future_incompatible = "warn"
+let_underscore = "warn"
+nonstandard_style = "warn"
+rust_2018_compatibility = "warn"
+rust_2018_idioms = "warn"
+rust_2021_compatibility = "warn"
+unused = "warn"
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_abi = "warn"
+missing_copy_implementations = "warn"
+missing_debug_implementations = "warn"
+non_ascii_idents = "warn"
+noop_method_call = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+variant_size_differences = "warn"
+
+[lints.clippy]
+all = "warn"
+correctness = "warn"
+suspicious = "warn"
+style = "warn"
+complexity = "warn"
+perf = "warn"
+
+[package.metadata.docs.rs]
+all-features = true

@@ -1,0 +1,22 @@
+[package]
+name = "boa_macros_tests"
+description = "Testing crate for boa_macros"
+keywords = ["javascript", "ECMAScript", "compiler", "tester"]
+publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+trybuild.workspace = true
+boa_engine = { workspace = true, features = ["embedded_lz4"] }
+boa_gc.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

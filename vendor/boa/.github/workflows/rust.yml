@@ -1,0 +1,458 @@
+name: Continuous integration
+
+on:
+  pull_request:
+    branches:
+      - main
+      - releases/**
+  push:
+    branches:
+      - main
+      - releases/**
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  W_FLAGS: ${{ (github.ref == 'refs/heads/main' || github.base_ref == 'main') && '-D warnings' || '' }}
+
+jobs:
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Set environment
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Format (rustfmt)
+        run: cargo fmt --all --check
+
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Check for typos
+        uses: crate-ci/typos@02ea592e44b3a53c302f697cddca7641cd051c3d # v1.45.0
+
+  clippy:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Set environment
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-workspaces
+        uses: baptiste0928/cargo-install@f204293d9709061b7bc1756fec3ec4e2cd57dec0 # v3.4.0
+        with:
+          crate: cargo-workspaces
+
+      - name: Clippy (All features)
+        run: cargo workspaces exec cargo clippy --all-features --all-targets
+      - name: Clippy (No features)
+        run: cargo workspaces exec cargo clippy --no-default-features --all-targets
+      - name: Clippy (Intl)
+        run: cargo clippy -p boa_engine --features intl
+      - name: Clippy (Annex-B)
+        run: cargo clippy -p boa_engine --features annex-b
+      - name: Clippy (Experimental)
+        run: cargo clippy -p boa_engine --features experimental
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUSTDOCFLAGS: ${{ (github.ref == 'refs/heads/main' || github.base_ref == 'main') && '-D warnings' || '' }}
+    steps:
+      - name: Set environment
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Generate documentation
+        run: cargo doc -v --document-private-items --all-features
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Set environment
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      # Get the rust_version from the Cargo.toml
+      - name: Get rust_version
+        id: rust_version
+        run: echo "rust_version=$(grep '^rust-version' Cargo.toml | cut -d' ' -f3 | tr -d '"')" >> $GITHUB_OUTPUT
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: ${{ steps.rust_version.outputs.rust_version }}
+
+      - name: Check compilation
+        run: cargo check --all-features --all-targets
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: ${{ github.ref == 'refs/heads/main' || github.base_ref == 'main' }}
+    needs:
+      - fmt
+      - typos
+      - clippy
+      - docs
+      - msrv
+    steps:
+      - name: Set environment
+        # Setting `RUSTFLAGS` overrides any flags set on .cargo/config.toml, so we need to
+        # set the target flags instead which are cumulative.
+        # Track https://github.com/rust-lang/cargo/issues/5376
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-tarpaulin
+        uses: baptiste0928/cargo-install@f204293d9709061b7bc1756fec3ec4e2cd57dec0 # v3.4.0
+        with:
+          crate: cargo-tarpaulin
+
+      - name: Run tarpaulin
+        run: cargo tarpaulin --workspace --features annex-b,intl_bundled,experimental --ignore-tests --engine llvm --out xml
+
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v5
+
+  tests:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    needs:
+      - fmt
+      - typos
+      - clippy
+      - docs
+      - msrv
+    env:
+      RUSTUP_WINDOWS_PATH_ADD_BIN: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+          - os: windows-latest
+          - os: ubuntu-24.04-arm
+          - os: ubuntu-latest
+    steps:
+      - name: Set environment
+        if: ${{ matrix.os != 'windows-latest' }}
+        # Setting `RUSTFLAGS` overrides any flags set on .cargo/config.toml, so we need to
+        # set the target flags instead which are cumulative.
+        # Track https://github.com/rust-lang/cargo/issues/5376
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Set environment
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: |
+          $target = (rustc -vV | Select-String '^host') -replace '^host:\s+', '' | ForEach-Object { $_.ToUpper().Replace('-', '_') }
+          "CARGO_TARGET_${target}_RUSTFLAGS=$env:W_FLAGS" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+
+      - name: Install Cargo insta
+        uses: baptiste0928/cargo-install@f204293d9709061b7bc1756fec3ec4e2cd57dec0 # v3.4.0
+        with:
+          crate: cargo-insta
+          locked: true
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build tests
+        run: cargo test --no-run --profile ci
+      # this order is faster according to rust-analyzer
+      - name: Build
+        run: cargo build --all-targets --quiet --profile ci --features annex-b,intl_bundled,experimental,embedded_lz4
+      - name: Install latest nextest
+        uses: taiki-e/install-action@7cb3ba7bc31801346db00d4a6d7008aabab5e986 # nextest
+      - name: Test with nextest
+        run: cargo nextest run --profile ci --cargo-profile ci --features annex-b,intl_bundled,experimental,embedded_lz4
+      - name: Test docs
+        run: cargo test --doc --profile ci --features annex-b,intl_bundled,experimental
+      - name: Test bytecode output
+        run: cargo insta test -p insta-bytecode
+
+  cross-tests:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs:
+      - fmt
+      - typos
+      - clippy
+      - docs
+      - msrv
+    strategy:
+      matrix:
+        include:
+          - target: i686-unknown-linux-gnu
+    steps:
+      - name: Set environment
+        # Setting `RUSTFLAGS` overrides any flags set on .cargo/config.toml, so we need to
+        # set the target flags instead which are cumulative.
+        # Track https://github.com/rust-lang/cargo/issues/5376
+        run: |
+          target=$(echo ${{ matrix.target }} | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      - name: Install Cross
+        uses: baptiste0928/cargo-install@f204293d9709061b7bc1756fec3ec4e2cd57dec0 # v3.4.0
+        with:
+          crate: cross
+          git: https://github.com/cross-rs/cross
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Run tests
+        run: |
+          cross test --workspace --target ${{ matrix.target }} \
+            --profile ci \
+            --features annex-b,intl_bundled,experimental \
+            --exclude boa_macros \
+            --exclude boa_macros_tests
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs:
+      - fmt
+      - typos
+      - clippy
+      - docs
+      - msrv
+    steps:
+      - name: Set environment
+        # Setting `RUSTFLAGS` overrides any flags set on .cargo/config.toml, so we need to
+        # set the target flags instead which are cumulative.
+        # Track https://github.com/rust-lang/cargo/issues/5376
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust nightly with miri
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+        with:
+          toolchain: nightly
+          components: miri
+
+      - name: Setup miri
+        run: cargo miri setup
+
+      - name: Run miri tests
+        run: cargo miri test --workspace --exclude boa_cli --exclude boa_examples miri
+
+  build-fuzz:
+    name: Fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs:
+      - fmt
+      - typos
+      - clippy
+      - docs
+      - msrv
+    steps:
+      - name: Set environment
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-fuzz
+        uses: baptiste0928/cargo-install@f204293d9709061b7bc1756fec3ec4e2cd57dec0 # v3.4.0
+        with:
+          crate: cargo-fuzz
+
+      - name: Build fuzz
+        run: cd tests/fuzz && cargo fuzz build -s none --dev
+
+  build-run-examples:
+    name: Build & run examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs:
+      - fmt
+      - typos
+      - clippy
+      - docs
+      - msrv
+    steps:
+      - name: Set environment
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-workspaces
+        uses: baptiste0928/cargo-install@f204293d9709061b7bc1756fec3ec4e2cd57dec0 # v3.4.0
+        with:
+          crate: cargo-workspaces
+
+      - name: Build (All features)
+        run: cargo workspaces exec cargo build --all-features --all-targets --profile ci
+      - name: Build (No features)
+        run: cargo workspaces exec cargo build --no-default-features --all-targets --profile ci
+
+      - name: Run examples
+        run: |
+          cd examples
+          cargo run -p boa_examples --bin 2>&1 \
+            | grep -E '^ ' \
+            | xargs -n1 sh -c 'cargo run -p boa_examples --profile ci --bin $0 || exit 255'
+
+  run-semver-check:
+    name: Check SemVer compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs:
+      - fmt
+      - typos
+      - clippy
+      - docs
+      - msrv
+    steps:
+      - name: Set environment
+        run: |
+          target=$(rustc -vV | awk '/^host/ { print $2 }' | tr [:lower:] [:upper:] | tr '-' '_')
+          echo "CARGO_TARGET_${target}_RUSTFLAGS=$W_FLAGS" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Check Semver
+        uses: obi1kenobi/cargo-semver-checks-action@5b298c9520f7096a4683c0bd981a7ac5a7e249ae # v2
+        with:
+          exclude: boa_wintertc

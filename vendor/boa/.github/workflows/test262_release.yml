@@ -1,0 +1,69 @@
+name: Update Test262 Results
+
+on:
+  release:
+    types:
+      - published
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update_test262_results:
+    name: Update Test262 Results
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # Checkout the main repository
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          path: boa
+
+      # Install Rust toolchain
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+
+      # Cache cargo dependencies
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # Checkout the `data` repository
+      - name: Checkout the data repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: boa-dev/data
+          token: ${{ secrets.DATA_PAT }}
+          path: data
+
+      # Run the Test262 test suite
+      - name: Run the test262 test suite
+        run: |
+          cd boa
+          cargo run --release --bin boa_tester -- run -v -o ../data/test262
+
+      # Commit and push results back to the `data` repo
+      - name: Commit results
+        run: |
+          cd data
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add test262
+          git commit -m "Update Test262 results ( ${{ github.ref_name }} )"
+      - name: Push changes
+        uses: ad-m/github-push-action@4cc74773234f74829a8c21bc4d69dd4be9cfa599 # master
+        with:
+            # cannot use secrets.GITHUB_TOKEN since it only gives you
+            # write permissions to the current repository.
+            github_token: ${{ secrets.DATA_PAT }}
+            repository: boa-dev/data
+            directory: data

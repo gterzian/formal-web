@@ -1,0 +1,44 @@
+[package]
+name = "boa_wasm"
+description = "Wasm compatibility layer for the Boa JavaScript engine."
+keywords = ["javascript", "compiler", "lexer", "parser", "js"]
+categories = ["parser-implementations", "wasm", "compilers"]
+publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+boa_engine = { workspace = true, features = ["js"] }
+wasm-bindgen = { workspace = true, default-features = false }
+console_error_panic_hook.workspace = true
+
+[target.'cfg(all(any(target_arch = "wasm32", target_arch = "wasm64"), target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test.workspace = true
+
+[features]
+default = [
+    "boa_engine/annex-b",
+    "boa_engine/experimental",
+    "boa_engine/float16",
+    "boa_engine/intl_bundled",
+    "boa_engine/temporal",
+    "boa_engine/xsum",
+]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "boa_wasm"
+bench = false
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

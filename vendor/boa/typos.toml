@@ -1,0 +1,13 @@
+[files]
+extend-exclude = ["CHANGELOG.md", "benches/scripts/**/*.js"]
+
+[default.extend-words]
+ba = "ba"
+beng = "beng"
+fo = "fo"
+forin = "forin"
+mis = "mis"
+pn = "pn"
+tru = "tru"
+Caf = "Caf"
+writeable = "writeable"
