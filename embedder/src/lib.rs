@@ -9,7 +9,9 @@ use blitz_traits::events::{
     PointerDetails, UiEvent,
 };
 use blitz_traits::shell::ColorScheme;
-use ipc_messages::content::{Command as ContentCommand, PaintFrame, SceneSummary, ScrollOffset};
+use ipc_messages::content::{
+    Command as ContentCommand, FontTransportReceiver, PaintFrame, SceneSummary, ScrollOffset,
+};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use std::path::PathBuf;
@@ -118,6 +120,7 @@ struct FormalWebApp {
     window: Option<Arc<Window>>,
     renderer: VelloWindowRenderer,
     current_paint_frame: Option<EmbedderPaintFrame>,
+    font_receiver: FontTransportReceiver,
     pending_ui_events: PendingUiEvents,
     saw_redraw_requested: bool,
     has_top_level_traversable: bool,
@@ -492,6 +495,7 @@ impl Default for FormalWebApp {
             window: None,
             renderer: VelloWindowRenderer::new(),
             current_paint_frame: None,
+            font_receiver: FontTransportReceiver::default(),
             pending_ui_events: PendingUiEvents::default(),
             saw_redraw_requested: false,
             has_top_level_traversable: false,
@@ -551,14 +555,14 @@ impl FormalWebApp {
         window.request_redraw();
     }
 
-    fn paint_frame(snapshot: PaintFrame) -> Result<EmbedderPaintFrame, String> {
+    fn paint_frame(&mut self, snapshot: PaintFrame) -> Result<EmbedderPaintFrame, String> {
         let document_id = snapshot.document_id;
         let viewport_scroll = snapshot.viewport_scroll.clone();
-        let scene = snapshot.into_recorded_scene()?;
+        let scene = snapshot.into_recorded_scene(&mut self.font_receiver)?;
         let debug_summary = render_debug_enabled().then(|| scene.summary());
         Ok(EmbedderPaintFrame {
             document_id,
-            scene: scene.into(),
+            scene: scene.into_scene(&self.font_receiver),
             debug_summary,
             viewport_scroll,
         })
@@ -866,10 +870,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
             FormalWebUserEvent::Paint(snapshot) => {
-                let Some(window) = self.window.as_ref() else {
-                    return;
-                };
-                let Ok(paint_frame) = Self::paint_frame(snapshot) else {
+                let Ok(paint_frame) = self.paint_frame(snapshot) else {
                     return;
                 };
                 if let Some(summary) = paint_frame.debug_summary {
@@ -880,7 +881,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                     self.paint_current_frame();
                     self.saw_redraw_requested = false;
                 } else if self.has_visible_viewport() {
-                    window.request_redraw();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                 }
             }
             FormalWebUserEvent::EmbedderRequestRedraw => {

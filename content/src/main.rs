@@ -24,7 +24,8 @@ use ipc_messages::content::Command::{
 };
 use ipc_messages::content::{
     Bootstrap, CallbackData, ColorScheme as MessageColorScheme, Command, Event as ContentEvent,
-    FetchRequest as ContentFetchRequest, PaintFrame, RecordedScene, ScrollOffset, ViewportSnapshot,
+    FetchRequest as ContentFetchRequest, FontTransportSender, PaintFrame, RecordedScene,
+    ScrollOffset, ViewportSnapshot,
 };
 use std::{
     cell::RefCell,
@@ -32,11 +33,20 @@ use std::{
     env,
     rc::Rc,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
+
+fn new_font_namespace() -> u64 {
+    let pid = u64::from(std::process::id());
+    let start_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    pid.rotate_left(32) ^ start_nanos
+}
 
 struct PendingDocumentHandler {
     document_id: u64,
@@ -189,6 +199,8 @@ struct ContentRuntime {
     viewport: Option<ViewportSnapshot>,
     documents: HashMap<u64, ContentDocument>,
     animation_start: Instant,
+    font_namespace: u64,
+    font_sender: FontTransportSender,
 }
 
 impl ContentRuntime {
@@ -202,6 +214,8 @@ impl ContentRuntime {
             viewport: None,
             documents: HashMap::new(),
             animation_start: Instant::now(),
+            font_namespace: new_font_namespace(),
+            font_sender: FontTransportSender::default(),
         }
     }
 
@@ -424,8 +438,8 @@ impl ContentRuntime {
                     0,
                     0,
                 );
-                let scene = RecordedScene::from(scene);
-                log_paint_debug(document_id, &document_guard, &scene);
+                let scene = self.font_sender.prepare_scene(self.font_namespace, scene);
+                log_paint_debug(document_id, &document_guard, &scene.scene);
                 let viewport_scroll = document_guard.viewport_scroll();
                 PaintFrame::new(
                     document_id,
@@ -588,7 +602,7 @@ mod tests {
     use blitz_dom::{BaseDocument, DocumentConfig};
     use blitz_paint::paint_scene;
     use blitz_traits::shell::{ColorScheme, Viewport};
-    use ipc_messages::content::RecordedScene;
+    use ipc_messages::content::FontTransportSender;
     use std::{cell::RefCell, fs, rc::Rc, sync::Arc};
     use url::Url;
 
@@ -639,10 +653,11 @@ mod tests {
             0,
             0,
         );
-        let recorded_scene = RecordedScene::from(scene);
-        log_paint_debug(1, &document_guard, &recorded_scene);
+        let mut font_sender = FontTransportSender::default();
+        let prepared_scene = font_sender.prepare_scene(1, scene);
+        log_paint_debug(1, &document_guard, &prepared_scene.scene);
 
-        let summary = recorded_scene.summary();
+        let summary = prepared_scene.scene.summary();
         assert!(
             summary.glyph_runs > 0,
             "expected startup scene to include glyph runs, got {}",
@@ -654,9 +669,13 @@ mod tests {
             summary.describe()
         );
         assert!(
-            summary.font_bytes > 0,
-            "expected startup scene to carry font bytes, got {}",
+            summary.font_refs > 0,
+            "expected startup scene to reference fonts, got {}",
             summary.describe()
+        );
+        assert!(
+            !prepared_scene.registered_fonts.is_empty(),
+            "expected startup scene to register fonts for transport"
         );
     }
 }

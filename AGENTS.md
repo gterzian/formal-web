@@ -25,5 +25,6 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 
 - Coalesce high-frequency embedder input such as pointer moves and wheel bursts before forwarding them into Lean/content, and note a rendering opportunity once per flushed batch rather than once per raw event.
 - Move large paint-scene payloads across the content/embedder boundary via `IpcSharedMemory`, and keep the typed IPC message focused on control metadata and shared-memory handles.
+- Keep cross-frame paint resources such as fonts in a transport registry keyed by stable identifiers, send new blobs via shared memory when first used for a content-runtime namespace, and keep recorded scenes focused on lightweight references.
 
 Plans and TODOS belong in `scratchpad`. 
