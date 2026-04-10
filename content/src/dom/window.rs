@@ -4,12 +4,11 @@ use boa_gc::{Finalize, Trace};
 use super::{event::EventTarget, global_scope::GlobalScope};
 
 /// <https://html.spec.whatwg.org/#window>
-#[derive(Default, Trace, Finalize, JsData)]
+#[derive(Trace, Finalize, JsData)]
 pub struct Window {
     /// <https://dom.spec.whatwg.org/#interface-eventtarget>
     pub event_target: EventTarget,
 
     /// <https://html.spec.whatwg.org/#global-object>
-    #[unsafe_ignore_trace]
     pub global_scope: GlobalScope,
 }

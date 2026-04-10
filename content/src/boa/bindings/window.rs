@@ -5,8 +5,8 @@ use boa_engine::{
     native_function::NativeFunction,
 };
 
+use crate::boa::platform_objects::with_global_scope;
 use crate::dom::Window;
-use crate::html::{cancel_animation_frame, request_animation_frame};
 use crate::webidl::callback_function_value;
 
 use super::event_target::register_event_target_methods;
@@ -52,7 +52,9 @@ fn request_animation_frame_method(
 ) -> JsResult<JsValue> {
     require_window_receiver(this)?;
     let callback = callback_function_value(args.get_or_undefined(0))?;
-    Ok(JsValue::from(request_animation_frame(context, callback)?))
+    Ok(JsValue::from(with_global_scope(context, |global_scope| {
+        Ok(global_scope.request_animation_frame(callback))
+    })?))
 }
 
 fn cancel_animation_frame_method(
@@ -62,7 +64,10 @@ fn cancel_animation_frame_method(
 ) -> JsResult<JsValue> {
     require_window_receiver(this)?;
     let handle = args.get_or_undefined(0).to_u32(context)?;
-    cancel_animation_frame(context, handle)?;
+    with_global_scope(context, |global_scope| {
+        global_scope.cancel_animation_frame(handle);
+        Ok(())
+    })?;
     Ok(JsValue::undefined())
 }
 

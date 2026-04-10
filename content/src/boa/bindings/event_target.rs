@@ -1,13 +1,21 @@
+use std::{cell::RefCell, rc::Rc};
+
+use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::JsObject,
+    object::{JsObject, builtins::JsFunction},
 };
 
-use crate::dom::{EventTarget, dispatch, with_event_target_mut};
-use crate::webidl::callback_interface_value;
+use crate::boa::platform_objects::{
+    document_object, object_for_existing_node, resolve_element_object,
+};
+use crate::dom::{
+    Event, EventDispatchHost, EventTarget, dispatch, with_event_target_mut,
+};
+use crate::webidl::{EcmascriptHost, callback_interface_value};
 
 #[derive(Clone, Copy)]
 pub(crate) struct AddEventListenerOptions {
@@ -117,10 +125,78 @@ fn dispatch_event_with_context(
     event: &JsObject,
     context: &mut Context,
 ) -> JsResult<bool> {
-    use crate::boa::execution_context::ContextEventDispatchHost;
-
     let mut host = ContextEventDispatchHost::new(context);
     dispatch(&mut host, target, event, false)
+}
+
+struct ContextEventDispatchHost<'a> {
+    context: &'a mut Context,
+}
+
+impl<'a> ContextEventDispatchHost<'a> {
+    fn new(context: &'a mut Context) -> Self {
+        Self { context }
+    }
+}
+
+impl EcmascriptHost for ContextEventDispatchHost<'_> {
+    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
+        object.get(JsString::from(property), self.context)
+    }
+
+    fn is_callable(&self, object: &JsObject) -> bool {
+        object.is_callable()
+    }
+
+    fn call(
+        &mut self,
+        callable: &JsObject,
+        this_arg: &JsValue,
+        args: &[JsValue],
+    ) -> JsResult<JsValue> {
+        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("callback is not callable"))
+        })?;
+        function.call(this_arg, args, self.context)
+    }
+
+    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
+        self.context.run_jobs()
+    }
+
+    fn report_exception(&mut self, error: JsError, _callback: &JsObject) {
+        eprintln!("uncaught event listener error: {error}");
+    }
+}
+
+impl EventDispatchHost for ContextEventDispatchHost<'_> {
+    fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
+        Event::from_data(event, self.context)
+    }
+
+    fn document_object(&mut self) -> JsResult<JsObject> {
+        document_object(self.context)
+    }
+
+    fn global_object(&mut self) -> JsObject {
+        self.context.global_object()
+    }
+
+    fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
+        resolve_element_object(node_id, self.context)
+    }
+
+    fn resolve_existing_node_object(
+        &mut self,
+        document: Rc<RefCell<BaseDocument>>,
+        node_id: usize,
+    ) -> JsResult<JsObject> {
+        object_for_existing_node(document, node_id, self.context)
+    }
+
+    fn current_time_millis(&self) -> f64 {
+        0.0
+    }
 }
 
 pub(crate) fn flatten(options: &JsValue, context: &mut Context) -> JsResult<bool> {

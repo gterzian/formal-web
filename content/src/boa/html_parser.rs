@@ -12,7 +12,7 @@ use html5ever::{
     tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeBuilderOpts, TreeSink},
 };
 
-use super::execution_context::JsExecutionContext;
+use crate::html::EnvironmentSettingsObject;
 
 fn html5ever_to_blitz_attr(attr: html5ever::Attribute) -> Attribute {
     Attribute {
@@ -237,17 +237,18 @@ impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
     }
 }
 
-pub fn parse_html_into_document(
-    document: &mut BaseDocument,
-    html: &str,
-    execution_context: &mut JsExecutionContext,
-) {
+pub enum PendingParserScript {
+    External { src: String },
+    Inline { source: String },
+}
+
+pub fn parse_html_into_document(document: &mut BaseDocument, html: &str) -> Vec<PendingParserScript> {
     {
         let mut mutator = document.mutate();
         JsTreeSink::parse_into_mutator(&mut mutator, html);
     }
 
-    let mut inline_scripts = Vec::new();
+    let mut scripts = Vec::new();
     document.visit(|node_id, node: &Node| {
         if !node
             .data
@@ -255,35 +256,53 @@ pub fn parse_html_into_document(
         {
             return;
         }
-        inline_scripts.push(node_id);
+        scripts.push(node_id);
     });
 
-    for node_id in inline_scripts {
+    scripts
+        .into_iter()
+        .filter_map(|node_id| parser_script_for_node(document, node_id))
+        .collect()
+}
+
+pub fn execute_parser_scripts(
+    settings: &mut EnvironmentSettingsObject,
+    scripts: Vec<PendingParserScript>,
+) -> Result<(), String> {
+    for script in scripts {
+        match script {
+            PendingParserScript::External { src } => {
+                eprintln!("external script fetch is not implemented yet: {src}");
+            }
+            PendingParserScript::Inline { source } => {
+                settings.evaluate_script(&source)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn parser_script_for_node(document: &BaseDocument, node_id: usize) -> Option<PendingParserScript> {
         let Some(node) = document.get_node(node_id) else {
-            continue;
+            return None;
         };
         let Some(element) = node.element_data() else {
-            continue;
+            return None;
         };
         if element.attr(blitz_dom::local_name!("type")) == Some("module")
             || element.attr(blitz_dom::local_name!("async")).is_some()
             || element.attr(blitz_dom::local_name!("defer")).is_some()
         {
-            continue;
+            return None;
         }
         if let Some(src) = element.attr(blitz_dom::local_name!("src")) {
-            let src = src.to_owned();
-            execution_context.enqueue_task(move |_| {
-                eprintln!("external script fetch is not implemented yet: {src}");
-                Ok(())
-            });
-            continue;
+            return Some(PendingParserScript::External { src: src.to_owned() });
         }
         let source = node.text_content();
         if source.trim().is_empty() {
-            continue;
+            return None;
         }
-        execution_context
-            .enqueue_task(move |execution_context| execution_context.evaluate_script(&source));
-    }
+
+        Some(PendingParserScript::Inline { source })
 }

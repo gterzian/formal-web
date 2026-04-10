@@ -77,7 +77,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - `content/src/main.rs` and sibling root modules such as `content/src/html.rs` own the HTML Standard entry points that resume embedder-driven algorithms, create documents, and trigger HTML-defined load/rendering steps.
 
-- `content/src/boa` owns Boa context setup, HTML parsing, task draining, microtask checkpoints, and the bridge from Blitz UI events into JavaScript event dispatch.
+- `content/src/boa` owns HTML parsing, parser-script collection, microtask checkpoints, and the bridge from Blitz UI events into JavaScript event dispatch.
 
 - `content/src/dom` stores the native data carried by JavaScript-visible `Window`, `Node`, `Document`, `Element`, `EventTarget`, `Event`, and `UIEvent` objects. `BaseDocument` remains the authoritative DOM state; the JavaScript wrappers do not store shadow DOM data.
 
@@ -93,6 +93,8 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - When a content runtime type models an HTML execution concept, document it against the corresponding HTML concept anchor such as `#environment`, `#environment-settings-object`, or `#global-object` instead of folding that state into the nearest exposed interface name.
 
+- Keep the Boa host state on `EnvironmentSettingsObject`, and keep per-global caches such as the `Document` wrapper identity, node wrapper identity, and animation frame callback state on `GlobalScope`.
+
 - Keep binding-related tooling in `content` only when it is part of the maintained workflow. Remove inactive generators, generated outputs, and orphaned Web IDL inputs instead of leaving them in the tree.
 
-- Initial document parsing queues classic inline scripts after the tree build and drains them before the `load` event fires. `innerHTML` parsing uses the same sink with scripting disabled so fragment parsing does not execute scripts.
+- Initial document parsing collects classic scripts after the tree build and executes them in document order before the `load` event fires. `innerHTML` parsing uses the same sink with scripting disabled so fragment parsing does not execute scripts.

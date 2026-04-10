@@ -25,6 +25,8 @@ pub(crate) trait EventDispatchHost: EcmascriptHost {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> JsResult<JsObject>;
+
+    fn current_time_millis(&self) -> f64;
 }
 
 #[derive(Clone)]
@@ -56,7 +58,7 @@ pub(crate) fn fire_event(
         false,
         false,
         true,
-        0.0,
+        host.current_time_millis(),
     ))?;
 
     // Step 3: "Initialize event's type attribute to e."

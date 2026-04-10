@@ -4,7 +4,7 @@ use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandl
 use blitz_traits::events::{DomEvent, EventState, UiEvent};
 use boa_engine::class::Class;
 
-use crate::boa::JsExecutionContext;
+use crate::html::EnvironmentSettingsObject;
 
 use super::{UIEvent as JsUiEvent, dispatch_with_chain};
 
@@ -12,23 +12,23 @@ use super::{UIEvent as JsUiEvent, dispatch_with_chain};
 /// Note: This bridges Blitz input events into the DOM dispatch algorithm by first letting Blitz compute the native event path and then dispatching the corresponding JavaScript `UIEvent`.
 pub(crate) fn dispatch_ui_event(
     document: Rc<RefCell<BaseDocument>>,
-    execution_context: &mut JsExecutionContext,
+    settings: &mut EnvironmentSettingsObject,
     event: UiEvent,
 ) -> Result<(), String> {
     let mut document = document;
-    let handler = BlitzJSEventHandler::new(execution_context);
+    let handler = BlitzJSEventHandler::new(settings);
     let mut driver = EventDriver::new(&mut document, handler);
     driver.handle_ui_event(event);
     Ok(())
 }
 
 struct BlitzJSEventHandler<'a> {
-    execution_context: &'a mut JsExecutionContext,
+    settings: &'a mut EnvironmentSettingsObject,
 }
 
 impl<'a> BlitzJSEventHandler<'a> {
-    fn new(execution_context: &'a mut JsExecutionContext) -> Self {
-        Self { execution_context }
+    fn new(settings: &'a mut EnvironmentSettingsObject) -> Self {
+        Self { settings }
     }
 }
 
@@ -40,17 +40,12 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         _doc: &mut dyn BlitzDocument,
         event_state: &mut EventState,
     ) {
-        let time_stamp = self
-            .execution_context
-            .navigation_start
-            .elapsed()
-            .as_secs_f64()
-            * 1000.0;
-        let view = Some(self.execution_context.context.global_object());
+        let time_stamp = self.settings.current_time_millis();
+        let view = Some(self.settings.context.global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
-        let event_object = JsUiEvent::from_data(ui_event, &mut self.execution_context.context)
+        let event_object = JsUiEvent::from_data(ui_event, &mut self.settings.context)
             .expect("UIEvent construction must succeed");
-        if let Err(error) = dispatch_with_chain(self.execution_context, chain, &event_object) {
+        if let Err(error) = dispatch_with_chain(self.settings, chain, &event_object) {
             eprintln!("failed to dispatch UI event through JavaScript listeners: {error}");
             return;
         }
