@@ -24,6 +24,7 @@ use crate::dom::{
     Document, Element, Event, EventDispatchHost, EventTarget, GlobalScope, GlobalScopeKind, Node,
     UIEvent, Window,
 };
+use crate::html::{HTMLAnchorElement, HTMLElement};
 use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
 
 /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
@@ -108,16 +109,27 @@ impl EnvironmentSettingsObject {
             .register_global_class::<Element>()
             .map_err(|error| error.to_string())?;
         context
+            .register_global_class::<HTMLElement>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<HTMLAnchorElement>()
+            .map_err(|error| error.to_string())?;
+        context
             .register_global_class::<Window>()
             .map_err(|error| error.to_string())?;
+
+        wire_interface_prototypes(&mut context);
 
         let global = context.global_object();
         if let Some(window_class) = context.get_global_class::<Window>() {
             global.set_prototype(Some(window_class.prototype()));
         }
 
-        let document_object =
-            Document::from_data(Document::new(document), &mut context).map_err(|error| error.to_string())?;
+        let document_object = Document::from_data(
+            Document::new(document, creation_url.clone()),
+            &mut context,
+        )
+        .map_err(|error| error.to_string())?;
         store_document_object(&context, document_object.clone()).map_err(|error| error.to_string())?;
         install_document_property(&mut context).map_err(|error| error.to_string())?;
         install_console_namespace(&mut context).map_err(|error| error.to_string())?;
@@ -174,6 +186,28 @@ impl EnvironmentSettingsObject {
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
         self.context.run_jobs().map_err(|error| error.to_string())
     }
+}
+
+fn wire_interface_prototypes(context: &mut Context) {
+    set_registered_interface_prototype::<UIEvent, Event>(context);
+    set_registered_interface_prototype::<Window, EventTarget>(context);
+    set_registered_interface_prototype::<Node, EventTarget>(context);
+    set_registered_interface_prototype::<Document, Node>(context);
+    set_registered_interface_prototype::<Element, Node>(context);
+    set_registered_interface_prototype::<HTMLElement, Element>(context);
+    set_registered_interface_prototype::<HTMLAnchorElement, HTMLElement>(context);
+}
+
+fn set_registered_interface_prototype<Child: Class, Parent: Class>(context: &mut Context) {
+    let Some(child) = context.get_global_class::<Child>() else {
+        return;
+    };
+    let Some(parent) = context.get_global_class::<Parent>() else {
+        return;
+    };
+
+    child.prototype().set_prototype(Some(parent.prototype()));
+    child.constructor().set_prototype(Some(parent.constructor()));
 }
 
 impl EcmascriptHost for EnvironmentSettingsObject {

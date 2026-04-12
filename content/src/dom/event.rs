@@ -2,6 +2,8 @@ use blitz_traits::events::{DomEvent, EventState};
 use boa_engine::{JsData, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
 
+use crate::html::{HTMLAnchorElement, HTMLElement};
+
 use super::{Document, Element, Node, Window};
 
 pub const NONE: u16 = 0;
@@ -342,6 +344,12 @@ pub(crate) fn with_event_target_mut<R>(
     if let Some(mut element) = object.downcast_mut::<Element>() {
         return Ok(f(&mut element.node.event_target));
     }
+    if let Some(mut html_element) = object.downcast_mut::<HTMLElement>() {
+        return Ok(f(&mut html_element.element.node.event_target));
+    }
+    if let Some(mut html_anchor_element) = object.downcast_mut::<HTMLAnchorElement>() {
+        return Ok(f(&mut html_anchor_element.html_element.element.node.event_target));
+    }
     if let Some(mut node) = object.downcast_mut::<Node>() {
         return Ok(f(&mut node.event_target));
     }
@@ -365,6 +373,12 @@ pub(crate) fn with_event_target_ref<R>(
     }
     if let Some(element) = object.downcast_ref::<Element>() {
         return Ok(f(&element.node.event_target));
+    }
+    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
+        return Ok(f(&html_element.element.node.event_target));
+    }
+    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
+        return Ok(f(&html_anchor_element.html_element.element.node.event_target));
     }
     if let Some(node) = object.downcast_ref::<Node>() {
         return Ok(f(&node.event_target));

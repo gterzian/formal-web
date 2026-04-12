@@ -10,6 +10,7 @@ deriving Repr, DecidableEq
 /-- https://html.spec.whatwg.org/multipage/#user-navigation-involvement -/
 inductive UserNavigationInvolvement
   | none
+  | activation
   | browserUI
 deriving Repr, DecidableEq
 
@@ -119,6 +120,20 @@ structure PendingNavigationFetch where
   allowPOST : Bool := false
   /-- https://fetch.spec.whatwg.org/#concept-request -/
   request : NavigationRequest
+deriving Repr, DecidableEq
+
+/-- Model-local continuation for a navigation paused at https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled. -/
+structure PendingBeforeUnloadNavigation where
+  /-- Model-local identifier for the queued beforeunload check. -/
+  checkId : Nat
+  /-- Model-local reference to the document whose relevant global object receives `beforeunload`. -/
+  documentId : Nat
+  /-- Model-local reference to the target traversable that will navigate if the check continues. -/
+  traversableId : Nat
+  /-- Destination URL for the deferred navigation. -/
+  destinationURL : String
+  /-- https://html.spec.whatwg.org/multipage/#navigation-params-user-involvement -/
+  userInvolvement : UserNavigationInvolvement := .none
 deriving Repr, DecidableEq
 
 end FormalWeb

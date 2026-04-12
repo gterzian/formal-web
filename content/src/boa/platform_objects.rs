@@ -1,9 +1,11 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
+use html5ever::{local_name, ns};
 use boa_engine::{Context, JsError, JsNativeError, JsResult, class::Class, object::JsObject};
 
 use crate::dom::{Element, GlobalScope, Node, Window};
+use crate::html::{HTMLAnchorElement, HTMLElement};
 
 pub(crate) fn with_global_scope<R>(
     context: &Context,
@@ -52,7 +54,30 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
     }
 
     let document = with_global_scope(context, |global_scope| Ok(global_scope.document()))?;
-    let object = Element::from_data(Element::new(document, node_id), context)?;
+    let object = {
+        let kind = document
+            .borrow()
+            .get_node(node_id)
+            .and_then(|node| node.element_data())
+            .map(|element| {
+                if element.name.ns == ns!(html) {
+                    if element.name.local == local_name!("a") {
+                        2_u8
+                    } else {
+                        1_u8
+                    }
+                } else {
+                    0_u8
+                }
+            })
+            .unwrap_or(0);
+
+        match kind {
+            2 => HTMLAnchorElement::from_data(HTMLAnchorElement::new(document, node_id), context)?,
+            1 => HTMLElement::from_data(HTMLElement::new(document, node_id), context)?,
+            _ => Element::from_data(Element::new(document, node_id), context)?,
+        }
+    };
     cache_node_object(context, node_id, object.clone())?;
     Ok(object)
 }

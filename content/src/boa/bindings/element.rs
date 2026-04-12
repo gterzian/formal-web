@@ -7,6 +7,7 @@ use boa_engine::{
 };
 
 use crate::dom::Element;
+use crate::html::{HTMLAnchorElement, HTMLElement};
 
 use super::{event_target::register_event_target_methods, node::register_node_methods};
 
@@ -64,34 +65,38 @@ pub(crate) fn register_element_methods(class: &mut ClassBuilder<'_>) -> JsResult
     Ok(())
 }
 
-fn get_id(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R) -> JsResult<R> {
     let object = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("element receiver is not an object"))?;
-    let element = object
-        .downcast_ref::<Element>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an Element"))?;
-    Ok(JsValue::from(JsString::from(element.id())))
+    if let Some(element) = object.downcast_ref::<Element>() {
+        return Ok(f(&element));
+    }
+    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
+        return Ok(f(&html_element.element));
+    }
+    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
+        return Ok(f(&html_anchor_element.html_element.element));
+    }
+    Err(JsNativeError::typ()
+        .with_message("receiver is not an Element")
+        .into())
+}
+
+fn get_id(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    with_element_ref(this, |element| JsValue::from(JsString::from(element.id())))
 }
 
 fn get_tag_name(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("element receiver is not an object"))?;
-    let element = object
-        .downcast_ref::<Element>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an Element"))?;
-    Ok(JsValue::from(JsString::from(element.tag_name().as_str())))
+    with_element_ref(this, |element| {
+        JsValue::from(JsString::from(element.tag_name().as_str()))
+    })
 }
 
 fn get_inner_html(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("element receiver is not an object"))?;
-    let element = object
-        .downcast_ref::<Element>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an Element"))?;
-    Ok(JsValue::from(JsString::from(element.inner_html().as_str())))
+    with_element_ref(this, |element| {
+        JsValue::from(JsString::from(element.inner_html().as_str()))
+    })
 }
 
 fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -99,13 +104,9 @@ fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("element receiver is not an object"))?;
-    let element = object
-        .downcast_ref::<Element>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an Element"))?;
-    element.set_inner_html(&html);
+    with_element_ref(this, |element| {
+        element.set_inner_html(&html);
+    })?;
     Ok(JsValue::undefined())
 }
 
@@ -114,13 +115,7 @@ fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("element receiver is not an object"))?;
-    let element = object
-        .downcast_ref::<Element>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an Element"))?;
-    Ok(match element.get_attribute(&name) {
+    Ok(match with_element_ref(this, |element| element.get_attribute(&name))? {
         Some(value) => JsValue::from(JsString::from(value.as_str())),
         None => JsValue::null(),
     })
@@ -135,12 +130,8 @@ fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         .get_or_undefined(1)
         .to_string(context)?
         .to_std_string_escaped();
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("element receiver is not an object"))?;
-    let element = object
-        .downcast_ref::<Element>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an Element"))?;
-    element.set_attribute(&name, &value);
+    with_element_ref(this, |element| {
+        element.set_attribute(&name, &value);
+    })?;
     Ok(JsValue::undefined())
 }

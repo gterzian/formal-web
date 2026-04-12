@@ -9,6 +9,7 @@ use boa_engine::{
 };
 
 use crate::dom::{Document, Element, Node};
+use crate::html::{HTMLAnchorElement, HTMLElement};
 
 use super::event_target::register_event_target_methods;
 
@@ -61,6 +62,12 @@ pub(crate) fn with_node_ref<R>(this: &JsValue, f: impl FnOnce(&Node) -> R) -> Js
     if let Some(element) = object.downcast_ref::<Element>() {
         return Ok(f(&element.node));
     }
+    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
+        return Ok(f(&html_element.element.node));
+    }
+    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
+        return Ok(f(&html_anchor_element.html_element.element.node));
+    }
     Err(JsNativeError::typ()
         .with_message("receiver is not a Node")
         .into())
@@ -106,6 +113,18 @@ fn appendable_node(value: &JsValue) -> JsResult<Node> {
         return Ok(Node::new(
             Rc::clone(&element.node.document),
             element.node.node_id,
+        ));
+    }
+    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
+        return Ok(Node::new(
+            Rc::clone(&html_element.element.node.document),
+            html_element.element.node.node_id,
+        ));
+    }
+    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
+        return Ok(Node::new(
+            Rc::clone(&html_anchor_element.html_element.element.node.document),
+            html_anchor_element.html_element.element.node.node_id,
         ));
     }
     Err(JsNativeError::typ()

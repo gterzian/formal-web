@@ -15,6 +15,18 @@ inductive UserAgentAction
       (traversableId : Nat)
       (dispatch? : Option (Nat × EventLoopTaskMessage))
       (errorMessage : String)
+  | navigateRequest
+    (sourceDocumentId : Nat)
+    (destinationURL : String)
+    (targetName : String)
+    (userInvolvement : UserNavigationInvolvement)
+    (noopener : Bool)
+    (effects : List UserAgentEffect)
+  | beforeUnloadCompleted
+    (documentId : Nat)
+    (checkId : Nat)
+    (canceled : Bool)
+    (effects : List UserAgentEffect)
   | requestDocumentFetch
       (handler : RustNetHandlerPointer)
       (request : DocumentFetchRequest)
@@ -63,17 +75,41 @@ def userAgentLTS : TransitionSystem.LTS UserAgent UserAgentAction where
         ∃ createdUserAgent traversable,
           createNewTopLevelTraversable userAgent none "" = (createdUserAgent, traversable) ∧
           dispatch? = activeDocumentDispatch? createdUserAgent ∧
-          navigateWithPendingFetchRequest createdUserAgent traversable destinationURL =
+          navigate createdUserAgent traversable destinationURL =
             (userAgent', some pendingFetchRequest) ∧
           traversable.id = traversableId
     | .bootstrapTraversableError destinationURL traversableId dispatch? errorMessage =>
         ∃ createdUserAgent traversable,
           createNewTopLevelTraversable userAgent none "" = (createdUserAgent, traversable) ∧
           dispatch? = activeDocumentDispatch? createdUserAgent ∧
-          navigateWithPendingFetchRequest createdUserAgent traversable destinationURL =
+          navigate createdUserAgent traversable destinationURL =
             (userAgent', none) ∧
           traversable.id = traversableId ∧
           errorMessage = startupNavigationFailureDetails destinationURL userAgent' traversableId
+    | .navigateRequest sourceDocumentId destinationURL targetName userInvolvement noopener effects =>
+        userAgent' =
+            (runMonadic userAgent
+              (.navigateRequested
+                sourceDocumentId
+                destinationURL
+                targetName
+                userInvolvement
+                noopener)).2 ∧
+        effects =
+            (runMonadic userAgent
+              (.navigateRequested
+                sourceDocumentId
+                destinationURL
+                targetName
+                userInvolvement
+                noopener)).1.toList
+    | .beforeUnloadCompleted documentId checkId canceled effects =>
+        userAgent' =
+            (runMonadic userAgent
+              (.beforeUnloadCompleted documentId checkId canceled)).2 ∧
+        effects =
+            (runMonadic userAgent
+              (.beforeUnloadCompleted documentId checkId canceled)).1.toList
     | .requestDocumentFetch handler request =>
         ∃ pendingDocumentFetch,
           requestDocumentFetch userAgent handler request.request =
@@ -155,6 +191,10 @@ def interpretUserAgentAction : UserAgentAction → List UserAgentEffect
         .beginNavigation traversableId destinationURL none none,
         .logError errorMessage
       ]
+  | .navigateRequest _ _ _ _ _ effects =>
+      effects
+    | .beforeUnloadCompleted _ _ _ effects =>
+      effects
   | .requestDocumentFetch handler request =>
       [.requestDocumentFetch handler request]
   | .dispatchEvent traversableId event eventLoopId message =>
@@ -284,7 +324,7 @@ private theorem navigateM_run
     (destinationURL : String)
     (documentResource : Option DocumentResource := none) :
     (navigateM traversable destinationURL documentResource).run userAgent =
-      let result := navigateWithPendingFetchRequest userAgent traversable destinationURL documentResource
+      let result := navigate userAgent traversable destinationURL documentResource
       let nextUserAgent := result.1
       let pendingFetchRequest? := result.2
       ((pendingFetchRequest?,
@@ -305,7 +345,7 @@ theorem bootstrapFreshTopLevelTraversableM_run
       let createdUserAgent := created.1
       let traversable := created.2
       let dispatch? := activeDocumentDispatch? createdUserAgent
-      let navigated := navigateWithPendingFetchRequest createdUserAgent traversable destinationURL
+      let navigated := navigate createdUserAgent traversable destinationURL
       let nextUserAgent := navigated.1
       let pendingFetchRequest? := navigated.2
       match pendingFetchRequest? with
@@ -326,7 +366,7 @@ theorem bootstrapFreshTopLevelTraversableM_run
       dsimp
       rw [run_bind, navigateM_run]
       dsimp
-      cases navigateWithPendingFetchRequest
+      cases navigate
         (createNewTopLevelTraversable userAgent none "").1
         (createNewTopLevelTraversable userAgent none "").2
         destinationURL with
@@ -348,7 +388,7 @@ theorem runMonadic_freshTopLevelTraversable
       let createdUserAgent := created.1
       let traversable := created.2
       let dispatch? := activeDocumentDispatch? createdUserAgent
-      let navigated := navigateWithPendingFetchRequest createdUserAgent traversable destinationURL
+      let navigated := navigate createdUserAgent traversable destinationURL
       let nextUserAgent := navigated.1
       let pendingFetchRequest? := navigated.2
       match pendingFetchRequest? with
@@ -367,7 +407,7 @@ theorem runMonadic_freshTopLevelTraversable
   unfold runMonadic handleUserAgentTaskMessage
   rw [run_bind, bootstrapFreshTopLevelTraversableM_run]
   dsimp
-  cases navigateWithPendingFetchRequest
+  cases navigate
       (createNewTopLevelTraversable userAgent none "").1
       (createNewTopLevelTraversable userAgent none "").2
       destinationURL with
@@ -738,7 +778,7 @@ theorem handleFreshTopLevelTraversable_refinement
   let createdUserAgent := created.1
   let traversable := created.2
   let dispatch? := activeDocumentDispatch? createdUserAgent
-  let navigated := navigateWithPendingFetchRequest createdUserAgent traversable destinationURL
+  let navigated := navigate createdUserAgent traversable destinationURL
   let nextUserAgent := navigated.1
   let pendingFetchRequest? := navigated.2
   cases hpending : pendingFetchRequest? with
@@ -751,7 +791,7 @@ theorem handleFreshTopLevelTraversable_refinement
               (.bootstrapTraversable destinationURL traversable.id dispatch? pendingFetchRequest)
               nextUserAgent := by
           have hnavigated :
-              navigateWithPendingFetchRequest createdUserAgent traversable destinationURL =
+                  navigate createdUserAgent traversable destinationURL =
                 (nextUserAgent, pendingFetchRequest?) := by
             rfl
           refine ⟨createdUserAgent, traversable, rfl, rfl, ?_, rfl⟩
@@ -777,7 +817,7 @@ theorem handleFreshTopLevelTraversable_refinement
               (.bootstrapTraversableError destinationURL traversable.id dispatch? errorMessage)
               nextUserAgent := by
           have hnavigated :
-              navigateWithPendingFetchRequest createdUserAgent traversable destinationURL =
+                  navigate createdUserAgent traversable destinationURL =
                 (nextUserAgent, pendingFetchRequest?) := by
             rfl
           refine ⟨createdUserAgent, traversable, rfl, rfl, ?_, rfl, rfl⟩
@@ -826,6 +866,56 @@ theorem handleDocumentFetchRequested_refinement
       result, nextUserAgent, documentFetchRequest] using
       (congrArg (fun output => output.1.toList)
         (runMonadic_documentFetchRequested userAgent handler request)).symm
+
+theorem handleNavigateRequested_refinement
+    (userAgent : UserAgent)
+    (sourceDocumentId : Nat)
+    (destinationURL : String)
+    (targetName : String)
+    (userInvolvement : UserNavigationInvolvement)
+    (noopener : Bool) :
+    ∃ actions,
+      UserAgentTraceRefines
+        userAgent
+        (.navigateRequested sourceDocumentId destinationURL targetName userInvolvement noopener)
+        actions ∧
+      UserAgentEffectsRefine
+        userAgent
+        (.navigateRequested sourceDocumentId destinationURL targetName userInvolvement noopener)
+        actions := by
+  let effects :=
+    (runMonadic
+      userAgent
+      (.navigateRequested sourceDocumentId destinationURL targetName userInvolvement noopener)).1.toList
+  refine ⟨[.navigateRequest sourceDocumentId destinationURL targetName userInvolvement noopener effects], ?_, ?_⟩
+  · unfold UserAgentTraceRefines
+    apply TransitionSystem.TransitionTrace.single
+    constructor <;> rfl
+  · unfold UserAgentEffectsRefine
+    simp [interpretUserAgentActions, interpretUserAgentAction, effects]
+
+theorem handleBeforeUnloadCompleted_refinement
+    (userAgent : UserAgent)
+    (documentId : Nat)
+    (checkId : Nat)
+    (canceled : Bool) :
+    ∃ actions,
+      UserAgentTraceRefines
+        userAgent
+        (.beforeUnloadCompleted documentId checkId canceled)
+        actions ∧
+      UserAgentEffectsRefine
+        userAgent
+        (.beforeUnloadCompleted documentId checkId canceled)
+        actions := by
+  let effects :=
+    (runMonadic userAgent (.beforeUnloadCompleted documentId checkId canceled)).1.toList
+  refine ⟨[.beforeUnloadCompleted documentId checkId canceled effects], ?_, ?_⟩
+  · unfold UserAgentTraceRefines
+    apply TransitionSystem.TransitionTrace.single
+    constructor <;> rfl
+  · unfold UserAgentEffectsRefine
+    simp [interpretUserAgentActions, interpretUserAgentAction, effects]
 
 theorem handleDispatchEvent_refinement
     (userAgent : UserAgent)
@@ -1163,6 +1253,16 @@ theorem handleUserAgentTaskMessage_full_refinement
   cases message with
   | freshTopLevelTraversable destinationURL =>
       exact handleFreshTopLevelTraversable_refinement userAgent destinationURL
+  | navigateRequested sourceDocumentId destinationURL targetName userInvolvement noopener =>
+      exact handleNavigateRequested_refinement
+        userAgent
+        sourceDocumentId
+        destinationURL
+        targetName
+        userInvolvement
+        noopener
+  | beforeUnloadCompleted documentId checkId canceled =>
+      exact handleBeforeUnloadCompleted_refinement userAgent documentId checkId canceled
   | documentFetchRequested handler request =>
       exact handleDocumentFetchRequested_refinement userAgent handler request
   | dispatchEvent event =>

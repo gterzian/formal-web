@@ -313,6 +313,17 @@
         opacity: 0.85;
       }
 
+      .article-link {
+        color: #1c5a45;
+        font-weight: 700;
+        text-decoration-thickness: 0.08em;
+        text-underline-offset: 0.16em;
+      }
+
+      .article-link:hover {
+        color: #e63b2e;
+      }
+
       @media (max-width: 860px) {
         main {
           min-height: auto;
@@ -377,6 +388,11 @@
             The startup navigation now completes by going through the fetch worker,
             which fetches this checked-in artifact and then resumes
             <code>processNavigationFetchResponse</code>.
+          </p>
+          <p>
+            Navigate away through
+            <a class="article-link" href="navigated.html">A new document</a>
+            to exercise hyperlink following and the deferred beforeunload check.
           </p>
         </div>
         <div class="status-grid">
@@ -466,6 +482,10 @@
 
       window.addEventListener("load", () => {
         window.requestAnimationFrame(updateFps);
+      });
+
+      window.addEventListener("beforeunload", () => {
+        console.log("beforeunload");
       });
     </script>
   </body>

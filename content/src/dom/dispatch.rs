@@ -3,6 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::{JsResult, JsValue, object::JsObject};
 
+use crate::html::{HTMLAnchorElement, HTMLElement};
 use crate::webidl::{EcmascriptHost, call_user_objects_operation};
 
 use super::event::{EventListener, NONE};
@@ -67,6 +68,24 @@ pub(crate) fn fire_event(
 
     // Step 5: "Return the result of dispatching event at target, with legacy target override flag set if set."
     dispatch(host, target, &event, legacy_target_override)
+}
+
+/// <https://html.spec.whatwg.org/multipage/#steps-to-fire-beforeunload>
+pub(crate) fn dispatch_window_event(
+    host: &mut impl EventDispatchHost,
+    event_type: &str,
+    cancelable: bool,
+) -> JsResult<bool> {
+    let event = host.create_event_object(Event::new(
+        event_type.to_owned(),
+        false,
+        cancelable,
+        false,
+        true,
+        host.current_time_millis(),
+    ))?;
+    let target = host.global_object();
+    dispatch(host, &target, &event, false)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
@@ -155,6 +174,24 @@ fn path_for_target(
             host,
             Rc::clone(&element.node.document),
             element.node.node_id,
+            target.clone(),
+        );
+    }
+
+    if let Some(html_element) = target.downcast_ref::<HTMLElement>() {
+        return path_for_node(
+            host,
+            Rc::clone(&html_element.element.node.document),
+            html_element.element.node.node_id,
+            target.clone(),
+        );
+    }
+
+    if let Some(html_anchor_element) = target.downcast_ref::<HTMLAnchorElement>() {
+        return path_for_node(
+            host,
+            Rc::clone(&html_anchor_element.html_element.element.node.document),
+            html_anchor_element.html_element.element.node.node_id,
             target.clone(),
         );
     }

@@ -4,6 +4,7 @@ use blitz_dom::BaseDocument;
 use boa_engine::JsData;
 use boa_gc::{Finalize, Trace};
 use html5ever::{LocalName, QualName, ns};
+use url::Url;
 
 use super::Node;
 
@@ -12,12 +13,17 @@ use super::Node;
 pub struct Document {
     /// <https://dom.spec.whatwg.org/#interface-node>
     pub node: Node,
+
+    /// Model-local mirror of <https://html.spec.whatwg.org/#concept-environment-creation-url>.
+    #[unsafe_ignore_trace]
+    pub creation_url: Url,
 }
 
 impl Document {
-    pub fn new(document: Rc<RefCell<BaseDocument>>) -> Self {
+    pub fn new(document: Rc<RefCell<BaseDocument>>, creation_url: Url) -> Self {
         Self {
             node: Node::new(document, 0),
+            creation_url,
         }
     }
 

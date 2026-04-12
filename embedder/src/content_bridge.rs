@@ -71,6 +71,30 @@ fn spawn_listener(event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>) -
                         &request.body,
                     );
                 }
+                ContentEvent::NavigationRequested(request) => {
+                    let _ = super::call_lean_navigation_start_parts(
+                        request.document_id as usize,
+                        &request.destination_url,
+                        &request.target,
+                        match request.user_involvement {
+                            ipc_messages::content::UserNavigationInvolvement::None => "none",
+                            ipc_messages::content::UserNavigationInvolvement::Activation => {
+                                "activation"
+                            }
+                            ipc_messages::content::UserNavigationInvolvement::BrowserUi => {
+                                "browser-ui"
+                            }
+                        },
+                        request.noopener,
+                    );
+                }
+                ContentEvent::BeforeUnloadCompleted(result) => {
+                    let _ = super::call_lean_before_unload_completed_parts(
+                        result.document_id as usize,
+                        result.check_id as usize,
+                        result.canceled,
+                    );
+                }
                 ContentEvent::PaintReady(snapshot) => {
                     super::with_event_loop_proxy(|proxy| {
                         if let Some(proxy) = proxy {

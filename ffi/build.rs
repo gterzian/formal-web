@@ -84,14 +84,20 @@ fn c_file_for_initializer(
     Some(ir_dir.join(module_stem.replace('_', "/")).with_extension("c"))
 }
 
-fn collect_dependency_objects(
+struct DependencyArtifacts {
+    root_c_files: BTreeSet<PathBuf>,
+    external_objects: BTreeSet<PathBuf>,
+}
+
+fn collect_dependency_artifacts(
     entry_c_files: &[PathBuf],
     root_ir_dir: &Path,
     package_ir_dirs: &BTreeMap<String, PathBuf>,
-) -> BTreeSet<PathBuf> {
+) -> DependencyArtifacts {
     let mut pending = VecDeque::from(entry_c_files.to_vec());
     let mut visited = BTreeSet::new();
-    let mut objects = BTreeSet::new();
+    let mut root_c_files = BTreeSet::new();
+    let mut external_objects = BTreeSet::new();
 
     while let Some(c_file) = pending.pop_front() {
         if !visited.insert(c_file.clone()) {
@@ -122,12 +128,19 @@ fn collect_dependency_objects(
                 dep_object.display()
             );
 
-            objects.insert(dep_object);
+            if dep_c_file.starts_with(root_ir_dir) {
+                root_c_files.insert(dep_c_file.clone());
+            } else {
+                external_objects.insert(dep_object);
+            }
             pending.push_back(dep_c_file);
         }
     }
 
-    objects
+    DependencyArtifacts {
+        root_c_files,
+        external_objects,
+    }
 }
 
 fn main() {
@@ -177,7 +190,7 @@ fn main() {
     let formalweb_ir_dir = lake_ir_dir.join("FormalWeb");
     let runtime_entry = lake_ir_dir.join("FormalWebRuntime.c");
     let target = env::var("TARGET").expect("TARGET should be set");
-    let dependency_objects = collect_dependency_objects(
+    let dependency_artifacts = collect_dependency_artifacts(
         std::slice::from_ref(&runtime_entry),
         &lake_ir_dir,
         &package_ir_dirs(&repo_root),
@@ -196,7 +209,11 @@ fn main() {
         .include(&lake_ir_dir)
         .include(&formalweb_ir_dir);
 
-    for path in dependency_objects {
+    for path in dependency_artifacts.root_c_files {
+        build.file(path);
+    }
+
+    for path in dependency_artifacts.external_objects {
         build.object(path);
     }
 

@@ -32,6 +32,8 @@ structure UserAgent where
   nextEventLoopId : Nat := 0
   /-- Model-local allocator state for https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
   nextNavigationId : Nat := 0
+  /-- Model-local allocator state for pending https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled continuations. -/
+  nextBeforeUnloadCheckId : Nat := 0
   /-- Model-local allocator state for https://fetch.spec.whatwg.org/#fetch-controller -/
   nextFetchId : Nat := 0
   /-- https://html.spec.whatwg.org/multipage/#browsing-context-group-set -/
@@ -44,6 +46,8 @@ structure UserAgent where
   pendingNavigationFetches : Std.TreeMap Nat PendingNavigationFetch := Std.TreeMap.empty
   /-- Model-local reverse index from https://fetch.spec.whatwg.org/#fetch-controller identifiers to pending navigation ids. -/
   pendingNavigationFetchIdsByFetchId : Std.TreeMap Nat Nat := Std.TreeMap.empty
+  /-- Model-local queue of navigations paused while a content runtime runs `beforeunload`. -/
+  pendingBeforeUnloadNavigations : Std.TreeMap Nat PendingBeforeUnloadNavigation := Std.TreeMap.empty
   /-- Model-local queue of document-driven fetches waiting to hand results back to embedder-side handlers. -/
   pendingDocumentFetches : Std.TreeMap Nat PendingDocumentFetch := Std.TreeMap.empty
 deriving Repr
@@ -208,10 +212,48 @@ def allocateNavigationId (userAgent : UserAgent) : UserAgent × Nat :=
   let userAgent := { userAgent with nextNavigationId := userAgent.nextNavigationId + 1 }
   (userAgent, navigationId)
 
+def allocateBeforeUnloadCheckId (userAgent : UserAgent) : UserAgent × Nat :=
+  let checkId := userAgent.nextBeforeUnloadCheckId
+  let userAgent := {
+    userAgent with
+      nextBeforeUnloadCheckId := userAgent.nextBeforeUnloadCheckId + 1
+  }
+  (userAgent, checkId)
+
 def allocateFetchId (userAgent : UserAgent) : UserAgent × Nat :=
   let fetchId := userAgent.nextFetchId
   let userAgent := { userAgent with nextFetchId := userAgent.nextFetchId + 1 }
   (userAgent, fetchId)
+
+def appendPendingBeforeUnloadNavigation
+    (userAgent : UserAgent)
+    (pendingBeforeUnloadNavigation : PendingBeforeUnloadNavigation) :
+    UserAgent :=
+  {
+    userAgent with
+      pendingBeforeUnloadNavigations :=
+        userAgent.pendingBeforeUnloadNavigations.insert
+          pendingBeforeUnloadNavigation.checkId
+          pendingBeforeUnloadNavigation
+  }
+
+def takePendingBeforeUnloadNavigation
+    (userAgent : UserAgent)
+    (checkId : Nat) :
+    UserAgent × Option PendingBeforeUnloadNavigation :=
+  let result := userAgent.pendingBeforeUnloadNavigations.get? checkId
+  let userAgent := {
+    userAgent with
+      pendingBeforeUnloadNavigations :=
+        userAgent.pendingBeforeUnloadNavigations.erase checkId
+  }
+  (userAgent, result)
+
+def pendingBeforeUnloadNavigation?
+    (userAgent : UserAgent)
+    (checkId : Nat) :
+    Option PendingBeforeUnloadNavigation :=
+  userAgent.pendingBeforeUnloadNavigations.get? checkId
 
 def appendPendingNavigationFetch
     (userAgent : UserAgent)
@@ -369,6 +411,64 @@ def activeTraversableId?
     (userAgent : UserAgent) :
     Option Nat :=
   (activeTraversable? userAgent).map (·.id)
+
+def traversableContainingDocument?
+    (userAgent : UserAgent)
+    (documentId : Nat) :
+    Option TopLevelTraversable :=
+  let rec loop (index remaining : Nat) : Option TopLevelTraversable :=
+    match remaining with
+    | 0 => none
+    | remaining + 1 =>
+        match traversable? userAgent index with
+        | some traversable =>
+            match traversable.toTraversableNavigable.activeDocument with
+            | some document =>
+                if document.documentId.id = documentId then
+                  some traversable
+                else
+                  loop (index + 1) remaining
+            | none =>
+                loop (index + 1) remaining
+        | none =>
+            loop (index + 1) remaining
+  loop 0 userAgent.topLevelTraversableSet.members.size
+
+def traversableWithTargetName?
+    (userAgent : UserAgent)
+    (targetName : String) :
+    Option TopLevelTraversable :=
+  let rec loop (index remaining : Nat) : Option TopLevelTraversable :=
+    match remaining with
+    | 0 => none
+    | remaining + 1 =>
+        match traversable? userAgent index with
+        | some traversable =>
+            if traversable.targetName = targetName then
+              some traversable
+            else
+              loop (index + 1) remaining
+        | none =>
+            loop (index + 1) remaining
+  loop 0 userAgent.topLevelTraversableSet.members.size
+
+def browsingContextGroupOfBrowsingContext?
+    (userAgent : UserAgent)
+    (browsingContextId : Nat) :
+    Option BrowsingContextGroup :=
+  let rec loop (index remaining : Nat) : Option BrowsingContextGroup :=
+    match remaining with
+    | 0 => none
+    | remaining + 1 =>
+        match userAgent.browsingContextGroupSet.members.get? index with
+        | some group =>
+            if group.browsingContextSet.get? browsingContextId |>.isSome then
+              some group
+            else
+              loop (index + 1) remaining
+        | none =>
+            loop (index + 1) remaining
+  loop 0 userAgent.browsingContextGroupSet.members.size
 
 def setActiveTraversable
     (userAgent : UserAgent)
@@ -553,6 +653,41 @@ def requestDocumentFetch
   }
   (userAgent, pendingDocumentFetch, documentFetchRequest)
 
+/-- https://html.spec.whatwg.org/multipage/#obtain-browsing-context-navigation -/
+def obtainBrowsingContextToUseForNavigationResponse
+    (userAgent : UserAgent)
+    (traversable : TopLevelTraversable)
+    (navigationParams : NavigationParams) :
+    UserAgent × Nat :=
+  Id.run do
+    -- Step 1: Let browsingContext be navigationParams's navigable's active browsing context.
+    let browsingContextId := traversable.toTraversableNavigable.activeBrowsingContextId.getD 0
+
+    -- Step 2: If browsingContext is not a top-level browsing context, then return browsingContext.
+    -- Note: The current model stores only top-level browsing contexts, so this always continues with a top-level context.
+
+    -- Step 5: Let sourceOrigin be browsingContext's active document's origin.
+    let sourceOrigin? := traversable.toTraversableNavigable.activeDocument.map (·.origin)
+
+    -- Step 6: Let destinationOrigin be navigationParams's origin.
+    let destinationOrigin := navigationParams.origin
+
+    -- Step 8: If swapGroup is false, then return browsingContext.
+    -- Note: The current model approximates the COOP and same-site checks with direct same-origin reuse.
+    if sourceOrigin? = some destinationOrigin then
+      (userAgent, browsingContextId)
+    else
+      -- Step 9: Let newBrowsingContext be the first return value of creating a new top-level browsing context and document.
+      -- Note: The current model allocates a fresh browsing-context identifier in the existing group and lets the navigation response allocate the replacement `Document`.
+      let some group := browsingContextGroupOfBrowsingContext? userAgent browsingContextId
+        | (userAgent, browsingContextId)
+      let (group, browsingContext) := group.append { id := group.nextBrowsingContextId }
+      let userAgent := {
+        userAgent with
+          browsingContextGroupSet := userAgent.browsingContextGroupSet.replace group
+      }
+      (userAgent, browsingContext.id)
+
 /-- https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags -/
 def determineCreationSandboxingFlags
     (_browsingContext : BrowsingContext)
@@ -670,8 +805,10 @@ where
       (navigationParams : NavigationParams) :
       UserAgent.M Document := do
     -- Step 1: Let browsingContext be the result of obtaining a browsing context to use for a navigation response.
-    let browsingContextId := traversable.toTraversableNavigable.activeBrowsingContextId.getD 0
-    -- TODO: Model obtaining a browsing context to use for a navigation response, including COOP-triggered group switches.
+    let userAgent ← get
+    let (userAgent, browsingContextId) :=
+      obtainBrowsingContextToUseForNavigationResponse userAgent traversable navigationParams
+    set userAgent
 
     -- Step 2: Let permissionsPolicy be the result of creating a permissions policy from a response.
     let permissionsPolicy := createPermissionsPolicy none navigationParams.origin
@@ -746,6 +883,13 @@ def loadHtmlDocument
     (userAgent, document)
 
 /-- https://html.spec.whatwg.org/multipage/#loading-a-document -/
+private def contentTypeEssence (contentType : String) : String :=
+  match contentType.splitOn ";" with
+  | [] => contentType.trimAscii.toString.toLower
+  | mediaType :: _ => mediaType.trimAscii.toString.toLower
+
+
+/-- https://html.spec.whatwg.org/multipage/#loading-a-document -/
 def loadDocument
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable)
@@ -753,7 +897,8 @@ def loadDocument
     (_sourceSnapshotParams : SourceSnapshotParams)
     (_initiatorOrigin : Option Origin) :
     UserAgent × Option Document :=
-  if navigationParams.response.contentType = "text/html" then
+  let responseContentType := contentTypeEssence navigationParams.response.contentType
+  if responseContentType = "text/html" then
     let (userAgent, document) := loadHtmlDocument userAgent traversable navigationParams
     (userAgent, some document)
   else
@@ -880,6 +1025,7 @@ def continueAttemptToPopulateHistoryEntryDocument
           sessionHistoryEntries :=
             traversable.toTraversableNavigable.sessionHistoryEntries.concat historyEntry
           currentSessionHistoryStep := historyEntry.step
+          activeBrowsingContextId := document.map (·.browsingContextId)
           activeDocument := document
       }
       parentNavigableIdNone := by
@@ -1021,11 +1167,12 @@ def abortNavigation
       userAgent
 
 /-- https://html.spec.whatwg.org/multipage/#navigate -/
-def navigateWithPendingFetchRequest
+def navigate
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable)
     (destinationURL : String)
-    (documentResource : Option DocumentResource := none) :
+    (documentResource : Option DocumentResource := none)
+    (userInvolvement : UserNavigationInvolvement := .none) :
     UserAgent × Option PendingFetchRequest :=
   Id.run do
     let some sourceDocument := traversable.toTraversableNavigable.activeDocument
@@ -1077,7 +1224,7 @@ def navigateWithPendingFetchRequest
       .navigate
       sourceSnapshotParams
       targetSnapshotParams
-      .none
+      userInvolvement
       navigationId
       none
       "other"
@@ -1085,13 +1232,22 @@ def navigateWithPendingFetchRequest
     (userAgent, UserAgent.pendingNavigationFetchRequest? userAgent navigationId)
 
 /-- https://html.spec.whatwg.org/multipage/#navigate -/
-def navigate
+def navigateWithPendingFetchRequest
+    (userAgent : UserAgent)
+    (traversable : TopLevelTraversable)
+    (destinationURL : String)
+    (documentResource : Option DocumentResource := none) :
+    UserAgent × Option PendingFetchRequest :=
+  navigate userAgent traversable destinationURL documentResource
+
+/-- https://html.spec.whatwg.org/multipage/#navigate -/
+def navigateIgnoringPendingFetchRequest
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable)
     (destinationURL : String)
     (documentResource : Option DocumentResource := none) :
     UserAgent :=
-  (navigateWithPendingFetchRequest userAgent traversable destinationURL documentResource).1
+  (navigate userAgent traversable destinationURL documentResource).1
 
 /-- https://html.spec.whatwg.org/multipage/#obtain-similar-origin-window-agent -/
 def obtainSimilarOriginWindowAgent
@@ -1464,6 +1620,16 @@ where
 
 inductive UserAgentTaskMessage where
   | freshTopLevelTraversable (destinationURL : String)
+  | navigateRequested
+      (sourceDocumentId : Nat)
+      (destinationURL : String)
+      (targetName : String)
+      (userInvolvement : UserNavigationInvolvement)
+      (noopener : Bool)
+  | beforeUnloadCompleted
+      (documentId : Nat)
+      (checkId : Nat)
+      (canceled : Bool)
   | documentFetchRequested (handler : RustNetHandlerPointer) (request : NavigationRequest)
   | dispatchEvent (event : String)
   | renderingOpportunity
@@ -1611,11 +1777,12 @@ def createTopLevelTraversableM
 def navigateM
     (traversable : TopLevelTraversable)
     (destinationURL : String)
-    (documentResource : Option DocumentResource := none) :
+    (documentResource : Option DocumentResource := none)
+    (userInvolvement : UserNavigationInvolvement := .none) :
     M (Option PendingFetchRequest) := do
   let userAgent ← get
   let (nextUserAgent, pendingFetchRequest?) :=
-    navigateWithPendingFetchRequest userAgent traversable destinationURL documentResource
+    navigate userAgent traversable destinationURL documentResource userInvolvement
   set nextUserAgent
   M.beginNavigation traversable.id destinationURL documentResource pendingFetchRequest?
   pure pendingFetchRequest?
@@ -1643,6 +1810,117 @@ def requestDocumentFetchM
     requestDocumentFetch userAgent handler request
   set nextUserAgent
   M.requestDocumentFetch handler documentFetchRequest
+
+private def normalizeNavigationTargetName (targetName : String) : String :=
+  if targetName.toLower = "_self" then "" else targetName
+
+private def beforeUnloadDispatchEventName (checkId : Nat) : String :=
+  s!"BeforeUnload|{checkId}"
+
+/-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
+def startBeforeUnloadNavigationCheckM
+    (traversable : TopLevelTraversable)
+    (destinationURL : String)
+    (userInvolvement : UserNavigationInvolvement) :
+    M Bool := do
+  -- Step 1: Let documentsToFireBeforeunload be the active document of each item in navigablesThatNeedBeforeUnload.
+  -- TODO: Model descendant navigables and the aggregate documentsToFireBeforeunload list.
+  -- Note: The current model stores top-level traversables only, so this collapses to at most the target traversable's active document.
+  let some document := traversable.toTraversableNavigable.activeDocument
+    | pure false
+  if document.isInitialAboutBlank then
+    pure false
+  else
+    -- Steps 5-8: Queue a global task for the active document's relevant global object and wait in pending state for the completion.
+    -- TODO: Model unloadPromptShown, the traverse navigate-event branch, and the finalStatus aggregation.
+    let userAgent ← get
+    let (userAgent, checkId) := userAgent.allocateBeforeUnloadCheckId
+    let pending : PendingBeforeUnloadNavigation := {
+      checkId
+      documentId := document.documentId.id
+      traversableId := traversable.id
+      destinationURL
+      userInvolvement
+    }
+    let event := beforeUnloadDispatchEventName checkId
+    let userAgent := userAgent.appendPendingBeforeUnloadNavigation pending
+    match queueDispatchedEvent userAgent traversable.id event with
+    | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
+        set nextUserAgent
+        M.dispatchEvent traversable.id eventLoopId event eventLoopMessage
+        pure true
+    | none =>
+        set ((userAgent.takePendingBeforeUnloadNavigation checkId).1)
+        pure false
+
+def chooseTargetTraversableM
+    (sourceDocumentId : Nat)
+    (targetName : String)
+    (noopener : Bool) :
+    M TopLevelTraversable := do
+  let normalizedTargetName := normalizeNavigationTargetName targetName
+  if noopener || normalizedTargetName.toLower = "_blank" then
+    createTopLevelTraversableM
+  else
+    let userAgent ← get
+    if normalizedTargetName.isEmpty then
+      match traversableContainingDocument? userAgent sourceDocumentId with
+      | some traversable =>
+          pure traversable
+      | none =>
+          createTopLevelTraversableM
+    else
+      match traversableWithTargetName? userAgent normalizedTargetName with
+      | some traversable =>
+          pure traversable
+      | none =>
+          createTopLevelTraversableM normalizedTargetName
+
+def navigateRequestedM
+    (sourceDocumentId : Nat)
+    (destinationURL : String)
+    (targetName : String)
+    (userInvolvement : UserNavigationInvolvement)
+    (noopener : Bool) :
+    M Unit := do
+  let traversable ← chooseTargetTraversableM sourceDocumentId targetName noopener
+  let waitingForBeforeUnload ←
+    startBeforeUnloadNavigationCheckM traversable destinationURL userInvolvement
+  if !waitingForBeforeUnload then
+    let _ ← navigateM traversable destinationURL none userInvolvement
+  pure ()
+
+/-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
+def beforeUnloadCompletedM
+    (documentId : Nat)
+    (checkId : Nat)
+    (canceled : Bool) :
+    M Unit := do
+  -- Step 9: Wait for completedTasks to be totalTasks.
+  -- Note: The runtime resumes here once the relevant content process reports the queued `beforeunload` task result.
+  let userAgent ← get
+  let (userAgent, pendingBeforeUnloadNavigation?) :=
+    userAgent.takePendingBeforeUnloadNavigation checkId
+  set userAgent
+  let some pendingBeforeUnloadNavigation := pendingBeforeUnloadNavigation?
+    | pure ()
+  if pendingBeforeUnloadNavigation.documentId != documentId || canceled then
+    pure ()
+  else
+    match traversable? userAgent pendingBeforeUnloadNavigation.traversableId with
+    | some traversable =>
+        if traversable.toTraversableNavigable.activeDocument.map (·.documentId.id) = some documentId then
+          let _ ←
+            navigateM
+              traversable
+              pendingBeforeUnloadNavigation.destinationURL
+              none
+              pendingBeforeUnloadNavigation.userInvolvement
+          pure ()
+        else
+          pure ()
+    | none =>
+        pure ()
 
 def dispatchEventM
     (event : String) :
@@ -1705,14 +1983,16 @@ def handleFetchCompletedM
   match UserAgent.pendingNavigationFetchByFetchId? userAgent fetchId with
   | some pendingNavigationFetch =>
       let navigationResponse := navigationResponseOfFetchResponse response
-      let userAgent :=
+      let processedUserAgent :=
         processNavigationFetchResponse userAgent pendingNavigationFetch.navigationId navigationResponse
       let (nextUserAgent, renderingDispatch?) :=
-        resumePendingUpdateTheRenderingAfterNavigation userAgent pendingNavigationFetch.traversableId
+        resumePendingUpdateTheRenderingAfterNavigation
+          processedUserAgent
+          pendingNavigationFetch.traversableId
       set nextUserAgent
       let dispatch? :=
         navigationDocumentDispatch?
-          userAgent
+          processedUserAgent
           pendingNavigationFetch.traversableId
           navigationResponse
       M.completeNavigation
@@ -1742,6 +2022,10 @@ def handleUserAgentTaskMessage
   | .freshTopLevelTraversable destinationURL =>
       let _ ← bootstrapFreshTopLevelTraversableM destinationURL
       pure ()
+  | .navigateRequested sourceDocumentId destinationURL targetName userInvolvement noopener =>
+    navigateRequestedM sourceDocumentId destinationURL targetName userInvolvement noopener
+  | .beforeUnloadCompleted documentId checkId canceled =>
+    beforeUnloadCompletedM documentId checkId canceled
   | .documentFetchRequested handler request =>
       requestDocumentFetchM handler request
   | .dispatchEvent event =>

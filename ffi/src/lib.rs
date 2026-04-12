@@ -21,6 +21,15 @@ unsafe extern "C" {
         method: *mut lean_object,
         body: *mut lean_object,
     ) -> *mut lean_object;
+    fn startNavigation(
+        document_id: usize,
+        destination_url: *mut lean_object,
+        target: *mut lean_object,
+        user_involvement: *mut lean_object,
+        noopener: usize,
+    ) -> *mut lean_object;
+    fn completeBeforeUnload(document_id: usize, check_id: usize, canceled: usize)
+    -> *mut lean_object;
     fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
     fn leanIoResultMkOkUnit() -> *mut lean_object;
     fn leanIoResultMkOkUsize(value: usize) -> *mut lean_object;
@@ -90,6 +99,51 @@ fn call_lean_document_fetch_start_parts(
     Ok(())
 }
 
+fn call_lean_navigation_start_parts(
+    document_id: usize,
+    destination_url: &str,
+    target: &str,
+    user_involvement: &str,
+    noopener: bool,
+) -> Result<(), String> {
+    let lean_destination_url = lean_string_from_owned(destination_url.to_owned());
+    let lean_target = lean_string_from_owned(target.to_owned());
+    let lean_user_involvement = lean_string_from_owned(user_involvement.to_owned());
+    let io_result = unsafe {
+        startNavigation(
+            document_id,
+            lean_destination_url,
+            lean_target,
+            lean_user_involvement,
+            usize::from(noopener),
+        )
+    };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean navigation start failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
+fn call_lean_before_unload_completed_parts(
+    document_id: usize,
+    check_id: usize,
+    canceled: bool,
+) -> Result<(), String> {
+    let io_result = unsafe { completeBeforeUnload(document_id, check_id, usize::from(canceled)) };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean beforeunload completion failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
 fn user_agent_note_rendering_opportunity(message: &str) {
     let lean_message = lean_string_from_owned(message.to_owned());
     let io_result = unsafe { userAgentNoteRenderingOpportunity(lean_message) };
@@ -104,6 +158,8 @@ fn runtime_hooks() -> RuntimeHooks {
     RuntimeHooks {
         handle_runtime_message: call_lean_runtime_message_handler,
         start_document_fetch_parts: call_lean_document_fetch_start_parts,
+        start_navigation_parts: call_lean_navigation_start_parts,
+        complete_before_unload_parts: call_lean_before_unload_completed_parts,
         note_rendering_opportunity: user_agent_note_rendering_opportunity,
     }
 }

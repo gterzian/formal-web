@@ -77,7 +77,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - `content/src/main.rs` and sibling root modules such as `content/src/html.rs` own the HTML Standard entry points that resume embedder-driven algorithms, create documents, and trigger HTML-defined load/rendering steps.
 
-- `content/src/boa` owns HTML parsing, parser-script collection, microtask checkpoints, and the bridge from Blitz UI events into JavaScript event dispatch.
+- `content/src/html` owns HTML parsing, hyperlink-following helpers, document loading entry points, and parser-script collection, while `content/src/boa` owns microtask checkpoints and the bridge from Blitz UI events into JavaScript event dispatch.
 
 - `content/src/dom` stores the native data carried by JavaScript-visible `Window`, `Node`, `Document`, `Element`, `EventTarget`, `Event`, and `UIEvent` objects. `BaseDocument` remains the authoritative DOM state; the JavaScript wrappers do not store shadow DOM data.
 
@@ -98,3 +98,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 - Keep binding-related tooling in `content` only when it is part of the maintained workflow. Remove inactive generators, generated outputs, and orphaned Web IDL inputs instead of leaving them in the tree.
 
 - Initial document parsing collects classic scripts after the tree build and executes them in document order before the `load` event fires. `innerHTML` parsing uses the same sink with scripting disabled so fragment parsing does not execute scripts.
+
+- Parser-script collection must match classic scripts by normalized `type` essence and skip non-classic data blocks such as `application/json`, `speculationrules`, and module scripts.
+
+- Register a newly created content document before running parser-discovered scripts or firing `load` so later dispatch and rendering commands do not lose the document id when a page script throws.

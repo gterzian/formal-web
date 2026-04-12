@@ -35,6 +35,29 @@ pub struct FetchRequest {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UserNavigationInvolvement {
+    None,
+    Activation,
+    BrowserUi,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NavigateRequest {
+    pub document_id: u64,
+    pub destination_url: String,
+    pub target: String,
+    pub user_involvement: UserNavigationInvolvement,
+    pub noopener: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeforeUnloadResult {
+    pub document_id: u64,
+    pub check_id: u64,
+    pub canceled: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FontIdentifier {
     pub namespace: u64,
@@ -425,6 +448,8 @@ pub enum Command {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
     DocumentFetchRequested(FetchRequest),
+    NavigationRequested(NavigateRequest),
+    BeforeUnloadCompleted(BeforeUnloadResult),
     PaintReady(PaintFrame),
 }
 

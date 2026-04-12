@@ -119,6 +119,41 @@ def startDocumentFetchFromRust
   spawnDetached <| enqueueUserAgentMessage <|
     .documentFetchRequested { raw := handlerPointer } request
 
+@[export startNavigation]
+def startNavigationFromRust
+    (documentId : USize)
+    (destinationURL : String)
+    (targetName : String)
+    (userInvolvement : String)
+    (noopener : USize) :
+    IO Unit := do
+  let parsedUserInvolvement :=
+    if userInvolvement = "activation" then
+      UserNavigationInvolvement.activation
+    else if userInvolvement = "browser-ui" then
+      UserNavigationInvolvement.browserUI
+    else
+      UserNavigationInvolvement.none
+  spawnDetached <| enqueueUserAgentMessage <|
+    .navigateRequested
+      documentId.toNat
+      destinationURL
+      targetName
+      parsedUserInvolvement
+      (noopener.toNat != 0)
+
+@[export completeBeforeUnload]
+def completeBeforeUnloadFromRust
+    (documentId : USize)
+    (checkId : USize)
+    (canceled : USize) :
+    IO Unit := do
+  spawnDetached <| enqueueUserAgentMessage <|
+    .beforeUnloadCompleted
+      documentId.toNat
+      checkId.toNat
+      (canceled.toNat != 0)
+
 def kernelStarted : IO Bool := do
   return (← userAgentMessageChannelRef.get).isSome
 

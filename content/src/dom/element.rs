@@ -71,6 +71,10 @@ impl Element {
             .map(ToOwned::to_owned)
     }
 
+    pub(crate) fn has_attribute(&self, qualified_name: &str) -> bool {
+        self.get_attribute(qualified_name).is_some()
+    }
+
     /// <https://dom.spec.whatwg.org/#dom-element-setattribute>
     pub(crate) fn set_attribute(&self, qualified_name: &str, value: &str) {
         let mut document = self.node.document.borrow_mut();
@@ -79,6 +83,15 @@ impl Element {
             self.node.node_id,
             QualName::new(None, ns!(html), LocalName::from(qualified_name)),
             value,
+        );
+    }
+
+    pub(crate) fn remove_attribute(&self, qualified_name: &str) {
+        let mut document = self.node.document.borrow_mut();
+        let mut mutator = document.mutate();
+        mutator.clear_attribute(
+            self.node.node_id,
+            QualName::new(None, ns!(html), LocalName::from(qualified_name)),
         );
     }
 }

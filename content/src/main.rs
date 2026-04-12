@@ -7,11 +7,11 @@ mod dom;
 mod html;
 mod webidl;
 
-use crate::boa::{
-    JsHtmlParserProvider, execute_parser_scripts, parse_html_into_document,
+use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
+use crate::html::{
+    EnvironmentSettingsObject, JsHtmlParserProvider, execute_parser_scripts,
+    parse_html_into_document,
 };
-use crate::dom::{dispatch_ui_event, fire_event};
-use crate::html::EnvironmentSettingsObject;
 use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig, NodeData};
@@ -40,6 +40,11 @@ use std::{
 use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
+const BEFORE_UNLOAD_EVENT_PREFIX: &str = "BeforeUnload|";
+
+fn before_unload_check_id(event: &str) -> Option<u64> {
+    event.strip_prefix(BEFORE_UNLOAD_EVENT_PREFIX)?.parse().ok()
+}
 
 fn new_font_namespace() -> u64 {
     let pid = u64::from(std::process::id());
@@ -297,7 +302,7 @@ impl ContentRuntime {
         let document = Rc::new(RefCell::new(BaseDocument::new(
             self.document_config(document_id, Some(url.clone())),
         )));
-        let mut settings = EnvironmentSettingsObject::new(
+        let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse(&url).map_err(|error| error.to_string())?,
         )?;
@@ -310,14 +315,29 @@ impl ContentRuntime {
             parse_html_into_document(&mut document_guard, &body)
         };
 
+        self.documents.insert(
+            document_id,
+            ContentDocument {
+                document: Rc::clone(&document),
+                settings,
+                pending_update_the_rendering: false,
+            },
+        );
+
+        let content_document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+
         // Note: This block continues <https://html.spec.whatwg.org/#the-end>.
         // Step 1: "Update the current document readiness to `complete`."
         // Note: The content runtime executes parser-discovered classic scripts before the load event fires.
-        execute_parser_scripts(&mut settings, parser_scripts)?;
+        execute_parser_scripts(&mut content_document.settings, parser_scripts)?;
 
         // Step 5: "Fire an event named `load` at `window`, with legacy target override flag set."
-        let window = settings.context.global_object();
-        fire_event(&mut settings, &window, "load", true).map_err(|error| error.to_string())?;
+        let window = content_document.settings.context.global_object();
+        fire_event(&mut content_document.settings, &window, "load", true)
+            .map_err(|error| error.to_string())?;
 
         // Step 12: "Completely finish loading the `Document`."
         // Step 12.1: "Set document's completely loaded time to the current time."
@@ -326,14 +346,6 @@ impl ContentRuntime {
         // Step 12.2: "Let container be document's node navigable's container."
         // Note: This runtime entry point creates a top-level document, so `container` is null and the container `load` event branch in `completely finish loading` does not run here.
 
-        self.documents.insert(
-            document_id,
-            ContentDocument {
-                document,
-                settings,
-                pending_update_the_rendering: false,
-            },
-        );
         Ok(())
     }
 
@@ -351,9 +363,30 @@ impl ContentRuntime {
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
+        if let Some(check_id) = before_unload_check_id(&event) {
+            let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
+                .map_err(|error| error.to_string())?;
+            self.event_sender
+                .send(ContentEvent::BeforeUnloadCompleted(
+                    ipc_messages::content::BeforeUnloadResult {
+                        document_id,
+                        check_id,
+                        canceled,
+                    },
+                ))
+                .map_err(|error| format!("failed to send beforeunload completion: {error}"))?;
+            return Ok(());
+        }
+
         // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event to the content runtime.
         let event = deserialize_ui_event(&event)?;
-        dispatch_ui_event(Rc::clone(&document.document), &mut document.settings, event)
+        dispatch_ui_event(
+            document_id,
+            Rc::clone(&document.document),
+            &mut document.settings,
+            &self.event_sender,
+            event,
+        )
     }
 
     fn update_the_rendering(&mut self, document_id: u64) -> Result<(), String> {

@@ -3,6 +3,8 @@ mod document;
 mod element;
 mod event;
 mod event_target;
+mod html_anchor_element;
+mod html_element;
 mod node;
 mod ui_event;
 mod window;

@@ -44,6 +44,8 @@ pub struct EventLoopOptions {
 pub struct RuntimeHooks {
     pub handle_runtime_message: fn(&str),
     pub start_document_fetch_parts: fn(usize, &str, &str, &str) -> Result<(), String>,
+    pub start_navigation_parts: fn(usize, &str, &str, &str, bool) -> Result<(), String>,
+    pub complete_before_unload_parts: fn(usize, usize, bool) -> Result<(), String>,
     pub note_rendering_opportunity: fn(&str),
 }
 
@@ -189,6 +191,32 @@ pub(crate) fn call_lean_document_fetch_start_parts(
 ) -> Result<(), String> {
     let hooks = runtime_hooks()?;
     (hooks.start_document_fetch_parts)(handler, url, method, body)
+}
+
+pub(crate) fn call_lean_navigation_start_parts(
+    document_id: usize,
+    destination_url: &str,
+    target: &str,
+    user_involvement: &str,
+    noopener: bool,
+) -> Result<(), String> {
+    let hooks = runtime_hooks()?;
+    (hooks.start_navigation_parts)(
+        document_id,
+        destination_url,
+        target,
+        user_involvement,
+        noopener,
+    )
+}
+
+pub(crate) fn call_lean_before_unload_completed_parts(
+    document_id: usize,
+    check_id: usize,
+    canceled: bool,
+) -> Result<(), String> {
+    let hooks = runtime_hooks()?;
+    (hooks.complete_before_unload_parts)(document_id, check_id, canceled)
 }
 
 fn user_agent_note_rendering_opportunity(message: &str) {
