@@ -58,6 +58,12 @@ pub struct BeforeUnloadResult {
     pub canceled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NavigationCommitted {
+    pub document_id: u64,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FontIdentifier {
     pub namespace: u64,
@@ -436,6 +442,10 @@ pub enum Command {
         document_id: u64,
         event: String,
     },
+    RunBeforeUnload {
+        document_id: u64,
+        check_id: u64,
+    },
     UpdateTheRendering { document_id: u64 },
     CompleteDocumentFetch {
         handler_id: u64,
@@ -450,6 +460,7 @@ pub enum Event {
     DocumentFetchRequested(FetchRequest),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
+    NavigationCommitted(NavigationCommitted),
     PaintReady(PaintFrame),
 }
 

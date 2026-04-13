@@ -74,6 +74,10 @@ inductive UserAgentEffect where
       (eventLoopId : Nat)
       (event : String)
       (message : EventLoopTaskMessage)
+    | runBeforeUnload
+      (traversableId : Nat)
+      (eventLoopId : Nat)
+      (message : EventLoopTaskMessage)
   | queueUpdateTheRendering
       (traversableId : Nat)
       (eventLoopId : Nat)
@@ -130,6 +134,12 @@ def dispatchEvent
     (event : String)
     (message : EventLoopTaskMessage) : FormalWeb.M Unit :=
   emit (.dispatchEvent traversableId eventLoopId event message)
+
+def runBeforeUnload
+    (traversableId : Nat)
+    (eventLoopId : Nat)
+    (message : EventLoopTaskMessage) : FormalWeb.M Unit :=
+  emit (.runBeforeUnload traversableId eventLoopId message)
 
 def queueUpdateTheRendering
     (traversableId : Nat)
@@ -601,6 +611,22 @@ def queueDispatchedEvent
     userAgent.setEventLoop eventLoop,
     document.eventLoopId,
     .queueDispatchEvent documentId event
+  )
+
+def queueRunBeforeUnload
+    (userAgent : UserAgent)
+    (traversableId : Nat)
+    (checkId : Nat) :
+    Option (UserAgent × Nat × EventLoopTaskMessage) := do
+  let traversable <- traversable? userAgent traversableId
+  let document <- traversable.toTraversableNavigable.activeDocument
+  let documentId <- activeDocumentId? userAgent traversableId
+  let eventLoop <- userAgent.eventLoop? document.eventLoopId
+  let eventLoop := eventLoop.enqueueTask { step := .runBeforeUnload }
+  pure (
+    userAgent.setEventLoop eventLoop,
+    document.eventLoopId,
+    .runBeforeUnload documentId checkId
   )
 
 def completeUpdateTheRendering
@@ -1630,6 +1656,7 @@ inductive UserAgentTaskMessage where
       (documentId : Nat)
       (checkId : Nat)
       (canceled : Bool)
+  | abortNavigationRequested (documentId : Nat)
   | documentFetchRequested (handler : RustNetHandlerPointer) (request : NavigationRequest)
   | dispatchEvent (event : String)
   | renderingOpportunity
@@ -1650,7 +1677,8 @@ def userAgentTaskMessageOfString? (message : String) : Option UserAgentTaskMessa
   else
     none
 
-def startupNavigationFailureDetails
+private def navigationFailureDetails
+    (context : String)
     (destinationURL : String)
     (userAgent : UserAgent)
     (traversableId : Nat) :
@@ -1658,7 +1686,7 @@ def startupNavigationFailureDetails
   let fetchScheme := isFetchScheme destinationURL
   match traversable? userAgent traversableId with
   | none =>
-      s!"expected startup navigation for traversable {traversableId} to create a pending fetch; traversable missing after navigate, destinationURL={destinationURL}, fetchScheme={fetchScheme}"
+      s!"{context} for traversable {traversableId} to create a pending fetch; traversable missing after navigate, destinationURL={destinationURL}, fetchScheme={fetchScheme}"
   | some traversable =>
       let ongoingNavigation := traversable.toTraversableNavigable.toNavigable.ongoingNavigation
       let activeDocumentUrl :=
@@ -1678,7 +1706,29 @@ def startupNavigationFailureDetails
                 s!"missing(navigationId={navigationId})"
         | some .traversal => "not-applicable(traversal)"
         | none => "not-applicable(no ongoing navigation)"
-      s!"expected startup navigation for traversable {traversableId} to create a pending fetch; destinationURL={destinationURL}, fetchScheme={fetchScheme}, activeDocumentUrl={activeDocumentUrl}, ongoingNavigation={ongoingNavigationDescription}, pendingNavigationFetch={pendingNavigationFetchDescription}"
+      s!"{context} for traversable {traversableId} to create a pending fetch; destinationURL={destinationURL}, fetchScheme={fetchScheme}, activeDocumentUrl={activeDocumentUrl}, ongoingNavigation={ongoingNavigationDescription}, pendingNavigationFetch={pendingNavigationFetchDescription}"
+
+def startupNavigationFailureDetails
+    (destinationURL : String)
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    String :=
+  navigationFailureDetails
+    "expected startup navigation"
+    destinationURL
+    userAgent
+    traversableId
+
+def beforeUnloadNavigationFailureDetails
+    (destinationURL : String)
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    String :=
+  navigationFailureDetails
+    "expected deferred navigation after beforeunload"
+    destinationURL
+    userAgent
+    traversableId
 
 def bootstrapFreshTopLevelTraversable
     (destinationURL : String)
@@ -1814,9 +1864,6 @@ def requestDocumentFetchM
 private def normalizeNavigationTargetName (targetName : String) : String :=
   if targetName.toLower = "_self" then "" else targetName
 
-private def beforeUnloadDispatchEventName (checkId : Nat) : String :=
-  s!"BeforeUnload|{checkId}"
-
 /-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
 def startBeforeUnloadNavigationCheckM
     (traversable : TopLevelTraversable)
@@ -1842,12 +1889,11 @@ def startBeforeUnloadNavigationCheckM
       destinationURL
       userInvolvement
     }
-    let event := beforeUnloadDispatchEventName checkId
     let userAgent := userAgent.appendPendingBeforeUnloadNavigation pending
-    match queueDispatchedEvent userAgent traversable.id event with
+    match queueRunBeforeUnload userAgent traversable.id checkId with
     | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
         set nextUserAgent
-        M.dispatchEvent traversable.id eventLoopId event eventLoopMessage
+        M.runBeforeUnload traversable.id eventLoopId eventLoopMessage
         pure true
     | none =>
         set ((userAgent.takePendingBeforeUnloadNavigation checkId).1)
@@ -1910,17 +1956,36 @@ def beforeUnloadCompletedM
     match traversable? userAgent pendingBeforeUnloadNavigation.traversableId with
     | some traversable =>
         if traversable.toTraversableNavigable.activeDocument.map (·.documentId.id) = some documentId then
-          let _ ←
+          let pendingFetchRequest? ←
             navigateM
               traversable
               pendingBeforeUnloadNavigation.destinationURL
               none
               pendingBeforeUnloadNavigation.userInvolvement
-          pure ()
+          match pendingFetchRequest? with
+          | some _ =>
+              pure ()
+          | none =>
+              let resumedUserAgent ← get
+              M.logError
+                (beforeUnloadNavigationFailureDetails
+                  pendingBeforeUnloadNavigation.destinationURL
+                  resumedUserAgent
+                  pendingBeforeUnloadNavigation.traversableId)
         else
           pure ()
     | none =>
         pure ()
+
+  def abortNavigationRequestedM
+    (documentId : Nat) :
+    M Unit := do
+    let userAgent ← get
+    match traversableContainingDocument? userAgent documentId with
+    | some traversable =>
+      set (abortNavigation userAgent traversable.id)
+    | none =>
+      pure ()
 
 def dispatchEventM
     (event : String) :
@@ -2026,6 +2091,8 @@ def handleUserAgentTaskMessage
     navigateRequestedM sourceDocumentId destinationURL targetName userInvolvement noopener
   | .beforeUnloadCompleted documentId checkId canceled =>
     beforeUnloadCompletedM documentId checkId canceled
+  | .abortNavigationRequested documentId =>
+    abortNavigationRequestedM documentId
   | .documentFetchRequested handler request =>
       requestDocumentFetchM handler request
   | .dispatchEvent event =>
@@ -2096,6 +2163,13 @@ def runUserAgentMessage
     | .requestDocumentFetch _ request =>
         enqueueFetchMessage (.startDocumentFetch request)
     | .dispatchEvent _ eventLoopId _ eventLoopMessage =>
+        sendEventLoopTaskMessage
+          ensureEventLoopWorker
+          enqueueEventLoopMessage
+          nextUserAgent
+          eventLoopId
+          eventLoopMessage
+    | .runBeforeUnload _ eventLoopId eventLoopMessage =>
         sendEventLoopTaskMessage
           ensureEventLoopWorker
           enqueueEventLoopMessage

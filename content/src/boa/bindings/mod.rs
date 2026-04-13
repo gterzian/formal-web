@@ -3,6 +3,7 @@ mod document;
 mod element;
 mod event;
 mod event_target;
+mod hyperlink_element_utils;
 mod html_anchor_element;
 mod html_element;
 mod node;

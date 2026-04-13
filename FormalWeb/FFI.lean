@@ -44,6 +44,10 @@ opaque contentProcessCreateLoadedDocument : USize → USize → @& String → @&
 @[extern "contentProcessDispatchEvent"]
 opaque contentProcessDispatchEvent : USize → USize → @& String → IO Unit
 
+/-- Runs the `beforeunload` steps for a document in the event loop's content process. -/
+@[extern "contentProcessRunBeforeUnload"]
+opaque contentProcessRunBeforeUnload : USize → USize → USize → IO Unit
+
 /-- Runs the I/O part of update-the-rendering for a document in the event loop's content process. -/
 @[extern "contentProcessUpdateTheRendering"]
 opaque contentProcessUpdateTheRendering : USize → USize → IO Unit

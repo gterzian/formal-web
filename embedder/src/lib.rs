@@ -1,6 +1,8 @@
+mod chrome;
 mod content_bridge;
 pub mod ui_event;
 
+use crate::chrome::{ChromeAction, ChromeUi, ChromeViewState};
 use anyrender::{PaintScene, Scene as RenderScene, WindowRenderer};
 use anyrender_vello::VelloWindowRenderer;
 use blitz_traits::events::{
@@ -8,9 +10,10 @@ use blitz_traits::events::{
     BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords,
     PointerDetails, UiEvent,
 };
-use blitz_traits::shell::ColorScheme;
+use blitz_traits::shell::{ColorScheme, Viewport};
 use ipc_messages::content::{
-    Command as ContentCommand, FontTransportReceiver, PaintFrame, SceneSummary, ScrollOffset,
+    BeforeUnloadResult, Command as ContentCommand, FontTransportReceiver, NavigateRequest,
+    NavigationCommitted, PaintFrame, SceneSummary, ScrollOffset,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
@@ -46,6 +49,7 @@ pub struct RuntimeHooks {
     pub start_document_fetch_parts: fn(usize, &str, &str, &str) -> Result<(), String>,
     pub start_navigation_parts: fn(usize, &str, &str, &str, bool) -> Result<(), String>,
     pub complete_before_unload_parts: fn(usize, usize, bool) -> Result<(), String>,
+    pub abort_navigation_parts: fn(usize) -> Result<(), String>,
     pub note_rendering_opportunity: fn(&str),
 }
 
@@ -114,13 +118,72 @@ impl PendingUiEvents {
 
 pub(crate) enum FormalWebUserEvent {
     Paint(PaintFrame),
+    NavigationRequested(NavigateRequest),
+    BeforeUnloadCompleted(BeforeUnloadResult),
+    NavigationCommitted(NavigationCommitted),
     EmbedderRequestRedraw,
     NewTopLevelTraversable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingNavigation {
+    url: String,
+}
+
+#[derive(Default)]
+struct BrowserState {
+    history: Vec<String>,
+    history_index: Option<usize>,
+    pending_navigation: Option<PendingNavigation>,
+    current_document_id: Option<u64>,
+}
+
+impl BrowserState {
+    fn displayed_url(&self) -> String {
+        self.pending_navigation
+            .as_ref()
+            .map(|pending| pending.url.clone())
+            .or_else(|| self.current_url().map(ToOwned::to_owned))
+            .unwrap_or_default()
+    }
+
+    fn current_url(&self) -> Option<&str> {
+        self.history_index
+            .and_then(|index| self.history.get(index).map(String::as_str))
+    }
+
+    fn begin_navigation(&mut self, pending_navigation: PendingNavigation) {
+        self.pending_navigation = Some(pending_navigation);
+    }
+
+    fn cancel_pending_navigation(&mut self) {
+        self.pending_navigation = None;
+    }
+
+    fn commit_navigation(&mut self, document_id: u64, url: String) {
+        self.pending_navigation.take();
+        self.current_document_id = Some(document_id);
+
+        if let Some(index) = self.history_index {
+            if self.history.get(index).is_some_and(|current| current == &url) {
+                self.history[index] = url;
+            } else {
+                self.history.truncate(index + 1);
+                self.history.push(url);
+                self.history_index = Some(self.history.len() - 1);
+            }
+        } else {
+            self.history.push(url);
+            self.history_index = Some(0);
+        }
+    }
 }
 
 struct FormalWebApp {
     window: Option<Arc<Window>>,
     renderer: VelloWindowRenderer,
+    chrome: Option<ChromeUi>,
+    browser: BrowserState,
     current_paint_frame: Option<EmbedderPaintFrame>,
     font_receiver: FontTransportReceiver,
     pending_ui_events: PendingUiEvents,
@@ -307,6 +370,17 @@ fn startup_artifact_url() -> Result<String, String> {
     Ok(format!("file://{}", artifact_path.display()))
 }
 
+fn normalize_browser_destination(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.contains("://") || trimmed.starts_with("about:") {
+        return Some(trimmed.to_owned());
+    }
+    Some(format!("https://{trimmed}"))
+}
+
 fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
     match message {
         NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE => Ok(FormalWebUserEvent::NewTopLevelTraversable),
@@ -352,6 +426,11 @@ fn viewport_snapshot_for_window(window: &Window) -> (u32, u32, f32, ColorScheme)
     let scale = window.scale_factor() as f32;
     let color_scheme = theme_to_color_scheme(window.theme().unwrap_or(winit::window::Theme::Light));
     (size.width, size.height, scale, color_scheme)
+}
+
+fn viewport_of_snapshot(snapshot: (u32, u32, f32, ColorScheme)) -> Viewport {
+    let (width, height, scale, color_scheme) = snapshot;
+    Viewport::new(width, height, scale, color_scheme)
 }
 
 fn winit_ime_to_blitz(event: Ime) -> BlitzImeEvent {
@@ -522,6 +601,8 @@ impl Default for FormalWebApp {
         Self {
             window: None,
             renderer: VelloWindowRenderer::new(),
+            chrome: None,
+            browser: BrowserState::default(),
             current_paint_frame: None,
             font_receiver: FontTransportReceiver::default(),
             pending_ui_events: PendingUiEvents::default(),
@@ -565,6 +646,41 @@ impl FormalWebApp {
             && position.y < f64::from(size.height)
     }
 
+    fn chrome_height_css(&self) -> f32 {
+        self.chrome
+            .as_ref()
+            .map(ChromeUi::height_css)
+            .unwrap_or_default()
+    }
+
+    fn chrome_height_physical(&self) -> u32 {
+        self.chrome
+            .as_ref()
+            .map(ChromeUi::height_physical)
+            .unwrap_or_default()
+    }
+
+    fn content_has_visible_viewport(&self) -> bool {
+        if !self.has_visible_viewport() {
+            return false;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        window.inner_size().height > self.chrome_height_physical()
+    }
+
+    fn pointer_position_in_chrome(&self, position: PhysicalPosition<f64>) -> bool {
+        self.pointer_position_in_viewport(position)
+            && position.y < f64::from(self.chrome_height_physical())
+    }
+
+    fn pointer_position_in_content_viewport(&self, position: PhysicalPosition<f64>) -> bool {
+        self.pointer_position_in_viewport(position)
+            && position.y >= f64::from(self.chrome_height_physical())
+            && self.content_has_visible_viewport()
+    }
+
     fn request_visible_redraw(&self, reason: &str) {
         if !self.has_visible_viewport() {
             return;
@@ -596,13 +712,39 @@ impl FormalWebApp {
         })
     }
 
-    fn update_window_viewport_snapshot(window: &Window) {
-        let viewport_snapshot = viewport_snapshot_for_window(window);
+    fn content_viewport_snapshot(&self, window: &Window) -> (u32, u32, f32, ColorScheme) {
+        let (width, height, scale, color_scheme) = viewport_snapshot_for_window(window);
+        (
+            width,
+            height.saturating_sub(self.chrome_height_physical()),
+            scale,
+            color_scheme,
+        )
+    }
+
+    fn update_content_viewport_snapshot(&self, window: &Window) {
+        let viewport_snapshot = self.content_viewport_snapshot(window);
         let mut snapshot = WINDOW_VIEWPORT_SNAPSHOT
             .lock()
             .expect("window viewport snapshot mutex poisoned");
         *snapshot = Some(viewport_snapshot);
         content_bridge::broadcast_viewport(Some(viewport_snapshot));
+    }
+
+    fn current_chrome_view_state(&self) -> ChromeViewState {
+        ChromeViewState {
+            address: self.browser.displayed_url(),
+        }
+    }
+
+    fn sync_chrome_state(&mut self) {
+        let chrome_view_state = self.current_chrome_view_state();
+        if let Some(chrome) = self.chrome.as_mut() {
+            chrome.sync_state(&chrome_view_state);
+        }
+        if let Some(window) = self.window.as_ref() {
+            self.update_content_viewport_snapshot(window);
+        }
     }
 
     fn resume_renderer_for_window(&mut self, window: &Arc<Window>) {
@@ -647,12 +789,19 @@ impl FormalWebApp {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        let Some(current_paint_frame) = self.current_paint_frame.as_ref() else {
+        let chrome_height = f64::from(self.chrome_height_physical());
+        let chrome_scene = self.chrome.as_mut().map(ChromeUi::paint_scene);
+        let content_scene = self.current_paint_frame.as_ref().map(|current_paint_frame| {
+            if let Some(summary) = current_paint_frame.debug_summary {
+                log_embedder_scene("render", current_paint_frame.document_id, summary);
+            }
+            current_paint_frame.scene.clone()
+        });
+
+        if chrome_scene.is_none() && content_scene.is_none() {
             return;
-        };
-        if let Some(summary) = current_paint_frame.debug_summary {
-            log_embedder_scene("render", current_paint_frame.document_id, summary);
         }
+
         let size = window.inner_size();
 
         if self.renderer.is_active() {
@@ -662,22 +811,42 @@ impl FormalWebApp {
             self.renderer.resume(window_handle, size.width, size.height);
         }
 
-        let scene_fragment = current_paint_frame.scene.clone();
         self.renderer.render(|scene| {
-            scene.append_scene(scene_fragment, Affine::IDENTITY);
+            if let Some(content_scene) = content_scene.clone() {
+                scene.append_scene(content_scene, Affine::translate((0.0, chrome_height)));
+            }
+            if let Some(chrome_scene) = chrome_scene.clone() {
+                scene.append_scene(chrome_scene, Affine::IDENTITY);
+            }
         });
     }
 
-    fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
+    fn logical_position(&self, position: PhysicalPosition<f64>) -> LogicalPosition<f32> {
         let scale = self
             .window
             .as_ref()
             .map(|window| window.scale_factor())
             .unwrap_or(1.0);
-        let LogicalPosition::<f32> { x: screen_x, y: screen_y } = position.to_logical(scale);
+        position.to_logical(scale)
+    }
+
+    fn chrome_pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
+        let LogicalPosition::<f32> { x: screen_x, y: screen_y } = self.logical_position(position);
+        PointerCoords {
+            screen_x,
+            screen_y,
+            client_x: screen_x,
+            client_y: screen_y,
+            page_x: screen_x,
+            page_y: screen_y,
+        }
+    }
+
+    fn content_pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
+        let LogicalPosition::<f32> { x: screen_x, y: screen_y } = self.logical_position(position);
+        let client_x = screen_x;
+        let client_y = screen_y - self.chrome_height_css();
         if let Some(current_paint_frame) = self.current_paint_frame.as_ref() {
-            let client_x = screen_x;
-            let client_y = screen_y;
             let page_x = client_x + current_paint_frame.viewport_scroll.x;
             let page_y = client_y + current_paint_frame.viewport_scroll.y;
             PointerCoords {
@@ -700,8 +869,8 @@ impl FormalWebApp {
         }
     }
 
-    fn dispatch_ui_event(&mut self, event: UiEvent) {
-        if !self.has_visible_viewport() {
+    fn dispatch_content_ui_event(&mut self, event: UiEvent) {
+        if !self.content_has_visible_viewport() {
             return;
         }
         self.pending_ui_events.push(event);
@@ -710,8 +879,23 @@ impl FormalWebApp {
         }
     }
 
+    fn handle_chrome_ui_event(&mut self, event: UiEvent) {
+        if !self.has_visible_viewport() {
+            return;
+        }
+
+        let action = self
+            .chrome
+            .as_mut()
+            .and_then(|chrome| chrome.handle_ui_event(event));
+        self.request_window_redraw();
+        if let Some(action) = action {
+            self.handle_chrome_action(action);
+        }
+    }
+
     fn flush_pending_ui_events(&mut self) {
-        if !self.has_top_level_traversable || !self.has_visible_viewport() {
+        if !self.has_top_level_traversable || !self.content_has_visible_viewport() {
             return;
         }
 
@@ -730,6 +914,72 @@ impl FormalWebApp {
             user_agent_note_rendering_opportunity("ui_event_batch");
         }
     }
+
+    fn start_navigation_request(&self, destination_url: &str) -> Result<(), String> {
+        match self.browser.current_document_id {
+            Some(document_id) => call_lean_navigation_start_parts(
+                document_id as usize,
+                destination_url,
+                "",
+                "browser-ui",
+                false,
+            ),
+            None => {
+                let message = format!("FreshTopLevelTraversable|{destination_url}");
+                call_lean_runtime_message_handler(&message);
+                Ok(())
+            }
+        }
+    }
+
+    fn begin_navigation(&mut self, pending_navigation: PendingNavigation) -> Result<(), String> {
+        self.start_navigation_request(&pending_navigation.url)?;
+        self.browser.begin_navigation(pending_navigation);
+        self.sync_chrome_state();
+        self.request_window_redraw();
+        Ok(())
+    }
+
+    fn handle_chrome_action(&mut self, action: ChromeAction) {
+        let result = match action {
+            ChromeAction::Navigate => {
+                let Some(chrome) = self.chrome.as_ref() else {
+                    return;
+                };
+                let Some(destination_url) = normalize_browser_destination(&chrome.address_value()) else {
+                    return;
+                };
+                self.begin_navigation(PendingNavigation { url: destination_url })
+            }
+        };
+
+        if let Err(error) = result {
+            eprintln!("{error}");
+        }
+    }
+
+    fn handle_navigation_requested(&mut self, request: NavigateRequest) {
+        self.browser.begin_navigation(PendingNavigation {
+            url: request.destination_url,
+        });
+        self.sync_chrome_state();
+        self.request_window_redraw();
+    }
+
+    fn handle_before_unload_completed(&mut self, result: BeforeUnloadResult) {
+        if result.canceled {
+            self.browser.cancel_pending_navigation();
+            self.sync_chrome_state();
+            self.request_window_redraw();
+        }
+    }
+
+    fn handle_navigation_committed(&mut self, committed: NavigationCommitted) {
+        self.browser
+            .commit_navigation(committed.document_id, committed.url);
+        self.sync_chrome_state();
+        self.request_window_redraw();
+    }
 }
 
 impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
@@ -737,13 +987,34 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
         if self.window.is_none() {
             match Self::create_window(event_loop) {
                 Ok(window) => {
-                    Self::update_window_viewport_snapshot(&window);
+                    let full_viewport = viewport_of_snapshot(viewport_snapshot_for_window(&window));
+                    let chrome = match ChromeUi::new(full_viewport) {
+                        Ok(chrome) => chrome,
+                        Err(_error) => {
+                            event_loop.exit();
+                            return;
+                        }
+                    };
+                    self.chrome = Some(chrome);
+                    self.window = Some(window.clone());
+                    self.sync_chrome_state();
+                    self.update_content_viewport_snapshot(&window);
                     self.resume_renderer_for_window(&window);
-                    self.window = Some(window);
                     match startup_runtime_message() {
-                        Ok(message) => call_lean_runtime_message_handler(&message),
+                        Ok(message) => {
+                            if let Some(destination_url) =
+                                message.strip_prefix("FreshTopLevelTraversable|")
+                            {
+                                self.browser.begin_navigation(PendingNavigation {
+                                    url: destination_url.to_owned(),
+                                });
+                                self.sync_chrome_state();
+                            }
+                            call_lean_runtime_message_handler(&message)
+                        }
                         Err(_error) => event_loop.exit(),
                     }
+                    self.request_window_redraw();
                 }
                 Err(_error) => event_loop.exit(),
             }
@@ -762,7 +1033,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             WindowEvent::RedrawRequested => {
                 self.saw_redraw_requested = true;
                 self.flush_pending_ui_events();
-                if self.current_paint_frame.is_some() {
+                if self.current_paint_frame.is_some() || self.chrome.is_some() {
                     self.paint_current_frame();
                     self.saw_redraw_requested = false;
                 }
@@ -772,18 +1043,26 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             }
             WindowEvent::Resized(size) => {
                 if let Some(window) = self.window.as_ref() {
-                    Self::update_window_viewport_snapshot(window);
+                    let full_viewport = viewport_of_snapshot(viewport_snapshot_for_window(window));
+                    if let Some(chrome) = self.chrome.as_mut() {
+                        chrome.set_viewport(full_viewport);
+                    }
+                    self.sync_chrome_state();
                 }
                 if self.renderer.is_active() {
                     self.renderer.set_size(size.width, size.height);
                 }
                 if self.has_top_level_traversable {
                     self.request_visible_redraw("request_redraw");
+                } else {
+                    self.request_window_redraw();
                 }
             }
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
                 self.renderer.suspend();
                 self.animation_timer = None;
+                self.chrome = None;
+                self.browser = BrowserState::default();
                 self.current_paint_frame = None;
                 self.pending_ui_events.clear();
                 self.has_top_level_traversable = false;
@@ -796,7 +1075,12 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 event_loop.exit();
             }
             WindowEvent::Ime(ime_event) => {
-                self.dispatch_ui_event(UiEvent::Ime(winit_ime_to_blitz(ime_event)));
+                let event = UiEvent::Ime(winit_ime_to_blitz(ime_event));
+                if self.chrome.as_ref().is_some_and(ChromeUi::takes_text_input_focus) {
+                    self.handle_chrome_ui_event(event);
+                } else {
+                    self.dispatch_content_ui_event(event);
+                }
             }
             WindowEvent::ModifiersChanged(new_state) => {
                 self.keyboard_modifiers = new_state;
@@ -808,28 +1092,40 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 } else {
                     UiEvent::KeyUp(key_event)
                 };
-                self.dispatch_ui_event(event);
+                if self.chrome.as_ref().is_some_and(ChromeUi::takes_text_input_focus) {
+                    self.handle_chrome_ui_event(event);
+                } else {
+                    self.dispatch_content_ui_event(event);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer_pos = position;
-                if !self.pointer_position_in_viewport(position) {
-                    return;
+                if self.pointer_position_in_chrome(position) {
+                    self.handle_chrome_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: self.chrome_pointer_coords(position),
+                        button: Default::default(),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                        details: PointerDetails::default(),
+                    }));
+                } else if self.pointer_position_in_content_viewport(position) {
+                    self.dispatch_content_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: self.content_pointer_coords(position),
+                        button: Default::default(),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                        details: PointerDetails::default(),
+                    }));
                 }
-                self.dispatch_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
-                    id: BlitzPointerId::Mouse,
-                    is_primary: true,
-                    coords: self.pointer_coords(position),
-                    button: Default::default(),
-                    buttons: self.buttons,
-                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                    details: PointerDetails::default(),
-                }));
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 if !self.pointer_position_in_viewport(self.pointer_pos) {
                     return;
                 }
-                let coords = self.pointer_coords(self.pointer_pos);
                 let mapped_button = match button {
                     MouseButton::Left => MouseEventButton::Main,
                     MouseButton::Right => MouseEventButton::Secondary,
@@ -842,38 +1138,86 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                     ElementState::Pressed => self.buttons |= mapped_button.into(),
                     ElementState::Released => self.buttons ^= mapped_button.into(),
                 }
-                let event = BlitzPointerEvent {
-                    id: BlitzPointerId::Mouse,
-                    is_primary: true,
-                    coords,
-                    button: mapped_button,
-                    buttons: self.buttons,
-                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                    details: PointerDetails::default(),
-                };
-                self.dispatch_ui_event(match state {
-                    ElementState::Pressed => UiEvent::PointerDown(event),
-                    ElementState::Released => UiEvent::PointerUp(event),
-                });
+                if self.pointer_position_in_chrome(self.pointer_pos) {
+                    let event = BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: self.chrome_pointer_coords(self.pointer_pos),
+                        button: mapped_button,
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                        details: PointerDetails::default(),
+                    };
+                    self.handle_chrome_ui_event(match state {
+                        ElementState::Pressed => UiEvent::PointerDown(event),
+                        ElementState::Released => UiEvent::PointerUp(event),
+                    });
+                } else if self.pointer_position_in_content_viewport(self.pointer_pos) {
+                    if state.is_pressed() {
+                        if let Some(chrome) = self.chrome.as_mut() {
+                            chrome.clear_focus();
+                        }
+                        self.request_window_redraw();
+                    }
+                    let event = BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: self.content_pointer_coords(self.pointer_pos),
+                        button: mapped_button,
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                        details: PointerDetails::default(),
+                    };
+                    self.dispatch_content_ui_event(match state {
+                        ElementState::Pressed => UiEvent::PointerDown(event),
+                        ElementState::Released => UiEvent::PointerUp(event),
+                    });
+                }
             }
             WindowEvent::Touch(Touch { phase, location, force, id, .. }) => {
                 if !self.pointer_position_in_viewport(location) {
                     return;
                 }
-                let coords = self.pointer_coords(location);
-                let event = BlitzPointerEvent {
-                    id: BlitzPointerId::Finger(id),
-                    is_primary: true,
-                    coords,
-                    button: Default::default(),
-                    buttons: MouseEventButtons::None,
-                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                    details: touch_pointer_details(force),
-                };
-                match phase {
-                    TouchPhase::Started => self.dispatch_ui_event(UiEvent::PointerDown(event)),
-                    TouchPhase::Moved => self.dispatch_ui_event(UiEvent::PointerMove(event)),
-                    TouchPhase::Ended | TouchPhase::Cancelled => self.dispatch_ui_event(UiEvent::PointerUp(event)),
+                if self.pointer_position_in_chrome(location) {
+                    let event = BlitzPointerEvent {
+                        id: BlitzPointerId::Finger(id),
+                        is_primary: true,
+                        coords: self.chrome_pointer_coords(location),
+                        button: Default::default(),
+                        buttons: MouseEventButtons::None,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                        details: touch_pointer_details(force),
+                    };
+                    match phase {
+                        TouchPhase::Started => self.handle_chrome_ui_event(UiEvent::PointerDown(event)),
+                        TouchPhase::Moved => self.handle_chrome_ui_event(UiEvent::PointerMove(event)),
+                        TouchPhase::Ended | TouchPhase::Cancelled => {
+                            self.handle_chrome_ui_event(UiEvent::PointerUp(event))
+                        }
+                    }
+                } else if self.pointer_position_in_content_viewport(location) {
+                    let event = BlitzPointerEvent {
+                        id: BlitzPointerId::Finger(id),
+                        is_primary: true,
+                        coords: self.content_pointer_coords(location),
+                        button: Default::default(),
+                        buttons: MouseEventButtons::None,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                        details: touch_pointer_details(force),
+                    };
+                    match phase {
+                        TouchPhase::Started => {
+                            if let Some(chrome) = self.chrome.as_mut() {
+                                chrome.clear_focus();
+                            }
+                            self.request_window_redraw();
+                            self.dispatch_content_ui_event(UiEvent::PointerDown(event))
+                        }
+                        TouchPhase::Moved => self.dispatch_content_ui_event(UiEvent::PointerMove(event)),
+                        TouchPhase::Ended | TouchPhase::Cancelled => {
+                            self.dispatch_content_ui_event(UiEvent::PointerUp(event))
+                        }
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -884,12 +1228,21 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                     MouseScrollDelta::LineDelta(x, y) => BlitzWheelDelta::Lines(x as f64, y as f64),
                     MouseScrollDelta::PixelDelta(pos) => BlitzWheelDelta::Pixels(pos.x, pos.y),
                 };
-                self.dispatch_ui_event(UiEvent::Wheel(BlitzWheelEvent {
-                    delta,
-                    coords: self.pointer_coords(self.pointer_pos),
-                    buttons: self.buttons,
-                    mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                }));
+                if self.pointer_position_in_chrome(self.pointer_pos) {
+                    self.handle_chrome_ui_event(UiEvent::Wheel(BlitzWheelEvent {
+                        delta,
+                        coords: self.chrome_pointer_coords(self.pointer_pos),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                    }));
+                } else if self.pointer_position_in_content_viewport(self.pointer_pos) {
+                    self.dispatch_content_ui_event(UiEvent::Wheel(BlitzWheelEvent {
+                        delta,
+                        coords: self.content_pointer_coords(self.pointer_pos),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                    }));
+                }
             }
             _ => {}
         }
@@ -904,6 +1257,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 if let Some(summary) = paint_frame.debug_summary {
                     log_embedder_scene("received", paint_frame.document_id, summary);
                 }
+                self.browser.current_document_id = Some(paint_frame.document_id);
                 self.current_paint_frame = Some(paint_frame);
                 if self.saw_redraw_requested {
                     self.paint_current_frame();
@@ -913,6 +1267,15 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         window.request_redraw();
                     }
                 }
+            }
+            FormalWebUserEvent::NavigationRequested(request) => {
+                self.handle_navigation_requested(request);
+            }
+            FormalWebUserEvent::BeforeUnloadCompleted(result) => {
+                self.handle_before_unload_completed(result);
+            }
+            FormalWebUserEvent::NavigationCommitted(committed) => {
+                self.handle_navigation_committed(committed);
             }
             FormalWebUserEvent::EmbedderRequestRedraw => {
                 if self.has_visible_viewport() {

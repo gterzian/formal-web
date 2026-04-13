@@ -10,6 +10,10 @@
 
 - Blitz UI-event integration that turns native `UiEvent` values into DOM dispatch belongs in `content/src/dom`, not in `content/src/boa`.
 
+- Activation-triggering native events should flow through `content/src/dom/dispatch.rs`. Compute the activation target during DOM dispatch and invoke HTML-defined activation behavior from that algorithm; do not special-case anchor navigation in the UI-event bridge.
+
+- Keep `activationTarget` selection in `dispatch.rs` aligned with the DOM dispatch algorithm's target-first assignment and bubbling-parent fallback, rather than treating it as a post-dispatch HTML lookup.
+
 - Use the checked-in standards under `/web_standards` for DOM, HTML, and UI Events anchors and verbatim `Step N:` comments. Never quote specs from memory: only use the local sources.
 
 - "Missing Feature:" comments identify major missing features in the code. Only address those if given a clear implementation plan.

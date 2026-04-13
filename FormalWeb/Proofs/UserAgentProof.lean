@@ -27,6 +27,9 @@ inductive UserAgentAction
     (checkId : Nat)
     (canceled : Bool)
     (effects : List UserAgentEffect)
+  | abortNavigation
+      (documentId : Nat)
+      (traversableId : Nat)
   | requestDocumentFetch
       (handler : RustNetHandlerPointer)
       (request : DocumentFetchRequest)
@@ -110,6 +113,11 @@ def userAgentLTS : TransitionSystem.LTS UserAgent UserAgentAction where
         effects =
             (runMonadic userAgent
               (.beforeUnloadCompleted documentId checkId canceled)).1.toList
+    | .abortNavigation documentId traversableId =>
+        ∃ traversable,
+          traversableContainingDocument? userAgent documentId = some traversable ∧
+          traversable.id = traversableId ∧
+          userAgent' = abortNavigation userAgent traversableId
     | .requestDocumentFetch handler request =>
         ∃ pendingDocumentFetch,
           requestDocumentFetch userAgent handler request.request =
@@ -195,6 +203,8 @@ def interpretUserAgentAction : UserAgentAction → List UserAgentEffect
       effects
     | .beforeUnloadCompleted _ _ _ effects =>
       effects
+  | .abortNavigation _ _ =>
+      []
   | .requestDocumentFetch handler request =>
       [.requestDocumentFetch handler request]
   | .dispatchEvent traversableId event eventLoopId message =>
@@ -917,6 +927,79 @@ theorem handleBeforeUnloadCompleted_refinement
   · unfold UserAgentEffectsRefine
     simp [interpretUserAgentActions, interpretUserAgentAction, effects]
 
+  theorem abortNavigationRequestedM_run
+    (userAgent : UserAgent)
+    (documentId : Nat) :
+    (abortNavigationRequestedM documentId).run userAgent =
+      match traversableContainingDocument? userAgent documentId with
+      | some traversable =>
+        (((), #[]), abortNavigation userAgent traversable.id)
+      | none =>
+        (((), #[]), userAgent) := by
+    unfold abortNavigationRequestedM
+    rw [run_bind, run_get]
+    cases htraversable : traversableContainingDocument? userAgent documentId with
+    | some traversable =>
+      simp [htraversable, run_set, run_pure]
+    | none =>
+      simp [htraversable, run_pure]
+
+  theorem runMonadic_abortNavigationRequested
+    (userAgent : UserAgent)
+    (documentId : Nat) :
+    runMonadic userAgent (.abortNavigationRequested documentId) =
+      match traversableContainingDocument? userAgent documentId with
+      | some traversable =>
+        (#[], abortNavigation userAgent traversable.id)
+      | none =>
+        (#[], userAgent) := by
+    unfold runMonadic handleUserAgentTaskMessage
+    rw [abortNavigationRequestedM_run]
+    cases htraversable : traversableContainingDocument? userAgent documentId with
+    | some traversable =>
+      simp [htraversable]
+    | none =>
+      simp [htraversable]
+
+theorem handleAbortNavigationRequested_refinement
+    (userAgent : UserAgent)
+    (documentId : Nat) :
+    ∃ actions,
+      UserAgentTraceRefines userAgent (.abortNavigationRequested documentId) actions ∧
+      UserAgentEffectsRefine userAgent (.abortNavigationRequested documentId) actions := by
+  cases htraversable : traversableContainingDocument? userAgent documentId with
+  | some traversable =>
+      refine ⟨[.abortNavigation documentId traversable.id], ?_, ?_⟩
+      · unfold UserAgentTraceRefines
+        have htrans :
+            userAgentLTS.trans
+              userAgent
+              (.abortNavigation documentId traversable.id)
+              (abortNavigation userAgent traversable.id) := by
+          exact ⟨traversable, htraversable, rfl, rfl⟩
+        have hstate :
+            (runMonadic userAgent (.abortNavigationRequested documentId)).2 =
+              abortNavigation userAgent traversable.id := by
+          simpa [htraversable] using
+            congrArg Prod.snd (runMonadic_abortNavigationRequested userAgent documentId)
+        simpa [hstate] using TransitionSystem.TransitionTrace.single htrans
+      · unfold UserAgentEffectsRefine
+        simpa [interpretUserAgentActions, interpretUserAgentAction, htraversable] using
+          (congrArg (fun output => output.1.toList)
+            (runMonadic_abortNavigationRequested userAgent documentId)).symm
+  | none =>
+      refine ⟨[], ?_, ?_⟩
+      · unfold UserAgentTraceRefines
+        have hstate :
+            (runMonadic userAgent (.abortNavigationRequested documentId)).2 = userAgent := by
+          simpa [htraversable] using
+            congrArg Prod.snd (runMonadic_abortNavigationRequested userAgent documentId)
+        simpa [hstate] using (TransitionSystem.TransitionTrace.nil userAgent)
+      · unfold UserAgentEffectsRefine
+        simpa [interpretUserAgentActions, htraversable] using
+          (congrArg (fun output => output.1.toList)
+            (runMonadic_abortNavigationRequested userAgent documentId)).symm
+
 theorem handleDispatchEvent_refinement
     (userAgent : UserAgent)
     (event : String) :
@@ -1263,6 +1346,8 @@ theorem handleUserAgentTaskMessage_full_refinement
         noopener
   | beforeUnloadCompleted documentId checkId canceled =>
       exact handleBeforeUnloadCompleted_refinement userAgent documentId checkId canceled
+    | abortNavigationRequested documentId =>
+      exact handleAbortNavigationRequested_refinement userAgent documentId
   | documentFetchRequested handler request =>
       exact handleDocumentFetchRequested_refinement userAgent handler request
   | dispatchEvent event =>

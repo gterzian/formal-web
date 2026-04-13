@@ -28,6 +28,30 @@ pub(crate) trait EventDispatchHost: EcmascriptHost {
     ) -> JsResult<JsObject>;
 
     fn current_time_millis(&self) -> f64;
+
+    fn has_activation_behavior(&mut self, _target: &JsObject) -> bool {
+        false
+    }
+
+    fn run_legacy_pre_activation_behavior(
+        &mut self,
+        _target: &JsObject,
+        _event: &JsObject,
+    ) -> JsResult<()> {
+        Ok(())
+    }
+
+    fn run_activation_behavior(&mut self, _target: &JsObject, _event: &JsObject) -> JsResult<()> {
+        Ok(())
+    }
+
+    fn run_legacy_canceled_activation_behavior(
+        &mut self,
+        _target: &JsObject,
+        _event: &JsObject,
+    ) -> JsResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -261,9 +285,16 @@ fn dispatch_on_path(
     // Note: `path_for_target` resolves the shadow-adjusted target chosen for this dispatch ahead of time.
 
     // Step 3: "Let activationTarget be null."
+    let activation_target = activation_target(host, path, event)?;
+
     // Step 4: "Let relatedTarget be the result of retargeting event's relatedTarget against target."
     // Step 5: "Let clearTargets be false."
-    // Note: The content runtime does not yet model activation behavior, related targets, or shadow-tree target clearing.
+    // Note: The content runtime does not yet model related targets or shadow-tree target clearing.
+
+    // Step 12: "If activationTarget is non-null and activationTarget has legacy-pre-activation behavior, then run activationTarget's legacy-pre-activation behavior."
+    if let Some(activation_target) = activation_target.as_ref() {
+        host.run_legacy_pre_activation_behavior(activation_target, event)?;
+    }
 
     // Step 13: "For each struct of event's path, in reverse order:"
     for (index, entry) in path.iter().enumerate().rev() {
@@ -323,11 +354,65 @@ fn dispatch_on_path(
     })?;
 
     // Step 19: "If clearTargets is true:"
+    // Note: The content runtime does not yet model shadow-tree target clearing.
+
     // Step 20: "If activationTarget is non-null:"
-    // Note: The content runtime does not yet model shadow-tree target clearing or activation behavior.
+    if let Some(activation_target) = activation_target.as_ref() {
+        if !canceled {
+            host.run_activation_behavior(activation_target, event)?;
+        } else {
+            host.run_legacy_canceled_activation_behavior(activation_target, event)?;
+        }
+    }
 
     // Step 21: "Return false if event's canceled flag is set; otherwise true."
     Ok(!canceled)
+}
+
+fn activation_target(
+    host: &mut impl EventDispatchHost,
+    path: &[EventPathEntry],
+    event: &JsObject,
+) -> JsResult<Option<JsObject>> {
+    // Note: This helper models the `activationTarget` selection performed while DOM dispatch
+    // appends the initial target and then walks up through its parents. The current runtime does
+    // not model shadow trees, so the spec's two `activationTarget` assignment sites collapse to a
+    // target-first check plus a bubbling-only ancestor scan.
+
+    // Step 5: "If isActivationEvent is true and target has activation behavior, then set activationTarget to target."
+    // Note: The current runtime does not yet materialize `MouseEvent`, so trusted `click`
+    // dispatch is treated as the activation-event signal used by HTML activation behavior hooks.
+    if !is_activation_event(event)? {
+        return Ok(None);
+    }
+
+    let Some(target_entry) = path.first() else {
+        return Ok(None);
+    };
+
+    let target = target_entry
+        .shadow_adjusted_target
+        .clone()
+        .unwrap_or_else(|| target_entry.invocation_target.clone());
+    if host.has_activation_behavior(&target) {
+        return Ok(Some(target));
+    }
+
+    // Steps 9.6.1 and 9.8.2: "If isActivationEvent is true, event's bubbles attribute is true,
+    // activationTarget is null, and parent/target has activation behavior, then set activationTarget
+    // to parent/target."
+    if !bubbles(event)? {
+        return Ok(None);
+    }
+
+    for entry in path.iter().skip(1) {
+        let candidate = entry.invocation_target.clone();
+        if host.has_activation_behavior(&candidate) {
+            return Ok(Some(candidate));
+        }
+    }
+
+    Ok(None)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-listener-invoke>
@@ -513,4 +598,8 @@ fn event_phase(event: &JsObject) -> JsResult<u16> {
 
 fn event_type(event: &JsObject) -> JsResult<String> {
     with_event_mut(&JsValue::from(event.clone()), |inner| inner.type_.clone())
+}
+
+fn is_activation_event(event: &JsObject) -> JsResult<bool> {
+    Ok(event_type(event)? == "click")
 }

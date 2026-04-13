@@ -21,6 +21,8 @@ inductive TaskStep
   | updateTheRendering
   /-- Model-local task step queued when the embedder runtime dispatches a serialized UI event. -/
   | dispatchEvent
+  /-- Model-local task step queued when the user agent runs the `beforeunload` steps for a document. -/
+  | runBeforeUnload
   /-- Model-local task step queued when the user agent requests a paint for the active document. -/
   | paint
   /-- Model-local task step queued when a document-driven fetch result is handed back to Rust. -/
@@ -60,6 +62,7 @@ inductive EventLoopTaskMessage where
   | createLoadedDocument (documentId : DocumentId) (url : String) (body : String)
   | queueUpdateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | queueDispatchEvent (documentId : DocumentId) (event : String)
+  | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
   | queuePaint (documentId : DocumentId)
   | queueDocumentFetchCompletion
       (handler : RustNetHandlerPointer)
@@ -135,6 +138,11 @@ structure PendingDispatchEventTask where
   event : String
 deriving DecidableEq
 
+structure PendingRunBeforeUnloadTask where
+  documentId : DocumentId
+  checkId : Nat
+deriving DecidableEq
+
 structure PendingPaintTask where
   documentId : DocumentId
 deriving DecidableEq
@@ -152,6 +160,7 @@ structure EventLoopTaskState where
   pendingCreateLoadedDocumentTasks : List PendingCreateLoadedDocumentTask := []
   pendingUpdateTheRenderingTasks : List PendingUpdateTheRenderingTask := []
   pendingDispatchEventTasks : List PendingDispatchEventTask := []
+  pendingRunBeforeUnloadTasks : List PendingRunBeforeUnloadTask := []
   pendingPaintTasks : List PendingPaintTask := []
   pendingDocumentFetchCompletionTasks : List PendingDocumentFetchCompletionTask := []
 
@@ -163,6 +172,7 @@ inductive EventLoopRuntimeEffect where
   | createLoadedDocument (documentId : DocumentId) (url : String) (body : String)
   | updateTheRendering (completion : EventLoopTaskCompletion)
   | dispatchEvent (documentId : DocumentId) (event : String)
+  | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
   | paint (documentId : DocumentId)
   | documentFetchCompletion
       (handler : RustNetHandlerPointer)
@@ -231,6 +241,13 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
             | pendingTask :: pendingTasks =>
                 (some (.dispatchEvent pendingTask.documentId pendingTask.event),
                   { baseState with pendingDispatchEventTasks := pendingTasks })
+        | .runBeforeUnload =>
+          match state.pendingRunBeforeUnloadTasks with
+          | [] =>
+            (none, baseState)
+          | pendingTask :: pendingTasks =>
+            (some (.runBeforeUnload pendingTask.documentId pendingTask.checkId),
+              { baseState with pendingRunBeforeUnloadTasks := pendingTasks })
         | .paint =>
             match state.pendingPaintTasks with
             | [] =>
@@ -313,6 +330,19 @@ def handleEventLoopTaskMessage
       }
       let (effects, nextState) := enqueueAndRunNext state task
       (((), effects), nextState)
+  | .runBeforeUnload documentId checkId =>
+      let task : Task := {
+        step := .runBeforeUnload
+        documentId := some documentId.id
+      }
+      let state := {
+        state with
+          eventLoop := state.eventLoop.enqueueTask task
+          pendingRunBeforeUnloadTasks :=
+            state.pendingRunBeforeUnloadTasks.concat { documentId, checkId }
+      }
+      let (effects, nextState) := enqueueAndRunNext state task
+      (((), effects), nextState)
   | .queuePaint documentId =>
       let task : Task := {
         step := .paint
@@ -379,6 +409,11 @@ def runEventLoopMessage
               nextState.contentProcess.raw
               (USize.ofNat documentId.id)
               event
+        | some (.runBeforeUnload documentId checkId) =>
+            contentProcessRunBeforeUnload
+              nextState.contentProcess.raw
+              (USize.ofNat documentId.id)
+              (USize.ofNat checkId)
         | some (.paint documentId) =>
             contentProcessUpdateTheRendering
               nextState.contentProcess.raw

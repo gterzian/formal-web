@@ -87,6 +87,12 @@ fn spawn_listener(event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>) -
                         },
                         request.noopener,
                     );
+                    super::with_event_loop_proxy(|proxy| {
+                        if let Some(proxy) = proxy {
+                            let _ =
+                                proxy.send_event(super::FormalWebUserEvent::NavigationRequested(request));
+                        }
+                    });
                 }
                 ContentEvent::BeforeUnloadCompleted(result) => {
                     let _ = super::call_lean_before_unload_completed_parts(
@@ -94,6 +100,20 @@ fn spawn_listener(event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>) -
                         result.check_id as usize,
                         result.canceled,
                     );
+                    super::with_event_loop_proxy(|proxy| {
+                        if let Some(proxy) = proxy {
+                            let _ = proxy
+                                .send_event(super::FormalWebUserEvent::BeforeUnloadCompleted(result));
+                        }
+                    });
+                }
+                ContentEvent::NavigationCommitted(committed) => {
+                    super::with_event_loop_proxy(|proxy| {
+                        if let Some(proxy) = proxy {
+                            let _ = proxy
+                                .send_event(super::FormalWebUserEvent::NavigationCommitted(committed));
+                        }
+                    });
                 }
                 ContentEvent::PaintReady(snapshot) => {
                     super::with_event_loop_proxy(|proxy| {

@@ -26,5 +26,9 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 - Coalesce high-frequency embedder input such as pointer moves and wheel bursts before forwarding them into Lean/content, and note a rendering opportunity once per flushed batch rather than once per raw event.
 - Move large paint-scene payloads across the content/embedder boundary via `IpcSharedMemory`, and keep the typed IPC message focused on control metadata and shared-memory handles.
 - Keep cross-frame paint resources such as fonts in a transport registry keyed by stable identifiers, send new blobs via shared memory when first used for a content-runtime namespace, and keep recorded scenes focused on lightweight references.
+- Track navigation completion with an explicit content-to-embedder commit signal instead of inferring it from paint delivery; stale content can repaint while `beforeunload` or replacement navigation is still pending.
+- When compositing fixed embedder chrome above scrollable content, append the content scene first and the chrome scene last so scrolled content cannot overpaint fixed controls.
+
+At the end of a task, always comfirm `cargo run --release` builds the project successfully, and then exit the terminal. 
 
 Plans and TODOS belong in `scratchpad`. 

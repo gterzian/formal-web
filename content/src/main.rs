@@ -40,11 +40,6 @@ use std::{
 use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
-const BEFORE_UNLOAD_EVENT_PREFIX: &str = "BeforeUnload|";
-
-fn before_unload_check_id(event: &str) -> Option<u64> {
-    event.strip_prefix(BEFORE_UNLOAD_EVENT_PREFIX)?.parse().ok()
-}
 
 fn new_font_namespace() -> u64 {
     let pid = u64::from(std::process::id());
@@ -346,6 +341,12 @@ impl ContentRuntime {
         // Step 12.2: "Let container be document's node navigable's container."
         // Note: This runtime entry point creates a top-level document, so `container` is null and the container `load` event branch in `completely finish loading` does not run here.
 
+        self.event_sender
+            .send(ContentEvent::NavigationCommitted(
+                ipc_messages::content::NavigationCommitted { document_id, url },
+            ))
+            .map_err(|error| format!("failed to send navigation commit: {error}"))?;
+
         Ok(())
     }
 
@@ -363,21 +364,6 @@ impl ContentRuntime {
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
-        if let Some(check_id) = before_unload_check_id(&event) {
-            let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
-                .map_err(|error| error.to_string())?;
-            self.event_sender
-                .send(ContentEvent::BeforeUnloadCompleted(
-                    ipc_messages::content::BeforeUnloadResult {
-                        document_id,
-                        check_id,
-                        canceled,
-                    },
-                ))
-                .map_err(|error| format!("failed to send beforeunload completion: {error}"))?;
-            return Ok(());
-        }
-
         // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event to the content runtime.
         let event = deserialize_ui_event(&event)?;
         dispatch_ui_event(
@@ -387,6 +373,24 @@ impl ContentRuntime {
             &self.event_sender,
             event,
         )
+    }
+
+    fn run_before_unload(&mut self, document_id: u64, check_id: u64) -> Result<(), String> {
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
+            .map_err(|error| error.to_string())?;
+        self.event_sender
+            .send(ContentEvent::BeforeUnloadCompleted(
+                ipc_messages::content::BeforeUnloadResult {
+                    document_id,
+                    check_id,
+                    canceled,
+                },
+            ))
+            .map_err(|error| format!("failed to send beforeunload completion: {error}"))
     }
 
     fn update_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
@@ -519,6 +523,13 @@ impl ContentRuntime {
             }
             DispatchEvent { document_id, event } => {
                 self.dispatch_event(document_id, event)?;
+                Ok(true)
+            }
+            Command::RunBeforeUnload {
+                document_id,
+                check_id,
+            } => {
+                self.run_before_unload(document_id, check_id)?;
                 Ok(true)
             }
             UpdateTheRendering { document_id } => {

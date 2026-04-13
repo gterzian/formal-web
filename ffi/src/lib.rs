@@ -30,6 +30,7 @@ unsafe extern "C" {
     ) -> *mut lean_object;
     fn completeBeforeUnload(document_id: usize, check_id: usize, canceled: usize)
     -> *mut lean_object;
+    fn abortNavigation(document_id: usize) -> *mut lean_object;
     fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
     fn leanIoResultMkOkUnit() -> *mut lean_object;
     fn leanIoResultMkOkUsize(value: usize) -> *mut lean_object;
@@ -144,6 +145,18 @@ fn call_lean_before_unload_completed_parts(
     Ok(())
 }
 
+fn call_lean_abort_navigation_parts(document_id: usize) -> Result<(), String> {
+    let io_result = unsafe { abortNavigation(document_id) };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean navigation abort failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
 fn user_agent_note_rendering_opportunity(message: &str) {
     let lean_message = lean_string_from_owned(message.to_owned());
     let io_result = unsafe { userAgentNoteRenderingOpportunity(lean_message) };
@@ -160,6 +173,7 @@ fn runtime_hooks() -> RuntimeHooks {
         start_document_fetch_parts: call_lean_document_fetch_start_parts,
         start_navigation_parts: call_lean_navigation_start_parts,
         complete_before_unload_parts: call_lean_before_unload_completed_parts,
+        abort_navigation_parts: call_lean_abort_navigation_parts,
         note_rendering_opportunity: user_agent_note_rendering_opportunity,
     }
 }
@@ -294,6 +308,27 @@ pub extern "C" fn contentProcessDispatchEvent(
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic dispatching content event"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessRunBeforeUnload(
+    handle: usize,
+    document_id: usize,
+    check_id: usize,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        embedder::send_content_command(
+            handle,
+            ContentCommand::RunBeforeUnload {
+                document_id: document_id as u64,
+                check_id: check_id as u64,
+            },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic running content beforeunload"),
     }
 }
 

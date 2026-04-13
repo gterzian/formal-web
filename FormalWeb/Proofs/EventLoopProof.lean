@@ -106,6 +106,7 @@ theorem runNextQueuedTaskM_eventLoop
     | cases state.pendingCreateLoadedDocumentTasks <;> rfl
     | cases state.pendingUpdateTheRenderingTasks <;> rfl
     | cases state.pendingDispatchEventTasks <;> rfl
+    | cases state.pendingRunBeforeUnloadTasks <;> rfl
     | cases state.pendingPaintTasks <;> rfl
     | cases state.pendingDocumentFetchCompletionTasks <;> rfl
 
@@ -244,6 +245,36 @@ theorem handleEventLoopTaskMessage_full_refinement
         state with
           eventLoop := state.eventLoop.enqueueTask task
           pendingDispatchEventTasks := state.pendingDispatchEventTasks.concat { documentId, event }
+      }
+      have hqueue :
+          TransitionSystem.TransitionTrace
+            eventLoopLTS
+            state.eventLoop
+            [.queueTask task]
+            queuedState.eventLoop := by
+        exact queueTask_trace state.eventLoop task (by simp [task])
+      rcases runNextQueuedTaskM_full_refinement queuedState with ⟨actions₂, htrace₂, hinterp₂⟩
+      refine ⟨[.queueTask task] ++ actions₂, ?_, ?_⟩
+      · change TransitionSystem.TransitionTrace
+            eventLoopLTS
+            state.eventLoop
+            ([.queueTask task] ++ actions₂)
+            (enqueueAndRunNext queuedState task).2.eventLoop
+        rw [enqueueAndRunNext_eventLoop]
+        simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
+          TransitionSystem.TransitionTrace.append hqueue htrace₂
+      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
+        rw [enqueueAndRunNext_effects, hinterp₂]
+  | runBeforeUnload documentId checkId =>
+      let task : Task := {
+        step := .runBeforeUnload
+        documentId := some documentId.id
+      }
+      let queuedState : EventLoopTaskState := {
+        state with
+          eventLoop := state.eventLoop.enqueueTask task
+          pendingRunBeforeUnloadTasks :=
+            state.pendingRunBeforeUnloadTasks.concat { documentId, checkId }
       }
       have hqueue :
           TransitionSystem.TransitionTrace

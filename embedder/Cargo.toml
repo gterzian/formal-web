@@ -7,7 +7,11 @@ publish = false
 [dependencies]
 anyrender = { version = "0.8", features = ["serde"] }
 anyrender_vello = "0.8.0"
+blitz-dom = { path = "../vendor/blitz/packages/blitz-dom", default-features = false, features = ["system_fonts", "svg"] }
+blitz-html = { path = "../vendor/blitz/packages/blitz-html", default-features = false }
+blitz-paint = { path = "../vendor/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
+html5ever = "0.37"
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 keyboard-types = "0.7"

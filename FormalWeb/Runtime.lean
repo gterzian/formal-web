@@ -154,6 +154,13 @@ def completeBeforeUnloadFromRust
       checkId.toNat
       (canceled.toNat != 0)
 
+@[export abortNavigation]
+def abortNavigationFromRust
+    (documentId : USize) :
+    IO Unit := do
+  spawnDetached <| enqueueUserAgentMessage <|
+    .abortNavigationRequested documentId.toNat
+
 def kernelStarted : IO Bool := do
   return (← userAgentMessageChannelRef.get).isSome
 
