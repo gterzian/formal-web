@@ -74,7 +74,7 @@ inductive UserAgentEffect where
       (eventLoopId : Nat)
       (event : String)
       (message : EventLoopTaskMessage)
-    | runBeforeUnload
+  | runBeforeUnload
       (traversableId : Nat)
       (eventLoopId : Nat)
       (message : EventLoopTaskMessage)
@@ -82,11 +82,7 @@ inductive UserAgentEffect where
       (traversableId : Nat)
       (eventLoopId : Nat)
       (message : EventLoopTaskMessage)
-  | updateTheRendering
-      (traversableId : Nat)
-      (eventLoopId : Nat)
-      (documentId : DocumentId)
-      (paintDispatch? : Option (Nat × EventLoopTaskMessage))
+  | runNextEventLoopTask (eventLoopId : Nat)
   | completeNavigation
       (navigationId : Nat)
       (traversableId : Nat)
@@ -147,12 +143,9 @@ def queueUpdateTheRendering
     (message : EventLoopTaskMessage) : FormalWeb.M Unit :=
   emit (.queueUpdateTheRendering traversableId eventLoopId message)
 
-def updateTheRendering
-    (traversableId : Nat)
-    (eventLoopId : Nat)
-    (documentId : DocumentId)
-    (paintDispatch? : Option (Nat × EventLoopTaskMessage)) : FormalWeb.M Unit :=
-  emit (.updateTheRendering traversableId eventLoopId documentId paintDispatch?)
+def runNextEventLoopTask
+    (eventLoopId : Nat) : FormalWeb.M Unit :=
+  emit (.runNextEventLoopTask eventLoopId)
 
 def completeNavigation
     (navigationId : Nat)
@@ -525,12 +518,6 @@ def queueCreateLoadedDocument
   let _eventLoop <- userAgent.eventLoop? document.eventLoopId
   pure (document.eventLoopId, .createLoadedDocument document.documentId response.url response.body)
 
-def queuePaintDocument
-    (eventLoopId : Nat)
-  (documentId : DocumentId) :
-    Option (Nat × EventLoopTaskMessage) :=
-  some (eventLoopId, .queuePaint documentId)
-
 def notePendingUpdateTheRendering
     (userAgent : UserAgent)
     (traversableId : Nat) :
@@ -575,14 +562,11 @@ def queueUpdateTheRendering
       replaceTraversable userAgent traversable
     else
       userAgent
-  if eventLoop.hasPendingUpdateTheRendering then
-    (userAgent, none)
-  else
-    let eventLoop := eventLoop.enqueueUpdateTheRenderingTask
-    (
-      userAgent.setEventLoop eventLoop,
-      some (document.eventLoopId, EventLoopTaskMessage.queueUpdateTheRendering traversableId documentId)
-    )
+  let eventLoop := eventLoop.enqueueTask { step := .updateTheRendering }
+  (
+    userAgent.setEventLoop eventLoop,
+    some (document.eventLoopId, EventLoopTaskMessage.queueUpdateTheRendering traversableId documentId)
+  )
 
 def resumePendingUpdateTheRenderingAfterNavigation
     (userAgent : UserAgent)
@@ -628,38 +612,6 @@ def queueRunBeforeUnload
     document.eventLoopId,
     .runBeforeUnload documentId checkId
   )
-
-def completeUpdateTheRendering
-    (userAgent : UserAgent)
-    (traversableId : Nat)
-    (eventLoopId : Nat)
-  (documentId : DocumentId) :
-    Option UserAgent := do
-  let traversable <- traversable? userAgent traversableId
-  if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
-    none
-  else
-    let document <- traversable.toTraversableNavigable.activeDocument
-    if document.eventLoopId != eventLoopId || document.documentId != documentId then
-      none
-    else
-      let eventLoop <- userAgent.eventLoop? eventLoopId
-      if !eventLoop.hasPendingUpdateTheRendering then
-        none
-      else
-        let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
-        pure (userAgent.setEventLoop eventLoop)
-
-def dropPendingUpdateTheRenderingCompletion
-    (userAgent : UserAgent)
-    (eventLoopId : Nat) :
-    Option UserAgent := do
-  let eventLoop <- userAgent.eventLoop? eventLoopId
-  if !eventLoop.hasPendingUpdateTheRendering then
-    none
-  else
-    let eventLoop := eventLoop.dequeueUpdateTheRenderingTask
-    pure (userAgent.setEventLoop eventLoop)
 
 def requestDocumentFetch
     (userAgent : UserAgent)
@@ -1660,10 +1612,7 @@ inductive UserAgentTaskMessage where
   | documentFetchRequested (handler : RustNetHandlerPointer) (request : NavigationRequest)
   | dispatchEvent (event : String)
   | renderingOpportunity
-  | updateTheRenderingCompleted
-      (traversableId : Nat)
-      (eventLoopId : Nat)
-      (documentId : DocumentId)
+  | runNextEventLoopTask (eventLoopId : Nat)
   | fetchCompleted (fetchId : Nat) (response : FetchResponse)
 deriving Repr, DecidableEq
 
@@ -1795,12 +1744,6 @@ def renderingOpportunityFailureDetails
       "cannot queue update-the-rendering before an active traversable exists"
   | some traversableId =>
       s!"cannot queue update-the-rendering for active traversable {traversableId}"
-
-def updateTheRenderingCompletionFailureDetails
-    (traversableId : Nat)
-    (eventLoopId : Nat) :
-    String :=
-  s!"cannot apply completed update-the-rendering for traversable {traversableId} on event loop {eventLoopId}"
 
 def documentFetchCompletionDispatch?
     (userAgent : UserAgent)
@@ -2021,24 +1964,13 @@ def queueRenderingOpportunityM : M Unit := do
         | none =>
             pure ()
 
-def completeUpdateTheRenderingM
-    (traversableId : Nat)
-    (eventLoopId : Nat)
-    (documentId : DocumentId) :
+def runNextEventLoopTaskM
+  (eventLoopId : Nat) :
     M Unit := do
   let userAgent ← get
-  match completeUpdateTheRendering userAgent traversableId eventLoopId documentId with
-  | some nextUserAgent =>
-      set nextUserAgent
-      let paintDispatch? := queuePaintDocument eventLoopId documentId
-      M.updateTheRendering traversableId eventLoopId documentId paintDispatch?
-      match paintDispatch? with
-      | some _ =>
-          pure ()
-      | none =>
-          M.logError (updateTheRenderingCompletionFailureDetails traversableId eventLoopId)
-  | none =>
-      pure ()
+  let some _ := userAgent.eventLoop? eventLoopId
+    | pure ()
+  M.runNextEventLoopTask eventLoopId
 
 def handleFetchCompletedM
     (fetchId : Nat)
@@ -2099,8 +2031,8 @@ def handleUserAgentTaskMessage
       dispatchEventM event
   | .renderingOpportunity =>
       queueRenderingOpportunityM
-  | .updateTheRenderingCompleted traversableId eventLoopId documentId =>
-      completeUpdateTheRenderingM traversableId eventLoopId documentId
+  | .runNextEventLoopTask eventLoopId =>
+      runNextEventLoopTaskM eventLoopId
   | .fetchCompleted fetchId response =>
       handleFetchCompletedM fetchId response
 
@@ -2111,8 +2043,6 @@ def runMonadic
   let (((), effects), nextUserAgent) :=
     (handleUserAgentTaskMessage message).run userAgent
   (effects, nextUserAgent)
-
-
 
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
@@ -2183,17 +2113,13 @@ def runUserAgentMessage
           nextUserAgent
           eventLoopId
           eventLoopMessage
-    | .updateTheRendering _ _ _ paintDispatch? =>
-        match paintDispatch? with
-        | some (eventLoopId, eventLoopMessage) =>
-            sendEventLoopTaskMessage
-              ensureEventLoopWorker
-              enqueueEventLoopMessage
-              nextUserAgent
-              eventLoopId
-              eventLoopMessage
-        | none =>
-            pure ()
+    | .runNextEventLoopTask eventLoopId =>
+        sendEventLoopTaskMessage
+          ensureEventLoopWorker
+          enqueueEventLoopMessage
+          nextUserAgent
+          eventLoopId
+          .runNextTask
     | .completeNavigation _ _ _ dispatch? =>
         match dispatch? with
         | some (eventLoopId, eventLoopMessage) =>

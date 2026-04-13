@@ -9,7 +9,9 @@ build = "build.rs"
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
 embedder = { path = "../embedder" }
+ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 
 [build-dependencies]

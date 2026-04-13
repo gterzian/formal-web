@@ -1,9 +1,10 @@
 use blitz_traits::shell::ColorScheme;
+use embedder::{ContentBridgeHooks, FormalWebUserEvent};
+use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command as ContentCommand,
-    Event as ContentEvent, ViewportSnapshot,
+    Event as ContentEvent, UserNavigationInvolvement, ViewportSnapshot,
 };
-use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
@@ -30,8 +31,8 @@ fn executable_file_name(stem: &str) -> String {
 }
 
 fn content_executable_path() -> Result<PathBuf, String> {
-    let current_exe =
-        std::env::current_exe().map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
     let parent = current_exe
         .parent()
         .ok_or_else(|| String::from("failed to resolve executable directory"))?;
@@ -59,7 +60,18 @@ fn viewport_command(snapshot: (u32, u32, f32, ColorScheme)) -> ContentCommand {
     })
 }
 
-fn spawn_listener(event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>) -> JoinHandle<()> {
+fn navigation_user_involvement_name(user_involvement: UserNavigationInvolvement) -> &'static str {
+    match user_involvement {
+        UserNavigationInvolvement::None => "none",
+        UserNavigationInvolvement::Activation => "activation",
+        UserNavigationInvolvement::BrowserUi => "browser-ui",
+    }
+}
+
+fn spawn_listener(
+    event_loop_id: usize,
+    event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         while let Ok(event) = event_receiver.recv() {
             match event {
@@ -76,23 +88,10 @@ fn spawn_listener(event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>) -
                         request.document_id as usize,
                         &request.destination_url,
                         &request.target,
-                        match request.user_involvement {
-                            ipc_messages::content::UserNavigationInvolvement::None => "none",
-                            ipc_messages::content::UserNavigationInvolvement::Activation => {
-                                "activation"
-                            }
-                            ipc_messages::content::UserNavigationInvolvement::BrowserUi => {
-                                "browser-ui"
-                            }
-                        },
+                        navigation_user_involvement_name(request.user_involvement.clone()),
                         request.noopener,
                     );
-                    super::with_event_loop_proxy(|proxy| {
-                        if let Some(proxy) = proxy {
-                            let _ =
-                                proxy.send_event(super::FormalWebUserEvent::NavigationRequested(request));
-                        }
-                    });
+                    let _ = embedder::send_user_event(FormalWebUserEvent::NavigationRequested(request));
                 }
                 ContentEvent::BeforeUnloadCompleted(result) => {
                     let _ = super::call_lean_before_unload_completed_parts(
@@ -100,27 +99,18 @@ fn spawn_listener(event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>) -
                         result.check_id as usize,
                         result.canceled,
                     );
-                    super::with_event_loop_proxy(|proxy| {
-                        if let Some(proxy) = proxy {
-                            let _ = proxy
-                                .send_event(super::FormalWebUserEvent::BeforeUnloadCompleted(result));
-                        }
-                    });
+                    let _ =
+                        embedder::send_user_event(FormalWebUserEvent::BeforeUnloadCompleted(result));
                 }
                 ContentEvent::NavigationCommitted(committed) => {
-                    super::with_event_loop_proxy(|proxy| {
-                        if let Some(proxy) = proxy {
-                            let _ = proxy
-                                .send_event(super::FormalWebUserEvent::NavigationCommitted(committed));
-                        }
-                    });
+                    let _ =
+                        embedder::send_user_event(FormalWebUserEvent::NavigationCommitted(committed));
+                }
+                ContentEvent::CommandCompleted => {
+                    let _ = super::call_lean_run_next_event_loop_task(event_loop_id);
                 }
                 ContentEvent::PaintReady(snapshot) => {
-                    super::with_event_loop_proxy(|proxy| {
-                        if let Some(proxy) = proxy {
-                            let _ = proxy.send_event(super::FormalWebUserEvent::Paint(snapshot));
-                        }
-                    });
+                    let _ = embedder::send_user_event(FormalWebUserEvent::Paint(snapshot));
                 }
             }
         }
@@ -134,10 +124,14 @@ fn send_command_inner(bridge: &ContentBridge, command: ContentCommand) -> Result
         .map_err(|error| format!("failed to send content IPC message: {error}"))
 }
 
-pub fn start(_event_loop_id: usize) -> Result<usize, String> {
+pub fn install_hooks() {
+    embedder::set_content_bridge_hooks(ContentBridgeHooks { broadcast_viewport });
+}
+
+pub fn start(event_loop_id: usize) -> Result<usize, String> {
     let executable_path = content_executable_path()?;
-    let (server, token) =
-        IpcOneShotServer::<Bootstrap>::new().map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
+    let (server, token) = IpcOneShotServer::<Bootstrap>::new()
+        .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
 
     let mut child_process = Command::new(executable_path);
     setup_common(&mut child_process, &token);
@@ -149,17 +143,15 @@ pub fn start(_event_loop_id: usize) -> Result<usize, String> {
         .accept()
         .map_err(|error| format!("failed to accept content bootstrap: {error}"))?;
 
-    let listener = spawn_listener(bootstrap.event_receiver);
+    let listener = spawn_listener(event_loop_id, bootstrap.event_receiver);
     let bridge = Arc::new(ContentBridge {
         command_sender: bootstrap.command_sender,
         child: Mutex::new(Some(child)),
         listener: Mutex::new(Some(listener)),
     });
 
-    if let Ok(snapshot_guard) = super::WINDOW_VIEWPORT_SNAPSHOT.lock() {
-        if let Some(snapshot) = *snapshot_guard {
-            let _ = send_command_inner(&bridge, viewport_command(snapshot));
-        }
+    if let Some(snapshot) = embedder::window_viewport_snapshot() {
+        let _ = send_command_inner(&bridge, viewport_command(snapshot));
     }
 
     let handle = NEXT_CONTENT_HANDLE.fetch_add(1, Ordering::Relaxed);
@@ -211,6 +203,7 @@ pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
     let Some(snapshot) = snapshot else {
         return;
     };
+
     let command = viewport_command(snapshot);
     let bridges = CONTENT_REGISTRY
         .lock()

@@ -29,12 +29,6 @@ initialize userAgentWorkerRef : IO.Ref (Option (_root_.Task (Except IO.Error Uni
 initialize fetchWorkerRef : IO.Ref (Option (_root_.Task (Except IO.Error Unit))) ←
   IO.mkRef (none : Option (_root_.Task (Except IO.Error Unit)))
 
-def recvCloseableChannel?
-    (channel : Std.CloseableChannel α) :
-    IO (Option α) := do
-  let receiveTask ← channel.recv
-  IO.wait receiveTask
-
 def trySendOnRef
     (channelRef : IO.Ref (Option (Std.CloseableChannel α)))
     (message : α) :
@@ -48,10 +42,6 @@ def trySendAndForget
     (message : α) :
     IO Unit := do
   let _ ← channel.trySend message
-  pure ()
-
-def spawnDetached (action : IO Unit) : IO Unit := do
-  let _ ← IO.asTask action
   pure ()
 
 def enqueueUserAgentMessage (message : UserAgentTaskMessage) : IO Unit := do
@@ -70,7 +60,6 @@ def enqueueEventLoopMessage
   pure ()
 
 def ensureEventLoopWorker
-    (userAgentChannel : Std.CloseableChannel UserAgentTaskMessage)
     (eventLoop : EventLoop) :
     IO Unit := do
   let channels ← eventLoopMessageChannelsRef.get
@@ -81,28 +70,18 @@ def ensureEventLoopWorker
       let channel ← Std.CloseableChannel.new
       eventLoopMessageChannelsRef.modify (·.insert eventLoop.id channel)
       eventLoopShutdownChannelsRef.modify (fun shutdownChannels => channel :: shutdownChannels)
-      let worker ← IO.asTask <|
-        FormalWeb.runEventLoop
-          channel
-          (fun completion =>
-            trySendAndForget
-              userAgentChannel
-              (.updateTheRenderingCompleted
-                completion.traversableId
-                completion.eventLoopId
-                completion.documentId))
-          { eventLoop := eventLoop }
+      let worker ← IO.asTask <| FormalWeb.runEventLoop channel { eventLoop := eventLoop }
       eventLoopWorkersRef.modify (fun workers => worker :: workers)
 
 @[export userAgentNoteRenderingOpportunity]
 def userAgentNoteRenderingOpportunity (message : String) : IO Unit := do
   let _ := message
-  spawnDetached <| enqueueUserAgentMessage .renderingOpportunity
+  enqueueUserAgentMessage .renderingOpportunity
 
 @[export handleRuntimeMessage]
 def handleRuntimeMessageFromRust (message : String) : IO Unit := do
   let some userAgentMessage := FormalWeb.userAgentTaskMessageOfString? message | pure ()
-  spawnDetached <| enqueueUserAgentMessage userAgentMessage
+  enqueueUserAgentMessage userAgentMessage
 
 @[export startDocumentFetch]
 def startDocumentFetchFromRust
@@ -116,7 +95,7 @@ def startDocumentFetchFromRust
     method
     body := if body.isEmpty then none else some body
   }
-  spawnDetached <| enqueueUserAgentMessage <|
+  enqueueUserAgentMessage <|
     .documentFetchRequested { raw := handlerPointer } request
 
 @[export startNavigation]
@@ -134,7 +113,7 @@ def startNavigationFromRust
       UserNavigationInvolvement.browserUI
     else
       UserNavigationInvolvement.none
-  spawnDetached <| enqueueUserAgentMessage <|
+  enqueueUserAgentMessage <|
     .navigateRequested
       documentId.toNat
       destinationURL
@@ -148,17 +127,24 @@ def completeBeforeUnloadFromRust
     (checkId : USize)
     (canceled : USize) :
     IO Unit := do
-  spawnDetached <| enqueueUserAgentMessage <|
+  enqueueUserAgentMessage <|
     .beforeUnloadCompleted
       documentId.toNat
       checkId.toNat
       (canceled.toNat != 0)
 
+@[export runNextEventLoopTask]
+def runNextEventLoopTaskFromRust
+    (eventLoopId : USize) :
+    IO Unit := do
+  enqueueUserAgentMessage <|
+    .runNextEventLoopTask eventLoopId.toNat
+
 @[export abortNavigation]
 def abortNavigationFromRust
     (documentId : USize) :
     IO Unit := do
-  spawnDetached <| enqueueUserAgentMessage <|
+  enqueueUserAgentMessage <|
     .abortNavigationRequested documentId.toNat
 
 def kernelStarted : IO Bool := do
@@ -183,7 +169,7 @@ def startKernel : IO Unit := do
     FormalWeb.runUserAgent
       userAgentChannel
       (fun message => trySendAndForget fetchChannel message)
-      (ensureEventLoopWorker userAgentChannel)
+      ensureEventLoopWorker
       enqueueEventLoopMessage
   let fetchWorker ← IO.asTask <|
     FormalWeb.runFetch fetchChannel fun notification =>

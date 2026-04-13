@@ -1,5 +1,4 @@
 mod chrome;
-mod content_bridge;
 pub mod ui_event;
 
 use crate::chrome::{ChromeAction, ChromeUi, ChromeViewState};
@@ -12,8 +11,8 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ColorScheme, Viewport};
 use ipc_messages::content::{
-    BeforeUnloadResult, Command as ContentCommand, FontTransportReceiver, NavigateRequest,
-    NavigationCommitted, PaintFrame, SceneSummary, ScrollOffset,
+    BeforeUnloadResult, FontTransportReceiver, NavigateRequest, NavigationCommitted, PaintFrame,
+    SceneSummary, ScrollOffset,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
@@ -46,11 +45,14 @@ pub struct EventLoopOptions {
 #[derive(Clone, Copy)]
 pub struct RuntimeHooks {
     pub handle_runtime_message: fn(&str),
-    pub start_document_fetch_parts: fn(usize, &str, &str, &str) -> Result<(), String>,
     pub start_navigation_parts: fn(usize, &str, &str, &str, bool) -> Result<(), String>,
-    pub complete_before_unload_parts: fn(usize, usize, bool) -> Result<(), String>,
     pub abort_navigation_parts: fn(usize) -> Result<(), String>,
     pub note_rendering_opportunity: fn(&str),
+}
+
+#[derive(Clone, Copy)]
+pub struct ContentBridgeHooks {
+    pub broadcast_viewport: fn(Option<(u32, u32, f32, ColorScheme)>),
 }
 
 #[derive(Clone)]
@@ -116,12 +118,11 @@ impl PendingUiEvents {
     }
 }
 
-pub(crate) enum FormalWebUserEvent {
+pub enum FormalWebUserEvent {
     Paint(PaintFrame),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     NavigationCommitted(NavigationCommitted),
-    EmbedderRequestRedraw,
     NewTopLevelTraversable,
 }
 
@@ -202,6 +203,8 @@ pub(crate) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32
     LazyLock::new(|| Mutex::new(None));
 static RUNTIME_HOOKS: LazyLock<Mutex<Option<RuntimeHooks>>> =
     LazyLock::new(|| Mutex::new(None));
+static CONTENT_BRIDGE_HOOKS: LazyLock<Mutex<Option<ContentBridgeHooks>>> =
+    LazyLock::new(|| Mutex::new(None));
 static EVENT_LOOP_OPTIONS: LazyLock<Mutex<EventLoopOptions>> =
     LazyLock::new(|| Mutex::new(EventLoopOptions::default()));
 
@@ -231,6 +234,13 @@ pub fn set_runtime_hooks(hooks: RuntimeHooks) {
     *guard = Some(hooks);
 }
 
+pub fn set_content_bridge_hooks(hooks: ContentBridgeHooks) {
+    let mut guard = CONTENT_BRIDGE_HOOKS
+        .lock()
+        .expect("content bridge hooks mutex poisoned");
+    *guard = Some(hooks);
+}
+
 fn runtime_hooks() -> Result<RuntimeHooks, String> {
     RUNTIME_HOOKS
         .lock()
@@ -244,16 +254,6 @@ fn call_lean_runtime_message_handler(message: &str) {
     if let Ok(hooks) = runtime_hooks() {
         (hooks.handle_runtime_message)(message);
     }
-}
-
-pub(crate) fn call_lean_document_fetch_start_parts(
-    handler: usize,
-    url: &str,
-    method: &str,
-    body: &str,
-) -> Result<(), String> {
-    let hooks = runtime_hooks()?;
-    (hooks.start_document_fetch_parts)(handler, url, method, body)
 }
 
 pub(crate) fn call_lean_navigation_start_parts(
@@ -273,29 +273,35 @@ pub(crate) fn call_lean_navigation_start_parts(
     )
 }
 
-pub(crate) fn call_lean_before_unload_completed_parts(
-    document_id: usize,
-    check_id: usize,
-    canceled: bool,
-) -> Result<(), String> {
-    let hooks = runtime_hooks()?;
-    (hooks.complete_before_unload_parts)(document_id, check_id, canceled)
-}
-
 fn user_agent_note_rendering_opportunity(message: &str) {
     if let Ok(hooks) = runtime_hooks() {
         (hooks.note_rendering_opportunity)(message);
     }
 }
 
-pub fn send_runtime_message(message: &str) -> Result<(), String> {
-    let user_event = user_event_of_runtime_message(message)?;
+fn broadcast_content_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
+    let hooks = CONTENT_BRIDGE_HOOKS
+        .lock()
+        .expect("content bridge hooks mutex poisoned")
+        .as_ref()
+        .copied();
+    if let Some(hooks) = hooks {
+        (hooks.broadcast_viewport)(snapshot);
+    }
+}
+
+pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
     with_event_loop_proxy(|proxy| match proxy {
         Some(proxy) => proxy
-            .send_event(user_event)
-            .map_err(|error| format!("failed to send runtime message event: {error}")),
+            .send_event(event)
+            .map_err(|error| format!("failed to send user event: {error}")),
         None => Err(String::from("winit event loop proxy is not initialized")),
     })
+}
+
+pub fn send_runtime_message(message: &str) -> Result<(), String> {
+    let user_event = user_event_of_runtime_message(message)?;
+    send_user_event(user_event)
 }
 
 pub fn run_event_loop() -> Result<(), String> {
@@ -324,32 +330,12 @@ pub fn run_event_loop() -> Result<(), String> {
     run_result
 }
 
-pub fn request_redraw() {
-    with_event_loop_proxy(|proxy| {
-        if let Some(proxy) = proxy {
-            let _ = proxy.send_event(FormalWebUserEvent::EmbedderRequestRedraw);
-        }
-    });
-}
-
 pub fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
     WINDOW_VIEWPORT_SNAPSHOT
         .lock()
         .expect("window viewport snapshot mutex poisoned")
         .as_ref()
         .copied()
-}
-
-pub fn start_content(event_loop_id: usize) -> Result<usize, String> {
-    content_bridge::start(event_loop_id)
-}
-
-pub fn stop_content(handle: usize) -> Result<(), String> {
-    content_bridge::stop(handle)
-}
-
-pub fn send_content_command(handle: usize, command: ContentCommand) -> Result<(), String> {
-    content_bridge::send_command(handle, command)
 }
 
 fn startup_runtime_message() -> Result<String, String> {
@@ -728,7 +714,7 @@ impl FormalWebApp {
             .lock()
             .expect("window viewport snapshot mutex poisoned");
         *snapshot = Some(viewport_snapshot);
-        content_bridge::broadcast_viewport(Some(viewport_snapshot));
+        broadcast_content_viewport(Some(viewport_snapshot));
     }
 
     fn current_chrome_view_state(&self) -> ChromeViewState {
@@ -1070,7 +1056,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 if let Ok(mut snapshot) = WINDOW_VIEWPORT_SNAPSHOT.lock() {
                     *snapshot = None;
                 }
-                content_bridge::broadcast_viewport(None);
+                broadcast_content_viewport(None);
                 self.window = None;
                 event_loop.exit();
             }
@@ -1276,13 +1262,6 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             }
             FormalWebUserEvent::NavigationCommitted(committed) => {
                 self.handle_navigation_committed(committed);
-            }
-            FormalWebUserEvent::EmbedderRequestRedraw => {
-                if self.has_visible_viewport() {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                }
             }
             FormalWebUserEvent::NewTopLevelTraversable => {
                 self.has_top_level_traversable = true;

@@ -1,3 +1,5 @@
+mod content_bridge;
+
 use embedder::RuntimeHooks;
 use ipc_messages::content::Command as ContentCommand;
 use std::ffi::{CStr, c_char};
@@ -30,6 +32,7 @@ unsafe extern "C" {
     ) -> *mut lean_object;
     fn completeBeforeUnload(document_id: usize, check_id: usize, canceled: usize)
     -> *mut lean_object;
+    fn runNextEventLoopTask(event_loop_id: usize) -> *mut lean_object;
     fn abortNavigation(document_id: usize) -> *mut lean_object;
     fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
     fn leanIoResultMkOkUnit() -> *mut lean_object;
@@ -80,7 +83,7 @@ fn call_lean_runtime_message_handler(message: &str) {
     unsafe { leanDec(io_result) };
 }
 
-fn call_lean_document_fetch_start_parts(
+pub(crate) fn call_lean_document_fetch_start_parts(
     handler: usize,
     url: &str,
     method: &str,
@@ -100,7 +103,7 @@ fn call_lean_document_fetch_start_parts(
     Ok(())
 }
 
-fn call_lean_navigation_start_parts(
+pub(crate) fn call_lean_navigation_start_parts(
     document_id: usize,
     destination_url: &str,
     target: &str,
@@ -129,7 +132,7 @@ fn call_lean_navigation_start_parts(
     Ok(())
 }
 
-fn call_lean_before_unload_completed_parts(
+pub(crate) fn call_lean_before_unload_completed_parts(
     document_id: usize,
     check_id: usize,
     canceled: bool,
@@ -140,6 +143,18 @@ fn call_lean_before_unload_completed_parts(
         unsafe { leanIoResultShowError(io_result) };
         unsafe { leanDec(io_result) };
         return Err(String::from("Lean beforeunload completion failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
+pub(crate) fn call_lean_run_next_event_loop_task(event_loop_id: usize) -> Result<(), String> {
+    let io_result = unsafe { runNextEventLoopTask(event_loop_id) };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean run-next-event-loop-task failed"));
     }
     unsafe { leanDec(io_result) };
     Ok(())
@@ -170,9 +185,7 @@ fn user_agent_note_rendering_opportunity(message: &str) {
 fn runtime_hooks() -> RuntimeHooks {
     RuntimeHooks {
         handle_runtime_message: call_lean_runtime_message_handler,
-        start_document_fetch_parts: call_lean_document_fetch_start_parts,
         start_navigation_parts: call_lean_navigation_start_parts,
-        complete_before_unload_parts: call_lean_before_unload_completed_parts,
         abort_navigation_parts: call_lean_abort_navigation_parts,
         note_rendering_opportunity: user_agent_note_rendering_opportunity,
     }
@@ -190,6 +203,10 @@ pub fn finalize_lean_runtime() -> Result<(), String> {
 
 pub fn install_runtime_hooks() {
     embedder::set_runtime_hooks(runtime_hooks());
+}
+
+pub fn install_content_bridge_hooks() {
+    content_bridge::install_hooks();
 }
 
 pub fn start_kernel() -> Result<(), String> {
@@ -219,6 +236,7 @@ pub extern "C" fn sendEmbedderMessage(message: *mut lean_object) -> *mut lean_ob
 pub extern "C" fn runEmbedderEventLoop(_: *mut lean_object) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
         install_runtime_hooks();
+        install_content_bridge_hooks();
         embedder::run_event_loop()
     })) {
         Ok(Ok(())) => ok_unit_result(),
@@ -229,7 +247,10 @@ pub extern "C" fn runEmbedderEventLoop(_: *mut lean_object) -> *mut lean_object 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn contentProcessStart(event_loop_id: usize) -> *mut lean_object {
-    match panic::catch_unwind(AssertUnwindSafe(|| embedder::start_content(event_loop_id))) {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        install_content_bridge_hooks();
+        content_bridge::start(event_loop_id)
+    })) {
         Ok(Ok(handle)) => ok_usize_result(handle),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic starting content"),
@@ -238,7 +259,7 @@ pub extern "C" fn contentProcessStart(event_loop_id: usize) -> *mut lean_object 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn contentProcessStop(handle: usize) -> *mut lean_object {
-    match panic::catch_unwind(AssertUnwindSafe(|| embedder::stop_content(handle))) {
+    match panic::catch_unwind(AssertUnwindSafe(|| content_bridge::stop(handle))) {
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic stopping content"),
@@ -248,7 +269,7 @@ pub extern "C" fn contentProcessStop(handle: usize) -> *mut lean_object {
 #[unsafe(no_mangle)]
 pub extern "C" fn contentProcessCreateEmptyDocument(handle: usize, document_id: usize) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        embedder::send_content_command(
+        content_bridge::send_command(
             handle,
             ContentCommand::CreateEmptyDocument {
                 document_id: document_id as u64,
@@ -273,7 +294,7 @@ pub extern "C" fn contentProcessCreateLoadedDocument(
         let url = unsafe { CStr::from_ptr(c_url) }.to_string_lossy().into_owned();
         let c_body = unsafe { leanStringCstr(body) };
         let body = unsafe { CStr::from_ptr(c_body) }.to_string_lossy().into_owned();
-        embedder::send_content_command(
+        content_bridge::send_command(
             handle,
             ContentCommand::CreateLoadedDocument {
                 document_id: document_id as u64,
@@ -297,7 +318,7 @@ pub extern "C" fn contentProcessDispatchEvent(
     match panic::catch_unwind(AssertUnwindSafe(|| {
         let c_event = unsafe { leanStringCstr(event) };
         let event = unsafe { CStr::from_ptr(c_event) }.to_string_lossy().into_owned();
-        embedder::send_content_command(
+        content_bridge::send_command(
             handle,
             ContentCommand::DispatchEvent {
                 document_id: document_id as u64,
@@ -318,7 +339,7 @@ pub extern "C" fn contentProcessRunBeforeUnload(
     check_id: usize,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        embedder::send_content_command(
+        content_bridge::send_command(
             handle,
             ContentCommand::RunBeforeUnload {
                 document_id: document_id as u64,
@@ -335,7 +356,7 @@ pub extern "C" fn contentProcessRunBeforeUnload(
 #[unsafe(no_mangle)]
 pub extern "C" fn contentProcessUpdateTheRendering(handle: usize, document_id: usize) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        embedder::send_content_command(
+        content_bridge::send_command(
             handle,
             ContentCommand::UpdateTheRendering {
                 document_id: document_id as u64,
@@ -361,7 +382,7 @@ pub extern "C" fn contentProcessCompleteDocumentFetch(
         let size = unsafe { leanByteArraySize(bytes) };
         let bytes_ptr = unsafe { leanByteArrayCptr(bytes) };
         let payload = unsafe { std::slice::from_raw_parts(bytes_ptr, size) };
-        embedder::send_content_command(
+        content_bridge::send_command(
             handle,
             ContentCommand::CompleteDocumentFetch {
                 handler_id: handler_id as u64,

@@ -3,351 +3,141 @@ import FormalWeb.Proofs.TransitionSystem
 
 namespace FormalWeb
 
-/-- LTS-style actions for the standalone event-loop task queue model. -/
+/-- LTS-style actions for the standalone event-loop worker. -/
 inductive EventLoopAction
-  | queueTask (task : Task)
-  | runNextTask
+  | handleMessage (message : EventLoopTaskMessage)
+  | scheduleNextTask
 deriving Repr, DecidableEq
 
-/-- Relational LTS for the standalone event-loop task queue model. -/
-def eventLoopLTS : TransitionSystem.LTS EventLoop EventLoopAction where
-  init := fun eventLoop => eventLoop = default
-  trans := fun eventLoop action eventLoop' =>
-    match action with
-    | .queueTask task =>
-        if task.step = .updateTheRendering then
-          eventLoop' = eventLoop.enqueueUpdateTheRenderingTask
-        else
-          eventLoop' = eventLoop.enqueueTask task
-    | .runNextTask =>
-        ∃ task, eventLoop.takeNextTask? = some (task, eventLoop')
-
-theorem queueTask_trace
-    (eventLoop : EventLoop)
-    (task : Task)
-    (hnotUpdate : task.step ≠ .updateTheRendering) :
-    TransitionSystem.TransitionTrace
-      eventLoopLTS
-      eventLoop
-      [.queueTask task]
-      (eventLoop.enqueueTask task) := by
-  refine TransitionSystem.TransitionTrace.single ?_
-  simp [eventLoopLTS, hnotUpdate]
-
-theorem queueUpdateTheRendering_trace
-    (eventLoop : EventLoop) :
-    TransitionSystem.TransitionTrace
-      eventLoopLTS
-      eventLoop
-      [.queueTask { step := .updateTheRendering }]
-      (eventLoop.enqueueUpdateTheRenderingTask) := by
-  refine TransitionSystem.TransitionTrace.single ?_
-  simp [eventLoopLTS]
-
-theorem runNextTask_trace
-    (eventLoop nextEventLoop : EventLoop)
-    (task : Task)
-    (htake : eventLoop.takeNextTask? = some (task, nextEventLoop)) :
-    TransitionSystem.TransitionTrace
-      eventLoopLTS
-      eventLoop
-      [.runNextTask]
-      nextEventLoop := by
-  refine TransitionSystem.TransitionTrace.single ?_
-  exact ⟨task, htake⟩
-
-def interpretEventLoopEffect : EventLoopEffect → List EventLoopAction
-  | .queueTask task =>
-      [.queueTask task]
-  | .runNextTask _ _ =>
-      [.runNextTask]
-
-def interpretEventLoopEffects (effects : Array EventLoopEffect) : List EventLoopAction :=
-  effects.toList.flatMap interpretEventLoopEffect
-
-theorem interpretEffects_queueTask_cons
-    (task : Task)
-    (effects : Array EventLoopEffect) :
-    interpretEventLoopEffects (#[.queueTask task] ++ effects) =
-      [.queueTask task] ++ interpretEventLoopEffects effects := by
-  simp [interpretEventLoopEffects, interpretEventLoopEffect]
-
-theorem enqueueAndRunNext_eventLoop
-  (state : EventLoopTaskState)
-  (task : Task) :
-  (enqueueAndRunNext state task).2.eventLoop = (runNextQueuedTaskM state).2.eventLoop := by
-  unfold enqueueAndRunNext
-  cases hrun : runNextQueuedTaskM state with
-  | mk result nextState =>
-    rfl
-
-theorem enqueueAndRunNext_effects
-  (state : EventLoopTaskState)
-  (task : Task) :
-  interpretEventLoopEffects (enqueueAndRunNext state task).1 =
-    [.queueTask task] ++ interpretEventLoopEffects (runNextQueuedTaskM state).1.2 := by
-  unfold enqueueAndRunNext
-  cases hrun : runNextQueuedTaskM state with
-  | mk result nextState =>
-    cases result with
-      | mk runtimeUnit nextEffects =>
-      simp [interpretEffects_queueTask_cons]
-
-theorem runNextQueuedTaskM_eventLoop
-    (state : EventLoopTaskState)
-    (task : Task)
-    (nextEventLoop : EventLoop)
-    (htake : state.eventLoop.takeNextTask? = some (task, nextEventLoop)) :
-    (runNextQueuedTaskM state).2.eventLoop = nextEventLoop := by
-  unfold runNextQueuedTaskM
-  cases hstep : task.step <;> simp [htake, hstep] <;>
-    first
-    | cases state.pendingCreateEmptyDocumentTasks <;> rfl
-    | cases state.pendingCreateLoadedDocumentTasks <;> rfl
-    | cases state.pendingUpdateTheRenderingTasks <;> rfl
-    | cases state.pendingDispatchEventTasks <;> rfl
-    | cases state.pendingRunBeforeUnloadTasks <;> rfl
-    | cases state.pendingPaintTasks <;> rfl
-    | cases state.pendingDocumentFetchCompletionTasks <;> rfl
-
-theorem runNextQueuedTaskM_full_refinement
-    (state : EventLoopTaskState) :
-    ∃ actions,
-      TransitionSystem.TransitionTrace
-        eventLoopLTS
-        state.eventLoop
-        actions
-        (runNextQueuedTaskM state).2.eventLoop ∧
-      interpretEventLoopEffects (runNextQueuedTaskM state).1.2 = actions := by
-  cases htake : state.eventLoop.takeNextTask? with
-  | none =>
-      refine ⟨[], ?_, ?_⟩
-      · have hstate : (runNextQueuedTaskM state).2.eventLoop = state.eventLoop := by
-          simp [runNextQueuedTaskM, htake]
-        simpa [hstate] using (TransitionSystem.TransitionTrace.nil state.eventLoop)
-      · simp [runNextQueuedTaskM, interpretEventLoopEffects, htake]
-  | some result =>
-      rcases result with ⟨task, nextEventLoop⟩
-      refine ⟨[.runNextTask], ?_, ?_⟩
-      · have heventLoop : (runNextQueuedTaskM state).2.eventLoop = nextEventLoop := by
-          exact runNextQueuedTaskM_eventLoop state task nextEventLoop htake
-        simpa [heventLoop] using runNextTask_trace state.eventLoop nextEventLoop task htake
-      · simp [runNextQueuedTaskM, interpretEventLoopEffects, interpretEventLoopEffect, htake]
-
-theorem handleEventLoopTaskMessage_full_refinement
+/-- Relational LTS for the event-loop worker's pure message-drain phase and single scheduling step. -/
+def handleMessageState
     (state : EventLoopTaskState)
     (message : EventLoopTaskMessage) :
-    ∃ actions,
+    EventLoopTaskState :=
+  ((handleEventLoopTaskMessage message).run state).2
+
+def queueMessagesState
+    (state : EventLoopTaskState)
+    (messages : List EventLoopTaskMessage) :
+    EventLoopTaskState :=
+  messages.foldl handleMessageState state
+
+def eventLoopLTS : TransitionSystem.LTS EventLoopTaskState EventLoopAction where
+  init := fun state => state = default
+  trans := fun state action state' =>
+    match action with
+    | .handleMessage message =>
+        state' = handleMessageState state message
+    | .scheduleNextTask =>
+        state' = (runNextQueuedTaskM state).2
+
+theorem handleMessage_trace
+    (state : EventLoopTaskState)
+    (message : EventLoopTaskMessage) :
+    TransitionSystem.TransitionTrace
+      eventLoopLTS
+      state
+      [.handleMessage message]
+      (handleMessageState state message) := by
+  exact TransitionSystem.TransitionTrace.single rfl
+
+theorem scheduleNextTask_trace
+    (state : EventLoopTaskState) :
+    TransitionSystem.TransitionTrace
+      eventLoopLTS
+      state
+      [.scheduleNextTask]
+      (runNextQueuedTaskM state).2 := by
+  exact TransitionSystem.TransitionTrace.single rfl
+
+def eventLoopMessageActions (messages : List EventLoopTaskMessage) : List EventLoopAction :=
+  messages.map EventLoopAction.handleMessage ++ [.scheduleNextTask]
+
+private theorem handleMessages_trace
+    (state : EventLoopTaskState)
+    (messages : List EventLoopTaskMessage) :
+    TransitionSystem.TransitionTrace
+      eventLoopLTS
+      state
+      (messages.map EventLoopAction.handleMessage)
+      (queueMessagesState state messages) := by
+  induction messages generalizing state with
+  | nil =>
+      simpa using TransitionSystem.TransitionTrace.nil state
+  | cons message messages ih =>
+      have hstep :
+          eventLoopLTS.trans
+            state
+            (.handleMessage message)
+            (handleMessageState state message) := by
+        rfl
+      have htrace :=
+        ih (handleMessageState state message)
+      simpa [queueMessagesState, handleMessageState, List.map, List.foldl] using
+        TransitionSystem.TransitionTrace.cons hstep htrace
+
+private theorem queueEffectsFold_state
+    (initialEffects : Array EventLoopEffect)
+    (state : EventLoopTaskState)
+    (messages : List EventLoopTaskMessage) :
+    (messages.foldl
+      (fun (effects, currentState) message =>
+        let (((), nextEffects), nextState) :=
+          (handleEventLoopTaskMessage message).run currentState
+        (effects ++ nextEffects, nextState))
+      (initialEffects, state)).2 =
+    queueMessagesState state messages := by
+  induction messages generalizing initialEffects state with
+  | nil =>
+      rfl
+  | cons message messages ih =>
+      simpa [queueMessagesState, handleMessageState, List.foldl] using
+        ih
+          (initialEffects ++ ((handleEventLoopTaskMessage message).run state).1.2)
+          (handleMessageState state message)
+
+theorem runEventLoopMessagesMonadic_trace
+    (state : EventLoopTaskState)
+    (messages : List EventLoopTaskMessage) :
+    TransitionSystem.TransitionTrace
+      eventLoopLTS
+      state
+      (eventLoopMessageActions messages)
+      (runEventLoopMessagesMonadic state messages).2 := by
+  let queuedState := queueMessagesState state messages
+  have hqueue :
       TransitionSystem.TransitionTrace
         eventLoopLTS
-        state.eventLoop
-        actions
-        (runEventLoopMonadic state message).2.eventLoop ∧
-      interpretEventLoopEffects (runEventLoopMonadic state message).1 = actions := by
-  cases message with
-  | createEmptyDocument documentId =>
-      let task : Task := {
-        step := .createEmptyDocument
-        documentId := some documentId.id
-      }
-      let queuedState : EventLoopTaskState := {
-        state with
-          eventLoop := state.eventLoop.enqueueTask task
-          pendingCreateEmptyDocumentTasks :=
-            state.pendingCreateEmptyDocumentTasks.concat { documentId }
-      }
-      have hqueue :
-          TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            [.queueTask task]
-            queuedState.eventLoop := by
-        exact queueTask_trace state.eventLoop task (by simp [task])
-      rcases runNextQueuedTaskM_full_refinement queuedState with ⟨actions₂, htrace₂, hinterp₂⟩
-      refine ⟨[.queueTask task] ++ actions₂, ?_, ?_⟩
-      · change TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            ([.queueTask task] ++ actions₂)
-            (enqueueAndRunNext queuedState task).2.eventLoop
-        rw [enqueueAndRunNext_eventLoop]
-        simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
-          TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
-        rw [enqueueAndRunNext_effects, hinterp₂]
-  | createLoadedDocument documentId url body =>
-      let task : Task := {
-        step := .createLoadedDocument
-        documentId := some documentId.id
-      }
-      let queuedState : EventLoopTaskState := {
-        state with
-          eventLoop := state.eventLoop.enqueueTask task
-          pendingCreateLoadedDocumentTasks :=
-            state.pendingCreateLoadedDocumentTasks.concat { documentId, url, body }
-      }
-      have hqueue :
-          TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            [.queueTask task]
-            queuedState.eventLoop := by
-        exact queueTask_trace state.eventLoop task (by simp [task])
-      rcases runNextQueuedTaskM_full_refinement queuedState with ⟨actions₂, htrace₂, hinterp₂⟩
-      refine ⟨[.queueTask task] ++ actions₂, ?_, ?_⟩
-      · change TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            ([.queueTask task] ++ actions₂)
-            (enqueueAndRunNext queuedState task).2.eventLoop
-        rw [enqueueAndRunNext_eventLoop]
-        simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
-          TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
-        rw [enqueueAndRunNext_effects, hinterp₂]
-  | queueUpdateTheRendering traversableId documentId =>
-      let task : Task := { step := .updateTheRendering }
-      let shouldAppendTask := !state.eventLoop.hasPendingUpdateTheRendering
-      let queuedState : EventLoopTaskState := {
-        state with
-          eventLoop := state.eventLoop.enqueueUpdateTheRenderingTask
-          pendingUpdateTheRenderingTasks :=
-            if shouldAppendTask then
-              state.pendingUpdateTheRenderingTasks.concat { traversableId, documentId }
-            else
-              state.pendingUpdateTheRenderingTasks
-      }
-      have hqueue :
-          TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            [.queueTask task]
-            queuedState.eventLoop := by
-        simpa [task, queuedState, shouldAppendTask] using queueUpdateTheRendering_trace state.eventLoop
-      rcases runNextQueuedTaskM_full_refinement queuedState with ⟨actions₂, htrace₂, hinterp₂⟩
-      refine ⟨[.queueTask task] ++ actions₂, ?_, ?_⟩
-      · change TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            ([.queueTask task] ++ actions₂)
-            (enqueueAndRunNext queuedState task).2.eventLoop
-        rw [enqueueAndRunNext_eventLoop]
-        simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState, shouldAppendTask] using
-          TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
-        rw [enqueueAndRunNext_effects, hinterp₂]
-  | queueDispatchEvent documentId event =>
-      let task : Task := {
-        step := .dispatchEvent
-        documentId := some documentId.id
-      }
-      let queuedState : EventLoopTaskState := {
-        state with
-          eventLoop := state.eventLoop.enqueueTask task
-          pendingDispatchEventTasks := state.pendingDispatchEventTasks.concat { documentId, event }
-      }
-      have hqueue :
-          TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            [.queueTask task]
-            queuedState.eventLoop := by
-        exact queueTask_trace state.eventLoop task (by simp [task])
-      rcases runNextQueuedTaskM_full_refinement queuedState with ⟨actions₂, htrace₂, hinterp₂⟩
-      refine ⟨[.queueTask task] ++ actions₂, ?_, ?_⟩
-      · change TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            ([.queueTask task] ++ actions₂)
-            (enqueueAndRunNext queuedState task).2.eventLoop
-        rw [enqueueAndRunNext_eventLoop]
-        simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
-          TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
-        rw [enqueueAndRunNext_effects, hinterp₂]
-  | runBeforeUnload documentId checkId =>
-      let task : Task := {
-        step := .runBeforeUnload
-        documentId := some documentId.id
-      }
-      let queuedState : EventLoopTaskState := {
-        state with
-          eventLoop := state.eventLoop.enqueueTask task
-          pendingRunBeforeUnloadTasks :=
-            state.pendingRunBeforeUnloadTasks.concat { documentId, checkId }
-      }
-      have hqueue :
-          TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            [.queueTask task]
-            queuedState.eventLoop := by
-        exact queueTask_trace state.eventLoop task (by simp [task])
-      rcases runNextQueuedTaskM_full_refinement queuedState with ⟨actions₂, htrace₂, hinterp₂⟩
-      refine ⟨[.queueTask task] ++ actions₂, ?_, ?_⟩
-      · change TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            ([.queueTask task] ++ actions₂)
-            (enqueueAndRunNext queuedState task).2.eventLoop
-        rw [enqueueAndRunNext_eventLoop]
-        simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
-          TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
-        rw [enqueueAndRunNext_effects, hinterp₂]
-  | queuePaint documentId =>
-      let task : Task := {
-        step := .paint
-        documentId := some documentId.id
-      }
-      let queuedState : EventLoopTaskState := {
-        state with
-          eventLoop := state.eventLoop.enqueueTask task
-          pendingPaintTasks := state.pendingPaintTasks.concat { documentId }
-      }
-      have hqueue :
-          TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            [.queueTask task]
-            queuedState.eventLoop := by
-        exact queueTask_trace state.eventLoop task (by simp [task])
-      rcases runNextQueuedTaskM_full_refinement queuedState with ⟨actions₂, htrace₂, hinterp₂⟩
-      refine ⟨[.queueTask task] ++ actions₂, ?_, ?_⟩
-      · change TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            ([.queueTask task] ++ actions₂)
-            (enqueueAndRunNext queuedState task).2.eventLoop
-        rw [enqueueAndRunNext_eventLoop]
-        simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
-          TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
-        rw [enqueueAndRunNext_effects, hinterp₂]
-  | queueDocumentFetchCompletion handler resolvedUrl body =>
-      let task : Task := { step := .completeDocumentFetch }
-      let queuedState : EventLoopTaskState := {
-        state with
-          eventLoop := state.eventLoop.enqueueTask task
-          pendingDocumentFetchCompletionTasks :=
-            state.pendingDocumentFetchCompletionTasks.concat { handler, resolvedUrl, body }
-      }
-      have hqueue :
-          TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            [.queueTask task]
-            queuedState.eventLoop := by
-        exact queueTask_trace state.eventLoop task (by simp [task])
-      rcases runNextQueuedTaskM_full_refinement queuedState with ⟨actions₂, htrace₂, hinterp₂⟩
-      refine ⟨[.queueTask task] ++ actions₂, ?_, ?_⟩
-      · change TransitionSystem.TransitionTrace
-            eventLoopLTS
-            state.eventLoop
-            ([.queueTask task] ++ actions₂)
-            (enqueueAndRunNext queuedState task).2.eventLoop
-        rw [enqueueAndRunNext_eventLoop]
-        simpa [runEventLoopMonadic, handleEventLoopTaskMessage, task, queuedState] using
-          TransitionSystem.TransitionTrace.append hqueue htrace₂
-      · change interpretEventLoopEffects (enqueueAndRunNext queuedState task).1 = [.queueTask task] ++ actions₂
-        rw [enqueueAndRunNext_effects, hinterp₂]
+        state
+        (messages.map EventLoopAction.handleMessage)
+        queuedState := by
+    simpa [queuedState] using handleMessages_trace state messages
+  have hschedule :
+      TransitionSystem.TransitionTrace
+        eventLoopLTS
+        queuedState
+        [.scheduleNextTask]
+        (runNextQueuedTaskM queuedState).2 := by
+    exact scheduleNextTask_trace queuedState
+  have hqueuedState :
+      (messages.foldl
+        (fun (effects, currentState) message =>
+          let (((), nextEffects), nextState) :=
+            (handleEventLoopTaskMessage message).run currentState
+          (effects ++ nextEffects, nextState))
+        (#[], state)).2 = queuedState := by
+    simpa [queuedState] using queueEffectsFold_state #[] state messages
+  simpa [eventLoopMessageActions, runEventLoopMessagesMonadic, queuedState] using
+    hqueuedState ▸ TransitionSystem.TransitionTrace.append hqueue hschedule
+
+theorem runEventLoopMonadic_trace
+    (state : EventLoopTaskState)
+    (message : EventLoopTaskMessage) :
+    TransitionSystem.TransitionTrace
+      eventLoopLTS
+      state
+      (eventLoopMessageActions [message])
+      (runEventLoopMonadic state message).2 := by
+  simpa [runEventLoopMonadic] using runEventLoopMessagesMonadic_trace state [message]
+
+end FormalWeb

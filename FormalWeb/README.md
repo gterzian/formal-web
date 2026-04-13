@@ -27,6 +27,7 @@
 - If a spec convenience helper only bundles multiple LTS-visible steps, prefer modeling those steps directly in the action system and omit the convenience helper unless it still carries independent explanatory value.
 - If a spec algorithm is only a top-level entry point and is not referenced by other spec algorithms, it does not need to be preserved as a separate helper in the model when the LTS already captures its intended behavior.
 - For WriterT/state refinement proofs, keep runtime helpers definitionally transparent and prove small projection lemmas for packed returns such as emitted-effect arrays or next-state fields instead of fighting large `simp` goals over the whole monadic term.
+- Queue update-the-rendering tasks in `UserAgent` without deduplicating them there, let `EventLoop` drop queued render duplicates when it selects one to run, and wake the event-loop worker after content-command completion instead of treating content `PaintReady` as a Lean state transition.
 - A guide on Lean FFI can be found in `/scratchpad/ffi_guide/md`.
 - Keep proof-only transition helper modules such as `TransitionSystem` and `TransitionTrace` under `FormalWeb/Proofs/`.
 - AGAIN: Use `lean-lsp-mcp` when working in Lean, it is documented at `/scratchpad/lean-lsp-mcp/README.md`. Read the documentation before attempting to do anything in Lean.

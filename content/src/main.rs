@@ -494,6 +494,12 @@ impl ContentRuntime {
         self.continue_updating_the_rendering(pending_handler.document_id)
     }
 
+    fn note_command_completed(&self) -> Result<(), String> {
+        self.event_sender
+            .send(ContentEvent::CommandCompleted)
+            .map_err(|error| format!("failed to send content command completion: {error}"))
+    }
+
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     /// Note: Lean emits these runtime effects from `FormalWeb.EventLoop.runEventLoopMessage`, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
@@ -581,10 +587,32 @@ fn main() -> Result<(), String> {
             Ok(command) => command,
             Err(_error) => break,
         };
+        let notify_event_loop = matches!(
+            &command,
+            CreateEmptyDocument { .. }
+                | CreateLoadedDocument { .. }
+                | DispatchEvent { .. }
+                | Command::RunBeforeUnload { .. }
+                | UpdateTheRendering { .. }
+                | CompleteDocumentFetch { .. }
+        );
         match runtime.handle_command(command) {
-            Ok(true) => {}
+            Ok(true) => {
+                if notify_event_loop {
+                    if let Err(error) = runtime.note_command_completed() {
+                        eprintln!("content error: {error}");
+                    }
+                }
+            }
             Ok(false) => break,
-            Err(error) => eprintln!("content error: {error}"),
+            Err(error) => {
+                eprintln!("content error: {error}");
+                if notify_event_loop {
+                    if let Err(error) = runtime.note_command_completed() {
+                        eprintln!("content error: {error}");
+                    }
+                }
+            }
         }
     }
 

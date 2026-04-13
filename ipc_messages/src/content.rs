@@ -461,6 +461,7 @@ pub enum Event {
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     NavigationCommitted(NavigationCommitted),
+    CommandCompleted,
     PaintReady(PaintFrame),
 }
 

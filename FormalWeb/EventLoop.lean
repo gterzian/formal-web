@@ -23,11 +23,8 @@ inductive TaskStep
   | dispatchEvent
   /-- Model-local task step queued when the user agent runs the `beforeunload` steps for a document. -/
   | runBeforeUnload
-  /-- Model-local task step queued when the user agent requests a paint for the active document. -/
-  | paint
   /-- Model-local task step queued when a document-driven fetch result is handed back to Rust. -/
   | completeDocumentFetch
-  | opaque
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#concept-task -/
@@ -50,8 +47,8 @@ structure EventLoop where
   taskQueue : List Task := []
   /-- https://html.spec.whatwg.org/multipage/#termination-nesting-level -/
   terminationNestingLevel : Nat := 0
-  /-- Model-local dedup flag: an UpdateTheRendering task is already queued, so further requests are no-ops until it runs. -/
-  hasPendingUpdateTheRendering : Bool := false
+  /-- Model-local flag: the content process is still handling the previously emitted task effect, so the event loop must wait for a wake-up message before emitting another one. -/
+  awaitingTaskCompletion : Bool := false
 deriving Repr, DecidableEq
 
 instance : Inhabited EventLoop where
@@ -63,20 +60,18 @@ inductive EventLoopTaskMessage where
   | queueUpdateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | queueDispatchEvent (documentId : DocumentId) (event : String)
   | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
-  | queuePaint (documentId : DocumentId)
+  | runNextTask
   | queueDocumentFetchCompletion
       (handler : RustNetHandlerPointer)
       (resolvedUrl : String)
       (body : ByteArray)
 deriving Repr, DecidableEq
 
-structure EventLoopTaskCompletion where
-  traversableId : Nat
-  eventLoopId : Nat
-  documentId : DocumentId
-deriving Repr, DecidableEq
-
 namespace EventLoop
+
+private def dropQueuedUpdateTheRenderingTasks
+    (tasks : List Task) : List Task :=
+  tasks.filter (fun task => task.step ≠ .updateTheRendering)
 
 def enqueueTask
     (eventLoop : EventLoop)
@@ -87,33 +82,30 @@ def enqueueTask
       taskQueue := eventLoop.taskQueue.concat task
   }
 
-/-- Enqueue an UpdateTheRendering task, deduplicating: a second enqueue is a no-op if one is already pending. -/
-def enqueueUpdateTheRenderingTask (eventLoop : EventLoop) : EventLoop :=
-  if eventLoop.hasPendingUpdateTheRendering then
-    eventLoop
-  else
-    let updated := eventLoop.enqueueTask { step := .updateTheRendering }
-    { updated with hasPendingUpdateTheRendering := true }
 
-/-- Remove the next task from the queue, clearing the pending-render flag when that task is UpdateTheRendering. -/
+def wakeForNextTask (eventLoop : EventLoop) : EventLoop :=
+  { eventLoop with awaitingTaskCompletion := false }
+
+/-- Remove the next task from the queue. -/
 def takeNextTask?
     (eventLoop : EventLoop) :
     Option (Task × EventLoop) :=
-  match eventLoop.taskQueue with
-  | [] => none
-  | task :: remainingTasks =>
-      let hasPendingUpdateTheRendering :=
-        if task.step = .updateTheRendering then
-          false
-        else
-          eventLoop.hasPendingUpdateTheRendering
-      some (task, { eventLoop with taskQueue := remainingTasks, hasPendingUpdateTheRendering })
-
-/-- Dequeue the UpdateTheRendering task and clear the pending flag. -/
-def dequeueUpdateTheRenderingTask (eventLoop : EventLoop) : EventLoop :=
-  { eventLoop with
-      taskQueue := eventLoop.taskQueue.filter (fun task => task.step ≠ .updateTheRendering)
-      hasPendingUpdateTheRendering := false }
+  if eventLoop.awaitingTaskCompletion then
+    none
+  else
+    match eventLoop.taskQueue with
+    | [] => none
+    | task :: remainingTasks =>
+        let remainingTasks :=
+          if task.step = .updateTheRendering then
+            dropQueuedUpdateTheRenderingTasks remainingTasks
+          else
+            remainingTasks
+        some (task, {
+          eventLoop with
+            taskQueue := remainingTasks
+            awaitingTaskCompletion := true
+        })
 
 end EventLoop
 
@@ -129,7 +121,6 @@ deriving DecidableEq
 
 /-- Model-local runtime payload for an UpdateTheRendering task. -/
 structure PendingUpdateTheRenderingTask where
-  traversableId : Nat
   documentId : DocumentId
 deriving DecidableEq
 
@@ -141,10 +132,6 @@ deriving DecidableEq
 structure PendingRunBeforeUnloadTask where
   documentId : DocumentId
   checkId : Nat
-deriving DecidableEq
-
-structure PendingPaintTask where
-  documentId : DocumentId
 deriving DecidableEq
 
 structure PendingDocumentFetchCompletionTask where
@@ -161,7 +148,6 @@ structure EventLoopTaskState where
   pendingUpdateTheRenderingTasks : List PendingUpdateTheRenderingTask := []
   pendingDispatchEventTasks : List PendingDispatchEventTask := []
   pendingRunBeforeUnloadTasks : List PendingRunBeforeUnloadTask := []
-  pendingPaintTasks : List PendingPaintTask := []
   pendingDocumentFetchCompletionTasks : List PendingDocumentFetchCompletionTask := []
 
 instance : Inhabited EventLoopTaskState where
@@ -170,10 +156,9 @@ instance : Inhabited EventLoopTaskState where
 inductive EventLoopRuntimeEffect where
   | createEmptyDocument (documentId : DocumentId)
   | createLoadedDocument (documentId : DocumentId) (url : String) (body : String)
-  | updateTheRendering (completion : EventLoopTaskCompletion)
+  | updateTheRendering (documentId : DocumentId)
   | dispatchEvent (documentId : DocumentId) (event : String)
   | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
-  | paint (documentId : DocumentId)
   | documentFetchCompletion
       (handler : RustNetHandlerPointer)
       (resolvedUrl : String)
@@ -205,73 +190,58 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
   | none =>
       (((), #[]), state)
   | some (task, eventLoop) =>
-      let baseState := { state with eventLoop }
+      let blockedState := { state with eventLoop }
+      let readyState := {
+        blockedState with
+          eventLoop := blockedState.eventLoop.wakeForNextTask
+      }
       let (runtimeEffect?, nextState) :=
         match task.step with
         | .createEmptyDocument =>
             match state.pendingCreateEmptyDocumentTasks with
             | [] =>
-                (none, baseState)
+                (none, readyState)
             | pendingTask :: pendingTasks =>
                 (some (.createEmptyDocument pendingTask.documentId),
-                  { baseState with pendingCreateEmptyDocumentTasks := pendingTasks })
+                  { blockedState with pendingCreateEmptyDocumentTasks := pendingTasks })
         | .createLoadedDocument =>
             match state.pendingCreateLoadedDocumentTasks with
             | [] =>
-                (none, baseState)
+                (none, readyState)
             | pendingTask :: pendingTasks =>
                 (some (.createLoadedDocument pendingTask.documentId pendingTask.url pendingTask.body),
-                  { baseState with pendingCreateLoadedDocumentTasks := pendingTasks })
+                  { blockedState with pendingCreateLoadedDocumentTasks := pendingTasks })
         | .updateTheRendering =>
             match state.pendingUpdateTheRenderingTasks with
             | [] =>
-                (none, baseState)
-            | pendingTask :: pendingTasks =>
-                let completion : EventLoopTaskCompletion := {
-                  traversableId := pendingTask.traversableId
-                  eventLoopId := eventLoop.id
-                  documentId := pendingTask.documentId
-                }
-                (some (.updateTheRendering completion),
-                  { baseState with pendingUpdateTheRenderingTasks := pendingTasks })
+                (none, readyState)
+            | pendingTask :: _ =>
+                (some (.updateTheRendering pendingTask.documentId),
+                  { blockedState with pendingUpdateTheRenderingTasks := [] })
         | .dispatchEvent =>
             match state.pendingDispatchEventTasks with
             | [] =>
-                (none, baseState)
+                (none, readyState)
             | pendingTask :: pendingTasks =>
                 (some (.dispatchEvent pendingTask.documentId pendingTask.event),
-                  { baseState with pendingDispatchEventTasks := pendingTasks })
+                  { blockedState with pendingDispatchEventTasks := pendingTasks })
         | .runBeforeUnload =>
           match state.pendingRunBeforeUnloadTasks with
           | [] =>
-            (none, baseState)
+            (none, readyState)
           | pendingTask :: pendingTasks =>
             (some (.runBeforeUnload pendingTask.documentId pendingTask.checkId),
-              { baseState with pendingRunBeforeUnloadTasks := pendingTasks })
-        | .paint =>
-            match state.pendingPaintTasks with
-            | [] =>
-                (none, baseState)
-            | pendingTask :: pendingTasks =>
-                (some (.paint pendingTask.documentId),
-                  { baseState with pendingPaintTasks := pendingTasks })
+              { blockedState with pendingRunBeforeUnloadTasks := pendingTasks })
         | .completeDocumentFetch =>
             match state.pendingDocumentFetchCompletionTasks with
             | [] =>
-                (none, baseState)
+                (none, readyState)
             | pendingTask :: pendingTasks =>
                 (some (.documentFetchCompletion pendingTask.handler pendingTask.resolvedUrl pendingTask.body),
-                  { baseState with pendingDocumentFetchCompletionTasks := pendingTasks })
+                  { blockedState with pendingDocumentFetchCompletionTasks := pendingTasks })
         | _ =>
-            (none, baseState)
+            (none, readyState)
       (((), #[EventLoopEffect.runNextTask task runtimeEffect?]), nextState)
-
-def enqueueAndRunNext
-    (state : EventLoopTaskState)
-    (task : Task) :
-    Array EventLoopEffect × EventLoopTaskState :=
-  let (((), nextEffects), nextState) := runNextQueuedTaskM state
-  (#[EventLoopEffect.queueTask task] ++ nextEffects, nextState)
 
 def handleEventLoopTaskMessage
     (message : EventLoopTaskMessage) :
@@ -288,8 +258,7 @@ def handleEventLoopTaskMessage
           pendingCreateEmptyDocumentTasks :=
             state.pendingCreateEmptyDocumentTasks.concat { documentId }
       }
-      let (effects, nextState) := enqueueAndRunNext state task
-      (((), effects), nextState)
+      (((), #[EventLoopEffect.queueTask task]), state)
   | .createLoadedDocument documentId url body =>
       let task : Task := {
         step := .createLoadedDocument
@@ -301,23 +270,16 @@ def handleEventLoopTaskMessage
           pendingCreateLoadedDocumentTasks :=
             state.pendingCreateLoadedDocumentTasks.concat { documentId, url, body }
       }
-      let (effects, nextState) := enqueueAndRunNext state task
-      (((), effects), nextState)
-  | .queueUpdateTheRendering traversableId documentId =>
+      (((), #[EventLoopEffect.queueTask task]), state)
+  | .queueUpdateTheRendering _ documentId =>
       let task : Task := { step := .updateTheRendering }
-      let shouldAppendTask := !state.eventLoop.hasPendingUpdateTheRendering
-      let pendingUpdateTheRenderingTasks :=
-        if shouldAppendTask then
-          state.pendingUpdateTheRenderingTasks.concat { traversableId, documentId }
-        else
-          state.pendingUpdateTheRenderingTasks
       let state := {
         state with
-          eventLoop := state.eventLoop.enqueueUpdateTheRenderingTask
-          pendingUpdateTheRenderingTasks
+          eventLoop := state.eventLoop.enqueueTask task
+          pendingUpdateTheRenderingTasks :=
+            state.pendingUpdateTheRenderingTasks.concat { documentId }
       }
-      let (effects, nextState) := enqueueAndRunNext state task
-      (((), effects), nextState)
+      (((), #[EventLoopEffect.queueTask task]), state)
   | .queueDispatchEvent documentId event =>
       let task : Task := {
         step := .dispatchEvent
@@ -328,8 +290,7 @@ def handleEventLoopTaskMessage
           eventLoop := state.eventLoop.enqueueTask task
           pendingDispatchEventTasks := state.pendingDispatchEventTasks.concat { documentId, event }
       }
-      let (effects, nextState) := enqueueAndRunNext state task
-      (((), effects), nextState)
+      (((), #[EventLoopEffect.queueTask task]), state)
   | .runBeforeUnload documentId checkId =>
       let task : Task := {
         step := .runBeforeUnload
@@ -341,20 +302,13 @@ def handleEventLoopTaskMessage
           pendingRunBeforeUnloadTasks :=
             state.pendingRunBeforeUnloadTasks.concat { documentId, checkId }
       }
-      let (effects, nextState) := enqueueAndRunNext state task
-      (((), effects), nextState)
-  | .queuePaint documentId =>
-      let task : Task := {
-        step := .paint
-        documentId := some documentId.id
-      }
+      (((), #[EventLoopEffect.queueTask task]), state)
+  | .runNextTask =>
       let state := {
         state with
-          eventLoop := state.eventLoop.enqueueTask task
-          pendingPaintTasks := state.pendingPaintTasks.concat { documentId }
+          eventLoop := state.eventLoop.wakeForNextTask
       }
-      let (effects, nextState) := enqueueAndRunNext state task
-      (((), effects), nextState)
+      (((), #[]), state)
   | .queueDocumentFetchCompletion handler resolvedUrl body =>
       let task : Task := { step := .completeDocumentFetch }
       let state := {
@@ -363,16 +317,27 @@ def handleEventLoopTaskMessage
           pendingDocumentFetchCompletionTasks :=
             state.pendingDocumentFetchCompletionTasks.concat { handler, resolvedUrl, body }
       }
-      let (effects, nextState) := enqueueAndRunNext state task
-      (((), effects), nextState)
+      (((), #[EventLoopEffect.queueTask task]), state)
+
+def runEventLoopMessagesMonadic
+    (state : EventLoopTaskState)
+    (messages : List EventLoopTaskMessage) :
+    Array EventLoopEffect × EventLoopTaskState :=
+  let (queueEffects, queuedState) :=
+    messages.foldl
+      (fun (effects, currentState) message =>
+        let (((), nextEffects), nextState) :=
+          (handleEventLoopTaskMessage message).run currentState
+        (effects ++ nextEffects, nextState))
+      (#[], state)
+  let (((), runEffects), nextState) := runNextQueuedTaskM queuedState
+  (queueEffects ++ runEffects, nextState)
 
 def runEventLoopMonadic
     (state : EventLoopTaskState)
     (message : EventLoopTaskMessage) :
     Array EventLoopEffect × EventLoopTaskState :=
-  let (((), effects), nextState) :=
-    (handleEventLoopTaskMessage message).run state
-  (effects, nextState)
+  runEventLoopMessagesMonadic state [message]
 
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
@@ -380,12 +345,28 @@ private def recvCloseableChannel?
   let receiveTask ← channel.recv
   IO.wait receiveTask
 
-def runEventLoopMessage
-    (reportCompletion : EventLoopTaskCompletion → IO Unit)
+private partial def drainCloseableChannel
+    (channel : Std.CloseableChannel α)
+    (reversedMessages : List α := []) :
+    IO (List α) := do
+  match ← channel.tryRecv with
+  | some message =>
+      drainCloseableChannel channel (message :: reversedMessages)
+  | none =>
+      pure reversedMessages.reverse
+
+private def recvDrainedMessages?
+    (channel : Std.CloseableChannel α) :
+    IO (Option (List α)) := do
+  let some firstMessage ← recvCloseableChannel? channel | pure none
+  let drainedMessages ← drainCloseableChannel channel
+  pure (some (firstMessage :: drainedMessages))
+
+def runEventLoopMessages
     (state : EventLoopTaskState)
-    (message : EventLoopTaskMessage) :
+    (messages : List EventLoopTaskMessage) :
     IO EventLoopTaskState := do
-  let (effects, nextState) := runEventLoopMonadic state message
+  let (effects, nextState) := runEventLoopMessagesMonadic state messages
   for effect in effects do
     match effect with
     | .queueTask _ =>
@@ -402,8 +383,10 @@ def runEventLoopMessage
               (USize.ofNat documentId.id)
               url
               body
-        | some (.updateTheRendering completion) =>
-            reportCompletion completion
+        | some (.updateTheRendering documentId) =>
+            contentProcessUpdateTheRendering
+              nextState.contentProcess.raw
+              (USize.ofNat documentId.id)
         | some (.dispatchEvent documentId event) =>
             contentProcessDispatchEvent
               nextState.contentProcess.raw
@@ -414,10 +397,6 @@ def runEventLoopMessage
               nextState.contentProcess.raw
               (USize.ofNat documentId.id)
               (USize.ofNat checkId)
-        | some (.paint documentId) =>
-            contentProcessUpdateTheRendering
-              nextState.contentProcess.raw
-              (USize.ofNat documentId.id)
         | some (.documentFetchCompletion handler resolvedUrl body) =>
             contentProcessCompleteDocumentFetch
               nextState.contentProcess.raw
@@ -426,24 +405,28 @@ def runEventLoopMessage
               body
   pure nextState
 
+def runEventLoopMessage
+    (state : EventLoopTaskState)
+    (message : EventLoopTaskMessage) :
+    IO EventLoopTaskState := do
+  runEventLoopMessages state [message]
+
 partial def runEventLoopLoop
     (channel : Std.CloseableChannel EventLoopTaskMessage)
-    (reportCompletion : EventLoopTaskCompletion → IO Unit)
     (state : EventLoopTaskState) :
     IO Unit := do
-  let some message ← recvCloseableChannel? channel | pure ()
-  let state ← runEventLoopMessage reportCompletion state message
-  runEventLoopLoop channel reportCompletion state
+  let some messages ← recvDrainedMessages? channel | pure ()
+  let state ← runEventLoopMessages state messages
+  runEventLoopLoop channel state
 
 def runEventLoop
     (channel : Std.CloseableChannel EventLoopTaskMessage)
-    (reportCompletion : EventLoopTaskCompletion → IO Unit)
     (state : EventLoopTaskState) :
     IO Unit := do
   let contentProcess ← contentProcessStart (USize.ofNat state.eventLoop.id)
   let state := { state with contentProcess }
   try
-    runEventLoopLoop channel reportCompletion state
+    runEventLoopLoop channel state
   finally
     if contentProcess.raw ≠ 0 then
       contentProcessStop contentProcess.raw
