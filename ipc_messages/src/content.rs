@@ -59,7 +59,7 @@ pub struct BeforeUnloadResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NavigationCommitted {
+pub struct FinalizeNavigation {
     pub document_id: u64,
     pub url: String,
 }
@@ -460,7 +460,7 @@ pub enum Event {
     DocumentFetchRequested(FetchRequest),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
-    NavigationCommitted(NavigationCommitted),
+    FinalizeNavigation(FinalizeNavigation),
     CommandCompleted,
     PaintReady(PaintFrame),
 }

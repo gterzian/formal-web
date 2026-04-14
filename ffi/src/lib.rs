@@ -32,6 +32,7 @@ unsafe extern "C" {
     ) -> *mut lean_object;
     fn completeBeforeUnload(document_id: usize, check_id: usize, canceled: usize)
     -> *mut lean_object;
+    fn finalizeNavigation(document_id: usize, url: *mut lean_object) -> *mut lean_object;
     fn runNextEventLoopTask(event_loop_id: usize) -> *mut lean_object;
     fn abortNavigation(document_id: usize) -> *mut lean_object;
     fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
@@ -143,6 +144,22 @@ pub(crate) fn call_lean_before_unload_completed_parts(
         unsafe { leanIoResultShowError(io_result) };
         unsafe { leanDec(io_result) };
         return Err(String::from("Lean beforeunload completion failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
+pub(crate) fn call_lean_finalize_navigation_parts(
+    document_id: usize,
+    url: &str,
+) -> Result<(), String> {
+    let lean_url = lean_string_from_owned(url.to_owned());
+    let io_result = unsafe { finalizeNavigation(document_id, lean_url) };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean finalize-navigation failed"));
     }
     unsafe { leanDec(io_result) };
     Ok(())

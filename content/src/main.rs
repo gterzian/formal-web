@@ -342,10 +342,10 @@ impl ContentRuntime {
         // Note: This runtime entry point creates a top-level document, so `container` is null and the container `load` event branch in `completely finish loading` does not run here.
 
         self.event_sender
-            .send(ContentEvent::NavigationCommitted(
-                ipc_messages::content::NavigationCommitted { document_id, url },
+            .send(ContentEvent::FinalizeNavigation(
+                ipc_messages::content::FinalizeNavigation { document_id, url },
             ))
-            .map_err(|error| format!("failed to send navigation commit: {error}"))?;
+            .map_err(|error| format!("failed to send finalize-navigation event: {error}"))?;
 
         Ok(())
     }

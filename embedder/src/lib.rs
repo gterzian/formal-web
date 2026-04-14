@@ -11,7 +11,7 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ColorScheme, Viewport};
 use ipc_messages::content::{
-    BeforeUnloadResult, FontTransportReceiver, NavigateRequest, NavigationCommitted, PaintFrame,
+    BeforeUnloadResult, FinalizeNavigation, FontTransportReceiver, NavigateRequest, PaintFrame,
     SceneSummary, ScrollOffset,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
@@ -122,7 +122,7 @@ pub enum FormalWebUserEvent {
     Paint(PaintFrame),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
-    NavigationCommitted(NavigationCommitted),
+    FinalizeNavigation(FinalizeNavigation),
     NewTopLevelTraversable,
 }
 
@@ -682,6 +682,7 @@ impl FormalWebApp {
         let Some(window) = self.window.as_ref() else {
             return;
         };
+        println!("Request redraw");
         window.request_redraw();
     }
 
@@ -960,9 +961,15 @@ impl FormalWebApp {
         }
     }
 
-    fn handle_navigation_committed(&mut self, committed: NavigationCommitted) {
+    fn handle_finalize_navigation(&mut self, finalized: FinalizeNavigation) {
+        println!("Finalize navigation for: {:?}", finalized);
+        if let Some(pending_navigation) = self.browser.pending_navigation.as_ref() {
+            if pending_navigation.url != finalized.url.as_str() {
+                return;
+            }
+        }
         self.browser
-            .commit_navigation(committed.document_id, committed.url);
+            .commit_navigation(finalized.document_id, finalized.url);
         self.sync_chrome_state();
         self.request_window_redraw();
     }
@@ -1260,8 +1267,8 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             FormalWebUserEvent::BeforeUnloadCompleted(result) => {
                 self.handle_before_unload_completed(result);
             }
-            FormalWebUserEvent::NavigationCommitted(committed) => {
-                self.handle_navigation_committed(committed);
+            FormalWebUserEvent::FinalizeNavigation(finalized) => {
+                self.handle_finalize_navigation(finalized);
             }
             FormalWebUserEvent::NewTopLevelTraversable => {
                 self.has_top_level_traversable = true;

@@ -126,6 +126,8 @@ structure Document where
   openerPolicy : OpenerPolicy := {}
   /-- https://dom.spec.whatwg.org/#concept-document-url -/
   url : String := "about:blank"
+  /-- https://html.spec.whatwg.org/multipage/#concept-document-salvageable -/
+  salvageable : Bool := true
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#determining-the-origin -/

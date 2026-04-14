@@ -133,6 +133,16 @@ def completeBeforeUnloadFromRust
       checkId.toNat
       (canceled.toNat != 0)
 
+@[export finalizeNavigation]
+def finalizeNavigationFromRust
+    (documentId : USize)
+    (url : String) :
+    IO Unit := do
+  enqueueUserAgentMessage <|
+    .finalizeNavigation
+      documentId.toNat
+      url
+
 @[export runNextEventLoopTask]
 def runNextEventLoopTaskFromRust
     (eventLoopId : USize) :

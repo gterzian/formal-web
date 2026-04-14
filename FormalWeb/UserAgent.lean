@@ -48,6 +48,10 @@ structure UserAgent where
   pendingNavigationFetchIdsByFetchId : Std.TreeMap Nat Nat := Std.TreeMap.empty
   /-- Model-local queue of navigations paused while a content runtime runs `beforeunload`. -/
   pendingBeforeUnloadNavigations : Std.TreeMap Nat PendingBeforeUnloadNavigation := Std.TreeMap.empty
+  /-- Model-local queue of loaded documents waiting for https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation. -/
+  pendingNavigationFinalizations : Std.TreeMap Nat PendingNavigationFinalization := Std.TreeMap.empty
+  /-- Model-local reverse index from https://html.spec.whatwg.org/multipage/#navigation-params-id to pending finalization document ids. -/
+  pendingNavigationFinalizationIdsByNavigationId : Std.TreeMap Nat Nat := Std.TreeMap.empty
   /-- Model-local queue of document-driven fetches waiting to hand results back to embedder-side handlers. -/
   pendingDocumentFetches : Std.TreeMap Nat PendingDocumentFetch := Std.TreeMap.empty
 deriving Repr
@@ -258,6 +262,18 @@ def pendingBeforeUnloadNavigation?
     Option PendingBeforeUnloadNavigation :=
   userAgent.pendingBeforeUnloadNavigations.get? checkId
 
+def setPendingBeforeUnloadNavigation
+    (userAgent : UserAgent)
+    (pendingBeforeUnloadNavigation : PendingBeforeUnloadNavigation) :
+    UserAgent :=
+  {
+    userAgent with
+      pendingBeforeUnloadNavigations :=
+        userAgent.pendingBeforeUnloadNavigations.insert
+          pendingBeforeUnloadNavigation.checkId
+          pendingBeforeUnloadNavigation
+  }
+
 def appendPendingNavigationFetch
     (userAgent : UserAgent)
     (pendingNavigationFetch : PendingNavigationFetch) :
@@ -303,6 +319,53 @@ def pendingNavigationFetchByFetchId?
     Option PendingNavigationFetch := do
   let navigationId <- userAgent.pendingNavigationFetchIdsByFetchId.get? fetchId
   userAgent.pendingNavigationFetch? navigationId
+
+def appendPendingNavigationFinalization
+    (userAgent : UserAgent)
+    (pendingNavigationFinalization : PendingNavigationFinalization) :
+    UserAgent :=
+  {
+    userAgent with
+      pendingNavigationFinalizations :=
+        userAgent.pendingNavigationFinalizations.insert
+          pendingNavigationFinalization.documentId
+          pendingNavigationFinalization
+      pendingNavigationFinalizationIdsByNavigationId :=
+        userAgent.pendingNavigationFinalizationIdsByNavigationId.insert
+          pendingNavigationFinalization.navigationId
+          pendingNavigationFinalization.documentId
+  }
+
+def pendingNavigationFinalization?
+    (userAgent : UserAgent)
+    (documentId : Nat) :
+    Option PendingNavigationFinalization :=
+  userAgent.pendingNavigationFinalizations.get? documentId
+
+def pendingNavigationFinalizationByNavigationId?
+    (userAgent : UserAgent)
+    (navigationId : Nat) :
+    Option PendingNavigationFinalization := do
+  let documentId <- userAgent.pendingNavigationFinalizationIdsByNavigationId.get? navigationId
+  userAgent.pendingNavigationFinalization? documentId
+
+def takePendingNavigationFinalization
+    (userAgent : UserAgent)
+    (documentId : Nat) :
+    UserAgent × Option PendingNavigationFinalization :=
+  let result := userAgent.pendingNavigationFinalization? documentId
+  let userAgent := {
+    userAgent with
+      pendingNavigationFinalizations := userAgent.pendingNavigationFinalizations.erase documentId
+      pendingNavigationFinalizationIdsByNavigationId :=
+        match result with
+        | some pendingNavigationFinalization =>
+            userAgent.pendingNavigationFinalizationIdsByNavigationId.erase
+              pendingNavigationFinalization.navigationId
+        | none =>
+            userAgent.pendingNavigationFinalizationIdsByNavigationId
+  }
+  (userAgent, result)
 
 /-- Model-local bridge from the HTML navigation wait state to the runtime fetch worker. -/
 def pendingNavigationFetchRequest?
@@ -517,6 +580,213 @@ def queueCreateLoadedDocument
     Option (Nat × EventLoopTaskMessage) := do
   let _eventLoop <- userAgent.eventLoop? document.eventLoopId
   pure (document.eventLoopId, .createLoadedDocument document.documentId response.url response.body)
+
+private def updateOptionDocument
+    (optionDocument : Option Document)
+    (documentId : Nat)
+    (f : Document -> Document) :
+    Option Document :=
+  optionDocument.map fun document =>
+    if document.documentId.id = documentId then
+      f document
+    else
+      document
+
+private def updateHistoryEntryDocument
+    (historyEntry : SessionHistoryEntry)
+    (documentId : Nat)
+    (f : Document -> Document) :
+    SessionHistoryEntry :=
+  {
+    historyEntry with
+      documentState := {
+        historyEntry.documentState with
+          document := updateOptionDocument historyEntry.documentState.document documentId f
+      }
+  }
+
+private def updateTraversableDocument
+    (traversable : TopLevelTraversable)
+    (documentId : Nat)
+    (f : Document -> Document) :
+    TopLevelTraversable :=
+  {
+    traversable with
+      toTraversableNavigable := {
+        traversable.toTraversableNavigable with
+          toNavigable := {
+            traversable.toTraversableNavigable.toNavigable with
+              currentSessionHistoryEntry :=
+                traversable.toTraversableNavigable.toNavigable.currentSessionHistoryEntry.map
+                  (fun historyEntry => updateHistoryEntryDocument historyEntry documentId f)
+              activeSessionHistoryEntry :=
+                traversable.toTraversableNavigable.toNavigable.activeSessionHistoryEntry.map
+                  (fun historyEntry => updateHistoryEntryDocument historyEntry documentId f)
+          }
+          activeDocument := updateOptionDocument traversable.toTraversableNavigable.activeDocument documentId f
+          sessionHistoryEntries :=
+            traversable.toTraversableNavigable.sessionHistoryEntries.map
+              (fun historyEntry => updateHistoryEntryDocument historyEntry documentId f)
+      }
+      parentNavigableIdNone := by
+        simpa using traversable.parentNavigableIdNone
+  }
+
+def pendingNavigationDocumentDispatch?
+    (userAgent : UserAgent)
+    (navigationId : Nat)
+    (response : NavigationResponse) :
+    Option (Nat × EventLoopTaskMessage) := do
+  let pendingNavigationFinalization <-
+    UserAgent.pendingNavigationFinalizationByNavigationId? userAgent navigationId
+  let document <- pendingNavigationFinalization.historyEntry.documentState.document
+  if document.url = "about:blank" then
+    queueCreateEmptyDocument userAgent document
+  else
+    queueCreateLoadedDocument userAgent document response
+
+def cancelPendingNavigationFinalization
+    (userAgent : UserAgent)
+    (navigationId : Nat) :
+    UserAgent :=
+  match UserAgent.pendingNavigationFinalizationByNavigationId? userAgent navigationId with
+  | some pendingNavigationFinalization =>
+      (userAgent.takePendingNavigationFinalization pendingNavigationFinalization.documentId).1
+  | none =>
+      userAgent
+
+/-- https://html.spec.whatwg.org/multipage/#make-document-unsalvageable -/
+def makeDocumentUnsalvageable
+    (userAgent : UserAgent)
+    (documentId : Nat) :
+    UserAgent :=
+  match traversableContainingDocument? userAgent documentId with
+  | some traversable =>
+      replaceTraversable
+        userAgent
+        (updateTraversableDocument traversable documentId fun document =>
+          { document with salvageable := false })
+  | none =>
+      userAgent
+
+/-- https://html.spec.whatwg.org/multipage/#abort-a-document-and-its-descendants -/
+def abortDocumentAndDescendants
+    (userAgent : UserAgent)
+    (documentId : Nat) :
+    UserAgent :=
+  -- Step 1: Let descendantNavigables be document's descendant navigables.
+  -- TODO: Model descendant navigables once child navigables exist in the user-agent state.
+
+  -- Step 3: Abort document.
+  -- Note: The current model collapses the queued abort task to its durable effect of making the active document unsalvageable.
+  makeDocumentUnsalvageable userAgent documentId
+
+private def clearForwardSessionHistoryEntries
+    (traversable : TraversableNavigable) :
+    List SessionHistoryEntry :=
+  traversable.sessionHistoryEntries.filter fun historyEntry =>
+    historyEntry.step <= traversable.currentSessionHistoryStep
+
+private def replaceSessionHistoryEntryAtStep
+    (entries : List SessionHistoryEntry)
+    (step : Nat)
+    (historyEntry : SessionHistoryEntry) :
+    List SessionHistoryEntry :=
+  entries.map fun entry => if entry.step = step then historyEntry else entry
+
+/-- https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation -/
+def finalizeCrossDocumentNavigation
+    (userAgent : UserAgent)
+    (pendingNavigationFinalization : PendingNavigationFinalization) :
+    UserAgent :=
+  Id.run do
+    let some traversable := traversable? userAgent pendingNavigationFinalization.traversableId
+      | userAgent
+    let some document := pendingNavigationFinalization.historyEntry.documentState.document
+      | userAgent
+
+    -- Step 2: Set navigable's is delaying `load` events to false.
+    -- TODO: Model `load`-event delaying mode on navigables.
+
+    -- Step 4: If all of the following are true:
+    -- Note: The current model stores only top-level traversables, so the auxiliary-browsing-context branch is not yet represented.
+    let historyEntry :=
+      match traversable.toTraversableNavigable.activeDocument with
+      | some activeDocument =>
+          if traversable.toTraversableNavigable.toNavigable.parentNavigableId.isNone &&
+              document.origin != activeDocument.origin then
+            {
+              pendingNavigationFinalization.historyEntry with
+                documentState := {
+                  pendingNavigationFinalization.historyEntry.documentState with
+                    navigableTargetName := ""
+                }
+            }
+          else
+            pendingNavigationFinalization.historyEntry
+      | none =>
+          pendingNavigationFinalization.historyEntry
+
+    -- Step 5: Let entryToReplace be navigable's active session history entry if historyHandling is "replace", otherwise null.
+    let entryToReplace :=
+      match pendingNavigationFinalization.historyHandling with
+      | .replace => traversable.toTraversableNavigable.toNavigable.activeSessionHistoryEntry
+      | .push => none
+
+    -- Step 6: Let traversable be navigable's traversable navigable.
+    let traversableNavigable := traversable.toTraversableNavigable
+
+    -- Step 7: Let targetStep be null.
+    -- Step 8: Let targetEntries be the result of getting session history entries for navigable.
+    let (historyEntry, targetStep, targetEntries) :=
+      match entryToReplace with
+      | none =>
+          -- Step 9.1: Clear the forward session history of traversable.
+          -- Step 9.2: Set targetStep to traversable's current session history step + 1.
+          -- Step 9.3: Set historyEntry's step to targetStep.
+          -- Step 9.4: Append historyEntry to targetEntries.
+          let targetStep := traversableNavigable.currentSessionHistoryStep + 1
+          let historyEntry := { historyEntry with step := targetStep }
+          let targetEntries := (clearForwardSessionHistoryEntries traversableNavigable).concat historyEntry
+          (historyEntry, targetStep, targetEntries)
+      | some entryToReplace =>
+          -- Step 9.1: Replace entryToReplace with historyEntry in targetEntries.
+          -- TODO: Model the same-origin navigation API key preservation branch for replacements.
+
+          -- Step 9.2: Set historyEntry's step to entryToReplace's step.
+
+          -- Step 9.4: Set targetStep to traversable's current session history step.
+          let historyEntry := { historyEntry with step := entryToReplace.step }
+          let targetEntries :=
+            replaceSessionHistoryEntryAtStep
+              traversableNavigable.sessionHistoryEntries
+              entryToReplace.step
+              historyEntry
+          (historyEntry, traversableNavigable.currentSessionHistoryStep, targetEntries)
+
+    -- Step 10: Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
+    -- Note: The current model commits the history entry and active document directly on the traversable instead of separately modeling the shared traversal queue.
+    let committedNavigable := {
+      traversableNavigable.toNavigable with
+        currentSessionHistoryEntry := some historyEntry
+        activeSessionHistoryEntry := some historyEntry
+    }
+    let updatedNavigable := setOngoingNavigation committedNavigable none
+    let traversable := {
+      traversable with
+        toTraversableNavigable := {
+          traversableNavigable with
+            toNavigable := updatedNavigable
+            activeBrowsingContextId := some document.browsingContextId
+            activeDocument := some document
+            currentSessionHistoryStep := targetStep
+            sessionHistoryEntries := targetEntries
+        }
+        parentNavigableIdNone := by
+          simpa [committedNavigable, updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
+            traversable.parentNavigableIdNone
+    }
+    replaceTraversable userAgent traversable
 
 def notePendingUpdateTheRendering
     (userAgent : UserAgent)
@@ -965,6 +1235,7 @@ def continueAttemptToPopulateHistoryEntryDocument
     (sourceSnapshotParams : SourceSnapshotParams)
     (navigationParams : NavigationParams) :
     UserAgent :=
+  -- Step 5.8: Let entry's document state's document be the result of loading a document.
   let (userAgent, document) :=
     loadDocument
       userAgent
@@ -972,45 +1243,50 @@ def continueAttemptToPopulateHistoryEntryDocument
       navigationParams
       sourceSnapshotParams
       entry.documentState.initiatorOrigin
-  let documentState := {
-    entry.documentState with
-      document
-      everPopulated := document.isSome
-      origin := match document with
-        | some document => some document.origin
-        | none => entry.documentState.origin
-      historyPolicyContainer := some navigationParams.policyContainer
-      requestReferrer :=
-        (navigationParams.request.map (·.referrer)).getD entry.documentState.requestReferrer
-  }
+
+  -- Step 6: If entry's document state's document is not null, then:
   let historyEntry : SessionHistoryEntry := {
     entry with
-      documentState
-      step := traversable.toTraversableNavigable.currentSessionHistoryStep + 1
-  }
-  let updatedNavigable :=
-    {
-      traversable.toTraversableNavigable.toNavigable with
-        currentSessionHistoryEntry := some historyEntry
-        activeSessionHistoryEntry := some historyEntry
-        ongoingNavigation := none
-    }
-  let traversable := {
-    traversable with
-      toTraversableNavigable := {
-        traversable.toTraversableNavigable with
-          toNavigable := updatedNavigable
-          sessionHistoryEntries :=
-            traversable.toTraversableNavigable.sessionHistoryEntries.concat historyEntry
-          currentSessionHistoryStep := historyEntry.step
-          activeBrowsingContextId := document.map (·.browsingContextId)
-          activeDocument := document
+      documentState := {
+        entry.documentState with
+          document
+          everPopulated := document.isSome
+          origin := match document with
+            | some document => some document.origin
+            | none => entry.documentState.origin
+          historyPolicyContainer := some navigationParams.policyContainer
+          requestReferrer :=
+            (navigationParams.request.map (·.referrer)).getD entry.documentState.requestReferrer
       }
-      parentNavigableIdNone := by
-        simpa [updatedNavigable] using
-          traversable.parentNavigableIdNone
   }
-  replaceTraversable userAgent traversable
+  match document with
+  | some document =>
+      let pendingNavigationFinalization : PendingNavigationFinalization := {
+        documentId := document.documentId.id
+        navigationId := navigationParams.id
+        traversableId := traversable.id
+        historyEntry
+        historyHandling := .push
+        userInvolvement := navigationParams.userInvolvement
+      }
+
+      -- Step 7: Run completionSteps.
+      -- Note: The current model stores the completion-steps continuation explicitly and waits for the content runtime's `FinalizeNavigation` signal before mutating session history.
+      userAgent.appendPendingNavigationFinalization pendingNavigationFinalization
+  | none =>
+      let updatedNavigable :=
+        setOngoingNavigation traversable.toTraversableNavigable.toNavigable none
+      let traversable := {
+        traversable with
+          toTraversableNavigable := {
+            traversable.toTraversableNavigable with
+              toNavigable := updatedNavigable
+          }
+          parentNavigableIdNone := by
+            simpa [updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
+              traversable.parentNavigableIdNone
+      }
+      replaceTraversable userAgent traversable
 
 /--
 Continuation of the wait in https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching.
@@ -1114,7 +1390,9 @@ def processNavigationFetchCancellation
     (userAgent : UserAgent)
     (navigationId : Nat) :
     UserAgent :=
-  finishCreatingNavigationParamsByFetching userAgent navigationId none
+  cancelPendingNavigationFinalization
+    (finishCreatingNavigationParamsByFetching userAgent navigationId none)
+    navigationId
 
 /-- Model a concrete ongoing-navigation change that can wake a fetch-backed wait. -/
 def abortNavigation
@@ -1608,6 +1886,9 @@ inductive UserAgentTaskMessage where
       (documentId : Nat)
       (checkId : Nat)
       (canceled : Bool)
+    | finalizeNavigation
+      (documentId : Nat)
+      (url : String)
   | abortNavigationRequested (documentId : Nat)
   | documentFetchRequested (handler : RustNetHandlerPointer) (request : NavigationRequest)
   | dispatchEvent (event : String)
@@ -1808,21 +2089,68 @@ private def normalizeNavigationTargetName (targetName : String) : String :=
   if targetName.toLower = "_self" then "" else targetName
 
 /-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
-def startBeforeUnloadNavigationCheckM
+def advancePendingBeforeUnloadNavigation
+    (userAgent : UserAgent)
+    (documentId : Nat)
+    (checkId : Nat)
+    (canceled : Bool) :
+    UserAgent :=
+  match UserAgent.pendingBeforeUnloadNavigation? userAgent checkId with
+  | some pendingBeforeUnloadNavigation =>
+      if pendingBeforeUnloadNavigation.documentId != documentId then
+        userAgent
+      else
+        let status :=
+          if canceled then
+            BeforeUnloadCheckStatus.canceledByBeforeUnload
+          else
+            BeforeUnloadCheckStatus.continueNavigation
+        UserAgent.setPendingBeforeUnloadNavigation
+          userAgent
+          { pendingBeforeUnloadNavigation with status }
+  | none =>
+      userAgent
+
+def takeResolvedPendingBeforeUnloadNavigation
+    (userAgent : UserAgent)
+    (checkId : Nat) :
+    UserAgent × Option PendingBeforeUnloadNavigation :=
+  match UserAgent.pendingBeforeUnloadNavigation? userAgent checkId with
+  | some pendingBeforeUnloadNavigation =>
+      match pendingBeforeUnloadNavigation.status with
+      | .pending =>
+          (userAgent, none)
+      | .continueNavigation
+      | .canceledByBeforeUnload =>
+          userAgent.takePendingBeforeUnloadNavigation checkId
+  | none =>
+      (userAgent, none)
+
+/-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
+def checkIfUnloadingIsCanceledM
     (traversable : TopLevelTraversable)
     (destinationURL : String)
     (userInvolvement : UserNavigationInvolvement) :
-    M Bool := do
+    M BeforeUnloadCheckStatus := do
   -- Step 1: Let documentsToFireBeforeunload be the active document of each item in navigablesThatNeedBeforeUnload.
   -- TODO: Model descendant navigables and the aggregate documentsToFireBeforeunload list.
   -- Note: The current model stores top-level traversables only, so this collapses to at most the target traversable's active document.
   let some document := traversable.toTraversableNavigable.activeDocument
-    | pure false
+    | pure .continueNavigation
   if document.isInitialAboutBlank then
-    pure false
+    -- Step 3: Let finalStatus be "continue".
+    pure .continueNavigation
   else
-    -- Steps 5-8: Queue a global task for the active document's relevant global object and wait in pending state for the completion.
-    -- TODO: Model unloadPromptShown, the traverse navigate-event branch, and the finalStatus aggregation.
+    -- Step 5: Let totalTasks be the size of documentsToFireBeforeunload.
+    -- Note: The current model stores at most one top-level active document here, so `totalTasks` is implicit in the pending check record.
+
+    -- Step 6: Let completedTasks be 0.
+    -- Note: The current model tracks the single queued completion through `PendingBeforeUnloadNavigation.status` instead of an explicit counter.
+
+    -- Step 7: For each document of documentsToFireBeforeunload, queue a global task on the navigation and traversal task source given document's relevant global object to run the steps:
+    -- TODO: Model unloadPromptShown, the traverse navigate-event branch, and the full finalStatus aggregation once descendant navigables are represented.
+
+    -- Step 8: Wait for completedTasks to be totalTasks.
     let userAgent ← get
     let (userAgent, checkId) := userAgent.allocateBeforeUnloadCheckId
     let pending : PendingBeforeUnloadNavigation := {
@@ -1837,10 +2165,57 @@ def startBeforeUnloadNavigationCheckM
     | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
         set nextUserAgent
         M.runBeforeUnload traversable.id eventLoopId eventLoopMessage
-        pure true
+        pure .pending
     | none =>
         set ((userAgent.takePendingBeforeUnloadNavigation checkId).1)
-        pure false
+        pure .continueNavigation
+
+/-- https://html.spec.whatwg.org/multipage/#navigate -/
+def continueNavigationAfterBeforeUnloadM
+    (traversableId : Nat)
+    (documentId : Option Nat)
+    (destinationURL : String)
+    (userInvolvement : UserNavigationInvolvement) :
+    M Unit := do
+  let userAgent ← get
+
+  -- Step 23.3: Queue a global task on the navigation and traversal task source given navigable's active window to abort a document and its descendants given navigable's active document.
+  -- Note: The current model applies the queued task's modeled effect eagerly by marking the active document unsalvageable before continuing navigation.
+  let userAgent :=
+    match documentId with
+    | some documentId => abortDocumentAndDescendants userAgent documentId
+    | none => userAgent
+  set userAgent
+  match traversable? userAgent traversableId with
+  | some traversable =>
+      let readyToContinue :=
+        match documentId with
+        | some documentId =>
+            traversable.toTraversableNavigable.activeDocument.map (·.documentId.id) == some documentId
+        | none =>
+            true
+      match readyToContinue with
+      | true =>
+          let pendingFetchRequest? ←
+            navigateM
+              traversable
+              destinationURL
+              none
+              userInvolvement
+          match pendingFetchRequest? with
+          | some _ =>
+              pure ()
+          | none =>
+              let resumedUserAgent ← get
+              M.logError
+                (beforeUnloadNavigationFailureDetails
+                  destinationURL
+                  resumedUserAgent
+                  traversableId)
+      | false =>
+          pure ()
+  | none =>
+      pure ()
 
 def chooseTargetTraversableM
     (sourceDocumentId : Nat)
@@ -1873,11 +2248,18 @@ def navigateRequestedM
     (noopener : Bool) :
     M Unit := do
   let traversable ← chooseTargetTraversableM sourceDocumentId targetName noopener
-  let waitingForBeforeUnload ←
-    startBeforeUnloadNavigationCheckM traversable destinationURL userInvolvement
-  if !waitingForBeforeUnload then
-    let _ ← navigateM traversable destinationURL none userInvolvement
-  pure ()
+  let unloadStatus ←
+    checkIfUnloadingIsCanceledM traversable destinationURL userInvolvement
+  match unloadStatus with
+  | .continueNavigation =>
+      continueNavigationAfterBeforeUnloadM
+        traversable.id
+        (traversable.toTraversableNavigable.activeDocument.map (·.documentId.id))
+        destinationURL
+        userInvolvement
+  | .pending
+  | .canceledByBeforeUnload =>
+      pure ()
 
 /-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
 def beforeUnloadCompletedM
@@ -1888,47 +2270,32 @@ def beforeUnloadCompletedM
   -- Step 9: Wait for completedTasks to be totalTasks.
   -- Note: The runtime resumes here once the relevant content process reports the queued `beforeunload` task result.
   let userAgent ← get
+  let userAgent := advancePendingBeforeUnloadNavigation userAgent documentId checkId canceled
   let (userAgent, pendingBeforeUnloadNavigation?) :=
-    userAgent.takePendingBeforeUnloadNavigation checkId
+    takeResolvedPendingBeforeUnloadNavigation userAgent checkId
   set userAgent
   let some pendingBeforeUnloadNavigation := pendingBeforeUnloadNavigation?
     | pure ()
-  if pendingBeforeUnloadNavigation.documentId != documentId || canceled then
-    pure ()
-  else
-    match traversable? userAgent pendingBeforeUnloadNavigation.traversableId with
-    | some traversable =>
-        if traversable.toTraversableNavigable.activeDocument.map (·.documentId.id) = some documentId then
-          let pendingFetchRequest? ←
-            navigateM
-              traversable
-              pendingBeforeUnloadNavigation.destinationURL
-              none
-              pendingBeforeUnloadNavigation.userInvolvement
-          match pendingFetchRequest? with
-          | some _ =>
-              pure ()
-          | none =>
-              let resumedUserAgent ← get
-              M.logError
-                (beforeUnloadNavigationFailureDetails
-                  pendingBeforeUnloadNavigation.destinationURL
-                  resumedUserAgent
-                  pendingBeforeUnloadNavigation.traversableId)
-        else
-          pure ()
-    | none =>
-        pure ()
+  match pendingBeforeUnloadNavigation.status with
+  | .continueNavigation =>
+      continueNavigationAfterBeforeUnloadM
+        pendingBeforeUnloadNavigation.traversableId
+        (some pendingBeforeUnloadNavigation.documentId)
+        pendingBeforeUnloadNavigation.destinationURL
+        pendingBeforeUnloadNavigation.userInvolvement
+  | .pending
+  | .canceledByBeforeUnload =>
+      pure ()
 
-  def abortNavigationRequestedM
+def abortNavigationRequestedM
     (documentId : Nat) :
     M Unit := do
-    let userAgent ← get
-    match traversableContainingDocument? userAgent documentId with
-    | some traversable =>
-      set (abortNavigation userAgent traversable.id)
-    | none =>
-      pure ()
+  let userAgent ← get
+  match traversableContainingDocument? userAgent documentId with
+  | some traversable =>
+    set (abortNavigation userAgent traversable.id)
+  | none =>
+    pure ()
 
 def dispatchEventM
     (event : String) :
@@ -1982,15 +2349,22 @@ def handleFetchCompletedM
       let navigationResponse := navigationResponseOfFetchResponse response
       let processedUserAgent :=
         processNavigationFetchResponse userAgent pendingNavigationFetch.navigationId navigationResponse
-      let (nextUserAgent, renderingDispatch?) :=
-        resumePendingUpdateTheRenderingAfterNavigation
+      let waitingForFinalization :=
+        (UserAgent.pendingNavigationFinalizationByNavigationId?
           processedUserAgent
-          pendingNavigationFetch.traversableId
+          pendingNavigationFetch.navigationId).isSome
+      let (nextUserAgent, renderingDispatch?) :=
+        if waitingForFinalization then
+          (processedUserAgent, none)
+        else
+          resumePendingUpdateTheRenderingAfterNavigation
+            processedUserAgent
+            pendingNavigationFetch.traversableId
       set nextUserAgent
       let dispatch? :=
-        navigationDocumentDispatch?
-          processedUserAgent
-          pendingNavigationFetch.traversableId
+        pendingNavigationDocumentDispatch?
+          nextUserAgent
+          pendingNavigationFetch.navigationId
           navigationResponse
       M.completeNavigation
         pendingNavigationFetch.navigationId
@@ -2012,6 +2386,40 @@ def handleFetchCompletedM
       | none =>
           pure ()
 
+def finalizeNavigationM
+    (documentId : Nat)
+    (url : String) :
+    M Unit := do
+  let userAgent ← get
+  let (userAgent, pendingNavigationFinalization?) :=
+    userAgent.takePendingNavigationFinalization documentId
+  let some pendingNavigationFinalization := pendingNavigationFinalization?
+    | set userAgent; pure ()
+  if pendingNavigationFinalization.historyEntry.url != url then
+    set userAgent
+    pure ()
+  else
+    match traversable? userAgent pendingNavigationFinalization.traversableId with
+    | some traversable =>
+        if traversable.toTraversableNavigable.toNavigable.ongoingNavigation =
+            some (.navigationId pendingNavigationFinalization.navigationId) then
+          let userAgent := finalizeCrossDocumentNavigation userAgent pendingNavigationFinalization
+          let (userAgent, renderingDispatch?) :=
+            queueUpdateTheRendering userAgent pendingNavigationFinalization.traversableId
+          set userAgent
+          match renderingDispatch? with
+          | some (eventLoopId, eventLoopMessage) =>
+              M.queueUpdateTheRendering
+                pendingNavigationFinalization.traversableId
+                eventLoopId
+                eventLoopMessage
+          | none =>
+              pure ()
+        else
+          set userAgent
+    | none =>
+        set userAgent
+
 def handleUserAgentTaskMessage
     (message : UserAgentTaskMessage) :
     M Unit := do
@@ -2023,6 +2431,8 @@ def handleUserAgentTaskMessage
     navigateRequestedM sourceDocumentId destinationURL targetName userInvolvement noopener
   | .beforeUnloadCompleted documentId checkId canceled =>
     beforeUnloadCompletedM documentId checkId canceled
+  | .finalizeNavigation documentId url =>
+    finalizeNavigationM documentId url
   | .abortNavigationRequested documentId =>
     abortNavigationRequestedM documentId
   | .documentFetchRequested handler request =>

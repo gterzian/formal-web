@@ -102,9 +102,14 @@ fn spawn_listener(
                     let _ =
                         embedder::send_user_event(FormalWebUserEvent::BeforeUnloadCompleted(result));
                 }
-                ContentEvent::NavigationCommitted(committed) => {
-                    let _ =
-                        embedder::send_user_event(FormalWebUserEvent::NavigationCommitted(committed));
+                ContentEvent::FinalizeNavigation(finalized) => {
+                    let _ = super::call_lean_finalize_navigation_parts(
+                        finalized.document_id as usize,
+                        &finalized.url,
+                    );
+                    let _ = embedder::send_user_event(FormalWebUserEvent::FinalizeNavigation(
+                        finalized,
+                    ));
                 }
                 ContentEvent::CommandCompleted => {
                     let _ = super::call_lean_run_next_event_loop_task(event_loop_id);

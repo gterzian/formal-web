@@ -14,6 +14,12 @@ inductive UserNavigationInvolvement
   | browserUI
 deriving Repr, DecidableEq
 
+/-- https://html.spec.whatwg.org/multipage/#history-handling-behavior -/
+inductive HistoryHandlingBehavior
+  | push
+  | replace
+deriving Repr, DecidableEq
+
 /-- https://html.spec.whatwg.org/multipage/#ongoing-navigation -/
 inductive OngoingNavigation
   | navigationId (id : Nat)
@@ -123,6 +129,13 @@ structure PendingNavigationFetch where
 deriving Repr, DecidableEq
 
 /-- Model-local continuation for a navigation paused at https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled. -/
+inductive BeforeUnloadCheckStatus
+  | pending
+  | continueNavigation
+  | canceledByBeforeUnload
+deriving Repr, DecidableEq
+
+/-- Model-local continuation for a navigation paused at https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled. -/
 structure PendingBeforeUnloadNavigation where
   /-- Model-local identifier for the queued beforeunload check. -/
   checkId : Nat
@@ -132,6 +145,24 @@ structure PendingBeforeUnloadNavigation where
   traversableId : Nat
   /-- Destination URL for the deferred navigation. -/
   destinationURL : String
+  /-- https://html.spec.whatwg.org/multipage/#navigation-params-user-involvement -/
+  userInvolvement : UserNavigationInvolvement := .none
+  /-- Model-local state for the pending https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled result. -/
+  status : BeforeUnloadCheckStatus := .pending
+deriving Repr, DecidableEq
+
+/-- Model-local continuation for https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation once the content runtime finishes loading the new document. -/
+structure PendingNavigationFinalization where
+  /-- Model-local identifier for the loaded https://dom.spec.whatwg.org/#concept-document whose content runtime will emit the finalization signal. -/
+  documentId : Nat
+  /-- Model-local identifier corresponding to https://html.spec.whatwg.org/multipage/#navigation-params-id -/
+  navigationId : Nat
+  /-- Model-local reference to the target navigable for https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation -/
+  traversableId : Nat
+  /-- https://html.spec.whatwg.org/multipage/#session-history-entry -/
+  historyEntry : SessionHistoryEntry
+  /-- https://html.spec.whatwg.org/multipage/#history-handling-behavior -/
+  historyHandling : HistoryHandlingBehavior := .push
   /-- https://html.spec.whatwg.org/multipage/#navigation-params-user-involvement -/
   userInvolvement : UserNavigationInvolvement := .none
 deriving Repr, DecidableEq
