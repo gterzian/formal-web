@@ -1,2 +1,0 @@
-- Web standards are present under `web_standards`, currently those are: Console, Dom, Fetch, and HTML. 
-- Always document your work with links 
