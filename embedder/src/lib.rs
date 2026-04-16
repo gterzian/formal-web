@@ -17,7 +17,7 @@ use ipc_messages::content::{
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalPosition};
@@ -72,11 +72,35 @@ pub enum FormalWebUserEvent {
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
     NewTopLevelTraversable,
+    Automation(AutomationCommand),
+    Exit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationSnapshot {
+    pub current_url: Option<String>,
+    pub displayed_url: String,
+    pub document_id: Option<u64>,
+    pub has_top_level_traversable: bool,
+}
+
+pub enum AutomationCommand {
+    Snapshot {
+        reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
+    },
+    Navigate {
+        url: String,
+        reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingNavigation {
     url: String,
+}
+
+struct PendingAutomationNavigation {
+    reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
 }
 
 #[derive(Default)]
@@ -126,6 +150,15 @@ impl BrowserState {
             self.history_index = Some(0);
         }
     }
+
+    fn automation_snapshot(&self, has_top_level_traversable: bool) -> AutomationSnapshot {
+        AutomationSnapshot {
+            current_url: self.current_url().map(ToOwned::to_owned),
+            displayed_url: self.displayed_url(),
+            document_id: self.current_document_id,
+            has_top_level_traversable,
+        }
+    }
 }
 
 struct FormalWebApp {
@@ -141,6 +174,7 @@ struct FormalWebApp {
     keyboard_modifiers: Modifiers,
     buttons: MouseEventButtons,
     pointer_pos: PhysicalPosition<f64>,
+    pending_automation_navigation: Option<PendingAutomationNavigation>,
 }
 
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
@@ -248,6 +282,44 @@ pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
 pub fn send_runtime_message(message: &str) -> Result<(), String> {
     let user_event = user_event_of_runtime_message(message)?;
     send_user_event(user_event)
+}
+
+pub fn automation_is_ready() -> bool {
+    with_event_loop_proxy(|proxy| proxy.is_some())
+}
+
+pub fn automation_snapshot(timeout: std::time::Duration) -> Result<AutomationSnapshot, String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::Snapshot {
+        reply,
+    }))?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting for automation snapshot: {error}",
+            timeout.as_millis()
+        )
+    })?
+}
+
+pub fn automation_navigate(
+    url: &str,
+    timeout: std::time::Duration,
+) -> Result<AutomationSnapshot, String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::Navigate {
+        url: url.to_owned(),
+        reply,
+    }))?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting for navigation to complete: {error}",
+            timeout.as_millis()
+        )
+    })?
+}
+
+pub fn request_exit() -> Result<(), String> {
+    send_user_event(FormalWebUserEvent::Exit)
 }
 
 pub fn run_event_loop() -> Result<(), String> {
@@ -584,6 +656,7 @@ impl Default for FormalWebApp {
             keyboard_modifiers: Modifiers::default(),
             buttons: MouseEventButtons::None,
             pointer_pos: PhysicalPosition::default(),
+            pending_automation_navigation: None,
         }
     }
 }
@@ -922,6 +995,11 @@ impl FormalWebApp {
 
     fn handle_before_unload_completed(&mut self, result: BeforeUnloadResult) {
         if result.canceled {
+            if let Some(pending_navigation) = self.pending_automation_navigation.take() {
+                let _ = pending_navigation.reply.send(Err(String::from(
+                    "navigation was canceled by beforeunload",
+                )));
+            }
             self.browser.cancel_pending_navigation();
             self.sync_chrome_state();
             self.request_window_redraw();
@@ -938,6 +1016,37 @@ impl FormalWebApp {
             .commit_navigation(finalized.document_id, finalized.url);
         self.sync_chrome_state();
         self.request_window_redraw();
+
+        if let Some(pending_navigation) = self.pending_automation_navigation.take() {
+            let _ = pending_navigation
+                .reply
+                .send(Ok(self.browser.automation_snapshot(self.has_top_level_traversable)));
+        }
+    }
+
+    fn handle_automation_command(&mut self, command: AutomationCommand) {
+        match command {
+            AutomationCommand::Snapshot { reply } => {
+                let _ = reply.send(Ok(self.browser.automation_snapshot(self.has_top_level_traversable)));
+            }
+            AutomationCommand::Navigate { url, reply } => {
+                if self.pending_automation_navigation.is_some() {
+                    let _ = reply.send(Err(String::from("an automation navigation is already pending")));
+                    return;
+                }
+
+                match self.begin_navigation(PendingNavigation { url }) {
+                    Ok(()) => {
+                        self.pending_automation_navigation = Some(PendingAutomationNavigation {
+                            reply,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1015,6 +1124,11 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 }
             }
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                if let Some(pending_navigation) = self.pending_automation_navigation.take() {
+                    let _ = pending_navigation.reply.send(Err(String::from(
+                        "window closed before navigation completed",
+                    )));
+                }
                 self.renderer.suspend();
                 self.animation_timer = None;
                 self.chrome = None;
@@ -1205,7 +1319,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
             FormalWebUserEvent::Paint(snapshot) => {
                 let Ok(paint_frame) = self.paint_frame(snapshot) else {
@@ -1232,6 +1346,12 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             FormalWebUserEvent::NewTopLevelTraversable => {
                 self.has_top_level_traversable = true;
                 self.request_visible_redraw("request_redraw");
+            }
+            FormalWebUserEvent::Automation(command) => {
+                self.handle_automation_command(command);
+            }
+            FormalWebUserEvent::Exit => {
+                event_loop.exit();
             }
         }
     }

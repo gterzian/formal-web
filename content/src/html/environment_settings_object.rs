@@ -22,9 +22,11 @@ use crate::boa::{
 };
 use crate::dom::{Document, Element, Event, EventDispatchHost, EventTarget, Node, UIEvent};
 use crate::html::{
-    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLElement, Window,
+    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLElement, TimerHandler, Window,
 };
 use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
+use ipc_channel::ipc::IpcSender;
+use ipc_messages::content::Event as ContentEvent;
 
 /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
 #[derive(Debug, Clone)]
@@ -154,12 +156,46 @@ impl EnvironmentSettingsObject {
         self.time_origin.elapsed().as_secs_f64() * 1000.0
     }
 
+    pub fn install_timer_host(
+        &self,
+        document_id: u64,
+        event_sender: IpcSender<ContentEvent>,
+    ) -> Result<(), String> {
+        crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+            global_scope.install_timer_host(document_id, event_sender.clone());
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    pub fn clear_all_window_timers(&self) -> Result<(), String> {
+        crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+            global_scope.clear_all_timers();
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+    }
+
     pub fn evaluate_script(&mut self, source: &str) -> Result<(), String> {
         self.context
             .eval(Source::from_bytes(source))
             .map(|_| ())
             .map_err(|error| error.to_string())?;
         self.perform_a_microtask_checkpoint()
+    }
+
+    pub fn evaluate_script_to_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
+        let value = self
+            .context
+            .eval(Source::from_bytes(source))
+            .map_err(|error| error.to_string())?;
+
+        self.perform_a_microtask_checkpoint()?;
+
+        value
+            .to_json(&mut self.context)
+            .map(|value| value.unwrap_or(serde_json::Value::Null))
+            .map_err(|error| error.to_string())
     }
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
@@ -179,6 +215,65 @@ impl EnvironmentSettingsObject {
         }
 
         Ok(())
+    }
+
+    /// <https://html.spec.whatwg.org/#timers>
+    pub(crate) fn run_window_timer(
+        &mut self,
+        timer_id: u32,
+        timer_key: u64,
+        nesting_level: u32,
+    ) -> Result<(), String> {
+        let previous_nesting_level = crate::boa::platform_objects::with_global_scope(
+            &self.context,
+            |global_scope| Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level))),
+        )
+        .map_err(|error| error.to_string())?;
+
+        let timer = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+            Ok(global_scope.window_timer(timer_id, timer_key))
+        })
+        .map_err(|error| error.to_string())?;
+
+        let Some(timer) = timer else {
+            let _ = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                global_scope.set_current_timer_nesting_level(previous_nesting_level);
+                Ok(())
+            });
+            return Ok(());
+        };
+
+        match &timer.handler {
+            TimerHandler::Function { callback } => {
+                let global = JsValue::from(self.context.global_object());
+                if let Err(error) = invoke_callback_function(
+                    self,
+                    callback,
+                    &timer.arguments,
+                    ExceptionBehavior::Report,
+                    Some(&global),
+                ) {
+                    eprintln!("content error: {error}");
+                }
+            }
+            TimerHandler::String { source } => {
+                if let Err(error) = self.evaluate_script(source) {
+                    eprintln!("content error: {error}");
+                }
+            }
+        }
+
+        let completion_result = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+            global_scope
+                .complete_window_timer(timer_id, timer_key)
+                .map_err(|error| JsError::from(JsNativeError::typ().with_message(error)))
+        })
+        .map_err(|error| error.to_string());
+        let _ = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+            global_scope.set_current_timer_nesting_level(previous_nesting_level);
+            Ok(())
+        });
+        completion_result
     }
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>

@@ -56,6 +56,14 @@ opaque contentProcessRunBeforeUnload : USize → USize → USize → IO Unit
 @[extern "contentProcessUpdateTheRendering"]
 opaque contentProcessUpdateTheRendering : USize → USize → IO Unit
 
+/-- Runs one queued timer task inside the event loop's content process. -/
+@[extern "contentProcessRunWindowTimer"]
+opaque contentProcessRunWindowTimer : USize → USize → USize → USize → USize → IO Unit
+
+/-- Fails one queued document fetch inside the event loop's content process. -/
+@[extern "contentProcessFailDocumentFetch"]
+opaque contentProcessFailDocumentFetch : USize → USize → IO Unit
+
 /-- Completes a queued document fetch inside the event loop's content process. -/
 @[extern "contentProcessCompleteDocumentFetch"]
 opaque contentProcessCompleteDocumentFetch : USize → USize → @& String → ByteArray → IO Unit

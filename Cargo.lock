@@ -960,6 +960,7 @@ dependencies = [
  "embedder",
  "ipc-channel",
  "ipc_messages",
+ "serde_json",
 ]
 
 [[package]]
@@ -1613,6 +1614,7 @@ dependencies = [
  "peniko",
  "postcard",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -4,6 +4,7 @@ use embedder::RuntimeHooks;
 use ipc_messages::content::{Command as ContentCommand, DispatchEventEntry};
 use std::ffi::{CStr, c_char};
 use std::panic::{self, AssertUnwindSafe};
+use std::time::Duration;
 
 const DISPATCH_EVENT_BATCH_SEPARATOR: char = '\u{001e}';
 const DISPATCH_EVENT_FIELD_SEPARATOR: char = '\u{001f}';
@@ -27,6 +28,15 @@ unsafe extern "C" {
         method: *mut lean_object,
         body: *mut lean_object,
     ) -> *mut lean_object;
+    fn scheduleWindowTimer(
+        event_loop_id: usize,
+        document_id: usize,
+        timer_id: usize,
+        timer_key: usize,
+        timeout_ms: usize,
+        nesting_level: usize,
+    ) -> *mut lean_object;
+    fn clearWindowTimer(event_loop_id: usize, timer_key: usize) -> *mut lean_object;
     fn startNavigation(
         document_id: usize,
         destination_url: *mut lean_object,
@@ -128,6 +138,49 @@ pub(crate) fn call_lean_document_fetch_start_parts(
         unsafe { leanIoResultShowError(io_result) };
         unsafe { leanDec(io_result) };
         return Err(String::from("Lean document fetch start failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
+pub(crate) fn call_lean_schedule_window_timer_parts(
+    event_loop_id: usize,
+    document_id: usize,
+    timer_id: usize,
+    timer_key: usize,
+    timeout_ms: usize,
+    nesting_level: usize,
+) -> Result<(), String> {
+    let io_result = unsafe {
+        scheduleWindowTimer(
+            event_loop_id,
+            document_id,
+            timer_id,
+            timer_key,
+            timeout_ms,
+            nesting_level,
+        )
+    };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean window timer schedule failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
+pub(crate) fn call_lean_clear_window_timer_parts(
+    event_loop_id: usize,
+    timer_key: usize,
+) -> Result<(), String> {
+    let io_result = unsafe { clearWindowTimer(event_loop_id, timer_key) };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean window timer clear failed"));
     }
     unsafe { leanDec(io_result) };
     Ok(())
@@ -253,6 +306,14 @@ pub fn install_runtime_hooks() {
 
 pub fn install_content_bridge_hooks() {
     content_bridge::install_hooks();
+}
+
+pub fn evaluate_script(
+    document_id: u64,
+    source: String,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    content_bridge::evaluate_script(document_id, source, timeout)
 }
 
 pub fn start_kernel() -> Result<(), String> {
@@ -428,6 +489,50 @@ pub extern "C" fn contentProcessUpdateTheRendering(handle: usize, document_id: u
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic running content update-the-rendering"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessRunWindowTimer(
+    handle: usize,
+    document_id: usize,
+    timer_id: usize,
+    timer_key: usize,
+    nesting_level: usize,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        content_bridge::send_command(
+            handle,
+            ContentCommand::RunWindowTimer {
+                document_id: document_id as u64,
+                timer_id: timer_id as u32,
+                timer_key: timer_key as u64,
+                nesting_level: nesting_level as u32,
+            },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic running content window timer"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessFailDocumentFetch(
+    handle: usize,
+    handler_id: usize,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        content_bridge::send_command(
+            handle,
+            ContentCommand::FailDocumentFetch {
+                handler_id: handler_id as u64,
+            },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic failing content fetch"),
     }
 }
 

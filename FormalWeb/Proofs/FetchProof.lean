@@ -84,9 +84,9 @@ theorem handleFetchTaskMessage_full_refinement
                   have hc : completeFetch { pendingFetches := pendingFetches } controllerId = ({ pendingFetches := pendingFetches }, none) :=
                     completeFetch_none { pendingFetches := pendingFetches } controllerId hlookup'
                   have hc_fst : (completeFetch { pendingFetches := pendingFetches } controllerId).1 = { pendingFetches := pendingFetches } := by
-                    simpa [hc]
+                    simp [hc]
                   have hc_snd : (completeFetch { pendingFetches := pendingFetches } controllerId).2 = none := by
-                    simpa [hc]
+                    simp [hc]
                   unfold finishFetchM
                   simp [hc_fst, hc_snd]
             simpa [hstate] using (TransitionSystem.TransitionTrace.nil fetch)
@@ -100,12 +100,12 @@ theorem handleFetchTaskMessage_full_refinement
                   have hc : completeFetch { pendingFetches := pendingFetches } controllerId = ({ pendingFetches := pendingFetches }, none) :=
                     completeFetch_none { pendingFetches := pendingFetches } controllerId hlookup'
                   have hc_fst : (completeFetch { pendingFetches := pendingFetches } controllerId).1 = { pendingFetches := pendingFetches } := by
-                    simpa [hc]
+                    simp [hc]
                   have hc_snd : (completeFetch { pendingFetches := pendingFetches } controllerId).2 = none := by
-                    simpa [hc]
+                    simp [hc]
                   unfold finishFetchM
                   simp [hc_fst, hc_snd]
-            simpa [heffects, interpretEffects]
+            simp [heffects, interpretEffects]
       | some pendingFetch =>
           refine ⟨[.completeFetch controllerId], ?_, ?_⟩
           · have hlookup' : fetch.pendingFetches[controllerId]? = some pendingFetch := by
@@ -124,10 +124,10 @@ theorem handleFetchTaskMessage_full_refinement
                   have hc_fst :
                       (completeFetch { pendingFetches := pendingFetches } controllerId).1 =
                         { pendingFetches := pendingFetches.erase controllerId } := by
-                    simpa [hc]
+                    simp [hc]
                   have hc_snd :
                       (completeFetch { pendingFetches := pendingFetches } controllerId).2 = some pendingFetch := by
-                    simpa [hc]
+                    simp [hc]
                   unfold finishFetchM
                   simp [hc_fst, hc_snd]
             have htrans :
@@ -151,12 +151,12 @@ theorem handleFetchTaskMessage_full_refinement
                   have hc_fst :
                       (completeFetch { pendingFetches := pendingFetches } controllerId).1 =
                         { pendingFetches := pendingFetches.erase controllerId } := by
-                    simpa [hc]
+                    simp [hc]
                   have hc_snd :
                       (completeFetch { pendingFetches := pendingFetches } controllerId).2 = some pendingFetch := by
-                    simpa [hc]
+                    simp [hc]
                   unfold finishFetchM
                   simp [hc_fst, hc_snd]
-            simpa [heffects, interpretEffects, interpretEffect]
+            simp [heffects, interpretEffects, interpretEffect]
 
 end FormalWeb

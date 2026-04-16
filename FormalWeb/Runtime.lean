@@ -1,6 +1,7 @@
 import FormalWeb.FFI
 import FormalWeb.EventLoop
 import FormalWeb.Fetch
+import FormalWeb.Timer
 import FormalWeb.UserAgent
 import Std.Data.TreeMap
 import Std.Sync.Channel
@@ -12,6 +13,9 @@ initialize userAgentMessageChannelRef : IO.Ref (Option (Std.CloseableChannel Use
 
 initialize fetchMessageChannelRef : IO.Ref (Option (Std.CloseableChannel FetchTaskMessage)) ←
   IO.mkRef (none : Option (Std.CloseableChannel FetchTaskMessage))
+
+initialize timerMessageChannelRef : IO.Ref (Option (Std.CloseableChannel TimerTaskMessage)) ←
+  IO.mkRef (none : Option (Std.CloseableChannel TimerTaskMessage))
 
 initialize eventLoopMessageChannelsRef : IO.Ref (Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage)) ←
   IO.mkRef
@@ -39,6 +43,9 @@ initialize userAgentWorkerRef : IO.Ref (Option (_root_.Task (Except IO.Error Uni
 initialize fetchWorkerRef : IO.Ref (Option (_root_.Task (Except IO.Error Unit))) ←
   IO.mkRef (none : Option (_root_.Task (Except IO.Error Unit)))
 
+initialize timerWorkerRef : IO.Ref (Option (_root_.Task (Except IO.Error Unit))) ←
+  IO.mkRef (none : Option (_root_.Task (Except IO.Error Unit)))
+
 def trySendOnRef
     (channelRef : IO.Ref (Option (Std.CloseableChannel α)))
     (message : α) :
@@ -59,6 +66,9 @@ def enqueueUserAgentMessage (message : UserAgentTaskMessage) : IO Unit := do
 
 def enqueueFetchMessage (message : FetchTaskMessage) : IO Unit := do
   trySendOnRef fetchMessageChannelRef message
+
+def enqueueTimerMessage (message : TimerTaskMessage) : IO Unit := do
+  trySendOnRef timerMessageChannelRef message
 
 def enqueueEventLoopMessage
     (eventLoopId : Nat)
@@ -140,12 +150,29 @@ def handleEventLoopRuntimeEffect
       let fetchId ← allocateDocumentFetchId
       registerDocumentFetchRecipient fetchId state.eventLoop.id handler
       enqueueFetchMessage <| .startDocumentFetch { fetchId, request }
+  | .scheduleTimeout request =>
+      let nowMs ← IO.monoMsNow
+      enqueueTimerMessage <| .scheduleTimeout nowMs request
+  | .clearTimeout timerKey =>
+      let nowMs ← IO.monoMsNow
+      enqueueTimerMessage <| .clearTimeout nowMs timerKey
   | .documentFetchCompletion handler resolvedUrl body =>
       contentProcessCompleteDocumentFetch
         state.contentProcess.raw
         handler.raw
         resolvedUrl
         body
+  | .runWindowTimer documentId timerId timerKey nestingLevel =>
+      contentProcessRunWindowTimer
+        state.contentProcess.raw
+        (USize.ofNat documentId.id)
+        (USize.ofNat timerId)
+        (USize.ofNat timerKey)
+        (USize.ofNat nestingLevel)
+  | .failDocumentFetch handler =>
+      contentProcessFailDocumentFetch
+        state.contentProcess.raw
+        handler.raw
 
 def ensureEventLoopWorker
     (eventLoop : EventLoop) :
@@ -191,6 +218,31 @@ def startDocumentFetchFromRust
   enqueueEventLoopMessage
     eventLoopId.toNat
     (.documentFetchRequested { raw := handlerPointer } request)
+
+@[export scheduleWindowTimer]
+def scheduleWindowTimerFromRust
+    (eventLoopId : USize)
+    (documentId : USize)
+    (timerId : USize)
+    (timerKey : USize)
+    (timeoutMs : USize)
+    (nestingLevel : USize) :
+    IO Unit := do
+  enqueueEventLoopMessage
+    eventLoopId.toNat
+    (.scheduleWindowTimer
+      { id := documentId.toNat }
+      timerId.toNat
+      timerKey.toNat
+      timeoutMs.toNat
+      nestingLevel.toNat)
+
+@[export clearWindowTimer]
+def clearWindowTimerFromRust
+    (eventLoopId : USize)
+    (timerKey : USize) :
+    IO Unit := do
+  enqueueEventLoopMessage eventLoopId.toNat (.clearTimeout timerKey.toNat)
 
 @[export startNavigation]
 def startNavigationFromRust
@@ -260,9 +312,11 @@ def startKernel : IO Unit := do
 
   let userAgentChannel ← Std.CloseableChannel.new
   let fetchChannel ← Std.CloseableChannel.new
+  let timerChannel ← Std.CloseableChannel.new
 
   userAgentMessageChannelRef.set (some userAgentChannel)
   fetchMessageChannelRef.set (some fetchChannel)
+  timerMessageChannelRef.set (some timerChannel)
   eventLoopMessageChannelsRef.set
     (Std.TreeMap.empty : Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage) compare)
   documentEventLoopIdsRef.set (Std.TreeMap.empty : Std.TreeMap Nat Nat compare)
@@ -271,6 +325,7 @@ def startKernel : IO Unit := do
   nextDocumentFetchIdRef.set 0
   eventLoopShutdownChannelsRef.set ([] : List (Std.CloseableChannel EventLoopTaskMessage))
   eventLoopWorkersRef.set ([] : List (_root_.Task (Except IO.Error Unit)))
+  timerWorkerRef.set (none : Option (_root_.Task (Except IO.Error Unit)))
 
   let userAgentWorker ← IO.asTask <|
     FormalWeb.runUserAgent
@@ -289,21 +344,40 @@ def startKernel : IO Unit := do
                 (.queueDocumentFetchCompletion handler response.url response.body)
           | none =>
               trySendAndForget userAgentChannel (.fetchCompleted fetchId response)
+  let timerWorker ← IO.asTask <|
+    FormalWeb.runTimer timerChannel fun notification => do
+      match notification.completion with
+      | .windowTimerTask documentId timerId timerKey nestingLevel =>
+          enqueueEventLoopMessage
+            notification.eventLoopId
+            (.queueWindowTimerTask
+              { id := documentId }
+              timerId
+              timerKey
+              nestingLevel)
+      | .documentFetchTimeout handlerId =>
+          enqueueEventLoopMessage
+            notification.eventLoopId
+            (.queueDocumentFetchTimeout { raw := USize.ofNat handlerId })
 
   userAgentWorkerRef.set (some userAgentWorker)
   fetchWorkerRef.set (some fetchWorker)
+  timerWorkerRef.set (some timerWorker)
 
 @[export formalWebShutdownKernel]
 def shutdownKernel : IO Unit := do
   let userAgentChannel? ← userAgentMessageChannelRef.get
   let fetchChannel? ← fetchMessageChannelRef.get
+  let timerChannel? ← timerMessageChannelRef.get
   let eventLoopShutdownChannels ← eventLoopShutdownChannelsRef.get
   let eventLoopWorkers ← eventLoopWorkersRef.get
   let userAgentWorker? ← userAgentWorkerRef.get
   let fetchWorker? ← fetchWorkerRef.get
+  let timerWorker? ← timerWorkerRef.get
 
   userAgentMessageChannelRef.set (none : Option (Std.CloseableChannel UserAgentTaskMessage))
   fetchMessageChannelRef.set (none : Option (Std.CloseableChannel FetchTaskMessage))
+  timerMessageChannelRef.set (none : Option (Std.CloseableChannel TimerTaskMessage))
   eventLoopMessageChannelsRef.set
     (Std.TreeMap.empty : Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage) compare)
   documentEventLoopIdsRef.set (Std.TreeMap.empty : Std.TreeMap Nat Nat compare)
@@ -314,15 +388,22 @@ def shutdownKernel : IO Unit := do
   eventLoopWorkersRef.set ([] : List (_root_.Task (Except IO.Error Unit)))
   userAgentWorkerRef.set (none : Option (_root_.Task (Except IO.Error Unit)))
   fetchWorkerRef.set (none : Option (_root_.Task (Except IO.Error Unit)))
+  timerWorkerRef.set (none : Option (_root_.Task (Except IO.Error Unit)))
 
   if let some fetchChannel := fetchChannel? then
     fetchChannel.close
+
+  if let some timerChannel := timerChannel? then
+    timerChannel.close
 
   for channel in eventLoopShutdownChannels do
     channel.close
 
   if let some fetchWorker := fetchWorker? then
     let _ ← IO.wait fetchWorker
+
+  if let some timerWorker := timerWorker? then
+    let _ ← IO.wait timerWorker
 
   for worker in eventLoopWorkers do
     let _ ← IO.wait worker

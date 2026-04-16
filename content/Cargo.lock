@@ -1351,6 +1351,7 @@ dependencies = [
  "peniko",
  "postcard",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

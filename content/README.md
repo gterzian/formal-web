@@ -93,6 +93,8 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - When a JavaScript-visible Web IDL attribute or algorithm is implemented for a DOM type, keep the spec-linked method on the corresponding `content/src/dom` type and have `content/src/boa/bindings` delegate to that method instead of embedding the algorithm in the binding layer.
 
+- When a carrier-side helper owns a named HTML algorithm or a specific suffix of its steps, prefer the spec algorithm name for the helper when practical and note exactly which steps that helper continues instead of repeating a bare anchor.
+
 - For HTML mixins such as `HyperlinkElementUtils`, keep the carrier-side algorithms on a shared trait and register the shared Web IDL surface from a binding helper instead of duplicating mixin methods on each concrete element binding.
 
 - When one spec section invokes a concept algorithm defined elsewhere, link the shared trait/helper to the concept anchor and link the concrete element implementation to the invoking section's reference anchor (for example `api-for-a-and-area-elements:*` for anchor-specific uses of hyperlink URL algorithms).

@@ -8,19 +8,24 @@ use ipc_messages::content::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 struct ContentBridge {
     command_sender: IpcSender<ContentCommand>,
     child: Mutex<Option<Child>>,
     listener: Mutex<Option<JoinHandle<()>>>,
+    script_waiters: Mutex<HashMap<u64, mpsc::Sender<Result<serde_json::Value, String>>>>,
 }
 
 static CONTENT_REGISTRY: LazyLock<Mutex<HashMap<usize, Arc<ContentBridge>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static ACTIVE_CONTENT_BRIDGE: LazyLock<Mutex<Option<Arc<ContentBridge>>>> =
+    LazyLock::new(|| Mutex::new(None));
 static NEXT_CONTENT_HANDLE: AtomicUsize = AtomicUsize::new(1);
+static NEXT_SCRIPT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 fn executable_file_name(stem: &str) -> String {
     if std::env::consts::EXE_EXTENSION.is_empty() {
@@ -71,9 +76,18 @@ fn navigation_user_involvement_name(user_involvement: UserNavigationInvolvement)
 fn spawn_listener(
     event_loop_id: usize,
     event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>,
+    bridge: Arc<ContentBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        while let Ok(event) = event_receiver.recv() {
+        loop {
+            let event = match event_receiver.recv() {
+                Ok(event) => event,
+                Err(error) => {
+                    eprintln!("content bridge listener error: {error}");
+                    break;
+                }
+            };
+
             match event {
                 ContentEvent::DocumentFetchRequested(request) => {
                     let _ = super::call_lean_document_fetch_start_parts(
@@ -82,6 +96,23 @@ fn spawn_listener(
                         &request.url,
                         &request.method,
                         &request.body,
+                    );
+                }
+                ContentEvent::WindowTimerRequested(request) => {
+                    let _ = super::call_lean_schedule_window_timer_parts(
+                        event_loop_id,
+                        request.document_id as usize,
+                        request.timer_id as usize,
+                        request.timer_key as usize,
+                        request.timeout_ms as usize,
+                        request.nesting_level as usize,
+                    );
+                }
+                ContentEvent::WindowTimerCleared(request) => {
+                    let _ = request.document_id;
+                    let _ = super::call_lean_clear_window_timer_parts(
+                        event_loop_id,
+                        request.timer_key as usize,
                     );
                 }
                 ContentEvent::NavigationRequested(request) => {
@@ -109,10 +140,38 @@ fn spawn_listener(
                 ContentEvent::CommandCompleted => {
                     let _ = super::call_lean_run_next_event_loop_task(event_loop_id);
                 }
+                ContentEvent::ScriptEvaluated(result) => {
+                    let waiter = bridge
+                        .script_waiters
+                        .lock()
+                        .expect("content script waiter mutex poisoned")
+                        .remove(&result.request_id);
+                    if let Some(waiter) = waiter {
+                        let send_result = match result.error {
+                            Some(error) => Err(error),
+                            None => serde_json::from_str(&result.value_json).map_err(|error| {
+                                format!(
+                                    "failed to decode content script evaluation result: {error}"
+                                )
+                            }),
+                        };
+                        let _ = waiter.send(send_result);
+                    }
+                }
                 ContentEvent::PaintReady(snapshot) => {
                     let _ = embedder::send_user_event(FormalWebUserEvent::Paint(snapshot));
                 }
             }
+        }
+
+        let waiters = bridge
+            .script_waiters
+            .lock()
+            .expect("content script waiter mutex poisoned")
+            .drain()
+            .collect::<Vec<_>>();
+        for (_request_id, waiter) in waiters {
+            let _ = waiter.send(Err(String::from("content process event channel closed")));
         }
     })
 }
@@ -143,12 +202,17 @@ pub fn start(event_loop_id: usize) -> Result<usize, String> {
         .accept()
         .map_err(|error| format!("failed to accept content bootstrap: {error}"))?;
 
-    let listener = spawn_listener(event_loop_id, bootstrap.event_receiver);
     let bridge = Arc::new(ContentBridge {
         command_sender: bootstrap.command_sender,
         child: Mutex::new(Some(child)),
-        listener: Mutex::new(Some(listener)),
+        listener: Mutex::new(None),
+        script_waiters: Mutex::new(HashMap::new()),
     });
+    let listener = spawn_listener(event_loop_id, bootstrap.event_receiver, Arc::clone(&bridge));
+    *bridge
+        .listener
+        .lock()
+        .expect("content listener mutex poisoned") = Some(listener);
 
     if let Some(snapshot) = embedder::window_viewport_snapshot() {
         let _ = send_command_inner(&bridge, viewport_command(snapshot));
@@ -158,7 +222,10 @@ pub fn start(event_loop_id: usize) -> Result<usize, String> {
     CONTENT_REGISTRY
         .lock()
         .expect("content registry mutex poisoned")
-        .insert(handle, bridge);
+        .insert(handle, Arc::clone(&bridge));
+    *ACTIVE_CONTENT_BRIDGE
+        .lock()
+        .expect("active content bridge mutex poisoned") = Some(bridge);
     Ok(handle)
 }
 
@@ -168,6 +235,15 @@ pub fn stop(handle: usize) -> Result<(), String> {
         .expect("content registry mutex poisoned")
         .remove(&handle)
         .ok_or_else(|| format!("unknown content handle: {handle}"))?;
+
+    {
+        let mut active = ACTIVE_CONTENT_BRIDGE
+            .lock()
+            .expect("active content bridge mutex poisoned");
+        if active.as_ref().is_some_and(|candidate| Arc::ptr_eq(candidate, &bridge)) {
+            active.take();
+        }
+    }
 
     let _ = send_command_inner(&bridge, ContentCommand::Shutdown);
     if let Some(listener) = bridge
@@ -186,6 +262,17 @@ pub fn stop(handle: usize) -> Result<(), String> {
     {
         let _ = child.wait();
     }
+
+    let waiters = bridge
+        .script_waiters
+        .lock()
+        .expect("content script waiter mutex poisoned")
+        .drain()
+        .collect::<Vec<_>>();
+    for (_request_id, waiter) in waiters {
+        let _ = waiter.send(Err(String::from("content process stopped")));
+    }
+
     Ok(())
 }
 
@@ -197,6 +284,70 @@ pub fn send_command(handle: usize, command: ContentCommand) -> Result<(), String
         .cloned()
         .ok_or_else(|| format!("unknown content handle: {handle}"))?;
     send_command_inner(&bridge, command)
+}
+
+fn active_bridge() -> Result<Arc<ContentBridge>, String> {
+    ACTIVE_CONTENT_BRIDGE
+        .lock()
+        .expect("active content bridge mutex poisoned")
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| String::from("no active content process"))
+}
+
+pub fn evaluate_script(
+    document_id: u64,
+    source: String,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let bridge = active_bridge()?;
+    let request_id = NEXT_SCRIPT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let (sender, receiver) = mpsc::channel();
+
+    bridge
+        .script_waiters
+        .lock()
+        .expect("content script waiter mutex poisoned")
+        .insert(request_id, sender);
+
+    if let Err(error) = send_command_inner(
+        &bridge,
+        ContentCommand::EvaluateScript {
+            document_id,
+            request_id,
+            source,
+        },
+    ) {
+        bridge
+            .script_waiters
+            .lock()
+            .expect("content script waiter mutex poisoned")
+            .remove(&request_id);
+        return Err(error);
+    }
+
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            bridge
+                .script_waiters
+                .lock()
+                .expect("content script waiter mutex poisoned")
+                .remove(&request_id);
+            Err(format!(
+                "timed out waiting {} ms for script evaluation result",
+                timeout.as_millis()
+            ))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            bridge
+                .script_waiters
+                .lock()
+                .expect("content script waiter mutex poisoned")
+                .remove(&request_id);
+            Err(String::from("content script evaluation channel disconnected"))
+        }
+    }
 }
 
 pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {

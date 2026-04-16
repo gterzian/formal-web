@@ -65,9 +65,32 @@ pub struct FinalizeNavigation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptEvaluationResult {
+    pub request_id: u64,
+    pub value_json: String,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchEventEntry {
     pub document_id: u64,
     pub event: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowTimerRequest {
+    pub document_id: u64,
+    pub timer_id: u32,
+    pub timer_key: u64,
+    pub timeout_ms: u32,
+    pub nesting_level: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowTimerClearRequest {
+    pub document_id: u64,
+    pub timer_key: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -443,6 +466,7 @@ pub enum Command {
     DestroyDocument { document_id: u64 },
     EvaluateScript {
         document_id: u64,
+        request_id: u64,
         source: String,
     },
     DispatchEvent {
@@ -453,10 +477,19 @@ pub enum Command {
         check_id: u64,
     },
     UpdateTheRendering { document_id: u64 },
+    RunWindowTimer {
+        document_id: u64,
+        timer_id: u32,
+        timer_key: u64,
+        nesting_level: u32,
+    },
     CompleteDocumentFetch {
         handler_id: u64,
         resolved_url: String,
         body: Vec<u8>,
+    },
+    FailDocumentFetch {
+        handler_id: u64,
     },
     Shutdown,
 }
@@ -464,9 +497,12 @@ pub enum Command {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
     DocumentFetchRequested(FetchRequest),
+    WindowTimerRequested(WindowTimerRequest),
+    WindowTimerCleared(WindowTimerClearRequest),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
+    ScriptEvaluated(ScriptEvaluationResult),
     CommandCompleted,
     PaintReady(PaintFrame),
 }

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>load event fires</title>
+<script>
+window.addEventListener(
+  "load",
+  () => {
+    window.__formalWebTestResult = {
+      location: "",
+      title: String(document.title || ""),
+      tests: [
+        {
+          name: "window load event fires",
+          status: 0,
+          message: null,
+          stack: null,
+        },
+      ],
+      status: {
+        status: 0,
+        message: null,
+        stack: null,
+      },
+      asserts: [],
+    };
+  },
+  { once: true },
+);
+</script>
+<p>Verifies that the window load event fires for a completed document load.</p>

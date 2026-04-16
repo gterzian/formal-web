@@ -4,12 +4,14 @@ import Mathlib.Control.Monad.Writer
 import FormalWeb.Document
 import FormalWeb.FFI
 import FormalWeb.Fetch
+import FormalWeb.Timer
 
 namespace FormalWeb
 
 /-- https://html.spec.whatwg.org/multipage/#task-source -/
 inductive TaskSource
   | generic
+  | timer
 deriving Repr, DecidableEq
 
 /-- Model-local summary of the work stored in https://html.spec.whatwg.org/multipage/#concept-task-steps -/
@@ -26,6 +28,10 @@ inductive TaskStep
   | runBeforeUnload
   /-- Model-local task step queued when a document-driven fetch result is handed back to Rust. -/
   | completeDocumentFetch
+  /-- Model-local task step queued from the HTML timer task source. -/
+  | runWindowTimer
+  /-- Model-local task step queued when a document fetch timeout elapses. -/
+  | documentFetchTimeout
 deriving Repr, DecidableEq
 
 /-- https://html.spec.whatwg.org/multipage/#concept-task -/
@@ -65,11 +71,24 @@ inductive EventLoopTaskMessage where
   | documentFetchRequested
       (handler : RustNetHandlerPointer)
       (request : NavigationRequest)
+    | scheduleWindowTimer
+      (documentId : DocumentId)
+      (timerId : Nat)
+      (timerKey : Nat)
+      (timeoutMs : Nat)
+      (nestingLevel : Nat)
+    | clearTimeout (timerKey : Nat)
   | runNextTask
   | queueDocumentFetchCompletion
       (handler : RustNetHandlerPointer)
       (resolvedUrl : String)
       (body : ByteArray)
+    | queueWindowTimerTask
+      (documentId : DocumentId)
+      (timerId : Nat)
+      (timerKey : Nat)
+      (nestingLevel : Nat)
+    | queueDocumentFetchTimeout (handler : RustNetHandlerPointer)
 deriving Repr, DecidableEq
 
 namespace EventLoop
@@ -152,6 +171,17 @@ structure PendingDocumentFetchCompletionTask where
   handler : RustNetHandlerPointer
   resolvedUrl : String
   body : ByteArray
+deriving DecidableEq
+
+structure PendingRunWindowTimerTask where
+  documentId : DocumentId
+  timerId : Nat
+  timerKey : Nat
+  nestingLevel : Nat
+deriving DecidableEq
+
+structure PendingDocumentFetchTimeoutTask where
+  handler : RustNetHandlerPointer
 deriving DecidableEq
 
 private def dispatchEventKindLabel
@@ -474,6 +504,16 @@ private def dropPendingDocumentFetchRequest
       else
         pendingRequest :: dropPendingDocumentFetchRequest remainingRequests handler
 
+private def hasPendingDocumentFetchRequest
+    (pendingDocumentFetchRequests : List PendingDocumentFetchRequest)
+    (handler : RustNetHandlerPointer) :
+    Bool :=
+  pendingDocumentFetchRequests.any fun pendingRequest =>
+    pendingRequest.handler.raw = handler.raw
+
+private def documentFetchTimeoutMilliseconds : Nat :=
+  5000
+
 private def dispatchEventBatchSeparator : String :=
   String.singleton (Char.ofNat 30)
 
@@ -501,6 +541,8 @@ structure EventLoopTaskState where
   pendingRunBeforeUnloadTasks : List PendingRunBeforeUnloadTask := []
   pendingDocumentFetchRequests : List PendingDocumentFetchRequest := []
   pendingDocumentFetchCompletionTasks : List PendingDocumentFetchCompletionTask := []
+  pendingRunWindowTimerTasks : List PendingRunWindowTimerTask := []
+  pendingDocumentFetchTimeoutTasks : List PendingDocumentFetchTimeoutTask := []
 
 instance : Inhabited EventLoopTaskState where
   default := { eventLoop := { id := 0 } }
@@ -515,10 +557,18 @@ inductive EventLoopRuntimeEffect where
   | startDocumentFetch
       (handler : RustNetHandlerPointer)
       (request : NavigationRequest)
+    | scheduleTimeout (request : RunStepsAfterTimeoutRequest)
+    | clearTimeout (timerKey : Nat)
   | documentFetchCompletion
       (handler : RustNetHandlerPointer)
       (resolvedUrl : String)
       (body : ByteArray)
+    | runWindowTimer
+      (documentId : DocumentId)
+      (timerId : Nat)
+      (timerKey : Nat)
+      (nestingLevel : Nat)
+    | failDocumentFetch (handler : RustNetHandlerPointer)
 deriving Repr, DecidableEq
 
 inductive EventLoopEffect where
@@ -526,7 +576,7 @@ inductive EventLoopEffect where
   | runNextTask (task : Task) (runtimeEffect? : Option EventLoopRuntimeEffect)
 deriving Repr, DecidableEq
 
-private def coalesceQueuedHighFrequencyWork
+def coalesceQueuedHighFrequencyWork
     (state : EventLoopTaskState) :
     EventLoopTaskState :=
   match state with
@@ -541,7 +591,9 @@ private def coalesceQueuedHighFrequencyWork
       pendingDispatchEventTasks
       pendingRunBeforeUnloadTasks
       pendingDocumentFetchRequests
-      pendingDocumentFetchCompletionTasks =>
+      pendingDocumentFetchCompletionTasks
+      pendingRunWindowTimerTasks
+      pendingDocumentFetchTimeoutTasks =>
       let taskQueueAfterDispatch :=
         coalesceDispatchTaskQueue eventLoop.taskQueue
       let taskQueue :=
@@ -567,6 +619,8 @@ private def coalesceQueuedHighFrequencyWork
         pendingRunBeforeUnloadTasks
         pendingDocumentFetchRequests
         pendingDocumentFetchCompletionTasks
+        pendingRunWindowTimerTasks
+        pendingDocumentFetchTimeoutTasks
 
 abbrev EventLoopM := WriterT (Array EventLoopEffect) (StateM EventLoopTaskState)
 
@@ -659,15 +713,53 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
             | [] =>
                 (none, readyState)
             | pendingTask :: pendingTasks =>
-                (some (.documentFetchCompletion pendingTask.handler pendingTask.resolvedUrl pendingTask.body),
+                if hasPendingDocumentFetchRequest blockedState.pendingDocumentFetchRequests pendingTask.handler then
+                  (some (.documentFetchCompletion pendingTask.handler pendingTask.resolvedUrl pendingTask.body),
+                    {
+                      blockedState with
+                        pendingDocumentFetchRequests :=
+                          dropPendingDocumentFetchRequest
+                            blockedState.pendingDocumentFetchRequests
+                            pendingTask.handler
+                        pendingDocumentFetchCompletionTasks := pendingTasks
+                    })
+                else
+                  (none,
+                    {
+                      blockedState with
+                        pendingDocumentFetchCompletionTasks := pendingTasks
+                    })
+        | .runWindowTimer =>
+            match state.pendingRunWindowTimerTasks with
+            | [] =>
+                (none, readyState)
+            | pendingTask :: pendingTasks =>
+                (some (.runWindowTimer pendingTask.documentId pendingTask.timerId pendingTask.timerKey pendingTask.nestingLevel),
                   {
                     blockedState with
-                      pendingDocumentFetchRequests :=
-                        dropPendingDocumentFetchRequest
-                          blockedState.pendingDocumentFetchRequests
-                          pendingTask.handler
-                      pendingDocumentFetchCompletionTasks := pendingTasks
+                      pendingRunWindowTimerTasks := pendingTasks
                   })
+        | .documentFetchTimeout =>
+            match state.pendingDocumentFetchTimeoutTasks with
+            | [] =>
+                (none, readyState)
+            | pendingTask :: pendingTasks =>
+                if hasPendingDocumentFetchRequest blockedState.pendingDocumentFetchRequests pendingTask.handler then
+                  (some (.failDocumentFetch pendingTask.handler),
+                    {
+                      blockedState with
+                        pendingDocumentFetchRequests :=
+                          dropPendingDocumentFetchRequest
+                            blockedState.pendingDocumentFetchRequests
+                            pendingTask.handler
+                        pendingDocumentFetchTimeoutTasks := pendingTasks
+                    })
+                else
+                  (none,
+                    {
+                      blockedState with
+                        pendingDocumentFetchTimeoutTasks := pendingTasks
+                    })
         | _ =>
             (none, readyState)
         (((), #[EventLoopEffect.runNextTask task runtimeEffect?]), nextState)
@@ -754,7 +846,30 @@ def handleEventLoopTaskMessage
           pendingDocumentFetchRequests :=
             state.pendingDocumentFetchRequests.concat { handler, request }
       }
-      (((), #[EventLoopEffect.performRuntimeEffect (.startDocumentFetch handler request)]), state)
+      let timeoutRequest : RunStepsAfterTimeoutRequest := {
+        timerKey := handler.raw.toNat
+        globalId := state.eventLoop.id
+        orderingIdentifier := "document-fetch"
+        milliseconds := documentFetchTimeoutMilliseconds
+        eventLoopId := state.eventLoop.id
+        completion := .documentFetchTimeout handler.raw.toNat
+      }
+      (((), #[
+        EventLoopEffect.performRuntimeEffect (.startDocumentFetch handler request),
+        EventLoopEffect.performRuntimeEffect (.scheduleTimeout timeoutRequest)
+      ]), state)
+  | .scheduleWindowTimer documentId timerId timerKey timeoutMs nestingLevel =>
+      let request : RunStepsAfterTimeoutRequest := {
+        timerKey
+        globalId := documentId.id
+        orderingIdentifier := "setTimeout/setInterval"
+        milliseconds := timeoutMs
+        eventLoopId := state.eventLoop.id
+        completion := .windowTimerTask documentId.id timerId timerKey nestingLevel
+      }
+      (((), #[EventLoopEffect.performRuntimeEffect (.scheduleTimeout request)]), state)
+  | .clearTimeout timerKey =>
+      (((), #[EventLoopEffect.performRuntimeEffect (.clearTimeout timerKey)]), state)
   | .runNextTask =>
       let state := {
         state with
@@ -768,6 +883,31 @@ def handleEventLoopTaskMessage
           eventLoop := state.eventLoop.enqueueTask task
           pendingDocumentFetchCompletionTasks :=
             state.pendingDocumentFetchCompletionTasks.concat { handler, resolvedUrl, body }
+      }
+      (((), #[EventLoopEffect.performRuntimeEffect (.clearTimeout handler.raw.toNat)]), state)
+  | .queueWindowTimerTask documentId timerId timerKey nestingLevel =>
+      let task : Task := {
+        step := .runWindowTimer
+        source := .timer
+        documentId := some documentId.id
+      }
+      let state := {
+        state with
+          eventLoop := state.eventLoop.enqueueTask task
+          pendingRunWindowTimerTasks :=
+            state.pendingRunWindowTimerTasks.concat { documentId, timerId, timerKey, nestingLevel }
+      }
+      (((), #[]), state)
+  | .queueDocumentFetchTimeout handler =>
+      let task : Task := {
+        step := .documentFetchTimeout
+        source := .timer
+      }
+      let state := {
+        state with
+          eventLoop := state.eventLoop.enqueueTask task
+          pendingDocumentFetchTimeoutTasks :=
+            state.pendingDocumentFetchTimeoutTasks.concat { handler }
       }
       (((), #[]), state)
 

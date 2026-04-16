@@ -19,16 +19,17 @@ use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use data_url::DataUrl;
-use ipc_channel::{TryRecvError, ipc::{self, IpcSender}};
+use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
     CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument, DispatchEvent,
-    EvaluateScript, SetViewport, Shutdown, UpdateTheRendering,
+    EvaluateScript, FailDocumentFetch, RunWindowTimer, SetViewport, Shutdown,
+    UpdateTheRendering,
 };
 use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
     Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FontTransportSender, PaintFrame, RecordedScene,
-    ScrollOffset, ViewportSnapshot,
+    ScriptEvaluationResult, ScrollOffset, ViewportSnapshot,
 };
 use std::{
     cell::RefCell,
@@ -36,13 +37,11 @@ use std::{
     env,
     rc::Rc,
     sync::{Arc, Mutex},
-    thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
-const RESOURCE_LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn new_font_namespace() -> u64 {
     let pid = u64::from(std::process::id());
@@ -56,6 +55,7 @@ fn new_font_namespace() -> u64 {
 enum PendingNetworkHandler {
     Resource {
         document_id: u64,
+        request_url: String,
         handler: Box<dyn NetHandler>,
     },
     DeferredScript {
@@ -191,6 +191,7 @@ impl NetProvider for ContentNetProvider {
                     handler_id,
                     PendingNetworkHandler::Resource {
                         document_id: self.content_document_id,
+                        request_url: request.url.to_string(),
                         handler,
                     },
                 );
@@ -214,15 +215,7 @@ struct ContentDocument {
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
     pending_update_the_rendering: bool,
-    resource_timeout_deadline: Option<Instant>,
     pending_document_load: Option<PendingDocumentLoad>,
-}
-
-impl ContentDocument {
-    fn resources_timed_out(&self) -> bool {
-        self.resource_timeout_deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-    }
 }
 
 struct ContentRuntime {
@@ -390,22 +383,11 @@ impl ContentRuntime {
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
             content_document.document.borrow_mut().handle_messages();
-            let resources_timed_out = content_document.resources_timed_out();
-            let resources_ready =
-                resources_timed_out
-                    || !content_document.document.borrow().has_pending_critical_resources();
+            let resources_ready = !content_document.document.borrow().has_pending_critical_resources();
 
             let Some(pending_document_load) = content_document.pending_document_load.as_mut() else {
                 return Ok(());
             };
-
-            if resources_timed_out {
-                for script in &mut pending_document_load.scripts {
-                    if let DeferredScriptState::ExternalPending { src } = script {
-                        *script = DeferredScriptState::ExternalFailed { src: src.clone() };
-                    }
-                }
-            }
 
             let scripts_ready = pending_document_load
                 .scripts
@@ -458,29 +440,6 @@ impl ContentRuntime {
             .map_err(|error| format!("failed to send finalize-navigation event: {error}"))
     }
 
-    fn poll_timeouts(&mut self) -> Result<(), String> {
-        let document_ids = self.documents.keys().copied().collect::<Vec<_>>();
-        for document_id in document_ids {
-            let timed_out = self.documents.get(&document_id).is_some_and(|content_document| {
-                content_document.resources_timed_out()
-                    && (content_document.pending_document_load.is_some()
-                        || content_document.pending_update_the_rendering)
-            });
-            if !timed_out {
-                continue;
-            }
-            self.continue_document_load(document_id)?;
-            if self
-                .documents
-                .get(&document_id)
-                .is_some_and(|content_document| content_document.pending_update_the_rendering)
-            {
-                self.continue_updating_the_rendering(document_id)?;
-            }
-        }
-        Ok(())
-    }
-
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, document_id: u64) -> Result<(), String> {
@@ -489,6 +448,7 @@ impl ContentRuntime {
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
         )?;
+        settings.install_timer_host(document_id, self.event_sender.clone())?;
 
         // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
@@ -515,7 +475,6 @@ impl ContentRuntime {
                 document,
                 settings,
                 pending_update_the_rendering: false,
-                resource_timeout_deadline: None,
                 pending_document_load: None,
             },
         );
@@ -540,6 +499,7 @@ impl ContentRuntime {
             Rc::clone(&document),
             Url::parse(&url).map_err(|error| error.to_string())?,
         )?;
+        settings.install_timer_host(document_id, self.event_sender.clone())?;
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
@@ -549,7 +509,6 @@ impl ContentRuntime {
             parse_html_into_document(&mut document_guard, &body)
         };
 
-        let resource_timeout_deadline = Instant::now() + RESOURCE_LOAD_TIMEOUT;
         let deferred_scripts = parser_scripts
             .into_iter()
             .map(Self::deferred_script_state)
@@ -561,7 +520,6 @@ impl ContentRuntime {
                 document: Rc::clone(&document),
                 settings,
                 pending_update_the_rendering: false,
-                resource_timeout_deadline: Some(resource_timeout_deadline),
                 pending_document_load: Some(PendingDocumentLoad {
                     finalize_url: url.clone(),
                     scripts: deferred_scripts,
@@ -600,16 +558,18 @@ impl ContentRuntime {
         self.continue_document_load(document_id)
     }
 
-    fn evaluate_script(&mut self, document_id: u64, source: String) -> Result<(), String> {
+    fn evaluate_script(&mut self, document_id: u64, source: String) -> Result<serde_json::Value, String> {
         let document = self
             .documents
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document id: {document_id}"))?;
-        document.settings.evaluate_script(&source)
+        document.settings.evaluate_script_to_json(&source)
     }
 
     fn destroy_document(&mut self, document_id: u64) -> Result<(), String> {
-        self.documents.remove(&document_id);
+        if let Some(content_document) = self.documents.remove(&document_id) {
+            let _ = content_document.settings.clear_all_window_timers();
+        }
         let mut local_state = self
             .local_state
             .lock()
@@ -687,9 +647,7 @@ impl ContentRuntime {
 
             document.document.borrow_mut().handle_messages();
 
-            if document.document.borrow().has_pending_critical_resources()
-                && !document.resources_timed_out()
-            {
+            if document.document.borrow().has_pending_critical_resources() {
                 return Ok(());
             }
 
@@ -763,15 +721,17 @@ impl ContentRuntime {
                 .local_state
                 .lock()
                 .expect("local content state mutex poisoned");
-            local_state
-                .pending_handlers
-                .remove(&handler_id)
-                .ok_or_else(|| format!("unknown fetch handler id: {handler_id}"))?
+            local_state.pending_handlers.remove(&handler_id)
+        };
+
+        let Some(pending_handler) = pending_handler else {
+            return Ok(());
         };
 
         match pending_handler {
             PendingNetworkHandler::Resource {
                 document_id,
+                request_url: _,
                 handler,
             } => {
                 handler.bytes(resolved_url, Bytes::copy_from_slice(&body));
@@ -794,6 +754,62 @@ impl ContentRuntime {
                 Ok(())
             }
         }
+    }
+
+    fn fail_document_fetch(&mut self, handler_id: u64) -> Result<(), String> {
+        let pending_handler = {
+            let mut local_state = self
+                .local_state
+                .lock()
+                .expect("local content state mutex poisoned");
+            local_state.pending_handlers.remove(&handler_id)
+        };
+
+        let Some(pending_handler) = pending_handler else {
+            return Ok(());
+        };
+
+        match pending_handler {
+            PendingNetworkHandler::Resource {
+                document_id,
+                request_url,
+                handler,
+            } => {
+                handler.bytes(request_url, Bytes::new());
+                if self.documents.contains_key(&document_id) {
+                    self.continue_document_load(document_id)?;
+                    self.continue_updating_the_rendering(document_id)?;
+                }
+                Ok(())
+            }
+            PendingNetworkHandler::DeferredScript {
+                document_id,
+                script_index,
+            } => {
+                self.mark_deferred_script_failed(document_id, script_index);
+                if self.documents.contains_key(&document_id) {
+                    self.continue_document_load(document_id)?;
+                    self.continue_updating_the_rendering(document_id)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn run_window_timer(
+        &mut self,
+        document_id: u64,
+        timer_id: u32,
+        timer_key: u64,
+        nesting_level: u32,
+    ) -> Result<(), String> {
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        document
+            .settings
+            .run_window_timer(timer_id, timer_key, nesting_level)
     }
 
     fn note_command_completed(&self) -> Result<(), String> {
@@ -828,9 +844,19 @@ impl ContentRuntime {
             }
             EvaluateScript {
                 document_id,
+                request_id,
                 source,
             } => {
-                self.evaluate_script(document_id, source)?;
+                let value = self.evaluate_script(document_id, source)?;
+                let value_json = serde_json::to_string(&value)
+                    .map_err(|error| format!("failed to encode script evaluation result: {error}"))?;
+                self.event_sender
+                    .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
+                        request_id,
+                        value_json,
+                        error: None,
+                    }))
+                    .map_err(|error| format!("failed to send script evaluation result: {error}"))?;
                 Ok(true)
             }
             DispatchEvent { events } => {
@@ -848,12 +874,25 @@ impl ContentRuntime {
                 self.update_the_rendering(document_id)?;
                 Ok(true)
             }
+            RunWindowTimer {
+                document_id,
+                timer_id,
+                timer_key,
+                nesting_level,
+            } => {
+                self.run_window_timer(document_id, timer_id, timer_key, nesting_level)?;
+                Ok(true)
+            }
             CompleteDocumentFetch {
                 handler_id,
                 resolved_url,
                 body,
             } => {
                 self.complete_document_fetch(handler_id, resolved_url, body)?;
+                Ok(true)
+            }
+            FailDocumentFetch { handler_id } => {
+                self.fail_document_fetch(handler_id)?;
                 Ok(true)
             }
             Shutdown => Ok(false),
@@ -889,14 +928,9 @@ fn main() -> Result<(), String> {
 
     let mut runtime = ContentRuntime::new(event_sender);
     loop {
-        let command = match command_receiver.try_recv() {
+        let command = match command_receiver.recv() {
             Ok(command) => command,
-            Err(TryRecvError::Empty) => {
-                runtime.poll_timeouts()?;
-                thread::sleep(Duration::from_millis(16));
-                continue;
-            }
-            Err(TryRecvError::IpcError(_error)) => break,
+            Err(_error) => break,
         };
         let notify_event_loop = matches!(
             &command,
@@ -906,7 +940,9 @@ fn main() -> Result<(), String> {
                 | DispatchEvent { .. }
                 | Command::RunBeforeUnload { .. }
                 | UpdateTheRendering { .. }
+                | RunWindowTimer { .. }
                 | CompleteDocumentFetch { .. }
+                | FailDocumentFetch { .. }
         );
         match runtime.handle_command(command) {
             Ok(true) => {

@@ -1,3 +1,4 @@
+mod webdriver;
 mod wpt;
 
 use clap::{Parser, Subcommand};
@@ -14,6 +15,8 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum CommandKind {
     TestWpt(wpt::TestWptArgs),
+    #[command(name = "webdriver")]
+    WebDriver(webdriver::WebDriverArgs),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -55,6 +58,7 @@ fn main() {
     let result = match cli.command {
         None => run_app(),
         Some(CommandKind::TestWpt(args)) => wpt::run(args),
+        Some(CommandKind::WebDriver(args)) => webdriver::run(args),
     };
 
     if let Err(error) = result {
