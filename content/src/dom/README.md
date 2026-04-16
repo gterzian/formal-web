@@ -2,7 +2,7 @@
 
 - `BaseDocument` remains the authoritative DOM tree. The Rust carrier structs in this directory keep references, cached event-listener state, and algorithm entry points for JavaScript-visible behavior.
 
-- `GlobalScope` maps to HTML's global object concept. `Window` is one concrete global-object kind and composes `GlobalScope` rather than replacing it.
+- HTML global-object carriers such as `GlobalScope` and `Window` live in `content/src/html`; DOM dispatch and event-target code in this directory can depend on those HTML-owned carriers when the DOM Standard talks about Window objects.
 
 - `Document` and `Element` compose `Node` so shared node algorithms live on `Node`, while document-specific and element-specific Web IDL behavior lives on their respective carrier types.
 

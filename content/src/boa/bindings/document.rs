@@ -10,7 +10,8 @@ use boa_engine::{
 };
 
 use crate::boa::platform_objects::{
-    document_object, resolve_element_object, resolve_or_create_text_node_object,
+    collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
+    resolve_element_object, resolve_or_create_text_node_object,
 };
 use crate::dom::Document;
 
@@ -175,6 +176,17 @@ fn set_title(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResul
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
+    let dropped_node_ids = with_document(this, |document| {
+        let title_node_id = {
+            let document_ref = document.node.document.borrow();
+            document_ref.find_title_node().map(|node| node.id)
+        };
+
+        title_node_id
+            .map(|node_id| collect_child_subtree_node_ids(&document.node.document, node_id))
+            .unwrap_or_default()
+    })?;
+    invalidate_cached_node_ids(context, &dropped_node_ids)?;
     with_document(this, |document| document.set_title(&title))?;
     Ok(JsValue::undefined())
 }

@@ -6,7 +6,7 @@ use boa_engine::{
 };
 
 use crate::boa::platform_objects::with_global_scope;
-use crate::dom::Window;
+use crate::html::Window;
 use crate::webidl::callback_function_value;
 
 use super::event_target::register_event_target_methods;

@@ -2,9 +2,9 @@ use blitz_traits::events::{DomEvent, EventState};
 use boa_engine::{JsData, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
 
-use crate::html::{HTMLAnchorElement, HTMLElement};
+use crate::html::{HTMLAnchorElement, HTMLElement, Window};
 
-use super::{Document, Element, Node, Window};
+use super::{Document, Element, Node};
 
 pub const NONE: u16 = 0;
 pub const CAPTURING_PHASE: u16 = 1;

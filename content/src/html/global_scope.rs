@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     rc::Rc,
 };
 
@@ -98,9 +99,19 @@ impl GlobalScope {
             .push(CachedNodeObject { node_id, object });
     }
 
+    pub(crate) fn invalidate_cached_node_ids(&self, node_ids: &[usize]) {
+        if node_ids.is_empty() {
+            return;
+        }
+
+        let node_ids = node_ids.iter().copied().collect::<HashSet<_>>();
+        self.node_objects
+            .borrow_mut()
+            .retain(|entry| !node_ids.contains(&entry.node_id));
+    }
+
     /// <https://html.spec.whatwg.org/#dom-animationframeprovider-requestanimationframe>
     pub(crate) fn request_animation_frame(&self, callback: JsObject) -> u32 {
-        // Step 3: "Increment target's animation frame callback identifier by one, and let handle be the result."
         let callbacks = self.animation_frame_callbacks.borrow();
         let mut handle = self.animation_frame_callback_identifier.get();
 
@@ -116,22 +127,14 @@ impl GlobalScope {
 
         drop(callbacks);
         self.animation_frame_callback_identifier.set(handle);
-
-        // Step 4: "Let callbacks be target's map of animation frame callbacks."
-        // Step 5: "Set callbacks[handle] to callback."
         self.animation_frame_callbacks
             .borrow_mut()
             .push(AnimationFrameCallback { handle, callback });
-
-        // Step 6: "Return handle."
         handle
     }
 
     /// <https://html.spec.whatwg.org/#animationframeprovider-cancelanimationframe>
     pub(crate) fn cancel_animation_frame(&self, handle: u32) {
-        // Step 2: "Let callbacks be this's target object's map of animation frame callbacks."
-
-        // Step 3: "Remove callbacks[handle]."
         self.animation_frame_callbacks
             .borrow_mut()
             .retain(|entry| entry.handle != handle);
@@ -139,9 +142,6 @@ impl GlobalScope {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn take_animation_frame_callbacks(&self) -> Vec<JsObject> {
-        // Step 1: "Let callbacks be target's map of animation frame callbacks."
-
-        // Step 2: "Let callbackHandles be the result of getting the keys of callbacks."
         let callback_handles: Vec<u32> = self
             .animation_frame_callbacks
             .borrow()
@@ -149,7 +149,6 @@ impl GlobalScope {
             .map(|entry| entry.handle)
             .collect();
 
-        // Step 3: "For each handle in callbackHandles, if handle exists in callbacks:"
         let mut callbacks = self.animation_frame_callbacks.borrow_mut();
         let mut taken = Vec::with_capacity(callback_handles.len());
         for handle in callback_handles {

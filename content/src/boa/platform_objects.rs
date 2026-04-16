@@ -4,8 +4,8 @@ use blitz_dom::{BaseDocument, Node as BlitzNode};
 use html5ever::{local_name, ns};
 use boa_engine::{Context, JsError, JsNativeError, JsResult, class::Class, object::JsObject};
 
-use crate::dom::{Element, GlobalScope, Node, Window};
-use crate::html::{HTMLAnchorElement, HTMLElement};
+use crate::dom::{Element, Node};
+use crate::html::{GlobalScope, HTMLAnchorElement, HTMLElement, Window};
 
 pub(crate) fn with_global_scope<R>(
     context: &Context,
@@ -29,6 +29,40 @@ pub(crate) fn document_object(context: &Context) -> JsResult<JsObject> {
 pub(crate) fn store_document_object(context: &Context, object: JsObject) -> JsResult<()> {
     with_global_scope(context, |global_scope| {
         global_scope.store_document_object(object);
+        Ok(())
+    })
+}
+
+fn collect_node_subtree_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
+    let Some(node) = document.get_node(node_id) else {
+        return;
+    };
+
+    node_ids.push(node_id);
+    for child_id in node.children.iter().copied() {
+        collect_node_subtree_ids(document, child_id, node_ids);
+    }
+}
+
+pub(crate) fn collect_child_subtree_node_ids(
+    document: &Rc<RefCell<BaseDocument>>,
+    parent_node_id: usize,
+) -> Vec<usize> {
+    let document = document.borrow();
+    let Some(parent) = document.get_node(parent_node_id) else {
+        return Vec::new();
+    };
+
+    let mut node_ids = Vec::new();
+    for child_id in parent.children.iter().copied() {
+        collect_node_subtree_ids(&document, child_id, &mut node_ids);
+    }
+    node_ids
+}
+
+pub(crate) fn invalidate_cached_node_ids(context: &Context, node_ids: &[usize]) -> JsResult<()> {
+    with_global_scope(context, |global_scope| {
+        global_scope.invalidate_cached_node_ids(node_ids);
         Ok(())
     })
 }

@@ -7,7 +7,9 @@ use boa_engine::{
     native_function::NativeFunction,
     property::Attribute,
 };
+use blitz_dom::NodeData;
 
+use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
 use crate::dom::{Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLElement};
 
@@ -87,6 +89,21 @@ fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     } else {
         Some(value.to_string(context)?.to_std_string_escaped())
     };
+    let dropped_node_ids = with_node_ref(this, |node| {
+        let should_invalidate = {
+            let document = node.document.borrow();
+            document
+                .get_node(node.node_id)
+                .is_some_and(|current| matches!(current.data, NodeData::Element(_)))
+        };
+
+        if should_invalidate {
+            collect_child_subtree_node_ids(&node.document, node.node_id)
+        } else {
+            Vec::new()
+        }
+    })?;
+    invalidate_cached_node_ids(context, &dropped_node_ids)?;
     with_node_ref(this, |node| {
         node.set_text_content(text.as_deref());
     })?;

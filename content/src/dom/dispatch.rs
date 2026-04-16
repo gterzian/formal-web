@@ -3,12 +3,12 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::{JsResult, JsValue, object::JsObject};
 
-use crate::html::{HTMLAnchorElement, HTMLElement};
+use crate::html::{HTMLAnchorElement, HTMLElement, Window};
 use crate::webidl::{EcmascriptHost, call_user_objects_operation};
 
 use super::event::{EventListener, NONE};
 use super::{
-    BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node, Window, with_event_mut,
+    BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node, with_event_mut,
     with_event_target_mut, with_event_target_ref,
 };
 

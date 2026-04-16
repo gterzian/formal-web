@@ -9,8 +9,8 @@ mod webidl;
 
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
-    EnvironmentSettingsObject, JsHtmlParserProvider, execute_parser_scripts,
-    parse_html_into_document,
+    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
+    execute_parser_scripts, parse_html_into_document,
 };
 use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
@@ -19,13 +19,14 @@ use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use data_url::DataUrl;
-use ipc_channel::ipc::{self, IpcSender};
+use ipc_channel::{TryRecvError, ipc::{self, IpcSender}};
 use ipc_messages::content::Command::{
-    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DispatchEvent,
+    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument, DispatchEvent,
     EvaluateScript, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
-    Bootstrap, ColorScheme as MessageColorScheme, Command, Event as ContentEvent,
+    Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
+    Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FontTransportSender, PaintFrame, RecordedScene,
     ScrollOffset, ViewportSnapshot,
 };
@@ -35,11 +36,13 @@ use std::{
     env,
     rc::Rc,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
+const RESOURCE_LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn new_font_namespace() -> u64 {
     let pid = u64::from(std::process::id());
@@ -50,17 +53,35 @@ fn new_font_namespace() -> u64 {
     pid.rotate_left(32) ^ start_nanos
 }
 
-struct PendingDocumentHandler {
-    document_id: u64,
-    handler: Box<dyn NetHandler>,
+enum PendingNetworkHandler {
+    Resource {
+        document_id: u64,
+        handler: Box<dyn NetHandler>,
+    },
+    DeferredScript {
+        document_id: u64,
+        script_index: usize,
+    },
 }
 
 struct LocalContentState {
-    pending_handlers: HashMap<u64, PendingDocumentHandler>,
+    pending_handlers: HashMap<u64, PendingNetworkHandler>,
     next_handler_id: u64,
 }
 
 type LocalContentStateRef = Arc<Mutex<LocalContentState>>;
+
+enum DeferredScriptState {
+    Inline { source: String },
+    ExternalPending { src: String },
+    ExternalReady { source: String },
+    ExternalFailed { src: String },
+}
+
+struct PendingDocumentLoad {
+    finalize_url: String,
+    scripts: Vec<DeferredScriptState>,
+}
 
 fn request_body_string(body: &Body) -> String {
     match body {
@@ -168,7 +189,7 @@ impl NetProvider for ContentNetProvider {
                 local_state.next_handler_id += 1;
                 local_state.pending_handlers.insert(
                     handler_id,
-                    PendingDocumentHandler {
+                    PendingNetworkHandler::Resource {
                         document_id: self.content_document_id,
                         handler,
                     },
@@ -193,6 +214,15 @@ struct ContentDocument {
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
     pending_update_the_rendering: bool,
+    resource_timeout_deadline: Option<Instant>,
+    pending_document_load: Option<PendingDocumentLoad>,
+}
+
+impl ContentDocument {
+    fn resources_timed_out(&self) -> bool {
+        self.resource_timeout_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
 }
 
 struct ContentRuntime {
@@ -244,6 +274,213 @@ impl ContentRuntime {
         }
     }
 
+    fn register_pending_handler(&self, pending_handler: PendingNetworkHandler) -> u64 {
+        let mut local_state = self
+            .local_state
+            .lock()
+            .expect("local content state mutex poisoned");
+        let handler_id = local_state.next_handler_id;
+        local_state.next_handler_id += 1;
+        local_state.pending_handlers.insert(handler_id, pending_handler);
+        handler_id
+    }
+
+    fn request_remote_fetch(&self, handler_id: u64, request: Request) -> Result<(), String> {
+        self.event_sender
+            .send(ContentEvent::DocumentFetchRequested(ContentFetchRequest {
+                handler_id,
+                url: request.url.to_string(),
+                method: request.method.to_string(),
+                body: request_body_string(&request.body),
+            }))
+            .map_err(|error| format!("failed to send document fetch request to the embedder: {error}"))
+    }
+
+    fn deferred_script_state(script: PendingParserScript) -> DeferredScriptState {
+        match script {
+            PendingParserScript::Inline { source } => {
+                DeferredScriptState::Inline { source }
+            }
+            PendingParserScript::External { src } => {
+                DeferredScriptState::ExternalPending { src }
+            }
+        }
+    }
+
+    fn mark_deferred_script_failed(&mut self, document_id: u64, script_index: usize) {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return;
+        };
+        let Some(pending_document_load) = content_document.pending_document_load.as_mut() else {
+            return;
+        };
+        let Some(script) = pending_document_load.scripts.get_mut(script_index) else {
+            return;
+        };
+        let failed_src = match script {
+            DeferredScriptState::ExternalPending { src }
+            | DeferredScriptState::ExternalFailed { src } => src.clone(),
+            DeferredScriptState::Inline { .. } | DeferredScriptState::ExternalReady { .. } => {
+                return;
+            }
+        };
+        *script = DeferredScriptState::ExternalFailed { src: failed_src };
+    }
+
+    fn complete_deferred_script_fetch(
+        &mut self,
+        document_id: u64,
+        script_index: usize,
+        body: Vec<u8>,
+    ) {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return;
+        };
+        let Some(pending_document_load) = content_document.pending_document_load.as_mut() else {
+            return;
+        };
+        let Some(script) = pending_document_load.scripts.get_mut(script_index) else {
+            return;
+        };
+        if matches!(script, DeferredScriptState::ExternalPending { .. }) {
+            *script = DeferredScriptState::ExternalReady {
+                source: String::from_utf8_lossy(&body).into_owned(),
+            };
+        }
+    }
+
+    fn start_deferred_script_fetch(
+        &mut self,
+        document_id: u64,
+        script_index: usize,
+        src: &str,
+    ) -> Result<(), String> {
+        let creation_url = self
+            .documents
+            .get(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?
+            .settings
+            .creation_url
+            .clone();
+        let resolved_url = creation_url
+            .join(src)
+            .map_err(|error| format!("failed to resolve deferred script URL `{src}`: {error}"))?;
+
+        if resolved_url.scheme() == "data" {
+            let (bytes, _fragment) = DataUrl::process(resolved_url.as_str())
+                .map_err(|error| format!("failed to decode deferred data script URL: {error}"))?
+                .decode_to_vec()
+                .map_err(|error| format!("failed to read deferred data script body: {error}"))?;
+            self.complete_deferred_script_fetch(document_id, script_index, bytes);
+            return Ok(());
+        }
+
+        let handler_id = self.register_pending_handler(PendingNetworkHandler::DeferredScript {
+            document_id,
+            script_index,
+        });
+        self.request_remote_fetch(handler_id, Request::get(resolved_url))
+    }
+
+    fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
+        let ready_to_finish = {
+            let content_document = self
+                .documents
+                .get_mut(&document_id)
+                .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+
+            content_document.document.borrow_mut().handle_messages();
+            let resources_timed_out = content_document.resources_timed_out();
+            let resources_ready =
+                resources_timed_out
+                    || !content_document.document.borrow().has_pending_critical_resources();
+
+            let Some(pending_document_load) = content_document.pending_document_load.as_mut() else {
+                return Ok(());
+            };
+
+            if resources_timed_out {
+                for script in &mut pending_document_load.scripts {
+                    if let DeferredScriptState::ExternalPending { src } = script {
+                        *script = DeferredScriptState::ExternalFailed { src: src.clone() };
+                    }
+                }
+            }
+
+            let scripts_ready = pending_document_load
+                .scripts
+                .iter()
+                .all(|script| !matches!(script, DeferredScriptState::ExternalPending { .. }));
+            resources_ready && scripts_ready
+        };
+
+        if !ready_to_finish {
+            return Ok(());
+        }
+
+        let pending_document_load = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?
+            .pending_document_load
+            .take()
+            .ok_or_else(|| format!("missing pending document load for document {document_id}"))?;
+
+        let content_document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+
+        for script in pending_document_load.scripts {
+            match script {
+                DeferredScriptState::Inline { source }
+                | DeferredScriptState::ExternalReady { source } => {
+                    if let Err(error) = content_document.settings.evaluate_script(&source) {
+                        eprintln!("content error: {error}");
+                    }
+                }
+                DeferredScriptState::ExternalPending { .. }
+                | DeferredScriptState::ExternalFailed { .. } => {}
+            }
+        }
+
+        let window = content_document.settings.context.global_object();
+        fire_event(&mut content_document.settings, &window, "load", true)
+            .map_err(|error| error.to_string())?;
+
+        self.event_sender
+            .send(ContentEvent::FinalizeNavigation(
+                ipc_messages::content::FinalizeNavigation {
+                    document_id,
+                    url: pending_document_load.finalize_url,
+                },
+            ))
+            .map_err(|error| format!("failed to send finalize-navigation event: {error}"))
+    }
+
+    fn poll_timeouts(&mut self) -> Result<(), String> {
+        let document_ids = self.documents.keys().copied().collect::<Vec<_>>();
+        for document_id in document_ids {
+            let timed_out = self.documents.get(&document_id).is_some_and(|content_document| {
+                content_document.resources_timed_out()
+                    && (content_document.pending_document_load.is_some()
+                        || content_document.pending_update_the_rendering)
+            });
+            if !timed_out {
+                continue;
+            }
+            self.continue_document_load(document_id)?;
+            if self
+                .documents
+                .get(&document_id)
+                .is_some_and(|content_document| content_document.pending_update_the_rendering)
+            {
+                self.continue_updating_the_rendering(document_id)?;
+            }
+        }
+        Ok(())
+    }
+
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, document_id: u64) -> Result<(), String> {
@@ -278,6 +515,8 @@ impl ContentRuntime {
                 document,
                 settings,
                 pending_update_the_rendering: false,
+                resource_timeout_deadline: None,
+                pending_document_load: None,
             },
         );
         Ok(())
@@ -310,44 +549,55 @@ impl ContentRuntime {
             parse_html_into_document(&mut document_guard, &body)
         };
 
+        let resource_timeout_deadline = Instant::now() + RESOURCE_LOAD_TIMEOUT;
+        let deferred_scripts = parser_scripts
+            .into_iter()
+            .map(Self::deferred_script_state)
+            .collect::<Vec<_>>();
+
         self.documents.insert(
             document_id,
             ContentDocument {
                 document: Rc::clone(&document),
                 settings,
                 pending_update_the_rendering: false,
+                resource_timeout_deadline: Some(resource_timeout_deadline),
+                pending_document_load: Some(PendingDocumentLoad {
+                    finalize_url: url.clone(),
+                    scripts: deferred_scripts,
+                }),
             },
         );
 
-        let content_document = self
+        let deferred_fetches = self
             .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+            .get(&document_id)
+            .and_then(|content_document| content_document.pending_document_load.as_ref())
+            .map(|pending_document_load| {
+                pending_document_load
+                    .scripts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(script_index, script)| match script {
+                        DeferredScriptState::ExternalPending { src } => {
+                            Some((script_index, src.clone()))
+                        }
+                        DeferredScriptState::Inline { .. }
+                        | DeferredScriptState::ExternalReady { .. }
+                        | DeferredScriptState::ExternalFailed { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
-        // Note: This block continues <https://html.spec.whatwg.org/#the-end>.
-        // Step 1: "Update the current document readiness to `complete`."
-        // Note: The content runtime executes parser-discovered classic scripts before the load event fires.
-        execute_parser_scripts(&mut content_document.settings, parser_scripts)?;
+        for (script_index, src) in deferred_fetches {
+            if let Err(error) = self.start_deferred_script_fetch(document_id, script_index, &src) {
+                eprintln!("content error: {error}");
+                self.mark_deferred_script_failed(document_id, script_index);
+            }
+        }
 
-        // Step 5: "Fire an event named `load` at `window`, with legacy target override flag set."
-        let window = content_document.settings.context.global_object();
-        fire_event(&mut content_document.settings, &window, "load", true)
-            .map_err(|error| error.to_string())?;
-
-        // Step 12: "Completely finish loading the `Document`."
-        // Step 12.1: "Set document's completely loaded time to the current time."
-        // TODO: Persist the document's completely loaded time in the DOM/runtime state.
-
-        // Step 12.2: "Let container be document's node navigable's container."
-        // Note: This runtime entry point creates a top-level document, so `container` is null and the container `load` event branch in `completely finish loading` does not run here.
-
-        self.event_sender
-            .send(ContentEvent::FinalizeNavigation(
-                ipc_messages::content::FinalizeNavigation { document_id, url },
-            ))
-            .map_err(|error| format!("failed to send finalize-navigation event: {error}"))?;
-
-        Ok(())
+        self.continue_document_load(document_id)
     }
 
     fn evaluate_script(&mut self, document_id: u64, source: String) -> Result<(), String> {
@@ -358,21 +608,44 @@ impl ContentRuntime {
         document.settings.evaluate_script(&source)
     }
 
-    fn dispatch_event(&mut self, document_id: u64, event: String) -> Result<(), String> {
-        let document = self
-            .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+    fn destroy_document(&mut self, document_id: u64) -> Result<(), String> {
+        self.documents.remove(&document_id);
+        let mut local_state = self
+            .local_state
+            .lock()
+            .expect("local content state mutex poisoned");
+        local_state.pending_handlers.retain(|_, pending_handler| match pending_handler {
+            PendingNetworkHandler::Resource {
+                document_id: pending_document_id,
+                ..
+            }
+            | PendingNetworkHandler::DeferredScript {
+                document_id: pending_document_id,
+                ..
+            } => *pending_document_id != document_id,
+        });
+        Ok(())
+    }
 
-        // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event to the content runtime.
-        let event = deserialize_ui_event(&event)?;
-        dispatch_ui_event(
-            document_id,
-            Rc::clone(&document.document),
-            &mut document.settings,
-            &self.event_sender,
-            event,
-        )
+    fn dispatch_events(&mut self, events: Vec<DispatchEventEntry>) -> Result<(), String> {
+        for DispatchEventEntry { document_id, event } in events {
+            let document = self
+                .documents
+                .get_mut(&document_id)
+                .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+
+            // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event batch to the content runtime.
+            let event = deserialize_ui_event(&event)?;
+            dispatch_ui_event(
+                document_id,
+                Rc::clone(&document.document),
+                &mut document.settings,
+                &self.event_sender,
+                event,
+            )?;
+        }
+
+        Ok(())
     }
 
     fn run_before_unload(&mut self, document_id: u64, check_id: u64) -> Result<(), String> {
@@ -412,7 +685,11 @@ impl ContentRuntime {
                 .get_mut(&document_id)
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
-            if document.document.borrow().has_pending_critical_resources() {
+            document.document.borrow_mut().handle_messages();
+
+            if document.document.borrow().has_pending_critical_resources()
+                && !document.resources_timed_out()
+            {
                 return Ok(());
             }
 
@@ -481,17 +758,42 @@ impl ContentRuntime {
         resolved_url: String,
         body: Vec<u8>,
     ) -> Result<(), String> {
-        let pending_handler = self
-            .local_state
-            .lock()
-            .expect("local content state mutex poisoned")
-            .pending_handlers
-            .remove(&handler_id)
-            .ok_or_else(|| format!("unknown fetch handler id: {handler_id}"))?;
-        pending_handler
-            .handler
-            .bytes(resolved_url, Bytes::copy_from_slice(&body));
-        self.continue_updating_the_rendering(pending_handler.document_id)
+        let pending_handler = {
+            let mut local_state = self
+                .local_state
+                .lock()
+                .expect("local content state mutex poisoned");
+            local_state
+                .pending_handlers
+                .remove(&handler_id)
+                .ok_or_else(|| format!("unknown fetch handler id: {handler_id}"))?
+        };
+
+        match pending_handler {
+            PendingNetworkHandler::Resource {
+                document_id,
+                handler,
+            } => {
+                handler.bytes(resolved_url, Bytes::copy_from_slice(&body));
+                if self.documents.contains_key(&document_id) {
+                    self.continue_document_load(document_id)?;
+                    self.continue_updating_the_rendering(document_id)?;
+                }
+                Ok(())
+            }
+            PendingNetworkHandler::DeferredScript {
+                document_id,
+                script_index,
+            } => {
+                let _ = resolved_url;
+                self.complete_deferred_script_fetch(document_id, script_index, body);
+                if self.documents.contains_key(&document_id) {
+                    self.continue_document_load(document_id)?;
+                    self.continue_updating_the_rendering(document_id)?;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn note_command_completed(&self) -> Result<(), String> {
@@ -520,6 +822,10 @@ impl ContentRuntime {
                 self.create_loaded_document(document_id, url, body)?;
                 Ok(true)
             }
+            DestroyDocument { document_id } => {
+                self.destroy_document(document_id)?;
+                Ok(true)
+            }
             EvaluateScript {
                 document_id,
                 source,
@@ -527,8 +833,8 @@ impl ContentRuntime {
                 self.evaluate_script(document_id, source)?;
                 Ok(true)
             }
-            DispatchEvent { document_id, event } => {
-                self.dispatch_event(document_id, event)?;
+            DispatchEvent { events } => {
+                self.dispatch_events(events)?;
                 Ok(true)
             }
             Command::RunBeforeUnload {
@@ -583,14 +889,20 @@ fn main() -> Result<(), String> {
 
     let mut runtime = ContentRuntime::new(event_sender);
     loop {
-        let command = match command_receiver.recv() {
+        let command = match command_receiver.try_recv() {
             Ok(command) => command,
-            Err(_error) => break,
+            Err(TryRecvError::Empty) => {
+                runtime.poll_timeouts()?;
+                thread::sleep(Duration::from_millis(16));
+                continue;
+            }
+            Err(TryRecvError::IpcError(_error)) => break,
         };
         let notify_event_loop = matches!(
             &command,
             CreateEmptyDocument { .. }
                 | CreateLoadedDocument { .. }
+                | DestroyDocument { .. }
                 | DispatchEvent { .. }
                 | Command::RunBeforeUnload { .. }
                 | UpdateTheRendering { .. }

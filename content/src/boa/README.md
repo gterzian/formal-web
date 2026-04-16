@@ -2,9 +2,10 @@
 
 - `content/src/html/environment_settings_object.rs` owns the Boa `Context`, global-object construction, and the Rust state that corresponds to an HTML environment settings object.
 
-- `content/src/dom/global_scope.rs` caches the platform objects associated with one global object so repeated wrapper lookups reuse the same `JsObject` identity.
+- `content/src/html/global_scope.rs` caches the platform objects associated with one global object so repeated wrapper lookups reuse the same `JsObject` identity.
+- Invalidate cached node wrappers before DOM mutations that drop subtrees so removed node ids cannot be reused with stale `JsObject` identities; if the mutator does not report dropped ids directly, derive the affected subtree ids before applying the mutation.
 
-- Parser-discovered classic scripts run through the dedicated parser-script list in `html_parser.rs`; the maintained queue integration point with Boa is the job queue used for microtasks.
+- Parser-discovered classic scripts run through the dedicated parser-script list in `html_parser.rs`; the content runtime now defers their execution until the document-finish-parsing continuation sees that external scripts and critical resources are ready or have timed out, while Boa's maintained queue integration point remains the job queue used for microtasks.
 
 - `html_parser.rs` connects html5ever parsing to Blitz mutation, records parser errors, and collects classic inline scripts in document order.
 

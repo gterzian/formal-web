@@ -1,7 +1,9 @@
 use boa_engine::JsData;
 use boa_gc::{Finalize, Trace};
 
-use super::{event::EventTarget, global_scope::GlobalScope};
+use crate::dom::event::EventTarget;
+
+use super::GlobalScope;
 
 /// <https://html.spec.whatwg.org/#window>
 #[derive(Trace, Finalize, JsData)]

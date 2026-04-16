@@ -34,6 +34,9 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
 const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE: &str = "NewTopLevelTraversable";
+const NAVIGATION_REQUESTED_MESSAGE_PREFIX: &str = "NavigationRequested|";
+const BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX: &str = "BeforeUnloadCompleted|";
+const FINALIZE_NAVIGATION_MESSAGE_PREFIX: &str = "FinalizeNavigation|";
 const DISPATCH_EVENT_MESSAGE_PREFIX: &str = "DispatchEvent|";
 
 #[derive(Clone, Default)]
@@ -61,61 +64,6 @@ struct EmbedderPaintFrame {
     scene: RenderScene,
     debug_summary: Option<SceneSummary>,
     viewport_scroll: ScrollOffset,
-}
-
-#[derive(Default)]
-struct PendingUiEvents {
-    events: Vec<UiEvent>,
-}
-
-impl PendingUiEvents {
-    fn push(&mut self, event: UiEvent) {
-        self.events.push(event);
-    }
-
-    fn take(&mut self) -> Vec<UiEvent> {
-        std::mem::take(&mut self.events)
-    }
-
-    fn take_coalesced(&mut self) -> Vec<UiEvent> {
-        let events = self.take();
-        let mut last_pointer_move = None;
-        let mut last_wheel = None;
-
-        for (index, event) in events.iter().enumerate() {
-            match event {
-                UiEvent::PointerMove(_) => last_pointer_move = Some(index),
-                UiEvent::Wheel(_) => last_wheel = Some(index),
-                _ => {}
-            }
-        }
-
-        events
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, event)| match &event {
-                UiEvent::PointerMove(_) => {
-                    if last_pointer_move == Some(index) {
-                        Some(event)
-                    } else {
-                        None
-                    }
-                }
-                UiEvent::Wheel(_) => {
-                    if last_wheel == Some(index) {
-                        Some(event)
-                    } else {
-                        None
-                    }
-                }
-                _ => Some(event),
-            })
-            .collect()
-    }
-
-    fn clear(&mut self) {
-        self.events.clear();
-    }
 }
 
 pub enum FormalWebUserEvent {
@@ -187,8 +135,6 @@ struct FormalWebApp {
     browser: BrowserState,
     current_paint_frame: Option<EmbedderPaintFrame>,
     font_receiver: FontTransportReceiver,
-    pending_ui_events: PendingUiEvents,
-    saw_redraw_requested: bool,
     has_top_level_traversable: bool,
     window_occluded: bool,
     animation_timer: Option<Instant>,
@@ -368,10 +314,51 @@ fn normalize_browser_destination(input: &str) -> Option<String> {
 }
 
 fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
-    match message {
-        NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE => Ok(FormalWebUserEvent::NewTopLevelTraversable),
-        _ => Err(format!("unknown runtime message: {message}")),
+    if message == NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE {
+        return Ok(FormalWebUserEvent::NewTopLevelTraversable);
     }
+
+    if let Some(destination_url) = message.strip_prefix(NAVIGATION_REQUESTED_MESSAGE_PREFIX) {
+        return Ok(FormalWebUserEvent::NavigationRequested(NavigateRequest {
+            document_id: 0,
+            destination_url: destination_url.to_owned(),
+            target: String::new(),
+            user_involvement: ipc_messages::content::UserNavigationInvolvement::None,
+            noopener: false,
+        }));
+    }
+
+    if let Some(payload) = message.strip_prefix(BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX) {
+        let Some((document_id, remainder)) = payload.split_once('|') else {
+            return Err(format!("invalid beforeunload runtime message: {message}"));
+        };
+        let Some((check_id, canceled)) = remainder.split_once('|') else {
+            return Err(format!("invalid beforeunload runtime message: {message}"));
+        };
+        return Ok(FormalWebUserEvent::BeforeUnloadCompleted(BeforeUnloadResult {
+            document_id: document_id
+                .parse()
+                .map_err(|error| format!("invalid beforeunload document id: {error}"))?,
+            check_id: check_id
+                .parse()
+                .map_err(|error| format!("invalid beforeunload check id: {error}"))?,
+            canceled: canceled == "1",
+        }));
+    }
+
+    if let Some(payload) = message.strip_prefix(FINALIZE_NAVIGATION_MESSAGE_PREFIX) {
+        let Some((document_id, url)) = payload.split_once('|') else {
+            return Err(format!("invalid finalize-navigation runtime message: {message}"));
+        };
+        return Ok(FormalWebUserEvent::FinalizeNavigation(FinalizeNavigation {
+            document_id: document_id
+                .parse()
+                .map_err(|error| format!("invalid finalize-navigation document id: {error}"))?,
+            url: url.to_owned(),
+        }));
+    }
+
+    Err(format!("unknown runtime message: {message}"))
 }
 
 pub(crate) fn with_event_loop_proxy<R>(
@@ -591,8 +578,6 @@ impl Default for FormalWebApp {
             browser: BrowserState::default(),
             current_paint_frame: None,
             font_receiver: FontTransportReceiver::default(),
-            pending_ui_events: PendingUiEvents::default(),
-            saw_redraw_requested: false,
             has_top_level_traversable: false,
             window_occluded: false,
             animation_timer: None,
@@ -682,7 +667,6 @@ impl FormalWebApp {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        println!("Request redraw");
         window.request_redraw();
     }
 
@@ -857,13 +841,17 @@ impl FormalWebApp {
     }
 
     fn dispatch_content_ui_event(&mut self, event: UiEvent) {
-        if !self.content_has_visible_viewport() {
+        if !self.content_has_visible_viewport() || !self.has_top_level_traversable {
             return;
         }
-        self.pending_ui_events.push(event);
-        if self.has_top_level_traversable {
-            self.request_window_redraw();
-        }
+
+        let Ok(event_message) = ui_event::serialize_ui_event(&event) else {
+            return;
+        };
+        let message = format!("{DISPATCH_EVENT_MESSAGE_PREFIX}{event_message}");
+        call_lean_runtime_message_handler(&message);
+        user_agent_note_rendering_opportunity("ui_event");
+        self.request_window_redraw();
     }
 
     fn handle_chrome_ui_event(&mut self, event: UiEvent) {
@@ -878,27 +866,6 @@ impl FormalWebApp {
         self.request_window_redraw();
         if let Some(action) = action {
             self.handle_chrome_action(action);
-        }
-    }
-
-    fn flush_pending_ui_events(&mut self) {
-        if !self.has_top_level_traversable || !self.content_has_visible_viewport() {
-            return;
-        }
-
-        let mut dispatched_any = false;
-        let events = self.pending_ui_events.take_coalesced();
-        for event in events {
-            let Ok(event_message) = ui_event::serialize_ui_event(&event) else {
-                continue;
-            };
-            let message = format!("{DISPATCH_EVENT_MESSAGE_PREFIX}{event_message}");
-            call_lean_runtime_message_handler(&message);
-            dispatched_any = true;
-        }
-
-        if dispatched_any {
-            user_agent_note_rendering_opportunity("ui_event_batch");
         }
     }
 
@@ -962,7 +929,6 @@ impl FormalWebApp {
     }
 
     fn handle_finalize_navigation(&mut self, finalized: FinalizeNavigation) {
-        println!("Finalize navigation for: {:?}", finalized);
         if let Some(pending_navigation) = self.browser.pending_navigation.as_ref() {
             if pending_navigation.url != finalized.url.as_str() {
                 return;
@@ -1024,11 +990,8 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
 
         match event {
             WindowEvent::RedrawRequested => {
-                self.saw_redraw_requested = true;
-                self.flush_pending_ui_events();
                 if self.current_paint_frame.is_some() || self.chrome.is_some() {
                     self.paint_current_frame();
-                    self.saw_redraw_requested = false;
                 }
             }
             WindowEvent::Occluded(occluded) => {
@@ -1057,7 +1020,6 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 self.chrome = None;
                 self.browser = BrowserState::default();
                 self.current_paint_frame = None;
-                self.pending_ui_events.clear();
                 self.has_top_level_traversable = false;
                 self.window_occluded = false;
                 if let Ok(mut snapshot) = WINDOW_VIEWPORT_SNAPSHOT.lock() {
@@ -1241,6 +1203,8 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
         }
     }
 
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
+
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
             FormalWebUserEvent::Paint(snapshot) => {
@@ -1252,13 +1216,8 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 }
                 self.browser.current_document_id = Some(paint_frame.document_id);
                 self.current_paint_frame = Some(paint_frame);
-                if self.saw_redraw_requested {
-                    self.paint_current_frame();
-                    self.saw_redraw_requested = false;
-                } else if self.has_visible_viewport() {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
+                if self.has_visible_viewport() {
+                    self.request_window_redraw();
                 }
             }
             FormalWebUserEvent::NavigationRequested(request) => {
@@ -1274,108 +1233,6 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 self.has_top_level_traversable = true;
                 self.request_visible_redraw("request_redraw");
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::PendingUiEvents;
-    use blitz_traits::events::{
-        BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButtons,
-        PointerCoords, PointerDetails, UiEvent,
-    };
-    use keyboard_types::Modifiers as KeyboardModifiers;
-
-    fn pointer_move(x: f32, y: f32) -> UiEvent {
-        UiEvent::PointerMove(BlitzPointerEvent {
-            id: BlitzPointerId::Mouse,
-            is_primary: true,
-            coords: PointerCoords {
-                screen_x: x,
-                screen_y: y,
-                client_x: x,
-                client_y: y,
-                page_x: x,
-                page_y: y,
-            },
-            button: Default::default(),
-            buttons: MouseEventButtons::None,
-            mods: KeyboardModifiers::default(),
-            details: PointerDetails::default(),
-        })
-    }
-
-    fn wheel_event(delta: BlitzWheelDelta) -> UiEvent {
-        UiEvent::Wheel(BlitzWheelEvent {
-            delta,
-            coords: PointerCoords {
-                screen_x: 10.0,
-                screen_y: 20.0,
-                client_x: 10.0,
-                client_y: 20.0,
-                page_x: 10.0,
-                page_y: 20.0,
-            },
-            buttons: MouseEventButtons::None,
-            mods: KeyboardModifiers::default(),
-        })
-    }
-
-    #[test]
-    fn pending_ui_events_keep_only_last_pointer_move_on_flush() {
-        let mut pending = PendingUiEvents::default();
-        pending.push(pointer_move(10.0, 20.0));
-        pending.push(pointer_move(30.0, 40.0));
-
-        let events = pending.take_coalesced();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            UiEvent::PointerMove(event) => {
-                assert_eq!(event.coords.client_x, 30.0);
-                assert_eq!(event.coords.client_y, 40.0);
-            }
-            event => panic!("expected pointer move, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn pending_ui_events_keep_only_last_wheel_on_flush() {
-        let mut pending = PendingUiEvents::default();
-        pending.push(wheel_event(BlitzWheelDelta::Lines(0.0, 1.0)));
-        pending.push(wheel_event(BlitzWheelDelta::Lines(0.0, 2.5)));
-
-        let events = pending.take_coalesced();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            UiEvent::Wheel(event) => match &event.delta {
-                BlitzWheelDelta::Lines(x, y) => {
-                    assert_eq!(*x, 0.0);
-                    assert_eq!(*y, 2.5);
-                }
-                delta => panic!("expected line delta, got {delta:?}"),
-            },
-            event => panic!("expected wheel event, got {event:?}"),
-        }
-    }
-
-    #[test]
-    fn pending_ui_events_keep_only_last_wheel_event_type_on_flush() {
-        let mut pending = PendingUiEvents::default();
-        pending.push(wheel_event(BlitzWheelDelta::Lines(0.0, 1.0)));
-        pending.push(wheel_event(BlitzWheelDelta::Pixels(0.0, 1.0)));
-
-        let events = pending.take_coalesced();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            UiEvent::Wheel(event) => match &event.delta {
-                BlitzWheelDelta::Pixels(x, y) => {
-                    assert_eq!(*x, 0.0);
-                    assert_eq!(*y, 1.0);
-                }
-                delta => panic!("expected pixel delta, got {delta:?}"),
-            },
-            event => panic!("expected wheel event, got {event:?}"),
         }
     }
 }

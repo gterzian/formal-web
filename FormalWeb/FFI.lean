@@ -40,9 +40,13 @@ opaque contentProcessCreateEmptyDocument : USize → USize → IO Unit
 @[extern "contentProcessCreateLoadedDocument"]
 opaque contentProcessCreateLoadedDocument : USize → USize → @& String → @& String → IO Unit
 
-/-- Sends a serialized UI event to the event loop's content process. -/
+/-- Sends a destroy-document command to the event loop's content process. -/
+@[extern "contentProcessDestroyDocument"]
+opaque contentProcessDestroyDocument : USize → USize → IO Unit
+
+/-- Sends a serialized UI event batch to the event loop's content process. -/
 @[extern "contentProcessDispatchEvent"]
-opaque contentProcessDispatchEvent : USize → USize → @& String → IO Unit
+opaque contentProcessDispatchEvent : USize → @& String → IO Unit
 
 /-- Runs the `beforeunload` steps for a document in the event loop's content process. -/
 @[extern "contentProcessRunBeforeUnload"]

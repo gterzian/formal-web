@@ -17,6 +17,16 @@ initialize eventLoopMessageChannelsRef : IO.Ref (Std.TreeMap Nat (Std.CloseableC
   IO.mkRef
     (Std.TreeMap.empty : Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage) compare)
 
+initialize documentEventLoopIdsRef : IO.Ref (Std.TreeMap Nat Nat) ←
+  IO.mkRef (Std.TreeMap.empty : Std.TreeMap Nat Nat compare)
+
+initialize documentFetchRecipientsRef : IO.Ref (Std.TreeMap Nat (Nat × RustNetHandlerPointer)) ←
+  IO.mkRef
+    (Std.TreeMap.empty : Std.TreeMap Nat (Nat × RustNetHandlerPointer) compare)
+
+initialize nextDocumentFetchIdRef : IO.Ref Nat ←
+  IO.mkRef 0
+
 initialize eventLoopShutdownChannelsRef : IO.Ref (List (Std.CloseableChannel EventLoopTaskMessage)) ←
   IO.mkRef ([] : List (Std.CloseableChannel EventLoopTaskMessage))
 
@@ -59,6 +69,84 @@ def enqueueEventLoopMessage
   let _ ← channel.trySend message
   pure ()
 
+def registerDocumentEventLoop
+    (documentId : Nat)
+    (eventLoopId : Nat) :
+    IO Unit := do
+  documentEventLoopIdsRef.modify (·.insert documentId eventLoopId)
+
+def unregisterDocumentEventLoop
+    (documentId : Nat) :
+    IO Unit := do
+  documentEventLoopIdsRef.modify (·.erase documentId)
+
+def eventLoopIdForDocument?
+    (documentId : Nat) :
+    IO (Option Nat) := do
+  pure ((← documentEventLoopIdsRef.get).get? documentId)
+
+def allocateDocumentFetchId : IO Nat := do
+  let nextFetchId ← nextDocumentFetchIdRef.get
+  nextDocumentFetchIdRef.set (nextFetchId + 1)
+  pure (nextFetchId * 2 + 1)
+
+def registerDocumentFetchRecipient
+    (fetchId : Nat)
+    (eventLoopId : Nat)
+    (handler : RustNetHandlerPointer) :
+    IO Unit := do
+  documentFetchRecipientsRef.modify (·.insert fetchId (eventLoopId, handler))
+
+def takeDocumentFetchRecipient?
+    (fetchId : Nat) :
+    IO (Option (Nat × RustNetHandlerPointer)) := do
+  let recipients ← documentFetchRecipientsRef.get
+  let recipient? := recipients.get? fetchId
+  documentFetchRecipientsRef.modify (·.erase fetchId)
+  pure recipient?
+
+def handleEventLoopRuntimeEffect
+    (state : EventLoopTaskState)
+    (runtimeEffect : EventLoopRuntimeEffect) :
+    IO Unit := do
+  match runtimeEffect with
+  | .createEmptyDocument documentId =>
+      registerDocumentEventLoop documentId.id state.eventLoop.id
+      contentProcessCreateEmptyDocument state.contentProcess.raw (USize.ofNat documentId.id)
+  | .createLoadedDocument documentId url body =>
+      registerDocumentEventLoop documentId.id state.eventLoop.id
+      contentProcessCreateLoadedDocument
+        state.contentProcess.raw
+        (USize.ofNat documentId.id)
+        url
+        body
+  | .destroyDocument documentId =>
+      unregisterDocumentEventLoop documentId.id
+      contentProcessDestroyDocument state.contentProcess.raw (USize.ofNat documentId.id)
+  | .updateTheRendering documentId =>
+      contentProcessUpdateTheRendering
+        state.contentProcess.raw
+        (USize.ofNat documentId.id)
+  | .dispatchEvent events =>
+      contentProcessDispatchEvent
+        state.contentProcess.raw
+        (encodeDispatchEventBatch events)
+  | .runBeforeUnload documentId checkId =>
+      contentProcessRunBeforeUnload
+        state.contentProcess.raw
+        (USize.ofNat documentId.id)
+        (USize.ofNat checkId)
+  | .startDocumentFetch handler request =>
+      let fetchId ← allocateDocumentFetchId
+      registerDocumentFetchRecipient fetchId state.eventLoop.id handler
+      enqueueFetchMessage <| .startDocumentFetch { fetchId, request }
+  | .documentFetchCompletion handler resolvedUrl body =>
+      contentProcessCompleteDocumentFetch
+        state.contentProcess.raw
+        handler.raw
+        resolvedUrl
+        body
+
 def ensureEventLoopWorker
     (eventLoop : EventLoop) :
     IO Unit := do
@@ -70,7 +158,11 @@ def ensureEventLoopWorker
       let channel ← Std.CloseableChannel.new
       eventLoopMessageChannelsRef.modify (·.insert eventLoop.id channel)
       eventLoopShutdownChannelsRef.modify (fun shutdownChannels => channel :: shutdownChannels)
-      let worker ← IO.asTask <| FormalWeb.runEventLoop channel { eventLoop := eventLoop }
+      let worker ← IO.asTask <| do
+        try
+          FormalWeb.runEventLoop handleEventLoopRuntimeEffect channel { eventLoop := eventLoop }
+        finally
+          eventLoopMessageChannelsRef.modify (·.erase eventLoop.id)
       eventLoopWorkersRef.modify (fun workers => worker :: workers)
 
 @[export userAgentNoteRenderingOpportunity]
@@ -85,6 +177,7 @@ def handleRuntimeMessageFromRust (message : String) : IO Unit := do
 
 @[export startDocumentFetch]
 def startDocumentFetchFromRust
+  (eventLoopId : USize)
     (handlerPointer : USize)
     (url : String)
     (method : String)
@@ -95,8 +188,9 @@ def startDocumentFetchFromRust
     method
     body := if body.isEmpty then none else some body
   }
-  enqueueUserAgentMessage <|
-    .documentFetchRequested { raw := handlerPointer } request
+  enqueueEventLoopMessage
+    eventLoopId.toNat
+    (.documentFetchRequested { raw := handlerPointer } request)
 
 @[export startNavigation]
 def startNavigationFromRust
@@ -147,8 +241,7 @@ def finalizeNavigationFromRust
 def runNextEventLoopTaskFromRust
     (eventLoopId : USize) :
     IO Unit := do
-  enqueueUserAgentMessage <|
-    .runNextEventLoopTask eventLoopId.toNat
+  enqueueEventLoopMessage eventLoopId.toNat .runNextTask
 
 @[export abortNavigation]
 def abortNavigationFromRust
@@ -172,6 +265,10 @@ def startKernel : IO Unit := do
   fetchMessageChannelRef.set (some fetchChannel)
   eventLoopMessageChannelsRef.set
     (Std.TreeMap.empty : Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage) compare)
+  documentEventLoopIdsRef.set (Std.TreeMap.empty : Std.TreeMap Nat Nat compare)
+  documentFetchRecipientsRef.set
+    (Std.TreeMap.empty : Std.TreeMap Nat (Nat × RustNetHandlerPointer) compare)
+  nextDocumentFetchIdRef.set 0
   eventLoopShutdownChannelsRef.set ([] : List (Std.CloseableChannel EventLoopTaskMessage))
   eventLoopWorkersRef.set ([] : List (_root_.Task (Except IO.Error Unit)))
 
@@ -182,10 +279,16 @@ def startKernel : IO Unit := do
       ensureEventLoopWorker
       enqueueEventLoopMessage
   let fetchWorker ← IO.asTask <|
-    FormalWeb.runFetch fetchChannel fun notification =>
+    FormalWeb.runFetch fetchChannel fun notification => do
       match notification with
       | .fetchCompleted fetchId response =>
-          trySendAndForget userAgentChannel (.fetchCompleted fetchId response)
+          match ← takeDocumentFetchRecipient? fetchId with
+          | some (eventLoopId, handler) =>
+              enqueueEventLoopMessage
+                eventLoopId
+                (.queueDocumentFetchCompletion handler response.url response.body)
+          | none =>
+              trySendAndForget userAgentChannel (.fetchCompleted fetchId response)
 
   userAgentWorkerRef.set (some userAgentWorker)
   fetchWorkerRef.set (some fetchWorker)
@@ -203,6 +306,10 @@ def shutdownKernel : IO Unit := do
   fetchMessageChannelRef.set (none : Option (Std.CloseableChannel FetchTaskMessage))
   eventLoopMessageChannelsRef.set
     (Std.TreeMap.empty : Std.TreeMap Nat (Std.CloseableChannel EventLoopTaskMessage) compare)
+  documentEventLoopIdsRef.set (Std.TreeMap.empty : Std.TreeMap Nat Nat compare)
+  documentFetchRecipientsRef.set
+    (Std.TreeMap.empty : Std.TreeMap Nat (Nat × RustNetHandlerPointer) compare)
+  nextDocumentFetchIdRef.set 0
   eventLoopShutdownChannelsRef.set ([] : List (Std.CloseableChannel EventLoopTaskMessage))
   eventLoopWorkersRef.set ([] : List (_root_.Task (Except IO.Error Unit)))
   userAgentWorkerRef.set (none : Option (_root_.Task (Except IO.Error Unit)))

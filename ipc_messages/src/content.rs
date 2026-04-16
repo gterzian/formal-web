@@ -64,6 +64,12 @@ pub struct FinalizeNavigation {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DispatchEventEntry {
+    pub document_id: u64,
+    pub event: String,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FontIdentifier {
     pub namespace: u64,
@@ -434,13 +440,13 @@ pub enum Command {
         url: String,
         body: String,
     },
+    DestroyDocument { document_id: u64 },
     EvaluateScript {
         document_id: u64,
         source: String,
     },
     DispatchEvent {
-        document_id: u64,
-        event: String,
+        events: Vec<DispatchEventEntry>,
     },
     RunBeforeUnload {
         document_id: u64,

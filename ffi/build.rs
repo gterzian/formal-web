@@ -85,7 +85,7 @@ fn c_file_for_initializer(
 }
 
 struct DependencyArtifacts {
-    root_c_files: BTreeSet<PathBuf>,
+    compiled_c_files: BTreeSet<PathBuf>,
     external_objects: BTreeSet<PathBuf>,
 }
 
@@ -96,7 +96,7 @@ fn collect_dependency_artifacts(
 ) -> DependencyArtifacts {
     let mut pending = VecDeque::from(entry_c_files.to_vec());
     let mut visited = BTreeSet::new();
-    let mut root_c_files = BTreeSet::new();
+    let mut compiled_c_files = BTreeSet::new();
     let mut external_objects = BTreeSet::new();
 
     while let Some(c_file) = pending.pop_front() {
@@ -122,23 +122,20 @@ fn collect_dependency_artifacts(
                 "missing generated Lean C file for {symbol}: {}",
                 dep_c_file.display()
             );
-            assert!(
-                dep_object.is_file(),
-                "missing generated Lean object export for {symbol}: {}",
-                dep_object.display()
-            );
 
             if dep_c_file.starts_with(root_ir_dir) {
-                root_c_files.insert(dep_c_file.clone());
-            } else {
+                compiled_c_files.insert(dep_c_file.clone());
+            } else if dep_object.is_file() {
                 external_objects.insert(dep_object);
+            } else {
+                compiled_c_files.insert(dep_c_file.clone());
             }
             pending.push_back(dep_c_file);
         }
     }
 
     DependencyArtifacts {
-        root_c_files,
+        compiled_c_files,
         external_objects,
     }
 }
@@ -190,10 +187,11 @@ fn main() {
     let formalweb_ir_dir = lake_ir_dir.join("FormalWeb");
     let runtime_entry = lake_ir_dir.join("FormalWebRuntime.c");
     let target = env::var("TARGET").expect("TARGET should be set");
+    let package_ir_dirs = package_ir_dirs(&repo_root);
     let dependency_artifacts = collect_dependency_artifacts(
         std::slice::from_ref(&runtime_entry),
         &lake_ir_dir,
-        &package_ir_dirs(&repo_root),
+        &package_ir_dirs,
     );
 
     println!("cargo:rustc-link-search=native={}", lean_lib_dir.display());
@@ -209,7 +207,11 @@ fn main() {
         .include(&lake_ir_dir)
         .include(&formalweb_ir_dir);
 
-    for path in dependency_artifacts.root_c_files {
+    for ir_dir in package_ir_dirs.values() {
+        build.include(ir_dir);
+    }
+
+    for path in dependency_artifacts.compiled_c_files {
         build.file(path);
     }
 

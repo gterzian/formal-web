@@ -77,7 +77,9 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - `content/src/main.rs` and sibling root modules such as `content/src/html.rs` own the HTML Standard entry points that resume embedder-driven algorithms, create documents, and trigger HTML-defined load/rendering steps.
 
-- `content/src/html` owns HTML parsing, hyperlink-following helpers, document loading entry points, and parser-script collection, while `content/src/boa` owns microtask checkpoints and the bridge from Blitz UI events into JavaScript event dispatch.
+- `DispatchEvent` runtime commands may carry a retained batch of serialized UI events rather than a single raw input; `content/src/main.rs` should dispatch that batch in order instead of assuming a one-command-per-event bridge.
+
+- `content/src/html` owns HTML parsing, hyperlink-following helpers, document loading entry points, parser-script collection, and HTML global-object carriers such as `GlobalScope` and `Window`, while `content/src/boa` owns microtask checkpoints and the bridge from Blitz UI events into JavaScript event dispatch.
 
 - `content/src/dom` stores the native data carried by JavaScript-visible `Window`, `Node`, `Document`, `Element`, `EventTarget`, `Event`, and `UIEvent` objects. `BaseDocument` remains the authoritative DOM state; the JavaScript wrappers do not store shadow DOM data.
 
@@ -101,7 +103,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - Keep binding-related tooling in `content` only when it is part of the maintained workflow. Remove inactive generators, generated outputs, and orphaned Web IDL inputs instead of leaving them in the tree.
 
-- Initial document parsing collects classic scripts after the tree build and executes them in document order before the `load` event fires. `innerHTML` parsing uses the same sink with scripting disabled so fragment parsing does not execute scripts.
+- Initial document parsing collects classic scripts after the tree build, starts external script fetches as they are discovered, and runs the queued classic scripts in document order only after the document's deferred-load continuation observes that scripts and critical resources are ready or have timed out. `innerHTML` parsing uses the same sink with scripting disabled so fragment parsing does not execute scripts.
 
 - Parser-script collection must match classic scripts by normalized `type` essence and skip non-classic data blocks such as `application/json`, `speculationrules`, and module scripts.
 

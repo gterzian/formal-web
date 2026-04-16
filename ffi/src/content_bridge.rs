@@ -77,6 +77,7 @@ fn spawn_listener(
             match event {
                 ContentEvent::DocumentFetchRequested(request) => {
                     let _ = super::call_lean_document_fetch_start_parts(
+                        event_loop_id,
                         request.handler_id as usize,
                         &request.url,
                         &request.method,
@@ -91,7 +92,6 @@ fn spawn_listener(
                         navigation_user_involvement_name(request.user_involvement.clone()),
                         request.noopener,
                     );
-                    let _ = embedder::send_user_event(FormalWebUserEvent::NavigationRequested(request));
                 }
                 ContentEvent::BeforeUnloadCompleted(result) => {
                     let _ = super::call_lean_before_unload_completed_parts(
@@ -99,17 +99,12 @@ fn spawn_listener(
                         result.check_id as usize,
                         result.canceled,
                     );
-                    let _ =
-                        embedder::send_user_event(FormalWebUserEvent::BeforeUnloadCompleted(result));
                 }
                 ContentEvent::FinalizeNavigation(finalized) => {
                     let _ = super::call_lean_finalize_navigation_parts(
                         finalized.document_id as usize,
                         &finalized.url,
                     );
-                    let _ = embedder::send_user_event(FormalWebUserEvent::FinalizeNavigation(
-                        finalized,
-                    ));
                 }
                 ContentEvent::CommandCompleted => {
                     let _ = super::call_lean_run_next_event_loop_task(event_loop_id);

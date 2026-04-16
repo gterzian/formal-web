@@ -20,11 +20,10 @@ use crate::boa::{
         take_animation_frame_callbacks,
     },
 };
-use crate::dom::{
-    Document, Element, Event, EventDispatchHost, EventTarget, GlobalScope, GlobalScopeKind, Node,
-    UIEvent, Window,
+use crate::dom::{Document, Element, Event, EventDispatchHost, EventTarget, Node, UIEvent};
+use crate::html::{
+    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLElement, Window,
 };
-use crate::html::{HTMLAnchorElement, HTMLElement};
 use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
 
 /// <https://html.spec.whatwg.org/#concept-settings-object-origin>

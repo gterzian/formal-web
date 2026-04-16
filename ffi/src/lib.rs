@@ -1,9 +1,12 @@
 mod content_bridge;
 
 use embedder::RuntimeHooks;
-use ipc_messages::content::Command as ContentCommand;
+use ipc_messages::content::{Command as ContentCommand, DispatchEventEntry};
 use std::ffi::{CStr, c_char};
 use std::panic::{self, AssertUnwindSafe};
+
+const DISPATCH_EVENT_BATCH_SEPARATOR: char = '\u{001e}';
+const DISPATCH_EVENT_FIELD_SEPARATOR: char = '\u{001f}';
 
 #[repr(C)]
 pub struct lean_object {
@@ -18,6 +21,7 @@ unsafe extern "C" {
     fn lean_mk_string_from_bytes(value: *const c_char, size: usize) -> *mut lean_object;
     fn handleRuntimeMessage(message: *mut lean_object) -> *mut lean_object;
     fn startDocumentFetch(
+        event_loop_id: usize,
         handler: usize,
         url: *mut lean_object,
         method: *mut lean_object,
@@ -84,7 +88,30 @@ fn call_lean_runtime_message_handler(message: &str) {
     unsafe { leanDec(io_result) };
 }
 
+fn decode_dispatch_event_batch(batch: &str) -> Result<Vec<DispatchEventEntry>, String> {
+    if batch.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    batch
+        .split(DISPATCH_EVENT_BATCH_SEPARATOR)
+        .map(|entry| {
+            let (document_id, event) = entry.split_once(DISPATCH_EVENT_FIELD_SEPARATOR).ok_or_else(
+                || format!("malformed dispatch-event batch entry: {entry:?}"),
+            )?;
+            let document_id = document_id.parse::<u64>().map_err(|error| {
+                format!("invalid dispatch-event document id {document_id:?}: {error}")
+            })?;
+            Ok(DispatchEventEntry {
+                document_id,
+                event: event.to_owned(),
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn call_lean_document_fetch_start_parts(
+    event_loop_id: usize,
     handler: usize,
     url: &str,
     method: &str,
@@ -93,7 +120,9 @@ pub(crate) fn call_lean_document_fetch_start_parts(
     let lean_url = lean_string_from_owned(url.to_owned());
     let lean_method = lean_string_from_owned(method.to_owned());
     let lean_body = lean_string_from_owned(body.to_owned());
-    let io_result = unsafe { startDocumentFetch(handler, lean_url, lean_method, lean_body) };
+    let io_result = unsafe {
+        startDocumentFetch(event_loop_id, handler, lean_url, lean_method, lean_body)
+    };
     let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
     if !is_ok {
         unsafe { leanIoResultShowError(io_result) };
@@ -327,20 +356,36 @@ pub extern "C" fn contentProcessCreateLoadedDocument(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn contentProcessDispatchEvent(
+pub extern "C" fn contentProcessDestroyDocument(
     handle: usize,
     document_id: usize,
-    event: *mut lean_object,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        let c_event = unsafe { leanStringCstr(event) };
-        let event = unsafe { CStr::from_ptr(c_event) }.to_string_lossy().into_owned();
         content_bridge::send_command(
             handle,
-            ContentCommand::DispatchEvent {
+            ContentCommand::DestroyDocument {
                 document_id: document_id as u64,
-                event,
             },
+        )
+    })) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic destroying content document"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessDispatchEvent(
+    handle: usize,
+    batch: *mut lean_object,
+) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        let c_batch = unsafe { leanStringCstr(batch) };
+        let batch = unsafe { CStr::from_ptr(c_batch) }.to_string_lossy().into_owned();
+        let events = decode_dispatch_event_batch(&batch)?;
+        content_bridge::send_command(
+            handle,
+            ContentCommand::DispatchEvent { events },
         )
     })) {
         Ok(Ok(())) => ok_unit_result(),

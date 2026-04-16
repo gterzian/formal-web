@@ -8,16 +8,6 @@ import FormalWeb.Traversable
 
 namespace FormalWeb
 
-/-- Model-local routing metadata for a document-driven fetch initiated by the embedder runtime. -/
-structure PendingDocumentFetch where
-  /-- Model-local identifier corresponding to https://fetch.spec.whatwg.org/#fetch-controller -/
-  fetchId : Nat
-  /-- Model-local opaque pointer to the boxed Rust-side Blitz `NetHandler`. -/
-  handler : RustNetHandlerPointer
-  /-- https://fetch.spec.whatwg.org/#concept-request -/
-  request : NavigationRequest
-deriving Repr, DecidableEq
-
 /--
 The user agent is the top-level global state for the browser model.
 -/
@@ -52,8 +42,6 @@ structure UserAgent where
   pendingNavigationFinalizations : Std.TreeMap Nat PendingNavigationFinalization := Std.TreeMap.empty
   /-- Model-local reverse index from https://html.spec.whatwg.org/multipage/#navigation-params-id to pending finalization document ids. -/
   pendingNavigationFinalizationIdsByNavigationId : Std.TreeMap Nat Nat := Std.TreeMap.empty
-  /-- Model-local queue of document-driven fetches waiting to hand results back to embedder-side handlers. -/
-  pendingDocumentFetches : Std.TreeMap Nat PendingDocumentFetch := Std.TreeMap.empty
 deriving Repr
 
 instance : Inhabited UserAgent where
@@ -70,9 +58,6 @@ inductive UserAgentEffect where
       (destinationURL : String)
       (documentResource : Option DocumentResource)
       (request? : Option PendingFetchRequest)
-  | requestDocumentFetch
-      (handler : RustNetHandlerPointer)
-      (request : DocumentFetchRequest)
   | dispatchEvent
       (traversableId : Nat)
       (eventLoopId : Nat)
@@ -92,10 +77,10 @@ inductive UserAgentEffect where
       (traversableId : Nat)
       (response : NavigationResponse)
       (dispatch? : Option (Nat × EventLoopTaskMessage))
-  | finishDocumentFetch
-      (fetchId : Nat)
-      (pendingDocumentFetch : PendingDocumentFetch)
-      (dispatch? : Option (Nat × EventLoopTaskMessage))
+  | eventLoopMessage (eventLoopId : Nat) (message : EventLoopTaskMessage)
+  | notifyNavigationRequested (destinationURL : String)
+  | notifyBeforeUnloadCompleted (documentId : Nat) (checkId : Nat) (canceled : Bool)
+  | notifyFinalizeNavigation (documentId : Nat) (url : String)
   | logError (message : String)
 deriving Repr, DecidableEq
 
@@ -122,11 +107,6 @@ def beginNavigation
     (documentResource : Option DocumentResource)
     (request? : Option PendingFetchRequest) : FormalWeb.M Unit :=
   emit (.beginNavigation traversableId destinationURL documentResource request?)
-
-def requestDocumentFetch
-    (handler : RustNetHandlerPointer)
-    (request : DocumentFetchRequest) : FormalWeb.M Unit :=
-  emit (.requestDocumentFetch handler request)
 
 def dispatchEvent
     (traversableId : Nat)
@@ -158,11 +138,25 @@ def completeNavigation
     (dispatch? : Option (Nat × EventLoopTaskMessage)) : FormalWeb.M Unit :=
   emit (.completeNavigation navigationId traversableId response dispatch?)
 
-def finishDocumentFetch
-    (fetchId : Nat)
-    (pendingDocumentFetch : PendingDocumentFetch)
-    (dispatch? : Option (Nat × EventLoopTaskMessage)) : FormalWeb.M Unit :=
-  emit (.finishDocumentFetch fetchId pendingDocumentFetch dispatch?)
+def eventLoopMessage
+    (eventLoopId : Nat)
+    (message : EventLoopTaskMessage) : FormalWeb.M Unit :=
+  emit (.eventLoopMessage eventLoopId message)
+
+def notifyNavigationRequested
+    (destinationURL : String) : FormalWeb.M Unit :=
+  emit (.notifyNavigationRequested destinationURL)
+
+def notifyBeforeUnloadCompleted
+    (documentId : Nat)
+    (checkId : Nat)
+    (canceled : Bool) : FormalWeb.M Unit :=
+  emit (.notifyBeforeUnloadCompleted documentId checkId canceled)
+
+def notifyFinalizeNavigation
+    (documentId : Nat)
+    (url : String) : FormalWeb.M Unit :=
+  emit (.notifyFinalizeNavigation documentId url)
 
 def logError (message : String) : FormalWeb.M Unit :=
   emit (.logError message)
@@ -228,7 +222,7 @@ def allocateBeforeUnloadCheckId (userAgent : UserAgent) : UserAgent × Nat :=
   (userAgent, checkId)
 
 def allocateFetchId (userAgent : UserAgent) : UserAgent × Nat :=
-  let fetchId := userAgent.nextFetchId
+  let fetchId := userAgent.nextFetchId * 2
   let userAgent := { userAgent with nextFetchId := userAgent.nextFetchId + 1 }
   (userAgent, fetchId)
 
@@ -378,33 +372,6 @@ def pendingNavigationFetchRequest?
     navigationId := pendingNavigationFetch.navigationId
     request := pendingNavigationFetch.request
   }
-
-def appendPendingDocumentFetch
-    (userAgent : UserAgent)
-    (pendingDocumentFetch : PendingDocumentFetch) :
-    UserAgent :=
-  {
-    userAgent with
-      pendingDocumentFetches :=
-        userAgent.pendingDocumentFetches.insert pendingDocumentFetch.fetchId pendingDocumentFetch
-  }
-
-def pendingDocumentFetch?
-    (userAgent : UserAgent)
-    (fetchId : Nat) :
-    Option PendingDocumentFetch :=
-  userAgent.pendingDocumentFetches.get? fetchId
-
-def takePendingDocumentFetch
-    (userAgent : UserAgent)
-    (fetchId : Nat) :
-    UserAgent × Option PendingDocumentFetch :=
-  let result := userAgent.pendingDocumentFetch? fetchId
-  let userAgent := {
-    userAgent with
-      pendingDocumentFetches := userAgent.pendingDocumentFetches.erase fetchId
-  }
-  (userAgent, result)
 
 private def allocateDocumentIdM : M DocumentId := do
   let userAgent ← get
@@ -882,24 +849,6 @@ def queueRunBeforeUnload
     document.eventLoopId,
     .runBeforeUnload documentId checkId
   )
-
-def requestDocumentFetch
-    (userAgent : UserAgent)
-    (handler : RustNetHandlerPointer)
-    (request : NavigationRequest) :
-    UserAgent × PendingDocumentFetch × DocumentFetchRequest :=
-  let (userAgent, fetchId) := userAgent.allocateFetchId
-  let pendingDocumentFetch : PendingDocumentFetch := {
-    fetchId
-    handler
-    request
-  }
-  let userAgent := userAgent.appendPendingDocumentFetch pendingDocumentFetch
-  let documentFetchRequest : DocumentFetchRequest := {
-    fetchId
-    request
-  }
-  (userAgent, pendingDocumentFetch, documentFetchRequest)
 
 /-- https://html.spec.whatwg.org/multipage/#obtain-browsing-context-navigation -/
 def obtainBrowsingContextToUseForNavigationResponse
@@ -1886,11 +1835,10 @@ inductive UserAgentTaskMessage where
       (documentId : Nat)
       (checkId : Nat)
       (canceled : Bool)
-    | finalizeNavigation
+  | finalizeNavigation
       (documentId : Nat)
       (url : String)
   | abortNavigationRequested (documentId : Nat)
-  | documentFetchRequested (handler : RustNetHandlerPointer) (request : NavigationRequest)
   | dispatchEvent (event : String)
   | renderingOpportunity
   | runNextEventLoopTask (eventLoopId : Nat)
@@ -2026,19 +1974,6 @@ def renderingOpportunityFailureDetails
   | some traversableId =>
       s!"cannot queue update-the-rendering for active traversable {traversableId}"
 
-def documentFetchCompletionDispatch?
-    (userAgent : UserAgent)
-    (pendingDocumentFetch : PendingDocumentFetch)
-    (response : FetchResponse) :
-    Option (Nat × EventLoopTaskMessage) := do
-  let traversable <- activeTraversable? userAgent
-  let document <- traversable.toTraversableNavigable.activeDocument
-  let _eventLoop <- userAgent.eventLoop? document.eventLoopId
-  pure (
-    document.eventLoopId,
-    .queueDocumentFetchCompletion pendingDocumentFetch.handler response.url response.body
-  )
-
 def createTopLevelTraversableM
     (targetName : String := "") :
     M TopLevelTraversable := do
@@ -2074,16 +2009,6 @@ def bootstrapFreshTopLevelTraversableM
       let errorMessage := startupNavigationFailureDetails destinationURL userAgent traversable.id
       M.logError errorMessage
       pure (.error errorMessage)
-
-def requestDocumentFetchM
-    (handler : RustNetHandlerPointer)
-    (request : NavigationRequest) :
-    M Unit := do
-  let userAgent ← get
-  let (nextUserAgent, _pendingDocumentFetch, documentFetchRequest) :=
-    requestDocumentFetch userAgent handler request
-  set nextUserAgent
-  M.requestDocumentFetch handler documentFetchRequest
 
 private def normalizeNavigationTargetName (targetName : String) : String :=
   if targetName.toLower = "_self" then "" else targetName
@@ -2247,6 +2172,7 @@ def navigateRequestedM
     (userInvolvement : UserNavigationInvolvement)
     (noopener : Bool) :
     M Unit := do
+  M.notifyNavigationRequested destinationURL
   let traversable ← chooseTargetTraversableM sourceDocumentId targetName noopener
   let unloadStatus ←
     checkIfUnloadingIsCanceledM traversable destinationURL userInvolvement
@@ -2284,7 +2210,8 @@ def beforeUnloadCompletedM
         pendingBeforeUnloadNavigation.destinationURL
         pendingBeforeUnloadNavigation.userInvolvement
   | .pending
-  | .canceledByBeforeUnload =>
+  | .canceledByBeforeUnload => do
+      M.notifyBeforeUnloadCompleted documentId checkId true
       pure ()
 
 def abortNavigationRequestedM
@@ -2377,14 +2304,7 @@ def handleFetchCompletedM
       | none =>
           pure ()
   | none =>
-      match UserAgent.pendingDocumentFetch? userAgent fetchId with
-      | some pendingDocumentFetch =>
-          let (nextUserAgent, _) := userAgent.takePendingDocumentFetch fetchId
-          set nextUserAgent
-          let dispatch? := documentFetchCompletionDispatch? nextUserAgent pendingDocumentFetch response
-          M.finishDocumentFetch fetchId pendingDocumentFetch dispatch?
-      | none =>
-          pure ()
+      pure ()
 
 def finalizeNavigationM
     (documentId : Nat)
@@ -2403,10 +2323,25 @@ def finalizeNavigationM
     | some traversable =>
         if traversable.toTraversableNavigable.toNavigable.ongoingNavigation =
             some (.navigationId pendingNavigationFinalization.navigationId) then
+          let staleDocumentDispatch? :=
+            match traversable.toTraversableNavigable.activeDocument with
+            | some activeDocument =>
+                if activeDocument.documentId.id != documentId && !activeDocument.salvageable then
+                  some (activeDocument.eventLoopId, .destroyDocument activeDocument.documentId)
+                else
+                  none
+            | none =>
+                none
           let userAgent := finalizeCrossDocumentNavigation userAgent pendingNavigationFinalization
           let (userAgent, renderingDispatch?) :=
             queueUpdateTheRendering userAgent pendingNavigationFinalization.traversableId
           set userAgent
+          M.notifyFinalizeNavigation documentId url
+          match staleDocumentDispatch? with
+          | some (eventLoopId, eventLoopMessage) =>
+              M.eventLoopMessage eventLoopId eventLoopMessage
+          | none =>
+              pure ()
           match renderingDispatch? with
           | some (eventLoopId, eventLoopMessage) =>
               M.queueUpdateTheRendering
@@ -2435,8 +2370,6 @@ def handleUserAgentTaskMessage
     finalizeNavigationM documentId url
   | .abortNavigationRequested documentId =>
     abortNavigationRequestedM documentId
-  | .documentFetchRequested handler request =>
-      requestDocumentFetchM handler request
   | .dispatchEvent event =>
       dispatchEventM event
   | .renderingOpportunity =>
@@ -2471,6 +2404,10 @@ private def sendEventLoopTaskMessage
   ensureEventLoopWorker eventLoop
   enqueueEventLoopMessage eventLoopId message
 
+private def sendEmbedderRuntimeMessage
+    (message : String) : IO Unit :=
+  FormalWeb.sendEmbedderMessage message
+
 def runUserAgentMessage
     (enqueueFetchMessage : FetchTaskMessage -> IO Unit)
     (ensureEventLoopWorker : EventLoop -> IO Unit)
@@ -2500,8 +2437,6 @@ def runUserAgentMessage
         enqueueFetchMessage (.startFetch request)
       | none =>
         pure ()
-    | .requestDocumentFetch _ request =>
-        enqueueFetchMessage (.startDocumentFetch request)
     | .dispatchEvent _ eventLoopId _ eventLoopMessage =>
         sendEventLoopTaskMessage
           ensureEventLoopWorker
@@ -2541,17 +2476,20 @@ def runUserAgentMessage
               eventLoopMessage
         | none =>
             pure ()
-    | .finishDocumentFetch _ _ dispatch? =>
-        match dispatch? with
-        | some (eventLoopId, eventLoopMessage) =>
-            sendEventLoopTaskMessage
-              ensureEventLoopWorker
-              enqueueEventLoopMessage
-              nextUserAgent
-              eventLoopId
-              eventLoopMessage
-        | none =>
-            pure ()
+    | .eventLoopMessage eventLoopId eventLoopMessage =>
+      sendEventLoopTaskMessage
+        ensureEventLoopWorker
+        enqueueEventLoopMessage
+        nextUserAgent
+        eventLoopId
+        eventLoopMessage
+    | .notifyNavigationRequested destinationURL =>
+      sendEmbedderRuntimeMessage s!"NavigationRequested|{destinationURL}"
+    | .notifyBeforeUnloadCompleted documentId checkId canceled =>
+      sendEmbedderRuntimeMessage
+        s!"BeforeUnloadCompleted|{documentId}|{checkId}|{if canceled then "1" else "0"}"
+    | .notifyFinalizeNavigation documentId url =>
+      sendEmbedderRuntimeMessage s!"FinalizeNavigation|{documentId}|{url}"
     | .logError errorMessage =>
         IO.eprintln errorMessage
   pure nextUserAgent

@@ -10,3 +10,4 @@
 content/target/
 ipc_messages/target/
 target/
+.DS_Store

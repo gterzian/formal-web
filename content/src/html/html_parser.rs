@@ -320,11 +320,6 @@ fn parser_script_for_node(document: &BaseDocument, node_id: usize) -> Option<Pen
             return None;
         }
     }
-    if element.attr(blitz_dom::local_name!("async")).is_some()
-        || element.attr(blitz_dom::local_name!("defer")).is_some()
-    {
-        return None;
-    }
     if let Some(src) = element.attr(blitz_dom::local_name!("src")) {
         return Some(PendingParserScript::External {
             src: src.to_owned(),
