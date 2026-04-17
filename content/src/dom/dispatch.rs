@@ -3,14 +3,12 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::{JsResult, JsValue, object::JsObject};
 
+use crate::boa::{with_event_mut, with_event_target_mut, with_event_target_ref};
 use crate::html::{HTMLAnchorElement, HTMLElement, Window};
 use crate::webidl::{EcmascriptHost, call_user_objects_operation};
 
 use super::event::{EventListener, NONE};
-use super::{
-    BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node, with_event_mut,
-    with_event_target_mut, with_event_target_ref,
-};
+use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};
 
 pub(crate) trait EventDispatchHost: EcmascriptHost {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject>;

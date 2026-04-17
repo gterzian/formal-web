@@ -18,3 +18,5 @@ The current runner reads:
 - `<test>.ini` directly nested subtest `expected:` entries.
 
 Supported expectation values are `PASS`, `FAIL`, `TIMEOUT`, `ERROR`, `NOTRUN`, `PRECONDITION_FAILED`, `CRASH`, and `SKIP`.
+
+Use `disabled:` for tests whose whole-harness result is not `PASS`. Reserve root-level `expected:` and subtest expectations for mixed-result tests where the page still runs and some subtests need explicit tracking.

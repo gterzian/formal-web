@@ -6,7 +6,8 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::dom::{AbortController, AbortSignal, with_abort_controller_ref};
+use crate::boa::with_abort_controller_ref;
+use crate::dom::{AbortController, AbortSignal};
 
 use super::abort_signal::{abort_reason_from_argument, signal_abort_with_context};
 

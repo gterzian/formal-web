@@ -7,9 +7,9 @@ use boa_engine::{
     property::Attribute,
 };
 
+use crate::boa::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
 use crate::dom::{
     AbortSignal, DOMException, initialize_dependent_abort_signal, signal_abort,
-    with_abort_signal_mut, with_abort_signal_ref,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 
@@ -198,13 +198,13 @@ fn set_onabort(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<Js
     let previous = with_abort_signal_mut(this, |signal| signal.replace_onabort(callback.clone()))?;
 
     if let Some(previous) = previous {
-        crate::dom::with_event_target_mut(this, |target| {
+        with_event_target_mut(this, |target| {
             target.remove_event_listener_entry("abort", &previous, false);
         })?;
     }
 
     if let Some(callback) = callback {
-        crate::dom::with_event_target_mut(this, |target| {
+        with_event_target_mut(this, |target| {
             target.add_event_listener(
                 &signal_object,
                 String::from("abort"),

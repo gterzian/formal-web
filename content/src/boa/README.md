@@ -12,4 +12,6 @@
 
 - Bindings in `content/src/boa/bindings` should convert arguments, select the right carrier object, and delegate. If a JavaScript-visible algorithm needs DOM or runtime state, move that logic onto the DOM carrier or Boa runtime struct that owns the state.
 
+- Carrier downcast helpers that only unwrap `JsValue` or `JsObject` into DOM or HTML carrier structs belong in `content/src/boa`, even when the callers live under `content/src/dom` or `content/src/html`.
+
 - Document runtime structs against HTML concepts such as `#environment-settings-object` and `#global-object` instead of documenting them as if they were DOM interfaces.

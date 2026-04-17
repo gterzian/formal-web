@@ -41,6 +41,7 @@ const DISPATCH_EVENT_MESSAGE_PREFIX: &str = "DispatchEvent|";
 
 #[derive(Clone, Default)]
 pub struct EventLoopOptions {
+    pub headless: bool,
     pub startup_url: Option<String>,
     pub window_title: Option<String>,
 }
@@ -815,10 +816,13 @@ impl FormalWebApp {
     }
 
     fn create_window(event_loop: &ActiveEventLoop) -> Result<Arc<Window>, String> {
-        let title = event_loop_options()
+        let options = event_loop_options();
+        let title = options
             .window_title
             .unwrap_or_else(|| String::from("formal-web"));
-        let attributes: WindowAttributes = Window::default_attributes().with_title(title);
+        let attributes: WindowAttributes = Window::default_attributes()
+            .with_title(title)
+            .with_visible(!options.headless);
         event_loop
             .create_window(attributes)
             .map(Arc::new)

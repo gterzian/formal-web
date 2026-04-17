@@ -21,8 +21,13 @@ static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 pub struct WebDriverArgs {
     #[arg(long, default_value_t = 4444)]
     pub port: u16,
+
+    #[arg(long)]
+    pub headless: bool,
+
     #[arg(long, value_name = "URL")]
     pub startup_url: Option<String>,
+
     #[arg(long, default_value_t = true)]
     pub exit_on_session_delete: bool,
 }
@@ -78,7 +83,8 @@ struct ErrorValue {
 pub fn run(args: WebDriverArgs) -> Result<(), String> {
     let server = WebDriverServer::start(args.port, args.exit_on_session_delete)?;
     let result = crate::run_app_with_options(AppRunOptions {
-        startup_url: args.startup_url,
+        headless: args.headless,
+        startup_url: args.startup_url.or_else(|| Some(String::from("about:blank"))),
         window_title: Some(format!("formal-web WebDriver :{}", args.port)),
     });
     drop(server);

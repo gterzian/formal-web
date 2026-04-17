@@ -1,9 +1,11 @@
 use std::mem;
 
-use boa_engine::{JsData, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsData, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
 
-use super::{EventDispatchHost, EventTarget, fire_event, with_event_target_mut};
+use crate::boa::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
+
+use super::{EventDispatchHost, EventTarget, fire_event};
 
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
 #[derive(Clone, Trace, Finalize)]
@@ -324,43 +326,4 @@ fn append_unique_signal(signals: &mut Vec<JsObject>, signal: &JsObject) {
     }
 
     signals.push(signal.clone());
-}
-
-pub(crate) fn with_abort_controller_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&AbortController) -> R,
-) -> JsResult<R> {
-    let controller = object.downcast_ref::<AbortController>().ok_or_else(|| {
-        JsNativeError::typ().with_message("object is not an AbortController")
-    })?;
-    Ok(f(&controller))
-}
-
-pub(crate) fn with_abort_signal_mut<R>(
-    this: &JsValue,
-    f: impl FnOnce(&mut AbortSignal) -> R,
-) -> JsResult<R> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("abort signal receiver is not an object"))?;
-    let Some(mut signal) = object.downcast_mut::<AbortSignal>() else {
-        return Err(JsNativeError::typ()
-            .with_message("receiver is not an AbortSignal")
-            .into());
-    };
-    Ok(f(&mut signal))
-}
-
-pub(crate) fn with_abort_signal_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&AbortSignal) -> R,
-) -> JsResult<R> {
-    let signal = object.downcast_ref::<AbortSignal>().ok_or_else(|| {
-        JsNativeError::typ().with_message("object is not an AbortSignal")
-    })?;
-    Ok(f(&signal))
-}
-
-pub(crate) fn is_abort_signal_object(object: &JsObject) -> bool {
-    object.downcast_ref::<AbortSignal>().is_some()
 }

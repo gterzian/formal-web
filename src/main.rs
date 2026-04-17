@@ -21,6 +21,7 @@ enum CommandKind {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AppRunOptions {
+    pub headless: bool,
     pub startup_url: Option<String>,
     pub window_title: Option<String>,
 }
@@ -29,6 +30,7 @@ pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String>
     ffi::initialize_lean_runtime()?;
     ffi::install_runtime_hooks();
     embedder::set_event_loop_options(embedder::EventLoopOptions {
+        headless: options.headless,
         startup_url: options.startup_url,
         window_title: options.window_title,
     });

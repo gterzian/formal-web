@@ -36,12 +36,18 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 pub struct TestWptArgs {
     #[arg(value_name = "PATH")]
     path: Option<String>,
+
     #[arg(long, default_value_t = 10_000)]
     timeout_ms: u64,
+
     #[arg(long, value_name = "PATH")]
     output: Option<PathBuf>,
+
     #[arg(long)]
     list: bool,
+
+    #[arg(long)]
+    headed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,6 +343,7 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
     let timeout = Duration::from_millis(args.timeout_ms);
     println!("WPT root: {}", config.wpt.root.display());
     println!("Mode: WebDriver + wptserve runner");
+    println!("Browser mode: {}", if args.headed { "headed" } else { "headless" });
     println!("Selected tests: {}", selected.len());
 
     let mut summary = RunSummary::default();
@@ -372,7 +379,7 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
                 continue;
             }
         };
-        let observed = run_single_test(&test, &server, timeout);
+        let observed = run_single_test(&test, &server, timeout, !args.headed);
         let compared = compare_observed_result(
             observed,
             suite_meta.expectation_for(&test.source_relative_path),
@@ -691,13 +698,21 @@ impl Drop for WptServeProcess {
 }
 
 impl BrowserProcess {
-    fn start(port: u16) -> Result<Self, String> {
+    fn start(port: u16, startup_url: Option<&str>, headless: bool) -> Result<Self, String> {
         let executable = std::env::current_exe()
             .map_err(|error| format!("failed to resolve current executable: {error}"))?;
-        let mut child = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .arg("webdriver")
             .arg("--port")
-            .arg(port.to_string())
+            .arg(port.to_string());
+        if headless {
+            command.arg("--headless");
+        }
+        if let Some(startup_url) = startup_url {
+            command.arg("--startup-url").arg(startup_url);
+        }
+        let mut child = command
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -748,12 +763,6 @@ impl WebDriverSession {
     fn delete(&self) -> Result<(), String> {
         let path = format!("/session/{}", self.session_id);
         let _ = webdriver_request(self.port, "DELETE", &path, None)?;
-        Ok(())
-    }
-
-    fn navigate(&self, url: &str) -> Result<(), String> {
-        let path = format!("/session/{}/url", self.session_id);
-        let _ = webdriver_request(self.port, "POST", &path, Some(&json!({ "url": url })))?;
         Ok(())
     }
 
@@ -1401,6 +1410,7 @@ fn run_single_test(
     test: &SelectedTest,
     server: &WptServeProcess,
     timeout: Duration,
+    headless: bool,
 ) -> ObservedTestResult {
     let started = Instant::now();
     let port = match pick_unused_port() {
@@ -1408,7 +1418,9 @@ fn run_single_test(
         Err(error) => return crash_result(test, error, started.elapsed().as_millis()),
     };
 
-    let mut browser = match BrowserProcess::start(port) {
+    let test_url = format!("{}/{}", server.base_url(), test.served_path);
+
+    let mut browser = match BrowserProcess::start(port, Some(&test_url), headless) {
         Ok(browser) => browser,
         Err(error) => return crash_result(test, error, started.elapsed().as_millis()),
     };
@@ -1418,14 +1430,7 @@ fn run_single_test(
         Err(error) => return crash_result(test, error, started.elapsed().as_millis()),
     };
 
-    let test_url = format!("{}/{}", server.base_url(), test.served_path);
-    let mut observed = match session.navigate(&test_url) {
-        Ok(()) => wait_for_test_report(&session, test, timeout, started),
-        Err(error) if error.contains("timeout") => {
-            timeout_result(test, error, started.elapsed().as_millis())
-        }
-        Err(error) => crash_result(test, error, started.elapsed().as_millis()),
-    };
+    let mut observed = wait_for_test_report(&session, test, timeout, started);
 
     let mut cleanup_errors = Vec::new();
     if let Err(error) = session.delete() {

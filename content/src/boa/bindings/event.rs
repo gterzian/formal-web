@@ -6,7 +6,8 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::dom::{Event, with_event_mut};
+use crate::boa::with_event_mut;
+use crate::dom::Event;
 
 impl Class for Event {
     const NAME: &'static str = "Event";
