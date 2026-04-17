@@ -51,6 +51,23 @@ impl Document {
             .map_err(|error| format!("invalid selector `{selectors}`: {error:?}"))
     }
 
+    /// <https://dom.spec.whatwg.org/#dom-parentnode-getelementsbytagname>
+    pub(crate) fn get_elements_by_tag_name(
+        &self,
+        qualified_name: &str,
+    ) -> Result<Vec<usize>, String> {
+        self.node
+            .document
+            .borrow()
+            .query_selector_all(qualified_name)
+            .map(|matches| matches.into_iter().collect())
+            .map_err(|error| {
+                format!(
+                    "failed to resolve tag name selector `{qualified_name}`: {error:?}"
+                )
+            })
+    }
+
     /// <https://dom.spec.whatwg.org/#dom-document-createelement>
     pub(crate) fn create_element(&self, local_name: &str) -> usize {
         let mut document = self.node.document.borrow_mut();
@@ -59,6 +76,29 @@ impl Document {
             QualName::new(None, ns!(html), LocalName::from(local_name)),
             Vec::new(),
         )
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-document-createelementns>
+    pub(crate) fn create_element_ns(
+        &self,
+        namespace: Option<&str>,
+        qualified_name: &str,
+    ) -> Result<usize, String> {
+        let namespace = match namespace {
+            None | Some("") | Some("http://www.w3.org/1999/xhtml") => ns!(html),
+            Some(other) => {
+                return Err(format!(
+                    "unsupported namespace `{other}` in createElementNS"
+                ));
+            }
+        };
+
+        let mut document = self.node.document.borrow_mut();
+        let mut mutator = document.mutate();
+        Ok(mutator.create_element(
+            QualName::new(None, namespace, LocalName::from(qualified_name)),
+            Vec::new(),
+        ))
     }
 
     /// <https://dom.spec.whatwg.org/#dom-document-createtextnode>

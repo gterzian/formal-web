@@ -56,9 +56,19 @@ pub(crate) fn register_document_methods(class: &mut ClassBuilder<'_>) -> JsResul
             NativeFunction::from_fn_ptr(query_selector_all),
         )
         .method(
+            js_string!("getElementsByTagName"),
+            1,
+            NativeFunction::from_fn_ptr(get_elements_by_tag_name),
+        )
+        .method(
             js_string!("createElement"),
             1,
             NativeFunction::from_fn_ptr(create_element),
+        )
+        .method(
+            js_string!("createElementNS"),
+            2,
+            NativeFunction::from_fn_ptr(create_element_ns),
         )
         .method(
             js_string!("createTextNode"),
@@ -133,12 +143,57 @@ fn query_selector_all(
     Ok(JsArray::from_iter(values, context).into())
 }
 
+fn get_elements_by_tag_name(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let qualified_name = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let node_ids = with_document(this, |document| {
+        document.get_elements_by_tag_name(&qualified_name)
+    })?
+    .map_err(|error| JsNativeError::syntax().with_message(error))?;
+    let values = node_ids
+        .into_iter()
+        .map(|node_id| resolve_element_object(node_id, context).map(JsValue::from))
+        .collect::<JsResult<Vec<_>>>()?;
+    Ok(JsArray::from_iter(values, context).into())
+}
+
 fn create_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let local_name = args
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
     let node_id = with_document(this, |document| document.create_element(&local_name))?;
+    Ok(resolve_element_object(node_id, context)?.into())
+}
+
+fn create_element_ns(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let namespace = if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined() {
+        None
+    } else {
+        Some(
+            args.get_or_undefined(0)
+                .to_string(context)?
+                .to_std_string_escaped(),
+        )
+    };
+    let qualified_name = args
+        .get_or_undefined(1)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let node_id = with_document(this, |document| {
+        document.create_element_ns(namespace.as_deref(), &qualified_name)
+    })?
+    .map_err(|error| JsNativeError::syntax().with_message(error))?;
     Ok(resolve_element_object(node_id, context)?.into())
 }
 

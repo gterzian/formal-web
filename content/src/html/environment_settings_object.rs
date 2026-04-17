@@ -20,7 +20,10 @@ use crate::boa::{
         take_animation_frame_callbacks,
     },
 };
-use crate::dom::{Document, Element, Event, EventDispatchHost, EventTarget, Node, UIEvent};
+use crate::dom::{
+    AbortController, AbortSignal, DOMException, Document, Element, Event, EventDispatchHost,
+    EventTarget, Node, UIEvent,
+};
 use crate::html::{
     GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLElement, TimerHandler, Window,
 };
@@ -95,10 +98,19 @@ impl EnvironmentSettingsObject {
             .register_global_class::<EventTarget>()
             .map_err(|error| error.to_string())?;
         context
+            .register_global_class::<DOMException>()
+            .map_err(|error| error.to_string())?;
+        context
             .register_global_class::<Event>()
             .map_err(|error| error.to_string())?;
         context
             .register_global_class::<UIEvent>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<AbortSignal>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<AbortController>()
             .map_err(|error| error.to_string())?;
         context
             .register_global_class::<Node>()
@@ -283,7 +295,14 @@ impl EnvironmentSettingsObject {
 }
 
 fn wire_interface_prototypes(context: &mut Context) {
+    if let Some(dom_exception) = context.get_global_class::<DOMException>() {
+        dom_exception
+            .prototype()
+            .set_prototype(Some(context.intrinsics().constructors().error().prototype()));
+    }
+
     set_registered_interface_prototype::<UIEvent, Event>(context);
+    set_registered_interface_prototype::<AbortSignal, EventTarget>(context);
     set_registered_interface_prototype::<Window, EventTarget>(context);
     set_registered_interface_prototype::<Node, EventTarget>(context);
     set_registered_interface_prototype::<Document, Node>(context);

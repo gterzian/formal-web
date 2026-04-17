@@ -475,6 +475,10 @@ fn inner_invoke(
 
     // Step 2: "For each listener of listeners, whose removed is false:"
     for listener in listeners.iter().filter(|listener| !listener.removed) {
+        if !listener_is_active(current_target, listener.id)? {
+            continue;
+        }
+
         // Step 2.1: "If event's type attribute value is not listener's type, then continue."
         if event_type(event)? != listener.type_ {
             continue;
@@ -495,15 +499,9 @@ fn inner_invoke(
 
         // Step 2.5: "If listener's once is true, then remove an event listener given event's currentTarget attribute value and listener."
         if listener.once {
-            if let Some(callback) = listener.callback.as_ref() {
-                with_event_target_mut(&JsValue::from(current_target.clone()), |event_target| {
-                    event_target.remove_event_listener_entry(
-                        &listener.type_,
-                        callback,
-                        listener.capture,
-                    );
-                })?;
-            }
+            with_event_target_mut(&JsValue::from(current_target.clone()), |event_target| {
+                event_target.remove_event_listener_by_id(listener.id);
+            })?;
         }
 
         // Step 2.6: "Let global be listener callback's associated realm's global object."
@@ -557,6 +555,12 @@ fn shadow_adjusted_target(path: &[EventPathEntry], index: usize) -> Option<JsObj
         .iter()
         .rev()
         .find_map(|entry| entry.shadow_adjusted_target.clone())
+}
+
+fn listener_is_active(target: &JsObject, listener_id: u64) -> JsResult<bool> {
+    with_event_target_ref(target, |event_target| {
+        event_target.listener_is_active(listener_id)
+    })
 }
 
 fn set_event_target_state(

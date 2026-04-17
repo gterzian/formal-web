@@ -13,15 +13,17 @@ use crate::boa::platform_objects::{
     document_object, object_for_existing_node, resolve_element_object,
 };
 use crate::dom::{
-    Event, EventDispatchHost, EventTarget, dispatch, with_event_target_mut,
+    Event, EventDispatchHost, EventTarget, dispatch, is_abort_signal_object,
+    with_event_target_mut,
 };
 use crate::webidl::{EcmascriptHost, callback_interface_value};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct AddEventListenerOptions {
     pub capture: bool,
     pub once: bool,
     pub passive: Option<bool>,
+    pub signal: Option<JsObject>,
 }
 
 impl Class for EventTarget {
@@ -65,24 +67,26 @@ fn add_event_listener(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
+    let event_target = current_event_target_object(this, context);
     let type_ = args
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    let Some(callback) = callback_interface_value(args.get_or_undefined(1))? else {
-        return Ok(JsValue::undefined());
-    };
     let options = flatten_more(args.get_or_undefined(2), context)?;
+    let callback = callback_interface_value(args.get_or_undefined(1))?;
+    let receiver = JsValue::from(event_target.clone());
 
-    with_event_target_mut(this, |target| {
+    with_event_target_mut(&receiver, |target| {
         target.add_event_listener(
+            &event_target,
             type_,
             callback,
             options.capture,
             options.once,
             options.passive,
-        );
-    })?;
+            options.signal,
+        )
+    })??;
 
     Ok(JsValue::undefined())
 }
@@ -92,6 +96,7 @@ fn remove_event_listener(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
+    let event_target = current_event_target_object(this, context);
     let type_ = args
         .get_or_undefined(0)
         .to_string(context)?
@@ -100,8 +105,9 @@ fn remove_event_listener(
         return Ok(JsValue::undefined());
     };
     let capture = flatten(args.get_or_undefined(2), context)?;
+    let receiver = JsValue::from(event_target);
 
-    with_event_target_mut(this, |target| {
+    with_event_target_mut(&receiver, |target| {
         target.remove_event_listener_entry(&type_, &callback, capture);
     })?;
 
@@ -109,9 +115,7 @@ fn remove_event_listener(
 }
 
 fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let target = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("dispatchEvent receiver is not an object")
-    })?;
+    let target = current_event_target_object(this, context);
     let event = args
         .get_or_undefined(0)
         .as_object()
@@ -129,12 +133,12 @@ fn dispatch_event_with_context(
     dispatch(&mut host, target, event, false)
 }
 
-struct ContextEventDispatchHost<'a> {
+pub(crate) struct ContextEventDispatchHost<'a> {
     context: &'a mut Context,
 }
 
 impl<'a> ContextEventDispatchHost<'a> {
-    fn new(context: &'a mut Context) -> Self {
+    pub(crate) fn new(context: &'a mut Context) -> Self {
         Self { context }
     }
 }
@@ -199,6 +203,14 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
     }
 }
 
+fn current_event_target_object(this: &JsValue, context: &Context) -> JsObject {
+    if let Some(object) = this.as_object() {
+        return object.clone();
+    }
+
+    context.global_object()
+}
+
 pub(crate) fn flatten(options: &JsValue, context: &mut Context) -> JsResult<bool> {
     if let Some(boolean) = options.as_boolean() {
         return Ok(boolean);
@@ -219,20 +231,36 @@ pub(crate) fn flatten_more(
             capture,
             once: false,
             passive: None,
+            signal: None,
         });
     };
     let once = object.get(js_string!("once"), context)?.to_boolean();
     let passive = {
-        let value = object.get(js_string!("passive"), context)?;
-        if value.is_undefined() {
+        if !object.has_property(js_string!("passive"), context)? {
             None
         } else {
+            let value = object.get(js_string!("passive"), context)?;
             Some(value.to_boolean())
         }
+    };
+    let signal = if !object.has_property(js_string!("signal"), context)? {
+        None
+    } else {
+        let value = object.get(js_string!("signal"), context)?;
+        let signal = value.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("addEventListener signal must be an AbortSignal")
+        })?;
+        if !is_abort_signal_object(&signal) {
+            return Err(JsNativeError::typ()
+                .with_message("addEventListener signal must be an AbortSignal")
+                .into());
+        }
+        Some(signal.clone())
     };
     Ok(AddEventListenerOptions {
         capture,
         once,
         passive,
+        signal,
     })
 }

@@ -981,6 +981,19 @@ mod tests {
     use std::{cell::RefCell, fs, rc::Rc, sync::Arc};
     use url::Url;
 
+    fn blank_environment_settings() -> EnvironmentSettingsObject {
+        let base_url = Url::parse("https://example.test/").expect("URL should parse");
+        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(960, 720, 1.0, ColorScheme::Light)),
+            base_url: Some(base_url.to_string()),
+            html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
+            ..DocumentConfig::default()
+        })));
+
+        EnvironmentSettingsObject::new(document, base_url)
+            .expect("environment settings should initialize")
+    }
+
     #[test]
     fn startup_example_generates_glyph_runs() {
         let artifact_path = format!(
@@ -1048,5 +1061,115 @@ mod tests {
             !prepared_scene.registered_fonts.is_empty(),
             "expected startup scene to register fonts for transport"
         );
+    }
+
+    #[test]
+    fn abort_interfaces_are_exposed_on_window() {
+        let mut settings = blank_environment_settings();
+        let value = settings
+            .evaluate_script_to_json(
+                r#"({
+                    abortController: typeof AbortController,
+                    abortSignal: typeof AbortSignal,
+                    domException: typeof DOMException,
+                    windowAddEventListener: typeof window.addEventListener,
+                    selfAddEventListener: typeof self.addEventListener,
+                    abortStatic: typeof AbortSignal.abort,
+                    timeoutStatic: typeof AbortSignal.timeout,
+                    anyStatic: typeof AbortSignal.any
+                })"#,
+            )
+            .expect("script evaluation should succeed");
+
+        assert_eq!(value["abortController"], "function");
+        assert_eq!(value["abortSignal"], "function");
+        assert_eq!(value["domException"], "function");
+        assert_eq!(value["windowAddEventListener"], "function");
+        assert_eq!(value["selfAddEventListener"], "function");
+        assert_eq!(value["abortStatic"], "function");
+        assert_eq!(value["timeoutStatic"], "function");
+        assert_eq!(value["anyStatic"], "function");
+    }
+
+    #[test]
+    fn abort_signal_abort_returns_aborted_signal() {
+        let mut settings = blank_environment_settings();
+        let value = settings
+            .evaluate_script_to_json(
+                r#"(() => {
+                    const signal = AbortSignal.abort();
+                    return {
+                        isSignal: signal instanceof AbortSignal,
+                        aborted: signal.aborted,
+                        reasonIsDomException: signal.reason instanceof DOMException,
+                        reasonName: signal.reason.name
+                    };
+                })()"#,
+            )
+            .expect("script evaluation should succeed");
+
+        assert_eq!(value["isSignal"], true);
+        assert_eq!(value["aborted"], true);
+        assert_eq!(value["reasonIsDomException"], true);
+        assert_eq!(value["reasonName"], "AbortError");
+    }
+
+    #[test]
+    fn abort_controller_construction_returns_signal() {
+        let mut settings = blank_environment_settings();
+        let value = settings
+            .evaluate_script_to_json(
+                r#"(() => {
+                    const controller = new AbortController();
+                    return {
+                        controllerIsObject: typeof controller === "object",
+                        signalIsSignal: controller.signal instanceof AbortSignal,
+                        signalStable: controller.signal === controller.signal,
+                        aborted: controller.signal.aborted,
+                        reasonIsUndefined: controller.signal.reason === undefined
+                    };
+                })()"#,
+            )
+            .expect("script evaluation should succeed");
+
+        assert_eq!(value["controllerIsObject"], true);
+        assert_eq!(value["signalIsSignal"], true);
+        assert_eq!(value["signalStable"], true);
+        assert_eq!(value["aborted"], false);
+        assert_eq!(value["reasonIsUndefined"], true);
+    }
+
+    #[test]
+    fn abort_controller_works_under_testharness() {
+        let mut settings = blank_environment_settings();
+        settings
+            .evaluate_script(
+                r#"self.GLOBAL = {
+                    isWindow() { return true; },
+                    isWorker() { return false; },
+                    isShadowRealm() { return false; }
+                };"#,
+            )
+            .expect("GLOBAL should install");
+
+        let harness_path = format!(
+            "{}/../vendor/wpt/resources/testharness.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let harness = fs::read_to_string(harness_path)
+            .expect("testharness.js should be readable");
+        settings
+            .evaluate_script(&harness)
+            .expect("testharness should evaluate");
+        settings
+            .evaluate_script(
+                r#"test(() => {
+                    const controller = new AbortController();
+                    assert_true(controller.signal instanceof AbortSignal);
+                    assert_false(controller.signal.aborted);
+                }, "AbortController testharness integration");
+                done();"#,
+            )
+            .expect("testharness test should run");
     }
 }

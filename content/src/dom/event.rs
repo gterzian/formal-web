@@ -4,7 +4,10 @@ use boa_gc::{Finalize, Trace};
 
 use crate::html::{HTMLAnchorElement, HTMLElement, Window};
 
-use super::{Document, Element, Node};
+use super::{
+    AbortAlgorithm, AbortSignal, Document, Element, Node, with_abort_signal_mut,
+    with_abort_signal_ref,
+};
 
 pub const NONE: u16 = 0;
 pub const CAPTURING_PHASE: u16 = 1;
@@ -14,6 +17,9 @@ pub const BUBBLING_PHASE: u16 = 3;
 /// <https://dom.spec.whatwg.org/#concept-event-listener>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct EventListener {
+    #[unsafe_ignore_trace]
+    pub id: u64,
+
     /// <https://dom.spec.whatwg.org/#concept-event-listener-type>
     #[unsafe_ignore_trace]
     pub type_: String,
@@ -33,6 +39,9 @@ pub struct EventListener {
     #[unsafe_ignore_trace]
     pub once: bool,
 
+    /// <https://dom.spec.whatwg.org/#event-listener-signal>
+    pub signal: Option<JsObject>,
+
     /// <https://dom.spec.whatwg.org/#concept-event-listener-removed>
     #[unsafe_ignore_trace]
     pub removed: bool,
@@ -43,18 +52,35 @@ pub struct EventListener {
 pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
     pub event_listener_list: Vec<EventListener>,
+
+    #[unsafe_ignore_trace]
+    next_listener_id: u64,
 }
 
 impl EventTarget {
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>
     pub(crate) fn add_event_listener(
         &mut self,
+        event_target: &JsObject,
         type_: String,
-        callback: JsObject,
+        callback: Option<JsObject>,
         capture: bool,
         once: bool,
         passive: Option<bool>,
-    ) {
+        signal: Option<JsObject>,
+    ) -> JsResult<()> {
+        if let Some(signal) = signal.as_ref() {
+            if with_abort_signal_ref(signal, |signal| signal.aborted_value())? {
+                return Ok(());
+            }
+        }
+
+        let Some(callback) = callback else {
+            return Ok(());
+        };
+
+        let passive = passive.or(Some(false));
+        let listener_id = self.next_listener_id.wrapping_add(1);
         let duplicate = self.event_listener_list.iter().any(|listener| {
             listener.type_ == type_
                 && listener.capture == capture
@@ -65,15 +91,29 @@ impl EventTarget {
         });
 
         if !duplicate {
+            self.next_listener_id = listener_id;
             self.event_listener_list.push(EventListener {
+                id: listener_id,
                 type_,
                 callback: Some(callback),
                 capture,
                 passive,
                 once,
+                signal: signal.clone(),
                 removed: false,
             });
+
+            if let Some(signal) = signal {
+                with_abort_signal_mut(&JsValue::from(signal), |signal| {
+                    signal.add_abort_algorithm(AbortAlgorithm::RemoveEventListener {
+                        event_target: event_target.clone(),
+                        listener_id,
+                    });
+                })?;
+            }
         }
+
+        Ok(())
     }
 
     /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
@@ -97,6 +137,23 @@ impl EventTarget {
 
         self.event_listener_list
             .retain(|listener| !listener.removed);
+    }
+
+    pub(crate) fn remove_event_listener_by_id(&mut self, listener_id: u64) {
+        for listener in &mut self.event_listener_list {
+            if listener.id == listener_id {
+                listener.removed = true;
+            }
+        }
+
+        self.event_listener_list
+            .retain(|listener| !listener.removed);
+    }
+
+    pub(crate) fn listener_is_active(&self, listener_id: u64) -> bool {
+        self.event_listener_list
+            .iter()
+            .any(|listener| listener.id == listener_id && !listener.removed)
     }
 }
 
@@ -353,6 +410,9 @@ pub(crate) fn with_event_target_mut<R>(
     if let Some(mut node) = object.downcast_mut::<Node>() {
         return Ok(f(&mut node.event_target));
     }
+    if let Some(mut signal) = object.downcast_mut::<AbortSignal>() {
+        return Ok(f(&mut signal.event_target));
+    }
     if let Some(mut target) = object.downcast_mut::<EventTarget>() {
         return Ok(f(&mut target));
     }
@@ -382,6 +442,9 @@ pub(crate) fn with_event_target_ref<R>(
     }
     if let Some(node) = object.downcast_ref::<Node>() {
         return Ok(f(&node.event_target));
+    }
+    if let Some(signal) = object.downcast_ref::<AbortSignal>() {
+        return Ok(f(&signal.event_target));
     }
     if let Some(target) = object.downcast_ref::<EventTarget>() {
         return Ok(f(&target));

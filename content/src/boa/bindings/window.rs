@@ -4,6 +4,7 @@ use boa_engine::{
     js_string,
     object::JsObject,
     native_function::NativeFunction,
+    property::Attribute,
 };
 
 use crate::html::{Window, WindowOrWorkerGlobalScope};
@@ -31,7 +32,20 @@ impl Class for Window {
 }
 
 pub(crate) fn register_window_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+    let realm = class.context().realm().clone();
     class
+        .accessor(
+            js_string!("parent"),
+            Some(NativeFunction::from_fn_ptr(get_parent).to_js_function(&realm)),
+            None,
+            Attribute::all(),
+        )
+        .accessor(
+            js_string!("top"),
+            Some(NativeFunction::from_fn_ptr(get_top).to_js_function(&realm)),
+            None,
+            Attribute::all(),
+        )
         .method(
             js_string!("requestAnimationFrame"),
             1,
@@ -76,6 +90,14 @@ fn request_animation_frame_method(
     Ok(JsValue::from(
         window.global_scope.request_animation_frame(callback),
     ))
+}
+
+fn get_parent(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::from(current_window_object(this, context)))
+}
+
+fn get_top(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::from(current_window_object(this, context)))
 }
 
 fn cancel_animation_frame_method(

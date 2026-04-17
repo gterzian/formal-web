@@ -320,7 +320,7 @@ fn execute_script_value(script: &str, args: &[Value]) -> Result<Value, WebDriver
 fn wrap_execute_script(script: &str, args: &[Value]) -> Result<String, serde_json::Error> {
     let args_json = serde_json::to_string(args)?;
     Ok(format!(
-        "(() => {{\nconst __formalWebArgs = {args_json};\nconst __formalWebFn = function() {{\n{script}\n}};\nreturn __formalWebFn.apply(window, __formalWebArgs);\n}})()"
+        "(() => {{\nconst __formalWebArgs = {args_json};\nconst __formalWebKey = \"__formalWebExecuteScript\";\nwindow[__formalWebKey] = function() {{\n{script}\n}};\ntry {{\nreturn window[__formalWebKey](...__formalWebArgs);\n}} finally {{\ndelete window[__formalWebKey];\n}}\n}})()"
     ))
 }
 
@@ -354,9 +354,15 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, Stri
     let mut buffer = Vec::with_capacity(4096);
     let mut chunk = [0_u8; 4096];
     let header_end = loop {
-        let bytes_read = stream
-            .read(&mut chunk)
-            .map_err(|error| format!("failed to read WebDriver request: {error}"))?;
+        let bytes_read = match stream.read(&mut chunk) {
+            Ok(bytes_read) => bytes_read,
+            Err(error)
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(format!("failed to read WebDriver request: {error}")),
+        };
         if bytes_read == 0 {
             return Ok(None);
         }
@@ -393,9 +399,17 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, Stri
 
     let mut body = buffer[header_end..].to_vec();
     while body.len() < content_length {
-        let bytes_read = stream
-            .read(&mut chunk)
-            .map_err(|error| format!("failed to read WebDriver request body: {error}"))?;
+        let bytes_read = match stream.read(&mut chunk) {
+            Ok(bytes_read) => bytes_read,
+            Err(error)
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(format!("failed to read WebDriver request body: {error}"));
+            }
+        };
         if bytes_read == 0 {
             break;
         }
@@ -500,6 +514,7 @@ mod tests {
         let wrapped = wrap_execute_script("return arguments[0] + arguments[1];", &[json!(1), json!(2)])
             .expect("script wrapping should succeed");
         assert!(wrapped.contains("__formalWebArgs = [1,2]"));
-        assert!(wrapped.contains("return __formalWebFn.apply(window, __formalWebArgs);"));
+        assert!(wrapped.contains("return window[__formalWebKey](...__formalWebArgs);"));
+        assert!(wrapped.contains("delete window[__formalWebKey];"));
     }
 }

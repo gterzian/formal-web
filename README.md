@@ -25,7 +25,7 @@ rustup run 1.92.0 cargo run --release
 rustup run 1.92.0 cargo run -- test-wpt formal/load-event-fires.html
 ```
 
-`cargo run -- test-wpt` runs the current WPT runner. The parent process starts the bundled `vendor/wpt/wpt serve`, mounts `tests/formal/tests/` through the `/__formal__/` alias, spawns a fresh `formal-web webdriver` child per test, and collects `testharness.js` completion through WebDriver script execution.
+`cargo run -- test-wpt` runs the current WPT runner. The parent process mounts `tests/formal/tests/` through the `/__formal__/` alias, starts a fresh bundled `vendor/wpt/wpt serve` instance per test for isolation, spawns a fresh `formal-web webdriver` child per test, and collects `testharness.js` completion through WebDriver script execution with a rendered-summary fallback from `testharnessreport.js`.
 
 Without a path it uses both `tests/wpt/include.ini` and `tests/formal/include.ini`. With `--list` it prints the selected tests without launching the embedder. Explicit paths can point at the upstream WPT tree or at the local suite through the `formal/` prefix.
 

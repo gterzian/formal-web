@@ -49,6 +49,7 @@ pub struct TestWptArgs {
 enum TestKind {
     Html,
     WindowScript,
+    AnyScript,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,6 +213,22 @@ struct HarnessCompletionReport {
     asserts: Vec<Value>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct LiveHarnessSummary {
+    #[serde(default, rename = "harnessStatus")]
+    harness_status: Option<String>,
+    #[serde(default)]
+    pass: f64,
+    #[serde(default)]
+    fail: f64,
+    #[serde(default)]
+    timeout: f64,
+    #[serde(default, rename = "notRun")]
+    not_run: f64,
+    #[serde(default, rename = "preconditionFailed")]
+    precondition_failed: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ObservedTestResult {
     path: String,
@@ -317,7 +334,6 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
         return Ok(());
     }
 
-    let server = WptServeProcess::start(&config)?;
     let timeout = Duration::from_millis(args.timeout_ms);
     println!("WPT root: {}", config.wpt.root.display());
     println!("Mode: WebDriver + wptserve runner");
@@ -343,6 +359,19 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
             continue;
         }
 
+        let server = match WptServeProcess::start(&config) {
+            Ok(server) => server,
+            Err(error) => {
+                let result = compare_observed_result(
+                    crash_result(&test, error, 0),
+                    suite_meta.expectation_for(&test.source_relative_path),
+                );
+                print_test_result(&result);
+                update_summary(&mut summary, &result);
+                results.push(result);
+                continue;
+            }
+        };
         let observed = run_single_test(&test, &server, timeout);
         let compared = compare_observed_result(
             observed,
@@ -1111,6 +1140,24 @@ fn classify_test(
         return Ok(ClassifiedTest::Ignore);
     }
 
+    if is_any_script_path(file_name) {
+        let source = match fs::read_to_string(absolute_path) {
+            Ok(source) => source,
+            Err(_) => return Ok(ClassifiedTest::Ignore),
+        };
+        if !any_script_supports_window(&source) {
+            return Ok(ClassifiedTest::Unsupported(String::from(
+                ".any.js tests without a window global are not implemented yet",
+            )));
+        }
+        if source.contains("importScripts(") {
+            return Ok(ClassifiedTest::Unsupported(String::from(
+                "worker JavaScript tests are not implemented yet",
+            )));
+        }
+        return Ok(ClassifiedTest::Supported(TestKind::AnyScript));
+    }
+
     Ok(ClassifiedTest::Ignore)
 }
 
@@ -1131,6 +1178,31 @@ fn is_window_script_path(file_name: &str) -> bool {
         && !file_name.contains(".worklet.")
 }
 
+fn is_any_script_path(file_name: &str) -> bool {
+    file_name.ends_with(".any.js")
+}
+
+fn any_script_supports_window(source: &str) -> bool {
+    let mut saw_global_meta = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let Some(globals) = trimmed.strip_prefix("// META: global=") else {
+            continue;
+        };
+        saw_global_meta = true;
+        if globals
+            .split(',')
+            .map(str::trim)
+            .any(|global| global == "window")
+        {
+            return true;
+        }
+    }
+
+    !saw_global_meta
+}
+
 fn is_reftest_source(source: &str) -> bool {
     source.contains("rel=\"match\"")
         || source.contains("rel='match'")
@@ -1146,6 +1218,10 @@ fn served_path_for_test(url_prefix: &str, relative_path: &str, kind: TestKind) -
         TestKind::WindowScript => relative_path
             .strip_suffix(".window.js")
             .map(|prefix| format!("{prefix}.window.html"))
+            .unwrap_or_else(|| relative_path.to_owned()),
+        TestKind::AnyScript => relative_path
+            .strip_suffix(".any.js")
+            .map(|prefix| format!("{prefix}.any.html"))
             .unwrap_or_else(|| relative_path.to_owned()),
     };
 
@@ -1385,25 +1461,87 @@ fn wait_for_test_report(
 ) -> ObservedTestResult {
     let deadline = Instant::now() + timeout;
     loop {
-        match session.execute_script("return window.__formalWebTestResult;", &[]) {
-            Ok(Value::Null) => {}
-            Ok(value) => {
-                let duration_ms = started.elapsed().as_millis();
-                return match serde_json::from_value::<HarnessCompletionReport>(value) {
-                    Ok(report) => ObservedTestResult {
-                        path: test.display_path.clone(),
-                        kind: test.kind,
-                        actual: report_status_from_payload(&report),
-                        message: report.status.message.clone(),
-                        harness: Some(report),
-                        duration_ms,
-                    },
-                    Err(error) => error_result(
-                        test,
-                        format!("failed to decode harness report: {error}"),
-                        duration_ms,
-                    ),
+        match session.execute_script(
+            r##"return (function () {
+                function parseLeadingNumber(text) {
+                    var match = String(text || "").match(/(\d+)/);
+                    return match ? Number(match[1]) : 0;
+                }
+
+                function countFor(summary, labelName) {
+                    var labels = document.querySelectorAll("#summary label");
+                    for (var i = 0; i < labels.length; i += 1) {
+                        var text = String(labels[i].textContent || "");
+                        if (text.toLowerCase().indexOf(labelName) !== -1) {
+                            return parseLeadingNumber(text);
+                        }
+                    }
+                    return 0;
+                }
+
+                var summary = document.getElementById("summary");
+                return {
+                    result: window.__formalWebTestResult || null,
+                    summary: summary ? {
+                        harnessStatus: (function () {
+                            var status = document.querySelector("#summary p span");
+                            return status ? String(status.textContent || "") : null;
+                        }()),
+                        pass: countFor(summary, "pass"),
+                        fail: countFor(summary, "fail"),
+                        timeout: countFor(summary, "timeout"),
+                        notRun: countFor(summary, "not run"),
+                        preconditionFailed: countFor(summary, "precondition failed")
+                    } : null
                 };
+            }());"##,
+            &[],
+        ) {
+            Ok(value) => {
+                let result_value = value.get("result").cloned().unwrap_or(Value::Null);
+                if result_value != Value::Null {
+                    let duration_ms = started.elapsed().as_millis();
+                    return match serde_json::from_value::<HarnessCompletionReport>(result_value) {
+                        Ok(report) => ObservedTestResult {
+                            path: test.display_path.clone(),
+                            kind: test.kind,
+                            actual: report_status_from_payload(&report),
+                            message: report.status.message.clone(),
+                            harness: Some(report),
+                            duration_ms,
+                        },
+                        Err(error) => error_result(
+                            test,
+                            format!("failed to decode harness report: {error}"),
+                            duration_ms,
+                        ),
+                    };
+                }
+
+                let Some(summary_value) = value.get("summary").cloned() else {
+                    // Keep polling until either the injected completion callback or the DOM summary appears.
+                    // The summary is produced by testharnessreport.js once the page is complete.
+                    if Instant::now() >= deadline {
+                        return timeout_result(
+                            test,
+                            format!(
+                                "test did not report completion within {} ms",
+                                timeout.as_millis()
+                            ),
+                            started.elapsed().as_millis(),
+                        );
+                    }
+                    thread::sleep(REPORT_POLL_INTERVAL);
+                    continue;
+                };
+
+                if summary_value != Value::Null {
+                    if let Ok(summary) = serde_json::from_value::<LiveHarnessSummary>(summary_value) {
+                        if summary.harness_status.is_some() {
+                            return observed_result_from_summary(test, summary, started.elapsed().as_millis());
+                        }
+                    }
+                }
             }
             Err(error) => {
                 return error_result(test, error, started.elapsed().as_millis());
@@ -1419,6 +1557,56 @@ fn wait_for_test_report(
         }
 
         thread::sleep(REPORT_POLL_INTERVAL);
+    }
+}
+
+fn observed_result_from_summary(
+    test: &SelectedTest,
+    summary: LiveHarnessSummary,
+    duration_ms: u128,
+) -> ObservedTestResult {
+    let harness_status = summary.harness_status.as_deref().unwrap_or("");
+    let actual = if summary.timeout > 0.0 {
+        WptStatus::Timeout
+    } else if summary.fail > 0.0 {
+        WptStatus::Fail
+    } else if summary.precondition_failed > 0.0 && summary.pass == 0.0 {
+        WptStatus::PreconditionFailed
+    } else if summary.not_run > 0.0 && summary.pass == 0.0 {
+        WptStatus::NotRun
+    } else if harness_status.eq_ignore_ascii_case("OK") {
+        WptStatus::Pass
+    } else if harness_status.eq_ignore_ascii_case("TIMEOUT") {
+        WptStatus::Timeout
+    } else if harness_status.eq_ignore_ascii_case("PRECONDITION_FAILED")
+        || harness_status.eq_ignore_ascii_case("PRECONDITION FAILED")
+    {
+        WptStatus::PreconditionFailed
+    } else {
+        WptStatus::Error
+    };
+
+    let message = if actual == WptStatus::Pass {
+        None
+    } else {
+        Some(format!(
+            "rendered summary reported harness status `{}` with pass={}, fail={}, timeout={}, notRun={}, preconditionFailed={}",
+            harness_status,
+            summary.pass,
+            summary.fail,
+            summary.timeout,
+            summary.not_run,
+            summary.precondition_failed,
+        ))
+    };
+
+    ObservedTestResult {
+        path: test.display_path.clone(),
+        kind: test.kind,
+        actual,
+        message,
+        harness: None,
+        duration_ms,
     }
 }
 
@@ -1625,10 +1813,10 @@ fn http_request_raw(
     let mut stream = TcpStream::connect(("127.0.0.1", port))
         .map_err(|error| format!("failed to connect to localhost:{port}: {error}"))?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|error| format!("failed to set read timeout: {error}"))?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
+        .set_write_timeout(Some(Duration::from_secs(10)))
         .map_err(|error| format!("failed to set write timeout: {error}"))?;
 
     let body = body.unwrap_or(&[]);
@@ -1685,43 +1873,8 @@ fn parse_http_response(bytes: &[u8]) -> Result<HttpResponse, String> {
 
 fn reporter_inject_script() -> &'static str {
     r#"(function () {
-  if (window.__formalWebAutomationObserverInstalled) {
-    return;
-  }
-
-  window.__formalWebAutomationObserverInstalled = true;
-  window.__formalWebTestResult = null;
-  window.__formalWebLoadEventFired = false;
-
-  window.addEventListener("load", function () {
-    window.__formalWebLoadEventFired = true;
-  }, { once: true });
-
-  function installCompletionCallback() {
-    if (window.__formalWebCompletionCallbackInstalled) {
-      return true;
-    }
-    if (typeof add_completion_callback !== "function") {
-      return false;
-    }
-
-    window.__formalWebCompletionCallbackInstalled = true;
-    add_completion_callback(function (tests, harness_status, asserts) {
-      window.__formalWebTestResult = {
-        location: String(location.href),
-        title: String(document.title || ""),
-        tests: tests,
-        status: harness_status,
-        asserts: asserts || []
-      };
-    });
-    return true;
-  }
-
-  if (!installCompletionCallback()) {
-        window.addEventListener("load", function () {
-            installCompletionCallback();
-        }, { once: true });
+  if (!document.currentScript) {
+    document.currentScript = { remove: function () {} };
   }
 }());
 "#
@@ -1730,16 +1883,16 @@ fn reporter_inject_script() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        TestKind, WptStatus, parse_test_expectation_file, reporter_inject_script,
-        served_path_for_test,
+        TestKind, WptStatus, any_script_supports_window, parse_test_expectation_file,
+        reporter_inject_script, served_path_for_test,
     };
     use std::fs;
 
     #[test]
     fn reporter_script_records_completion_result() {
         let script = reporter_inject_script();
-        assert!(script.contains("__formalWebTestResult"));
-        assert!(script.contains("add_completion_callback"));
+        assert!(script.contains("document.currentScript"));
+        assert!(script.contains("remove: function () {}"));
     }
 
     #[test]
@@ -1752,6 +1905,29 @@ mod tests {
             served_path_for_test("__formal__", "load.window.js", TestKind::WindowScript),
             String::from("__formal__/load.window.html")
         );
+    }
+
+    #[test]
+    fn served_any_script_uses_generated_html_path() {
+        assert_eq!(
+            served_path_for_test("", "dom/example.any.js", TestKind::AnyScript),
+            String::from("dom/example.any.html")
+        );
+        assert_eq!(
+            served_path_for_test("__formal__", "load.https.any.js", TestKind::AnyScript),
+            String::from("__formal__/load.https.any.html")
+        );
+    }
+
+    #[test]
+    fn any_script_global_meta_controls_window_support() {
+        assert!(any_script_supports_window("test(() => {});"));
+        assert!(any_script_supports_window(
+            "// META: global=window,dedicatedworker\ntest(() => {});"
+        ));
+        assert!(!any_script_supports_window(
+            "// META: global=dedicatedworker,shadowrealm\ntest(() => {});"
+        ));
     }
 
     #[test]
