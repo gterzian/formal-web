@@ -292,6 +292,44 @@ def fetchTaskExec
     Fetch :=
   messages.foldl fetchTaskStep fetch
 
+inductive FetchRuntimeMessage where
+  | task (message : FetchTaskMessage)
+  | startDocumentFetch
+      (handler : RustNetHandlerPointer)
+      (request : NavigationRequest)
+      (onComplete : FetchResponse -> IO Unit)
+
+structure FetchRuntimeState where
+  fetch : Fetch := default
+  nextDocumentFetchId : Nat := 0
+  documentFetchCompletions : Std.TreeMap Nat (FetchResponse -> IO Unit) := Std.TreeMap.empty
+
+instance : Inhabited FetchRuntimeState where
+  default := {}
+
+private def allocateDocumentFetchId
+    (state : FetchRuntimeState) :
+    FetchRuntimeState × Nat :=
+  let fetchId := state.nextDocumentFetchId * 2 + 1
+  ({ state with nextDocumentFetchId := state.nextDocumentFetchId + 1 }, fetchId)
+
+private def registerDocumentFetchCompletion
+    (state : FetchRuntimeState)
+    (fetchId : Nat)
+    (onComplete : FetchResponse -> IO Unit) :
+    FetchRuntimeState :=
+  {
+    state with
+      documentFetchCompletions := state.documentFetchCompletions.insert fetchId onComplete
+  }
+
+private def takeDocumentFetchCompletion?
+    (state : FetchRuntimeState)
+    (fetchId : Nat) :
+    FetchRuntimeState × Option (FetchResponse -> IO Unit) :=
+  let onComplete? := state.documentFetchCompletions.get? fetchId
+  ({ state with documentFetchCompletions := state.documentFetchCompletions.erase fetchId }, onComplete?)
+
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
     IO (Option α) := do
@@ -394,13 +432,24 @@ def fetchResponseForRequest
     }
 
 private def spawnFetchRequestTask
-    (channel : Std.CloseableChannel FetchTaskMessage)
+    (sendFinish : Nat -> FetchResponse -> IO Unit)
     (controllerId : Nat)
     (request : NavigationRequest) :
     IO Unit := do
   spawnDetached do
     let response ← fetchResponseForRequest request
-    trySendAndForget channel (.finishFetch controllerId response)
+    sendFinish controllerId response
+
+private def spawnFetchRuntimeRequestTask
+    (channel : Std.CloseableChannel FetchRuntimeMessage)
+    (controllerId : Nat)
+    (request : NavigationRequest) :
+    IO Unit :=
+  spawnFetchRequestTask
+    (fun finishedControllerId response =>
+      trySendAndForget channel (.task (.finishFetch finishedControllerId response)))
+    controllerId
+    request
 
 def runFetchMessage
     (channel : Std.CloseableChannel FetchTaskMessage)
@@ -412,12 +461,75 @@ def runFetchMessage
   for effect in effects do
     match effect with
     | .startFetch _ task =>
-        spawnFetchRequestTask channel task.controllerId task.request
+        spawnFetchRequestTask
+          (fun controllerId response =>
+            trySendAndForget channel (.finishFetch controllerId response))
+          task.controllerId
+          task.request
     | .startDocumentFetch _ task =>
-        spawnFetchRequestTask channel task.controllerId task.request
+        spawnFetchRequestTask
+          (fun controllerId response =>
+            trySendAndForget channel (.finishFetch controllerId response))
+          task.controllerId
+          task.request
     | .completeFetch _ _ notification =>
         onNotification notification
   pure nextFetch
+
+private def runFetchRuntimeTaskMessage
+    (channel : Std.CloseableChannel FetchRuntimeMessage)
+    (onNavigationFetchCompleted : FetchNotification -> IO Unit)
+    (state : FetchRuntimeState)
+    (message : FetchTaskMessage) :
+    IO FetchRuntimeState := do
+  let (effects, nextFetch) := runFetchMonadic state.fetch message
+  let mut nextState := { state with fetch := nextFetch }
+  for effect in effects do
+    match effect with
+    | .startFetch _ task =>
+        spawnFetchRuntimeRequestTask channel task.controllerId task.request
+    | .startDocumentFetch _ task =>
+        spawnFetchRuntimeRequestTask channel task.controllerId task.request
+    | .completeFetch controllerId response notification =>
+        let (updatedState, onComplete?) := takeDocumentFetchCompletion? nextState controllerId
+        nextState := updatedState
+        match onComplete? with
+        | some onComplete =>
+            onComplete response
+        | none =>
+            onNavigationFetchCompleted notification
+  pure nextState
+
+def runFetchRuntimeMessage
+    (channel : Std.CloseableChannel FetchRuntimeMessage)
+    (onNavigationFetchCompleted : FetchNotification -> IO Unit)
+    (state : FetchRuntimeState)
+    (message : FetchRuntimeMessage) :
+    IO FetchRuntimeState := do
+  match message with
+  | .task taskMessage =>
+      runFetchRuntimeTaskMessage channel onNavigationFetchCompleted state taskMessage
+  | .startDocumentFetch _ request onComplete =>
+      let (state, fetchId) := allocateDocumentFetchId state
+      let state := registerDocumentFetchCompletion state fetchId onComplete
+      runFetchRuntimeTaskMessage
+        channel
+        onNavigationFetchCompleted
+        state
+        (.startDocumentFetch { fetchId, request })
+
+partial def runFetchRuntime
+    (channel : Std.CloseableChannel FetchRuntimeMessage)
+    (onNavigationFetchCompleted : FetchNotification -> IO Unit)
+    (state : FetchRuntimeState := default) :
+    IO Unit := do
+  let nextMessage? ← recvCloseableChannel? channel
+  match nextMessage? with
+  | none =>
+      pure ()
+  | some message =>
+      let nextState ← runFetchRuntimeMessage channel onNavigationFetchCompleted state message
+      runFetchRuntime channel onNavigationFetchCompleted nextState
 
 /-- Process fetch-task messages until the channel is closed. -/
 partial def runFetch

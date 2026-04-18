@@ -263,6 +263,20 @@ def runTimerMessagesMonadic
     (messages.foldlM (fun _ message => handleTimerTaskMessage message) ()).run timer
   (effects, nextTimer)
 
+inductive TimerRuntimeMessage where
+  | task (message : TimerTaskMessage)
+  | scheduleTimeout
+      (nowMs : Nat)
+      (request : RunStepsAfterTimeoutRequest)
+      (onComplete : TimerCompletion -> IO Unit)
+
+structure TimerRuntimeState where
+  timer : Timer := default
+  completions : Std.TreeMap Nat (TimerCompletion -> IO Unit) := Std.TreeMap.empty
+
+instance : Inhabited TimerRuntimeState where
+  default := {}
+
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
     IO (Option α) := do
@@ -300,16 +314,50 @@ private partial def sleepMilliseconds
     sleepMilliseconds (delayMs - chunk)
 
 private def spawnWakeTask
-    (channel : Std.CloseableChannel TimerTaskMessage)
+    (sendWake : Nat -> Nat -> IO Unit)
     (generation : Nat)
     (delayMs : Nat) :
     IO Unit := do
   let _ ← IO.asTask <| do
     sleepMilliseconds delayMs
     let nowMs ← IO.monoMsNow
-    let _ ← channel.trySend (.wake nowMs generation)
-    pure ()
+    sendWake nowMs generation
   pure ()
+
+private def timerCompletionKey
+    (completion : TimerCompletion) :
+    Nat :=
+  match completion with
+  | .windowTimerTask _ _ timerKey _ =>
+      timerKey
+  | .documentFetchTimeout handlerId =>
+      handlerId
+
+private def registerCompletion
+    (state : TimerRuntimeState)
+    (timerKey : Nat)
+    (onComplete : TimerCompletion -> IO Unit) :
+    TimerRuntimeState :=
+  {
+    state with
+      completions := state.completions.insert timerKey onComplete
+  }
+
+private def clearCompletion
+    (state : TimerRuntimeState)
+    (timerKey : Nat) :
+    TimerRuntimeState :=
+  {
+    state with
+      completions := state.completions.erase timerKey
+  }
+
+private def takeCompletion?
+    (state : TimerRuntimeState)
+    (timerKey : Nat) :
+    TimerRuntimeState × Option (TimerCompletion -> IO Unit) :=
+  let onComplete? := state.completions.get? timerKey
+  ({ state with completions := state.completions.erase timerKey }, onComplete?)
 
 def runTimerMessages
     (notify : TimerNotification → IO Unit)
@@ -321,10 +369,72 @@ def runTimerMessages
   for effect in effects do
     match effect with
     | .scheduleWake generation delayMs =>
-        spawnWakeTask channel generation delayMs
+        spawnWakeTask
+          (fun nowMs wakeGeneration => do
+            let _ ← channel.trySend (.wake nowMs wakeGeneration)
+            pure ())
+          generation
+          delayMs
     | .notify notification =>
         notify notification
   pure nextTimer
+
+private def runTimerRuntimeTaskMessage
+    (channel : Std.CloseableChannel TimerRuntimeMessage)
+    (state : TimerRuntimeState)
+    (message : TimerTaskMessage) :
+    IO TimerRuntimeState := do
+  let state :=
+    match message with
+    | .clearTimeout _ timerKey =>
+        clearCompletion state timerKey
+    | _ =>
+        state
+  let (effects, nextTimer) := runTimerMessagesMonadic state.timer [message]
+  let mut nextState := { state with timer := nextTimer }
+  for effect in effects do
+    match effect with
+    | .scheduleWake generation delayMs =>
+        spawnWakeTask
+          (fun nowMs wakeGeneration => do
+            let _ ← channel.trySend (.task (.wake nowMs wakeGeneration))
+            pure ())
+          generation
+          delayMs
+    | .notify notification =>
+        let timerKey := timerCompletionKey notification.completion
+        let (updatedState, onComplete?) := takeCompletion? nextState timerKey
+        nextState := updatedState
+        match onComplete? with
+        | some onComplete =>
+            onComplete notification.completion
+        | none =>
+            pure ()
+  pure nextState
+
+def runTimerRuntimeMessage
+    (channel : Std.CloseableChannel TimerRuntimeMessage)
+    (state : TimerRuntimeState)
+    (message : TimerRuntimeMessage) :
+    IO TimerRuntimeState := do
+  match message with
+  | .task taskMessage =>
+      runTimerRuntimeTaskMessage channel state taskMessage
+  | .scheduleTimeout nowMs request onComplete =>
+      let state := registerCompletion state request.timerKey onComplete
+      runTimerRuntimeTaskMessage channel state (.scheduleTimeout nowMs request)
+
+partial def runTimerRuntime
+    (channel : Std.CloseableChannel TimerRuntimeMessage)
+    (state : TimerRuntimeState := default) :
+    IO Unit := do
+  let nextMessage? ← recvCloseableChannel? channel
+  match nextMessage? with
+  | none =>
+      pure ()
+  | some message =>
+      let nextState ← runTimerRuntimeMessage channel state message
+      runTimerRuntime channel nextState
 
 partial def runTimerLoop
     (notify : TimerNotification → IO Unit)

@@ -576,6 +576,64 @@ inductive EventLoopEffect where
   | runNextTask (task : Task) (runtimeEffect? : Option EventLoopRuntimeEffect)
 deriving Repr, DecidableEq
 
+structure EventLoopRuntimeHooks where
+  startDocumentFetch : RustNetHandlerPointer -> NavigationRequest -> IO Unit
+  scheduleTimeout : RunStepsAfterTimeoutRequest -> IO Unit
+  clearTimeout : Nat -> IO Unit
+
+def handleRuntimeEffect
+    (hooks : EventLoopRuntimeHooks)
+    (state : EventLoopTaskState)
+    (runtimeEffect : EventLoopRuntimeEffect) :
+    IO Unit := do
+  match runtimeEffect with
+  | .createEmptyDocument documentId =>
+      contentProcessCreateEmptyDocument state.contentProcess.raw (USize.ofNat documentId.id)
+  | .createLoadedDocument documentId url body =>
+      contentProcessCreateLoadedDocument
+        state.contentProcess.raw
+        (USize.ofNat documentId.id)
+        url
+        body
+  | .destroyDocument documentId =>
+      contentProcessDestroyDocument state.contentProcess.raw (USize.ofNat documentId.id)
+  | .updateTheRendering documentId =>
+      contentProcessUpdateTheRendering
+        state.contentProcess.raw
+        (USize.ofNat documentId.id)
+  | .dispatchEvent events =>
+      contentProcessDispatchEvent
+        state.contentProcess.raw
+        (encodeDispatchEventBatch events)
+  | .runBeforeUnload documentId checkId =>
+      contentProcessRunBeforeUnload
+        state.contentProcess.raw
+        (USize.ofNat documentId.id)
+        (USize.ofNat checkId)
+  | .startDocumentFetch handler request =>
+      hooks.startDocumentFetch handler request
+  | .scheduleTimeout request =>
+      hooks.scheduleTimeout request
+  | .clearTimeout timerKey =>
+      hooks.clearTimeout timerKey
+  | .documentFetchCompletion handler resolvedUrl body =>
+      contentProcessCompleteDocumentFetch
+        state.contentProcess.raw
+        handler.raw
+        resolvedUrl
+        body
+  | .runWindowTimer documentId timerId timerKey nestingLevel =>
+      contentProcessRunWindowTimer
+        state.contentProcess.raw
+        (USize.ofNat documentId.id)
+        (USize.ofNat timerId)
+        (USize.ofNat timerKey)
+        (USize.ofNat nestingLevel)
+  | .failDocumentFetch handler =>
+      contentProcessFailDocumentFetch
+        state.contentProcess.raw
+        handler.raw
+
 def coalesceQueuedHighFrequencyWork
     (state : EventLoopTaskState) :
     EventLoopTaskState :=
@@ -1004,5 +1062,57 @@ def runEventLoop
   finally
     if contentProcess.raw ≠ 0 then
       contentProcessStop contentProcess.raw
+
+structure EventLoopWorker where
+  channel : Std.CloseableChannel EventLoopTaskMessage
+  task : _root_.Task (Except IO.Error Unit)
+
+private def trySendAndForget
+    (channel : Std.CloseableChannel α)
+    (message : α) :
+    IO Unit := do
+  let _ ← channel.trySend message
+  pure ()
+
+def startEventLoopWorker
+    (fetchChannel : Std.CloseableChannel FetchRuntimeMessage)
+    (timerChannel : Std.CloseableChannel TimerRuntimeMessage)
+    (eventLoop : EventLoop)
+    (onStopped : IO Unit := pure ()) :
+    IO EventLoopWorker := do
+  let channel ← Std.CloseableChannel.new
+  let hooks : EventLoopRuntimeHooks := {
+    startDocumentFetch := fun handler request => do
+      let onComplete := fun response => do
+        trySendAndForget
+          channel
+          (.queueDocumentFetchCompletion handler response.url response.body)
+      trySendAndForget fetchChannel (.startDocumentFetch handler request onComplete)
+    scheduleTimeout := fun request => do
+      let nowMs ← IO.monoMsNow
+      let onComplete := fun completion => do
+        match completion with
+        | .windowTimerTask documentId timerId timerKey nestingLevel =>
+            trySendAndForget
+              channel
+              (.queueWindowTimerTask { id := documentId } timerId timerKey nestingLevel)
+        | .documentFetchTimeout handlerId =>
+            trySendAndForget
+              channel
+              (.queueDocumentFetchTimeout { raw := USize.ofNat handlerId })
+      trySendAndForget timerChannel (.scheduleTimeout nowMs request onComplete)
+    clearTimeout := fun timerKey => do
+      let nowMs ← IO.monoMsNow
+      trySendAndForget timerChannel (.task (.clearTimeout nowMs timerKey))
+  }
+  let task ← IO.asTask <| do
+    try
+      runEventLoop (handleRuntimeEffect hooks) channel { eventLoop := eventLoop }
+    finally
+      onStopped
+  pure {
+    channel
+    task
+  }
 
 end FormalWeb

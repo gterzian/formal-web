@@ -3,45 +3,50 @@ import FormalWeb.Proofs.TransitionSystem
 
 namespace FormalWeb
 
-/-- The user-agent LTS labels each step by the task message that `runMonadic` handles. -/
-abbrev UserAgentAction := UserAgentTaskMessage
+/-- High-level LTS action for one user-agent message together with its state contract. -/
+structure UserAgentAction where
+  message : UserAgentTaskMessage
+  precondition : UserAgent → Prop
+  postcondition : UserAgent → UserAgent → Prop
+
+def defaultUserAgentAction
+    (message : UserAgentTaskMessage) :
+    UserAgentAction := {
+      message
+      precondition := fun _ => True
+      postcondition := fun userAgent userAgent' =>
+        userAgent' = (runMonadic userAgent message).2
+    }
 
 /-- Relational LTS for user-agent task-message handling. -/
 def userAgentLTS : TransitionSystem.LTS UserAgent UserAgentAction where
   init := fun userAgent => userAgent = default
   trans := fun userAgent action userAgent' =>
-    userAgent' = (runMonadic userAgent action).2
+    action.precondition userAgent ∧ action.postcondition userAgent userAgent'
 
-def interpretUserAgentAction
+def runMonadicState
     (userAgent : UserAgent)
-    (action : UserAgentAction) :
-    List UserAgentEffect :=
-  (runMonadic userAgent action).1.toList
+    (message : UserAgentTaskMessage) :
+    UserAgent :=
+  (runMonadic userAgent message).2
+
+theorem runMonadic_refines_defaultAction
+    (userAgent : UserAgent)
+    (message : UserAgentTaskMessage) :
+    userAgentLTS.trans
+      userAgent
+      (defaultUserAgentAction message)
+      (runMonadicState userAgent message) := by
+  simp [userAgentLTS, defaultUserAgentAction, runMonadicState]
 
 theorem runMonadic_trace
     (userAgent : UserAgent)
-    (action : UserAgentAction) :
+    (message : UserAgentTaskMessage) :
     TransitionSystem.TransitionTrace
       userAgentLTS
       userAgent
-      [action]
-      (runMonadic userAgent action).2 := by
-  exact TransitionSystem.TransitionTrace.single rfl
-
-theorem interpretUserAgentAction_eq_runMonadic
-    (userAgent : UserAgent)
-    (action : UserAgentAction) :
-    interpretUserAgentAction userAgent action = (runMonadic userAgent action).1.toList := by
-  rfl
-
-theorem runNextEventLoopTask_trace
-    (userAgent : UserAgent)
-    (eventLoopId : Nat) :
-    TransitionSystem.TransitionTrace
-      userAgentLTS
-      userAgent
-      [.runNextEventLoopTask eventLoopId]
-      (runMonadic userAgent (.runNextEventLoopTask eventLoopId)).2 := by
-  simpa using runMonadic_trace userAgent (.runNextEventLoopTask eventLoopId)
+      [defaultUserAgentAction message]
+      (runMonadicState userAgent message) := by
+  exact TransitionSystem.TransitionTrace.single (runMonadic_refines_defaultAction userAgent message)
 
 end FormalWeb

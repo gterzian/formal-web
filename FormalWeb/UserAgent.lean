@@ -2,8 +2,8 @@ import Std.Data.TreeMap
 import Std.Sync.Channel
 import Mathlib.Control.Monad.Writer
 import FormalWeb.EventLoop
-import FormalWeb.FFI
 import FormalWeb.Fetch
+import FormalWeb.SessionHistoryNavigation
 import FormalWeb.Traversable
 
 namespace FormalWeb
@@ -49,35 +49,10 @@ instance : Inhabited UserAgent where
 
 /-- Effects that the user-agent model can emit during a state transition. -/
 inductive UserAgentEffect where
-  | createTopLevelTraversable
-      (targetName : String)
-      (dispatch? : Option (Nat × EventLoopTaskMessage))
-      (notifyEmbedder : Bool := true)
-  | beginNavigation
-      (traversableId : Nat)
-      (destinationURL : String)
-      (documentResource : Option DocumentResource)
-      (request? : Option PendingFetchRequest)
-  | dispatchEvent
-      (traversableId : Nat)
-      (eventLoopId : Nat)
-      (event : String)
-      (message : EventLoopTaskMessage)
-  | runBeforeUnload
-      (traversableId : Nat)
-      (eventLoopId : Nat)
-      (message : EventLoopTaskMessage)
-  | queueUpdateTheRendering
-      (traversableId : Nat)
-      (eventLoopId : Nat)
-      (message : EventLoopTaskMessage)
-  | runNextEventLoopTask (eventLoopId : Nat)
-  | completeNavigation
-      (navigationId : Nat)
-      (traversableId : Nat)
-      (response : NavigationResponse)
-      (dispatch? : Option (Nat × EventLoopTaskMessage))
+  | startEventLoop (eventLoopId : Nat)
+  | startFetch (request : PendingFetchRequest)
   | eventLoopMessage (eventLoopId : Nat) (message : EventLoopTaskMessage)
+  | notifyTopLevelTraversableCreated
   | notifyNavigationRequested (destinationURL : String)
   | notifyBeforeUnloadCompleted (documentId : Nat) (checkId : Nat) (canceled : Bool)
   | notifyFinalizeNavigation (documentId : Nat) (url : String)
@@ -95,53 +70,21 @@ namespace M
 def emit (effect : UserAgentEffect) : FormalWeb.M Unit :=
   tell #[effect]
 
-def createTopLevelTraversable
-    (targetName : String)
-    (dispatch? : Option (Nat × EventLoopTaskMessage))
-    (notifyEmbedder : Bool := true) : FormalWeb.M Unit :=
-  emit (.createTopLevelTraversable targetName dispatch? notifyEmbedder)
-
-def beginNavigation
-    (traversableId : Nat)
-    (destinationURL : String)
-    (documentResource : Option DocumentResource)
-    (request? : Option PendingFetchRequest) : FormalWeb.M Unit :=
-  emit (.beginNavigation traversableId destinationURL documentResource request?)
-
-def dispatchEvent
-    (traversableId : Nat)
-    (eventLoopId : Nat)
-    (event : String)
-    (message : EventLoopTaskMessage) : FormalWeb.M Unit :=
-  emit (.dispatchEvent traversableId eventLoopId event message)
-
-def runBeforeUnload
-    (traversableId : Nat)
-    (eventLoopId : Nat)
-    (message : EventLoopTaskMessage) : FormalWeb.M Unit :=
-  emit (.runBeforeUnload traversableId eventLoopId message)
-
-def queueUpdateTheRendering
-    (traversableId : Nat)
-    (eventLoopId : Nat)
-    (message : EventLoopTaskMessage) : FormalWeb.M Unit :=
-  emit (.queueUpdateTheRendering traversableId eventLoopId message)
-
-def runNextEventLoopTask
+def startEventLoop
     (eventLoopId : Nat) : FormalWeb.M Unit :=
-  emit (.runNextEventLoopTask eventLoopId)
+  emit (.startEventLoop eventLoopId)
 
-def completeNavigation
-    (navigationId : Nat)
-    (traversableId : Nat)
-    (response : NavigationResponse)
-    (dispatch? : Option (Nat × EventLoopTaskMessage)) : FormalWeb.M Unit :=
-  emit (.completeNavigation navigationId traversableId response dispatch?)
+def startFetch
+    (request : PendingFetchRequest) : FormalWeb.M Unit :=
+  emit (.startFetch request)
 
 def eventLoopMessage
     (eventLoopId : Nat)
     (message : EventLoopTaskMessage) : FormalWeb.M Unit :=
   emit (.eventLoopMessage eventLoopId message)
+
+def notifyTopLevelTraversableCreated : FormalWeb.M Unit :=
+  emit .notifyTopLevelTraversableCreated
 
 def notifyNavigationRequested
     (destinationURL : String) : FormalWeb.M Unit :=
@@ -647,113 +590,6 @@ def abortDocumentAndDescendants
   -- Step 3: Abort document.
   -- Note: The current model collapses the queued abort task to its durable effect of making the active document unsalvageable.
   makeDocumentUnsalvageable userAgent documentId
-
-private def clearForwardSessionHistoryEntries
-    (traversable : TraversableNavigable) :
-    List SessionHistoryEntry :=
-  traversable.sessionHistoryEntries.filter fun historyEntry =>
-    historyEntry.step <= traversable.currentSessionHistoryStep
-
-private def replaceSessionHistoryEntryAtStep
-    (entries : List SessionHistoryEntry)
-    (step : Nat)
-    (historyEntry : SessionHistoryEntry) :
-    List SessionHistoryEntry :=
-  entries.map fun entry => if entry.step = step then historyEntry else entry
-
-/-- https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation -/
-def finalizeCrossDocumentNavigation
-    (userAgent : UserAgent)
-    (pendingNavigationFinalization : PendingNavigationFinalization) :
-    UserAgent :=
-  Id.run do
-    let some traversable := traversable? userAgent pendingNavigationFinalization.traversableId
-      | userAgent
-    let some document := pendingNavigationFinalization.historyEntry.documentState.document
-      | userAgent
-
-    -- Step 2: Set navigable's is delaying `load` events to false.
-    -- TODO: Model `load`-event delaying mode on navigables.
-
-    -- Step 4: If all of the following are true:
-    -- Note: The current model stores only top-level traversables, so the auxiliary-browsing-context branch is not yet represented.
-    let historyEntry :=
-      match traversable.toTraversableNavigable.activeDocument with
-      | some activeDocument =>
-          if traversable.toTraversableNavigable.toNavigable.parentNavigableId.isNone &&
-              document.origin != activeDocument.origin then
-            {
-              pendingNavigationFinalization.historyEntry with
-                documentState := {
-                  pendingNavigationFinalization.historyEntry.documentState with
-                    navigableTargetName := ""
-                }
-            }
-          else
-            pendingNavigationFinalization.historyEntry
-      | none =>
-          pendingNavigationFinalization.historyEntry
-
-    -- Step 5: Let entryToReplace be navigable's active session history entry if historyHandling is "replace", otherwise null.
-    let entryToReplace :=
-      match pendingNavigationFinalization.historyHandling with
-      | .replace => traversable.toTraversableNavigable.toNavigable.activeSessionHistoryEntry
-      | .push => none
-
-    -- Step 6: Let traversable be navigable's traversable navigable.
-    let traversableNavigable := traversable.toTraversableNavigable
-
-    -- Step 7: Let targetStep be null.
-    -- Step 8: Let targetEntries be the result of getting session history entries for navigable.
-    let (historyEntry, targetStep, targetEntries) :=
-      match entryToReplace with
-      | none =>
-          -- Step 9.1: Clear the forward session history of traversable.
-          -- Step 9.2: Set targetStep to traversable's current session history step + 1.
-          -- Step 9.3: Set historyEntry's step to targetStep.
-          -- Step 9.4: Append historyEntry to targetEntries.
-          let targetStep := traversableNavigable.currentSessionHistoryStep + 1
-          let historyEntry := { historyEntry with step := targetStep }
-          let targetEntries := (clearForwardSessionHistoryEntries traversableNavigable).concat historyEntry
-          (historyEntry, targetStep, targetEntries)
-      | some entryToReplace =>
-          -- Step 9.1: Replace entryToReplace with historyEntry in targetEntries.
-          -- TODO: Model the same-origin navigation API key preservation branch for replacements.
-
-          -- Step 9.2: Set historyEntry's step to entryToReplace's step.
-
-          -- Step 9.4: Set targetStep to traversable's current session history step.
-          let historyEntry := { historyEntry with step := entryToReplace.step }
-          let targetEntries :=
-            replaceSessionHistoryEntryAtStep
-              traversableNavigable.sessionHistoryEntries
-              entryToReplace.step
-              historyEntry
-          (historyEntry, traversableNavigable.currentSessionHistoryStep, targetEntries)
-
-    -- Step 10: Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
-    -- Note: The current model commits the history entry and active document directly on the traversable instead of separately modeling the shared traversal queue.
-    let committedNavigable := {
-      traversableNavigable.toNavigable with
-        currentSessionHistoryEntry := some historyEntry
-        activeSessionHistoryEntry := some historyEntry
-    }
-    let updatedNavigable := setOngoingNavigation committedNavigable none
-    let traversable := {
-      traversable with
-        toTraversableNavigable := {
-          traversableNavigable with
-            toNavigable := updatedNavigable
-            activeBrowsingContextId := some document.browsingContextId
-            activeDocument := some document
-            currentSessionHistoryStep := targetStep
-            sessionHistoryEntries := targetEntries
-        }
-        parentNavigableIdNone := by
-          simpa [committedNavigable, updatedNavigable, setOngoingNavigation_preserves_parentNavigableId] using
-            traversable.parentNavigableIdNone
-    }
-    replaceTraversable userAgent traversable
 
 def notePendingUpdateTheRendering
     (userAgent : UserAgent)
@@ -1841,7 +1677,6 @@ inductive UserAgentTaskMessage where
   | abortNavigationRequested (documentId : Nat)
   | dispatchEvent (event : String)
   | renderingOpportunity
-  | runNextEventLoopTask (eventLoopId : Nat)
   | fetchCompleted (fetchId : Nat) (response : FetchResponse)
 deriving Repr, DecidableEq
 
@@ -1980,7 +1815,17 @@ def createTopLevelTraversableM
   let userAgent ← get
   let (nextUserAgent, traversable) := createNewTopLevelTraversable userAgent none targetName
   set nextUserAgent
-  M.createTopLevelTraversable targetName (activeDocumentDispatch? nextUserAgent)
+  match traversable.toTraversableNavigable.activeDocument with
+  | some document =>
+    M.startEventLoop document.eventLoopId
+  | none =>
+    pure ()
+  match activeDocumentDispatch? nextUserAgent with
+  | some (eventLoopId, eventLoopMessage) =>
+    M.eventLoopMessage eventLoopId eventLoopMessage
+  | none =>
+    pure ()
+  M.notifyTopLevelTraversableCreated
   pure traversable
 
 def navigateM
@@ -1993,7 +1838,11 @@ def navigateM
   let (nextUserAgent, pendingFetchRequest?) :=
     navigate userAgent traversable destinationURL documentResource userInvolvement
   set nextUserAgent
-  M.beginNavigation traversable.id destinationURL documentResource pendingFetchRequest?
+  match pendingFetchRequest? with
+  | some pendingFetchRequest =>
+      M.startFetch pendingFetchRequest
+  | none =>
+      pure ()
   pure pendingFetchRequest?
 
 def bootstrapFreshTopLevelTraversableM
@@ -2089,7 +1938,7 @@ def checkIfUnloadingIsCanceledM
     match queueRunBeforeUnload userAgent traversable.id checkId with
     | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
         set nextUserAgent
-        M.runBeforeUnload traversable.id eventLoopId eventLoopMessage
+        M.eventLoopMessage eventLoopId eventLoopMessage
         pure .pending
     | none =>
         set ((userAgent.takePendingBeforeUnloadNavigation checkId).1)
@@ -2235,7 +2084,7 @@ def dispatchEventM
       match queueDispatchedEvent userAgent traversableId event with
       | some (nextUserAgent, eventLoopId, eventLoopMessage) =>
           set nextUserAgent
-          M.dispatchEvent traversableId eventLoopId event eventLoopMessage
+          M.eventLoopMessage eventLoopId eventLoopMessage
       | none =>
           M.logError (dispatchEventFailureDetails userAgent event)
 
@@ -2254,17 +2103,9 @@ def queueRenderingOpportunityM : M Unit := do
         set nextUserAgent
         match dispatch? with
         | some (eventLoopId, eventLoopMessage) =>
-            M.queueUpdateTheRendering traversable.id eventLoopId eventLoopMessage
+            M.eventLoopMessage eventLoopId eventLoopMessage
         | none =>
             pure ()
-
-def runNextEventLoopTaskM
-  (eventLoopId : Nat) :
-    M Unit := do
-  let userAgent ← get
-  let some _ := userAgent.eventLoop? eventLoopId
-    | pure ()
-  M.runNextEventLoopTask eventLoopId
 
 def handleFetchCompletedM
     (fetchId : Nat)
@@ -2293,14 +2134,14 @@ def handleFetchCompletedM
           nextUserAgent
           pendingNavigationFetch.navigationId
           navigationResponse
-      M.completeNavigation
-        pendingNavigationFetch.navigationId
-        pendingNavigationFetch.traversableId
-        navigationResponse
-        dispatch?
+      match dispatch? with
+      | some (eventLoopId, eventLoopMessage) =>
+          M.eventLoopMessage eventLoopId eventLoopMessage
+      | none =>
+          pure ()
       match renderingDispatch? with
       | some (eventLoopId, eventLoopMessage) =>
-          M.queueUpdateTheRendering pendingNavigationFetch.traversableId eventLoopId eventLoopMessage
+          M.eventLoopMessage eventLoopId eventLoopMessage
       | none =>
           pure ()
   | none =>
@@ -2332,7 +2173,35 @@ def finalizeNavigationM
                   none
             | none =>
                 none
-          let userAgent := finalizeCrossDocumentNavigation userAgent pendingNavigationFinalization
+          let finalizedTraversable :=
+            FormalWeb.finalizeCrossDocumentNavigation
+              traversable.toTraversableNavigable.toNavigable
+              traversable.toTraversableNavigable.activeDocument
+              traversable.toTraversableNavigable.hasDeferredUpdateTheRendering
+              traversable.toTraversableNavigable.currentSessionHistoryStep
+              traversable.toTraversableNavigable.sessionHistoryEntries
+              pendingNavigationFinalization.historyEntry
+              pendingNavigationFinalization.historyHandling
+              pendingNavigationFinalization.userInvolvement
+          let userAgent :=
+            replaceTraversable
+              userAgent
+              {
+                traversable with
+                  toTraversableNavigable := finalizedTraversable
+                  parentNavigableIdNone := by
+                    exact
+                      (finalizeCrossDocumentNavigation_preserves_parentNavigableId
+                        traversable.toTraversableNavigable.toNavigable
+                        traversable.toTraversableNavigable.activeDocument
+                        traversable.toTraversableNavigable.hasDeferredUpdateTheRendering
+                        traversable.toTraversableNavigable.currentSessionHistoryStep
+                        traversable.toTraversableNavigable.sessionHistoryEntries
+                        pendingNavigationFinalization.historyEntry
+                        pendingNavigationFinalization.historyHandling
+                        pendingNavigationFinalization.userInvolvement).trans
+                          traversable.parentNavigableIdNone
+              }
           let (userAgent, renderingDispatch?) :=
             queueUpdateTheRendering userAgent pendingNavigationFinalization.traversableId
           set userAgent
@@ -2344,10 +2213,7 @@ def finalizeNavigationM
               pure ()
           match renderingDispatch? with
           | some (eventLoopId, eventLoopMessage) =>
-              M.queueUpdateTheRendering
-                pendingNavigationFinalization.traversableId
-                eventLoopId
-                eventLoopMessage
+              M.eventLoopMessage eventLoopId eventLoopMessage
           | none =>
               pure ()
         else
@@ -2374,8 +2240,6 @@ def handleUserAgentTaskMessage
       dispatchEventM event
   | .renderingOpportunity =>
       queueRenderingOpportunityM
-  | .runNextEventLoopTask eventLoopId =>
-      runNextEventLoopTaskM eventLoopId
   | .fetchCompleted fetchId response =>
       handleFetchCompletedM fetchId response
 
@@ -2387,122 +2251,162 @@ def runMonadic
     (handleUserAgentTaskMessage message).run userAgent
   (effects, nextUserAgent)
 
+inductive UserAgentRuntimeMessage where
+  | task (message : UserAgentTaskMessage)
+  | eventLoop (eventLoopId : Nat) (message : EventLoopTaskMessage)
+  | eventLoopStopped (eventLoopId : Nat)
+deriving Repr, DecidableEq
+
+structure UserAgentRuntimeState where
+  userAgent : UserAgent := default
+  fetchChannel : Std.CloseableChannel FetchRuntimeMessage
+  timerChannel : Std.CloseableChannel TimerRuntimeMessage
+  eventLoopWorkers : Std.TreeMap Nat EventLoopWorker := Std.TreeMap.empty
+
 private def recvCloseableChannel?
     (channel : Std.CloseableChannel α) :
     IO (Option α) := do
   let receiveTask ← channel.recv
   IO.wait receiveTask
 
-private def sendEventLoopTaskMessage
-  (ensureEventLoopWorker : EventLoop -> IO Unit)
-  (enqueueEventLoopMessage : Nat -> EventLoopTaskMessage -> IO Unit)
-  (userAgent : UserAgent)
-  (eventLoopId : Nat)
-  (message : EventLoopTaskMessage) :
-  IO Unit := do
-  let some eventLoop := userAgent.eventLoop? eventLoopId | pure ()
-  ensureEventLoopWorker eventLoop
-  enqueueEventLoopMessage eventLoopId message
-
-private def sendEmbedderRuntimeMessage
-    (message : String) : IO Unit :=
-  FormalWeb.sendEmbedderMessage message
-
-def runUserAgentMessage
-    (enqueueFetchMessage : FetchTaskMessage -> IO Unit)
-    (ensureEventLoopWorker : EventLoop -> IO Unit)
-    (enqueueEventLoopMessage : Nat -> EventLoopTaskMessage -> IO Unit)
-  (userAgent : UserAgent)
-    (message : UserAgentTaskMessage) :
-  IO UserAgent := do
-  let (effects, nextUserAgent) := runMonadic userAgent message
-  for effect in effects do
-    match effect with
-    | .createTopLevelTraversable _ dispatch? notifyEmbedder =>
-        match dispatch? with
-        | some (eventLoopId, eventLoopMessage) =>
-            sendEventLoopTaskMessage
-              ensureEventLoopWorker
-              enqueueEventLoopMessage
-              nextUserAgent
-              eventLoopId
-              eventLoopMessage
-        | none =>
-            pure ()
-        if notifyEmbedder then
-          FormalWeb.sendEmbedderMessage "NewTopLevelTraversable"
-    | .beginNavigation _ _ _ request? =>
-      match request? with
-      | some request =>
-        enqueueFetchMessage (.startFetch request)
-      | none =>
-        pure ()
-    | .dispatchEvent _ eventLoopId _ eventLoopMessage =>
-        sendEventLoopTaskMessage
-          ensureEventLoopWorker
-          enqueueEventLoopMessage
-          nextUserAgent
-          eventLoopId
-          eventLoopMessage
-    | .runBeforeUnload _ eventLoopId eventLoopMessage =>
-        sendEventLoopTaskMessage
-          ensureEventLoopWorker
-          enqueueEventLoopMessage
-          nextUserAgent
-          eventLoopId
-          eventLoopMessage
-    | .queueUpdateTheRendering _ eventLoopId eventLoopMessage =>
-        sendEventLoopTaskMessage
-          ensureEventLoopWorker
-          enqueueEventLoopMessage
-          nextUserAgent
-          eventLoopId
-          eventLoopMessage
-    | .runNextEventLoopTask eventLoopId =>
-        sendEventLoopTaskMessage
-          ensureEventLoopWorker
-          enqueueEventLoopMessage
-          nextUserAgent
-          eventLoopId
-          .runNextTask
-    | .completeNavigation _ _ _ dispatch? =>
-        match dispatch? with
-        | some (eventLoopId, eventLoopMessage) =>
-            sendEventLoopTaskMessage
-              ensureEventLoopWorker
-              enqueueEventLoopMessage
-              nextUserAgent
-              eventLoopId
-              eventLoopMessage
-        | none =>
-            pure ()
-    | .eventLoopMessage eventLoopId eventLoopMessage =>
-      sendEventLoopTaskMessage
-        ensureEventLoopWorker
-        enqueueEventLoopMessage
-        nextUserAgent
-        eventLoopId
-        eventLoopMessage
-    | .notifyNavigationRequested destinationURL =>
-      sendEmbedderRuntimeMessage s!"NavigationRequested|{destinationURL}"
-    | .notifyBeforeUnloadCompleted documentId checkId canceled =>
-      sendEmbedderRuntimeMessage
-        s!"BeforeUnloadCompleted|{documentId}|{checkId}|{if canceled then "1" else "0"}"
-    | .notifyFinalizeNavigation documentId url =>
-      sendEmbedderRuntimeMessage s!"FinalizeNavigation|{documentId}|{url}"
-    | .logError errorMessage =>
-        IO.eprintln errorMessage
-  pure nextUserAgent
-
-partial def runUserAgent
-    (channel : Std.CloseableChannel UserAgentTaskMessage)
-    (enqueueFetchMessage : FetchTaskMessage -> IO Unit)
-    (ensureEventLoopWorker : EventLoop -> IO Unit)
-    (enqueueEventLoopMessage : Nat -> EventLoopTaskMessage -> IO Unit)
-    (userAgent : UserAgent := default) :
+private def trySendAndForget
+    (channel : Std.CloseableChannel α)
+    (message : α) :
     IO Unit := do
-  let some message ← recvCloseableChannel? channel | pure ()
-  let userAgent ← runUserAgentMessage enqueueFetchMessage ensureEventLoopWorker enqueueEventLoopMessage userAgent message
-  runUserAgent channel enqueueFetchMessage ensureEventLoopWorker enqueueEventLoopMessage userAgent
+  let _ ← channel.trySend message
+  pure ()
+
+private def eventLoopWorkersList
+    (state : UserAgentRuntimeState) :
+    List EventLoopWorker :=
+  state.eventLoopWorkers.foldl (fun workers _ worker => worker :: workers) []
+
+private def ensureEventLoopWorker
+    (channel : Std.CloseableChannel UserAgentRuntimeMessage)
+    (state : UserAgentRuntimeState)
+    (eventLoopId : Nat) :
+    IO UserAgentRuntimeState := do
+  match state.eventLoopWorkers.get? eventLoopId with
+  | some _ =>
+      pure state
+  | none =>
+      let some eventLoop := state.userAgent.eventLoop? eventLoopId | pure state
+      let worker ←
+        FormalWeb.startEventLoopWorker
+          state.fetchChannel
+          state.timerChannel
+          eventLoop
+          (trySendAndForget channel (.eventLoopStopped eventLoop.id))
+      pure {
+        state with
+          eventLoopWorkers := state.eventLoopWorkers.insert eventLoopId worker
+      }
+
+private def dispatchEventLoopMessage
+    (state : UserAgentRuntimeState)
+    (eventLoopId : Nat)
+    (message : EventLoopTaskMessage) :
+    IO Unit := do
+  let some worker := state.eventLoopWorkers.get? eventLoopId | pure ()
+  let _ ← worker.channel.trySend message
+  pure ()
+
+private def handleUserAgentRuntimeEffect
+    (channel : Std.CloseableChannel UserAgentRuntimeMessage)
+    (state : UserAgentRuntimeState)
+    (effect : UserAgentEffect) :
+    IO UserAgentRuntimeState := do
+  match effect with
+  | .startEventLoop eventLoopId =>
+      ensureEventLoopWorker channel state eventLoopId
+  | .startFetch request =>
+      trySendAndForget state.fetchChannel (.task (.startFetch request))
+      pure state
+  | .eventLoopMessage eventLoopId eventLoopMessage =>
+      let state ← ensureEventLoopWorker channel state eventLoopId
+      dispatchEventLoopMessage state eventLoopId eventLoopMessage
+      pure state
+  | .notifyTopLevelTraversableCreated =>
+      FormalWeb.sendEmbedderMessage "NewTopLevelTraversable"
+      pure state
+  | .notifyNavigationRequested destinationURL =>
+      FormalWeb.sendEmbedderMessage s!"NavigationRequested|{destinationURL}"
+      pure state
+  | .notifyBeforeUnloadCompleted documentId checkId canceled =>
+      FormalWeb.sendEmbedderMessage
+        s!"BeforeUnloadCompleted|{documentId}|{checkId}|{if canceled then "1" else "0"}"
+      pure state
+  | .notifyFinalizeNavigation documentId url =>
+      FormalWeb.sendEmbedderMessage s!"FinalizeNavigation|{documentId}|{url}"
+      pure state
+  | .logError errorMessage =>
+      IO.eprintln errorMessage
+      pure state
+
+private def handleUserAgentTaskRuntimeMessage
+    (channel : Std.CloseableChannel UserAgentRuntimeMessage)
+    (state : UserAgentRuntimeState)
+    (message : UserAgentTaskMessage) :
+    IO UserAgentRuntimeState := do
+  let (effects, nextUserAgent) := runMonadic state.userAgent message
+  let mut nextState := { state with userAgent := nextUserAgent }
+  for effect in effects do
+    nextState ← handleUserAgentRuntimeEffect channel nextState effect
+  pure nextState
+
+private def handleUserAgentRuntimeMessage
+    (channel : Std.CloseableChannel UserAgentRuntimeMessage)
+    (state : UserAgentRuntimeState)
+    (message : UserAgentRuntimeMessage) :
+    IO UserAgentRuntimeState := do
+  match message with
+  | .task taskMessage =>
+      handleUserAgentTaskRuntimeMessage channel state taskMessage
+  | .eventLoop eventLoopId eventLoopMessage =>
+      let state ← ensureEventLoopWorker channel state eventLoopId
+      dispatchEventLoopMessage state eventLoopId eventLoopMessage
+      pure state
+  | .eventLoopStopped eventLoopId =>
+      match state.eventLoopWorkers.get? eventLoopId with
+      | some worker =>
+          let _ ← IO.wait worker.task
+          pure {
+            state with
+              eventLoopWorkers := state.eventLoopWorkers.erase eventLoopId
+          }
+      | none =>
+          pure state
+
+partial def runUserAgentLoop
+    (channel : Std.CloseableChannel UserAgentRuntimeMessage)
+    (state : UserAgentRuntimeState) :
+    IO UserAgentRuntimeState := do
+  let nextMessage? ← recvCloseableChannel? channel
+  match nextMessage? with
+  | none =>
+      pure state
+  | some message =>
+      let nextState ← handleUserAgentRuntimeMessage channel state message
+      runUserAgentLoop channel nextState
+
+private def shutdownUserAgentRuntime
+    (state : UserAgentRuntimeState) :
+    IO Unit := do
+  for worker in eventLoopWorkersList state do
+    worker.channel.close
+  for worker in eventLoopWorkersList state do
+    let _ ← IO.wait worker.task
+
+def runUserAgent
+    (channel : Std.CloseableChannel UserAgentRuntimeMessage)
+    (fetchChannel : Std.CloseableChannel FetchRuntimeMessage)
+    (timerChannel : Std.CloseableChannel TimerRuntimeMessage) :
+    IO Unit := do
+  let initialState : UserAgentRuntimeState := {
+    fetchChannel
+    timerChannel
+  }
+  let finalState ← runUserAgentLoop channel initialState
+  shutdownUserAgentRuntime finalState
 
 end FormalWeb

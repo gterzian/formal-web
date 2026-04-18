@@ -6,4 +6,6 @@ For `FormalWeb.M`, prefer tiny `WriterT.run` normalization lemmas such as bind/g
 
 For task-message refinement proofs, align LTS actions with message branches rather than individual emitted effects, and interpret each action back to the emitted effect list; one action may account for multiple effects or none.
 
+For kernel/message-handler refinement proofs, let the primary action be the incoming task message plus state preconditions/postconditions, prove the monadic handler satisfies that state relation first, and defer emitted-effect reasoning unless a later theorem actually needs it.
+
 When a proof needs to rewrite an unfolded `List.foldl` over WriterT/state pairs, give the fold step a local name before `change`/`generalize`; elaboration can normalize tuple-pattern lambdas into a different shape and prevent direct rewrites from matching the unfolded term.
