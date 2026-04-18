@@ -13,8 +13,7 @@ use boa_engine::{
 use url::Url;
 
 use crate::boa::{
-    install_console_namespace,
-    install_document_property,
+    install_console_namespace, install_document_property,
     platform_objects::{
         document_object, object_for_existing_node, resolve_element_object, store_document_object,
         take_animation_frame_callbacks,
@@ -26,6 +25,10 @@ use crate::dom::{
 };
 use crate::html::{
     GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLElement, TimerHandler, Window,
+};
+use crate::streams::{
+    ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableStream,
+    ReadableStreamDefaultController, ReadableStreamDefaultReader,
 };
 use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
 use ipc_channel::ipc::IpcSender;
@@ -130,6 +133,21 @@ impl EnvironmentSettingsObject {
         context
             .register_global_class::<Window>()
             .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ByteLengthQueuingStrategy>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<CountQueuingStrategy>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStream>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStreamDefaultController>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStreamDefaultReader>()
+            .map_err(|error| error.to_string())?;
 
         wire_interface_prototypes(&mut context);
 
@@ -138,12 +156,11 @@ impl EnvironmentSettingsObject {
             global.set_prototype(Some(window_class.prototype()));
         }
 
-        let document_object = Document::from_data(
-            Document::new(document, creation_url.clone()),
-            &mut context,
-        )
-        .map_err(|error| error.to_string())?;
-        store_document_object(&context, document_object.clone()).map_err(|error| error.to_string())?;
+        let document_object =
+            Document::from_data(Document::new(document, creation_url.clone()), &mut context)
+                .map_err(|error| error.to_string())?;
+        store_document_object(&context, document_object.clone())
+            .map_err(|error| error.to_string())?;
         install_document_property(&mut context).map_err(|error| error.to_string())?;
         install_console_namespace(&mut context).map_err(|error| error.to_string())?;
         context
@@ -212,7 +229,8 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
-        let callbacks = take_animation_frame_callbacks(&self.context).map_err(|error| error.to_string())?;
+        let callbacks =
+            take_animation_frame_callbacks(&self.context).map_err(|error| error.to_string())?;
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
@@ -236,22 +254,24 @@ impl EnvironmentSettingsObject {
         timer_key: u64,
         nesting_level: u32,
     ) -> Result<(), String> {
-        let previous_nesting_level = crate::boa::platform_objects::with_global_scope(
-            &self.context,
-            |global_scope| Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level))),
-        )
-        .map_err(|error| error.to_string())?;
+        let previous_nesting_level =
+            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
+            })
+            .map_err(|error| error.to_string())?;
 
-        let timer = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-            Ok(global_scope.window_timer(timer_id, timer_key))
-        })
-        .map_err(|error| error.to_string())?;
+        let timer =
+            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                Ok(global_scope.window_timer(timer_id, timer_key))
+            })
+            .map_err(|error| error.to_string())?;
 
         let Some(timer) = timer else {
-            let _ = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-                global_scope.set_current_timer_nesting_level(previous_nesting_level);
-                Ok(())
-            });
+            let _ =
+                crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                    global_scope.set_current_timer_nesting_level(previous_nesting_level);
+                    Ok(())
+                });
             return Ok(());
         };
 
@@ -275,12 +295,13 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let completion_result = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-            global_scope
-                .complete_window_timer(timer_id, timer_key)
-                .map_err(|error| JsError::from(JsNativeError::typ().with_message(error)))
-        })
-        .map_err(|error| error.to_string());
+        let completion_result =
+            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                global_scope
+                    .complete_window_timer(timer_id, timer_key)
+                    .map_err(|error| JsError::from(JsNativeError::typ().with_message(error)))
+            })
+            .map_err(|error| error.to_string());
         let _ = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
             global_scope.set_current_timer_nesting_level(previous_nesting_level);
             Ok(())
@@ -296,9 +317,9 @@ impl EnvironmentSettingsObject {
 
 fn wire_interface_prototypes(context: &mut Context) {
     if let Some(dom_exception) = context.get_global_class::<DOMException>() {
-        dom_exception
-            .prototype()
-            .set_prototype(Some(context.intrinsics().constructors().error().prototype()));
+        dom_exception.prototype().set_prototype(Some(
+            context.intrinsics().constructors().error().prototype(),
+        ));
     }
 
     set_registered_interface_prototype::<UIEvent, Event>(context);
@@ -320,7 +341,9 @@ fn set_registered_interface_prototype<Child: Class, Parent: Class>(context: &mut
     };
 
     child.prototype().set_prototype(Some(parent.prototype()));
-    child.constructor().set_prototype(Some(parent.constructor()));
+    child
+        .constructor()
+        .set_prototype(Some(parent.constructor()));
 }
 
 impl EcmascriptHost for EnvironmentSettingsObject {

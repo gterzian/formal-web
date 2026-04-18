@@ -8,9 +8,8 @@ use boa_engine::{
 
 use crate::html::HTMLElement;
 
-use super::{
-    element::register_element_methods, event_target::register_event_target_methods,
-    node::register_node_methods,
+use crate::boa::bindings::dom::{
+    register_element_methods, register_event_target_methods, register_node_methods,
 };
 
 impl Class for HTMLElement {
@@ -35,9 +34,9 @@ impl Class for HTMLElement {
 }
 
 fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -> JsResult<R> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("HTMLElement receiver is not an object"))?;
+    let object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("HTMLElement receiver is not an object")
+    })?;
     let html_element = object
         .downcast_ref::<HTMLElement>()
         .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLElement"))?;

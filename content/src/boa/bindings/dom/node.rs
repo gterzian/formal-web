@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use blitz_dom::NodeData;
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
@@ -7,7 +8,6 @@ use boa_engine::{
     native_function::NativeFunction,
     property::Attribute,
 };
-use blitz_dom::NodeData;
 
 use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
 use crate::dom::{Document, Element, Node};

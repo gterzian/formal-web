@@ -22,7 +22,8 @@ pub(crate) fn dispatch_ui_event(
     event: UiEvent,
 ) -> Result<(), String> {
     let mut document = document;
-    let handler = BlitzJSEventHandler::new(document_id, Rc::clone(&document), settings, event_sender);
+    let handler =
+        BlitzJSEventHandler::new(document_id, Rc::clone(&document), settings, event_sender);
     let mut driver = EventDriver::new(&mut document, handler);
     driver.handle_ui_event(event);
     Ok(())
@@ -73,7 +74,8 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> JsResult<JsObject> {
-        self.settings.resolve_existing_node_object(document, node_id)
+        self.settings
+            .resolve_existing_node_object(document, node_id)
     }
 
     fn current_time_millis(&self) -> f64 {
@@ -116,9 +118,7 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        <EnvironmentSettingsObject as EcmascriptHost>::perform_a_microtask_checkpoint(
-            self.settings,
-        )
+        <EnvironmentSettingsObject as EcmascriptHost>::perform_a_microtask_checkpoint(self.settings)
     }
 
     fn report_exception(&mut self, error: boa_engine::JsError, callback: &JsObject) {

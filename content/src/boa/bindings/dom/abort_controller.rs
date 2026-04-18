@@ -37,11 +37,7 @@ pub(crate) fn register_abort_controller_methods(class: &mut ClassBuilder<'_>) ->
             None,
             Attribute::all(),
         )
-        .method(
-            js_string!("abort"),
-            1,
-            NativeFunction::from_fn_ptr(abort),
-        );
+        .method(js_string!("abort"), 1, NativeFunction::from_fn_ptr(abort));
     Ok(())
 }
 

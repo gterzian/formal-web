@@ -2,15 +2,15 @@ use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
     js_string,
-    object::JsObject,
     native_function::NativeFunction,
+    object::JsObject,
     property::Attribute,
 };
 
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 use crate::webidl::callback_function_value;
 
-use super::event_target::register_event_target_methods;
+use crate::boa::bindings::dom::register_event_target_methods;
 
 impl Class for Window {
     const NAME: &'static str = "Window";
@@ -112,7 +112,11 @@ fn cancel_animation_frame_method(
     Ok(JsValue::undefined())
 }
 
-fn set_timeout_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_timeout_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let window_object = current_window_object(this, context);
     let window = downcast_window(&window_object)?;
     Ok(JsValue::from(window.set_timeout(
@@ -123,7 +127,11 @@ fn set_timeout_method(this: &JsValue, args: &[JsValue], context: &mut Context) -
     )?))
 }
 
-fn clear_timeout_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn clear_timeout_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let timer_id = args.get_or_undefined(0).to_u32(context)?;
     let window_object = current_window_object(this, context);
     let window = downcast_window(&window_object)?;
@@ -131,7 +139,11 @@ fn clear_timeout_method(this: &JsValue, args: &[JsValue], context: &mut Context)
     Ok(JsValue::undefined())
 }
 
-fn set_interval_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_interval_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let window_object = current_window_object(this, context);
     let window = downcast_window(&window_object)?;
     Ok(JsValue::from(window.set_interval(
@@ -142,7 +154,11 @@ fn set_interval_method(this: &JsValue, args: &[JsValue], context: &mut Context) 
     )?))
 }
 
-fn clear_interval_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn clear_interval_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let timer_id = args.get_or_undefined(0).to_u32(context)?;
     let window_object = current_window_object(this, context);
     let window = downcast_window(&window_object)?;
@@ -159,7 +175,9 @@ fn current_window_object(this: &JsValue, context: &Context) -> JsObject {
 }
 
 fn downcast_window(object: &JsObject) -> JsResult<boa_gc::GcRef<'_, Window>> {
-    object
-        .downcast_ref::<Window>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not a Window").into())
+    object.downcast_ref::<Window>().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("receiver is not a Window")
+            .into()
+    })
 }

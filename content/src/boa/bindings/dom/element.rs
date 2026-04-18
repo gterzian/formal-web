@@ -6,8 +6,8 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::dom::Element;
 use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
+use crate::dom::Element;
 use crate::html::{HTMLAnchorElement, HTMLElement};
 
 use super::{event_target::register_event_target_methods, node::register_node_methods};
@@ -120,10 +120,12 @@ fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    Ok(match with_element_ref(this, |element| element.get_attribute(&name))? {
-        Some(value) => JsValue::from(JsString::from(value.as_str())),
-        None => JsValue::null(),
-    })
+    Ok(
+        match with_element_ref(this, |element| element.get_attribute(&name))? {
+            Some(value) => JsValue::from(JsString::from(value.as_str())),
+            None => JsValue::null(),
+        },
+    )
 }
 
 fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

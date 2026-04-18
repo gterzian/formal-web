@@ -172,12 +172,9 @@ fn create_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     Ok(resolve_element_object(node_id, context)?.into())
 }
 
-fn create_element_ns(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let namespace = if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined() {
+fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let namespace = if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined()
+    {
         None
     } else {
         Some(

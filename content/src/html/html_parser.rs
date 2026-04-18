@@ -264,7 +264,10 @@ fn is_classic_javascript_type(script_type: &str) -> bool {
     )
 }
 
-pub fn parse_html_into_document(document: &mut BaseDocument, html: &str) -> Vec<PendingParserScript> {
+pub fn parse_html_into_document(
+    document: &mut BaseDocument,
+    html: &str,
+) -> Vec<PendingParserScript> {
     {
         let mut mutator = document.mutate();
         JsTreeSink::parse_into_mutator(&mut mutator, html);
@@ -358,7 +361,11 @@ mod tests {
             )
         };
 
-        assert_eq!(scripts.len(), 2, "expected only classic scripts to be queued");
+        assert_eq!(
+            scripts.len(),
+            2,
+            "expected only classic scripts to be queued"
+        );
         assert!(matches!(
             &scripts[0],
             PendingParserScript::Inline { source } if source.contains("inlineClassic")
@@ -390,7 +397,10 @@ mod tests {
             ],
         );
 
-        assert!(result.is_ok(), "parser-script errors should not abort document loading");
+        assert!(
+            result.is_ok(),
+            "parser-script errors should not abort document loading"
+        );
         let after_error = settings
             .context
             .global_object()

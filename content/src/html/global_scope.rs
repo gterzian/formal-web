@@ -188,7 +188,11 @@ impl GlobalScope {
         Rc::clone(&self.document)
     }
 
-    pub(crate) fn install_timer_host(&self, document_id: u64, event_sender: IpcSender<ContentEvent>) {
+    pub(crate) fn install_timer_host(
+        &self,
+        document_id: u64,
+        event_sender: IpcSender<ContentEvent>,
+    ) {
         self.timer_host.borrow_mut().replace(TimerHost {
             document_id,
             event_sender,
@@ -257,7 +261,10 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#timer-nesting-level>
-    pub(crate) fn set_current_timer_nesting_level(&self, nesting_level: Option<u32>) -> Option<u32> {
+    pub(crate) fn set_current_timer_nesting_level(
+        &self,
+        nesting_level: Option<u32>,
+    ) -> Option<u32> {
         let previous = self.current_timer_nesting_level.get();
         self.current_timer_nesting_level.set(nesting_level);
         previous
@@ -290,7 +297,9 @@ impl GlobalScope {
                 timeout_ms,
                 nesting_level,
             }))
-            .map_err(|error| format!("failed to send window timer request to the embedder: {error}"))?;
+            .map_err(|error| {
+                format!("failed to send window timer request to the embedder: {error}")
+            })?;
 
         // Step 12: "Set global's map of setTimeout and setInterval IDs[id] to uniqueHandle."
         let mut timers = self.window_timers.borrow_mut();
@@ -330,12 +339,12 @@ impl GlobalScope {
         };
 
         // Note: The embedder-facing clear mirrors the map removal into the Lean timer worker's active-timer state.
-        if let Err(error) = host
-            .event_sender
-            .send(ContentEvent::WindowTimerCleared(WindowTimerClearRequest {
-                document_id: host.document_id,
-                timer_key: removed_timer.timer_key,
-            }))
+        if let Err(error) =
+            host.event_sender
+                .send(ContentEvent::WindowTimerCleared(WindowTimerClearRequest {
+                    document_id: host.document_id,
+                    timer_key: removed_timer.timer_key,
+                }))
         {
             eprintln!("failed to send window timer clear to the embedder: {error}");
         }
@@ -352,7 +361,11 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
-    pub(crate) fn complete_window_timer(&self, timer_id: u32, timer_key: u64) -> Result<(), String> {
+    pub(crate) fn complete_window_timer(
+        &self,
+        timer_id: u32,
+        timer_key: u64,
+    ) -> Result<(), String> {
         // Note: This helper continues the queued timer task after the handler and the stale-handle checks have already run inside `EnvironmentSettingsObject::run_window_timer`.
         let timer = self.window_timer(timer_id, timer_key);
         let Some(timer) = timer else {
@@ -382,7 +395,9 @@ impl GlobalScope {
                 timeout_ms: timer.timeout_ms,
                 nesting_level: next_nesting_level,
             }))
-            .map_err(|error| format!("failed to reschedule window timer with the embedder: {error}"))?;
+            .map_err(|error| {
+                format!("failed to reschedule window timer with the embedder: {error}")
+            })?;
 
         let mut timers = self.window_timers.borrow_mut();
         let Some(entry) = timers
@@ -404,12 +419,12 @@ impl GlobalScope {
             return;
         };
         for timer in cleared_timers {
-            if let Err(error) = host
-                .event_sender
-                .send(ContentEvent::WindowTimerCleared(WindowTimerClearRequest {
-                    document_id: host.document_id,
-                    timer_key: timer.timer_key,
-                }))
+            if let Err(error) =
+                host.event_sender
+                    .send(ContentEvent::WindowTimerCleared(WindowTimerClearRequest {
+                        document_id: host.document_id,
+                        timer_key: timer.timer_key,
+                    }))
             {
                 eprintln!("failed to clear window timer during teardown: {error}");
                 break;

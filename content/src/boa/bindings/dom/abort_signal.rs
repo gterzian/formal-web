@@ -8,9 +8,7 @@ use boa_engine::{
 };
 
 use crate::boa::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
-use crate::dom::{
-    AbortSignal, DOMException, initialize_dependent_abort_signal, signal_abort,
-};
+use crate::dom::{AbortSignal, DOMException, initialize_dependent_abort_signal, signal_abort};
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 
 use super::event_target::{ContextEventDispatchHost, register_event_target_methods};
@@ -225,9 +223,9 @@ fn event_handler_value(value: &JsValue) -> JsResult<Option<JsObject>> {
         return Ok(None);
     }
 
-    let object = value.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("event handler is not an object")
-    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("event handler is not an object"))?;
     if !object.is_callable() {
         return Err(JsNativeError::typ()
             .with_message("event handler is not callable")
@@ -239,9 +237,12 @@ fn event_handler_value(value: &JsValue) -> JsResult<Option<JsObject>> {
 
 fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Vec<JsObject>> {
     let object = value.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("AbortSignal.any() requires a sequence of AbortSignal objects")
+        JsNativeError::typ()
+            .with_message("AbortSignal.any() requires a sequence of AbortSignal objects")
     })?;
-    let length = object.get(js_string!("length"), context)?.to_length(context)?;
+    let length = object
+        .get(js_string!("length"), context)?
+        .to_length(context)?;
     let mut signals = Vec::with_capacity(length as usize);
 
     for index in 0..length {

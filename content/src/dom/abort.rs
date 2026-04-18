@@ -157,17 +157,18 @@ impl AbortSignal {
         // Step 4: "For each dependentSignal of signal's dependent signals:"
         for dependent_signal in self.dependent_signals.clone() {
             // Step 4.1: "If dependentSignal is not aborted:"
-            let should_abort = with_abort_signal_mut(&JsValue::from(dependent_signal.clone()), |signal| {
-                if signal.aborted {
-                    return false;
-                }
+            let should_abort =
+                with_abort_signal_mut(&JsValue::from(dependent_signal.clone()), |signal| {
+                    if signal.aborted {
+                        return false;
+                    }
 
-                // Step 4.1.1: "Set dependentSignal's abort reason to signal's abort reason."
-                // Note: The content runtime stores the aborted state explicitly, so this is also where the dependent becomes aborted.
-                signal.aborted = true;
-                signal.abort_reason = reason.clone();
-                true
-            })?;
+                    // Step 4.1.1: "Set dependentSignal's abort reason to signal's abort reason."
+                    // Note: The content runtime stores the aborted state explicitly, so this is also where the dependent becomes aborted.
+                    signal.aborted = true;
+                    signal.abort_reason = reason.clone();
+                    true
+                })?;
 
             if should_abort {
                 // Step 4.1.2: "Append dependentSignal to dependentSignalsToAbort."
@@ -223,7 +224,9 @@ pub(crate) fn signal_abort(
 ) -> JsResult<()> {
     // Step 1: "If signal is aborted, then return."
     let Some(dependent_signals_to_abort) =
-        with_abort_signal_mut(&JsValue::from(signal.clone()), |signal| signal.begin_abort(reason))??
+        with_abort_signal_mut(&JsValue::from(signal.clone()), |signal| {
+            signal.begin_abort(reason)
+        })??
     else {
         return Ok(());
     };

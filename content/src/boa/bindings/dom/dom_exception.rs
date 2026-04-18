@@ -19,12 +19,20 @@ impl Class for DOMException {
     ) -> JsResult<Self> {
         let message = args
             .get(0)
-            .map(|value| value.to_string(context).map(|value| value.to_std_string_escaped()))
+            .map(|value| {
+                value
+                    .to_string(context)
+                    .map(|value| value.to_std_string_escaped())
+            })
             .transpose()?
             .unwrap_or_default();
         let name = args
             .get(1)
-            .map(|value| value.to_string(context).map(|value| value.to_std_string_escaped()))
+            .map(|value| {
+                value
+                    .to_string(context)
+                    .map(|value| value.to_std_string_escaped())
+            })
             .transpose()?
             .unwrap_or_else(|| String::from("Error"));
 
@@ -76,15 +84,12 @@ fn get_code(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue>
     with_dom_exception_ref(this, |exception| JsValue::from(exception.code_value()))
 }
 
-fn with_dom_exception_ref<R>(
-    this: &JsValue,
-    f: impl FnOnce(&DOMException) -> R,
-) -> JsResult<R> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("DOMException receiver is not an object"))?;
-    let exception = object.downcast_ref::<DOMException>().ok_or_else(|| {
-        JsNativeError::typ().with_message("receiver is not a DOMException")
+fn with_dom_exception_ref<R>(this: &JsValue, f: impl FnOnce(&DOMException) -> R) -> JsResult<R> {
+    let object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("DOMException receiver is not an object")
     })?;
+    let exception = object
+        .downcast_ref::<DOMException>()
+        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not a DOMException"))?;
     Ok(f(&exception))
 }

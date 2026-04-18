@@ -9,10 +9,10 @@ use boa_engine::{
     object::{JsObject, builtins::JsFunction},
 };
 
-use crate::boa::{is_abort_signal_object, with_event_target_mut};
 use crate::boa::platform_objects::{
     document_object, object_for_existing_node, resolve_element_object,
 };
+use crate::boa::{is_abort_signal_object, with_event_target_mut};
 use crate::dom::{Event, EventDispatchHost, EventTarget, dispatch};
 use crate::webidl::{EcmascriptHost, callback_interface_value};
 

@@ -5,12 +5,13 @@ mod ui_event;
 mod boa;
 mod dom;
 mod html;
+mod streams;
 mod webidl;
 
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
-    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
-    execute_parser_scripts, parse_html_into_document,
+    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
+    parse_html_into_document,
 };
 use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
@@ -21,15 +22,14 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
-    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument, DispatchEvent,
-    EvaluateScript, FailDocumentFetch, RunWindowTimer, SetViewport, Shutdown,
+    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
+    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer, SetViewport, Shutdown,
     UpdateTheRendering,
 };
 use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    Event as ContentEvent,
-    FetchRequest as ContentFetchRequest, FontTransportSender, PaintFrame, RecordedScene,
-    ScriptEvaluationResult, ScrollOffset, ViewportSnapshot,
+    Event as ContentEvent, FetchRequest as ContentFetchRequest, FontTransportSender, PaintFrame,
+    RecordedScene, ScriptEvaluationResult, ScrollOffset, ViewportSnapshot,
 };
 use std::{
     cell::RefCell,
@@ -274,7 +274,9 @@ impl ContentRuntime {
             .expect("local content state mutex poisoned");
         let handler_id = local_state.next_handler_id;
         local_state.next_handler_id += 1;
-        local_state.pending_handlers.insert(handler_id, pending_handler);
+        local_state
+            .pending_handlers
+            .insert(handler_id, pending_handler);
         handler_id
     }
 
@@ -286,17 +288,15 @@ impl ContentRuntime {
                 method: request.method.to_string(),
                 body: request_body_string(&request.body),
             }))
-            .map_err(|error| format!("failed to send document fetch request to the embedder: {error}"))
+            .map_err(|error| {
+                format!("failed to send document fetch request to the embedder: {error}")
+            })
     }
 
     fn deferred_script_state(script: PendingParserScript) -> DeferredScriptState {
         match script {
-            PendingParserScript::Inline { source } => {
-                DeferredScriptState::Inline { source }
-            }
-            PendingParserScript::External { src } => {
-                DeferredScriptState::ExternalPending { src }
-            }
+            PendingParserScript::Inline { source } => DeferredScriptState::Inline { source },
+            PendingParserScript::External { src } => DeferredScriptState::ExternalPending { src },
         }
     }
 
@@ -383,9 +383,13 @@ impl ContentRuntime {
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
             content_document.document.borrow_mut().handle_messages();
-            let resources_ready = !content_document.document.borrow().has_pending_critical_resources();
+            let resources_ready = !content_document
+                .document
+                .borrow()
+                .has_pending_critical_resources();
 
-            let Some(pending_document_load) = content_document.pending_document_load.as_mut() else {
+            let Some(pending_document_load) = content_document.pending_document_load.as_mut()
+            else {
                 return Ok(());
             };
 
@@ -443,7 +447,9 @@ impl ContentRuntime {
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, document_id: u64) -> Result<(), String> {
-        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(document_id, None))));
+        let document = Rc::new(RefCell::new(BaseDocument::new(
+            self.document_config(document_id, None),
+        )));
         let mut settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
@@ -558,7 +564,11 @@ impl ContentRuntime {
         self.continue_document_load(document_id)
     }
 
-    fn evaluate_script(&mut self, document_id: u64, source: String) -> Result<serde_json::Value, String> {
+    fn evaluate_script(
+        &mut self,
+        document_id: u64,
+        source: String,
+    ) -> Result<serde_json::Value, String> {
         let document = self
             .documents
             .get_mut(&document_id)
@@ -574,16 +584,18 @@ impl ContentRuntime {
             .local_state
             .lock()
             .expect("local content state mutex poisoned");
-        local_state.pending_handlers.retain(|_, pending_handler| match pending_handler {
-            PendingNetworkHandler::Resource {
-                document_id: pending_document_id,
-                ..
-            }
-            | PendingNetworkHandler::DeferredScript {
-                document_id: pending_document_id,
-                ..
-            } => *pending_document_id != document_id,
-        });
+        local_state
+            .pending_handlers
+            .retain(|_, pending_handler| match pending_handler {
+                PendingNetworkHandler::Resource {
+                    document_id: pending_document_id,
+                    ..
+                }
+                | PendingNetworkHandler::DeferredScript {
+                    document_id: pending_document_id,
+                    ..
+                } => *pending_document_id != document_id,
+            });
         Ok(())
     }
 
@@ -848,8 +860,9 @@ impl ContentRuntime {
                 source,
             } => {
                 let value = self.evaluate_script(document_id, source)?;
-                let value_json = serde_json::to_string(&value)
-                    .map_err(|error| format!("failed to encode script evaluation result: {error}"))?;
+                let value_json = serde_json::to_string(&value).map_err(|error| {
+                    format!("failed to encode script evaluation result: {error}")
+                })?;
                 self.event_sender
                     .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
                         request_id,
@@ -970,8 +983,8 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvironmentSettingsObject, JsHtmlParserProvider, execute_parser_scripts,
-        log_paint_debug, parse_html_into_document,
+        EnvironmentSettingsObject, JsHtmlParserProvider, execute_parser_scripts, log_paint_debug,
+        parse_html_into_document,
     };
     use anyrender::Scene as RenderScene;
     use blitz_dom::{BaseDocument, DocumentConfig};
@@ -1000,8 +1013,7 @@ mod tests {
             "{}/../artifacts/StartupExample.html",
             env!("CARGO_MANIFEST_DIR")
         );
-        let html = fs::read_to_string(&artifact_path)
-        .expect("startup artifact should be readable");
+        let html = fs::read_to_string(&artifact_path).expect("startup artifact should be readable");
         let artifact_url = Url::from_file_path(&artifact_path)
             .expect("startup artifact path should convert to a file URL");
         let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
@@ -1010,11 +1022,8 @@ mod tests {
             html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
             ..DocumentConfig::default()
         })));
-        let mut settings = EnvironmentSettingsObject::new(
-            Rc::clone(&document),
-            artifact_url,
-        )
-        .expect("environment settings should initialize");
+        let mut settings = EnvironmentSettingsObject::new(Rc::clone(&document), artifact_url)
+            .expect("environment settings should initialize");
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
@@ -1156,8 +1165,7 @@ mod tests {
             "{}/../vendor/wpt/resources/testharness.js",
             env!("CARGO_MANIFEST_DIR")
         );
-        let harness = fs::read_to_string(harness_path)
-            .expect("testharness.js should be readable");
+        let harness = fs::read_to_string(harness_path).expect("testharness.js should be readable");
         settings
             .evaluate_script(&harness)
             .expect("testharness should evaluate");
