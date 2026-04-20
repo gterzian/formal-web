@@ -43,33 +43,6 @@ use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
 
-fn runtime_debug_enabled() -> bool {
-    env::var_os("FORMAL_WEB_DEBUG_RUNTIME").is_some()
-}
-
-fn log_runtime_debug(message: impl AsRef<str>) {
-    if runtime_debug_enabled() {
-        eprintln!("[runtime-debug][content] {}", message.as_ref());
-    }
-}
-
-fn command_name(command: &Command) -> &'static str {
-    match command {
-        SetViewport(_) => "SetViewport",
-        CreateEmptyDocument { .. } => "CreateEmptyDocument",
-        CreateLoadedDocument { .. } => "CreateLoadedDocument",
-        DestroyDocument { .. } => "DestroyDocument",
-        EvaluateScript { .. } => "EvaluateScript",
-        DispatchEvent { .. } => "DispatchEvent",
-        Command::RunBeforeUnload { .. } => "RunBeforeUnload",
-        UpdateTheRendering { .. } => "UpdateTheRendering",
-        RunWindowTimer { .. } => "RunWindowTimer",
-        CompleteDocumentFetch { .. } => "CompleteDocumentFetch",
-        FailDocumentFetch { .. } => "FailDocumentFetch",
-        Shutdown => "Shutdown",
-    }
-}
-
 fn new_font_namespace() -> u64 {
     let pid = u64::from(std::process::id());
     let start_nanos = SystemTime::now()
@@ -256,7 +229,6 @@ struct ContentRuntime {
 
 impl ContentRuntime {
     fn new(event_sender: IpcSender<ContentEvent>) -> Self {
-        log_runtime_debug("runtime initialized");
         Self {
             event_sender,
             local_state: Arc::new(Mutex::new(LocalContentState {
@@ -285,10 +257,6 @@ impl ContentRuntime {
     }
 
     fn set_viewport(&mut self, viewport: ViewportSnapshot) {
-        log_runtime_debug(format!(
-            "set viewport {}x{} scale={}",
-            viewport.width, viewport.height, viewport.scale
-        ));
         let runtime_viewport = viewport_of_snapshot(&viewport);
         self.viewport = Some(viewport);
         for document in self.documents.values_mut() {
@@ -408,7 +376,6 @@ impl ContentRuntime {
     }
 
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
-        log_runtime_debug(format!("continue document load doc={document_id}"));
         let ready_to_finish = {
             let content_document = self
                 .documents
@@ -434,7 +401,6 @@ impl ContentRuntime {
         };
 
         if !ready_to_finish {
-            log_runtime_debug(format!("document load still waiting doc={document_id}"));
             return Ok(());
         }
 
@@ -481,7 +447,6 @@ impl ContentRuntime {
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, document_id: u64) -> Result<(), String> {
-        log_runtime_debug(format!("create empty document doc={document_id}"));
         let document = Rc::new(RefCell::new(BaseDocument::new(
             self.document_config(document_id, None),
         )));
@@ -530,12 +495,6 @@ impl ContentRuntime {
         url: String,
         body: String,
     ) -> Result<(), String> {
-        log_runtime_debug(format!(
-            "create loaded document doc={} url={} body_len={}",
-            document_id,
-            url,
-            body.len()
-        ));
         // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
         // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the DOM carrier and the JavaScript environment settings object.
@@ -596,10 +555,6 @@ impl ContentRuntime {
             .unwrap_or_default();
 
         for (script_index, src) in deferred_fetches {
-            log_runtime_debug(format!(
-                "start deferred script fetch doc={} index={} src={}",
-                document_id, script_index, src
-            ));
             if let Err(error) = self.start_deferred_script_fetch(document_id, script_index, &src) {
                 eprintln!("content error: {error}");
                 self.mark_deferred_script_failed(document_id, script_index);
@@ -622,7 +577,6 @@ impl ContentRuntime {
     }
 
     fn destroy_document(&mut self, document_id: u64) -> Result<(), String> {
-        log_runtime_debug(format!("destroy document doc={document_id}"));
         if let Some(content_document) = self.documents.remove(&document_id) {
             let _ = content_document.settings.clear_all_window_timers();
         }
@@ -667,10 +621,6 @@ impl ContentRuntime {
     }
 
     fn run_before_unload(&mut self, document_id: u64, check_id: u64) -> Result<(), String> {
-        log_runtime_debug(format!(
-            "run beforeunload doc={} check_id={}",
-            document_id, check_id
-        ));
         let document = self
             .documents
             .get_mut(&document_id)
@@ -689,7 +639,6 @@ impl ContentRuntime {
     }
 
     fn update_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
-        log_runtime_debug(format!("update the rendering doc={document_id}"));
         let document = self
             .documents
             .get_mut(&document_id)
@@ -701,7 +650,6 @@ impl ContentRuntime {
     /// <https://html.spec.whatwg.org/#update-the-rendering>
     /// Note: Lean queues this rendering task via `FormalWeb.UserAgent.queueUpdateTheRendering` and `FormalWeb.EventLoop.runEventLoopMessage`, and the content runtime continues the noted rendering opportunity once critical fetches finish.
     fn continue_updating_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
-        log_runtime_debug(format!("continue updating the rendering doc={document_id}"));
         let event_sender = self.event_sender.clone();
         let paint_frame = {
             let document = self
@@ -712,9 +660,6 @@ impl ContentRuntime {
             document.document.borrow_mut().handle_messages();
 
             if document.document.borrow().has_pending_critical_resources() {
-                log_runtime_debug(format!(
-                    "render blocked on pending critical resources doc={document_id}"
-                ));
                 return Ok(());
             }
 
@@ -783,12 +728,6 @@ impl ContentRuntime {
         resolved_url: String,
         body: Vec<u8>,
     ) -> Result<(), String> {
-        log_runtime_debug(format!(
-            "complete document fetch handler_id={} url={} body_len={}",
-            handler_id,
-            resolved_url,
-            body.len()
-        ));
         let pending_handler = {
             let mut local_state = self
                 .local_state
@@ -830,7 +769,6 @@ impl ContentRuntime {
     }
 
     fn fail_document_fetch(&mut self, handler_id: u64) -> Result<(), String> {
-        log_runtime_debug(format!("fail document fetch handler_id={handler_id}"));
         let pending_handler = {
             let mut local_state = self
                 .local_state
@@ -877,10 +815,6 @@ impl ContentRuntime {
         timer_key: u64,
         nesting_level: u32,
     ) -> Result<(), String> {
-        log_runtime_debug(format!(
-            "run window timer doc={} timer_id={} timer_key={} nesting={}",
-            document_id, timer_id, timer_key, nesting_level
-        ));
         let document = self
             .documents
             .get_mut(&document_id)
@@ -891,7 +825,6 @@ impl ContentRuntime {
     }
 
     fn note_command_completed(&self) -> Result<(), String> {
-        log_runtime_debug("note command completed");
         self.event_sender
             .send(ContentEvent::CommandCompleted)
             .map_err(|error| format!("failed to send content command completion: {error}"))
@@ -994,7 +927,6 @@ fn content_token() -> Result<String, String> {
 
 fn main() -> Result<(), String> {
     let token = content_token()?;
-    log_runtime_debug("process starting");
     let (command_sender, command_receiver) =
         ipc::channel::<Command>().map_err(|error| error.to_string())?;
     let (event_sender, event_receiver) =
@@ -1013,7 +945,6 @@ fn main() -> Result<(), String> {
             Ok(command) => command,
             Err(_error) => break,
         };
-        log_runtime_debug(format!("received command {}", command_name(&command)));
         let notify_event_loop = matches!(
             &command,
             CreateEmptyDocument { .. }
@@ -1034,10 +965,7 @@ fn main() -> Result<(), String> {
                     }
                 }
             }
-            Ok(false) => {
-                log_runtime_debug("received shutdown command");
-                break;
-            }
+            Ok(false) => break,
             Err(error) => {
                 eprintln!("content error: {error}");
                 if notify_event_loop {
@@ -1048,8 +976,6 @@ fn main() -> Result<(), String> {
             }
         }
     }
-
-    log_runtime_debug("process exiting");
 
     Ok(())
 }
