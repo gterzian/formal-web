@@ -456,6 +456,7 @@ dependencies = [
  "keyboard-types",
  "serde",
  "serde_json",
+ "stylo",
  "url",
  "xml5ever",
 ]

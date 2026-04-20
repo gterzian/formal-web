@@ -45,10 +45,7 @@ impl CountQueuingStrategy {
 #[derive(Clone, Trace, Finalize)]
 pub enum SizeAlgorithm {
     ReturnOne,
-    Callback {
-        this_object: JsObject,
-        callback: JsObject,
-    },
+    Callback { callback: JsObject },
 }
 
 impl SizeAlgorithm {
@@ -56,10 +53,7 @@ impl SizeAlgorithm {
     pub(crate) fn size(&self, chunk: &JsValue, context: &mut Context) -> JsResult<f64> {
         match self {
             Self::ReturnOne => Ok(1.0),
-            Self::Callback {
-                this_object,
-                callback,
-            } => {
+            Self::Callback { callback } => {
                 let callback =
                     boa_engine::object::builtins::JsFunction::from_object(callback.clone())
                         .ok_or_else(|| {
@@ -68,7 +62,7 @@ impl SizeAlgorithm {
                             )
                         })?;
 
-                let value = callback.call(&JsValue::from(this_object.clone()), &[chunk.clone()], context)?;
+                let value = callback.call(&JsValue::undefined(), &[chunk.clone()], context)?;
                 to_non_negative_number(&value, context)
             }
         }
@@ -81,9 +75,9 @@ pub(crate) fn validate_and_normalize_high_water_mark(
     context: &mut Context,
 ) -> JsResult<f64> {
     let number = value.to_number(context)?;
-    if !number.is_finite() || number < 0.0 {
+    if number.is_nan() || number < 0.0 {
         return Err(JsNativeError::range()
-            .with_message("highWaterMark must be a finite, non-negative number")
+            .with_message("highWaterMark must be a non-negative number")
             .into());
     }
     Ok(number)
@@ -146,7 +140,6 @@ pub(crate) fn extract_size_algorithm(
 
     // Step 5: "Return an algorithm that performs ? Call(size, strategy, « chunk »)."
     Ok(SizeAlgorithm::Callback {
-        this_object: strategy.clone(),
         callback: size.clone(),
     })
 }

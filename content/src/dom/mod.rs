@@ -7,7 +7,9 @@ pub mod event;
 pub mod node;
 mod ui_event_dispatch;
 
-pub(crate) use abort::{AbortAlgorithm, initialize_dependent_abort_signal, signal_abort};
+pub(crate) use abort::{
+    AbortAlgorithm, create_abort_signal, initialize_dependent_abort_signal, signal_abort,
+};
 pub use abort::{AbortController, AbortSignal};
 pub(crate) use dispatch::{
     EventDispatchHost, dispatch, dispatch_window_event, dispatch_with_chain, fire_event,

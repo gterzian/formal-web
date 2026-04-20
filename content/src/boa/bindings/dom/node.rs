@@ -9,7 +9,10 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
+use crate::boa::platform_objects::{
+    collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
+    object_for_existing_node,
+};
 use crate::dom::{Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLElement};
 
@@ -38,6 +41,24 @@ pub(crate) fn register_node_methods(class: &mut ClassBuilder<'_>) -> JsResult<()
     let realm = class.context().realm().clone();
     class
         .accessor(
+            js_string!("parentNode"),
+            Some(NativeFunction::from_fn_ptr(get_parent_node).to_js_function(&realm)),
+            None,
+            Attribute::all(),
+        )
+        .accessor(
+            js_string!("firstChild"),
+            Some(NativeFunction::from_fn_ptr(get_first_child).to_js_function(&realm)),
+            None,
+            Attribute::all(),
+        )
+        .accessor(
+            js_string!("lastChild"),
+            Some(NativeFunction::from_fn_ptr(get_last_child).to_js_function(&realm)),
+            None,
+            Attribute::all(),
+        )
+        .accessor(
             js_string!("textContent"),
             Some(NativeFunction::from_fn_ptr(get_text_content).to_js_function(&realm)),
             Some(NativeFunction::from_fn_ptr(set_text_content).to_js_function(&realm)),
@@ -47,6 +68,11 @@ pub(crate) fn register_node_methods(class: &mut ClassBuilder<'_>) -> JsResult<()
             js_string!("appendChild"),
             1,
             NativeFunction::from_fn_ptr(append_child),
+        )
+        .method(
+            js_string!("removeChild"),
+            1,
+            NativeFunction::from_fn_ptr(remove_child),
         );
     Ok(())
 }
@@ -82,6 +108,31 @@ fn get_text_content(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<
     })
 }
 
+fn get_first_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let (document, node_id) = with_node_ref(this, |node| (Rc::clone(&node.document), node.first_child()))?;
+    match node_id {
+        Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
+        None => Ok(JsValue::null()),
+    }
+}
+
+fn get_last_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let (document, node_id) = with_node_ref(this, |node| (Rc::clone(&node.document), node.last_child()))?;
+    match node_id {
+        Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
+        None => Ok(JsValue::null()),
+    }
+}
+
+fn get_parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let (document, node_id) = with_node_ref(this, |node| (Rc::clone(&node.document), node.parent_node()))?;
+    match node_id {
+        Some(0) => Ok(document_object(context)?.into()),
+        Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
+        None => Ok(JsValue::null()),
+    }
+}
+
 fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let value = args.get_or_undefined(0);
     let text = if value.is_null() {
@@ -113,6 +164,13 @@ fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
 fn append_child(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     let child = appendable_node(args.get_or_undefined(0))?;
     with_node_ref(this, |node| node.append_child(&child))?
+        .map_err(|error| JsNativeError::typ().with_message(error))?;
+    Ok(args.get_or_undefined(0).clone())
+}
+
+fn remove_child(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    let child = appendable_node(args.get_or_undefined(0))?;
+    with_node_ref(this, |node| node.remove_child(&child))?
         .map_err(|error| JsNativeError::typ().with_message(error))?;
     Ok(args.get_or_undefined(0).clone())
 }

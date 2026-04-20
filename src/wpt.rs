@@ -6,6 +6,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,10 +27,12 @@ const DEFAULT_FORMAL_URL_PREFIX: &str = "__formal__";
 
 const CHILD_STDERR_LIMIT: usize = 16 * 1024;
 const WPTSERVE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+const WPTSERVE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const WEBDRIVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const WEBDRIVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REPORT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const RUNNER_ARTIFACT_ROOT: &str = "scratchpad/wpt-runner";
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -661,7 +665,8 @@ impl WptServeProcess {
         fs::write(&inject_script, reporter_inject_script())
             .map_err(|error| format!("failed to write {}: {error}", inject_script.display()))?;
 
-        let mut child = Command::new("python3")
+        let mut command = Command::new("python3");
+        command
             .arg("./wpt")
             .arg("serve")
             .arg("--config")
@@ -673,11 +678,22 @@ impl WptServeProcess {
             .arg(&inject_script)
             .current_dir(&config.wpt.root)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("failed to start wptserve: {error}"))?;
+            .stderr(Stdio::piped());
+        configure_wptserve_command(&mut command);
 
-        wait_for_wptserve_ready(port, &mut child, WPTSERVE_STARTUP_TIMEOUT)?;
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(format!("failed to start wptserve: {error}"));
+            }
+        };
+
+        if let Err(error) = wait_for_wptserve_ready(port, &mut child, WPTSERVE_STARTUP_TIMEOUT) {
+            let _ = shutdown_wptserve_child(&mut child);
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(error);
+        }
 
         Ok(Self { child, port, temp_dir })
     }
@@ -689,10 +705,7 @@ impl WptServeProcess {
 
 impl Drop for WptServeProcess {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
+        let _ = shutdown_wptserve_child(&mut self.child);
         let _ = fs::remove_dir_all(&self.temp_dir);
     }
 }
@@ -1350,6 +1363,10 @@ fn update_summary(summary: &mut RunSummary, result: &ComparedTestResult) {
 fn write_run_report(path: &Path, report: &RunReport) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(report)
         .map_err(|error| format!("failed to encode report JSON: {error}"))?;
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
     fs::write(path, bytes).map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
@@ -1650,7 +1667,104 @@ fn timeout_result(test: &SelectedTest, message: String, duration_ms: u128) -> Ob
 
 fn temp_dir_path(prefix: &str) -> PathBuf {
     let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("formal-web-{prefix}-{}-{id}", std::process::id()))
+    repo_root()
+        .join(RUNNER_ARTIFACT_ROOT)
+        .join("runtime")
+        .join(format!("{prefix}-{}-{id}", std::process::id()))
+}
+
+fn configure_wptserve_command(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+}
+
+fn shutdown_wptserve_child(child: &mut Child) -> Result<(), String> {
+    if child.try_wait().ok().flatten().is_some() {
+        return Ok(());
+    }
+
+    request_wptserve_shutdown(child)?;
+    if wait_for_child_exit(child, WPTSERVE_SHUTDOWN_TIMEOUT)?.is_some() {
+        return Ok(());
+    }
+
+    force_kill_wptserve(child)?;
+    let _ = wait_for_child_exit(child, Duration::from_secs(1))?;
+    Ok(())
+}
+
+fn wait_for_child_exit(
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<Option<ExitStatus>, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to wait for child process: {error}"))?
+        {
+            return Ok(Some(status));
+        }
+
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn request_wptserve_shutdown(child: &mut Child) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        return send_signal_to_wptserve_group(child.id(), libc::SIGINT);
+    }
+
+    #[cfg(not(unix))]
+    {
+        if child.try_wait().ok().flatten().is_none() {
+            child
+                .kill()
+                .map_err(|error| format!("failed to stop wptserve child: {error}"))?;
+        }
+        Ok(())
+    }
+}
+
+fn force_kill_wptserve(child: &mut Child) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        if send_signal_to_wptserve_group(child.id(), libc::SIGKILL).is_ok() {
+            return Ok(());
+        }
+    }
+
+    if child.try_wait().ok().flatten().is_none() {
+        child
+            .kill()
+            .map_err(|error| format!("failed to kill wptserve child: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn send_signal_to_wptserve_group(pid: u32, signal: libc::c_int) -> Result<(), String> {
+    let process_group = -(pid as libc::pid_t);
+    let result = unsafe { libc::kill(process_group, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "failed to signal wptserve process group {pid} with signal {signal}: {error}"
+    ))
 }
 
 fn pick_unused_port() -> Result<u16, String> {
@@ -1888,10 +2002,11 @@ fn reporter_inject_script() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        TestKind, WptStatus, any_script_supports_window, parse_test_expectation_file,
-        reporter_inject_script, served_path_for_test,
+        RunReport, RunSummary, TestKind, WptStatus, any_script_supports_window,
+        parse_test_expectation_file, reporter_inject_script, served_path_for_test,
+        temp_dir_path, write_run_report,
     };
-    use std::fs;
+    use std::{fs, path::Path};
 
     #[test]
     fn reporter_script_records_completion_result() {
@@ -1952,5 +2067,27 @@ mod tests {
             expectation.subtests.get("subtest").and_then(|entry| entry.expected),
             Some(WptStatus::Timeout)
         );
+    }
+
+    #[test]
+    fn runner_artifacts_live_under_scratchpad() {
+        let path = temp_dir_path("wptserve");
+        let relative = path.strip_prefix(super::repo_root()).unwrap();
+        assert!(relative.starts_with(Path::new("scratchpad/wpt-runner/runtime")));
+    }
+
+    #[test]
+    fn write_run_report_creates_parent_directories() {
+        let base_dir = temp_dir_path("report-test");
+        let report_path = base_dir.join("reports/result.json");
+        let report = RunReport {
+            summary: RunSummary::default(),
+            tests: Vec::new(),
+        };
+
+        write_run_report(&report_path, &report).unwrap();
+        assert!(report_path.exists());
+
+        fs::remove_dir_all(base_dir).unwrap();
     }
 }

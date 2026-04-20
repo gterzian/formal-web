@@ -28,7 +28,9 @@ use crate::html::{
 };
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableStream,
-    ReadableStreamDefaultController, ReadableStreamDefaultReader,
+    ReadableStreamDefaultController, ReadableStreamDefaultReader, WritableStream,
+    WritableStreamDefaultController, WritableStreamDefaultWriter,
+    TransformStream, TransformStreamDefaultController,
 };
 use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
 use ipc_channel::ipc::IpcSender;
@@ -147,6 +149,21 @@ impl EnvironmentSettingsObject {
             .map_err(|error| error.to_string())?;
         context
             .register_global_class::<ReadableStreamDefaultReader>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<WritableStream>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<WritableStreamDefaultController>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<WritableStreamDefaultWriter>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<TransformStream>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<TransformStreamDefaultController>()
             .map_err(|error| error.to_string())?;
 
         wire_interface_prototypes(&mut context);

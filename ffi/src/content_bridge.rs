@@ -27,6 +27,33 @@ static ACTIVE_CONTENT_BRIDGE: LazyLock<Mutex<Option<Arc<ContentBridge>>>> =
 static NEXT_CONTENT_HANDLE: AtomicUsize = AtomicUsize::new(1);
 static NEXT_SCRIPT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
+fn runtime_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_RUNTIME").is_some()
+}
+
+fn log_runtime_debug(message: impl AsRef<str>) {
+    if runtime_debug_enabled() {
+        eprintln!("[runtime-debug][bridge] {}", message.as_ref());
+    }
+}
+
+fn command_name(command: &ContentCommand) -> &'static str {
+    match command {
+        ContentCommand::SetViewport(_) => "SetViewport",
+        ContentCommand::CreateEmptyDocument { .. } => "CreateEmptyDocument",
+        ContentCommand::CreateLoadedDocument { .. } => "CreateLoadedDocument",
+        ContentCommand::DestroyDocument { .. } => "DestroyDocument",
+        ContentCommand::EvaluateScript { .. } => "EvaluateScript",
+        ContentCommand::DispatchEvent { .. } => "DispatchEvent",
+        ContentCommand::RunBeforeUnload { .. } => "RunBeforeUnload",
+        ContentCommand::UpdateTheRendering { .. } => "UpdateTheRendering",
+        ContentCommand::RunWindowTimer { .. } => "RunWindowTimer",
+        ContentCommand::CompleteDocumentFetch { .. } => "CompleteDocumentFetch",
+        ContentCommand::FailDocumentFetch { .. } => "FailDocumentFetch",
+        ContentCommand::Shutdown => "Shutdown",
+    }
+}
+
 fn executable_file_name(stem: &str) -> String {
     if std::env::consts::EXE_EXTENSION.is_empty() {
         String::from(stem)
@@ -79,17 +106,22 @@ fn spawn_listener(
     bridge: Arc<ContentBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
+        log_runtime_debug(format!("listener started for event loop {event_loop_id}"));
         loop {
             let event = match event_receiver.recv() {
                 Ok(event) => event,
                 Err(error) => {
-                    eprintln!("content bridge listener error: {error}");
+                    log_runtime_debug(format!("listener exiting after recv error: {error}"));
                     break;
                 }
             };
 
             match event {
                 ContentEvent::DocumentFetchRequested(request) => {
+                    log_runtime_debug(format!(
+                        "event DocumentFetchRequested handler_id={} url={}",
+                        request.handler_id, request.url
+                    ));
                     let _ = super::call_lean_document_fetch_start_parts(
                         event_loop_id,
                         request.handler_id as usize,
@@ -99,6 +131,10 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::WindowTimerRequested(request) => {
+                    log_runtime_debug(format!(
+                        "event WindowTimerRequested document_id={} timer_id={}",
+                        request.document_id, request.timer_id
+                    ));
                     let _ = super::call_lean_schedule_window_timer_parts(
                         event_loop_id,
                         request.document_id as usize,
@@ -109,6 +145,10 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::WindowTimerCleared(request) => {
+                    log_runtime_debug(format!(
+                        "event WindowTimerCleared document_id={} timer_key={}",
+                        request.document_id, request.timer_key
+                    ));
                     let _ = request.document_id;
                     let _ = super::call_lean_clear_window_timer_parts(
                         event_loop_id,
@@ -116,6 +156,10 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::NavigationRequested(request) => {
+                    log_runtime_debug(format!(
+                        "event NavigationRequested document_id={} url={}",
+                        request.document_id, request.destination_url
+                    ));
                     let _ = super::call_lean_navigation_start_parts(
                         request.document_id as usize,
                         &request.destination_url,
@@ -125,6 +169,10 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::BeforeUnloadCompleted(result) => {
+                    log_runtime_debug(format!(
+                        "event BeforeUnloadCompleted document_id={} check_id={} canceled={}",
+                        result.document_id, result.check_id, result.canceled
+                    ));
                     let _ = super::call_lean_before_unload_completed_parts(
                         result.document_id as usize,
                         result.check_id as usize,
@@ -132,15 +180,25 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::FinalizeNavigation(finalized) => {
+                    log_runtime_debug(format!(
+                        "event FinalizeNavigation document_id={} url={}",
+                        finalized.document_id, finalized.url
+                    ));
                     let _ = super::call_lean_finalize_navigation_parts(
                         finalized.document_id as usize,
                         &finalized.url,
                     );
                 }
                 ContentEvent::CommandCompleted => {
+                    log_runtime_debug(format!("event CommandCompleted event_loop_id={event_loop_id}"));
                     let _ = super::call_lean_run_next_event_loop_task(event_loop_id);
                 }
                 ContentEvent::ScriptEvaluated(result) => {
+                    log_runtime_debug(format!(
+                        "event ScriptEvaluated request_id={} error={}",
+                        result.request_id,
+                        result.error.as_deref().unwrap_or("<none>")
+                    ));
                     let waiter = bridge
                         .script_waiters
                         .lock()
@@ -159,6 +217,13 @@ fn spawn_listener(
                     }
                 }
                 ContentEvent::PaintReady(snapshot) => {
+                    let summary = snapshot.transport_summary();
+                    log_runtime_debug(format!(
+                        "event PaintReady document_id={} scene_bytes={} registered_fonts={}",
+                        snapshot.document_id,
+                        summary.scene_bytes,
+                        summary.registered_fonts
+                    ));
                     let _ = embedder::send_user_event(FormalWebUserEvent::Paint(snapshot));
                 }
             }
@@ -177,6 +242,7 @@ fn spawn_listener(
 }
 
 fn send_command_inner(bridge: &ContentBridge, command: ContentCommand) -> Result<(), String> {
+    log_runtime_debug(format!("send command {}", command_name(&command)));
     bridge
         .command_sender
         .send(command)
@@ -189,6 +255,11 @@ pub fn install_hooks() {
 
 pub fn start(event_loop_id: usize) -> Result<usize, String> {
     let executable_path = content_executable_path()?;
+    log_runtime_debug(format!(
+        "starting content for event loop {} at {}",
+        event_loop_id,
+        executable_path.display()
+    ));
     let (server, token) = IpcOneShotServer::<Bootstrap>::new()
         .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
 
@@ -198,9 +269,11 @@ pub fn start(event_loop_id: usize) -> Result<usize, String> {
     let child = child_process
         .spawn()
         .map_err(|error| format!("failed to start content: {error}"))?;
+    log_runtime_debug(format!("spawned content child pid={}", child.id()));
     let (_receiver, bootstrap) = server
         .accept()
         .map_err(|error| format!("failed to accept content bootstrap: {error}"))?;
+    log_runtime_debug("accepted content bootstrap");
 
     let bridge = Arc::new(ContentBridge {
         command_sender: bootstrap.command_sender,
@@ -215,6 +288,10 @@ pub fn start(event_loop_id: usize) -> Result<usize, String> {
         .expect("content listener mutex poisoned") = Some(listener);
 
     if let Some(snapshot) = embedder::window_viewport_snapshot() {
+        log_runtime_debug(format!(
+            "sending initial viewport {}x{} scale={}",
+            snapshot.0, snapshot.1, snapshot.2
+        ));
         let _ = send_command_inner(&bridge, viewport_command(snapshot));
     }
 
@@ -230,6 +307,7 @@ pub fn start(event_loop_id: usize) -> Result<usize, String> {
 }
 
 pub fn stop(handle: usize) -> Result<(), String> {
+    log_runtime_debug(format!("stopping content handle={handle}"));
     let bridge = CONTENT_REGISTRY
         .lock()
         .expect("content registry mutex poisoned")
@@ -252,6 +330,7 @@ pub fn stop(handle: usize) -> Result<(), String> {
         .expect("content listener mutex poisoned")
         .take()
     {
+        log_runtime_debug("joining content listener");
         let _ = listener.join();
     }
     if let Some(mut child) = bridge
@@ -260,6 +339,7 @@ pub fn stop(handle: usize) -> Result<(), String> {
         .expect("content child mutex poisoned")
         .take()
     {
+        log_runtime_debug(format!("waiting for content child pid={}", child.id()));
         let _ = child.wait();
     }
 
@@ -352,9 +432,14 @@ pub fn evaluate_script(
 
 pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
     let Some(snapshot) = snapshot else {
+        log_runtime_debug("broadcast viewport cleared");
         return;
     };
 
+    log_runtime_debug(format!(
+        "broadcast viewport {}x{} scale={}",
+        snapshot.0, snapshot.1, snapshot.2
+    ));
     let command = viewport_command(snapshot);
     let bridges = CONTENT_REGISTRY
         .lock()

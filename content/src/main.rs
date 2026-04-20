@@ -43,6 +43,33 @@ use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
 
+fn runtime_debug_enabled() -> bool {
+    env::var_os("FORMAL_WEB_DEBUG_RUNTIME").is_some()
+}
+
+fn log_runtime_debug(message: impl AsRef<str>) {
+    if runtime_debug_enabled() {
+        eprintln!("[runtime-debug][content] {}", message.as_ref());
+    }
+}
+
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        SetViewport(_) => "SetViewport",
+        CreateEmptyDocument { .. } => "CreateEmptyDocument",
+        CreateLoadedDocument { .. } => "CreateLoadedDocument",
+        DestroyDocument { .. } => "DestroyDocument",
+        EvaluateScript { .. } => "EvaluateScript",
+        DispatchEvent { .. } => "DispatchEvent",
+        Command::RunBeforeUnload { .. } => "RunBeforeUnload",
+        UpdateTheRendering { .. } => "UpdateTheRendering",
+        RunWindowTimer { .. } => "RunWindowTimer",
+        CompleteDocumentFetch { .. } => "CompleteDocumentFetch",
+        FailDocumentFetch { .. } => "FailDocumentFetch",
+        Shutdown => "Shutdown",
+    }
+}
+
 fn new_font_namespace() -> u64 {
     let pid = u64::from(std::process::id());
     let start_nanos = SystemTime::now()
@@ -229,6 +256,7 @@ struct ContentRuntime {
 
 impl ContentRuntime {
     fn new(event_sender: IpcSender<ContentEvent>) -> Self {
+        log_runtime_debug("runtime initialized");
         Self {
             event_sender,
             local_state: Arc::new(Mutex::new(LocalContentState {
@@ -257,6 +285,10 @@ impl ContentRuntime {
     }
 
     fn set_viewport(&mut self, viewport: ViewportSnapshot) {
+        log_runtime_debug(format!(
+            "set viewport {}x{} scale={}",
+            viewport.width, viewport.height, viewport.scale
+        ));
         let runtime_viewport = viewport_of_snapshot(&viewport);
         self.viewport = Some(viewport);
         for document in self.documents.values_mut() {
@@ -376,6 +408,7 @@ impl ContentRuntime {
     }
 
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
+        log_runtime_debug(format!("continue document load doc={document_id}"));
         let ready_to_finish = {
             let content_document = self
                 .documents
@@ -401,6 +434,7 @@ impl ContentRuntime {
         };
 
         if !ready_to_finish {
+            log_runtime_debug(format!("document load still waiting doc={document_id}"));
             return Ok(());
         }
 
@@ -447,6 +481,7 @@ impl ContentRuntime {
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, document_id: u64) -> Result<(), String> {
+        log_runtime_debug(format!("create empty document doc={document_id}"));
         let document = Rc::new(RefCell::new(BaseDocument::new(
             self.document_config(document_id, None),
         )));
@@ -495,6 +530,12 @@ impl ContentRuntime {
         url: String,
         body: String,
     ) -> Result<(), String> {
+        log_runtime_debug(format!(
+            "create loaded document doc={} url={} body_len={}",
+            document_id,
+            url,
+            body.len()
+        ));
         // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
         // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the DOM carrier and the JavaScript environment settings object.
@@ -555,6 +596,10 @@ impl ContentRuntime {
             .unwrap_or_default();
 
         for (script_index, src) in deferred_fetches {
+            log_runtime_debug(format!(
+                "start deferred script fetch doc={} index={} src={}",
+                document_id, script_index, src
+            ));
             if let Err(error) = self.start_deferred_script_fetch(document_id, script_index, &src) {
                 eprintln!("content error: {error}");
                 self.mark_deferred_script_failed(document_id, script_index);
@@ -577,6 +622,7 @@ impl ContentRuntime {
     }
 
     fn destroy_document(&mut self, document_id: u64) -> Result<(), String> {
+        log_runtime_debug(format!("destroy document doc={document_id}"));
         if let Some(content_document) = self.documents.remove(&document_id) {
             let _ = content_document.settings.clear_all_window_timers();
         }
@@ -621,6 +667,10 @@ impl ContentRuntime {
     }
 
     fn run_before_unload(&mut self, document_id: u64, check_id: u64) -> Result<(), String> {
+        log_runtime_debug(format!(
+            "run beforeunload doc={} check_id={}",
+            document_id, check_id
+        ));
         let document = self
             .documents
             .get_mut(&document_id)
@@ -639,6 +689,7 @@ impl ContentRuntime {
     }
 
     fn update_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
+        log_runtime_debug(format!("update the rendering doc={document_id}"));
         let document = self
             .documents
             .get_mut(&document_id)
@@ -650,6 +701,7 @@ impl ContentRuntime {
     /// <https://html.spec.whatwg.org/#update-the-rendering>
     /// Note: Lean queues this rendering task via `FormalWeb.UserAgent.queueUpdateTheRendering` and `FormalWeb.EventLoop.runEventLoopMessage`, and the content runtime continues the noted rendering opportunity once critical fetches finish.
     fn continue_updating_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
+        log_runtime_debug(format!("continue updating the rendering doc={document_id}"));
         let event_sender = self.event_sender.clone();
         let paint_frame = {
             let document = self
@@ -660,6 +712,9 @@ impl ContentRuntime {
             document.document.borrow_mut().handle_messages();
 
             if document.document.borrow().has_pending_critical_resources() {
+                log_runtime_debug(format!(
+                    "render blocked on pending critical resources doc={document_id}"
+                ));
                 return Ok(());
             }
 
@@ -728,6 +783,12 @@ impl ContentRuntime {
         resolved_url: String,
         body: Vec<u8>,
     ) -> Result<(), String> {
+        log_runtime_debug(format!(
+            "complete document fetch handler_id={} url={} body_len={}",
+            handler_id,
+            resolved_url,
+            body.len()
+        ));
         let pending_handler = {
             let mut local_state = self
                 .local_state
@@ -769,6 +830,7 @@ impl ContentRuntime {
     }
 
     fn fail_document_fetch(&mut self, handler_id: u64) -> Result<(), String> {
+        log_runtime_debug(format!("fail document fetch handler_id={handler_id}"));
         let pending_handler = {
             let mut local_state = self
                 .local_state
@@ -815,6 +877,10 @@ impl ContentRuntime {
         timer_key: u64,
         nesting_level: u32,
     ) -> Result<(), String> {
+        log_runtime_debug(format!(
+            "run window timer doc={} timer_id={} timer_key={} nesting={}",
+            document_id, timer_id, timer_key, nesting_level
+        ));
         let document = self
             .documents
             .get_mut(&document_id)
@@ -825,6 +891,7 @@ impl ContentRuntime {
     }
 
     fn note_command_completed(&self) -> Result<(), String> {
+        log_runtime_debug("note command completed");
         self.event_sender
             .send(ContentEvent::CommandCompleted)
             .map_err(|error| format!("failed to send content command completion: {error}"))
@@ -927,6 +994,7 @@ fn content_token() -> Result<String, String> {
 
 fn main() -> Result<(), String> {
     let token = content_token()?;
+    log_runtime_debug("process starting");
     let (command_sender, command_receiver) =
         ipc::channel::<Command>().map_err(|error| error.to_string())?;
     let (event_sender, event_receiver) =
@@ -945,6 +1013,7 @@ fn main() -> Result<(), String> {
             Ok(command) => command,
             Err(_error) => break,
         };
+        log_runtime_debug(format!("received command {}", command_name(&command)));
         let notify_event_loop = matches!(
             &command,
             CreateEmptyDocument { .. }
@@ -965,7 +1034,10 @@ fn main() -> Result<(), String> {
                     }
                 }
             }
-            Ok(false) => break,
+            Ok(false) => {
+                log_runtime_debug("received shutdown command");
+                break;
+            }
             Err(error) => {
                 eprintln!("content error: {error}");
                 if notify_event_loop {
@@ -977,22 +1049,28 @@ fn main() -> Result<(), String> {
         }
     }
 
+    log_runtime_debug("process exiting");
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvironmentSettingsObject, JsHtmlParserProvider, execute_parser_scripts, log_paint_debug,
-        parse_html_into_document,
+        EMPTY_HTML_DOCUMENT, EnvironmentSettingsObject, JsHtmlParserProvider,
+        execute_parser_scripts, log_paint_debug, parse_html_into_document,
     };
+    use boa_engine::Source;
     use anyrender::Scene as RenderScene;
     use blitz_dom::{BaseDocument, DocumentConfig};
     use blitz_paint::paint_scene;
     use blitz_traits::shell::{ColorScheme, Viewport};
-    use ipc_messages::content::FontTransportSender;
+    use ipc_channel::{TryRecvError, ipc::{IpcReceiver, channel}};
+    use ipc_messages::content::{FontTransportSender, WindowTimerRequest};
     use std::{cell::RefCell, fs, rc::Rc, sync::Arc};
     use url::Url;
+
+    use crate::ContentEvent;
 
     fn blank_environment_settings() -> EnvironmentSettingsObject {
         let base_url = Url::parse("https://example.test/").expect("URL should parse");
@@ -1005,6 +1083,123 @@ mod tests {
 
         EnvironmentSettingsObject::new(document, base_url)
             .expect("environment settings should initialize")
+    }
+
+    fn parsed_document_environment_settings() -> EnvironmentSettingsObject {
+        let base_url = Url::parse("https://example.test/").expect("URL should parse");
+        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(960, 720, 1.0, ColorScheme::Light)),
+            base_url: Some(base_url.to_string()),
+            html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
+            ..DocumentConfig::default()
+        })));
+
+        let mut settings = EnvironmentSettingsObject::new(Rc::clone(&document), base_url)
+            .expect("environment settings should initialize");
+        let parser_scripts = {
+            let mut document_guard = document.borrow_mut();
+            parse_html_into_document(&mut document_guard, EMPTY_HTML_DOCUMENT)
+        };
+        execute_parser_scripts(&mut settings, parser_scripts)
+            .expect("empty document scripts should execute");
+        settings
+    }
+
+    fn raw_script_to_json(
+        settings: &mut EnvironmentSettingsObject,
+        source: &str,
+    ) -> serde_json::Value {
+        let value = settings
+            .context
+            .eval(Source::from_bytes(source))
+            .expect("raw script should evaluate");
+        value
+            .to_json(&mut settings.context)
+            .expect("raw script result should serialize")
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    fn drain_requested_window_timers(
+        settings: &mut EnvironmentSettingsObject,
+        event_receiver: &IpcReceiver<ContentEvent>,
+        max_timers: usize,
+    ) -> usize {
+        let mut timer_count = 0;
+        while timer_count < max_timers {
+            let event = match event_receiver.try_recv() {
+                Ok(event) => event,
+                Err(TryRecvError::Empty) => break,
+                Err(error) => panic!("timer receiver should stay connected: {error}"),
+            };
+
+            match event {
+                ContentEvent::WindowTimerRequested(request) => {
+                    settings
+                        .run_window_timer(
+                            request.timer_id,
+                            request.timer_key,
+                            request.nesting_level,
+                        )
+                        .expect("window timer should run");
+                    timer_count += 1;
+                }
+                ContentEvent::WindowTimerCleared(_) => {}
+                other => panic!("unexpected content event while draining timers: {other:?}"),
+            }
+        }
+
+        timer_count
+    }
+
+    fn drain_zero_timeout_window_timers(
+        settings: &mut EnvironmentSettingsObject,
+        event_receiver: &IpcReceiver<ContentEvent>,
+        max_timers: usize,
+    ) -> (usize, Vec<WindowTimerRequest>) {
+        drain_window_timers_up_to(settings, event_receiver, max_timers, 0)
+    }
+
+    fn drain_window_timers_up_to(
+        settings: &mut EnvironmentSettingsObject,
+        event_receiver: &IpcReceiver<ContentEvent>,
+        max_timers: usize,
+        max_timeout_ms: u32,
+    ) -> (usize, Vec<WindowTimerRequest>) {
+        let mut pending = Vec::new();
+        let mut timer_count = 0;
+
+        loop {
+            loop {
+                match event_receiver.try_recv() {
+                    Ok(ContentEvent::WindowTimerRequested(request)) => pending.push(request),
+                    Ok(ContentEvent::WindowTimerCleared(clear_request)) => {
+                        pending.retain(|request| request.timer_key != clear_request.timer_key);
+                    }
+                    Ok(other) => panic!("unexpected content event while draining timers: {other:?}"),
+                    Err(TryRecvError::Empty) => break,
+                    Err(error) => panic!("timer receiver should stay connected: {error}"),
+                }
+            }
+
+            let Some(index) = pending
+                .iter()
+                .position(|request| request.timeout_ms <= max_timeout_ms)
+            else {
+                break;
+            };
+
+            let request = pending.remove(index);
+            settings
+                .run_window_timer(request.timer_id, request.timer_key, request.nesting_level)
+                .expect("window timer should run");
+            timer_count += 1;
+            assert!(
+                timer_count <= max_timers,
+                "draining zero-timeout timers exceeded the safety limit of {max_timers}"
+            );
+        }
+
+        (timer_count, pending)
     }
 
     #[test]
@@ -1179,5 +1374,713 @@ mod tests {
                 done();"#,
             )
             .expect("testharness test should run");
+    }
+
+    #[test]
+    fn writable_stream_ready_resolves_after_async_write() {
+        let mut settings = blank_environment_settings();
+        settings
+            .evaluate_script(
+                r#"globalThis.__writableReadyState = (() => {
+                    let resolveSinkWritePromise;
+                    const events = [];
+                    const stream = new WritableStream({
+                        write() {
+                            return new Promise(resolve => {
+                                resolveSinkWritePromise = resolve;
+                            });
+                        }
+                    });
+                    const writer = stream.getWriter();
+                    writer.ready.then(() => {
+                        events.push("initial-ready");
+                        const writePromise = writer.write("a");
+                        writePromise.then(() => events.push("write"));
+                        writer.ready.then(() => events.push("ready"));
+                    });
+                    return {
+                        writer,
+                        events,
+                        resolve() {
+                            return resolveSinkWritePromise();
+                        },
+                        resolveType() {
+                            return typeof resolveSinkWritePromise;
+                        }
+                    };
+                })();"#,
+            )
+            .expect("setup script should succeed");
+
+        let before = settings
+            .evaluate_script_to_json(
+                r#"({
+                    resolveType: __writableReadyState.resolveType(),
+                    desiredSize: __writableReadyState.writer.desiredSize,
+                    events: [...__writableReadyState.events]
+                })"#,
+            )
+            .expect("pre-resolution state should serialize");
+
+        assert_eq!(before["resolveType"], "function");
+        assert_eq!(before["desiredSize"], 0.0);
+        assert_eq!(before["events"], serde_json::json!(["initial-ready"]));
+
+        settings
+            .evaluate_script(r#"__writableReadyState.resolve();"#)
+            .expect("sink write resolver should be callable");
+
+        let after = settings
+            .evaluate_script_to_json(
+                r#"({
+                    desiredSize: __writableReadyState.writer.desiredSize,
+                    events: [...__writableReadyState.events]
+                })"#,
+            )
+            .expect("post-resolution state should serialize");
+
+        assert_eq!(after["desiredSize"], 1.0);
+        assert_eq!(after["events"], serde_json::json!(["initial-ready", "write", "ready"]));
+    }
+
+    #[test]
+    fn writable_stream_ready_resolves_after_async_write_via_window_timers() {
+        let mut settings = blank_environment_settings();
+        let (event_sender, event_receiver) =
+            channel::<ContentEvent>().expect("content event channel should initialize");
+        settings
+            .install_timer_host(1, event_sender)
+            .expect("timer host should install");
+
+        settings
+            .evaluate_script(
+                r#"globalThis.delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+                globalThis.flushAsyncEvents = () => delay(0).then(() => delay(0)).then(() => delay(0)).then(() => delay(0));
+                globalThis.__writableTimerState = (() => {
+                    let resolveSinkWritePromise;
+                    let done = false;
+                    let error = null;
+                    let finalDesiredSize = null;
+                    const events = [];
+                    const stream = new WritableStream({
+                        write() {
+                            return new Promise(resolve => {
+                                resolveSinkWritePromise = resolve;
+                            });
+                        }
+                    });
+                    const writer = stream.getWriter();
+                    writer.ready.then(() => {
+                        events.push("initial-ready");
+                        const writePromise = writer.write("a");
+                        writePromise.then(() => events.push("write"));
+                        writer.ready.then(() => events.push("ready"));
+                        Promise.all([
+                            writePromise,
+                            writer.ready,
+                            flushAsyncEvents().then(() => {
+                                events.push("flush");
+                                resolveSinkWritePromise();
+                                resolveSinkWritePromise = undefined;
+                            })
+                        ]).then(() => {
+                            events.push("all");
+                            finalDesiredSize = writer.desiredSize;
+                            done = true;
+                        }, reason => {
+                            error = String(reason);
+                            done = true;
+                        });
+                    });
+                    return {
+                        snapshot() {
+                            return {
+                                done,
+                                error,
+                                finalDesiredSize,
+                                currentDesiredSize: writer.desiredSize,
+                                events: [...events],
+                                resolveType: typeof resolveSinkWritePromise
+                            };
+                        }
+                    };
+                })();"#,
+            )
+            .expect("timer-driven writable setup should succeed");
+
+        let initial = raw_script_to_json(&mut settings, r#"__writableTimerState.snapshot()"#);
+        assert_eq!(initial["done"], false);
+        assert_eq!(initial["currentDesiredSize"], 0.0);
+        assert_eq!(initial["events"], serde_json::json!(["initial-ready"]));
+
+        let timer_count = drain_requested_window_timers(&mut settings, &event_receiver, 16);
+        assert_eq!(timer_count, 4);
+
+        let after_timers = raw_script_to_json(&mut settings, r#"__writableTimerState.snapshot()"#);
+        if after_timers["done"] != true {
+            settings
+                .perform_a_microtask_checkpoint()
+                .expect("extra microtask checkpoint should succeed");
+            let after_checkpoint = raw_script_to_json(&mut settings, r#"__writableTimerState.snapshot()"#);
+            panic!(
+                "timer-driven writable test did not finish after draining timers; after timers: {after_timers:?}; after extra checkpoint: {after_checkpoint:?}"
+            );
+        }
+
+        assert_eq!(after_timers["error"], serde_json::Value::Null);
+        assert_eq!(after_timers["finalDesiredSize"], 1.0);
+        assert_eq!(after_timers["currentDesiredSize"], 1.0);
+        assert_eq!(
+            after_timers["events"],
+            serde_json::json!(["initial-ready", "flush", "write", "ready", "all"])
+        );
+    }
+
+    #[test]
+    fn writable_stream_ready_resolves_after_async_write_via_step_timeout() {
+        let mut settings = blank_environment_settings();
+        let (event_sender, event_receiver) =
+            channel::<ContentEvent>().expect("content event channel should initialize");
+        settings
+            .install_timer_host(1, event_sender)
+            .expect("timer host should install");
+
+        settings
+            .evaluate_script(
+                r#"globalThis.step_timeout = function(func, timeout) {
+                    const outerThis = this;
+                    const args = Array.prototype.slice.call(arguments, 2);
+                    return setTimeout(function() {
+                        func.apply(outerThis, args);
+                    }, timeout);
+                };
+                globalThis.delay = ms => new Promise(resolve => step_timeout(resolve, ms));
+                globalThis.flushAsyncEvents = () => delay(0).then(() => delay(0)).then(() => delay(0)).then(() => delay(0));
+                globalThis.__writableStepTimeoutState = (() => {
+                    let resolveSinkWritePromise;
+                    let done = false;
+                    let error = null;
+                    let finalDesiredSize = null;
+                    const events = [];
+                    const stream = new WritableStream({
+                        write() {
+                            return new Promise(resolve => {
+                                resolveSinkWritePromise = resolve;
+                            });
+                        }
+                    });
+                    const writer = stream.getWriter();
+                    writer.ready.then(() => {
+                        events.push("initial-ready");
+                        const writePromise = writer.write("a");
+                        writePromise.then(() => events.push("write"));
+                        writer.ready.then(() => events.push("ready"));
+                        Promise.all([
+                            writePromise,
+                            writer.ready,
+                            flushAsyncEvents().then(() => {
+                                events.push("flush");
+                                resolveSinkWritePromise();
+                                resolveSinkWritePromise = undefined;
+                            })
+                        ]).then(() => {
+                            events.push("all");
+                            finalDesiredSize = writer.desiredSize;
+                            done = true;
+                        }, reason => {
+                            error = String(reason);
+                            done = true;
+                        });
+                    });
+                    return {
+                        snapshot() {
+                            return {
+                                done,
+                                error,
+                                finalDesiredSize,
+                                currentDesiredSize: writer.desiredSize,
+                                events: [...events],
+                                resolveType: typeof resolveSinkWritePromise
+                            };
+                        }
+                    };
+                })();"#,
+            )
+            .expect("step-timeout writable setup should succeed");
+
+        let initial = raw_script_to_json(&mut settings, r#"__writableStepTimeoutState.snapshot()"#);
+        assert_eq!(initial["done"], false);
+        assert_eq!(initial["currentDesiredSize"], 0.0);
+        assert_eq!(initial["events"], serde_json::json!(["initial-ready"]));
+
+        let timer_count = drain_requested_window_timers(&mut settings, &event_receiver, 16);
+        assert_eq!(timer_count, 4);
+
+        let after_timers = raw_script_to_json(&mut settings, r#"__writableStepTimeoutState.snapshot()"#);
+        if after_timers["done"] != true {
+            settings
+                .perform_a_microtask_checkpoint()
+                .expect("extra microtask checkpoint should succeed");
+            let after_checkpoint =
+                raw_script_to_json(&mut settings, r#"__writableStepTimeoutState.snapshot()"#);
+            panic!(
+                "step-timeout writable test did not finish after draining timers; after timers: {after_timers:?}; after extra checkpoint: {after_checkpoint:?}"
+            );
+        }
+
+        assert_eq!(after_timers["error"], serde_json::Value::Null);
+        assert_eq!(after_timers["finalDesiredSize"], 1.0);
+        assert_eq!(after_timers["currentDesiredSize"], 1.0);
+        assert_eq!(
+            after_timers["events"],
+            serde_json::json!(["initial-ready", "flush", "write", "ready", "all"])
+        );
+    }
+
+    #[test]
+    fn writable_stream_waiting_for_acknowledgement_completes_under_testharness() {
+        let mut settings = parsed_document_environment_settings();
+        let (event_sender, event_receiver) =
+            channel::<ContentEvent>().expect("content event channel should initialize");
+        settings
+            .install_timer_host(1, event_sender)
+            .expect("timer host should install");
+
+        settings
+            .evaluate_script(
+                r#"self.GLOBAL = {
+                    isWindow() { return true; },
+                    isWorker() { return false; },
+                    isShadowRealm() { return false; }
+                };"#,
+            )
+            .expect("GLOBAL should install");
+
+        let harness_path = format!(
+            "{}/../vendor/wpt/resources/testharness.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let test_utils_path = format!(
+            "{}/../vendor/wpt/streams/resources/test-utils.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let harness = fs::read_to_string(harness_path).expect("testharness.js should be readable");
+        let test_utils =
+            fs::read_to_string(test_utils_path).expect("test-utils.js should be readable");
+
+        settings
+            .evaluate_script(&harness)
+            .expect("testharness should evaluate");
+        settings
+            .evaluate_script(r#"setup({ output: false });"#)
+            .expect("testharness setup should evaluate");
+        settings
+            .evaluate_script(&test_utils)
+            .expect("test-utils should evaluate");
+        settings
+            .evaluate_script(
+                r#"globalThis.__harnessState = { done: false };
+                add_completion_callback((tests, harnessStatus) => {
+                    globalThis.__harnessState = {
+                        done: true,
+                        harnessStatus: harnessStatus.status,
+                        tests: tests.map(test => ({
+                            name: test.name,
+                            status: test.status,
+                            message: test.message ?? null
+                        }))
+                    };
+                });
+                promise_test(() => {
+                    let resolveSinkWritePromise;
+                    const ws = new WritableStream({
+                        write() {
+                            return new Promise(resolve => {
+                                resolveSinkWritePromise = resolve;
+                            });
+                        }
+                    });
+
+                    const writer = ws.getWriter();
+
+                    assert_equals(writer.desiredSize, 1, 'desiredSize should be 1');
+
+                    return writer.ready.then(() => {
+                        const writePromise = writer.write('a');
+                        let writePromiseResolved = false;
+                        assert_not_equals(resolveSinkWritePromise, undefined, 'resolveSinkWritePromise should not be undefined');
+
+                        assert_equals(writer.desiredSize, 0, 'desiredSize should be 0 after writer.write()');
+
+                        return Promise.all([
+                            writePromise.then(value => {
+                                writePromiseResolved = true;
+                                assert_equals(resolveSinkWritePromise, undefined, 'sinkWritePromise should be fulfilled before writePromise');
+
+                                assert_equals(value, undefined, 'writePromise should be fulfilled with undefined');
+                            }),
+                            writer.ready.then(value => {
+                                assert_equals(resolveSinkWritePromise, undefined, 'sinkWritePromise should be fulfilled before writer.ready');
+                                assert_true(writePromiseResolved, 'writePromise should be fulfilled before writer.ready');
+
+                                assert_equals(writer.desiredSize, 1, 'desiredSize should be 1 again');
+
+                                assert_equals(value, undefined, 'writePromise should be fulfilled with undefined');
+                            }),
+                            flushAsyncEvents().then(() => {
+                                resolveSinkWritePromise();
+                                resolveSinkWritePromise = undefined;
+                            })
+                        ]);
+                    });
+                }, 'WritableStream should transition to waiting until write is acknowledged');
+                done();"#,
+            )
+            .expect("testharness writable test should evaluate");
+
+        let timer_count = drain_requested_window_timers(&mut settings, &event_receiver, 16);
+        let after_timers = raw_script_to_json(&mut settings, r#"__harnessState"#);
+        if after_timers["done"] != true {
+            settings
+                .perform_a_microtask_checkpoint()
+                .expect("extra microtask checkpoint should succeed");
+            let after_checkpoint = raw_script_to_json(&mut settings, r#"__harnessState"#);
+            panic!(
+                "testharness writable test did not finish after draining {timer_count} timers; after timers: {after_timers:?}; after extra checkpoint: {after_checkpoint:?}"
+            );
+        }
+
+        assert_eq!(timer_count, 4);
+        assert_eq!(after_timers["harnessStatus"], 0);
+        assert_eq!(after_timers["tests"], serde_json::json!([
+            {
+                "name": "WritableStream should transition to waiting until write is acknowledged",
+                "status": 0,
+                "message": null
+            }
+        ]));
+    }
+
+    #[test]
+    fn writable_stream_write_any_progress_stops_after_three_results() {
+        let mut settings = parsed_document_environment_settings();
+        let (event_sender, event_receiver) =
+            channel::<ContentEvent>().expect("content event channel should initialize");
+        settings
+            .install_timer_host(1, event_sender)
+            .expect("timer host should install");
+
+        settings
+            .evaluate_script(
+                r#"self.GLOBAL = {
+                    isWindow() { return true; },
+                    isWorker() { return false; },
+                    isShadowRealm() { return false; }
+                };"#,
+            )
+            .expect("GLOBAL should install");
+
+        let harness_path = format!(
+            "{}/../vendor/wpt/resources/testharness.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let test_utils_path = format!(
+            "{}/../vendor/wpt/streams/resources/test-utils.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let recording_streams_path = format!(
+            "{}/../vendor/wpt/streams/resources/recording-streams.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let write_any_path = format!(
+            "{}/../vendor/wpt/streams/writable-streams/write.any.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let harness = fs::read_to_string(harness_path).expect("testharness.js should be readable");
+        let test_utils =
+            fs::read_to_string(test_utils_path).expect("test-utils.js should be readable");
+        let recording_streams = fs::read_to_string(recording_streams_path)
+            .expect("recording-streams.js should be readable");
+        let write_any =
+            fs::read_to_string(write_any_path).expect("write.any.js should be readable");
+
+        settings
+            .evaluate_script(&harness)
+            .expect("testharness should evaluate");
+        settings
+            .evaluate_script(r#"setup({ output: false });"#)
+            .expect("testharness setup should evaluate");
+        settings
+            .evaluate_script(&test_utils)
+            .expect("test-utils should evaluate");
+        settings
+            .evaluate_script(&recording_streams)
+            .expect("recording-streams should evaluate");
+        settings
+            .evaluate_script(
+                r#"globalThis.__harnessProgress = [];
+                globalThis.__harnessState = { done: false };
+                add_result_callback(test => {
+                    globalThis.__harnessProgress.push({
+                        name: test.name,
+                        status: test.status,
+                        message: test.message ?? null
+                    });
+                });
+                add_completion_callback((tests, harnessStatus) => {
+                    globalThis.__harnessState = {
+                        done: true,
+                        harnessStatus: harnessStatus.status,
+                        tests: tests.map(test => ({
+                            name: test.name,
+                            status: test.status,
+                            message: test.message ?? null
+                        }))
+                    };
+                });"#,
+            )
+            .expect("harness callbacks should install");
+        settings
+            .evaluate_script(&write_any)
+            .expect("write.any.js should evaluate");
+
+        let (timer_count, pending_timers) =
+            drain_zero_timeout_window_timers(&mut settings, &event_receiver, 256);
+        let snapshot = raw_script_to_json(
+            &mut settings,
+            r#"({ progress: __harnessProgress, state: __harnessState })"#,
+        );
+
+        assert_eq!(timer_count, 18, "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert_eq!(
+            snapshot["progress"],
+            serde_json::json!([
+                {
+                    "name": "WritableStream should complete asynchronous writes before close resolves",
+                    "status": 0,
+                    "message": null
+                },
+                {
+                    "name": "WritableStream should complete synchronous writes before close resolves",
+                    "status": 0,
+                    "message": null
+                },
+                {
+                    "name": "fulfillment value of ws.write() call should be undefined even if the underlying sink returns a non-undefined value",
+                    "status": 0,
+                    "message": null
+                }
+            ]),
+            "snapshot: {snapshot:?}; pending: {pending_timers:?}"
+        );
+        assert_eq!(snapshot["state"]["done"], false, "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert!(
+            pending_timers.iter().all(|request| request.timeout_ms > 0),
+            "snapshot: {snapshot:?}; pending: {pending_timers:?}"
+        );
+    }
+
+    #[test]
+    fn writable_stream_write_any_completes_before_test_timeout_timer() {
+        let mut settings = parsed_document_environment_settings();
+        let (event_sender, event_receiver) =
+            channel::<ContentEvent>().expect("content event channel should initialize");
+        settings
+            .install_timer_host(1, event_sender)
+            .expect("timer host should install");
+
+        settings
+            .evaluate_script(
+                r#"self.GLOBAL = {
+                    isWindow() { return true; },
+                    isWorker() { return false; },
+                    isShadowRealm() { return false; }
+                };"#,
+            )
+            .expect("GLOBAL should install");
+
+        let harness_path = format!(
+            "{}/../vendor/wpt/resources/testharness.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let test_utils_path = format!(
+            "{}/../vendor/wpt/streams/resources/test-utils.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let recording_streams_path = format!(
+            "{}/../vendor/wpt/streams/resources/recording-streams.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let write_any_path = format!(
+            "{}/../vendor/wpt/streams/writable-streams/write.any.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let harness = fs::read_to_string(harness_path).expect("testharness.js should be readable");
+        let test_utils =
+            fs::read_to_string(test_utils_path).expect("test-utils.js should be readable");
+        let recording_streams = fs::read_to_string(recording_streams_path)
+            .expect("recording-streams.js should be readable");
+        let write_any =
+            fs::read_to_string(write_any_path).expect("write.any.js should be readable");
+
+        settings
+            .evaluate_script(&harness)
+            .expect("testharness should evaluate");
+        settings
+            .evaluate_script(r#"setup({ output: false });"#)
+            .expect("testharness setup should evaluate");
+        settings
+            .evaluate_script(&test_utils)
+            .expect("test-utils should evaluate");
+        settings
+            .evaluate_script(&recording_streams)
+            .expect("recording-streams should evaluate");
+        settings
+            .evaluate_script(
+                r#"globalThis.__harnessProgress = [];
+                globalThis.__harnessState = { done: false };
+                add_result_callback(test => {
+                    globalThis.__harnessProgress.push({
+                        name: test.name,
+                        status: test.status,
+                        message: test.message ?? null
+                    });
+                });
+                add_completion_callback((tests, harnessStatus) => {
+                    globalThis.__harnessState = {
+                        done: true,
+                        harnessStatus: harnessStatus.status,
+                        tests: tests.map(test => ({
+                            name: test.name,
+                            status: test.status,
+                            message: test.message ?? null
+                        }))
+                    };
+                });"#,
+            )
+            .expect("harness callbacks should install");
+        settings
+            .evaluate_script(&write_any)
+            .expect("write.any.js should evaluate");
+
+        let (timer_count, pending_timers) =
+            drain_window_timers_up_to(&mut settings, &event_receiver, 512, 4);
+        let snapshot = raw_script_to_json(
+            &mut settings,
+            r#"({ progress: __harnessProgress, state: __harnessState })"#,
+        );
+
+        assert_eq!(timer_count, 15, "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert_eq!(snapshot["state"]["done"], true, "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert_eq!(snapshot["state"]["harnessStatus"], 0, "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert_eq!(snapshot["progress"].as_array().map(Vec::len), Some(13), "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert!(
+            pending_timers.iter().all(|request| request.timeout_ms >= 10000),
+            "snapshot: {snapshot:?}; pending: {pending_timers:?}"
+        );
+    }
+
+    #[test]
+    fn writable_stream_write_any_stalls_with_output_enabled() {
+        let mut settings = parsed_document_environment_settings();
+        let (event_sender, event_receiver) =
+            channel::<ContentEvent>().expect("content event channel should initialize");
+        settings
+            .install_timer_host(1, event_sender)
+            .expect("timer host should install");
+
+        settings
+            .evaluate_script(
+                r#"self.GLOBAL = {
+                    isWindow() { return true; },
+                    isWorker() { return false; },
+                    isShadowRealm() { return false; }
+                };"#,
+            )
+            .expect("GLOBAL should install");
+
+        let harness_path = format!(
+            "{}/../vendor/wpt/resources/testharness.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let test_utils_path = format!(
+            "{}/../vendor/wpt/streams/resources/test-utils.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let recording_streams_path = format!(
+            "{}/../vendor/wpt/streams/resources/recording-streams.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let write_any_path = format!(
+            "{}/../vendor/wpt/streams/writable-streams/write.any.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let harness = fs::read_to_string(harness_path).expect("testharness.js should be readable");
+        let test_utils =
+            fs::read_to_string(test_utils_path).expect("test-utils.js should be readable");
+        let recording_streams = fs::read_to_string(recording_streams_path)
+            .expect("recording-streams.js should be readable");
+        let write_any =
+            fs::read_to_string(write_any_path).expect("write.any.js should be readable");
+
+        settings
+            .evaluate_script(&harness)
+            .expect("testharness should evaluate");
+        settings
+            .evaluate_script(&test_utils)
+            .expect("test-utils should evaluate");
+        settings
+            .evaluate_script(&recording_streams)
+            .expect("recording-streams should evaluate");
+        settings
+            .evaluate_script(
+                r#"globalThis.__harnessProgress = [];
+                globalThis.__harnessState = { done: false };
+                globalThis.__uncaughtErrors = [];
+                add_result_callback(test => {
+                    globalThis.__harnessProgress.push({
+                        name: test.name,
+                        status: test.status,
+                        message: test.message ?? null
+                    });
+                });
+                add_completion_callback((tests, harnessStatus) => {
+                    globalThis.__harnessState = {
+                        done: true,
+                        harnessStatus: harnessStatus.status,
+                        tests: tests.map(test => ({
+                            name: test.name,
+                            status: test.status,
+                            message: test.message ?? null
+                        }))
+                    };
+                });
+                window.addEventListener("error", event => {
+                    globalThis.__uncaughtErrors.push(String(event.message || event.error));
+                });
+                window.addEventListener("unhandledrejection", event => {
+                    globalThis.__uncaughtErrors.push(String(event.reason));
+                });"#,
+            )
+            .expect("harness callbacks should install");
+        settings
+            .evaluate_script(&write_any)
+            .expect("write.any.js should evaluate");
+
+        let (timer_count, pending_timers) =
+            drain_window_timers_up_to(&mut settings, &event_receiver, 512, 4);
+        let snapshot = raw_script_to_json(
+            &mut settings,
+            r#"({ progress: __harnessProgress, state: __harnessState, uncaughtErrors: __uncaughtErrors, logText: document.getElementById('log') ? document.getElementById('log').textContent : null })"#,
+        );
+
+        assert_eq!(timer_count, 6, "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert_eq!(snapshot["state"]["done"], false, "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert_eq!(snapshot["progress"].as_array().map(Vec::len), Some(3), "snapshot: {snapshot:?}; pending: {pending_timers:?}");
+        assert_eq!(
+            snapshot["uncaughtErrors"],
+            serde_json::json!(["TypeError: object is not callable"]),
+            "snapshot: {snapshot:?}; pending: {pending_timers:?}"
+        );
     }
 }

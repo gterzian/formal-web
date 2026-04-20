@@ -8,7 +8,10 @@ use boa_engine::{
 };
 
 use crate::boa::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
-use crate::dom::{AbortSignal, DOMException, initialize_dependent_abort_signal, signal_abort};
+use crate::dom::{
+    AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal,
+    signal_abort,
+};
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 
 use super::event_target::{ContextEventDispatchHost, register_event_target_methods};
@@ -99,7 +102,7 @@ pub(crate) fn timeout_reason(context: &mut Context) -> JsResult<JsValue> {
 }
 
 pub(crate) fn signal_abort_with_context(
-    signal: &JsObject,
+    signal: &AbortSignal,
     reason: JsValue,
     context: &mut Context,
 ) -> JsResult<()> {
@@ -109,17 +112,17 @@ pub(crate) fn signal_abort_with_context(
 
 fn abort_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let reason = abort_reason_from_argument(args.get(0), context)?;
-    let signal = AbortSignal::from_data(AbortSignal::aborted_with_reason(reason), context)?;
-    Ok(JsValue::from(signal))
+    let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), context)?;
+    Ok(JsValue::from(signal.object()?))
 }
 
 fn timeout_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let milliseconds = args.get_or_undefined(0).to_length(context)?;
-    let signal = AbortSignal::from_data(AbortSignal::new(), context)?;
+    let signal = create_abort_signal(AbortSignal::new(), context)?;
     let callback = NativeFunction::from_copy_closure_with_captures(
-        |_, _, signal: &JsObject, context| {
+        |_, _, signal: &AbortSignal, context| {
             let reason = timeout_reason(context)?;
-            signal_abort_with_context(&signal, reason, context)?;
+            signal_abort_with_context(signal, reason, context)?;
             Ok(JsValue::undefined())
         },
         signal.clone(),
@@ -139,14 +142,14 @@ fn timeout_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
         context,
     )?;
 
-    Ok(JsValue::from(signal))
+    Ok(JsValue::from(signal.object()?))
 }
 
 fn any_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let signals = sequence_abort_signals(args.get_or_undefined(0), context)?;
-    let result_signal = AbortSignal::from_data(AbortSignal::new(), context)?;
+    let result_signal = create_abort_signal(AbortSignal::new(), context)?;
     initialize_dependent_abort_signal(&result_signal, &signals)?;
-    Ok(JsValue::from(result_signal))
+    Ok(JsValue::from(result_signal.object()?))
 }
 
 fn get_aborted(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
@@ -235,7 +238,7 @@ fn event_handler_value(value: &JsValue) -> JsResult<Option<JsObject>> {
     Ok(Some(object.clone()))
 }
 
-fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Vec<JsObject>> {
+fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Vec<AbortSignal>> {
     let object = value.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("AbortSignal.any() requires a sequence of AbortSignal objects")
@@ -250,12 +253,13 @@ fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Ve
         let signal_object = signal_value.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("AbortSignal.any() requires AbortSignal objects")
         })?;
-        if signal_object.downcast_ref::<AbortSignal>().is_none() {
-            return Err(JsNativeError::typ()
-                .with_message("AbortSignal.any() requires AbortSignal objects")
-                .into());
-        }
-        signals.push(signal_object.clone());
+        let signal = signal_object
+            .downcast_ref::<AbortSignal>()
+            .map(|signal| signal.clone())
+            .ok_or_else(|| {
+            JsNativeError::typ().with_message("AbortSignal.any() requires AbortSignal objects")
+        })?;
+        signals.push(signal);
     }
 
     Ok(signals)

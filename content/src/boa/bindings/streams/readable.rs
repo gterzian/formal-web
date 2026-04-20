@@ -6,13 +6,11 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::streams::readable::{
+use crate::streams::{
+    ReadableStream, ReadableStreamDefaultController, ReadableStreamDefaultReader,
     construct_readable_stream, construct_readable_stream_default_reader,
     with_readable_stream_default_controller_mut, with_readable_stream_default_controller_ref,
     with_readable_stream_default_reader_ref, with_readable_stream_mut,
-};
-use crate::streams::{
-    ReadableStream, ReadableStreamDefaultController, ReadableStreamDefaultReader,
 };
 
 impl Class for ReadableStream {

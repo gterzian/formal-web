@@ -12,8 +12,8 @@ use boa_engine::{
 use crate::boa::platform_objects::{
     document_object, object_for_existing_node, resolve_element_object,
 };
-use crate::boa::{is_abort_signal_object, with_event_target_mut};
-use crate::dom::{Event, EventDispatchHost, EventTarget, dispatch};
+use crate::boa::with_event_target_mut;
+use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::webidl::{EcmascriptHost, callback_interface_value};
 
 #[derive(Clone)]
@@ -21,7 +21,7 @@ pub(crate) struct AddEventListenerOptions {
     pub capture: bool,
     pub once: bool,
     pub passive: Option<bool>,
-    pub signal: Option<JsObject>,
+    pub signal: Option<AbortSignal>,
 }
 
 impl Class for EventTarget {
@@ -248,12 +248,15 @@ pub(crate) fn flatten_more(
         let signal = value.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("addEventListener signal must be an AbortSignal")
         })?;
-        if !is_abort_signal_object(&signal) {
-            return Err(JsNativeError::typ()
-                .with_message("addEventListener signal must be an AbortSignal")
-                .into());
-        }
-        Some(signal.clone())
+        Some(
+            signal
+                .downcast_ref::<AbortSignal>()
+                .map(|signal| signal.clone())
+                .ok_or_else(|| {
+                    JsNativeError::typ()
+                        .with_message("addEventListener signal must be an AbortSignal")
+                })?,
+        )
     };
     Ok(AddEventListenerOptions {
         capture,

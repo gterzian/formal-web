@@ -29,6 +29,8 @@ rustup run 1.92.0 cargo run -- test-wpt formal/load-event-fires.html
 
 Each WebDriver child starts on the test URL instead of the startup artifact page, and the runner collects `testharness.js` completion through WebDriver script execution with a rendered-summary fallback from `testharnessreport.js`.
 
+The runner writes generated `wpt serve` config and injection files under `scratchpad/wpt-runner/runtime/` and removes them after each test. When machine-readable output is needed, point `--output` at a path under `scratchpad/wpt-runner/reports/`.
+
 Without a path it uses both `tests/wpt/include.ini` and `tests/formal/include.ini`. With `--list` it prints the selected tests without launching the embedder. Explicit paths can point at the upstream WPT tree or at the local suite through the `formal/` prefix.
 
 ```bash

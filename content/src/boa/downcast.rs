@@ -88,8 +88,8 @@ pub(crate) fn with_event_target_mut<R>(
     if let Some(mut node) = object.downcast_mut::<Node>() {
         return Ok(f(&mut node.event_target));
     }
-    if let Some(mut signal) = object.downcast_mut::<AbortSignal>() {
-        return Ok(f(&mut signal.event_target));
+    if let Some(signal) = object.downcast_ref::<AbortSignal>() {
+        return Ok(signal.with_event_target_mut(f));
     }
     if let Some(mut target) = object.downcast_mut::<EventTarget>() {
         return Ok(f(&mut target));
@@ -126,7 +126,7 @@ pub(crate) fn with_event_target_ref<R>(
         return Ok(f(&node.event_target));
     }
     if let Some(signal) = object.downcast_ref::<AbortSignal>() {
-        return Ok(f(&signal.event_target));
+        return Ok(signal.with_event_target_ref(f));
     }
     if let Some(target) = object.downcast_ref::<EventTarget>() {
         return Ok(f(&target));
