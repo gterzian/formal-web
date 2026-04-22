@@ -1991,10 +1991,106 @@ fn parse_http_response(bytes: &[u8]) -> Result<HttpResponse, String> {
 }
 
 fn reporter_inject_script() -> &'static str {
-    r#"(function () {
-  if (!document.currentScript) {
-    document.currentScript = { remove: function () {} };
-  }
+        r#"(function () {
+    if (!document.currentScript) {
+        document.currentScript = { remove: function () {} };
+    }
+
+    if (typeof window === "undefined") {
+        return;
+    }
+
+    var setupValue;
+    var addCompletionCallbackValue;
+    var outputDisabled = false;
+    var completionInstalled = false;
+    var installScheduled = false;
+
+    function installHarnessHooks() {
+        disableOutput();
+        installCompletionReporter();
+    }
+
+    function scheduleInstall() {
+        if (installScheduled) {
+            return;
+        }
+        installScheduled = true;
+        Promise.resolve().then(function () {
+            installScheduled = false;
+            installHarnessHooks();
+        });
+    }
+
+    function disableOutput() {
+        if (outputDisabled || typeof setupValue !== "function") {
+            return;
+        }
+        outputDisabled = true;
+        try {
+            setupValue({ output: false });
+        } catch (_error) {
+            outputDisabled = false;
+        }
+    }
+
+    function installCompletionReporter() {
+        if (completionInstalled || typeof addCompletionCallbackValue !== "function") {
+            return;
+        }
+        completionInstalled = true;
+        addCompletionCallbackValue(function (tests, harnessStatus, asserts) {
+            window.__formalWebTestResult = {
+                location: String((window.location && window.location.href) || ""),
+                title: String(document.title || ""),
+                tests: tests.map(function (test) {
+                    return {
+                        name: test.name,
+                        status: test.status,
+                        message: test.message == null ? null : String(test.message),
+                        stack: test.stack == null ? null : String(test.stack)
+                    };
+                }),
+                status: {
+                    status: harnessStatus.status,
+                    message: harnessStatus.message == null ? null : String(harnessStatus.message),
+                    stack: harnessStatus.stack == null ? null : String(harnessStatus.stack)
+                },
+                asserts: Array.isArray(asserts) ? asserts.map(function (assertRecord) {
+                    return {
+                        name: assertRecord.assert_name,
+                        status: assertRecord.status,
+                        args: assertRecord.args,
+                        stack: assertRecord.stack == null ? null : String(assertRecord.stack)
+                    };
+                }) : []
+            };
+        });
+    }
+
+    Object.defineProperty(window, "setup", {
+        configurable: true,
+        enumerable: true,
+        get: function () {
+            return setupValue;
+        },
+        set: function (value) {
+            setupValue = value;
+            scheduleInstall();
+        }
+    });
+
+    Object.defineProperty(window, "add_completion_callback", {
+        configurable: true,
+        enumerable: true,
+        get: function () {
+            return addCompletionCallbackValue;
+        },
+        set: function (value) {
+            addCompletionCallbackValue = value;
+            scheduleInstall();
+        }
+    });
 }());
 "#
 }
@@ -2013,6 +2109,8 @@ mod tests {
         let script = reporter_inject_script();
         assert!(script.contains("document.currentScript"));
         assert!(script.contains("remove: function () {}"));
+        assert!(script.contains("window.__formalWebTestResult"));
+        assert!(script.contains("setupValue({ output: false })"));
     }
 
     #[test]

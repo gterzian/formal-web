@@ -142,6 +142,10 @@ impl<'a> ContextEventDispatchHost<'a> {
 }
 
 impl EcmascriptHost for ContextEventDispatchHost<'_> {
+    fn context(&mut self) -> &mut Context {
+        self.context
+    }
+
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
         object.get(JsString::from(property), self.context)
     }

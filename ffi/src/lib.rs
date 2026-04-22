@@ -6,6 +6,16 @@ use std::ffi::{CStr, c_char};
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
+fn timer_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
+}
+
+fn log_timer_debug(message: impl AsRef<str>) {
+    if timer_debug_enabled() {
+        eprintln!("[timer-debug][ffi] {}", message.as_ref());
+    }
+}
+
 const DISPATCH_EVENT_BATCH_SEPARATOR: char = '\u{001e}';
 const DISPATCH_EVENT_FIELD_SEPARATOR: char = '\u{001f}';
 
@@ -151,6 +161,10 @@ pub(crate) fn call_lean_schedule_window_timer_parts(
     timeout_ms: usize,
     nesting_level: usize,
 ) -> Result<(), String> {
+    log_timer_debug(format!(
+        "schedule lean event_loop={} document={} id={} key={} timeout_ms={} nesting={}",
+        event_loop_id, document_id, timer_id, timer_key, timeout_ms, nesting_level
+    ));
     let io_result = unsafe {
         scheduleWindowTimer(
             event_loop_id,
@@ -175,6 +189,7 @@ pub(crate) fn call_lean_clear_window_timer_parts(
     event_loop_id: usize,
     timer_key: usize,
 ) -> Result<(), String> {
+    log_timer_debug(format!("clear lean event_loop={} key={}", event_loop_id, timer_key));
     let io_result = unsafe { clearWindowTimer(event_loop_id, timer_key) };
     let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
     if !is_ok {
@@ -500,6 +515,10 @@ pub extern "C" fn contentProcessRunWindowTimer(
     timer_key: usize,
     nesting_level: usize,
 ) -> *mut lean_object {
+    log_timer_debug(format!(
+        "dispatch to content handle={} document={} id={} key={} nesting={}",
+        handle, document_id, timer_id, timer_key, nesting_level
+    ));
     match panic::catch_unwind(AssertUnwindSafe(|| {
         content_bridge::send_command(
             handle,

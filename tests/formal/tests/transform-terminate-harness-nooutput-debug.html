@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>transform terminate harness nooutput debug</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+setup({ output: false });
+
+add_completion_callback((tests, harnessStatus) => {
+  window.__formalWebTestResult = {
+    location: "",
+    title: String(document.title || ""),
+    tests: tests.map(test => ({
+      name: test.name,
+      status: test.status,
+      message: test.message ?? null,
+      stack: null,
+    })),
+    status: {
+      status: harnessStatus.status,
+      message: harnessStatus.message ?? null,
+      stack: null,
+    },
+    asserts: [],
+  };
+});
+
+test(() => {
+  new TransformStream({
+    start(controller) {
+      controller.terminate();
+      controller.terminate();
+    },
+  });
+  assert_true(true);
+}, "controller.terminate() should do nothing the second time it is called");
+</script>

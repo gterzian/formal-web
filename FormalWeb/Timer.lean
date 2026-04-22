@@ -303,6 +303,9 @@ private def recvDrainedMessages?
 private def maxSleepMilliseconds : Nat :=
   4294967295
 
+private def wakeSleepChunkMilliseconds : Nat :=
+  50
+
 private partial def sleepMilliseconds
     (delayMs : Nat) :
     IO Unit := do
@@ -313,15 +316,47 @@ private partial def sleepMilliseconds
     IO.sleep (UInt32.ofNat chunk)
     sleepMilliseconds (delayMs - chunk)
 
+private partial def sleepUntilWakeReady
+    (currentGenerationRef : IO.Ref Nat)
+    (shutdownRef : IO.Ref Bool)
+    (generation : Nat)
+    (delayMs : Nat) :
+    IO Bool := do
+  if delayMs = 0 then
+    if ← shutdownRef.get then
+      return false
+    return (← currentGenerationRef.get) = generation
+  else
+    let chunk := Nat.min delayMs wakeSleepChunkMilliseconds
+    sleepMilliseconds chunk
+    if ← shutdownRef.get then
+      return false
+    if (← currentGenerationRef.get) ≠ generation then
+      return false
+    sleepUntilWakeReady currentGenerationRef shutdownRef generation (delayMs - chunk)
+
 private def spawnWakeTask
     (sendWake : Nat -> Nat -> IO Unit)
+    (currentGenerationRef : IO.Ref Nat)
+    (shutdownRef : IO.Ref Bool)
     (generation : Nat)
     (delayMs : Nat) :
     IO Unit := do
-  let _ ← IO.asTask <| do
-    sleepMilliseconds delayMs
-    let nowMs ← IO.monoMsNow
-    sendWake nowMs generation
+  if delayMs = 0 then
+    if ← shutdownRef.get then
+      pure ()
+    else if (← currentGenerationRef.get) = generation then
+      let nowMs ← IO.monoMsNow
+      sendWake nowMs generation
+    else
+      pure ()
+  else
+    let _ ← IO.asTask <| do
+      if ← sleepUntilWakeReady currentGenerationRef shutdownRef generation delayMs then
+        let nowMs ← IO.monoMsNow
+        sendWake nowMs generation
+      pure ()
+    pure ()
   pure ()
 
 private def timerCompletionKey
@@ -362,6 +397,8 @@ private def takeCompletion?
 def runTimerMessages
     (notify : TimerNotification → IO Unit)
     (channel : Std.CloseableChannel TimerTaskMessage)
+    (currentGenerationRef : IO.Ref Nat)
+    (shutdownRef : IO.Ref Bool)
     (timer : Timer)
     (messages : List TimerTaskMessage) :
     IO Timer := do
@@ -369,10 +406,13 @@ def runTimerMessages
   for effect in effects do
     match effect with
     | .scheduleWake generation delayMs =>
+        currentGenerationRef.set generation
         spawnWakeTask
           (fun nowMs wakeGeneration => do
             let _ ← channel.trySend (.wake nowMs wakeGeneration)
             pure ())
+          currentGenerationRef
+          shutdownRef
           generation
           delayMs
     | .notify notification =>
@@ -381,6 +421,8 @@ def runTimerMessages
 
 private def runTimerRuntimeTaskMessage
     (channel : Std.CloseableChannel TimerRuntimeMessage)
+    (currentGenerationRef : IO.Ref Nat)
+    (shutdownRef : IO.Ref Bool)
     (state : TimerRuntimeState)
     (message : TimerTaskMessage) :
     IO TimerRuntimeState := do
@@ -395,10 +437,13 @@ private def runTimerRuntimeTaskMessage
   for effect in effects do
     match effect with
     | .scheduleWake generation delayMs =>
+        currentGenerationRef.set generation
         spawnWakeTask
           (fun nowMs wakeGeneration => do
             let _ ← channel.trySend (.task (.wake nowMs wakeGeneration))
             pure ())
+          currentGenerationRef
+          shutdownRef
           generation
           delayMs
     | .notify notification =>
@@ -414,18 +459,27 @@ private def runTimerRuntimeTaskMessage
 
 def runTimerRuntimeMessage
     (channel : Std.CloseableChannel TimerRuntimeMessage)
+    (currentGenerationRef : IO.Ref Nat)
+    (shutdownRef : IO.Ref Bool)
     (state : TimerRuntimeState)
     (message : TimerRuntimeMessage) :
     IO TimerRuntimeState := do
   match message with
   | .task taskMessage =>
-      runTimerRuntimeTaskMessage channel state taskMessage
+      runTimerRuntimeTaskMessage channel currentGenerationRef shutdownRef state taskMessage
   | .scheduleTimeout nowMs request onComplete =>
       let state := registerCompletion state request.timerKey onComplete
-      runTimerRuntimeTaskMessage channel state (.scheduleTimeout nowMs request)
+      runTimerRuntimeTaskMessage
+        channel
+        currentGenerationRef
+        shutdownRef
+        state
+        (.scheduleTimeout nowMs request)
 
-partial def runTimerRuntime
+private partial def runTimerRuntimeLoop
     (channel : Std.CloseableChannel TimerRuntimeMessage)
+    (currentGenerationRef : IO.Ref Nat)
+    (shutdownRef : IO.Ref Bool)
     (state : TimerRuntimeState := default) :
     IO Unit := do
   let nextMessage? ← recvCloseableChannel? channel
@@ -433,22 +487,41 @@ partial def runTimerRuntime
   | none =>
       pure ()
   | some message =>
-      let nextState ← runTimerRuntimeMessage channel state message
-      runTimerRuntime channel nextState
+      let nextState ←
+        runTimerRuntimeMessage channel currentGenerationRef shutdownRef state message
+      runTimerRuntimeLoop channel currentGenerationRef shutdownRef nextState
+
+def runTimerRuntime
+    (channel : Std.CloseableChannel TimerRuntimeMessage)
+    (state : TimerRuntimeState := default) :
+    IO Unit := do
+  let currentGenerationRef ← IO.mkRef 0
+  let shutdownRef ← IO.mkRef false
+  try
+    runTimerRuntimeLoop channel currentGenerationRef shutdownRef state
+  finally
+    shutdownRef.set true
 
 partial def runTimerLoop
     (notify : TimerNotification → IO Unit)
     (channel : Std.CloseableChannel TimerTaskMessage)
+    (currentGenerationRef : IO.Ref Nat)
+    (shutdownRef : IO.Ref Bool)
     (timer : Timer) :
     IO Unit := do
   let some messages ← recvDrainedMessages? channel | pure ()
-  let nextTimer ← runTimerMessages notify channel timer messages
-  runTimerLoop notify channel nextTimer
+  let nextTimer ← runTimerMessages notify channel currentGenerationRef shutdownRef timer messages
+  runTimerLoop notify channel currentGenerationRef shutdownRef nextTimer
 
 def runTimer
     (channel : Std.CloseableChannel TimerTaskMessage)
     (notify : TimerNotification → IO Unit) :
     IO Unit := do
-  runTimerLoop notify channel default
+  let currentGenerationRef ← IO.mkRef 0
+  let shutdownRef ← IO.mkRef false
+  try
+    runTimerLoop notify channel currentGenerationRef shutdownRef default
+  finally
+    shutdownRef.set true
 
 end FormalWeb

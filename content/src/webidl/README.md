@@ -5,3 +5,5 @@
 - This layer should depend on abstract `Get` / `IsCallable` / `Call` hooks instead of reaching into Boa directly.
 
 - DOM event dispatch should call into this layer for listener callback invocation instead of calling Boa functions directly.
+
+- Spec is found under the top-level `/web_standards/WebIDL.html`

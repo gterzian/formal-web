@@ -3,15 +3,17 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
+    object::FunctionObjectBuilder,
     property::Attribute,
+    symbol::JsSymbol,
 };
 
 use crate::streams::{
     ReadableStream, ReadableStreamDefaultController, ReadableStreamDefaultReader,
     construct_readable_stream, construct_readable_stream_default_reader,
-    with_readable_stream_default_controller_ref,
     with_readable_stream_default_reader_ref, with_readable_stream_ref,
 };
+use crate::webidl::create_value_async_iterator;
 
 impl Class for ReadableStream {
     const NAME: &'static str = "ReadableStream";
@@ -35,6 +37,14 @@ impl Class for ReadableStream {
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
         let realm = class.context().realm().clone();
+        let values = FunctionObjectBuilder::new(
+            class.context().realm(),
+            NativeFunction::from_fn_ptr(values_method),
+        )
+        .name(js_string!("values"))
+        .length(0)
+        .constructor(false)
+        .build();
         class
             .static_method(
                 js_string!("from"),
@@ -71,6 +81,16 @@ impl Class for ReadableStream {
                 js_string!("tee"),
                 0,
                 NativeFunction::from_fn_ptr(tee_method),
+            )
+            .property(
+                js_string!("values"),
+                values.clone(),
+                Attribute::WRITABLE | Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .property(
+                JsSymbol::async_iterator(),
+                values,
+                Attribute::WRITABLE | Attribute::CONFIGURABLE,
             );
         Ok(())
     }
@@ -224,6 +244,17 @@ fn tee_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     stream.tee(context)
 }
 
+fn values_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let stream_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStream receiver is not an object")
+    })?;
+
+    let iterator = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| {
+        create_value_async_iterator(stream.clone(), args, context)
+    })??;
+    Ok(JsValue::from(iterator))
+}
+
 fn from_static(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     Err(JsNativeError::typ()
         .with_message("ReadableStream.from() is not implemented yet")
@@ -321,4 +352,14 @@ fn release_lock_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> 
 
     with_readable_stream_default_reader_ref(&reader_object, |reader| reader.release_lock(context))??;
     Ok(JsValue::undefined())
+}
+
+fn with_readable_stream_default_controller_ref<R>(
+    object: &boa_engine::object::JsObject,
+    f: impl FnOnce(&ReadableStreamDefaultController) -> R,
+) -> JsResult<R> {
+    let controller = object.downcast_ref::<ReadableStreamDefaultController>().ok_or_else(|| {
+        JsNativeError::typ().with_message("object is not a ReadableStreamDefaultController")
+    })?;
+    Ok(f(&controller))
 }

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>transform order flush debug</title>
+<script>
+function finish(status, message) {
+  window.__formalWebTestResult = {
+    location: "",
+    title: String(document.title || ""),
+    tests: [
+      {
+        name: "transform order flush debug",
+        status,
+        message,
+        stack: null,
+      },
+    ],
+    status: {
+      status,
+      message,
+      stack: null,
+    },
+    asserts: [],
+  };
+}
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const flushAsyncEvents = () => delay(0).then(() => delay(0)).then(() => delay(0)).then(() => delay(0));
+
+let startCalled = false;
+let startDone = false;
+let transformCalled = false;
+let transformDone = false;
+let flushCalled = false;
+let flushDone = false;
+let writeResult = "pending";
+let closeResult = "pending";
+let assertion = null;
+
+const ts = new TransformStream(
+  {
+    start() {
+      startCalled = true;
+      return flushAsyncEvents().then(() => {
+        startDone = true;
+      });
+    },
+    transform() {
+      transformCalled = true;
+      if (!startDone && !assertion) {
+        assertion = "transform-before-start";
+      }
+      return flushAsyncEvents().then(() => {
+        transformDone = true;
+      });
+    },
+    flush() {
+      flushCalled = true;
+      if (!transformDone && !assertion) {
+        assertion = "flush-before-transform";
+      }
+      return flushAsyncEvents().then(() => {
+        flushDone = true;
+      });
+    },
+  },
+  undefined,
+  { highWaterMark: 1 },
+);
+
+const writer = ts.writable.getWriter();
+writer.write("a").then(
+  () => {
+    writeResult = "fulfilled";
+  },
+  error => {
+    writeResult = `rejected:${String(error)}`;
+  },
+);
+writer.close().then(
+  () => {
+    closeResult = "closed";
+  },
+  error => {
+    closeResult = `close-rejected:${String(error)}`;
+  },
+);
+
+setTimeout(() => {
+  const state = {
+    startCalled,
+    startDone,
+    transformCalled,
+    transformDone,
+    flushCalled,
+    flushDone,
+    writeResult,
+    closeResult,
+    assertion,
+  };
+  const passed = assertion === null && closeResult === "closed";
+  finish(passed ? 0 : 1, JSON.stringify(state));
+}, 200);
+</script>

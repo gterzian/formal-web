@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
 use blitz_traits::events::{DomEvent, EventState, UiEvent};
 use boa_engine::class::Class;
-use boa_engine::{JsResult, object::JsObject};
+use boa_engine::{Context, JsResult, object::JsObject};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::Event as ContentEvent;
 
@@ -100,6 +100,10 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
 }
 
 impl EcmascriptHost for BlitzJSEventHandler<'_> {
+    fn context(&mut self) -> &mut Context {
+        &mut self.settings.context
+    }
+
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<boa_engine::JsValue> {
         self.settings.get(object, property)
     }
@@ -146,6 +150,10 @@ impl EventHandler for BlitzJSEventHandler<'_> {
 
         if let Some(ui_event) = event_object.downcast_ref::<JsUiEvent>() {
             ui_event.apply_to_event_state(event_state);
+        }
+
+        if let Err(error) = self.settings.perform_a_microtask_checkpoint() {
+            eprintln!("failed to run a microtask checkpoint after UI event dispatch: {error}");
         }
     }
 }

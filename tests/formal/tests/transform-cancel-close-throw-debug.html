@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>transform cancel close throw debug</title>
+<script>
+function finish(status, message) {
+  window.__formalWebTestResult = {
+    location: "",
+    title: String(document.title || ""),
+    tests: [
+      {
+        name: "transform cancel close throw debug",
+        status,
+        message,
+        stack: null,
+      },
+    ],
+    status: {
+      status,
+      message,
+      stack: null,
+    },
+    asserts: [],
+  };
+}
+
+const thrownError = new Error("bad things are happening!");
+thrownError.name = "error1";
+const originalReason = new Error("original reason");
+originalReason.name = "error2";
+
+const ts = new TransformStream({
+  async cancel(reason) {
+    if (reason !== originalReason) {
+      throw new Error("wrong cancel reason");
+    }
+    throw thrownError;
+  },
+  flush() {
+    throw new Error("flush should not be called");
+  },
+});
+
+let cancelState = "pending";
+let closeState = "pending";
+
+const cancelPromise = ts.readable.cancel(originalReason).then(
+  value => {
+    cancelState = `resolved:${String(value)}`;
+  },
+  error => {
+    cancelState = `rejected:${error && error.name ? error.name : String(error)}`;
+  },
+);
+
+const closePromise = ts.writable.close().then(
+  value => {
+    closeState = `resolved:${String(value)}`;
+  },
+  error => {
+    closeState = `rejected:${error && error.name ? error.name : String(error)}`;
+  },
+);
+
+Promise.allSettled([cancelPromise, closePromise]).then(() => {
+  const state = { cancelState, closeState };
+  const passed = cancelState === "rejected:error1" && closeState === "rejected:error1";
+  finish(passed ? 0 : 1, JSON.stringify(state));
+});
+</script>

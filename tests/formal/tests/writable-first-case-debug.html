@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>writable first case debug</title>
+<script src="/resources/testharness.js"></script>
+<script src="/streams/resources/test-utils.js"></script>
+<script>
+function finish(status, message) {
+  window.__formalWebTestResult = {
+    location: "",
+    title: String(document.title || ""),
+    tests: [
+      {
+        name: "writable first case debug",
+        status,
+        message,
+        stack: null,
+      },
+    ],
+    status: {
+      status,
+      message,
+      stack: null,
+    },
+    asserts: [],
+  };
+}
+
+const originalSetTimeout = globalThis.setTimeout.bind(globalThis);
+const timerLog = [];
+globalThis.setTimeout = function(callback, timeout, ...args) {
+  const label = timerLog.length + 1;
+  timerLog.push({ label, phase: "scheduled", timeout: Number(timeout) });
+  return originalSetTimeout(function(...innerArgs) {
+    timerLog.push({ label, phase: "fired", timeout: Number(timeout) });
+    return callback(...innerArgs);
+  }, timeout, ...args);
+};
+
+let storage;
+let writeCalls = 0;
+let closeCalls = 0;
+let result = "pending";
+let syncError = null;
+let sinkCloseSettled = false;
+let sinkWriteSettled = 0;
+
+try {
+  const ws = new WritableStream({
+    start() {
+      storage = [];
+    },
+    write(chunk) {
+      writeCalls += 1;
+      return delay(0).then(() => {
+        sinkWriteSettled += 1;
+        storage.push(chunk);
+      });
+    },
+    close() {
+      closeCalls += 1;
+      const promise = delay(0);
+      promise.then(() => {
+        sinkCloseSettled = true;
+      });
+      return promise;
+    },
+  });
+
+  const writer = ws.getWriter();
+  [1, 2, 3, 4, 5].forEach(chunk => writer.write(chunk));
+  writer.close().then(
+    () => {
+      result = "closed";
+    },
+    error => {
+      result = `close-rejected:${String(error)}`;
+    },
+  );
+} catch (error) {
+  syncError = String(error);
+}
+
+setTimeout(() => {
+  const state = {
+    storage,
+    writeCalls,
+    sinkWriteSettled,
+    closeCalls,
+    sinkCloseSettled,
+    result,
+    syncError,
+    delayType: typeof delay,
+    timerLog,
+  };
+  finish(result === "closed" && !syncError ? 0 : 1, JSON.stringify(state));
+}, 200);
+</script>

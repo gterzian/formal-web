@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>window timers nested clamp</title>
+<script>
+const tests = [];
+
+function record(name, status, message = null) {
+  tests.push({ name, status, message, stack: null });
+}
+
+function finish() {
+  const firstFailure = tests.find((test) => test.status !== 0) || null;
+  window.__formalWebTestResult = {
+    location: "",
+    title: String(document.title || ""),
+    tests,
+    status: {
+      status: firstFailure ? 1 : 0,
+      message: firstFailure ? firstFailure.message : null,
+      stack: null,
+    },
+    asserts: [],
+  };
+}
+
+const fireTimes = [];
+const startedAt = Date.now();
+
+function fireNestedTimeout(depth) {
+  fireTimes.push(Date.now() - startedAt);
+  if (depth === 7) {
+    record("nested setTimeout chain reaches the clamped timer", 0);
+    finish();
+    return;
+  }
+
+  setTimeout(() => {
+    fireNestedTimeout(depth + 1);
+  }, 0);
+}
+
+setTimeout(() => {
+  fireNestedTimeout(1);
+}, 0);
+</script>
+<p>Verifies that nested Window timers continue firing after the HTML timer clamp promotes the delay above zero.</p>

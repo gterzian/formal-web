@@ -36,6 +36,16 @@ use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function}
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::Event as ContentEvent;
 
+fn timer_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
+}
+
+fn log_timer_debug(message: impl AsRef<str>) {
+    if timer_debug_enabled() {
+        eprintln!("[timer-debug][settings] {}", message.as_ref());
+    }
+}
+
 /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
 #[derive(Debug, Clone)]
 pub struct Origin {
@@ -223,11 +233,15 @@ impl EnvironmentSettingsObject {
     }
 
     pub fn evaluate_script(&mut self, source: &str) -> Result<(), String> {
+        self.evaluate_script_without_microtask_checkpoint(source)?;
+        self.perform_a_microtask_checkpoint()
+    }
+
+    fn evaluate_script_without_microtask_checkpoint(&mut self, source: &str) -> Result<(), String> {
         self.context
             .eval(Source::from_bytes(source))
             .map(|_| ())
-            .map_err(|error| error.to_string())?;
-        self.perform_a_microtask_checkpoint()
+            .map_err(|error| error.to_string())
     }
 
     pub fn evaluate_script_to_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
@@ -271,6 +285,10 @@ impl EnvironmentSettingsObject {
         timer_key: u64,
         nesting_level: u32,
     ) -> Result<(), String> {
+        log_timer_debug(format!(
+            "run timer id={} key={} nesting={}",
+            timer_id, timer_key, nesting_level
+        ));
         let previous_nesting_level =
             crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
                 Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
@@ -284,6 +302,10 @@ impl EnvironmentSettingsObject {
             .map_err(|error| error.to_string())?;
 
         let Some(timer) = timer else {
+            log_timer_debug(format!(
+                "run timer id={} key={} missing_registration",
+                timer_id, timer_key
+            ));
             let _ =
                 crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
                     global_scope.set_current_timer_nesting_level(previous_nesting_level);
@@ -294,19 +316,31 @@ impl EnvironmentSettingsObject {
 
         match &timer.handler {
             TimerHandler::Function { callback } => {
+                log_timer_debug(format!(
+                    "invoke timer callback id={} key={} function",
+                    timer_id, timer_key
+                ));
                 let global = JsValue::from(self.context.global_object());
-                if let Err(error) = invoke_callback_function(
-                    self,
-                    callback,
-                    &timer.arguments,
-                    ExceptionBehavior::Report,
-                    Some(&global),
-                ) {
+                let callback_result = (|| {
+                    let function = JsFunction::from_object(callback.clone()).ok_or_else(|| {
+                        JsError::from(
+                            JsNativeError::typ().with_message("timer callback is not callable"),
+                        )
+                    })?;
+                    function.call(&global, &timer.arguments, &mut self.context)
+                })();
+                if let Err(error) = callback_result {
                     eprintln!("content error: {error}");
                 }
             }
             TimerHandler::String { source } => {
-                if let Err(error) = self.evaluate_script(source) {
+                log_timer_debug(format!(
+                    "invoke timer callback id={} key={} string_source_len={}",
+                    timer_id,
+                    timer_key,
+                    source.len()
+                ));
+                if let Err(error) = self.evaluate_script_without_microtask_checkpoint(source) {
                     eprintln!("content error: {error}");
                 }
             }
@@ -323,6 +357,9 @@ impl EnvironmentSettingsObject {
             global_scope.set_current_timer_nesting_level(previous_nesting_level);
             Ok(())
         });
+        if let Err(error) = self.perform_a_microtask_checkpoint() {
+            eprintln!("content error: {error}");
+        }
         completion_result
     }
 
@@ -364,6 +401,10 @@ fn set_registered_interface_prototype<Child: Class, Parent: Class>(context: &mut
 }
 
 impl EcmascriptHost for EnvironmentSettingsObject {
+    fn context(&mut self) -> &mut boa_engine::Context {
+        &mut self.context
+    }
+
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
         object.get(JsString::from(property), &mut self.context)
     }

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>transform order debug</title>
+<script>
+function finish(status, message) {
+  window.__formalWebTestResult = {
+    location: "",
+    title: String(document.title || ""),
+    tests: [
+      {
+        name: "transform order debug",
+        status,
+        message,
+        stack: null,
+      },
+    ],
+    status: {
+      status,
+      message,
+      stack: null,
+    },
+    asserts: [],
+  };
+}
+
+let startCalled = false;
+let startDone = false;
+let transformCalled = false;
+let transformDone = false;
+let flushCalled = false;
+let flushDone = false;
+let writeResult = "pending";
+let closeResult = "pending";
+
+const ts = new TransformStream(
+  {
+    start() {
+      startCalled = true;
+      return Promise.resolve().then(() => {
+        startDone = true;
+      });
+    },
+    transform(chunk, controller) {
+      transformCalled = true;
+      return Promise.resolve().then(() => {
+        transformDone = true;
+        controller.enqueue(String(chunk).toUpperCase());
+      });
+    },
+    flush() {
+      flushCalled = true;
+      return Promise.resolve().then(() => {
+        flushDone = true;
+      });
+    },
+  },
+  undefined,
+  { highWaterMark: 1 },
+);
+
+const writer = ts.writable.getWriter();
+writer.write("a").then(
+  () => {
+    writeResult = "fulfilled";
+  },
+  error => {
+    writeResult = `rejected:${String(error)}`;
+  },
+);
+writer.close().then(
+  () => {
+    closeResult = "closed";
+  },
+  error => {
+    closeResult = `close-rejected:${String(error)}`;
+  },
+);
+
+setTimeout(() => {
+  const state = {
+    startCalled,
+    startDone,
+    transformCalled,
+    transformDone,
+    flushCalled,
+    flushDone,
+    writeResult,
+    closeResult,
+  };
+  const passed = closeResult === "closed";
+  finish(passed ? 0 : 1, JSON.stringify(state));
+}, 100);
+</script>

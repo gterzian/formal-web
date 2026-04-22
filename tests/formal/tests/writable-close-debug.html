@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>writable close debug</title>
+<script>
+function finish(status, message) {
+  window.__formalWebTestResult = {
+    location: "",
+    title: String(document.title || ""),
+    tests: [
+      {
+        name: "writable close debug",
+        status,
+        message,
+        stack: null,
+      },
+    ],
+    status: {
+      status,
+      message,
+      stack: null,
+    },
+    asserts: [],
+  };
+}
+
+const storage = [];
+const writeResults = [];
+let closeResult = "pending";
+let closeCalls = 0;
+
+const ws = new WritableStream({
+  start() {},
+  write(chunk) {
+    return Promise.resolve().then(() => {
+      storage.push(chunk);
+    });
+  },
+  close() {
+    closeCalls += 1;
+    return Promise.resolve();
+  },
+});
+
+const writer = ws.getWriter();
+for (const chunk of [1, 2, 3, 4, 5]) {
+  writer.write(chunk).then(
+    () => {
+      writeResults.push(`fulfilled:${chunk}`);
+    },
+    error => {
+      writeResults.push(`rejected:${chunk}:${String(error)}`);
+    },
+  );
+}
+writer.close().then(
+  () => {
+    closeResult = "closed";
+  },
+  error => {
+    closeResult = `close-rejected:${String(error)}`;
+  },
+);
+
+setTimeout(() => {
+  const state = {
+    storage,
+    writeResults,
+    closeCalls,
+    closeResult,
+  };
+  const passed = closeResult === "closed";
+  finish(passed ? 0 : 1, JSON.stringify(state));
+}, 100);
+</script>

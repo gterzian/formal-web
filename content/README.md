@@ -87,6 +87,8 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - `content/src/webidl` owns Web IDL algorithms such as callback-interface conversion and `call a user object's operation`, so DOM dispatch can invoke listeners without reaching into Boa primitives directly.
 
+- Run microtask checkpoints at task boundaries such as completed script evaluation, timer execution, and UI event dispatch instead of immediately after every Rust-to-JavaScript callback return; callback-driven stream algorithms rely on the surrounding synchronous specification step finishing before queued promise reactions run.
+
 - Never call into JavaScript while holding a mutable `BaseDocument` borrow or guard that JavaScript bindings could try to re-borrow. Pass a document wrapper into Blitz and let it take short-lived borrows around its own native phases.
 
 - If `update the rendering` is noted while a document still has pending critical resources, keep that rendering opportunity pending and resume it from the corresponding fetch completion instead of painting a stale frame.

@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, ptr};
 
 use boa_engine::{
     Context, JsData, JsNativeError, JsResult, JsValue, class::Class, object::JsObject,
@@ -6,6 +6,8 @@ use boa_engine::{
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::boa::with_event_target_mut;
+use crate::streams::PipeToState;
+use crate::webidl::EcmascriptHost;
 
 use super::{EventDispatchHost, EventTarget, fire_event};
 
@@ -24,11 +26,15 @@ pub(crate) enum AbortAlgorithm {
         #[unsafe_ignore_trace]
         listener_id: u64,
     },
+
+    ReadableStreamPipeTo {
+        state: PipeToState,
+    },
 }
 
 impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
-    pub(crate) fn run(&self) -> JsResult<()> {
+    pub(crate) fn run(&self, host: &mut impl EcmascriptHost) -> JsResult<()> {
         match self {
             Self::Native { callback } => callback()?,
             Self::RemoveEventListener {
@@ -39,9 +45,35 @@ impl AbortAlgorithm {
                     target.remove_event_listener_by_id(*listener_id);
                 })?;
             }
+            Self::ReadableStreamPipeTo { state } => {
+                state.run_abort_algorithm(host.context())?;
+            }
         }
 
         Ok(())
+    }
+
+    pub(crate) fn matches_entry(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Native { callback: left }, Self::Native { callback: right }) => {
+                ptr::fn_addr_eq(*left, *right)
+            }
+            (
+                Self::RemoveEventListener {
+                    event_target: left_target,
+                    listener_id: left_id,
+                },
+                Self::RemoveEventListener {
+                    event_target: right_target,
+                    listener_id: right_id,
+                },
+            ) => left_id == right_id && JsObject::equals(left_target, right_target),
+            (
+                Self::ReadableStreamPipeTo { state: left_state },
+                Self::ReadableStreamPipeTo { state: right_state },
+            ) => left_state.ptr_eq(right_state),
+            _ => false,
+        }
     }
 }
 
@@ -148,6 +180,14 @@ impl AbortSignal {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
     pub(crate) fn add_abort_algorithm(&self, algorithm: AbortAlgorithm) {
         self.shared.borrow_mut().abort_algorithms.push(algorithm);
+    }
+
+    /// <https://dom.spec.whatwg.org/#abortsignal-remove>
+    pub(crate) fn remove_abort_algorithm(&self, algorithm: &AbortAlgorithm) {
+        self.shared
+            .borrow_mut()
+            .abort_algorithms
+            .retain(|candidate| !candidate.matches_entry(algorithm));
     }
 
     pub(crate) fn add_native_abort_algorithm(&self, callback: fn() -> JsResult<()>) {
@@ -299,7 +339,7 @@ fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> J
     // Step 1: "For each algorithm of signal's abort algorithms: run algorithm."
     let algorithms = signal.take_abort_algorithms();
     for algorithm in algorithms {
-        algorithm.run()?;
+        algorithm.run(host)?;
     }
 
     // Step 2: "Empty signal's abort algorithms."

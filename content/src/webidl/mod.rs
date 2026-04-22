@@ -1,6 +1,8 @@
+mod async_iterable;
 mod callback;
 mod promise;
 
+pub(crate) use async_iterable::{AsyncValueIterable, create_value_async_iterator};
 pub(crate) use callback::{
     EcmascriptHost, ExceptionBehavior, call_user_objects_operation, callback_function_value,
     callback_interface_value, invoke_callback_function,

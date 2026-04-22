@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>transform double terminate render debug</title>
+<body></body>
+<script>
+function finish(status, message) {
+  window.__formalWebTestResult = {
+    location: "",
+    title: String(document.title || ""),
+    tests: [
+      {
+        name: "transform double terminate render debug",
+        status,
+        message,
+        stack: null,
+      },
+    ],
+    status: {
+      status,
+      message,
+      stack: null,
+    },
+    asserts: [],
+  };
+}
+
+let syncError = null;
+
+try {
+  new TransformStream({
+    start(controller) {
+      controller.terminate();
+      controller.terminate();
+    },
+  });
+  document.body.textContent = "after terminate";
+} catch (error) {
+  syncError = String(error);
+}
+
+setTimeout(() => {
+  finish(syncError === null ? 0 : 1, JSON.stringify({ syncError, bodyText: document.body && document.body.textContent }));
+}, 50);
+</script>

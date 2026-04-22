@@ -13,6 +13,16 @@ use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+fn timer_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
+}
+
+fn log_timer_debug(message: impl AsRef<str>) {
+    if timer_debug_enabled() {
+        eprintln!("[timer-debug][bridge] {}", message.as_ref());
+    }
+}
+
 struct ContentBridge {
     command_sender: IpcSender<ContentCommand>,
     child: Mutex<Option<Child>>,
@@ -115,6 +125,14 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::WindowTimerRequested(request) => {
+                    log_timer_debug(format!(
+                        "forward schedule document={} id={} key={} timeout_ms={} nesting={}",
+                        request.document_id,
+                        request.timer_id,
+                        request.timer_key,
+                        request.timeout_ms,
+                        request.nesting_level
+                    ));
                     let _ = super::call_lean_schedule_window_timer_parts(
                         event_loop_id,
                         request.document_id as usize,
@@ -125,6 +143,10 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::WindowTimerCleared(request) => {
+                    log_timer_debug(format!(
+                        "forward clear document={} key={}",
+                        request.document_id, request.timer_key
+                    ));
                     let _ = request.document_id;
                     let _ = super::call_lean_clear_window_timer_parts(
                         event_loop_id,

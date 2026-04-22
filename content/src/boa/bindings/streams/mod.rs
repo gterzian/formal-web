@@ -1,4 +1,4 @@
-mod readable;
+mod readablestream;
 mod strategy;
-mod transform;
-mod writable;
+mod transformstream;
+mod writablestream;
