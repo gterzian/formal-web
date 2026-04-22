@@ -46,9 +46,7 @@ pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String>
     let finalize_result = ffi::finalize_lean_runtime();
     embedder::clear_event_loop_options();
 
-    event_loop_result
-        .and(shutdown_result)
-        .and(finalize_result)
+    event_loop_result.and(shutdown_result).and(finalize_result)
 }
 
 fn run_app() -> Result<(), String> {

@@ -337,12 +337,8 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
     let wpt_meta = MetaTree::load(&config.wpt.meta_root)?;
     let formal_meta = MetaTree::load(&config.formal.meta_root)?;
 
-    let selected = collect_selected_tests(
-        &config,
-        args.path.as_deref(),
-        &wpt_include,
-        &formal_include,
-    )?;
+    let selected =
+        collect_selected_tests(&config, args.path.as_deref(), &wpt_include, &formal_include)?;
 
     if args.list {
         for test in &selected {
@@ -354,7 +350,10 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
     let timeout = Duration::from_millis(args.timeout_ms);
     println!("WPT root: {}", config.wpt.root.display());
     println!("Mode: WebDriver + wptserve runner");
-    println!("Browser mode: {}", if args.headed { "headed" } else { "headless" });
+    println!(
+        "Browser mode: {}",
+        if args.headed { "headed" } else { "headless" }
+    );
     println!("Selected tests: {}", selected.len());
 
     let mut summary = RunSummary::default();
@@ -369,7 +368,11 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
 
         if let Some(reason) = suite_meta
             .disabled_reason_for(&test.source_relative_path)
-            .or_else(|| suite_meta.expectation_for(&test.source_relative_path).and_then(|entry| entry.disabled.clone()))
+            .or_else(|| {
+                suite_meta
+                    .expectation_for(&test.source_relative_path)
+                    .and_then(|entry| entry.disabled.clone())
+            })
         {
             let result = skipped_result(&test.display_path, test.kind, reason);
             print_test_result(&result);
@@ -573,7 +576,8 @@ impl MetaTree {
             let entries = fs::read_dir(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
             for entry in entries {
-                let entry = entry.map_err(|error| format!("failed to read metadata entry: {error}"))?;
+                let entry =
+                    entry.map_err(|error| format!("failed to read metadata entry: {error}"))?;
                 let entry_path = entry.path();
                 if entry_path.is_dir() {
                     stack.push(entry_path);
@@ -673,7 +677,11 @@ impl WptServeProcess {
 
         fs::write(
             &alias_file,
-            format!("/{}/, {}\n", DEFAULT_FORMAL_URL_PREFIX, config.formal.root.display()),
+            format!(
+                "/{}/, {}\n",
+                DEFAULT_FORMAL_URL_PREFIX,
+                config.formal.root.display()
+            ),
         )
         .map_err(|error| format!("failed to write {}: {error}", alias_file.display()))?;
         fs::write(&inject_script, reporter_inject_script())
@@ -709,7 +717,11 @@ impl WptServeProcess {
             return Err(error);
         }
 
-        Ok(Self { child, port, temp_dir })
+        Ok(Self {
+            child,
+            port,
+            temp_dir,
+        })
     }
 
     fn base_url(&self) -> String {
@@ -729,10 +741,7 @@ impl BrowserProcess {
         let executable = std::env::current_exe()
             .map_err(|error| format!("failed to resolve current executable: {error}"))?;
         let mut command = Command::new(executable);
-        command
-            .arg("webdriver")
-            .arg("--port")
-            .arg(port.to_string());
+        command.arg("webdriver").arg("--port").arg(port.to_string());
         if headless {
             command.arg("--headless");
         }
@@ -740,8 +749,8 @@ impl BrowserProcess {
             command.arg("--startup-url").arg(startup_url);
         }
         let mut child = command
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|error| format!("failed to start formal-web WebDriver child: {error}"))?;
 
@@ -965,7 +974,9 @@ fn parse_bool(value: &str) -> Result<bool, String> {
 
 fn path_is_html_file(path: &str) -> bool {
     matches!(
-        Path::new(path).extension().and_then(|extension| extension.to_str()),
+        Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str()),
         Some("html" | "htm" | "xhtml" | "svg")
     )
 }
@@ -995,13 +1006,18 @@ fn parse_directory_expectation_file(path: &Path) -> Result<DirectoryExpectation,
     Ok(expectation)
 }
 
-fn parse_test_expectation_file(path: &Path, relative_test_path: &str) -> Result<TestExpectation, String> {
+fn parse_test_expectation_file(
+    path: &Path,
+    relative_test_path: &str,
+) -> Result<TestExpectation, String> {
     let contents = fs::read_to_string(path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let expected_section = Path::new(relative_test_path)
         .file_name()
         .and_then(OsStr::to_str)
-        .ok_or_else(|| format!("failed to determine metadata section name for {relative_test_path}"))?;
+        .ok_or_else(|| {
+            format!("failed to determine metadata section name for {relative_test_path}")
+        })?;
 
     let mut expectation = TestExpectation::default();
     let mut sections = Vec::<String>::new();
@@ -1063,9 +1079,16 @@ fn collect_selected_tests(
 
     match selection {
         Some(raw_path) => {
-            let (suite, relative_path, absolute_path) = resolve_explicit_selection(raw_path, config)?;
+            let (suite, relative_path, absolute_path) =
+                resolve_explicit_selection(raw_path, config)?;
             if absolute_path.is_file() {
-                add_explicit_test(suite, &relative_path, &absolute_path, &mut seen, &mut selected)?;
+                add_explicit_test(
+                    suite,
+                    &relative_path,
+                    &absolute_path,
+                    &mut seen,
+                    &mut selected,
+                )?;
             } else if absolute_path.is_dir() {
                 collect_tests_under(suite, &absolute_path, &mut seen, &mut selected)?;
             } else {
@@ -1080,7 +1103,9 @@ fn collect_selected_tests(
 
     selected.sort_by(|left, right| left.display_path.cmp(&right.display_path));
     if selected.is_empty() {
-        return Err(String::from("no supported tests matched the requested selection"));
+        return Err(String::from(
+            "no supported tests matched the requested selection",
+        ));
     }
     Ok(selected)
 }
@@ -1181,7 +1206,8 @@ fn collect_tests_under(
     let entries = fs::read_dir(root)
         .map_err(|error| format!("failed to read {}: {error}", root.display()))?;
     for entry in entries {
-        let entry = entry.map_err(|error| format!("failed to read test directory entry: {error}"))?;
+        let entry =
+            entry.map_err(|error| format!("failed to read test directory entry: {error}"))?;
         let path = entry.path();
         if path.is_dir() {
             if should_skip_directory(&path) {
@@ -1234,9 +1260,10 @@ fn add_explicit_test(
             }
             Ok(())
         }
-        ClassifiedTest::Unsupported(reason) => {
-            Err(format!("{}{} is not runnable yet: {reason}", suite.display_prefix, relative_path))
-        }
+        ClassifiedTest::Unsupported(reason) => Err(format!(
+            "{}{} is not runnable yet: {reason}",
+            suite.display_prefix, relative_path
+        )),
         ClassifiedTest::Ignore => Err(format!(
             "{}{} is not a supported testharness test",
             suite.display_prefix, relative_path
@@ -1405,7 +1432,8 @@ fn served_path_for_test(url_prefix: &str, relative_path: &str, kind: TestKind) -
 }
 
 fn report_status_from_payload(report: &HarnessCompletionReport) -> WptStatus {
-    let harness_status = WptStatus::from_harness_code(report.status.status).unwrap_or(WptStatus::Error);
+    let harness_status =
+        WptStatus::from_harness_code(report.status.status).unwrap_or(WptStatus::Error);
     if harness_status != WptStatus::Pass {
         return harness_status;
     }
@@ -1419,7 +1447,9 @@ fn report_status_from_payload(report: &HarnessCompletionReport) -> WptStatus {
             WptStatus::Fail if !matches!(aggregate, WptStatus::Error | WptStatus::Timeout) => {
                 WptStatus::Fail
             }
-            WptStatus::PreconditionFailed if matches!(aggregate, WptStatus::Pass | WptStatus::NotRun) => {
+            WptStatus::PreconditionFailed
+                if matches!(aggregate, WptStatus::Pass | WptStatus::NotRun) =>
+            {
                 WptStatus::PreconditionFailed
             }
             WptStatus::NotRun if aggregate == WptStatus::Pass => WptStatus::NotRun,
@@ -1513,7 +1543,10 @@ fn update_summary(summary: &mut RunSummary, result: &ComparedTestResult) {
 fn write_run_report(path: &Path, report: &RunReport) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(report)
         .map_err(|error| format!("failed to encode report JSON: {error}"))?;
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
     }
@@ -1656,9 +1689,14 @@ fn wait_for_test_report(
                 };
 
                 if summary_value != Value::Null {
-                    if let Ok(summary) = serde_json::from_value::<LiveHarnessSummary>(summary_value) {
+                    if let Ok(summary) = serde_json::from_value::<LiveHarnessSummary>(summary_value)
+                    {
                         if summary.harness_status.is_some() {
-                            return observed_result_from_summary(test, summary, started.elapsed().as_millis());
+                            return observed_result_from_summary(
+                                test,
+                                summary,
+                                started.elapsed().as_millis(),
+                            );
                         }
                     }
                 }
@@ -1671,7 +1709,10 @@ fn wait_for_test_report(
         if Instant::now() >= deadline {
             return timeout_result(
                 test,
-                format!("test did not report completion within {} ms", timeout.as_millis()),
+                format!(
+                    "test did not report completion within {} ms",
+                    timeout.as_millis()
+                ),
                 started.elapsed().as_millis(),
             );
         }
@@ -1793,10 +1834,7 @@ fn shutdown_wptserve_child(child: &mut Child) -> Result<(), String> {
     Ok(())
 }
 
-fn wait_for_child_exit(
-    child: &mut Child,
-    timeout: Duration,
-) -> Result<Option<ExitStatus>, String> {
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<Option<ExitStatus>, String> {
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child
@@ -1993,9 +2031,17 @@ fn child_failure_message(status: Option<&ExitStatus>, stderr: &str) -> String {
     message
 }
 
-fn webdriver_request(port: u16, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+fn webdriver_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, String> {
     let body_bytes = body
-        .map(|value| serde_json::to_vec(value).map_err(|error| format!("failed to encode WebDriver request JSON: {error}")))
+        .map(|value| {
+            serde_json::to_vec(value)
+                .map_err(|error| format!("failed to encode WebDriver request JSON: {error}"))
+        })
         .transpose()?;
     let response = http_request_raw(
         port,
@@ -2089,7 +2135,7 @@ fn parse_http_response(bytes: &[u8]) -> Result<HttpResponse, String> {
 }
 
 fn reporter_inject_script() -> &'static str {
-        r#"(function () {
+    r#"(function () {
     if (!document.currentScript) {
         document.currentScript = { remove: function () {} };
     }
@@ -2197,8 +2243,8 @@ fn reporter_inject_script() -> &'static str {
 mod tests {
     use super::{
         RunReport, RunSummary, TestKind, WptStatus, any_script_supports_window,
-        parse_test_expectation_file, reporter_inject_script, served_path_for_test,
-        temp_dir_path, write_run_report,
+        parse_test_expectation_file, reporter_inject_script, served_path_for_test, temp_dir_path,
+        write_run_report,
     };
     use std::{fs, path::Path};
 
@@ -2260,7 +2306,10 @@ mod tests {
 
         assert_eq!(expectation.expected, Some(WptStatus::Fail));
         assert_eq!(
-            expectation.subtests.get("subtest").and_then(|entry| entry.expected),
+            expectation
+                .subtests
+                .get("subtest")
+                .and_then(|entry| entry.expected),
             Some(WptStatus::Timeout)
         );
     }
