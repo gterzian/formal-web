@@ -13,7 +13,7 @@ use crate::streams::{
     construct_readable_stream, construct_readable_stream_default_reader,
     with_readable_stream_default_reader_ref, with_readable_stream_ref,
 };
-use crate::webidl::create_value_async_iterator;
+use crate::webidl::{create_value_async_iterator, rejected_promise};
 
 impl Class for ReadableStream {
     const NAME: &'static str = "ReadableStream";
@@ -221,15 +221,27 @@ fn pipe_through_method(this: &JsValue, args: &[JsValue], context: &mut Context) 
 }
 
 fn pipe_to_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let stream_object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-    })?;
+    let promise = (|| {
+        let stream_object = this.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("ReadableStream receiver is not an object")
+        })?;
 
-    let mut stream = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| {
-        stream.clone()
-    })?;
-    let promise = stream.pipe_to(args.get_or_undefined(0), args.get_or_undefined(1), context)?;
+        let mut stream = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| {
+            stream.clone()
+        })?;
+        stream.pipe_to(args.get_or_undefined(0), args.get_or_undefined(1), context)
+    })();
 
+    let promise = match promise {
+        Ok(promise) => promise,
+        Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+    };
+
+    // TODO(formal-web): WPT `streams/piping/throwing-options.any.js` and some
+    // rejected-cancel `pipeTo()` cases still fail with `TypeError: not a callable
+    // function` inside harness promise helpers, even though direct local probes of
+    // `pipeTo(...).then(...)` work. That points to a Boa promise method/binding
+    // issue rather than another stream-layer semantic bug.
     Ok(JsValue::from(promise))
 }
 

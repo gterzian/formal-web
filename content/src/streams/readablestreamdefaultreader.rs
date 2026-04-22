@@ -3,7 +3,11 @@ use std::mem;
 use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
-    class::Class, object::{JsObject, builtins::JsPromise},
+    class::Class,
+    object::{
+        JsObject,
+        builtins::{JsFunction, JsPromise},
+    },
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -262,6 +266,22 @@ impl ReadableStreamDefaultReader {
 
         // Step 5: "Return promise."
         Ok(promise)
+    }
+
+    pub(crate) fn read_with_reaction(
+        &self,
+        on_fulfilled: JsFunction,
+        on_rejected: JsFunction,
+        context: &mut Context,
+    ) -> JsResult<()> {
+        if self.stream_slot_value().is_none() {
+            return Err(JsNativeError::typ()
+                .with_message("Cannot read from a released reader")
+                .into());
+        }
+
+        let read_request = ReadRequest::new_reaction(on_fulfilled, on_rejected);
+        self.read_steps(read_request, context)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-reader-read>

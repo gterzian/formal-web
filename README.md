@@ -25,9 +25,11 @@ rustup run 1.92.0 cargo run --release
 rustup run 1.92.0 cargo run -- test-wpt formal/load-event-fires.html
 ```
 
-`cargo run -- test-wpt` runs the current WPT runner. The parent process mounts `tests/formal/tests/` through the `/__formal__/` alias, starts a fresh bundled `vendor/wpt/wpt serve` instance per test for isolation, and spawns a fresh `formal-web webdriver` child per test in headless mode by default. Pass `--headed` when you want to watch the page.
+`cargo run -- test-wpt` runs the current WPT runner. The parent process mounts `tests/formal/tests/` through the `/__formal__/` alias, starts a bundled `vendor/wpt/wpt serve` instance, and reuses one `formal-web webdriver` child and WebDriver session across the run in headless mode by default. Pass `--headed` when you want to watch the page.
 
-Each WebDriver child starts on the test URL instead of the startup artifact page, and the runner collects `testharness.js` completion through WebDriver script execution with a rendered-summary fallback from `testharnessreport.js`.
+The shared browser starts on `common/blank.html`, navigates to `common/blank.html` between tests, and then loads the test URL instead of the startup artifact page. If navigation or report collection stalls, the runner tears the session down, starts a fresh one, and retries that test once before reporting the result. The runner collects `testharness.js` completion through WebDriver script execution with a rendered-summary fallback from `testharnessreport.js`.
+
+For `.any.js` files, the runner currently serves the `.any.html` variant and executes the plain window form. Worker, shared-worker, and service-worker variants are still left out of the default runner selection.
 
 The runner writes generated `wpt serve` config and injection files under `scratchpad/wpt-runner/runtime/` and removes them after each test. When machine-readable output is needed, point `--output` at a path under `scratchpad/wpt-runner/reports/`.
 

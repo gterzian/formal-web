@@ -30,7 +30,8 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 - When compositing fixed embedder chrome above scrollable content, append the content scene first and the chrome scene last so scrolled content cannot overpaint fixed controls.
 - Launch the content sidecar from the dedicated `target/formal-web-content/<profile>/content` build output; on macOS the copied sibling binary may fail to complete the `ipc-channel` bootstrap.
 - In `ffi/build.rs`, treat external package `.c.o.export` artifacts as an optimization rather than a requirement; if a dependency ships generated Lean `.c` without a matching export object, compile that `.c` directly.
+- Treat vendored third-party code and WPT resources as read-only unless the task explicitly calls for vendor changes; debug compatibility issues from local code or scratchpad artifacts instead.
 
-At the end of a task, always comfirm `cargo run --release` builds the project successfully, and then exit the terminal. 
+At the end of a task, always comfirm `cargo run --release` builds the project successfully, and then exit the terminal. Also always run the wpt tests without a path.
 
 Plans and TODOS belong in `scratchpad`. 

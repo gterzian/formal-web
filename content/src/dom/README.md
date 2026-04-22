@@ -21,3 +21,5 @@
 - "Missing Feature:" comments identify major missing features in the code. Only address those if given a clear implementation plan.
 
 - "TODO:" comments identify minor missing fixes or features. Those can be addressed in batches when asked to do so.
+
+- Spec is found under the top-level `/web_standards/DOM.html`

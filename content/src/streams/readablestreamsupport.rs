@@ -1,6 +1,7 @@
 use boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
+    job::PromiseJob,
     js_string,
     object::{
         JsObject, ObjectInitializer,
@@ -101,35 +102,106 @@ impl EcmascriptHost for ContextCallbackHost<'_> {
 /// produces a chunk, closes, or errors.
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct ReadRequest {
-    resolvers: ResolvingFunctions,
+    sink: ReadRequestSink,
+}
+
+#[derive(Clone, Trace, Finalize)]
+enum ReadRequestSink {
+    Promise {
+        resolvers: ResolvingFunctions,
+    },
+    Reaction {
+        on_fulfilled: JsFunction,
+        on_rejected: JsFunction,
+    },
 }
 
 impl ReadRequest {
     pub(crate) fn new(context: &mut Context) -> (Self, JsObject) {
         let (promise, resolvers) = JsPromise::new_pending(context);
-        (Self { resolvers }, promise.into())
+        (
+            Self {
+                sink: ReadRequestSink::Promise { resolvers },
+            },
+            promise.into(),
+        )
     }
+
+    pub(crate) fn new_reaction(on_fulfilled: JsFunction, on_rejected: JsFunction) -> Self {
+        Self {
+            sink: ReadRequestSink::Reaction {
+                on_fulfilled,
+                on_rejected,
+            },
+        }
+    }
+
     pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
         let result = create_read_result(chunk, false, context)?;
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[result], context)?;
-        Ok(())
+        match &self.sink {
+            ReadRequestSink::Promise { resolvers } => {
+                let resolvers = resolvers.clone();
+                resolvers
+                    .resolve
+                    .call(&JsValue::undefined(), &[result], context)?;
+                Ok(())
+            }
+            ReadRequestSink::Reaction { on_fulfilled, .. } => {
+                queue_read_request_reaction(on_fulfilled.clone(), result, context)
+            }
+        }
     }
+
     /// closure.
     pub(crate) fn close_steps(self, context: &mut Context) -> JsResult<()> {
         let result = create_read_result(JsValue::undefined(), true, context)?;
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[result], context)?;
-        Ok(())
+        match &self.sink {
+            ReadRequestSink::Promise { resolvers } => {
+                let resolvers = resolvers.clone();
+                resolvers
+                    .resolve
+                    .call(&JsValue::undefined(), &[result], context)?;
+                Ok(())
+            }
+            ReadRequestSink::Reaction { on_fulfilled, .. } => {
+                queue_read_request_reaction(on_fulfilled.clone(), result, context)
+            }
+        }
     }
+
     pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
-        self.resolvers
-            .reject
-            .call(&JsValue::undefined(), &[error], context)?;
-        Ok(())
+        match &self.sink {
+            ReadRequestSink::Promise { resolvers } => {
+                let resolvers = resolvers.clone();
+                resolvers
+                    .reject
+                    .call(&JsValue::undefined(), &[error], context)?;
+                Ok(())
+            }
+            ReadRequestSink::Reaction { on_rejected, .. } => {
+                queue_read_request_reaction(on_rejected.clone(), error, context)
+            }
+        }
     }
+}
+
+fn queue_read_request_reaction(
+    callback: JsFunction,
+    value: JsValue,
+    context: &mut Context,
+) -> JsResult<()> {
+    let realm = context.realm().clone();
+    context.enqueue_job(
+        PromiseJob::with_realm(
+            move |context| {
+                callback.call(&JsValue::undefined(), &[value], context)?;
+                Ok(JsValue::undefined())
+            },
+            realm,
+        )
+        .into(),
+    );
+    Ok(())
 }
 #[derive(Clone, Trace, Finalize)]
 pub(crate) enum ReadableStreamController {

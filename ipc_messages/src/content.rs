@@ -505,6 +505,7 @@ pub enum Event {
     ScriptEvaluated(ScriptEvaluationResult),
     CommandCompleted,
     PaintReady(PaintFrame),
+    ShutdownCompleted,
 }
 
 #[cfg(test)]

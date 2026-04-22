@@ -7,3 +7,5 @@
 - DOM event dispatch should call into this layer for listener callback invocation instead of calling Boa functions directly.
 
 - Spec is found under the top-level `/web_standards/WebIDL.html`
+
+- Do not add unit-tests; use wpt tests, and add your own under tests/formal when necessary.

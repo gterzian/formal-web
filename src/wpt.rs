@@ -33,7 +33,6 @@ const WEBDRIVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REPORT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const RUNNER_ARTIFACT_ROOT: &str = "scratchpad/wpt-runner";
-
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Args, Debug)]
@@ -59,7 +58,7 @@ pub struct TestWptArgs {
 enum TestKind {
     Html,
     WindowScript,
-    AnyScript,
+    AnyWindowScript,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,6 +320,14 @@ struct WebDriverSession {
     session_id: String,
 }
 
+#[derive(Debug)]
+struct SharedTestRunner {
+    server: WptServeProcess,
+    browser: BrowserProcess,
+    session: WebDriverSession,
+    current_url: String,
+}
+
 pub fn run(args: TestWptArgs) -> Result<(), String> {
     let repo_root = repo_root();
     let config = RunnerConfig::load(&repo_root)?;
@@ -352,7 +359,8 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
 
     let mut summary = RunSummary::default();
     let mut results = Vec::with_capacity(selected.len());
-
+    let mut shared_runner: Option<SharedTestRunner> = None;
+    let mut shared_runner_error: Option<String> = None;
     for test in selected {
         let suite_meta = match test.suite {
             SuiteKind::Wpt => &wpt_meta,
@@ -370,27 +378,33 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
             continue;
         }
 
-        let server = match WptServeProcess::start(&config) {
-            Ok(server) => server,
-            Err(error) => {
-                let result = compare_observed_result(
-                    crash_result(&test, error, 0),
-                    suite_meta.expectation_for(&test.source_relative_path),
-                );
-                print_test_result(&result);
-                update_summary(&mut summary, &result);
-                results.push(result);
-                continue;
-            }
-        };
-        let observed = run_single_test(&test, &server, timeout, !args.headed);
+        let observed = run_with_shared_runner(
+            &config,
+            &test,
+            timeout,
+            !args.headed,
+            &mut shared_runner,
+            &mut shared_runner_error,
+        );
         let compared = compare_observed_result(
             observed,
             suite_meta.expectation_for(&test.source_relative_path),
         );
+        if matches!(compared.actual, WptStatus::Crash | WptStatus::Timeout) {
+            if let Some(runner) = shared_runner.take() {
+                let _ = runner.shutdown();
+            }
+            shared_runner_error = None;
+        }
         print_test_result(&compared);
         update_summary(&mut summary, &compared);
         results.push(compared);
+    }
+
+    if let Some(runner) = shared_runner {
+        if let Err(error) = runner.shutdown() {
+            return Err(error);
+        }
     }
 
     print_summary(&summary);
@@ -779,6 +793,12 @@ impl WebDriverSession {
         Ok(())
     }
 
+    fn navigate(&self, url: &str) -> Result<(), String> {
+        let path = format!("/session/{}/url", self.session_id);
+        let _ = webdriver_request(self.port, "POST", &path, Some(&json!({ "url": url })))?;
+        Ok(())
+    }
+
     fn execute_script(&self, script: &str, args: &[Value]) -> Result<Value, String> {
         let path = format!("/session/{}/execute/sync", self.session_id);
         webdriver_request(
@@ -790,6 +810,136 @@ impl WebDriverSession {
                 "args": args,
             })),
         )
+    }
+}
+
+impl SharedTestRunner {
+    fn start(config: &RunnerConfig, headless: bool) -> Result<Self, String> {
+        let server = WptServeProcess::start(config)?;
+        let startup_url = format!("{}/common/blank.html", server.base_url());
+        let port = pick_unused_port()?;
+        let browser = BrowserProcess::start(port, Some(&startup_url), headless)?;
+        let session = WebDriverSession::create(browser.port)?;
+        Ok(Self {
+            server,
+            browser,
+            session,
+            current_url: startup_url,
+        })
+    }
+
+    fn run_test(&mut self, test: &SelectedTest, timeout: Duration) -> ObservedTestResult {
+        let started = Instant::now();
+        let reset_url = format!("{}/common/blank.html", self.server.base_url());
+        let test_url = format!("{}/{}", self.server.base_url(), test.served_path);
+        if self.current_url != reset_url {
+            if let Err(error) = self.session.navigate(&reset_url) {
+                return crash_result(
+                    test,
+                    format!("failed to navigate WebDriver session to {reset_url}: {error}"),
+                    started.elapsed().as_millis(),
+                );
+            }
+            self.current_url = reset_url;
+        }
+
+        if self.current_url != test_url {
+            if let Err(error) = self.session.navigate(&test_url) {
+                return crash_result(
+                    test,
+                    format!("failed to navigate WebDriver session to {test_url}: {error}"),
+                    started.elapsed().as_millis(),
+                );
+            }
+            self.current_url = test_url.clone();
+        }
+
+        wait_for_test_report(&self.session, test, timeout, started)
+    }
+
+    fn shutdown(mut self) -> Result<(), String> {
+        let mut cleanup_errors = Vec::new();
+        if let Err(error) = self.session.delete() {
+            cleanup_errors.push(format!("failed to delete WebDriver session: {error}"));
+        }
+        if let Err(error) = self.browser.wait_for_exit(WEBDRIVER_SHUTDOWN_TIMEOUT) {
+            cleanup_errors.push(error);
+        }
+        if cleanup_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(cleanup_errors.join("; "))
+        }
+    }
+}
+
+fn run_with_shared_runner(
+    config: &RunnerConfig,
+    test: &SelectedTest,
+    timeout: Duration,
+    headless: bool,
+    shared_runner: &mut Option<SharedTestRunner>,
+    shared_runner_error: &mut Option<String>,
+) -> ObservedTestResult {
+    let observed = run_once_with_shared_runner(
+        config,
+        test,
+        timeout,
+        headless,
+        shared_runner,
+        shared_runner_error,
+    );
+    if !matches!(observed.actual, WptStatus::Crash | WptStatus::Timeout) {
+        return observed;
+    }
+
+    if let Some(runner) = shared_runner.take() {
+        let _ = runner.shutdown();
+    }
+    *shared_runner_error = None;
+
+    run_once_with_shared_runner(
+        config,
+        test,
+        timeout,
+        headless,
+        shared_runner,
+        shared_runner_error,
+    )
+}
+
+fn run_once_with_shared_runner(
+    config: &RunnerConfig,
+    test: &SelectedTest,
+    timeout: Duration,
+    headless: bool,
+    shared_runner: &mut Option<SharedTestRunner>,
+    shared_runner_error: &mut Option<String>,
+) -> ObservedTestResult {
+    if let Some(error) = shared_runner_error.as_ref() {
+        return crash_result(test, error.clone(), 0);
+    }
+
+    if shared_runner.is_none() {
+        match SharedTestRunner::start(config, headless) {
+            Ok(runner) => {
+                *shared_runner = Some(runner);
+            }
+            Err(error) => {
+                *shared_runner_error = Some(error.clone());
+            }
+        }
+    }
+
+    match shared_runner.as_mut() {
+        Some(runner) => runner.run_test(test, timeout),
+        None => crash_result(
+            test,
+            shared_runner_error
+                .clone()
+                .unwrap_or_else(|| String::from("failed to start shared WPT runner")),
+            0,
+        ),
     }
 }
 
@@ -1177,7 +1327,7 @@ fn classify_test(
                 "worker JavaScript tests are not implemented yet",
             )));
         }
-        return Ok(ClassifiedTest::Supported(TestKind::AnyScript));
+        return Ok(ClassifiedTest::Supported(TestKind::AnyWindowScript));
     }
 
     Ok(ClassifiedTest::Ignore)
@@ -1241,7 +1391,7 @@ fn served_path_for_test(url_prefix: &str, relative_path: &str, kind: TestKind) -
             .strip_suffix(".window.js")
             .map(|prefix| format!("{prefix}.window.html"))
             .unwrap_or_else(|| relative_path.to_owned()),
-        TestKind::AnyScript => relative_path
+        TestKind::AnyWindowScript => relative_path
             .strip_suffix(".any.js")
             .map(|prefix| format!("{prefix}.any.html"))
             .unwrap_or_else(|| relative_path.to_owned()),
@@ -1421,58 +1571,6 @@ fn print_summary(summary: &RunSummary) {
         summary.errors,
         summary.crashes
     );
-}
-
-fn run_single_test(
-    test: &SelectedTest,
-    server: &WptServeProcess,
-    timeout: Duration,
-    headless: bool,
-) -> ObservedTestResult {
-    let started = Instant::now();
-    let port = match pick_unused_port() {
-        Ok(port) => port,
-        Err(error) => return crash_result(test, error, started.elapsed().as_millis()),
-    };
-
-    let test_url = format!("{}/{}", server.base_url(), test.served_path);
-
-    let mut browser = match BrowserProcess::start(port, Some(&test_url), headless) {
-        Ok(browser) => browser,
-        Err(error) => return crash_result(test, error, started.elapsed().as_millis()),
-    };
-
-    let session = match WebDriverSession::create(browser.port) {
-        Ok(session) => session,
-        Err(error) => return crash_result(test, error, started.elapsed().as_millis()),
-    };
-
-    let mut observed = wait_for_test_report(&session, test, timeout, started);
-
-    let mut cleanup_errors = Vec::new();
-    if let Err(error) = session.delete() {
-        cleanup_errors.push(format!("failed to delete WebDriver session: {error}"));
-    }
-    match browser.wait_for_exit(WEBDRIVER_SHUTDOWN_TIMEOUT) {
-        Ok(stderr) => {
-            if !stderr.is_empty() && observed.actual != WptStatus::Pass {
-                cleanup_errors.push(format!("browser stderr: {stderr}"));
-            }
-        }
-        Err(error) => cleanup_errors.push(error),
-    }
-    if !cleanup_errors.is_empty() {
-        if observed.actual == WptStatus::Pass {
-            observed.actual = WptStatus::Crash;
-            observed.harness = None;
-        }
-        observed.message = Some(match observed.message.take() {
-            Some(message) => format!("{message}; {}", cleanup_errors.join("; ")),
-            None => cleanup_errors.join("; "),
-        });
-    }
-
-    observed
 }
 
 fn wait_for_test_report(
@@ -2128,11 +2226,11 @@ mod tests {
     #[test]
     fn served_any_script_uses_generated_html_path() {
         assert_eq!(
-            served_path_for_test("", "dom/example.any.js", TestKind::AnyScript),
+            served_path_for_test("", "dom/example.any.js", TestKind::AnyWindowScript),
             String::from("dom/example.any.html")
         );
         assert_eq!(
-            served_path_for_test("__formal__", "load.https.any.js", TestKind::AnyScript),
+            served_path_for_test("__formal__", "load.https.any.js", TestKind::AnyWindowScript),
             String::from("__formal__/load.https.any.html")
         );
     }

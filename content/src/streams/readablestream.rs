@@ -1,8 +1,12 @@
-use std::{cell::{Cell, RefCell}, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    rc::Rc,
+};
 
 use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions,
+    builtins::promise::{PromiseState, ResolvingFunctions},
     class::Class,
     js_string,
     native_function::NativeFunction,
@@ -227,6 +231,13 @@ impl ReadableStream {
             JsNativeError::typ()
                 .with_message("ReadableStream.pipeThrough() requires a ReadableWritablePair")
         })?;
+        let readable_value = transform_obj.get(js_string!("readable"), context)?;
+        let readable_obj = readable_value.as_object().ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("ReadableWritablePair is missing its readable property")
+        })?;
+        let _ = with_readable_stream_ref(&readable_obj, |stream| stream.clone())?;
+
         let writable_value = transform_obj.get(js_string!("writable"), context)?;
         let writable_obj = writable_value.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -239,48 +250,18 @@ impl ReadableStream {
                 .into());
         }
 
-        // Step 3: "Let signal be options[\"signal\"] if it exists, or undefined otherwise."
-        let options_object = if options.is_undefined() || options.is_null() {
-            None
-        } else {
-            Some(options.to_object(context)?)
-        };
-
-        let signal = extract_abort_signal(options_object.as_ref(), context)?;
-
-        let readable_value = transform_obj.get(js_string!("readable"), context)?;
+        let options = normalize_pipe_options(options, context)?;
 
         // Step 4: "Let promise be ! ReadableStreamPipeTo(this, transform[\"writable\"], options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
-        let prevent_close = match options_object.as_ref() {
-            Some(options_object) => options_object
-                .get(js_string!("preventClose"), context)?
-                .to_boolean(),
-            None => false,
-        };
-
-        let prevent_abort = match options_object.as_ref() {
-            Some(options_object) => options_object
-                .get(js_string!("preventAbort"), context)?
-                .to_boolean(),
-            None => false,
-        };
-
-        let prevent_cancel = match options_object.as_ref() {
-            Some(options_object) => options_object
-                .get(js_string!("preventCancel"), context)?
-                .to_boolean(),
-            None => false,
-        };
-
         let destination = super::with_writable_stream_ref(&writable_obj, |ws| ws.clone())?;
         let promise = readable_stream_pipe_to(
             self.clone(),
             destination,
-            prevent_close,
-            prevent_abort,
-            prevent_cancel,
-            signal,
+            options.prevent_close,
+            options.prevent_abort,
+            options.prevent_cancel,
+            options.signal,
             context,
         )?;
 
@@ -316,7 +297,10 @@ impl ReadableStream {
                 );
             }
         };
-        let dest_locked = super::with_writable_stream_ref(&dest_obj, |ws| ws.locked())?;
+        let dest_locked = match super::with_writable_stream_ref(&dest_obj, |ws| ws.locked()) {
+            Ok(locked) => locked,
+            Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        };
         if dest_locked {
             return rejected_type_error_promise(
                 "ReadableStream.pipeTo(): destination is locked",
@@ -324,51 +308,30 @@ impl ReadableStream {
             );
         }
 
-        // Step 3: "Let signal be options[\"signal\"] if it exists, or undefined otherwise."
-        let options_object = if options.is_undefined() || options.is_null() {
-            None
-        } else {
-            Some(options.to_object(context)?)
+        let options = match normalize_pipe_options(options, context) {
+            Ok(options) => options,
+            Err(error) => return rejected_promise(error.into_opaque(context)?, context),
         };
 
-        let signal = match extract_abort_signal(options_object.as_ref(), context) {
-            Ok(signal) => signal,
+        let dest = match super::with_writable_stream_ref(&dest_obj, |ws| ws.clone()) {
+            Ok(dest) => dest,
             Err(error) => return rejected_promise(error.into_opaque(context)?, context),
         };
 
         // Step 4: "Return ! ReadableStreamPipeTo(this, destination, options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
-        let prevent_close = match options_object.as_ref() {
-            Some(options_object) => options_object
-                .get(js_string!("preventClose"), context)?
-                .to_boolean(),
-            None => false,
-        };
-
-        let prevent_abort = match options_object.as_ref() {
-            Some(options_object) => options_object
-                .get(js_string!("preventAbort"), context)?
-                .to_boolean(),
-            None => false,
-        };
-
-        let prevent_cancel = match options_object.as_ref() {
-            Some(options_object) => options_object
-                .get(js_string!("preventCancel"), context)?
-                .to_boolean(),
-            None => false,
-        };
-
-        let dest = super::with_writable_stream_ref(&dest_obj, |ws| ws.clone())?;
-        readable_stream_pipe_to(
+        match readable_stream_pipe_to(
             self.clone(),
             dest,
-            prevent_close,
-            prevent_abort,
-            prevent_cancel,
-            signal,
+            options.prevent_close,
+            options.prevent_abort,
+            options.prevent_cancel,
+            options.signal,
             context,
-        )
+        ) {
+            Ok(promise) => Ok(promise),
+            Err(error) => rejected_promise(error.into_opaque(context)?, context),
+        }
     }
 
     /// <https://streams.spec.whatwg.org/#rs-tee>
@@ -784,8 +747,6 @@ fn readable_stream_tee(
             }
 
             let reader = tee_state.borrow().reader.clone();
-            let read_promise = reader.read(context)?;
-
             let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
                 |_, args: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, context| {
                     let result = args.get_or_undefined(0).to_object(context)?;
@@ -921,8 +882,7 @@ fn readable_stream_tee(
                 tee_state.clone(),
             )
             .to_js_function(context.realm());
-
-            let _ = JsPromise::from_object(read_promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+            reader.read_with_reaction(on_fulfilled, on_rejected, context)?;
             Ok(JsValue::undefined())
         },
         tee_state.clone(),
@@ -1180,6 +1140,51 @@ fn extract_abort_signal(
     with_abort_signal_ref(&signal_object, |signal| signal.clone()).map(Some)
 }
 
+struct PipeOptions {
+    prevent_abort: bool,
+    prevent_cancel: bool,
+    prevent_close: bool,
+    signal: Option<AbortSignal>,
+}
+
+fn normalize_pipe_options(options: &JsValue, context: &mut Context) -> JsResult<PipeOptions> {
+    let options_object = if options.is_undefined() || options.is_null() {
+        None
+    } else {
+        Some(options.to_object(context)?)
+    };
+
+    let prevent_abort = match options_object.as_ref() {
+        Some(options_object) => options_object
+            .get(js_string!("preventAbort"), context)?
+            .to_boolean(),
+        None => false,
+    };
+
+    let prevent_cancel = match options_object.as_ref() {
+        Some(options_object) => options_object
+            .get(js_string!("preventCancel"), context)?
+            .to_boolean(),
+        None => false,
+    };
+
+    let prevent_close = match options_object.as_ref() {
+        Some(options_object) => options_object
+            .get(js_string!("preventClose"), context)?
+            .to_boolean(),
+        None => false,
+    };
+
+    let signal = extract_abort_signal(options_object.as_ref(), context)?;
+
+    Ok(PipeOptions {
+        prevent_abort,
+        prevent_cancel,
+        prevent_close,
+        signal,
+    })
+}
+
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
 fn readable_stream_pipe_to(
     source: ReadableStream,
@@ -1200,12 +1205,6 @@ fn readable_stream_pipe_to(
 
     // Step 5: "Assert: either signal is undefined, or signal implements AbortSignal."
     // Note: `pipe_to()` and `pipe_through()` normalize the Web IDL carrier to `Option<AbortSignal>` before calling this helper.
-
-    // Step 6: "Assert: ! IsReadableStreamLocked(source) is false."
-    debug_assert!(!source.locked());
-
-    // Step 7: "Assert: ! IsWritableStreamLocked(dest) is false."
-    debug_assert!(!dest.locked());
 
     // Step 8: "If source.[[controller]] implements ReadableByteStreamController, let reader be either ! AcquireReadableStreamBYOBReader(source) or ! AcquireReadableStreamDefaultReader(source), at the user agent’s discretion."
     // Note: Readable byte streams are not implemented yet, so the current runtime always uses the default reader path.
@@ -1228,20 +1227,20 @@ fn readable_stream_pipe_to(
     let pipe_promise_obj: JsObject = pipe_promise.into();
 
     // Step 15: "In parallel but not really; see #905, using reader and writer, read all chunks from source and write them to dest."
-    // Note: The helper below implements the current default-reader/default-writer pump directly on the carriers.
+    // Note: The pipe progress below follows a single typed state machine and advances from Boa promise reactions at each microtask.
     let state = PipeToState::new(PipeToStateInner {
         reader,
         writer,
-        source: source.clone(),
-        dest: dest.clone(),
+        pending_writes: VecDeque::new(),
+        state: PipePumpState::Starting,
         prevent_close,
         prevent_abort,
         prevent_cancel,
         signal: signal.clone(),
+        shutdown_error: None,
+        shutdown_action_promise: None,
         resolvers: Some(pipe_resolvers),
         shutting_down: false,
-        pending_writes: 0,
-        pending_shutdown: None,
     });
 
     // Step 14: "If signal is not undefined,"
@@ -1261,10 +1260,17 @@ fn readable_stream_pipe_to(
         signal.add_abort_algorithm(abort_algorithm);
     }
 
-    state.set_up_watchers(context)?;
-
     // Step 16: "Return promise."
-    pipe_loop(state, context)?;
+    state.check_and_propagate_errors_forward(context)?;
+    state.check_and_propagate_errors_backward(context)?;
+    state.check_and_propagate_closing_forward(context)?;
+    state.check_and_propagate_closing_backward(context)?;
+
+    if state.is_shutting_down() {
+        return Ok(pipe_promise_obj);
+    }
+
+    state.wait_for_writer_ready(context)?;
 
     Ok(pipe_promise_obj)
 }
@@ -1272,12 +1278,32 @@ fn readable_stream_pipe_to(
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct PipeToState(Gc<GcRefCell<PipeToStateInner>>);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PipePumpState {
+    Starting,
+    PendingReady,
+    PendingRead,
+    ShuttingDownWithPendingWrites(Option<PipeShutdownAction>),
+    ShuttingDownPendingAction(PipeShutdownAction),
+    Finalized,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PipeShutdownAction {
+    AbortDestination,
+    CancelSource,
+    CloseDestination,
+    Abort,
+}
+
 #[derive(Trace, Finalize)]
 pub(crate) struct PipeToStateInner {
     reader: ReadableStreamDefaultReader,
     writer: super::WritableStreamDefaultWriter,
-    source: ReadableStream,
-    dest: super::WritableStream,
+    pending_writes: VecDeque<JsObject>,
+
+    #[unsafe_ignore_trace]
+    state: PipePumpState,
 
     #[unsafe_ignore_trace]
     prevent_close: bool,
@@ -1289,15 +1315,12 @@ pub(crate) struct PipeToStateInner {
     prevent_cancel: bool,
 
     signal: Option<AbortSignal>,
+    shutdown_error: Option<JsValue>,
+    shutdown_action_promise: Option<JsObject>,
     resolvers: Option<ResolvingFunctions>,
 
     #[unsafe_ignore_trace]
     shutting_down: bool,
-
-    #[unsafe_ignore_trace]
-    pending_writes: usize,
-
-    pending_shutdown: Option<PipeShutdownRequest>,
 }
 
 impl PipeToState {
@@ -1319,111 +1342,521 @@ impl PipeToState {
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
     pub(crate) fn run_abort_algorithm(&self, context: &mut Context) -> JsResult<()> {
-        let error = self
-            .borrow()
-            .signal
-            .as_ref()
-            .map(AbortSignal::reason_value)
-            .ok_or_else(|| {
-                JsNativeError::typ().with_message(
-                    "ReadableStreamPipeTo abort algorithm ran without an attached AbortSignal",
-                )
-            })?;
+        if self.is_shutting_down() {
+            return Ok(());
+        }
 
-        pipe_shutdown_with_action(
-            self.clone(),
-            PipeShutdownAction::AbortSignal {
-                error: error.clone(),
-            },
-            Some(error),
-            context,
-        )
+        let error = {
+            let state = self.borrow();
+            state
+                .signal
+                .as_ref()
+                .map(AbortSignal::reason_value)
+                .ok_or_else(|| {
+                    JsNativeError::typ().with_message(
+                        "ReadableStreamPipeTo abort algorithm ran without an attached AbortSignal",
+                    )
+                })?
+        };
+
+        self.set_shutdown_error(Some(error));
+        self.shutdown(Some(PipeShutdownAction::Abort), context)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    pub(crate) fn set_up_watchers(&self, context: &mut Context) -> JsResult<()> {
-        let reader_closed = self.borrow().reader.closed()?;
-        let on_reader_closed = NativeFunction::from_copy_closure_with_captures(
-            |_, _, state: &PipeToState, context| {
-                pipe_source_closed(state.clone(), context)?;
-                Ok(JsValue::undefined())
-            },
-            self.clone(),
-        )
-        .to_js_function(context.realm());
-        let on_reader_error = NativeFunction::from_copy_closure_with_captures(
-            |_, args, state: &PipeToState, context| {
-                let error = args.get_or_undefined(0).clone();
-                pipe_source_errored(state.clone(), error, context)?;
-                Ok(JsValue::undefined())
-            },
-            self.clone(),
-        )
-        .to_js_function(context.realm());
-        let _ = JsPromise::from_object(reader_closed)?
-            .then(Some(on_reader_closed), Some(on_reader_error), context)?;
+    fn wait_for_writer_ready(&self, context: &mut Context) -> JsResult<()> {
+        self.set_state(PipePumpState::PendingReady);
 
-        let writer_closed = self.borrow().writer.closed()?;
-        let on_writer_closed = NativeFunction::from_copy_closure_with_captures(
-            |_, _, state: &PipeToState, context| {
-                pipe_destination_closed(state.clone(), context)?;
-                Ok(JsValue::undefined())
+        let (writer, reader) = {
+            let state = self.borrow();
+            (state.writer.clone(), state.reader.clone())
+        };
+        let ready_promise = writer.ready()?;
+        let reader_closed_promise = reader.closed()?;
+
+        if matches!(
+            JsPromise::from_object(ready_promise.clone())?.state(),
+            PromiseState::Fulfilled(_)
+        ) {
+            return self.read_chunk(context);
+        }
+
+        self.append_reaction(ready_promise, context)?;
+        self.append_reaction(reader_closed_promise, context)
+    }
+
+    /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+    fn read_chunk(&self, context: &mut Context) -> JsResult<()> {
+        self.set_state(PipePumpState::PendingRead);
+
+        let (reader, writer) = {
+            let state = self.borrow();
+            (state.reader.clone(), state.writer.clone())
+        };
+        let on_fulfilled = pipe_reaction_function(self.clone(), context);
+        let on_rejected = pipe_reaction_function(self.clone(), context);
+        reader.read_with_reaction(on_fulfilled, on_rejected, context)?;
+        let writer_closed_promise = writer.closed()?;
+
+        self.append_reaction(writer_closed_promise, context)
+    }
+
+    /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+    fn write_chunk(&self, result: JsValue, context: &mut Context) -> JsResult<bool> {
+        let Some(result_object) = result.as_object() else {
+            return Ok(false);
+        };
+
+        if !result_object.has_property(js_string!("done"), context)? {
+            return Ok(false);
+        }
+
+        if result_object
+            .get(js_string!("done"), context)?
+            .to_boolean()
+        {
+            return Ok(false);
+        }
+
+        let value = result_object.get(js_string!("value"), context)?;
+        let writer = {
+            let state = self.borrow();
+            state.writer.clone()
+        };
+        let write_promise = writer.write(value, context)?;
+        self.borrow_mut().pending_writes.push_back(write_promise);
+        Ok(true)
+    }
+
+    /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+    fn wait_on_pending_write(&self, promise: JsObject, context: &mut Context) -> JsResult<()> {
+        self.append_reaction(promise, context)
+    }
+
+    /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+    fn check_and_propagate_errors_forward(&self, context: &mut Context) -> JsResult<()> {
+        if self.is_shutting_down() {
+            return Ok(());
+        }
+
+        let (source, dest, prevent_abort) = {
+            let state = self.borrow();
+            (
+                state.reader.stream_slot_value(),
+                state.writer.stream_slot_value(),
+                state.prevent_abort,
+            )
+        };
+        let Some(source) = source else {
+            return Ok(());
+        };
+
+        if source.state() != ReadableStreamState::Errored {
+            return Ok(());
+        }
+
+        if !prevent_abort
+            && dest
+                .as_ref()
+                .is_some_and(|dest| dest.state() == super::WritableStreamState::Erroring)
+        {
+            return Ok(());
+        }
+
+        self.set_shutdown_error(Some(source.stored_error()));
+        if prevent_abort {
+            self.shutdown(None, context)
+        } else {
+            self.shutdown(Some(PipeShutdownAction::AbortDestination), context)
+        }
+    }
+
+    /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+    fn check_and_propagate_errors_backward(&self, context: &mut Context) -> JsResult<()> {
+        if self.is_shutting_down() {
+            return Ok(());
+        }
+
+        let (dest, source, prevent_cancel) = {
+            let state = self.borrow();
+            (
+                state.writer.stream_slot_value(),
+                state.reader.stream_slot_value(),
+                state.prevent_cancel,
+            )
+        };
+        let Some(dest) = dest else {
+            return Ok(());
+        };
+
+        if !matches!(
+            dest.state(),
+            super::WritableStreamState::Erroring | super::WritableStreamState::Errored
+        ) {
+            return Ok(());
+        }
+
+        self.set_shutdown_error(Some(dest.stored_error()));
+        let should_cancel = !prevent_cancel
+            && source
+                .as_ref()
+                .is_some_and(|source| source.state() == ReadableStreamState::Readable);
+        if !should_cancel {
+            self.shutdown(None, context)
+        } else {
+            self.shutdown(Some(PipeShutdownAction::CancelSource), context)
+        }
+    }
+
+    /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+    fn check_and_propagate_closing_forward(&self, context: &mut Context) -> JsResult<()> {
+        if self.is_shutting_down() {
+            return Ok(());
+        }
+
+        let (source, prevent_close) = {
+            let state = self.borrow();
+            (state.reader.stream_slot_value(), state.prevent_close)
+        };
+        let Some(source) = source else {
+            return Ok(());
+        };
+
+        if source.state() != ReadableStreamState::Closed {
+            return Ok(());
+        }
+
+        if prevent_close {
+            self.shutdown(None, context)
+        } else {
+            self.shutdown(Some(PipeShutdownAction::CloseDestination), context)
+        }
+    }
+
+    /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+    fn check_and_propagate_closing_backward(&self, context: &mut Context) -> JsResult<()> {
+        if self.is_shutting_down() {
+            return Ok(());
+        }
+
+        let (dest, source, prevent_cancel) = {
+            let state = self.borrow();
+            (
+                state.writer.stream_slot_value(),
+                state.reader.stream_slot_value(),
+                state.prevent_cancel,
+            )
+        };
+        let Some(dest) = dest else {
+            return Ok(());
+        };
+
+        let source_is_readable = source
+            .as_ref()
+            .is_some_and(|source| source.state() == ReadableStreamState::Readable);
+
+        if !source_is_readable {
+            return Ok(());
+        }
+
+        if dest.state() != super::WritableStreamState::Closed && !dest.close_queued_or_in_flight() {
+            return Ok(());
+        }
+
+        let error = type_error_value(
+            "The destination WritableStream closed before the pipe operation completed",
+            context,
+        )?;
+        self.set_shutdown_error(Some(error));
+        if prevent_cancel {
+            self.shutdown(None, context)
+        } else {
+            self.shutdown(Some(PipeShutdownAction::CancelSource), context)
+        }
+    }
+
+    /// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown-with-action>
+    /// Note: This also covers <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown> when `action` is `None`.
+    fn shutdown(
+        &self,
+        action: Option<PipeShutdownAction>,
+        context: &mut Context,
+    ) -> JsResult<()> {
+        let pending_write = {
+            let mut state = self.borrow_mut();
+            if state.shutting_down {
+                return Ok(());
+            }
+
+            state.shutting_down = true;
+
+            let should_wait = state
+                .writer
+                .stream_slot_value()
+                .is_some_and(|dest| {
+                    dest.state() == super::WritableStreamState::Writable
+                        && !dest.close_queued_or_in_flight()
+                        && !state.pending_writes.is_empty()
+                });
+            if should_wait {
+                state.state = PipePumpState::ShuttingDownWithPendingWrites(action);
+                state.pending_writes.front().cloned()
+            } else {
+                None
+            }
+        };
+
+        if let Some(pending_write) = pending_write {
+            return self.wait_on_pending_write(pending_write, context);
+        }
+
+        if let Some(action) = action {
+            return self.perform_action(action, context);
+        }
+
+        self.finalize(context)
+    }
+
+    /// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown-with-action>
+    fn perform_action(&self, action: PipeShutdownAction, context: &mut Context) -> JsResult<()> {
+        let (writer, source, dest, error, prevent_abort, prevent_cancel) = {
+            let mut state = self.borrow_mut();
+            state.state = PipePumpState::ShuttingDownPendingAction(action);
+            (
+                state.writer.clone(),
+                state.reader.stream_slot_value(),
+                state.writer.stream_slot_value(),
+                state
+                    .shutdown_error
+                    .clone()
+                    .unwrap_or_else(JsValue::undefined),
+                state.prevent_abort,
+                state.prevent_cancel,
+            )
+        };
+
+        let action_promise = match action {
+            PipeShutdownAction::AbortDestination => match dest {
+                Some(dest) => dest.abort_stream(error, context)?,
+                None => resolved_promise(JsValue::undefined(), context)?,
             },
-            self.clone(),
-        )
-        .to_js_function(context.realm());
-        let on_writer_error = NativeFunction::from_copy_closure_with_captures(
-            |_, args, state: &PipeToState, context| {
-                let error = args.get_or_undefined(0).clone();
-                pipe_destination_errored(state.clone(), error, context)?;
-                Ok(JsValue::undefined())
+            PipeShutdownAction::CancelSource => match source {
+                Some(source) => readable_stream_cancel(source, error, context)?,
+                None => resolved_promise(JsValue::undefined(), context)?,
             },
-            self.clone(),
-        )
-        .to_js_function(context.realm());
-        let _ = JsPromise::from_object(writer_closed)?
-            .then(Some(on_writer_closed), Some(on_writer_error), context)?;
+            PipeShutdownAction::CloseDestination => match dest {
+                Some(dest)
+                    if dest.state() == super::WritableStreamState::Closed
+                        || dest.close_queued_or_in_flight() =>
+                {
+                    resolved_promise(JsValue::undefined(), context)?
+                }
+                _ => writer.close(context)?,
+            },
+            PipeShutdownAction::Abort => {
+                let abort_promise = if !prevent_abort {
+                    match dest {
+                        Some(dest) if dest.state() == super::WritableStreamState::Writable => {
+                            Some(dest.abort_stream(error.clone(), context)?)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                let cancel_source = if !prevent_cancel {
+                    match source {
+                        Some(source) if source.state() == ReadableStreamState::Readable => {
+                            Some(source)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                match (abort_promise, cancel_source) {
+                    (Some(abort_promise), Some(source)) => {
+                        abort_destination_then_cancel_source(
+                            abort_promise,
+                            source,
+                            error,
+                            context,
+                        )?
+                    }
+                    (Some(abort_promise), None) => abort_promise,
+                    (None, Some(source)) => readable_stream_cancel(source, error, context)?,
+                    (None, None) => resolved_promise(JsValue::undefined(), context)?,
+                }
+            }
+        };
+
+        self.borrow_mut().shutdown_action_promise = Some(action_promise.clone());
+        self.append_reaction(action_promise, context)
+    }
+
+    /// <https://streams.spec.whatwg.org/#rs-pipeTo-finalize>
+    fn finalize(&self, context: &mut Context) -> JsResult<()> {
+        if self.current_state() == PipePumpState::Finalized {
+            return Ok(());
+        }
+
+        let (writer, reader, signal, error, resolvers) = {
+            let mut state = self.borrow_mut();
+            state.state = PipePumpState::Finalized;
+            (
+                state.writer.clone(),
+                state.reader.clone(),
+                state.signal.clone(),
+                state.shutdown_error.clone(),
+                state.resolvers.take(),
+            )
+        };
+
+        super::writable_stream_default_writer_release(writer, context)?;
+        super::readable_stream_default_reader_release(reader, context)?;
+
+        if let Some(signal) = signal {
+            signal.remove_abort_algorithm(&SignalAbortAlgorithm::ReadableStreamPipeTo {
+                state: self.clone(),
+            });
+        }
+
+        if let Some(resolvers) = resolvers {
+            match error {
+                Some(error) => {
+                    resolvers
+                        .reject
+                        .call(&JsValue::undefined(), &[error], context)?;
+                }
+                None => {
+                    resolvers.resolve.call(
+                        &JsValue::undefined(),
+                        &[JsValue::undefined()],
+                        context,
+                    )?;
+                }
+            }
+        }
 
         Ok(())
     }
-}
 
-#[derive(Clone, Trace, Finalize)]
-enum PipeShutdownAction {
-    AbortDestination { error: JsValue },
-    CancelSource { error: JsValue },
-    CloseDestination,
-    AbortSignal { error: JsValue },
-}
+    fn current_state(&self) -> PipePumpState {
+        self.borrow().state.clone()
+    }
 
-#[derive(Clone, Trace, Finalize)]
-enum PipeShutdownRequest {
-    Finalize { error: Option<JsValue> },
-    WithAction {
-        action: PipeShutdownAction,
-        original_error: Option<JsValue>,
-    },
-}
+    fn set_state(&self, state: PipePumpState) {
+        self.borrow_mut().state = state;
+    }
 
-#[derive(Trace, Finalize)]
-struct PipeFinalizeCapture {
-    state: PipeToState,
-    original_error: Option<JsValue>,
-}
+    fn is_shutting_down(&self) -> bool {
+        self.borrow().shutting_down
+    }
 
-#[derive(Trace, Finalize)]
-struct PipeAbortSignalCapture {
-    source: ReadableStream,
-    error: JsValue,
-    resolvers: ResolvingFunctions,
-}
+    fn set_shutdown_error(&self, error: Option<JsValue>) {
+        self.borrow_mut().shutdown_error = error;
+    }
 
-#[derive(Trace, Finalize)]
-struct PipeAbortSignalRejectedCapture {
-    source: ReadableStream,
-    error: JsValue,
-    abort_error: JsValue,
-    resolvers: ResolvingFunctions,
+    fn update_pending_shutdown_action(
+        &self,
+        action: Option<PipeShutdownAction>,
+        context: &mut Context,
+    ) -> JsResult<Option<PipeShutdownAction>> {
+        if action != Some(PipeShutdownAction::CloseDestination) {
+            return Ok(action);
+        }
+
+        let (source, dest, prevent_cancel) = {
+            let state = self.borrow();
+            (
+                state.reader.stream_slot_value(),
+                state.writer.stream_slot_value(),
+                state.prevent_cancel,
+            )
+        };
+
+        let Some(dest) = dest else {
+            return Ok(action);
+        };
+
+        let source_is_readable = source
+            .as_ref()
+            .is_some_and(|source| source.state() == ReadableStreamState::Readable);
+
+        if matches!(
+            dest.state(),
+            super::WritableStreamState::Erroring | super::WritableStreamState::Errored
+        ) {
+            self.set_shutdown_error(Some(dest.stored_error()));
+            return Ok((!prevent_cancel && source_is_readable)
+                .then_some(PipeShutdownAction::CancelSource));
+        }
+
+        if dest.state() == super::WritableStreamState::Closed || dest.close_queued_or_in_flight() {
+            if !source_is_readable {
+                return Ok(None);
+            }
+
+            let error = type_error_value(
+                "The destination WritableStream closed before the pipe operation completed",
+                context,
+            )?;
+            self.set_shutdown_error(Some(error));
+            return Ok((!prevent_cancel && source_is_readable)
+                .then_some(PipeShutdownAction::CancelSource));
+        }
+
+        Ok(action)
+    }
+
+    fn pending_write_front(&self) -> Option<JsObject> {
+        self.borrow().pending_writes.front().cloned()
+    }
+
+    fn shutdown_action_promise_state(&self) -> JsResult<Option<PromiseState>> {
+        self.borrow()
+            .shutdown_action_promise
+            .clone()
+            .map(|promise| Ok(JsPromise::from_object(promise)?.state()))
+            .transpose()
+    }
+
+    fn prune_settled_pending_writes(&self, context: &mut Context) -> JsResult<()> {
+        let mut handled = Vec::new();
+        {
+            let mut state = self.borrow_mut();
+            state.pending_writes.retain(|promise_object| {
+                let promise = match JsPromise::from_object(promise_object.clone()) {
+                    Ok(promise) => promise,
+                    Err(_) => {
+                        debug_assert!(false, "pipeTo tracked a non-promise write handle");
+                        return false;
+                    }
+                };
+                let pending = matches!(promise.state(), PromiseState::Pending);
+                if !pending {
+                    handled.push(promise_object.clone());
+                }
+                pending
+            });
+        }
+
+        for promise in handled {
+            mark_promise_as_handled(&promise, context)?;
+        }
+
+        Ok(())
+    }
+
+    fn append_reaction(&self, promise: JsObject, context: &mut Context) -> JsResult<()> {
+        let on_fulfilled = pipe_reaction_function(self.clone(), context);
+        let on_rejected = pipe_reaction_function(self.clone(), context);
+        let _ = JsPromise::from_object(promise)?
+            .then(Some(on_fulfilled), Some(on_rejected), context)?;
+        Ok(())
+    }
 }
 
 #[derive(Trace, Finalize)]
@@ -1442,644 +1875,133 @@ struct WaitForAllState {
     resolvers: ResolvingFunctions,
 }
 
+#[derive(Trace, Finalize)]
+struct AbortThenCancelState {
+    source: Option<ReadableStream>,
+    error: JsValue,
+    abort_rejection: Option<JsValue>,
+    resolvers: ResolvingFunctions,
+}
+
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_loop(state: PipeToState, context: &mut Context) -> JsResult<()> {
-    if pipe_check_state(state.clone(), context)? {
+fn pipe_to_on_promise_settled(
+    state: PipeToState,
+    result: JsValue,
+    context: &mut Context,
+) -> JsResult<()> {
+    state.prune_settled_pending_writes(context)?;
+
+    let state_before_checks = state.current_state();
+
+    if state_before_checks == PipePumpState::PendingRead {
+        let (source, dest) = {
+            let state_ref = state.borrow();
+            (
+                state_ref.reader.stream_slot_value(),
+                state_ref.writer.stream_slot_value(),
+            )
+        };
+
+        if let Some(source) = source {
+            if source.state() == ReadableStreamState::Closed {
+                if let Some(dest) = dest {
+                    if dest.state() == super::WritableStreamState::Writable
+                        && !dest.close_queued_or_in_flight()
+                    {
+                        let Some(done) = pipe_read_result_done(&result, context)? else {
+                            return Ok(());
+                        };
+
+                        if !done {
+                            let _ = state.write_chunk(result.clone(), context)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    state.check_and_propagate_errors_forward(context)?;
+    state.check_and_propagate_errors_backward(context)?;
+    state.check_and_propagate_closing_forward(context)?;
+    state.check_and_propagate_closing_backward(context)?;
+
+    let current_state = state.current_state();
+    if current_state != state_before_checks {
         return Ok(());
     }
 
-    // Wait for writer to be ready, then read.
-    let ready_promise = state.borrow().writer.clone().ready()?;
-    let state_for_ready = state.clone();
-    let on_ready = NativeFunction::from_copy_closure_with_captures(
-        |_, _, state: &PipeToState, context| {
-            if pipe_check_state(state.clone(), context)? {
-                return Ok(JsValue::undefined());
+    match current_state {
+        PipePumpState::Starting => {
+            debug_assert!(false, "ReadableStream pipeTo callback reached the Starting state");
+        }
+        PipePumpState::PendingReady => {
+            state.read_chunk(context)?;
+        }
+        PipePumpState::PendingRead => {
+            let _ = state.write_chunk(result, context)?;
+            if state.is_shutting_down() {
+                return Ok(());
             }
+            state.wait_for_writer_ready(context)?;
+        }
+        PipePumpState::ShuttingDownWithPendingWrites(action) => {
+            let action = state.update_pending_shutdown_action(action, context)?;
+            state.set_state(PipePumpState::ShuttingDownWithPendingWrites(action));
 
-            // Read one chunk.
-            let reader = {
-                let s = state.borrow();
-                if s.shutting_down {
-                    return Ok(JsValue::undefined());
+            if let Some(pending_write) = state.pending_write_front() {
+                state.wait_on_pending_write(pending_write, context)?;
+            } else if let Some(action) = action {
+                state.perform_action(action, context)?;
+            } else {
+                state.finalize(context)?;
+            }
+        }
+        PipePumpState::ShuttingDownPendingAction(action) => {
+            match state.shutdown_action_promise_state()? {
+                Some(PromiseState::Pending) => return Ok(()),
+                Some(PromiseState::Rejected(error)) => state.set_shutdown_error(Some(error)),
+                Some(PromiseState::Fulfilled(value)) => {
+                    if action != PipeShutdownAction::Abort && !value.is_undefined() {
+                        state.set_shutdown_error(Some(value));
+                    }
                 }
+                None => {}
+            }
 
-                s.reader.clone()
-            };
-            let read_promise = reader.read(context)?;
+            state.finalize(context)?;
+        }
+        PipePumpState::Finalized => {}
+    }
 
-            let state_for_read = state.clone();
-            let on_read = NativeFunction::from_copy_closure_with_captures(
-                |_, args, state: &PipeToState, context| {
-                    if pipe_check_state(state.clone(), context)? {
-                        return Ok(JsValue::undefined());
-                    }
+    Ok(())
+}
 
-                    let result = args.get_or_undefined(0);
-                    let result_obj = match result.as_object() {
-                        Some(obj) => obj,
-                        None => {
-                            pipe_shutdown(state.clone(), None, context)?;
-                            return Ok(JsValue::undefined());
-                        }
-                    };
-
-                    let done = result_obj.get(js_string!("done"), context)?.to_boolean();
-                    if done {
-                        pipe_source_closed(state.clone(), context)?;
-                        return Ok(JsValue::undefined());
-                    }
-
-                    let value = result_obj.get(js_string!("value"), context)?;
-
-                    // Write the chunk.
-                    let writer = state.borrow().writer.clone();
-                    pipe_note_write_started(state.clone());
-                    let write_promise = match writer.write(value, context) {
-                        Ok(write_promise) => write_promise,
-                        Err(error) => {
-                            pipe_note_write_finished(state.clone(), context)?;
-                            return Err(error);
-                        }
-                    };
-
-                    let state_for_write = state.clone();
-                    let on_write = NativeFunction::from_copy_closure_with_captures(
-                        |_, _, state: &PipeToState, context| {
-                            pipe_note_write_finished(state.clone(), context)?;
-                            Ok(JsValue::undefined())
-                        },
-                        state_for_write,
-                    )
-                    .to_js_function(context.realm());
-
-                    let state_for_err = state.clone();
-                    let on_write_error = NativeFunction::from_copy_closure_with_captures(
-                        |_, args, state: &PipeToState, context| {
-                            pipe_note_write_finished(state.clone(), context)?;
-
-                            if pipe_check_state(state.clone(), context)? {
-                                return Ok(JsValue::undefined());
-                            }
-
-                            let error = args.get_or_undefined(0).clone();
-                            pipe_shutdown(state.clone(), Some(error), context)?;
-                            Ok(JsValue::undefined())
-                        },
-                        state_for_err,
-                    )
-                    .to_js_function(context.realm());
-
-                    let _ = JsPromise::from_object(write_promise)?
-                        .then(Some(on_write), Some(on_write_error), context)?;
-
-                    pipe_loop(state.clone(), context)?;
-
-                    Ok(JsValue::undefined())
-                },
-                state_for_read,
-            )
-            .to_js_function(context.realm());
-
-            let state_for_read_err = state.clone();
-            let on_read_error = NativeFunction::from_copy_closure_with_captures(
-                |_, args, state: &PipeToState, context| {
-                    if pipe_check_state(state.clone(), context)? {
-                        return Ok(JsValue::undefined());
-                    }
-
-                    let error = args.get_or_undefined(0).clone();
-                    pipe_shutdown(state.clone(), Some(error), context)?;
-                    Ok(JsValue::undefined())
-                },
-                state_for_read_err,
-            )
-            .to_js_function(context.realm());
-
-            let _ = JsPromise::from_object(read_promise)?
-                .then(Some(on_read), Some(on_read_error), context)?;
-
-            Ok(JsValue::undefined())
-        },
-        state_for_ready,
-    )
-    .to_js_function(context.realm());
-
-    let state_for_ready_err = state.clone();
-    let on_ready_error = NativeFunction::from_copy_closure_with_captures(
+fn pipe_reaction_function(state: PipeToState, context: &mut Context) -> JsFunction {
+    NativeFunction::from_copy_closure_with_captures(
         |_, args, state: &PipeToState, context| {
-            if pipe_check_state(state.clone(), context)? {
-                return Ok(JsValue::undefined());
-            }
-
-            let error = args.get_or_undefined(0).clone();
-            pipe_shutdown(state.clone(), Some(error), context)?;
+            pipe_to_on_promise_settled(state.clone(), args.get_or_undefined(0).clone(), context)?;
             Ok(JsValue::undefined())
         },
-        state_for_ready_err,
+        state,
     )
-    .to_js_function(context.realm());
-
-    let _ = JsPromise::from_object(ready_promise)?
-        .then(Some(on_ready), Some(on_ready_error), context)?;
-
-    Ok(())
+    .to_js_function(context.realm())
 }
 
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_check_state(
-    state: PipeToState,
-    context: &mut Context,
-) -> JsResult<bool> {
-    let (source_state, source_error, dest_state, dest_error, dest_closing) = {
-        let s = state.borrow();
-        if s.shutting_down {
-            return Ok(true);
-        }
-
-        let source_state = s.source.state();
-        let source_error = if source_state == ReadableStreamState::Errored {
-            Some(s.source.stored_error())
-        } else {
-            None
-        };
-
-        let dest_state = s.dest.state();
-        let dest_error = if matches!(
-            dest_state,
-            super::WritableStreamState::Erroring | super::WritableStreamState::Errored
-        ) {
-            Some(s.dest.stored_error())
-        } else {
-            None
-        };
-
-        (
-            source_state,
-            source_error,
-            dest_state,
-            dest_error,
-            s.dest.close_queued_or_in_flight(),
-        )
+fn pipe_read_result_done(result: &JsValue, context: &mut Context) -> JsResult<Option<bool>> {
+    let Some(result_object) = result.as_object() else {
+        return Ok(None);
     };
 
-    if let Some(error) = source_error {
-        pipe_source_errored(state, error, context)?;
-        return Ok(true);
+    if !result_object.has_property(js_string!("done"), context)? {
+        return Ok(None);
     }
 
-    if let Some(error) = dest_error {
-        pipe_destination_errored(state, error, context)?;
-        return Ok(true);
-    }
-
-    if source_state == ReadableStreamState::Closed {
-        pipe_source_closed(state, context)?;
-        return Ok(true);
-    }
-
-    if dest_state == super::WritableStreamState::Closed || dest_closing {
-        pipe_destination_closed(state, context)?;
-        return Ok(true);
-    }
-
-    Ok(false)
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_source_errored(
-    state: PipeToState,
-    error: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
-    if state.borrow().prevent_abort {
-        return pipe_shutdown(state, Some(error), context);
-    }
-
-    pipe_shutdown_with_action(
-        state,
-        PipeShutdownAction::AbortDestination {
-            error: error.clone(),
-        },
-        Some(error),
-        context,
-    )
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_destination_errored(
-    state: PipeToState,
-    error: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
-    if state.borrow().prevent_cancel {
-        return pipe_shutdown(state, Some(error), context);
-    }
-
-    pipe_shutdown_with_action(
-        state,
-        PipeShutdownAction::CancelSource {
-            error: error.clone(),
-        },
-        Some(error),
-        context,
-    )
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_source_closed(
-    state: PipeToState,
-    context: &mut Context,
-) -> JsResult<()> {
-    if state.borrow().prevent_close {
-        return pipe_shutdown(state, None, context);
-    }
-
-    pipe_shutdown_with_action(state, PipeShutdownAction::CloseDestination, None, context)
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_destination_closed(
-    state: PipeToState,
-    context: &mut Context,
-) -> JsResult<()> {
-    let error = type_error_value(
-        "The destination WritableStream closed before the pipe operation completed",
-        context,
-    )?;
-
-    if state.borrow().prevent_cancel {
-        return pipe_shutdown(state, Some(error), context);
-    }
-
-    pipe_shutdown_with_action(
-        state,
-        PipeShutdownAction::CancelSource {
-            error: error.clone(),
-        },
-        Some(error),
-        context,
-    )
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_note_write_started(state: PipeToState) {
-    state.borrow_mut().pending_writes += 1;
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_note_write_finished(
-    state: PipeToState,
-    context: &mut Context,
-) -> JsResult<()> {
-    let pending_shutdown = {
-        let mut s = state.borrow_mut();
-        if s.pending_writes > 0 {
-            s.pending_writes -= 1;
-        }
-
-        if s.pending_writes == 0 {
-            s.pending_shutdown.take()
-        } else {
-            None
-        }
-    };
-
-    if let Some(pending_shutdown) = pending_shutdown {
-        execute_pipe_shutdown_request(state, pending_shutdown, context)?;
-    }
-
-    Ok(())
-}
-
-/// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown-with-action>
-fn pipe_shutdown_with_action(
-    state: PipeToState,
-    action: PipeShutdownAction,
-    original_error: Option<JsValue>,
-    context: &mut Context,
-) -> JsResult<()> {
-    {
-        let mut s = state.borrow_mut();
-        if s.shutting_down {
-            return Ok(());
-        }
-
-        s.shutting_down = true;
-
-        if pipe_should_wait_for_pending_writes(&s) {
-            s.pending_shutdown = Some(PipeShutdownRequest::WithAction {
-                action,
-                original_error,
-            });
-            return Ok(());
-        }
-    }
-
-    execute_pipe_shutdown_request(
-        state,
-        PipeShutdownRequest::WithAction {
-            action,
-            original_error,
-        },
-        context,
-    )
-}
-
-/// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown>
-fn pipe_shutdown(
-    state: PipeToState,
-    error: Option<JsValue>,
-    context: &mut Context,
-) -> JsResult<()> {
-    {
-        let mut s = state.borrow_mut();
-        if s.shutting_down {
-            return Ok(());
-        }
-
-        s.shutting_down = true;
-
-        if pipe_should_wait_for_pending_writes(&s) {
-            s.pending_shutdown = Some(PipeShutdownRequest::Finalize { error });
-            return Ok(());
-        }
-    }
-
-    finalize_pipe(state, error, context)
-}
-
-fn pipe_should_wait_for_pending_writes(state: &PipeToStateInner) -> bool {
-    state.pending_writes > 0
-        && state.dest.state() == super::WritableStreamState::Writable
-        && !state.dest.close_queued_or_in_flight()
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn execute_pipe_shutdown_request(
-    state: PipeToState,
-    request: PipeShutdownRequest,
-    context: &mut Context,
-) -> JsResult<()> {
-    match &request {
-        PipeShutdownRequest::Finalize { error } => finalize_pipe(state, error.clone(), context),
-        PipeShutdownRequest::WithAction {
-            action,
-            original_error,
-        } => {
-            let action_promise =
-                pipe_shutdown_action_promise(state.clone(), action.clone(), context)?;
-            pipe_finalize_after_action(state, action_promise, original_error.clone(), context)
-        }
-    }
-}
-
-/// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown-with-action>
-fn pipe_shutdown_action_promise(
-    state: PipeToState,
-    action: PipeShutdownAction,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    match &action {
-        PipeShutdownAction::AbortDestination { error } => {
-            let dest = state.borrow().dest.clone();
-            if dest.state() == super::WritableStreamState::Writable {
-                return dest.abort_stream(error.clone(), context);
-            }
-
-            resolved_promise(JsValue::undefined(), context)
-        }
-        PipeShutdownAction::CancelSource { error } => {
-            let source = state.borrow().source.clone();
-            if source.state() == ReadableStreamState::Readable {
-                return readable_stream_cancel(source, error.clone(), context);
-            }
-
-            resolved_promise(JsValue::undefined(), context)
-        }
-        PipeShutdownAction::CloseDestination => {
-            let writer = state.borrow().writer.clone();
-            writer.close(context)
-        }
-        PipeShutdownAction::AbortSignal { error } => {
-            let (source, dest, prevent_abort, prevent_cancel) = {
-                let s = state.borrow();
-                (
-                    s.source.clone(),
-                    s.dest.clone(),
-                    s.prevent_abort,
-                    s.prevent_cancel,
-                )
-            };
-
-            pipe_abort_signal_actions_promise(
-                source,
-                dest,
-                prevent_abort,
-                prevent_cancel,
-                error.clone(),
-                context,
-            )
-        }
-    }
-}
-
-fn pipe_abort_signal_actions_promise(
-    source: ReadableStream,
-    dest: super::WritableStream,
-    prevent_abort: bool,
-    prevent_cancel: bool,
-    error: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    let abort_promise = if !prevent_abort && dest.state() == super::WritableStreamState::Writable {
-        dest.abort_stream(error.clone(), context)?
-    } else {
-        resolved_promise(JsValue::undefined(), context)?
-    };
-
-    if prevent_cancel || source.state() != ReadableStreamState::Readable {
-        return Ok(abort_promise);
-    }
-
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    let on_abort_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, capture: &PipeAbortSignalCapture, context| {
-            let cancel_promise = readable_stream_cancel(
-                capture.source.clone(),
-                capture.error.clone(),
-                context,
-            )?;
-
-            let on_cancel_fulfilled = NativeFunction::from_copy_closure_with_captures(
-                |_, _, resolvers: &ResolvingFunctions, context| {
-                    resolvers.resolve.call(
-                        &JsValue::undefined(),
-                        &[JsValue::undefined()],
-                        context,
-                    )?;
-                    Ok(JsValue::undefined())
-                },
-                capture.resolvers.clone(),
-            )
-            .to_js_function(context.realm());
-            let on_cancel_rejected = NativeFunction::from_copy_closure_with_captures(
-                |_, args, resolvers: &ResolvingFunctions, context| {
-                    resolvers.reject.call(
-                        &JsValue::undefined(),
-                        &[args.get_or_undefined(0).clone()],
-                        context,
-                    )?;
-                    Ok(JsValue::undefined())
-                },
-                capture.resolvers.clone(),
-            )
-            .to_js_function(context.realm());
-
-            let _ = JsPromise::from_object(cancel_promise)?
-                .then(Some(on_cancel_fulfilled), Some(on_cancel_rejected), context)?;
-            Ok(JsValue::undefined())
-        },
-        PipeAbortSignalCapture {
-            source: source.clone(),
-            error: error.clone(),
-            resolvers: resolvers.clone(),
-        },
-    )
-    .to_js_function(context.realm());
-    let on_abort_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, capture: &PipeAbortSignalRejectedCapture, context| {
-            let abort_error = args.get_or_undefined(0).clone();
-            let cancel_promise = readable_stream_cancel(
-                capture.source.clone(),
-                capture.error.clone(),
-                context,
-            )?;
-
-            let on_cancel_settled = NativeFunction::from_copy_closure_with_captures(
-                |_, _, capture: &PipeAbortSignalRejectedCapture, context| {
-                    capture.resolvers.reject.call(
-                        &JsValue::undefined(),
-                        &[capture.abort_error.clone()],
-                        context,
-                    )?;
-                    Ok(JsValue::undefined())
-                },
-                PipeAbortSignalRejectedCapture {
-                    source: capture.source.clone(),
-                    error: capture.error.clone(),
-                    abort_error,
-                    resolvers: capture.resolvers.clone(),
-                },
-            )
-            .to_js_function(context.realm());
-
-            let _ = JsPromise::from_object(cancel_promise)?
-                .then(Some(on_cancel_settled.clone()), Some(on_cancel_settled), context)?;
-            Ok(JsValue::undefined())
-        },
-        PipeAbortSignalRejectedCapture {
-            source,
-            error,
-            abort_error: JsValue::undefined(),
-            resolvers,
-        },
-    )
-    .to_js_function(context.realm());
-
-    let _ = JsPromise::from_object(abort_promise)?
-        .then(Some(on_abort_fulfilled), Some(on_abort_rejected), context)?;
-
-    Ok(promise.into())
-}
-
-/// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown-with-action>
-fn pipe_finalize_after_action(
-    state: PipeToState,
-    action_promise: JsObject,
-    original_error: Option<JsValue>,
-    context: &mut Context,
-) -> JsResult<()> {
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, capture: &PipeFinalizeCapture, context| {
-            finalize_pipe(
-                capture.state.clone(),
-                capture.original_error.clone(),
-                context,
-            )?;
-            Ok(JsValue::undefined())
-        },
-        PipeFinalizeCapture {
-            state: state.clone(),
-            original_error,
-        },
-    )
-    .to_js_function(context.realm());
-
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &PipeToState, context| {
-            let new_error = args.get_or_undefined(0).clone();
-            finalize_pipe(state.clone(), Some(new_error), context)?;
-            Ok(JsValue::undefined())
-        },
-        state,
-    )
-    .to_js_function(context.realm());
-
-    let _ = JsPromise::from_object(action_promise)?
-        .then(Some(on_fulfilled), Some(on_rejected), context)?;
-
-    Ok(())
-}
-
-/// <https://streams.spec.whatwg.org/#rs-pipeTo-finalize>
-fn finalize_pipe(
-    state: PipeToState,
-    error: Option<JsValue>,
-    context: &mut Context,
-) -> JsResult<()> {
-    let (writer, reader, signal, resolvers) = {
-        let mut s = state.borrow_mut();
-        (
-            s.writer.clone(),
-            s.reader.clone(),
-            s.signal.clone(),
-            s.resolvers.take(),
-        )
-    };
-
-    // Step 1: "Perform ! WritableStreamDefaultWriterRelease(writer)."
-    super::writable_stream_default_writer_release(writer, context)?;
-
-    // Step 3: "Otherwise, perform ! ReadableStreamDefaultReaderRelease(reader)."
-    super::readable_stream_default_reader_release(reader, context)?;
-
-    // Step 4: "If signal is not undefined, remove abortAlgorithm from signal."
-    if let Some(signal) = signal {
-        signal.remove_abort_algorithm(&SignalAbortAlgorithm::ReadableStreamPipeTo {
-            state: state.clone(),
-        });
-    }
-
-    match (error, resolvers) {
-        // Step 5: "If error was given, reject promise with error."
-        (Some(error), Some(resolvers)) => {
-            resolvers
-                .reject
-                .call(&JsValue::undefined(), &[error], context)?;
-        }
-        // Step 6: "Otherwise, resolve promise with undefined."
-        (None, Some(resolvers)) => {
-            resolvers.resolve.call(
-                &JsValue::undefined(),
-                &[JsValue::undefined()],
-                context,
-            )?;
-        }
-        _ => {}
-    }
-
-    Ok(())
+    Ok(Some(
+        result_object
+            .get(js_string!("done"), context)?
+            .to_boolean(),
+    ))
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
@@ -2214,4 +2136,102 @@ fn wait_for_all_promises(
     }
 
     Ok(promise.into())
+}
+
+fn abort_destination_then_cancel_source(
+    abort_promise: JsObject,
+    source: ReadableStream,
+    error: JsValue,
+    context: &mut Context,
+) -> JsResult<JsObject> {
+    let (promise, resolvers) = JsPromise::new_pending(context);
+    let state = Gc::new(GcRefCell::new(AbortThenCancelState {
+        source: Some(source),
+        error,
+        abort_rejection: None,
+        resolvers,
+    }));
+
+    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
+        |_, _, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
+            start_abort_cancel_source(state.clone(), None, context)
+        },
+        state.clone(),
+    )
+    .to_js_function(context.realm());
+    let on_rejected = NativeFunction::from_copy_closure_with_captures(
+        |_, args, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
+            start_abort_cancel_source(
+                state.clone(),
+                Some(args.get_or_undefined(0).clone()),
+                context,
+            )
+        },
+        state.clone(),
+    )
+    .to_js_function(context.realm());
+    let _ = JsPromise::from_object(abort_promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+
+    Ok(promise.into())
+}
+
+fn start_abort_cancel_source(
+    state: Gc<GcRefCell<AbortThenCancelState>>,
+    abort_rejection: Option<JsValue>,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let (source, error) = {
+        let mut state_ref = state.borrow_mut();
+        state_ref.abort_rejection = abort_rejection;
+        (state_ref.source.take(), state_ref.error.clone())
+    };
+
+    let cancel_promise = match source {
+        Some(source) => readable_stream_cancel(source, error, context)?,
+        None => resolved_promise(JsValue::undefined(), context)?,
+    };
+
+    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
+        |_, _, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
+            finalize_abort_cancel_source(state.clone(), None, context)
+        },
+        state.clone(),
+    )
+    .to_js_function(context.realm());
+    let on_rejected = NativeFunction::from_copy_closure_with_captures(
+        |_, args, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
+            finalize_abort_cancel_source(
+                state.clone(),
+                Some(args.get_or_undefined(0).clone()),
+                context,
+            )
+        },
+        state,
+    )
+    .to_js_function(context.realm());
+    let _ = JsPromise::from_object(cancel_promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+    Ok(JsValue::undefined())
+}
+
+fn finalize_abort_cancel_source(
+    state: Gc<GcRefCell<AbortThenCancelState>>,
+    cancel_rejection: Option<JsValue>,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let (abort_rejection, resolvers) = {
+        let state_ref = state.borrow();
+        (state_ref.abort_rejection.clone(), state_ref.resolvers.clone())
+    };
+
+    if let Some(reason) = abort_rejection.or(cancel_rejection) {
+        resolvers.reject.call(&JsValue::undefined(), &[reason], context)?;
+    } else {
+        resolvers.resolve.call(
+            &JsValue::undefined(),
+            &[JsValue::undefined()],
+            context,
+        )?;
+    }
+
+    Ok(JsValue::undefined())
 }

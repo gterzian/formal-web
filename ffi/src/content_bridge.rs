@@ -199,6 +199,7 @@ fn spawn_listener(
                 ContentEvent::PaintReady(snapshot) => {
                     let _ = embedder::send_user_event(FormalWebUserEvent::Paint(snapshot));
                 }
+                ContentEvent::ShutdownCompleted => break,
             }
         }
 

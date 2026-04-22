@@ -113,6 +113,8 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - Register a newly created content document before running parser-discovered scripts or firing `load` so later dispatch and rendering commands do not lose the document id when a page script throws.
 
+- For content-side work, keep the default WPT runner configuration scoped to the suites under active development by editing `tests/wpt/include.ini` and `tests/formal/include.ini`, record known expected failures under `tests/wpt/meta` with `disabled:` reasons that name the missing feature or blocking bug, and finish by running `cargo run -- test-wpt` with no path so the default selection reports zero unexpected results. When enabling streams coverage, leave readable byte stream and BYOB coverage disabled until those controllers and readers are implemented.
+
 # Boa GC — Field Ownership Cheat Sheet
 
 ## The Basic Rule
