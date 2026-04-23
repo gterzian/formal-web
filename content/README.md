@@ -87,6 +87,8 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - `content/src/webidl` owns Web IDL algorithms such as callback-interface conversion and `call a user object's operation`, so DOM dispatch can invoke listeners without reaching into Boa primitives directly.
 
+- Run microtask checkpoints at task boundaries such as completed script evaluation, timer execution, and UI event dispatch instead of immediately after every Rust-to-JavaScript callback return; callback-driven stream algorithms rely on the surrounding synchronous specification step finishing before queued promise reactions run.
+
 - Never call into JavaScript while holding a mutable `BaseDocument` borrow or guard that JavaScript bindings could try to re-borrow. Pass a document wrapper into Blitz and let it take short-lived borrows around its own native phases.
 
 - If `update the rendering` is noted while a document still has pending critical resources, keep that rendering opportunity pending and resume it from the corresponding fetch completion instead of painting a stale frame.
@@ -110,3 +112,99 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 - Parser-script collection must match classic scripts by normalized `type` essence and skip non-classic data blocks such as `application/json`, `speculationrules`, and module scripts.
 
 - Register a newly created content document before running parser-discovered scripts or firing `load` so later dispatch and rendering commands do not lose the document id when a page script throws.
+
+- For content-side work, keep the default WPT runner configuration scoped to the suites under active development by editing `tests/wpt/include.ini` and `tests/formal/include.ini`, record known expected failures under `tests/wpt/meta` with `disabled:` reasons that name the missing feature or blocking bug, and finish by running `cargo run -- test-wpt` with no path so the default selection reports zero unexpected results. When enabling streams coverage, leave readable byte stream and BYOB coverage disabled until those controllers and readers are implemented.
+- Keep the content-side `console` namespace callable for the common logging entry points used by WPT helpers, including `warn`; `vendor/wpt/common/gc.js` falls back to `console.warn(...)` when manual GC hooks are unavailable.
+
+# Boa GC — Field Ownership Cheat Sheet
+
+## The Basic Rule
+
+Derive `Trace` and `Finalize` on every struct that lives inside a JS object. That's it for most cases.
+
+```rust
+#[derive(Trace, Finalize)]
+struct Animal {
+    name: String,       // plain Rust type — trace is a no-op
+    age: u32,
+    callback: JsValue,  // GC-managed — traced automatically via derive
+}
+```
+
+---
+
+## Choosing the Right Wrapper
+
+| Need | Use |
+|---|---|
+| Immutable, single owner | `T` |
+| Mutable, single owner | `GcRefCell<T>` |
+| Immutable, shared | `Gc<T>` |
+| Mutable, shared | `Gc<GcRefCell<T>>` |
+
+Same mental model as plain Rust: `T` / `RefCell<T>` / `Rc<T>` / `Rc<RefCell<T>>` — just with GC-aware versions.
+
+---
+
+## No Reflector Needed
+
+Unlike SpiderMonkey-based bindings, Boa does **not** require a back-reference to the JS wrapper stored on your struct. The JS object owns your Rust data — not the other way around.
+
+---
+
+## `#[unsafe_ignore_trace]`
+
+If a field can't implement `Trace` (e.g. a raw pointer or third-party type), opt it out:
+
+```rust
+#[derive(Trace, Finalize)]
+struct Foo {
+    #[unsafe_ignore_trace]
+    ptr: *mut SomeExternalThing, // GC won't trace this — fine for non-GC data
+}
+```
+
+---
+
+## `Gc<T>` — Only When Needed
+
+Reach for `Gc<T>` only when:
+- Multiple GC-tracked objects share ownership of the same data
+- You have (or might have) reference cycles — `Rc` would leak, `Gc` won't
+
+For typical `Class` implementations with no sharing, you'll never need it.
+
+---
+
+## Common Mistakes to Avoid
+
+### Don't derive `Trace`/`Finalize` unnecessarily
+Only derive them if the struct contains GC-managed fields (`JsValue`, `JsObject`, `Gc<T>`, etc.) or is itself stored inside a GC-managed object. A plain Rust struct with no GC fields doesn't need them.
+
+### Don't wrap things in `Gc<GcRefCell<T>>` unless they are actually shared
+`Gc<T>` is like `Rc<T>` — only reach for it when multiple structs need to point at the same allocation. If you just need owned mutable data, `GcRefCell<T>` alone is sufficient.
+
+### Don't add trivial helper methods for single field access
+If a method just does `self.some_cell.borrow_mut() = value`, delete the method and use the `GcRefCell` directly at the call site. The indirection adds noise without value.
+
+### Don't store a reflector back-reference on your struct
+A type like `WritableStream` doesn't need to hold a reference to its own JS wrapper object. It will either be owned by a `JsValue`, or by another struct that derives `Trace` — the GC handles reachability without any back-pointer.
+
+### `data_constructor`'s `this` is not the new instance
+The `this` passed into `data_constructor` is the **constructor function object**, not the newly created JS object. Don't use it to set up the instance. Just return `Self` — Boa takes care of wiring the returned Rust data to the new JS object. Helpers like `construct_writable_stream` that try to manually do this are unnecessary in the normal `Class` flow.
+
+---
+
+## `GcRefCell` Footgun: Re-entrancy
+
+If you hold a `GcRefCell` borrow and then call back into JS, a re-entrant access to the same cell will **panic**. Always clone out first:
+
+```rust
+// WRONG — borrow held across JS call
+let handler = self.callback.borrow();
+context.call(&handler, ...)?; // potential re-entrant borrow_mut → PANIC
+
+// RIGHT — clone first, then drop borrow
+let handler = self.callback.borrow().clone(); // JsValue clone is cheap
+context.call(&handler, ...)?; // safe
+```

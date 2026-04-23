@@ -84,7 +84,9 @@ pub fn run(args: WebDriverArgs) -> Result<(), String> {
     let server = WebDriverServer::start(args.port, args.exit_on_session_delete)?;
     let result = crate::run_app_with_options(AppRunOptions {
         headless: args.headless,
-        startup_url: args.startup_url.or_else(|| Some(String::from("about:blank"))),
+        startup_url: args
+            .startup_url
+            .or_else(|| Some(String::from("about:blank"))),
         window_title: Some(format!("formal-web WebDriver :{}", args.port)),
     });
     drop(server);
@@ -163,8 +165,15 @@ fn dispatch_request(request: &HttpRequest, state: &WebDriverState) -> (u16, &'st
     }
 }
 
-fn dispatch_request_inner(request: &HttpRequest, state: &WebDriverState) -> Result<Value, WebDriverError> {
-    let path = request.target.split('?').next().unwrap_or(request.target.as_str());
+fn dispatch_request_inner(
+    request: &HttpRequest,
+    state: &WebDriverState,
+) -> Result<Value, WebDriverError> {
+    let path = request
+        .target
+        .split('?')
+        .next()
+        .unwrap_or(request.target.as_str());
     let segments = path
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -181,7 +190,10 @@ fn dispatch_request_inner(request: &HttpRequest, state: &WebDriverState) -> Resu
             404,
             "Not Found",
             "unknown command",
-            format!("unsupported WebDriver route {} {}", request.method, request.target),
+            format!(
+                "unsupported WebDriver route {} {}",
+                request.method, request.target
+            ),
         )),
     }
 }
@@ -206,7 +218,8 @@ fn dispatch_session_request(
         }
         ("GET", ["title"]) => execute_script_value("return document.title;", &[]),
         ("POST", ["url"]) => {
-            let request: NavigateRequest = serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
+            let request: NavigateRequest =
+                serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
             embedder::automation_navigate(&request.url, AUTOMATION_TIMEOUT)
                 .map_err(WebDriverError::timeout)?;
             Ok(Value::Null)
@@ -220,7 +233,10 @@ fn dispatch_session_request(
             404,
             "Not Found",
             "unknown command",
-            format!("unsupported WebDriver session route {method} /{}", rest.join("/")),
+            format!(
+                "unsupported WebDriver session route {method} /{}",
+                rest.join("/")
+            ),
         )),
     }
 }
@@ -259,7 +275,10 @@ fn create_session(state: &WebDriverState) -> Result<Value, WebDriverError> {
         ));
     }
 
-    let session_id = format!("formal-web-{}", NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed));
+    let session_id = format!(
+        "formal-web-{}",
+        NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed)
+    );
     *guard = Some(session_id.clone());
 
     Ok(json!({
@@ -331,7 +350,8 @@ fn wrap_execute_script(script: &str, args: &[Value]) -> Result<String, serde_jso
 }
 
 fn json_success(value: Value) -> Vec<u8> {
-    serde_json::to_vec(&SuccessResponse { value }).expect("webdriver success response serialization failed")
+    serde_json::to_vec(&SuccessResponse { value })
+        .expect("webdriver success response serialization failed")
 }
 
 fn json_error(error: &'static str, message: &str) -> Vec<u8> {
@@ -362,9 +382,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, Stri
     let header_end = loop {
         let bytes_read = match stream.read(&mut chunk) {
             Ok(bytes_read) => bytes_read,
-            Err(error)
-                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-            {
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 continue;
             }
             Err(error) => return Err(format!("failed to read WebDriver request: {error}")),
@@ -374,7 +392,9 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, Stri
         }
         buffer.extend_from_slice(&chunk[..bytes_read]);
         if buffer.len() > HTTP_BODY_LIMIT {
-            return Err(String::from("incoming WebDriver request exceeded the size limit"));
+            return Err(String::from(
+                "incoming WebDriver request exceeded the size limit",
+            ));
         }
         if let Some(header_end) = find_header_terminator(&buffer) {
             break header_end;
@@ -407,9 +427,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, Stri
     while body.len() < content_length {
         let bytes_read = match stream.read(&mut chunk) {
             Ok(bytes_read) => bytes_read,
-            Err(error)
-                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-            {
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 continue;
             }
             Err(error) => {
@@ -421,12 +439,18 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, Stri
         }
         body.extend_from_slice(&chunk[..bytes_read]);
         if body.len() > HTTP_BODY_LIMIT {
-            return Err(String::from("incoming WebDriver request body exceeded the size limit"));
+            return Err(String::from(
+                "incoming WebDriver request body exceeded the size limit",
+            ));
         }
     }
     body.truncate(content_length);
 
-    Ok(Some(HttpRequest { method, target, body }))
+    Ok(Some(HttpRequest {
+        method,
+        target,
+        body,
+    }))
 }
 
 fn write_http_response(
@@ -474,12 +498,7 @@ impl WebDriverError {
     }
 
     fn invalid_argument(error: impl ToString) -> Self {
-        Self::http(
-            400,
-            "Bad Request",
-            "invalid argument",
-            error.to_string(),
-        )
+        Self::http(400, "Bad Request", "invalid argument", error.to_string())
     }
 
     fn unsupported(error: impl ToString) -> Self {
@@ -492,12 +511,7 @@ impl WebDriverError {
     }
 
     fn timeout(error: impl ToString) -> Self {
-        Self::http(
-            500,
-            "Internal Server Error",
-            "timeout",
-            error.to_string(),
-        )
+        Self::http(500, "Internal Server Error", "timeout", error.to_string())
     }
 
     fn javascript(error: impl ToString) -> Self {
@@ -517,8 +531,9 @@ mod tests {
 
     #[test]
     fn wraps_execute_script_with_arguments() {
-        let wrapped = wrap_execute_script("return arguments[0] + arguments[1];", &[json!(1), json!(2)])
-            .expect("script wrapping should succeed");
+        let wrapped =
+            wrap_execute_script("return arguments[0] + arguments[1];", &[json!(1), json!(2)])
+                .expect("script wrapping should succeed");
         assert!(wrapped.contains("__formalWebArgs = [1,2]"));
         assert!(wrapped.contains("return window[__formalWebKey](...__formalWebArgs);"));
         assert!(wrapped.contains("delete window[__formalWebKey];"));

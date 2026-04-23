@@ -64,7 +64,8 @@ impl HTMLAnchorElement {
         }
 
         // Step 7: "Otherwise, follow the hyperlink created by element with hyperlinkSuffix set to hyperlinkSuffix and userInvolvement set to userInvolvement."
-        let Some(destination_url) = self.follow_hyperlink(document_creation_url, hyperlink_suffix) else {
+        let Some(destination_url) = self.follow_hyperlink(document_creation_url, hyperlink_suffix)
+        else {
             return Ok(());
         };
         let request = NavigateRequest {
@@ -181,7 +182,9 @@ impl HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#dom-a-download>
     pub(crate) fn set_download(&self, download: &str) {
         // Step 1: "Set the download content attribute to the given value."
-        self.html_element.element.set_attribute("download", download);
+        self.html_element
+            .element
+            .set_attribute("download", download);
     }
 
     /// <https://html.spec.whatwg.org/#dom-a-rel>
@@ -237,6 +240,8 @@ impl HyperlinkElementUtils for HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#api-for-a-and-area-elements:update-href>
     fn update_href(&self, url: &Url) {
         // Step 1: "Set the element's href content attribute's value to the element's url, serialized."
-        self.html_element.element.set_attribute("href", url.as_str());
+        self.html_element
+            .element
+            .set_attribute("href", url.as_str());
     }
 }

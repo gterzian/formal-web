@@ -6,6 +6,8 @@
 
 - `Document` and `Element` compose `Node` so shared node algorithms live on `Node`, while document-specific and element-specific Web IDL behavior lives on their respective carrier types.
 
+- ParentNode mixin algorithms such as `querySelector()` and `querySelectorAll()` belong on both `Document` and `Element`; detached element subtrees still need selector queries during pure-JS DOM construction.
+
 - When a Web IDL attribute or algorithm naturally belongs to one of these DOM types, implement it here with spec-linked methods and keep `content/src/boa/bindings` as a thin conversion layer.
 
 - Blitz UI-event integration that turns native `UiEvent` values into DOM dispatch belongs in `content/src/dom`, not in `content/src/boa`.
@@ -19,3 +21,5 @@
 - "Missing Feature:" comments identify major missing features in the code. Only address those if given a clear implementation plan.
 
 - "TODO:" comments identify minor missing fixes or features. Those can be addressed in batches when asked to do so.
+
+- Spec is found under the top-level `/web_standards/DOM.html`

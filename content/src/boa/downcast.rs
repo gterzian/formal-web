@@ -1,15 +1,17 @@
 use boa_engine::{JsNativeError, JsResult, JsValue, object::JsObject};
 
-use crate::dom::{AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent};
+use crate::dom::{
+    AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent,
+};
 use crate::html::{HTMLAnchorElement, HTMLElement, Window};
 
 pub(crate) fn with_abort_controller_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&AbortController) -> R,
 ) -> JsResult<R> {
-    let controller = object.downcast_ref::<AbortController>().ok_or_else(|| {
-        JsNativeError::typ().with_message("object is not an AbortController")
-    })?;
+    let controller = object
+        .downcast_ref::<AbortController>()
+        .ok_or_else(|| JsNativeError::typ().with_message("object is not an AbortController"))?;
     Ok(f(&controller))
 }
 
@@ -17,9 +19,9 @@ pub(crate) fn with_abort_signal_mut<R>(
     this: &JsValue,
     f: impl FnOnce(&mut AbortSignal) -> R,
 ) -> JsResult<R> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("abort signal receiver is not an object"))?;
+    let object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("abort signal receiver is not an object")
+    })?;
     let Some(mut signal) = object.downcast_mut::<AbortSignal>() else {
         return Err(JsNativeError::typ()
             .with_message("receiver is not an AbortSignal")
@@ -32,9 +34,9 @@ pub(crate) fn with_abort_signal_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&AbortSignal) -> R,
 ) -> JsResult<R> {
-    let signal = object.downcast_ref::<AbortSignal>().ok_or_else(|| {
-        JsNativeError::typ().with_message("object is not an AbortSignal")
-    })?;
+    let signal = object
+        .downcast_ref::<AbortSignal>()
+        .ok_or_else(|| JsNativeError::typ().with_message("object is not an AbortSignal"))?;
     Ok(f(&signal))
 }
 
@@ -77,13 +79,17 @@ pub(crate) fn with_event_target_mut<R>(
         return Ok(f(&mut html_element.element.node.event_target));
     }
     if let Some(mut html_anchor_element) = object.downcast_mut::<HTMLAnchorElement>() {
-        return Ok(f(&mut html_anchor_element.html_element.element.node.event_target));
+        return Ok(f(&mut html_anchor_element
+            .html_element
+            .element
+            .node
+            .event_target));
     }
     if let Some(mut node) = object.downcast_mut::<Node>() {
         return Ok(f(&mut node.event_target));
     }
-    if let Some(mut signal) = object.downcast_mut::<AbortSignal>() {
-        return Ok(f(&mut signal.event_target));
+    if let Some(signal) = object.downcast_ref::<AbortSignal>() {
+        return Ok(signal.with_event_target_mut(f));
     }
     if let Some(mut target) = object.downcast_mut::<EventTarget>() {
         return Ok(f(&mut target));
@@ -110,13 +116,17 @@ pub(crate) fn with_event_target_ref<R>(
         return Ok(f(&html_element.element.node.event_target));
     }
     if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(f(&html_anchor_element.html_element.element.node.event_target));
+        return Ok(f(&html_anchor_element
+            .html_element
+            .element
+            .node
+            .event_target));
     }
     if let Some(node) = object.downcast_ref::<Node>() {
         return Ok(f(&node.event_target));
     }
     if let Some(signal) = object.downcast_ref::<AbortSignal>() {
-        return Ok(f(&signal.event_target));
+        return Ok(signal.with_event_target_ref(f));
     }
     if let Some(target) = object.downcast_ref::<EventTarget>() {
         return Ok(f(&target));

@@ -10,11 +10,11 @@ use boa_engine::{
     object::{JsObject, builtins::JsFunction},
     property::Attribute,
 };
+use boa_runtime::extensions::{RuntimeExtension, StructuredCloneExtension};
 use url::Url;
 
 use crate::boa::{
-    install_console_namespace,
-    install_document_property,
+    install_console_namespace, install_document_property,
     platform_objects::{
         document_object, object_for_existing_node, resolve_element_object, store_document_object,
         take_animation_frame_callbacks,
@@ -27,9 +27,26 @@ use crate::dom::{
 use crate::html::{
     GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLElement, TimerHandler, Window,
 };
+use crate::streams::{
+    ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
+    ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest,
+    ReadableStreamDefaultController, ReadableStreamDefaultReader, WritableStream,
+    WritableStreamDefaultController, WritableStreamDefaultWriter,
+    TransformStream, TransformStreamDefaultController,
+};
 use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::Event as ContentEvent;
+
+fn timer_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
+}
+
+fn log_timer_debug(message: impl AsRef<str>) {
+    if timer_debug_enabled() {
+        eprintln!("[timer-debug][settings] {}", message.as_ref());
+    }
+}
 
 /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
 #[derive(Debug, Clone)]
@@ -94,6 +111,10 @@ impl EnvironmentSettingsObject {
             .build()
             .map_err(|error| error.to_string())?;
 
+        StructuredCloneExtension
+            .register(None, &mut context)
+            .map_err(|error| error.to_string())?;
+
         context
             .register_global_class::<EventTarget>()
             .map_err(|error| error.to_string())?;
@@ -130,6 +151,45 @@ impl EnvironmentSettingsObject {
         context
             .register_global_class::<Window>()
             .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ByteLengthQueuingStrategy>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<CountQueuingStrategy>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStream>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStreamDefaultController>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableByteStreamController>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStreamDefaultReader>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStreamBYOBReader>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStreamBYOBRequest>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<WritableStream>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<WritableStreamDefaultController>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<WritableStreamDefaultWriter>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<TransformStream>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<TransformStreamDefaultController>()
+            .map_err(|error| error.to_string())?;
 
         wire_interface_prototypes(&mut context);
 
@@ -138,12 +198,11 @@ impl EnvironmentSettingsObject {
             global.set_prototype(Some(window_class.prototype()));
         }
 
-        let document_object = Document::from_data(
-            Document::new(document, creation_url.clone()),
-            &mut context,
-        )
-        .map_err(|error| error.to_string())?;
-        store_document_object(&context, document_object.clone()).map_err(|error| error.to_string())?;
+        let document_object =
+            Document::from_data(Document::new(document, creation_url.clone()), &mut context)
+                .map_err(|error| error.to_string())?;
+        store_document_object(&context, document_object.clone())
+            .map_err(|error| error.to_string())?;
         install_document_property(&mut context).map_err(|error| error.to_string())?;
         install_console_namespace(&mut context).map_err(|error| error.to_string())?;
         context
@@ -189,11 +248,15 @@ impl EnvironmentSettingsObject {
     }
 
     pub fn evaluate_script(&mut self, source: &str) -> Result<(), String> {
+        self.evaluate_script_without_microtask_checkpoint(source)?;
+        self.perform_a_microtask_checkpoint()
+    }
+
+    fn evaluate_script_without_microtask_checkpoint(&mut self, source: &str) -> Result<(), String> {
         self.context
             .eval(Source::from_bytes(source))
             .map(|_| ())
-            .map_err(|error| error.to_string())?;
-        self.perform_a_microtask_checkpoint()
+            .map_err(|error| error.to_string())
     }
 
     pub fn evaluate_script_to_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
@@ -212,7 +275,8 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
-        let callbacks = take_animation_frame_callbacks(&self.context).map_err(|error| error.to_string())?;
+        let callbacks =
+            take_animation_frame_callbacks(&self.context).map_err(|error| error.to_string())?;
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
@@ -236,55 +300,81 @@ impl EnvironmentSettingsObject {
         timer_key: u64,
         nesting_level: u32,
     ) -> Result<(), String> {
-        let previous_nesting_level = crate::boa::platform_objects::with_global_scope(
-            &self.context,
-            |global_scope| Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level))),
-        )
-        .map_err(|error| error.to_string())?;
+        log_timer_debug(format!(
+            "run timer id={} key={} nesting={}",
+            timer_id, timer_key, nesting_level
+        ));
+        let previous_nesting_level =
+            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
+            })
+            .map_err(|error| error.to_string())?;
 
-        let timer = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-            Ok(global_scope.window_timer(timer_id, timer_key))
-        })
-        .map_err(|error| error.to_string())?;
+        let timer =
+            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                Ok(global_scope.window_timer(timer_id, timer_key))
+            })
+            .map_err(|error| error.to_string())?;
 
         let Some(timer) = timer else {
-            let _ = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-                global_scope.set_current_timer_nesting_level(previous_nesting_level);
-                Ok(())
-            });
+            log_timer_debug(format!(
+                "run timer id={} key={} missing_registration",
+                timer_id, timer_key
+            ));
+            let _ =
+                crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                    global_scope.set_current_timer_nesting_level(previous_nesting_level);
+                    Ok(())
+                });
             return Ok(());
         };
 
         match &timer.handler {
             TimerHandler::Function { callback } => {
+                log_timer_debug(format!(
+                    "invoke timer callback id={} key={} function",
+                    timer_id, timer_key
+                ));
                 let global = JsValue::from(self.context.global_object());
-                if let Err(error) = invoke_callback_function(
-                    self,
-                    callback,
-                    &timer.arguments,
-                    ExceptionBehavior::Report,
-                    Some(&global),
-                ) {
+                let callback_result = (|| {
+                    let function = JsFunction::from_object(callback.clone()).ok_or_else(|| {
+                        JsError::from(
+                            JsNativeError::typ().with_message("timer callback is not callable"),
+                        )
+                    })?;
+                    function.call(&global, &timer.arguments, &mut self.context)
+                })();
+                if let Err(error) = callback_result {
                     eprintln!("content error: {error}");
                 }
             }
             TimerHandler::String { source } => {
-                if let Err(error) = self.evaluate_script(source) {
+                log_timer_debug(format!(
+                    "invoke timer callback id={} key={} string_source_len={}",
+                    timer_id,
+                    timer_key,
+                    source.len()
+                ));
+                if let Err(error) = self.evaluate_script_without_microtask_checkpoint(source) {
                     eprintln!("content error: {error}");
                 }
             }
         }
 
-        let completion_result = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-            global_scope
-                .complete_window_timer(timer_id, timer_key)
-                .map_err(|error| JsError::from(JsNativeError::typ().with_message(error)))
-        })
-        .map_err(|error| error.to_string());
+        let completion_result =
+            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
+                global_scope
+                    .complete_window_timer(timer_id, timer_key)
+                    .map_err(|error| JsError::from(JsNativeError::typ().with_message(error)))
+            })
+            .map_err(|error| error.to_string());
         let _ = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
             global_scope.set_current_timer_nesting_level(previous_nesting_level);
             Ok(())
         });
+        if let Err(error) = self.perform_a_microtask_checkpoint() {
+            eprintln!("content error: {error}");
+        }
         completion_result
     }
 
@@ -296,9 +386,9 @@ impl EnvironmentSettingsObject {
 
 fn wire_interface_prototypes(context: &mut Context) {
     if let Some(dom_exception) = context.get_global_class::<DOMException>() {
-        dom_exception
-            .prototype()
-            .set_prototype(Some(context.intrinsics().constructors().error().prototype()));
+        dom_exception.prototype().set_prototype(Some(
+            context.intrinsics().constructors().error().prototype(),
+        ));
     }
 
     set_registered_interface_prototype::<UIEvent, Event>(context);
@@ -320,10 +410,16 @@ fn set_registered_interface_prototype<Child: Class, Parent: Class>(context: &mut
     };
 
     child.prototype().set_prototype(Some(parent.prototype()));
-    child.constructor().set_prototype(Some(parent.constructor()));
+    child
+        .constructor()
+        .set_prototype(Some(parent.constructor()));
 }
 
 impl EcmascriptHost for EnvironmentSettingsObject {
+    fn context(&mut self) -> &mut boa_engine::Context {
+        &mut self.context
+    }
+
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
         object.get(JsString::from(property), &mut self.context)
     }

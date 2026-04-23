@@ -1,10 +1,8 @@
 use blitz_traits::events::{DomEvent, EventState};
-use boa_engine::{JsData, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsData, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
 
-use crate::boa::{with_abort_signal_mut, with_abort_signal_ref};
-
-use super::AbortAlgorithm;
+use super::{AbortAlgorithm, AbortSignal};
 
 pub const NONE: u16 = 0;
 pub const CAPTURING_PHASE: u16 = 1;
@@ -37,7 +35,7 @@ pub struct EventListener {
     pub once: bool,
 
     /// <https://dom.spec.whatwg.org/#event-listener-signal>
-    pub signal: Option<JsObject>,
+    pub signal: Option<AbortSignal>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-removed>
     #[unsafe_ignore_trace]
@@ -64,10 +62,10 @@ impl EventTarget {
         capture: bool,
         once: bool,
         passive: Option<bool>,
-        signal: Option<JsObject>,
+        signal: Option<AbortSignal>,
     ) -> JsResult<()> {
         if let Some(signal) = signal.as_ref() {
-            if with_abort_signal_ref(signal, |signal| signal.aborted_value())? {
+            if signal.aborted_value() {
                 return Ok(());
             }
         }
@@ -101,12 +99,10 @@ impl EventTarget {
             });
 
             if let Some(signal) = signal {
-                with_abort_signal_mut(&JsValue::from(signal), |signal| {
-                    signal.add_abort_algorithm(AbortAlgorithm::RemoveEventListener {
-                        event_target: event_target.clone(),
-                        listener_id,
-                    });
-                })?;
+                signal.add_abort_algorithm(AbortAlgorithm::RemoveEventListener {
+                    event_target: event_target.clone(),
+                    listener_id,
+                });
             }
         }
 

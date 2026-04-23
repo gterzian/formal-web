@@ -1,8 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
-use html5ever::{local_name, ns};
 use boa_engine::{Context, JsError, JsNativeError, JsResult, class::Class, object::JsObject};
+use html5ever::{local_name, ns};
 
 use crate::dom::{Element, Node};
 use crate::html::{GlobalScope, HTMLAnchorElement, HTMLElement, Window};
@@ -68,11 +68,15 @@ pub(crate) fn invalidate_cached_node_ids(context: &Context, node_ids: &[usize]) 
 }
 
 pub(crate) fn take_animation_frame_callbacks(context: &Context) -> JsResult<Vec<JsObject>> {
-    with_global_scope(context, |global_scope| Ok(global_scope.take_animation_frame_callbacks()))
+    with_global_scope(context, |global_scope| {
+        Ok(global_scope.take_animation_frame_callbacks())
+    })
 }
 
 fn cached_node_object(context: &Context, node_id: usize) -> JsResult<Option<JsObject>> {
-    with_global_scope(context, |global_scope| Ok(global_scope.cached_node_object(node_id)))
+    with_global_scope(context, |global_scope| {
+        Ok(global_scope.cached_node_object(node_id))
+    })
 }
 
 fn cache_node_object(context: &Context, node_id: usize, object: JsObject) -> JsResult<()> {

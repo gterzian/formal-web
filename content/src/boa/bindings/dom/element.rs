@@ -3,11 +3,12 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
+    object::builtins::JsArray,
     property::Attribute,
 };
 
-use crate::dom::Element;
 use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
+use crate::dom::Element;
 use crate::html::{HTMLAnchorElement, HTMLElement};
 
 use super::{event_target::register_event_target_methods, node::register_node_methods};
@@ -52,6 +53,21 @@ pub(crate) fn register_element_methods(class: &mut ClassBuilder<'_>) -> JsResult
             Some(NativeFunction::from_fn_ptr(get_inner_html).to_js_function(&realm)),
             Some(NativeFunction::from_fn_ptr(set_inner_html).to_js_function(&realm)),
             Attribute::all(),
+        )
+        .method(
+            js_string!("querySelector"),
+            1,
+            NativeFunction::from_fn_ptr(query_selector),
+        )
+        .method(
+            js_string!("querySelectorAll"),
+            1,
+            NativeFunction::from_fn_ptr(query_selector_all),
+        )
+        .method(
+            js_string!("insertAdjacentText"),
+            2,
+            NativeFunction::from_fn_ptr(insert_adjacent_text),
         )
         .method(
             js_string!("setAttribute"),
@@ -115,15 +131,66 @@ fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     Ok(JsValue::undefined())
 }
 
+fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let selector = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let node_id = with_element_ref(this, |element| element.query_selector(&selector))?
+        .map_err(|error| JsNativeError::syntax().with_message(error))?;
+    match node_id {
+        Some(node_id) => Ok(crate::boa::platform_objects::resolve_element_object(node_id, context)?.into()),
+        None => Ok(JsValue::null()),
+    }
+}
+
+fn query_selector_all(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let selector = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let node_ids = with_element_ref(this, |element| element.query_selector_all(&selector))?
+        .map_err(|error| JsNativeError::syntax().with_message(error))?;
+    let values = node_ids
+        .into_iter()
+        .map(|node_id| crate::boa::platform_objects::resolve_element_object(node_id, context).map(JsValue::from))
+        .collect::<JsResult<Vec<_>>>()?;
+    Ok(JsArray::from_iter(values, context).into())
+}
+
+fn insert_adjacent_text(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let where_ = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let data = args
+        .get_or_undefined(1)
+        .to_string(context)?
+        .to_std_string_escaped();
+    with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?
+        .map_err(|error| JsNativeError::syntax().with_message(error))?;
+    Ok(JsValue::undefined())
+}
+
 fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let name = args
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    Ok(match with_element_ref(this, |element| element.get_attribute(&name))? {
-        Some(value) => JsValue::from(JsString::from(value.as_str())),
-        None => JsValue::null(),
-    })
+    Ok(
+        match with_element_ref(this, |element| element.get_attribute(&name))? {
+            Some(value) => JsValue::from(JsString::from(value.as_str())),
+            None => JsValue::null(),
+        },
+    )
 }
 
 fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

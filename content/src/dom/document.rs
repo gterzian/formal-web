@@ -62,9 +62,7 @@ impl Document {
             .query_selector_all(qualified_name)
             .map(|matches| matches.into_iter().collect())
             .map_err(|error| {
-                format!(
-                    "failed to resolve tag name selector `{qualified_name}`: {error:?}"
-                )
+                format!("failed to resolve tag name selector `{qualified_name}`: {error:?}")
             })
     }
 

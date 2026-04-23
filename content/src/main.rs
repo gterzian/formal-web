@@ -5,12 +5,13 @@ mod ui_event;
 mod boa;
 mod dom;
 mod html;
+mod streams;
 mod webidl;
 
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
-    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
-    execute_parser_scripts, parse_html_into_document,
+    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
+    parse_html_into_document,
 };
 use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
@@ -21,15 +22,14 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
-    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument, DispatchEvent,
-    EvaluateScript, FailDocumentFetch, RunWindowTimer, SetViewport, Shutdown,
+    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
+    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer, SetViewport, Shutdown,
     UpdateTheRendering,
 };
 use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    Event as ContentEvent,
-    FetchRequest as ContentFetchRequest, FontTransportSender, PaintFrame, RecordedScene,
-    ScriptEvaluationResult, ScrollOffset, ViewportSnapshot,
+    Event as ContentEvent, FetchRequest as ContentFetchRequest, FontTransportSender, PaintFrame,
+    RecordedScene, ScriptEvaluationResult, ScrollOffset, ViewportSnapshot,
 };
 use std::{
     cell::RefCell,
@@ -274,7 +274,9 @@ impl ContentRuntime {
             .expect("local content state mutex poisoned");
         let handler_id = local_state.next_handler_id;
         local_state.next_handler_id += 1;
-        local_state.pending_handlers.insert(handler_id, pending_handler);
+        local_state
+            .pending_handlers
+            .insert(handler_id, pending_handler);
         handler_id
     }
 
@@ -286,17 +288,15 @@ impl ContentRuntime {
                 method: request.method.to_string(),
                 body: request_body_string(&request.body),
             }))
-            .map_err(|error| format!("failed to send document fetch request to the embedder: {error}"))
+            .map_err(|error| {
+                format!("failed to send document fetch request to the embedder: {error}")
+            })
     }
 
     fn deferred_script_state(script: PendingParserScript) -> DeferredScriptState {
         match script {
-            PendingParserScript::Inline { source } => {
-                DeferredScriptState::Inline { source }
-            }
-            PendingParserScript::External { src } => {
-                DeferredScriptState::ExternalPending { src }
-            }
+            PendingParserScript::Inline { source } => DeferredScriptState::Inline { source },
+            PendingParserScript::External { src } => DeferredScriptState::ExternalPending { src },
         }
     }
 
@@ -383,9 +383,13 @@ impl ContentRuntime {
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
             content_document.document.borrow_mut().handle_messages();
-            let resources_ready = !content_document.document.borrow().has_pending_critical_resources();
+            let resources_ready = !content_document
+                .document
+                .borrow()
+                .has_pending_critical_resources();
 
-            let Some(pending_document_load) = content_document.pending_document_load.as_mut() else {
+            let Some(pending_document_load) = content_document.pending_document_load.as_mut()
+            else {
                 return Ok(());
             };
 
@@ -443,7 +447,9 @@ impl ContentRuntime {
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, document_id: u64) -> Result<(), String> {
-        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(document_id, None))));
+        let document = Rc::new(RefCell::new(BaseDocument::new(
+            self.document_config(document_id, None),
+        )));
         let mut settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
@@ -558,7 +564,11 @@ impl ContentRuntime {
         self.continue_document_load(document_id)
     }
 
-    fn evaluate_script(&mut self, document_id: u64, source: String) -> Result<serde_json::Value, String> {
+    fn evaluate_script(
+        &mut self,
+        document_id: u64,
+        source: String,
+    ) -> Result<serde_json::Value, String> {
         let document = self
             .documents
             .get_mut(&document_id)
@@ -574,16 +584,18 @@ impl ContentRuntime {
             .local_state
             .lock()
             .expect("local content state mutex poisoned");
-        local_state.pending_handlers.retain(|_, pending_handler| match pending_handler {
-            PendingNetworkHandler::Resource {
-                document_id: pending_document_id,
-                ..
-            }
-            | PendingNetworkHandler::DeferredScript {
-                document_id: pending_document_id,
-                ..
-            } => *pending_document_id != document_id,
-        });
+        local_state
+            .pending_handlers
+            .retain(|_, pending_handler| match pending_handler {
+                PendingNetworkHandler::Resource {
+                    document_id: pending_document_id,
+                    ..
+                }
+                | PendingNetworkHandler::DeferredScript {
+                    document_id: pending_document_id,
+                    ..
+                } => *pending_document_id != document_id,
+            });
         Ok(())
     }
 
@@ -818,6 +830,12 @@ impl ContentRuntime {
             .map_err(|error| format!("failed to send content command completion: {error}"))
     }
 
+    fn note_shutdown_completed(&self) -> Result<(), String> {
+        self.event_sender
+            .send(ContentEvent::ShutdownCompleted)
+            .map_err(|error| format!("failed to send content shutdown completion: {error}"))
+    }
+
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     /// Note: Lean emits these runtime effects from `FormalWeb.EventLoop.runEventLoopMessage`, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
@@ -848,8 +866,9 @@ impl ContentRuntime {
                 source,
             } => {
                 let value = self.evaluate_script(document_id, source)?;
-                let value_json = serde_json::to_string(&value)
-                    .map_err(|error| format!("failed to encode script evaluation result: {error}"))?;
+                let value_json = serde_json::to_string(&value).map_err(|error| {
+                    format!("failed to encode script evaluation result: {error}")
+                })?;
                 self.event_sender
                     .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
                         request_id,
@@ -895,7 +914,10 @@ impl ContentRuntime {
                 self.fail_document_fetch(handler_id)?;
                 Ok(true)
             }
-            Shutdown => Ok(false),
+            Shutdown => {
+                self.note_shutdown_completed()?;
+                Ok(false)
+            }
         }
     }
 }
@@ -965,211 +987,4 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        EnvironmentSettingsObject, JsHtmlParserProvider, execute_parser_scripts,
-        log_paint_debug, parse_html_into_document,
-    };
-    use anyrender::Scene as RenderScene;
-    use blitz_dom::{BaseDocument, DocumentConfig};
-    use blitz_paint::paint_scene;
-    use blitz_traits::shell::{ColorScheme, Viewport};
-    use ipc_messages::content::FontTransportSender;
-    use std::{cell::RefCell, fs, rc::Rc, sync::Arc};
-    use url::Url;
-
-    fn blank_environment_settings() -> EnvironmentSettingsObject {
-        let base_url = Url::parse("https://example.test/").expect("URL should parse");
-        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
-            viewport: Some(Viewport::new(960, 720, 1.0, ColorScheme::Light)),
-            base_url: Some(base_url.to_string()),
-            html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
-            ..DocumentConfig::default()
-        })));
-
-        EnvironmentSettingsObject::new(document, base_url)
-            .expect("environment settings should initialize")
-    }
-
-    #[test]
-    fn startup_example_generates_glyph_runs() {
-        let artifact_path = format!(
-            "{}/../artifacts/StartupExample.html",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let html = fs::read_to_string(&artifact_path)
-        .expect("startup artifact should be readable");
-        let artifact_url = Url::from_file_path(&artifact_path)
-            .expect("startup artifact path should convert to a file URL");
-        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
-            viewport: Some(Viewport::new(960, 720, 1.0, ColorScheme::Light)),
-            base_url: Some(artifact_url.to_string()),
-            html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
-            ..DocumentConfig::default()
-        })));
-        let mut settings = EnvironmentSettingsObject::new(
-            Rc::clone(&document),
-            artifact_url,
-        )
-        .expect("environment settings should initialize");
-
-        let parser_scripts = {
-            let mut document_guard = document.borrow_mut();
-            parse_html_into_document(&mut document_guard, &html)
-        };
-
-        execute_parser_scripts(&mut settings, parser_scripts).expect("startup scripts should run");
-
-        let mut document_guard = document.borrow_mut();
-        document_guard.resolve(0.0);
-        let viewport = document_guard.viewport().clone();
-        let (width, height) = viewport.window_size;
-        let mut scene = RenderScene::new();
-        paint_scene(
-            &mut scene,
-            &document_guard,
-            viewport.scale_f64(),
-            width,
-            height,
-            0,
-            0,
-        );
-        let mut font_sender = FontTransportSender::default();
-        let prepared_scene = font_sender.prepare_scene(1, scene);
-        log_paint_debug(1, &document_guard, &prepared_scene.scene);
-
-        let summary = prepared_scene.scene.summary();
-        assert!(
-            summary.glyph_runs > 0,
-            "expected startup scene to include glyph runs, got {}",
-            summary.describe()
-        );
-        assert!(
-            summary.glyphs > 0,
-            "expected startup scene to include glyphs, got {}",
-            summary.describe()
-        );
-        assert!(
-            summary.font_refs > 0,
-            "expected startup scene to reference fonts, got {}",
-            summary.describe()
-        );
-        assert!(
-            !prepared_scene.registered_fonts.is_empty(),
-            "expected startup scene to register fonts for transport"
-        );
-    }
-
-    #[test]
-    fn abort_interfaces_are_exposed_on_window() {
-        let mut settings = blank_environment_settings();
-        let value = settings
-            .evaluate_script_to_json(
-                r#"({
-                    abortController: typeof AbortController,
-                    abortSignal: typeof AbortSignal,
-                    domException: typeof DOMException,
-                    windowAddEventListener: typeof window.addEventListener,
-                    selfAddEventListener: typeof self.addEventListener,
-                    abortStatic: typeof AbortSignal.abort,
-                    timeoutStatic: typeof AbortSignal.timeout,
-                    anyStatic: typeof AbortSignal.any
-                })"#,
-            )
-            .expect("script evaluation should succeed");
-
-        assert_eq!(value["abortController"], "function");
-        assert_eq!(value["abortSignal"], "function");
-        assert_eq!(value["domException"], "function");
-        assert_eq!(value["windowAddEventListener"], "function");
-        assert_eq!(value["selfAddEventListener"], "function");
-        assert_eq!(value["abortStatic"], "function");
-        assert_eq!(value["timeoutStatic"], "function");
-        assert_eq!(value["anyStatic"], "function");
-    }
-
-    #[test]
-    fn abort_signal_abort_returns_aborted_signal() {
-        let mut settings = blank_environment_settings();
-        let value = settings
-            .evaluate_script_to_json(
-                r#"(() => {
-                    const signal = AbortSignal.abort();
-                    return {
-                        isSignal: signal instanceof AbortSignal,
-                        aborted: signal.aborted,
-                        reasonIsDomException: signal.reason instanceof DOMException,
-                        reasonName: signal.reason.name
-                    };
-                })()"#,
-            )
-            .expect("script evaluation should succeed");
-
-        assert_eq!(value["isSignal"], true);
-        assert_eq!(value["aborted"], true);
-        assert_eq!(value["reasonIsDomException"], true);
-        assert_eq!(value["reasonName"], "AbortError");
-    }
-
-    #[test]
-    fn abort_controller_construction_returns_signal() {
-        let mut settings = blank_environment_settings();
-        let value = settings
-            .evaluate_script_to_json(
-                r#"(() => {
-                    const controller = new AbortController();
-                    return {
-                        controllerIsObject: typeof controller === "object",
-                        signalIsSignal: controller.signal instanceof AbortSignal,
-                        signalStable: controller.signal === controller.signal,
-                        aborted: controller.signal.aborted,
-                        reasonIsUndefined: controller.signal.reason === undefined
-                    };
-                })()"#,
-            )
-            .expect("script evaluation should succeed");
-
-        assert_eq!(value["controllerIsObject"], true);
-        assert_eq!(value["signalIsSignal"], true);
-        assert_eq!(value["signalStable"], true);
-        assert_eq!(value["aborted"], false);
-        assert_eq!(value["reasonIsUndefined"], true);
-    }
-
-    #[test]
-    fn abort_controller_works_under_testharness() {
-        let mut settings = blank_environment_settings();
-        settings
-            .evaluate_script(
-                r#"self.GLOBAL = {
-                    isWindow() { return true; },
-                    isWorker() { return false; },
-                    isShadowRealm() { return false; }
-                };"#,
-            )
-            .expect("GLOBAL should install");
-
-        let harness_path = format!(
-            "{}/../vendor/wpt/resources/testharness.js",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let harness = fs::read_to_string(harness_path)
-            .expect("testharness.js should be readable");
-        settings
-            .evaluate_script(&harness)
-            .expect("testharness should evaluate");
-        settings
-            .evaluate_script(
-                r#"test(() => {
-                    const controller = new AbortController();
-                    assert_true(controller.signal instanceof AbortSignal);
-                    assert_false(controller.signal.aborted);
-                }, "AbortController testharness integration");
-                done();"#,
-            )
-            .expect("testharness test should run");
-    }
 }

@@ -1,16 +1,17 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    class::ClassBuilder,
-    js_string,
-    native_function::NativeFunction,
-    property::Attribute,
+    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, class::ClassBuilder, js_string,
+    native_function::NativeFunction, property::Attribute,
 };
 use url::Url;
 
-use crate::{dom::Document, html::{HTMLAnchorElement, HyperlinkElementUtils}};
+use crate::boa::platform_objects;
+use crate::{
+    dom::Document,
+    html::{HTMLAnchorElement, HyperlinkElementUtils},
+};
 
 pub(crate) fn document_creation_url(context: &Context) -> JsResult<Url> {
-    let object = super::super::platform_objects::document_object(context)?;
+    let object = platform_objects::document_object(context)?;
     let document = object
         .downcast_ref::<Document>()
         .ok_or_else(|| JsNativeError::typ().with_message("document object is not a Document"))?;
@@ -21,9 +22,9 @@ fn with_hyperlink_element_utils_ref<R>(
     this: &JsValue,
     f: impl FnOnce(&dyn HyperlinkElementUtils) -> R,
 ) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("hyperlink receiver is not an object")
-    })?;
+    let object = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("hyperlink receiver is not an object"))?;
     if let Some(anchor) = object.downcast_ref::<HTMLAnchorElement>() {
         return Ok(f(&*anchor));
     }

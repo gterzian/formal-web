@@ -8,6 +8,7 @@ publish = false
 anyrender = { version = "0.8", features = ["serde"] }
 boa_engine = { path = "../vendor/boa/core/engine", default-features = false }
 boa_gc = { path = "../vendor/boa/core/gc" }
+boa_runtime = { path = "../vendor/boa/core/runtime", default-features = false }
 blitz-dom = { path = "../vendor/blitz/packages/blitz-dom", default-features = false, features = ["svg", "system_fonts"] }
 blitz-paint = { path = "../vendor/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
@@ -18,5 +19,6 @@ ipc-channel = "0.21"
 keyboard-types = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+style = { version = "0.15.0", package = "stylo" }
 url = "2"
 xml5ever = "0.37"

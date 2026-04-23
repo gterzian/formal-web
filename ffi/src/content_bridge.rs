@@ -13,6 +13,16 @@ use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+fn timer_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
+}
+
+fn log_timer_debug(message: impl AsRef<str>) {
+    if timer_debug_enabled() {
+        eprintln!("[timer-debug][bridge] {}", message.as_ref());
+    }
+}
+
 struct ContentBridge {
     command_sender: IpcSender<ContentCommand>,
     child: Mutex<Option<Child>>,
@@ -41,6 +51,22 @@ fn content_executable_path() -> Result<PathBuf, String> {
     let parent = current_exe
         .parent()
         .ok_or_else(|| String::from("failed to resolve executable directory"))?;
+    let profile_dir = parent;
+    let profile_name = profile_dir
+        .file_name()
+        .ok_or_else(|| String::from("failed to resolve build profile directory"))?;
+    let target_dir = profile_dir
+        .parent()
+        .ok_or_else(|| String::from("failed to resolve target directory"))?;
+
+    let dedicated_target = target_dir
+        .join("formal-web-content")
+        .join(profile_name)
+        .join(executable_file_name("content"));
+    if dedicated_target.is_file() {
+        return Ok(dedicated_target);
+    }
+
     Ok(parent.join(executable_file_name("content")))
 }
 
@@ -99,6 +125,14 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::WindowTimerRequested(request) => {
+                    log_timer_debug(format!(
+                        "forward schedule document={} id={} key={} timeout_ms={} nesting={}",
+                        request.document_id,
+                        request.timer_id,
+                        request.timer_key,
+                        request.timeout_ms,
+                        request.nesting_level
+                    ));
                     let _ = super::call_lean_schedule_window_timer_parts(
                         event_loop_id,
                         request.document_id as usize,
@@ -109,6 +143,10 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::WindowTimerCleared(request) => {
+                    log_timer_debug(format!(
+                        "forward clear document={} key={}",
+                        request.document_id, request.timer_key
+                    ));
                     let _ = request.document_id;
                     let _ = super::call_lean_clear_window_timer_parts(
                         event_loop_id,
@@ -161,6 +199,7 @@ fn spawn_listener(
                 ContentEvent::PaintReady(snapshot) => {
                     let _ = embedder::send_user_event(FormalWebUserEvent::Paint(snapshot));
                 }
+                ContentEvent::ShutdownCompleted => break,
             }
         }
 

@@ -1,6 +1,4 @@
-use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue,
-};
+use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue};
 
 use crate::html::{GlobalScope, TimerHandler, Window};
 
@@ -75,7 +73,10 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         // Note: `GlobalScope::timer_initialization_steps` owns the map of setTimeout and setInterval IDs, so it performs the concrete `id` allocation or reuse.
 
         // Step 3: "If the surrounding agent's event loop's currently running task is a task that was created by this algorithm, then let nesting level be that task's timer nesting level. Otherwise, let nesting level be 0."
-        let nesting_level = self.global_scope().current_timer_nesting_level().unwrap_or(0);
+        let nesting_level = self
+            .global_scope()
+            .current_timer_nesting_level()
+            .unwrap_or(0);
 
         // Step 4: "Set timeout to the result of converting timeout to an IDL long."
         let mut timeout_ms = timeout_ms(timeout, context)?;

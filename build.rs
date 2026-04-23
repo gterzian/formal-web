@@ -25,7 +25,8 @@ fn main() {
     println!("cargo:rerun-if-changed=content/src");
     println!("cargo:rerun-if-changed=lean-toolchain");
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"));
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set"));
     let profile = env::var("PROFILE").expect("PROFILE should be set");
     let cargo = env::var("CARGO").unwrap_or_else(|_| String::from("cargo"));
@@ -35,7 +36,10 @@ fn main() {
         .output()
         .expect("failed to run `lean --print-prefix`");
     if !lean_prefix.status.success() {
-        panic!("`lean --print-prefix` exited with status {}", lean_prefix.status);
+        panic!(
+            "`lean --print-prefix` exited with status {}",
+            lean_prefix.status
+        );
     }
 
     let lean_prefix = String::from_utf8(lean_prefix.stdout)
@@ -64,7 +68,9 @@ fn main() {
         command.arg("--release");
     }
 
-    let status = command.status().expect("failed to build the content child process");
+    let status = command
+        .status()
+        .expect("failed to build the content child process");
     if !status.success() {
         panic!("building the content child process failed with status {status}");
     }

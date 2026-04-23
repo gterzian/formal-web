@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>load event after multiple external scripts</title>
+<script>
+window.__externalScriptCount = 0;
+</script>
+<script src="resources/increment-counter.js"></script>
+<script src="resources/increment-counter.js"></script>
+<script src="resources/increment-counter.js"></script>
+<script src="resources/increment-counter.js"></script>
+<script>
+window.addEventListener(
+  "load",
+  () => {
+    const count = window.__externalScriptCount;
+    const passed = count === 4;
+    window.__formalWebTestResult = {
+      location: "",
+      title: String(document.title || ""),
+      tests: [
+        {
+          name: "window load waits for multiple external scripts",
+          status: passed ? 0 : 1,
+          message: passed ? null : `expected 4 external script executions but saw ${count}`,
+          stack: null,
+        },
+      ],
+      status: {
+        status: passed ? 0 : 1,
+        message: passed ? null : `expected 4 external script executions but saw ${count}`,
+        stack: null,
+      },
+      asserts: [],
+    };
+  },
+  { once: true },
+);
+</script>
+<p>Verifies that load fires after multiple parser-discovered external scripts execute.</p>

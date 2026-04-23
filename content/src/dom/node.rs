@@ -30,6 +30,28 @@ impl Node {
         }
     }
 
+    /// <https://dom.spec.whatwg.org/#dom-node-firstchild>
+    pub(crate) fn first_child(&self) -> Option<usize> {
+        let document = self.document.borrow();
+        document
+            .get_node(self.node_id)
+            .and_then(|node| node.children.first().copied())
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-lastchild>
+    pub(crate) fn last_child(&self) -> Option<usize> {
+        let document = self.document.borrow();
+        document
+            .get_node(self.node_id)
+            .and_then(|node| node.children.last().copied())
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-parentnode>
+    pub(crate) fn parent_node(&self) -> Option<usize> {
+        let document = self.document.borrow();
+        document.get_node(self.node_id).and_then(|node| node.parent)
+    }
+
     /// <https://dom.spec.whatwg.org/#dom-node-appendchild>
     pub(crate) fn append_child(&self, child: &Node) -> Result<(), String> {
         if self.node_id == 0 {
@@ -51,6 +73,30 @@ impl Node {
         let mut document = self.document.borrow_mut();
         let mut mutator = document.mutate();
         mutator.append_children(self.node_id, &[child.node_id]);
+        Ok(())
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-removechild>
+    pub(crate) fn remove_child(&self, child: &Node) -> Result<(), String> {
+        if !Rc::ptr_eq(&self.document, &child.document) {
+            return Err(String::from(
+                "removeChild requires nodes from the same document",
+            ));
+        }
+
+        {
+            let document = self.document.borrow();
+            let child_parent = document
+                .get_node(child.node_id)
+                .and_then(|node| node.parent);
+            if child_parent != Some(self.node_id) {
+                return Err(String::from("removeChild requires a child of the receiver"));
+            }
+        }
+
+        let mut document = self.document.borrow_mut();
+        let mut mutator = document.mutate();
+        mutator.remove_node(child.node_id);
         Ok(())
     }
 

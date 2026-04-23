@@ -8,11 +8,13 @@ use boa_engine::{
 
 use crate::html::HTMLAnchorElement;
 
+use crate::boa::bindings::dom::{
+    register_element_methods, register_event_target_methods, register_node_methods,
+};
+
 use super::{
-    element::register_element_methods, event_target::register_event_target_methods,
     html_element::register_html_element_methods,
     hyperlink_element_utils::{document_creation_url, register_hyperlink_element_utils_methods},
-    node::register_node_methods,
 };
 
 impl Class for HTMLAnchorElement {
@@ -134,9 +136,7 @@ fn set_download(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
 }
 
 fn get_rel(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_anchor_element_ref(this, |anchor| {
-        JsValue::from(JsString::from(anchor.rel()))
-    })
+    with_html_anchor_element_ref(this, |anchor| JsValue::from(JsString::from(anchor.rel())))
 }
 
 fn set_rel(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -163,8 +163,6 @@ fn set_referrer_policy(
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    with_html_anchor_element_ref(this, |anchor| {
-        anchor.set_referrer_policy(&referrer_policy)
-    })?;
+    with_html_anchor_element_ref(this, |anchor| anchor.set_referrer_policy(&referrer_policy))?;
     Ok(JsValue::undefined())
 }

@@ -1,6 +1,8 @@
-use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 
 pub(crate) trait EcmascriptHost {
+    fn context(&mut self) -> &mut Context;
+
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue>;
 
     fn is_callable(&self, object: &JsObject) -> bool;
@@ -117,9 +119,6 @@ pub(crate) fn call_user_objects_operation(
     // Step 12: "Let callResult be Completion(Call(X, thisArg, jsArgs))."
     let result = host.call(&callable, &effective_this_arg, args);
 
-    // Note: The content runtime performs <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint> immediately after each Rust-to-JavaScript callback entry returns.
-    host.perform_a_microtask_checkpoint()?;
-
     let result = result?;
 
     // Step 13: "If callResult is an abrupt completion, set completion to callResult and jump to the step labeled return."
@@ -171,9 +170,6 @@ pub(crate) fn invoke_callback_function(
 
     // Step 11: "Let callResult be Completion(Call(F, thisArg, jsArgs))."
     let call_result = host.call(&function, &effective_this_arg, args);
-
-    // Note: The content runtime performs <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint> immediately after each Rust-to-JavaScript callback entry returns.
-    host.perform_a_microtask_checkpoint()?;
 
     // Step 12: "If callResult is an abrupt completion, set completion to callResult and jump to the step labeled return."
     // Step 13: "Set completion to the result of converting callResult.[[Value]] to an IDL value of the same type as callable's return type."
