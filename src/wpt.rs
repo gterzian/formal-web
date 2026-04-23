@@ -33,7 +33,52 @@ const WEBDRIVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REPORT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const RUNNER_ARTIFACT_ROOT: &str = "scratchpad/wpt-runner";
+const WPTSERVE_PID_REGISTRY: &str = "wptserve-pids.txt";
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunnerBuildProfile {
+    Debug,
+    Release,
+}
+
+impl RunnerBuildProfile {
+    fn target_dir_name(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
+        }
+    }
+
+    fn cargo_profile_flag(self) -> Option<&'static str> {
+        match self {
+            Self::Debug => None,
+            Self::Release => Some("--release"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
+        }
+    }
+}
+
+fn current_runner_build_profile() -> Option<RunnerBuildProfile> {
+    let current_executable = std::env::current_exe().ok()?;
+    if let Ok(release_executable) = runner_executable_path(RunnerBuildProfile::Release) {
+        if same_file_path(&current_executable, &release_executable) {
+            return Some(RunnerBuildProfile::Release);
+        }
+    }
+    if let Ok(debug_executable) = runner_executable_path(RunnerBuildProfile::Debug) {
+        if same_file_path(&current_executable, &debug_executable) {
+            return Some(RunnerBuildProfile::Debug);
+        }
+    }
+    None
+}
 
 #[derive(Args, Debug)]
 pub struct TestWptArgs {
@@ -51,6 +96,9 @@ pub struct TestWptArgs {
 
     #[arg(long)]
     headed: bool,
+
+    #[arg(long, default_value_t = false)]
+    debug_build: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,13 +370,15 @@ struct WebDriverSession {
 
 #[derive(Debug)]
 struct SharedTestRunner {
-    server: WptServeProcess,
     browser: BrowserProcess,
     session: WebDriverSession,
+    base_url: String,
     current_url: String,
 }
 
 pub fn run(args: TestWptArgs) -> Result<(), String> {
+    maybe_reexec_test_wpt_runner(&args)?;
+
     let repo_root = repo_root();
     let config = RunnerConfig::load(&repo_root)?;
 
@@ -351,10 +401,25 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
     println!("WPT root: {}", config.wpt.root.display());
     println!("Mode: WebDriver + wptserve runner");
     println!(
+        "Runner build: {}",
+        current_runner_build_profile()
+            .map(RunnerBuildProfile::as_str)
+            .unwrap_or("unknown")
+    );
+    println!(
         "Browser mode: {}",
         if args.headed { "headed" } else { "headless" }
     );
+    let browser_build = if args.debug_build {
+        RunnerBuildProfile::Debug
+    } else {
+        RunnerBuildProfile::Release
+    };
+    println!("Browser build: {}", browser_build.as_str());
     println!("Selected tests: {}", selected.len());
+
+    cleanup_registered_wptserve_processes();
+    let server = WptServeProcess::start(&config)?;
 
     let mut summary = RunSummary::default();
     let mut results = Vec::with_capacity(selected.len());
@@ -382,10 +447,11 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
         }
 
         let observed = run_with_shared_runner(
-            &config,
+            &server,
             &test,
             timeout,
             !args.headed,
+            browser_build,
             &mut shared_runner,
             &mut shared_runner_error,
         );
@@ -393,7 +459,7 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
             observed,
             suite_meta.expectation_for(&test.source_relative_path),
         );
-        if matches!(compared.actual, WptStatus::Crash | WptStatus::Timeout) {
+        if compared.actual == WptStatus::Crash {
             if let Some(runner) = shared_runner.take() {
                 let _ = runner.shutdown();
             }
@@ -732,14 +798,18 @@ impl WptServeProcess {
 impl Drop for WptServeProcess {
     fn drop(&mut self) {
         let _ = shutdown_wptserve_child(&mut self.child);
+        unregister_wptserve_pid(self.child.id());
         let _ = fs::remove_dir_all(&self.temp_dir);
     }
 }
 
 impl BrowserProcess {
-    fn start(port: u16, startup_url: Option<&str>, headless: bool) -> Result<Self, String> {
-        let executable = std::env::current_exe()
-            .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    fn start(
+        executable: &Path,
+        port: u16,
+        startup_url: Option<&str>,
+        headless: bool,
+    ) -> Result<Self, String> {
         let mut command = Command::new(executable);
         command.arg("webdriver").arg("--port").arg(port.to_string());
         if headless {
@@ -823,24 +893,29 @@ impl WebDriverSession {
 }
 
 impl SharedTestRunner {
-    fn start(config: &RunnerConfig, headless: bool) -> Result<Self, String> {
-        let server = WptServeProcess::start(config)?;
-        let startup_url = format!("{}/common/blank.html", server.base_url());
+    fn start(
+        server: &WptServeProcess,
+        headless: bool,
+        build_profile: RunnerBuildProfile,
+    ) -> Result<Self, String> {
+        let base_url = server.base_url();
+        let startup_url = format!("{base_url}/common/blank.html");
+        let executable = ensure_runner_executable(build_profile)?;
         let port = pick_unused_port()?;
-        let browser = BrowserProcess::start(port, Some(&startup_url), headless)?;
+        let browser = BrowserProcess::start(&executable, port, Some(&startup_url), headless)?;
         let session = WebDriverSession::create(browser.port)?;
         Ok(Self {
-            server,
             browser,
             session,
+            base_url,
             current_url: startup_url,
         })
     }
 
     fn run_test(&mut self, test: &SelectedTest, timeout: Duration) -> ObservedTestResult {
         let started = Instant::now();
-        let reset_url = format!("{}/common/blank.html", self.server.base_url());
-        let test_url = format!("{}/{}", self.server.base_url(), test.served_path);
+        let reset_url = format!("{}/common/blank.html", self.base_url);
+        let test_url = format!("{}/{}", self.base_url, test.served_path);
         if self.current_url != reset_url {
             if let Err(error) = self.session.navigate(&reset_url) {
                 return crash_result(
@@ -883,22 +958,24 @@ impl SharedTestRunner {
 }
 
 fn run_with_shared_runner(
-    config: &RunnerConfig,
+    server: &WptServeProcess,
     test: &SelectedTest,
     timeout: Duration,
     headless: bool,
+    build_profile: RunnerBuildProfile,
     shared_runner: &mut Option<SharedTestRunner>,
     shared_runner_error: &mut Option<String>,
 ) -> ObservedTestResult {
     let observed = run_once_with_shared_runner(
-        config,
+        server,
         test,
         timeout,
         headless,
+        build_profile,
         shared_runner,
         shared_runner_error,
     );
-    if !matches!(observed.actual, WptStatus::Crash | WptStatus::Timeout) {
+    if observed.actual != WptStatus::Crash {
         return observed;
     }
 
@@ -908,20 +985,22 @@ fn run_with_shared_runner(
     *shared_runner_error = None;
 
     run_once_with_shared_runner(
-        config,
+        server,
         test,
         timeout,
         headless,
+        build_profile,
         shared_runner,
         shared_runner_error,
     )
 }
 
 fn run_once_with_shared_runner(
-    config: &RunnerConfig,
+    server: &WptServeProcess,
     test: &SelectedTest,
     timeout: Duration,
     headless: bool,
+    build_profile: RunnerBuildProfile,
     shared_runner: &mut Option<SharedTestRunner>,
     shared_runner_error: &mut Option<String>,
 ) -> ObservedTestResult {
@@ -930,7 +1009,7 @@ fn run_once_with_shared_runner(
     }
 
     if shared_runner.is_none() {
-        match SharedTestRunner::start(config, headless) {
+        match SharedTestRunner::start(server, headless, build_profile) {
             Ok(runner) => {
                 *shared_runner = Some(runner);
             }
@@ -1812,10 +1891,192 @@ fn temp_dir_path(prefix: &str) -> PathBuf {
         .join(format!("{prefix}-{}-{id}", std::process::id()))
 }
 
+fn maybe_reexec_test_wpt_runner(args: &TestWptArgs) -> Result<(), String> {
+    let desired_profile = if args.debug_build {
+        RunnerBuildProfile::Debug
+    } else {
+        RunnerBuildProfile::Release
+    };
+    let current_executable = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let desired_executable = runner_executable_path(desired_profile)?;
+
+    if same_file_path(&current_executable, &desired_executable) {
+        return Ok(());
+    }
+
+    build_runner_executable(desired_profile)?;
+
+    let status = Command::new(&desired_executable)
+        .args(std::env::args_os().skip(1))
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| {
+            format!(
+                "failed to re-exec test-wpt via {} build at {}: {error}",
+                desired_profile.as_str(),
+                desired_executable.display()
+            )
+        })?;
+
+    if status.success() {
+        std::process::exit(0);
+    }
+
+    let code = status.code().unwrap_or(1);
+    std::process::exit(code);
+}
+
+fn same_file_path(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn runner_executable_path(build_profile: RunnerBuildProfile) -> Result<PathBuf, String> {
+    let current_executable = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let executable_name = current_executable
+        .file_name()
+        .ok_or_else(|| String::from("current executable path was missing a file name"))?;
+    Ok(repo_root()
+        .join("target")
+        .join(build_profile.target_dir_name())
+        .join(executable_name))
+}
+
+fn ensure_runner_executable(build_profile: RunnerBuildProfile) -> Result<PathBuf, String> {
+    let executable = runner_executable_path(build_profile)?;
+    if executable.exists() {
+        return Ok(executable);
+    }
+
+    build_runner_executable(build_profile)?;
+    if executable.exists() {
+        Ok(executable)
+    } else {
+        Err(format!(
+            "expected {} WPT runner executable at {}, but it was not produced",
+            build_profile.as_str(),
+            executable.display()
+        ))
+    }
+}
+
+fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), String> {
+    let mut command = Command::new("cargo");
+    command.arg("build");
+    if let Some(flag) = build_profile.cargo_profile_flag() {
+        command.arg(flag);
+    }
+    command.arg("--bin").arg("formal-web");
+    command.current_dir(repo_root());
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to start cargo build for {} WPT runner: {error}",
+            build_profile.as_str()
+        )
+    })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cargo build for {} WPT runner exited with status {status}",
+            build_profile.as_str()
+        ))
+    }
+}
+
+fn wptserve_pid_registry_path() -> PathBuf {
+    repo_root()
+        .join(RUNNER_ARTIFACT_ROOT)
+        .join("runtime")
+        .join(WPTSERVE_PID_REGISTRY)
+}
+
+fn load_registered_wptserve_pids() -> Vec<u32> {
+    let path = wptserve_pid_registry_path();
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(_) => return Vec::new(),
+    };
+
+    contents
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect()
+}
+
+fn save_registered_wptserve_pids(pids: &[u32]) -> Result<(), String> {
+    let path = wptserve_pid_registry_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+
+    let mut contents = String::new();
+    for pid in pids {
+        contents.push_str(&pid.to_string());
+        contents.push('\n');
+    }
+    fs::write(&path, contents)
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+fn register_wptserve_pid(pid: u32) {
+    let mut pids = load_registered_wptserve_pids();
+    if pids.contains(&pid) {
+        return;
+    }
+    pids.push(pid);
+    let _ = save_registered_wptserve_pids(&pids);
+}
+
+fn unregister_wptserve_pid(pid: u32) {
+    let mut pids = load_registered_wptserve_pids();
+    let original_len = pids.len();
+    pids.retain(|existing| *existing != pid);
+    if pids.len() != original_len {
+        let _ = save_registered_wptserve_pids(&pids);
+    }
+}
+
+fn cleanup_registered_wptserve_processes() {
+    let pids = load_registered_wptserve_pids();
+    if pids.is_empty() {
+        return;
+    }
+
+    for pid in &pids {
+        let _ = terminate_wptserve_process_group(*pid);
+    }
+
+    let _ = save_registered_wptserve_pids(&[]);
+}
+
 fn configure_wptserve_command(command: &mut Command) {
     #[cfg(unix)]
     {
         command.process_group(0);
+    }
+}
+
+fn terminate_wptserve_process_group(pid: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        send_signal_to_wptserve_group(pid, libc::SIGINT)?;
+        thread::sleep(Duration::from_millis(100));
+        let _ = send_signal_to_wptserve_group(pid, libc::SIGKILL);
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Ok(())
     }
 }
 
@@ -1929,6 +2190,7 @@ fn wait_for_wptserve_ready(port: u16, child: &mut Child, timeout: Duration) -> R
             .map(|response| response.status == 200)
             .unwrap_or(false)
         {
+            register_wptserve_pid(child.id());
             return Ok(());
         }
 
