@@ -13,6 +13,8 @@ use boa_gc::{Finalize, Trace};
 
 use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
 
+use super::readablebytestreamcontroller::ReadableByteStreamController;
+use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
 use super::readablestreamdefaultreader::ReadableStreamDefaultReader;
 
@@ -116,6 +118,45 @@ enum ReadRequestSink {
     },
 }
 
+#[derive(Clone, Trace, Finalize)]
+pub(crate) struct ReadIntoRequest {
+    resolvers: ResolvingFunctions,
+}
+
+impl ReadIntoRequest {
+    pub(crate) fn new(context: &mut Context) -> (Self, JsObject) {
+        let (promise, resolvers) = JsPromise::new_pending(context);
+        (Self { resolvers }, promise.into())
+    }
+
+    pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
+        let result = create_read_result(chunk, false, context)?;
+        self.resolvers
+            .resolve
+            .call(&JsValue::undefined(), &[result], context)?;
+        Ok(())
+    }
+
+    pub(crate) fn close_steps(
+        self,
+        chunk: Option<JsValue>,
+        context: &mut Context,
+    ) -> JsResult<()> {
+        let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, context)?;
+        self.resolvers
+            .resolve
+            .call(&JsValue::undefined(), &[result], context)?;
+        Ok(())
+    }
+
+    pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
+        self.resolvers
+            .reject
+            .call(&JsValue::undefined(), &[error], context)?;
+        Ok(())
+    }
+}
+
 impl ReadRequest {
     pub(crate) fn new(context: &mut Context) -> (Self, JsObject) {
         let (promise, resolvers) = JsPromise::new_pending(context);
@@ -206,34 +247,47 @@ fn queue_read_request_reaction(
 #[derive(Clone, Trace, Finalize)]
 pub(crate) enum ReadableStreamController {
     Default(ReadableStreamDefaultController),
+    Byte(ReadableByteStreamController),
 }
 
 impl ReadableStreamController {
     pub(crate) fn cancel_steps(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
         match self {
             Self::Default(controller) => controller.cancel_steps(reason, context),
+            Self::Byte(controller) => controller.cancel_steps(reason, context),
         }
     }
     pub(crate) fn pull_steps(&self, read_request: ReadRequest, context: &mut Context) -> JsResult<()> {
         match self {
             Self::Default(controller) => controller.pull_steps(read_request, context),
+            Self::Byte(controller) => controller.pull_steps(read_request, context),
         }
     }
-    pub(crate) fn release_steps(&self) -> JsResult<()> {
+    pub(crate) fn release_steps(&self, context: &mut Context) -> JsResult<()> {
         match self {
-            Self::Default(controller) => controller.release_steps(),
+            Self::Default(controller) => controller.release_steps(context),
+            Self::Byte(controller) => controller.release_steps(context),
         }
     }
     /// readable-stream implementation.
     pub(crate) fn as_default_controller(&self) -> ReadableStreamDefaultController {
         match self {
             Self::Default(controller) => controller.clone(),
+            Self::Byte(_) => panic!("byte controller cannot be used as a default controller"),
+        }
+    }
+
+    pub(crate) fn as_byte_controller(&self) -> Option<ReadableByteStreamController> {
+        match self {
+            Self::Default(_) => None,
+            Self::Byte(controller) => Some(controller.clone()),
         }
     }
 }
 #[derive(Clone, Trace, Finalize)]
 pub(crate) enum ReadableStreamReader {
     Default(ReadableStreamDefaultReader),
+    BYOB(ReadableStreamBYOBReader),
 }
 
 impl ReadableStreamReader {
@@ -244,6 +298,14 @@ impl ReadableStreamReader {
     pub(crate) fn as_default_reader(&self) -> Option<ReadableStreamDefaultReader> {
         match self {
             Self::Default(reader) => Some(reader.clone()),
+            Self::BYOB(_) => None,
+        }
+    }
+
+    pub(crate) fn as_byob_reader(&self) -> Option<ReadableStreamBYOBReader> {
+        match self {
+            Self::Default(_) => None,
+            Self::BYOB(reader) => Some(reader.clone()),
         }
     }
 }

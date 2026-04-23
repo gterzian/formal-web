@@ -9,9 +9,14 @@ use boa_engine::{
 };
 
 use crate::streams::{
-    ReadableStream, ReadableStreamDefaultController, ReadableStreamDefaultReader,
-    construct_readable_stream, construct_readable_stream_default_reader,
-    with_readable_stream_default_reader_ref, with_readable_stream_ref,
+    ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader,
+    ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader,
+    construct_readable_stream, construct_readable_stream_byob_reader,
+    construct_readable_stream_default_reader,
+    readable_stream_from_iterable,
+    with_readable_byte_stream_controller_ref, with_readable_stream_byob_reader_ref,
+    with_readable_stream_byob_request_ref, with_readable_stream_default_reader_ref,
+    with_readable_stream_ref,
 };
 use crate::webidl::{create_value_async_iterator, rejected_promise};
 
@@ -24,15 +29,6 @@ impl Class for ReadableStream {
         context: &mut Context,
     ) -> JsResult<Self> {
         construct_readable_stream(new_target, args, context)
-    }
-
-    fn object_constructor(
-        instance: &boa_engine::object::JsObject<Self>,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<()> {
-        instance.borrow().data().set_reflector(instance.clone().upcast());
-        Ok(())
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
@@ -137,6 +133,53 @@ impl Class for ReadableStreamDefaultController {
     }
 }
 
+impl Class for ReadableByteStreamController {
+    const NAME: &'static str = "ReadableByteStreamController";
+
+    fn data_constructor(
+        _this: &JsValue,
+        _args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        Err(JsNativeError::typ()
+            .with_message("Illegal constructor")
+            .into())
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+        class
+            .accessor(
+                js_string!("byobRequest"),
+                Some(NativeFunction::from_fn_ptr(get_byob_request).to_js_function(&realm)),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                js_string!("desiredSize"),
+                Some(NativeFunction::from_fn_ptr(get_byte_desired_size).to_js_function(&realm)),
+                None,
+                Attribute::all(),
+            )
+            .method(
+                js_string!("close"),
+                0,
+                NativeFunction::from_fn_ptr(close_byte_method),
+            )
+            .method(
+                js_string!("enqueue"),
+                1,
+                NativeFunction::from_fn_ptr(enqueue_byte_method),
+            )
+            .method(
+                js_string!("error"),
+                1,
+                NativeFunction::from_fn_ptr(error_byte_method),
+            );
+        Ok(())
+    }
+}
+
 impl Class for ReadableStreamDefaultReader {
     const NAME: &'static str = "ReadableStreamDefaultReader";
     const LENGTH: usize = 1;
@@ -168,6 +211,79 @@ impl Class for ReadableStreamDefaultReader {
                 js_string!("releaseLock"),
                 0,
                 NativeFunction::from_fn_ptr(release_lock_method),
+            );
+        Ok(())
+    }
+}
+
+impl Class for ReadableStreamBYOBReader {
+    const NAME: &'static str = "ReadableStreamBYOBReader";
+    const LENGTH: usize = 1;
+
+    fn data_constructor(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Self> {
+        construct_readable_stream_byob_reader(this, args, context)
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+        class
+            .accessor(
+                js_string!("closed"),
+                Some(NativeFunction::from_fn_ptr(get_byob_closed).to_js_function(&realm)),
+                None,
+                Attribute::all(),
+            )
+            .method(
+                js_string!("cancel"),
+                1,
+                NativeFunction::from_fn_ptr(cancel_byob_reader_method),
+            )
+            .method(
+                js_string!("read"),
+                2,
+                NativeFunction::from_fn_ptr(read_byob_method),
+            )
+            .method(
+                js_string!("releaseLock"),
+                0,
+                NativeFunction::from_fn_ptr(release_byob_lock_method),
+            );
+        Ok(())
+    }
+}
+
+impl Class for ReadableStreamBYOBRequest {
+    const NAME: &'static str = "ReadableStreamBYOBRequest";
+    const LENGTH: usize = 2;
+
+    fn data_constructor(
+        _this: &JsValue,
+        _args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        Err(JsNativeError::typ()
+            .with_message("Illegal constructor")
+            .into())
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+        class
+            .accessor(
+                js_string!("view"),
+                Some(NativeFunction::from_fn_ptr(get_byob_view).to_js_function(&realm)),
+                None,
+                Attribute::all(),
+            )
+            .method(
+                js_string!("respond"),
+                1,
+                NativeFunction::from_fn_ptr(respond_method),
+            )
+            .method(
+                js_string!("respondWithNewView"),
+                1,
+                NativeFunction::from_fn_ptr(respond_with_new_view_method),
             );
         Ok(())
     }
@@ -267,10 +383,11 @@ fn values_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     Ok(JsValue::from(iterator))
 }
 
-fn from_static(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Err(JsNativeError::typ()
-        .with_message("ReadableStream.from() is not implemented yet")
-        .into())
+fn from_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::from(readable_stream_from_iterable(
+        args.get_or_undefined(0).clone(),
+        context,
+    )?))
 }
 
 fn get_desired_size(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
@@ -287,6 +404,34 @@ fn get_desired_size(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<
     }
 }
 
+fn get_byte_desired_size(this: &JsValue, _: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let controller_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("ReadableByteStreamController receiver is not an object")
+    })?;
+
+    match with_readable_byte_stream_controller_ref(&controller_object, |controller| {
+        controller.desired_size()
+    })?? {
+        Some(size) => Ok(JsValue::from(size)),
+        None => Ok(JsValue::null()),
+    }
+}
+
+fn get_byob_request(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let controller_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("ReadableByteStreamController receiver is not an object")
+    })?;
+
+    match with_readable_byte_stream_controller_ref(&controller_object, |controller| {
+        controller.byob_request(context)
+    })?? {
+        Some(byob_request) => Ok(JsValue::from(byob_request)),
+        None => Ok(JsValue::null()),
+    }
+}
+
 fn close_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let controller_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ()
@@ -294,6 +439,18 @@ fn close_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
     })?;
 
     with_readable_stream_default_controller_ref(&controller_object, |controller| {
+        controller.close(context)
+    })??;
+    Ok(JsValue::undefined())
+}
+
+fn close_byte_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let controller_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("ReadableByteStreamController receiver is not an object")
+    })?;
+
+    with_readable_byte_stream_controller_ref(&controller_object, |controller| {
         controller.close(context)
     })??;
     Ok(JsValue::undefined())
@@ -311,6 +468,18 @@ fn enqueue_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     Ok(JsValue::undefined())
 }
 
+fn enqueue_byte_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let controller_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("ReadableByteStreamController receiver is not an object")
+    })?;
+
+    with_readable_byte_stream_controller_ref(&controller_object, |controller| {
+        controller.enqueue(args.get_or_undefined(0).clone(), context)
+    })??;
+    Ok(JsValue::undefined())
+}
+
 fn error_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let controller_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ()
@@ -323,12 +492,33 @@ fn error_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     Ok(JsValue::undefined())
 }
 
+fn error_byte_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let controller_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("ReadableByteStreamController receiver is not an object")
+    })?;
+
+    with_readable_byte_stream_controller_ref(&controller_object, |controller| {
+        controller.error(args.get_or_undefined(0).clone(), context)
+    })??;
+    Ok(JsValue::undefined())
+}
+
 fn get_closed(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     let reader_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("ReadableStreamDefaultReader receiver is not an object")
     })?;
 
     let closed = with_readable_stream_default_reader_ref(&reader_object, |reader| reader.closed())??;
+    Ok(JsValue::from(closed))
+}
+
+fn get_byob_closed(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    let reader_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStreamBYOBReader receiver is not an object")
+    })?;
+
+    let closed = with_readable_stream_byob_reader_ref(&reader_object, |reader| reader.closed())??;
     Ok(JsValue::from(closed))
 }
 
@@ -357,12 +547,88 @@ fn read_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
     Ok(JsValue::from(promise))
 }
 
+fn cancel_byob_reader_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let reader_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStreamBYOBReader receiver is not an object")
+    })?;
+
+    let promise = with_readable_stream_byob_reader_ref(&reader_object, |reader| {
+        reader.cancel(args.get_or_undefined(0).clone(), context)
+    })??;
+    Ok(JsValue::from(promise))
+}
+
+fn read_byob_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let reader_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStreamBYOBReader receiver is not an object")
+    })?;
+
+    let promise = with_readable_stream_byob_reader_ref(&reader_object, |reader| {
+        reader.read(args.get_or_undefined(0), args.get_or_undefined(1), context)
+    })??;
+    Ok(JsValue::from(promise))
+}
+
 fn release_lock_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let reader_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("ReadableStreamDefaultReader receiver is not an object")
     })?;
 
     with_readable_stream_default_reader_ref(&reader_object, |reader| reader.release_lock(context))??;
+    Ok(JsValue::undefined())
+}
+
+fn release_byob_lock_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let reader_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStreamBYOBReader receiver is not an object")
+    })?;
+
+    with_readable_stream_byob_reader_ref(&reader_object, |reader| reader.release_lock(context))??;
+    Ok(JsValue::undefined())
+}
+
+fn get_byob_view(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    let request_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStreamBYOBRequest receiver is not an object")
+    })?;
+
+    match with_readable_stream_byob_request_ref(&request_object, |request| request.view())? {
+        Some(view) => Ok(JsValue::from(view)),
+        None => Ok(JsValue::null()),
+    }
+}
+
+fn respond_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let request_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStreamBYOBRequest receiver is not an object")
+    })?;
+    let bytes_written = args.get_or_undefined(0).to_number(context)?;
+    if !bytes_written.is_finite() || bytes_written < 0.0 || bytes_written.fract() != 0.0 {
+        return Err(JsNativeError::typ()
+            .with_message("bytesWritten must be a non-negative integer")
+            .into());
+    }
+    with_readable_stream_byob_request_ref(&request_object, |request| {
+        request.respond(bytes_written as usize, context)
+    })??;
+    Ok(JsValue::undefined())
+}
+
+fn respond_with_new_view_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let request_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStreamBYOBRequest receiver is not an object")
+    })?;
+    with_readable_stream_byob_request_ref(&request_object, |request| {
+        request.respond_with_new_view(args.get_or_undefined(0).clone(), context)
+    })??;
     Ok(JsValue::undefined())
 }
 

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>byob debug</title>
+<script>
+(async () => {
+  const log = [];
+  const timeout = (promise, name) => Promise.race([
+    promise.then((value) => ({ kind: "resolved", value })),
+    new Promise((resolve) => setTimeout(() => resolve({ kind: "timeout", name }), 1000)),
+  ]);
+
+  async function run(name, fn) {
+    try {
+      const result = await timeout(fn(), name);
+      log.push({ name, result });
+      return result;
+    } catch (error) {
+      log.push({ name, error: String(error) });
+      return { kind: "error", error: String(error) };
+    }
+  }
+
+  try {
+    await run("min-zero-rejects", async () => {
+      const rs = new ReadableStream({ type: "bytes" });
+      const reader = rs.getReader({ mode: "byob" });
+      try {
+        await reader.read(new Uint8Array(1), { min: 0 });
+        return { ok: false, detail: "resolved" };
+      } catch (error) {
+        return { ok: error instanceof TypeError, detail: String(error) };
+      }
+    });
+
+    await run("read-min-then-read", async () => {
+      let pullCount = 0;
+      const stream = new ReadableStream({
+        type: "bytes",
+        pull(controller) {
+          const view = controller.byobRequest.view;
+          if (pullCount === 0) {
+            view[0] = 1;
+            view[1] = 2;
+            controller.byobRequest.respond(2);
+          } else if (pullCount === 1) {
+            view[0] = 3;
+            controller.byobRequest.respond(1);
+          } else if (pullCount === 2) {
+            view[0] = 4;
+            controller.byobRequest.respond(1);
+          }
+          pullCount += 1;
+        },
+      });
+      const reader = stream.getReader({ mode: "byob" });
+      const result1 = await reader.read(new Uint8Array(3), { min: 3 });
+      const result2 = await reader.read(new Uint8Array(1));
+      return {
+        pullCount,
+        result1: { done: result1.done, value: Array.from(result1.value || []) },
+        result2: { done: result2.done, value: Array.from(result2.value || []) },
+      };
+    });
+
+    await run("closed-stream-read", async () => {
+      const stream = new ReadableStream({
+        type: "bytes",
+        start(controller) {
+          controller.close();
+        },
+      });
+      const reader = stream.getReader({ mode: "byob" });
+      const result = await reader.read(new Uint8Array([1]), { min: 1 });
+      return { done: result.done, byteLength: result.value.byteLength };
+    });
+
+    await run("close-before-fill", async () => {
+      let pullCount = 0;
+      const stream = new ReadableStream({
+        type: "bytes",
+        pull(controller) {
+          if (pullCount === 0) {
+            controller.byobRequest.view[0] = 1;
+            controller.byobRequest.respond(1);
+          } else if (pullCount === 1) {
+            controller.close();
+            controller.byobRequest.respond(0);
+          }
+          pullCount += 1;
+        },
+      });
+      const reader = stream.getReader({ mode: "byob" });
+      const result = await reader.read(new Uint8Array(3), { min: 3 });
+      return { pullCount, done: result.done, value: Array.from(result.value || []) };
+    });
+
+    await run("respond-with-new-view", async () => {
+      let pullCount = 0;
+      const byobRequestStates = [];
+      const stream = new ReadableStream({
+        type: "bytes",
+        async pull(controller) {
+          byobRequestStates.push({ before: controller.byobRequest !== null });
+          const transferredView = controller.byobRequest.view;
+          transferredView[0] = 1;
+          controller.byobRequest.respondWithNewView(transferredView);
+          byobRequestStates.push({ after: controller.byobRequest !== null });
+          pullCount += 1;
+        },
+      });
+      const reader = stream.getReader({ mode: "byob" });
+      const result = await reader.read(new Uint8Array(1), { min: 1 });
+      return {
+        pullCount,
+        byobRequestStates,
+        done: result.done,
+        value: Array.from(result.value || []),
+      };
+    });
+
+    await run("cancel-partial-fill", async () => {
+      let pullCount = 0;
+      const stream = new ReadableStream({
+        type: "bytes",
+        pull(controller) {
+          if (pullCount === 0) {
+            controller.byobRequest.view[0] = 1;
+            controller.byobRequest.respond(1);
+          }
+          pullCount += 1;
+        },
+      });
+      const reader = stream.getReader({ mode: "byob" });
+      const readPromise = reader.read(new Uint8Array(3), { min: 3 });
+      await Promise.resolve();
+      await reader.cancel();
+      const result = await readPromise;
+      return {
+        pullCount,
+        done: result.done,
+        value: result.value ? Array.from(result.value) : null,
+      };
+    });
+
+    await run("closed-uint16-misaligned", async () => {
+      const stream = new ReadableStream({
+        type: "bytes",
+        start(controller) {
+          controller.enqueue(new Uint8Array([0xaa, 0xbb, 0xcc]));
+          controller.close();
+        },
+      });
+      const reader = stream.getReader({ mode: "byob" });
+      try {
+        await reader.read(new Uint16Array(2), { min: 2 });
+        return { ok: false, detail: "resolved" };
+      } catch (error) {
+        return { ok: error instanceof TypeError, detail: String(error) };
+      }
+    });
+
+    await run("pending-uint16-close-throws", async () => {
+      let controller;
+      const stream = new ReadableStream({
+        type: "bytes",
+        start(c) {
+          controller = c;
+        },
+      });
+      const reader = stream.getReader({ mode: "byob" });
+      const readPromise = reader.read(new Uint16Array(2), { min: 2 }).catch((error) => String(error));
+      controller.enqueue(new Uint8Array([0xaa, 0xbb, 0xcc]));
+      let threw = false;
+      try {
+        controller.close();
+      } catch (error) {
+        threw = error instanceof TypeError;
+      }
+      const readResult = await readPromise;
+      return { threw, readResult };
+    });
+
+    window.__formalWebTestResult = {
+      location: "",
+      title: String(document.title || ""),
+      tests: [
+        {
+          name: "byob debug",
+          status: 1,
+          message: JSON.stringify(log),
+          stack: null,
+        },
+      ],
+      status: {
+        status: 1,
+        message: JSON.stringify(log),
+        stack: null,
+      },
+      asserts: [],
+    };
+  } catch (error) {
+    window.__formalWebTestResult = {
+      location: "",
+      title: String(document.title || ""),
+      tests: [
+        {
+          name: "byob debug",
+          status: 1,
+          message: `${error}\n${JSON.stringify(log)}`,
+          stack: null,
+        },
+      ],
+      status: {
+        status: 1,
+        message: `${error}\n${JSON.stringify(log)}`,
+        stack: null,
+      },
+      asserts: [],
+    };
+  }
+})();
+</script>

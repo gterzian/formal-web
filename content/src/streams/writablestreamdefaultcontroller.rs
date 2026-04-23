@@ -30,14 +30,14 @@ impl StartAlgorithm {
     /// <https://streams.spec.whatwg.org/#set-up-writable-stream-default-controller>
     fn call(
         &self,
-        controller: &WritableStreamDefaultController,
+        controller_object: &JsObject,
         context: &mut Context,
     ) -> JsResult<JsValue> {
         match self {
             Self::ReturnUndefined => Ok(JsValue::undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
             Self::JavaScript(callback) => {
-                let arg = JsValue::from(controller.object()?);
+                let arg = JsValue::from(controller_object.clone());
                 callback.call(&[arg], context)
             }
         }
@@ -55,14 +55,14 @@ impl WriteAlgorithm {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-writealgorithm>
     fn call(
         &self,
-        controller: &WritableStreamDefaultController,
+        controller_object: &JsObject,
         chunk: JsValue,
         context: &mut Context,
     ) -> JsResult<JsObject> {
         match self {
             Self::ReturnUndefined => resolved_promise(JsValue::undefined(), context),
             Self::JavaScript(callback) => {
-                let controller_value = JsValue::from(controller.object()?);
+                let controller_value = JsValue::from(controller_object.clone());
                 match callback.call(&[chunk, controller_value], context) {
                     Ok(value) => promise_from_value(value, context),
                     Err(error) => rejected_promise(error.into_opaque(context)?, context),
@@ -127,8 +127,6 @@ enum QueueEntryValue {
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct WritableStreamDefaultController {
-    reflector: Gc<GcRefCell<Option<JsObject>>>,
-
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-stream>
     stream: Gc<GcRefCell<Option<WritableStream>>>,
 
@@ -164,9 +162,8 @@ pub struct WritableStreamDefaultController {
 }
 
 impl WritableStreamDefaultController {
-    pub(crate) fn new(reflector: Option<JsObject>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            reflector: Gc::new(GcRefCell::new(reflector)),
             stream: Gc::new(GcRefCell::new(None)),
             abort_signal: Gc::new(GcRefCell::new(None)),
             queue: Gc::new(GcRefCell::new(Vec::new())),
@@ -179,20 +176,17 @@ impl WritableStreamDefaultController {
             abort_algorithm: Gc::new(GcRefCell::new(None)),
         }
     }
-    pub(crate) fn set_reflector(&self, reflector: JsObject) {
-        *self.reflector.borrow_mut() = Some(reflector);
-    }
-    pub(crate) fn object(&self) -> JsResult<JsObject> {
-        self.reflector.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStreamDefaultController is missing its JavaScript object")
-                .into()
-        })
-    }
     pub(crate) fn stream_slot(&self) -> JsResult<WritableStream> {
         self.stream.borrow().clone().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("WritableStreamDefaultController is not attached to a stream")
+                .into()
+        })
+    }
+    fn controller_object(&self) -> JsResult<JsObject> {
+        self.stream_slot()?.controller_object_slot().ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("WritableStreamDefaultController is missing its JavaScript object")
                 .into()
         })
     }
@@ -418,7 +412,10 @@ impl WritableStreamDefaultController {
         stream.mark_first_write_request_in_flight()?;
 
         // Step 3: "Let sinkWritePromise be the result of performing controller.[[writeAlgorithm]], passing in chunk."
-        let sink_write_promise = self.write_algorithm()?.call(self, chunk, context)?;
+        let controller_object = self.controller_object()?;
+        let sink_write_promise = self
+            .write_algorithm()?
+            .call(&controller_object, chunk, context)?;
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();
@@ -603,11 +600,11 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
 
 pub(crate) fn create_writable_stream_default_controller(
     context: &mut Context,
-) -> JsResult<WritableStreamDefaultController> {
-    let controller = WritableStreamDefaultController::new(None);
-    let controller_object = WritableStreamDefaultController::from_data(controller.clone(), context)?;
-    controller.set_reflector(controller_object);
-    Ok(controller)
+) -> JsResult<(WritableStreamDefaultController, JsObject)> {
+    let controller = WritableStreamDefaultController::new();
+    let controller_object: JsObject =
+        WritableStreamDefaultController::from_data(controller.clone(), context)?.into();
+    Ok((controller, controller_object))
 }
 
 pub(crate) fn with_writable_stream_default_controller_ref<R>(
@@ -626,6 +623,7 @@ pub(crate) fn with_writable_stream_default_controller_ref<R>(
 pub(crate) fn set_up_writable_stream_default_controller(
     stream: WritableStream,
     controller: WritableStreamDefaultController,
+    controller_object: &JsObject,
     start_algorithm: StartAlgorithm,
     write_algorithm: WriteAlgorithm,
     close_algorithm: CloseAlgorithm,
@@ -642,6 +640,7 @@ pub(crate) fn set_up_writable_stream_default_controller(
 
     // Step 4: "Set stream.[[controller]] to controller."
     stream.set_controller_slot(Some(WritableStreamController::Default(controller.clone())));
+    stream.set_controller_object_slot(Some(controller_object.clone()));
 
     // Step 5: "Perform ! ResetQueue(controller)."
     reset_controller_queue(&controller);
@@ -676,7 +675,7 @@ pub(crate) fn set_up_writable_stream_default_controller(
     stream.update_backpressure(backpressure, context)?;
 
     // Step 15: "Let startResult be the result of performing startAlgorithm."
-    let start_result = start_algorithm.call(&controller, context)?;
+    let start_result = start_algorithm.call(controller_object, context)?;
 
     // Step 16: "Let startPromise be a promise resolved with startResult."
     let start_promise = JsPromise::resolve(start_result, context)?;
@@ -722,7 +721,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     context: &mut Context,
 ) -> JsResult<()> {
     // Step 1: "Let controller be a new WritableStreamDefaultController."
-    let controller = create_writable_stream_default_controller(context)?;
+    let (controller, controller_object) = create_writable_stream_default_controller(context)?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
@@ -774,6 +773,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     set_up_writable_stream_default_controller(
         stream,
         controller,
+        &controller_object,
         start_algorithm,
         write_algorithm,
         close_algorithm,

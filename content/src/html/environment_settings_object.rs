@@ -27,7 +27,8 @@ use crate::html::{
     GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLElement, TimerHandler, Window,
 };
 use crate::streams::{
-    ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableStream,
+    ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
+    ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest,
     ReadableStreamDefaultController, ReadableStreamDefaultReader, WritableStream,
     WritableStreamDefaultController, WritableStreamDefaultWriter,
     TransformStream, TransformStreamDefaultController,
@@ -158,7 +159,16 @@ impl EnvironmentSettingsObject {
             .register_global_class::<ReadableStreamDefaultController>()
             .map_err(|error| error.to_string())?;
         context
+            .register_global_class::<ReadableByteStreamController>()
+            .map_err(|error| error.to_string())?;
+        context
             .register_global_class::<ReadableStreamDefaultReader>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStreamBYOBReader>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<ReadableStreamBYOBRequest>()
             .map_err(|error| error.to_string())?;
         context
             .register_global_class::<WritableStream>()

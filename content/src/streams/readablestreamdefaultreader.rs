@@ -153,7 +153,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         let controller = stream.controller_slot().ok_or_else(|| {
             JsNativeError::typ().with_message("ReadableStream is missing its controller")
         })?;
-        controller.release_steps()?;
+        controller.release_steps(context)?;
 
         // Step 8: "Set stream.[[reader]] to undefined."
         stream.set_reader_slot(None);
@@ -167,8 +167,6 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
 /// <https://streams.spec.whatwg.org/#default-reader-class>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct ReadableStreamDefaultReader {
-    reflector: Gc<GcRefCell<Option<JsObject>>>,
-
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-stream>
     stream: Gc<GcRefCell<Option<ReadableStream>>>,
 
@@ -182,24 +180,13 @@ pub struct ReadableStreamDefaultReader {
 }
 
 impl ReadableStreamDefaultReader {
-    pub(crate) fn new(reflector: Option<JsObject>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            reflector: Gc::new(GcRefCell::new(reflector)),
             stream: Gc::new(GcRefCell::new(None)),
             closed_promise: Gc::new(GcRefCell::new(None)),
             closed_resolvers: Gc::new(GcRefCell::new(None)),
             read_requests: Gc::new(GcRefCell::new(Vec::new())),
         }
-    }
-    pub(crate) fn set_reflector(&self, reflector: JsObject) {
-        *self.reflector.borrow_mut() = Some(reflector);
-    }
-    pub(crate) fn object(&self) -> JsResult<JsObject> {
-        self.reflector.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStreamDefaultReader is missing its JavaScript object")
-                .into()
-        })
     }
 
     /// <https://streams.spec.whatwg.org/#default-reader-constructor>
@@ -360,18 +347,15 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
 }
 /// entry point.
 pub(crate) fn construct_readable_stream_default_reader(
-    this: &JsValue,
+    _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<ReadableStreamDefaultReader> {
-    let reader_object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStreamDefaultReader receiver is not an object")
-    })?;
     let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("ReadableStreamDefaultReader requires a ReadableStream")
     })?;
     let stream = with_readable_stream_ref(&stream_object, |stream| stream.clone())?;
-    let reader = ReadableStreamDefaultReader::new(Some(reader_object.clone()));
+    let reader = ReadableStreamDefaultReader::new();
 
     // Step 1: "Perform ? SetUpReadableStreamDefaultReader(this, stream)."
     reader.set_up_readable_stream_default_reader(stream, context)?;
@@ -384,21 +368,19 @@ pub(crate) fn acquire_readable_stream_default_reader(
     context: &mut Context,
 ) -> JsResult<JsObject> {
     // Step 1: "Let reader be a new ReadableStreamDefaultReader."
-    let reader = create_readable_stream_default_reader(context)?;
+    let reader_object = create_readable_stream_default_reader(context)?;
+    let reader = with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone())?;
 
     // Step 2: "Perform ? SetUpReadableStreamDefaultReader(reader, stream)."
     reader.set_up_readable_stream_default_reader(stream, context)?;
 
     // Step 3: "Return reader."
-    reader.object()
+    Ok(reader_object)
 }
-fn create_readable_stream_default_reader(
-    context: &mut Context,
-) -> JsResult<ReadableStreamDefaultReader> {
-    let reader = ReadableStreamDefaultReader::new(None);
-    let reader_object = ReadableStreamDefaultReader::from_data(reader.clone(), context)?;
-    reader.set_reflector(reader_object);
-    Ok(reader)
+fn create_readable_stream_default_reader(context: &mut Context) -> JsResult<JsObject> {
+    let reader = ReadableStreamDefaultReader::new();
+    let reader_object: JsObject = ReadableStreamDefaultReader::from_data(reader, context)?.into();
+    Ok(reader_object)
 }
 pub(crate) fn with_readable_stream_default_reader_ref<R>(
     object: &JsObject,

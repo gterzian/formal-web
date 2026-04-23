@@ -85,9 +85,7 @@ fn get_readable(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> J
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("TransformStream.readable called on non-object")
     })?;
-    with_transform_stream_ref(&object, |stream| {
-        Ok(JsValue::from(stream.readable()?.object()?))
-    })?
+    with_transform_stream_ref(&object, |stream| Ok(JsValue::from(stream.readable_object()?)))?
 }
 
 /// <https://streams.spec.whatwg.org/#ts-writable>
@@ -95,9 +93,7 @@ fn get_writable(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> J
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("TransformStream.writable called on non-object")
     })?;
-    with_transform_stream_ref(&object, |stream| {
-        Ok(JsValue::from(stream.writable()?.object()?))
-    })?
+    with_transform_stream_ref(&object, |stream| Ok(JsValue::from(stream.writable_object()?)))?
 }
 
 /// <https://streams.spec.whatwg.org/#ts-default-controller-desired-size>

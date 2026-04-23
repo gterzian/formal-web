@@ -59,8 +59,6 @@ fn queued_resolved_promise(value: JsValue, context: &mut Context) -> JsResult<Js
 /// <https://streams.spec.whatwg.org/#ts-class>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct TransformStream {
-    reflector: Gc<GcRefCell<Option<JsObject>>>,
-
     /// <https://streams.spec.whatwg.org/#transformstream-backpressure>
     #[unsafe_ignore_trace]
     backpressure: Rc<Cell<bool>>,
@@ -71,43 +69,44 @@ pub struct TransformStream {
 
     /// <https://streams.spec.whatwg.org/#transformstream-controller>
     controller: Gc<GcRefCell<Option<TransformStreamDefaultController>>>,
+    controller_object: Gc<GcRefCell<Option<JsObject>>>,
 
     /// <https://streams.spec.whatwg.org/#transformstream-readable>
     readable: Gc<GcRefCell<Option<ReadableStream>>>,
+    readable_object: Gc<GcRefCell<Option<JsObject>>>,
 
     /// <https://streams.spec.whatwg.org/#transformstream-writable>
     writable: Gc<GcRefCell<Option<WritableStream>>>,
+    writable_object: Gc<GcRefCell<Option<JsObject>>>,
 }
 
 impl TransformStream {
-    pub(crate) fn new(reflector: Option<JsObject>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            reflector: Gc::new(GcRefCell::new(reflector)),
             backpressure: Rc::new(Cell::new(false)),
             backpressure_change_promise: Gc::new(GcRefCell::new(None)),
             backpressure_change_resolvers: Gc::new(GcRefCell::new(None)),
             controller: Gc::new(GcRefCell::new(None)),
+            controller_object: Gc::new(GcRefCell::new(None)),
             readable: Gc::new(GcRefCell::new(None)),
+            readable_object: Gc::new(GcRefCell::new(None)),
             writable: Gc::new(GcRefCell::new(None)),
+            writable_object: Gc::new(GcRefCell::new(None)),
         }
-    }
-
-    pub(crate) fn set_reflector(&self, reflector: JsObject) {
-        *self.reflector.borrow_mut() = Some(reflector);
-    }
-
-    pub(crate) fn object(&self) -> JsResult<JsObject> {
-        self.reflector.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("TransformStream is missing its JavaScript object")
-                .into()
-        })
     }
 
     pub(crate) fn readable(&self) -> JsResult<ReadableStream> {
         self.readable.borrow().clone().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("TransformStream is missing its readable side")
+                .into()
+        })
+    }
+
+    pub(crate) fn readable_object(&self) -> JsResult<JsObject> {
+        self.readable_object.borrow().clone().ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("TransformStream is missing its readable JavaScript object")
                 .into()
         })
     }
@@ -120,10 +119,26 @@ impl TransformStream {
         })
     }
 
+    pub(crate) fn writable_object(&self) -> JsResult<JsObject> {
+        self.writable_object.borrow().clone().ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("TransformStream is missing its writable JavaScript object")
+                .into()
+        })
+    }
+
     pub(crate) fn controller_slot(&self) -> JsResult<TransformStreamDefaultController> {
         self.controller.borrow().clone().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("TransformStream is missing its controller")
+                .into()
+        })
+    }
+
+    pub(crate) fn controller_object(&self) -> JsResult<JsObject> {
+        self.controller_object.borrow().clone().ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("TransformStream is missing its controller JavaScript object")
                 .into()
         })
     }
@@ -140,8 +155,6 @@ impl TransformStream {
 /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct TransformStreamDefaultController {
-    reflector: Gc<GcRefCell<Option<JsObject>>>,
-
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-stream>
     stream: Gc<GcRefCell<Option<TransformStream>>>,
 
@@ -181,9 +194,8 @@ pub(crate) enum TransformCancelAlgorithm {
 }
 
 impl TransformStreamDefaultController {
-    pub(crate) fn new(reflector: Option<JsObject>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            reflector: Gc::new(GcRefCell::new(reflector)),
             stream: Gc::new(GcRefCell::new(None)),
             transform_algorithm: Gc::new(GcRefCell::new(None)),
             flush_algorithm: Gc::new(GcRefCell::new(None)),
@@ -193,24 +205,16 @@ impl TransformStreamDefaultController {
         }
     }
 
-    pub(crate) fn set_reflector(&self, reflector: JsObject) {
-        *self.reflector.borrow_mut() = Some(reflector);
-    }
-
-    pub(crate) fn object(&self) -> JsResult<JsObject> {
-        self.reflector.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("TransformStreamDefaultController is missing its JavaScript object")
-                .into()
-        })
-    }
-
     fn stream_slot(&self) -> JsResult<TransformStream> {
         self.stream.borrow().clone().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("TransformStreamDefaultController is not attached to a stream")
                 .into()
         })
+    }
+
+    fn controller_object(&self) -> JsResult<JsObject> {
+        self.stream_slot()?.controller_object()
     }
 
     fn readable_controller(&self) -> JsResult<super::ReadableStreamDefaultController> {
@@ -315,7 +319,7 @@ fn initialize_transform_stream(
     ));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."
-    let writable = create_writable_stream(
+    let (writable, writable_object) = create_writable_stream(
         writable_start_algorithm,
         write_algorithm,
         close_algorithm,
@@ -325,6 +329,7 @@ fn initialize_transform_stream(
         context,
     )?;
     *stream.writable.borrow_mut() = Some(writable);
+    *stream.writable_object.borrow_mut() = Some(writable_object);
 
     // Step 6: "Let pullAlgorithm be the following steps:"
     let stream_for_pull = stream.clone();
@@ -360,7 +365,7 @@ fn initialize_transform_stream(
     ));
 
     // Step 8: "Set stream.[[readable]] to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancelAlgorithm, readableHighWaterMark, readableSizeAlgorithm)."
-    let readable = create_readable_stream(
+    let (readable, readable_object) = create_readable_stream(
         readable_start_algorithm,
         pull_algorithm,
         cancel_algorithm,
@@ -369,6 +374,7 @@ fn initialize_transform_stream(
         context,
     )?;
     *stream.readable.borrow_mut() = Some(readable);
+    *stream.readable_object.borrow_mut() = Some(readable_object);
 
     // Step 9: "Set stream.[[backpressure]] and stream.[[backpressureChangePromise]] to undefined."
     // Note: The implementation initializes [[backpressure]] with a boolean field and then immediately assigns the spec-visible initial state via TransformStreamSetBackpressure.
@@ -378,6 +384,7 @@ fn initialize_transform_stream(
 
     // Step 11: "Set stream.[[controller]] to undefined."
     *stream.controller.borrow_mut() = None;
+    *stream.controller_object.borrow_mut() = None;
 
     Ok(())
 }
@@ -472,6 +479,7 @@ fn transform_stream_unblock_write(
 fn set_up_transform_stream_default_controller(
     stream: &TransformStream,
     controller: TransformStreamDefaultController,
+    controller_object: &JsObject,
     transform_algorithm: TransformAlgorithm,
     flush_algorithm: FlushAlgorithm,
     cancel_algorithm: TransformCancelAlgorithm,
@@ -486,6 +494,7 @@ fn set_up_transform_stream_default_controller(
 
     // Step 4: "Set stream.[[controller]] to controller."
     *stream.controller.borrow_mut() = Some(controller.clone());
+    *stream.controller_object.borrow_mut() = Some(controller_object.clone());
 
     // Step 5: "Set controller.[[transformAlgorithm]] to transformAlgorithm."
     *controller.transform_algorithm.borrow_mut() = Some(transform_algorithm);
@@ -504,7 +513,7 @@ fn set_up_transform_stream_default_controller_from_transformer(
     context: &mut Context,
 ) -> JsResult<TransformStreamDefaultController> {
     // Step 1: "Let controller be a new TransformStreamDefaultController."
-    let controller = create_transform_stream_default_controller(context)?;
+    let (controller, controller_object) = create_transform_stream_default_controller(context)?;
 
     // Step 2: Default transformAlgorithm is identity (enqueue the chunk).
     let mut transform_algorithm = TransformAlgorithm::Identity;
@@ -545,6 +554,7 @@ fn set_up_transform_stream_default_controller_from_transformer(
     set_up_transform_stream_default_controller(
         stream,
         controller.clone(),
+        &controller_object,
         transform_algorithm,
         flush_algorithm,
         cancel_algorithm,
@@ -642,7 +652,7 @@ fn transform_stream_default_controller_perform_transform(
             }
         }
         Some(TransformAlgorithm::JavaScript(ref callback)) => {
-            let controller_value = JsValue::from(controller.object()?);
+            let controller_value = JsValue::from(controller.controller_object()?);
             match callback.call(&[chunk, controller_value], context) {
                 Ok(value) => promise_from_value(value, context)?,
                 Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
@@ -897,7 +907,7 @@ fn transform_stream_default_sink_close_algorithm(
             queued_resolved_promise(JsValue::undefined(), context)?
         }
         Some(FlushAlgorithm::JavaScript(ref callback)) => {
-            let controller_value = JsValue::from(controller.object()?);
+            let controller_value = JsValue::from(controller.controller_object()?);
             match callback.call(&[controller_value], context) {
                 Ok(value) => promise_from_value(value, context)?,
                 Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
@@ -1108,24 +1118,20 @@ fn transform_stream_default_source_cancel_algorithm(
 
 fn create_transform_stream_default_controller(
     context: &mut Context,
-) -> JsResult<TransformStreamDefaultController> {
-    let controller = TransformStreamDefaultController::new(None);
-    let controller_object =
-        TransformStreamDefaultController::from_data(controller.clone(), context)?;
-    controller.set_reflector(controller_object);
-    Ok(controller)
+) -> JsResult<(TransformStreamDefaultController, JsObject)> {
+    let controller = TransformStreamDefaultController::new();
+    let controller_object: JsObject =
+        TransformStreamDefaultController::from_data(controller.clone(), context)?.into();
+    Ok((controller, controller_object))
 }
 
 /// <https://streams.spec.whatwg.org/#ts-constructor>
 pub(crate) fn construct_transform_stream(
-    this: &JsValue,
+    _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<TransformStream> {
-    let stream_object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("TransformStream receiver is not an object")
-    })?;
-    let stream = TransformStream::new(Some(stream_object.clone()));
+    let stream = TransformStream::new();
 
     // Step 1: "If transformer is missing, set it to null."
     let transformer = if args.is_empty() {
@@ -1199,7 +1205,7 @@ pub(crate) fn construct_transform_stream(
     // Step 12: "If transformerDict[\"start\"] exists, then resolve startPromise with the result of invoking transformerDict[\"start\"] with argument list « this.[[controller]] » and callback this value transformer."
     if let Some(ref transformer_obj) = transformer_object {
         if let Some(start) = get_callable_method(transformer_obj, "start", context)? {
-            let controller_value = JsValue::from(controller.object()?);
+            let controller_value = JsValue::from(controller.controller_object()?);
             let source_method = SourceMethod::new(transformer_obj.clone(), start);
             let result = source_method.call(&[controller_value], context)?;
             start_resolvers

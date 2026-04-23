@@ -19,8 +19,6 @@ use super::{
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct WritableStreamDefaultWriter {
-    reflector: Gc<GcRefCell<Option<JsObject>>>,
-
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
     stream: Gc<GcRefCell<Option<WritableStream>>>,
 
@@ -34,25 +32,14 @@ pub struct WritableStreamDefaultWriter {
 }
 
 impl WritableStreamDefaultWriter {
-    pub(crate) fn new(reflector: Option<JsObject>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            reflector: Gc::new(GcRefCell::new(reflector)),
             stream: Gc::new(GcRefCell::new(None)),
             ready_promise: Gc::new(GcRefCell::new(None)),
             ready_resolvers: Gc::new(GcRefCell::new(None)),
             closed_promise: Gc::new(GcRefCell::new(None)),
             closed_resolvers: Gc::new(GcRefCell::new(None)),
         }
-    }
-    pub(crate) fn set_reflector(&self, reflector: JsObject) {
-        *self.reflector.borrow_mut() = Some(reflector);
-    }
-    pub(crate) fn object(&self) -> JsResult<JsObject> {
-        self.reflector.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStreamDefaultWriter is missing its JavaScript object")
-                .into()
-        })
     }
     pub(crate) fn stream_slot_value(&self) -> Option<WritableStream> {
         self.stream.borrow().clone()
@@ -339,7 +326,7 @@ impl WritableStreamDefaultWriter {
         )?;
 
         if let Some(current_stream) = self.stream_slot_value() {
-            if !JsObject::equals(&current_stream.object()?, &stream.object()?) {
+            if !current_stream.same_instance(&stream) {
                 return rejected_type_error_promise(
                     "Cannot write using a released WritableStreamDefaultWriter",
                     context,
@@ -384,18 +371,15 @@ impl WritableStreamDefaultWriter {
     }
 }
 pub(crate) fn construct_writable_stream_default_writer(
-    this: &JsValue,
+    _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<WritableStreamDefaultWriter> {
-    let writer_object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("WritableStreamDefaultWriter receiver is not an object")
-    })?;
     let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("WritableStreamDefaultWriter requires a WritableStream")
     })?;
     let stream = with_writable_stream_ref(&stream_object, |stream| stream.clone())?;
-    let writer = WritableStreamDefaultWriter::new(Some(writer_object.clone()));
+    let writer = WritableStreamDefaultWriter::new();
     writer.set_up_writable_stream_default_writer(stream, context)?;
     Ok(writer)
 }
@@ -405,17 +389,15 @@ pub(crate) fn acquire_writable_stream_default_writer(
     stream: WritableStream,
     context: &mut Context,
 ) -> JsResult<JsObject> {
-    let writer = create_writable_stream_default_writer(context)?;
+    let writer_object = create_writable_stream_default_writer(context)?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, |writer| writer.clone())?;
     writer.set_up_writable_stream_default_writer(stream, context)?;
-    writer.object()
+    Ok(writer_object)
 }
-fn create_writable_stream_default_writer(
-    context: &mut Context,
-) -> JsResult<WritableStreamDefaultWriter> {
-    let writer = WritableStreamDefaultWriter::new(None);
-    let writer_object = WritableStreamDefaultWriter::from_data(writer.clone(), context)?;
-    writer.set_reflector(writer_object);
-    Ok(writer)
+fn create_writable_stream_default_writer(context: &mut Context) -> JsResult<JsObject> {
+    let writer = WritableStreamDefaultWriter::new();
+    let writer_object: JsObject = WritableStreamDefaultWriter::from_data(writer, context)?.into();
+    Ok(writer_object)
 }
 pub(crate) fn with_writable_stream_default_writer_ref<R>(
     object: &JsObject,

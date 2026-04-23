@@ -29,7 +29,7 @@ pub(crate) enum PullAlgorithm {
 
 impl PullAlgorithm {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
-    fn call(&self, controller_object: &JsObject, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn call(&self, controller_object: &JsObject, context: &mut Context) -> JsResult<JsObject> {
         match self {
             Self::ReturnUndefined => resolved_promise(JsValue::undefined(), context),
             Self::JavaScript(callback) => {
@@ -52,7 +52,7 @@ pub(crate) enum CancelAlgorithm {
 
 impl CancelAlgorithm {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-cancelalgorithm>
-    fn call(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn call(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
         match self {
             Self::ReturnUndefined => resolved_promise(JsValue::undefined(), context),
             Self::JavaScript(callback) => match callback.call(&[reason], context) {
@@ -73,7 +73,7 @@ pub(crate) enum StartAlgorithm {
 
 impl StartAlgorithm {
     /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller>
-    fn call(&self, controller_object: &JsObject, context: &mut Context) -> JsResult<JsValue> {
+    pub(crate) fn call(&self, controller_object: &JsObject, context: &mut Context) -> JsResult<JsValue> {
         match self {
             Self::ReturnUndefined => Ok(JsValue::undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
@@ -278,7 +278,7 @@ impl ReadableStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaultcontroller-releasesteps>
-    pub(crate) fn release_steps(&self) -> JsResult<()> {
+    pub(crate) fn release_steps(&self, _context: &mut Context) -> JsResult<()> {
         // Step 1: "Return."
         Ok(())
     }
@@ -678,7 +678,7 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     )
 }
 /// underlying source object as the callback this value required by the Streams setup algorithm.
-fn extract_source_method(
+pub(crate) fn extract_source_method(
     source_object: Option<&JsObject>,
     name: &str,
     context: &mut Context,

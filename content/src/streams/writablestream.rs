@@ -24,10 +24,9 @@ use super::{
 /// <https://streams.spec.whatwg.org/#ws-class>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct WritableStream {
-    reflector: Gc<GcRefCell<Option<JsObject>>>,
-
     /// <https://streams.spec.whatwg.org/#writablestream-controller>
     controller: Gc<GcRefCell<Option<WritableStreamController>>>,
+    controller_object: Gc<GcRefCell<Option<JsObject>>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writer>
     writer: Gc<GcRefCell<Option<WritableStreamWriter>>>,
@@ -60,10 +59,10 @@ pub struct WritableStream {
 }
 
 impl WritableStream {
-    pub(crate) fn new(reflector: Option<JsObject>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            reflector: Gc::new(GcRefCell::new(reflector)),
             controller: Gc::new(GcRefCell::new(None)),
+            controller_object: Gc::new(GcRefCell::new(None)),
             writer: Gc::new(GcRefCell::new(None)),
             state: Rc::new(RefCell::new(WritableStreamState::Writable)),
             stored_error: Gc::new(GcRefCell::new(JsValue::undefined())),
@@ -75,21 +74,17 @@ impl WritableStream {
             backpressure: Rc::new(Cell::new(false)),
         }
     }
-    pub(crate) fn set_reflector(&self, reflector: JsObject) {
-        *self.reflector.borrow_mut() = Some(reflector);
-    }
-    pub(crate) fn object(&self) -> JsResult<JsObject> {
-        self.reflector.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStream is missing its JavaScript object")
-                .into()
-        })
-    }
     pub(crate) fn controller_slot(&self) -> Option<WritableStreamController> {
         self.controller.borrow().clone()
     }
     pub(crate) fn set_controller_slot(&self, controller: Option<WritableStreamController>) {
         *self.controller.borrow_mut() = controller;
+    }
+    pub(crate) fn controller_object_slot(&self) -> Option<JsObject> {
+        self.controller_object.borrow().clone()
+    }
+    pub(crate) fn set_controller_object_slot(&self, controller_object: Option<JsObject>) {
+        *self.controller_object.borrow_mut() = controller_object;
     }
     pub(crate) fn writer_slot(&self) -> Option<WritableStreamWriter> {
         self.writer.borrow().clone()
@@ -166,12 +161,17 @@ impl WritableStream {
         std::mem::take(&mut self.write_requests.borrow_mut())
     }
 
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.state, &other.state)
+    }
+
     /// <https://streams.spec.whatwg.org/#initialize-writable-stream>
     fn initialize_writable_stream(&mut self) {
         *self.state.borrow_mut() = WritableStreamState::Writable;
         *self.stored_error.borrow_mut() = JsValue::undefined();
         *self.writer.borrow_mut() = None;
         *self.controller.borrow_mut() = None;
+        *self.controller_object.borrow_mut() = None;
         *self.in_flight_write_request.borrow_mut() = None;
         *self.close_request.borrow_mut() = None;
         *self.in_flight_close_request.borrow_mut() = None;
@@ -547,7 +547,7 @@ pub(crate) fn construct_writable_stream(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<WritableStream> {
-    let mut stream = WritableStream::new(None);
+    let mut stream = WritableStream::new();
 
     let underlying_sink = if args.is_empty() {
         JsValue::null()
@@ -576,8 +576,8 @@ pub(crate) fn construct_writable_stream(
     }
 
     // Step 5: "Perform ! InitializeWritableStream(this)."
-    // Note: `data_constructor` initializes the native carrier before Boa allocates the wrapping
-    // object, so `object_constructor` stores the wrapper after construction.
+    // Note: Boa attaches the returned native carrier to the newly created wrapper after
+    // `data_constructor` returns.
     stream.initialize_writable_stream();
 
     // Step 6: "Perform ? SetUpWritableStreamDefaultControllerFromUnderlyingSink(this, underlyingSink, underlyingSinkDict, highWaterMark, sizeAlgorithm)."
@@ -600,17 +600,18 @@ pub(crate) fn create_writable_stream(
     high_water_mark: Option<f64>,
     size_algorithm: Option<SizeAlgorithm>,
     context: &mut Context,
-) -> JsResult<WritableStream> {
+) -> JsResult<(WritableStream, JsObject)> {
     let high_water_mark = high_water_mark.unwrap_or(1.0);
     let size_algorithm = size_algorithm.unwrap_or(SizeAlgorithm::ReturnOne);
     debug_assert!(high_water_mark >= 0.0 && !high_water_mark.is_nan());
 
-    let mut stream = create_writable_stream_object(context)?;
+    let (mut stream, stream_object) = create_writable_stream_object(context)?;
     stream.initialize_writable_stream();
-    let controller = create_writable_stream_default_controller(context)?;
+    let (controller, controller_object) = create_writable_stream_default_controller(context)?;
     set_up_writable_stream_default_controller(
         stream.clone(),
         controller,
+        &controller_object,
         start_algorithm,
         write_algorithm,
         close_algorithm,
@@ -619,13 +620,12 @@ pub(crate) fn create_writable_stream(
         size_algorithm,
         context,
     )?;
-    Ok(stream)
+    Ok((stream, stream_object))
 }
-fn create_writable_stream_object(context: &mut Context) -> JsResult<WritableStream> {
-    let stream = WritableStream::new(None);
-    let stream_object = WritableStream::from_data(stream.clone(), context)?;
-    stream.set_reflector(stream_object);
-    Ok(stream)
+fn create_writable_stream_object(context: &mut Context) -> JsResult<(WritableStream, JsObject)> {
+    let stream = WritableStream::new();
+    let stream_object: JsObject = WritableStream::from_data(stream.clone(), context)?.into();
+    Ok((stream, stream_object))
 }
 
 pub(crate) fn with_writable_stream_ref<R>(

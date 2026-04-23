@@ -1,4 +1,6 @@
 mod readablestream;
+mod readablebytestreamcontroller;
+mod readablestreambyobreader;
 mod readablestreamasynciterator;
 mod readablestreamdefaultcontroller;
 mod readablestreamdefaultreader;
@@ -11,6 +13,8 @@ mod writablestreamsupport;
 pub mod strategy;
 
 pub use readablestream::ReadableStream;
+pub use readablebytestreamcontroller::{ReadableByteStreamController, ReadableStreamBYOBRequest};
+pub use readablestreambyobreader::ReadableStreamBYOBReader;
 pub use readablestreamdefaultcontroller::ReadableStreamDefaultController;
 pub use readablestreamdefaultreader::ReadableStreamDefaultReader;
 pub use strategy::{ByteLengthQueuingStrategy, CountQueuingStrategy, SizeAlgorithm};
@@ -18,11 +22,23 @@ pub use writablestream::WritableStream;
 pub use writablestreamdefaultcontroller::WritableStreamDefaultController;
 pub use writablestreamdefaultwriter::WritableStreamDefaultWriter;
 pub(crate) use readablestream::{
-    PipeToState, construct_readable_stream, with_readable_stream_ref,
+    PipeToState, construct_readable_stream, readable_stream_add_read_request,
+    readable_stream_close, readable_stream_error, readable_stream_fulfill_read_request,
+    readable_stream_from_iterable, readable_stream_get_num_read_requests,
+    with_readable_stream_ref,
 };
 pub(crate) use readablestreamdefaultcontroller::{
     CancelAlgorithm, PullAlgorithm, StartAlgorithm, set_up_readable_stream_default_controller,
+    extract_source_method,
     set_up_readable_stream_default_controller_from_underlying_source,
+};
+pub(crate) use readablebytestreamcontroller::{
+    ArrayBufferViewDescriptor, set_up_readable_byte_stream_controller_from_underlying_source,
+    with_readable_byte_stream_controller_ref, with_readable_stream_byob_request_ref,
+};
+pub(crate) use readablestreambyobreader::{
+    acquire_readable_stream_byob_reader, construct_readable_stream_byob_reader,
+    with_readable_stream_byob_reader_ref,
 };
 pub(crate) use readablestreamdefaultreader::{
     ReadableStreamGenericReader, acquire_readable_stream_default_reader,
@@ -30,8 +46,9 @@ pub(crate) use readablestreamdefaultreader::{
     readable_stream_default_reader_release, with_readable_stream_default_reader_ref,
 };
 pub(crate) use readablestreamsupport::{
-    ReadRequest, ReadableStreamController, ReadableStreamReader, ReadableStreamState,
-    SourceMethod, range_error_value, rejected_type_error_promise, type_error_value,
+    ReadIntoRequest, ReadRequest, ReadableStreamController, ReadableStreamReader,
+    ReadableStreamState, SourceMethod, range_error_value, rejected_type_error_promise,
+    type_error_value,
 };
 pub(crate) use strategy::{
     byte_length_size, count_size, extract_high_water_mark, extract_size_algorithm,

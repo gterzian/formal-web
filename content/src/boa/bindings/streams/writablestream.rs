@@ -24,15 +24,6 @@ impl Class for WritableStream {
         construct_writable_stream(new_target, args, context)
     }
 
-    fn object_constructor(
-        instance: &boa_engine::object::JsObject<Self>,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<()> {
-        instance.borrow().data().set_reflector(instance.clone().upcast());
-        Ok(())
-    }
-
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
         let realm = class.context().realm().clone();
         class
