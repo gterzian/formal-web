@@ -1,0 +1,92 @@
+<svg width="680" viewBox="0 0 680 540" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#888" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="680" height="540" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="340" y="36" text-anchor="middle" font-size="17" font-weight="500" fill="#1a1a18">formal-web</text>
+  <text x="340" y="56" text-anchor="middle" font-size="12" fill="#73726c">a formally verified web engine</text>
+
+  <!-- Correctness -->
+  <rect x="40" y="78" width="138" height="108" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text x="109" y="104" text-anchor="middle" font-size="14" font-weight="500" fill="#3C3489">Correctness</text>
+  <text x="109" y="122" text-anchor="middle" font-size="12" fill="#534AB7">Lean verified kernel</text>
+  <text x="109" y="140" text-anchor="middle" font-size="12" fill="#534AB7">for all concurrent</text>
+  <text x="109" y="158" text-anchor="middle" font-size="12" fill="#534AB7">logic</text>
+
+  <!-- Performance -->
+  <rect x="194" y="78" width="138" height="108" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="263" y="104" text-anchor="middle" font-size="14" font-weight="500" fill="#085041">Performance</text>
+  <text x="263" y="122" text-anchor="middle" font-size="12" fill="#0F6E56">Never block the</text>
+  <text x="263" y="140" text-anchor="middle" font-size="12" fill="#0F6E56">render path; heavy</text>
+  <text x="263" y="158" text-anchor="middle" font-size="12" fill="#0F6E56">work via WASM</text>
+
+  <!-- Modularity -->
+  <rect x="348" y="78" width="138" height="108" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+  <text x="417" y="104" text-anchor="middle" font-size="14" font-weight="500" fill="#633806">Modularity</text>
+  <text x="417" y="122" text-anchor="middle" font-size="12" fill="#854F0B">Blitz + Vello +</text>
+  <text x="417" y="140" text-anchor="middle" font-size="12" fill="#854F0B">Wasmtime + Boa,</text>
+  <text x="417" y="158" text-anchor="middle" font-size="12" fill="#854F0B">composed cleanly</text>
+
+  <!-- Security -->
+  <rect x="502" y="78" width="138" height="108" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+  <text x="571" y="104" text-anchor="middle" font-size="14" font-weight="500" fill="#712B13">Security</text>
+  <text x="571" y="122" text-anchor="middle" font-size="12" fill="#993C1D">Multi-process from</text>
+  <text x="571" y="140" text-anchor="middle" font-size="12" fill="#993C1D">day one; meets</text>
+  <text x="571" y="158" text-anchor="middle" font-size="12" fill="#993C1D">Apple iOS rules</text>
+
+  <!-- Section label -->
+  <text x="340" y="216" text-anchor="middle" font-size="12" fill="#73726c">Architecture stack</text>
+
+  <!-- TLA+ specs -->
+  <rect x="40" y="228" width="600" height="38" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="200" y="251" text-anchor="middle" font-size="14" font-weight="500" fill="#2C2C2A">TLA+ specs</text>
+  <text x="480" y="251" text-anchor="middle" font-size="12" fill="#5F5E5A">high-level design &amp; concurrency thinking</text>
+
+  <!-- Lean specs -->
+  <rect x="40" y="274" width="600" height="38" rx="6" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text x="200" y="297" text-anchor="middle" font-size="14" font-weight="500" fill="#3C3489">Lean specs</text>
+  <text x="480" y="297" text-anchor="middle" font-size="12" fill="#534AB7">TLA-style state machines, formally verified</text>
+
+  <!-- Lean implementations -->
+  <rect x="40" y="320" width="600" height="38" rx="6" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text x="200" y="343" text-anchor="middle" font-size="14" font-weight="500" fill="#3C3489">Lean implementations</text>
+  <text x="480" y="343" text-anchor="middle" font-size="12" fill="#534AB7">concurrent logic, I/O, navigation, fetch</text>
+
+  <!-- FFI arrow -->
+  <line x1="340" y1="358" x2="340" y2="374" stroke="#888" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <text x="354" y="370" font-size="11" fill="#888">FFI</text>
+
+  <!-- Rust modules -->
+  <rect x="40" y="378" width="600" height="38" rx="6" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="200" y="401" text-anchor="middle" font-size="14" font-weight="500" fill="#085041">Rust modules</text>
+  <text x="480" y="401" text-anchor="middle" font-size="12" fill="#0F6E56">sequential algorithms, called as black boxes</text>
+
+  <!-- Process model label -->
+  <text x="340" y="440" text-anchor="middle" font-size="12" fill="#73726c">Process model</text>
+
+  <!-- Main process -->
+  <rect x="40" y="452" width="144" height="54" rx="6" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="112" y="473" text-anchor="middle" font-size="14" font-weight="500" fill="#2C2C2A">Main process</text>
+  <text x="112" y="491" text-anchor="middle" font-size="12" fill="#5F5E5A">chrome + embedder</text>
+
+  <!-- Content processes -->
+  <rect x="200" y="452" width="144" height="54" rx="6" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text x="272" y="473" text-anchor="middle" font-size="14" font-weight="500" fill="#3C3489">Content ×N</text>
+  <text x="272" y="491" text-anchor="middle" font-size="12" fill="#534AB7">DOM, JS, display list</text>
+
+  <!-- Network process -->
+  <rect x="360" y="452" width="144" height="54" rx="6" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="432" y="473" text-anchor="middle" font-size="14" font-weight="500" fill="#085041">Network process</text>
+  <text x="432" y="491" text-anchor="middle" font-size="12" fill="#0F6E56">fetch, TLS</text>
+
+  <!-- GPU process -->
+  <rect x="520" y="452" width="120" height="54" rx="6" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+  <text x="580" y="473" text-anchor="middle" font-size="14" font-weight="500" fill="#633806">GPU process</text>
+  <text x="580" y="491" text-anchor="middle" font-size="12" fill="#854F0B">Vello rendering</text>
+</svg>
