@@ -7,8 +7,8 @@ import Std.Sync.Channel
 
 namespace FormalWeb
 
-initialize userAgentMessageChannelRef : IO.Ref (Option (Std.CloseableChannel UserAgentRuntimeMessage)) ←
-  IO.mkRef (none : Option (Std.CloseableChannel UserAgentRuntimeMessage))
+initialize userAgentMessageChannelRef : IO.Ref (Option (Std.CloseableChannel UserAgentTaskMessage)) ←
+  IO.mkRef (none : Option (Std.CloseableChannel UserAgentTaskMessage))
 
 initialize fetchMessageChannelRef : IO.Ref (Option (Std.CloseableChannel FetchRuntimeMessage)) ←
   IO.mkRef (none : Option (Std.CloseableChannel FetchRuntimeMessage))
@@ -36,20 +36,20 @@ private def trySendOnRef
 private def runtimeStarted : IO Bool := do
   pure (← userAgentMessageChannelRef.get).isSome
 
-private def enqueueUserAgentRuntimeMessage
-    (message : UserAgentRuntimeMessage) :
+private def enqueueUserAgentTaskMessage
+    (message : UserAgentTaskMessage) :
     IO Unit := do
   trySendOnRef userAgentMessageChannelRef message
 
 @[export userAgentNoteRenderingOpportunity]
 def userAgentNoteRenderingOpportunity (message : String) : IO Unit := do
   let _ := message
-  enqueueUserAgentRuntimeMessage (.task .renderingOpportunity)
+  enqueueUserAgentTaskMessage .renderingOpportunity
 
 @[export handleRuntimeMessage]
 def handleRuntimeMessageFromRust (message : String) : IO Unit := do
   let some userAgentMessage := FormalWeb.userAgentTaskMessageOfString? message | pure ()
-  enqueueUserAgentRuntimeMessage (.task userAgentMessage)
+  enqueueUserAgentTaskMessage userAgentMessage
 
 @[export startDocumentFetch]
 def startDocumentFetchFromRust
@@ -64,10 +64,9 @@ def startDocumentFetchFromRust
     method
     body := if body.isEmpty then none else some body
   }
-  enqueueUserAgentRuntimeMessage <|
-    .eventLoop
-      eventLoopId.toNat
-      (.documentFetchRequested { raw := handlerPointer } request)
+  sendEventLoopMessage
+    eventLoopId.toNat
+    (.documentFetchRequested { raw := handlerPointer } request)
 
 @[export scheduleWindowTimer]
 def scheduleWindowTimerFromRust
@@ -78,23 +77,21 @@ def scheduleWindowTimerFromRust
     (timeoutMs : USize)
     (nestingLevel : USize) :
     IO Unit := do
-  enqueueUserAgentRuntimeMessage <|
-    .eventLoop
-      eventLoopId.toNat
-      (.scheduleWindowTimer
-        { id := documentId.toNat }
-        timerId.toNat
-        timerKey.toNat
-        timeoutMs.toNat
-        nestingLevel.toNat)
+  sendEventLoopMessage
+    eventLoopId.toNat
+    (.scheduleWindowTimer
+      { id := documentId.toNat }
+      timerId.toNat
+      timerKey.toNat
+      timeoutMs.toNat
+      nestingLevel.toNat)
 
 @[export clearWindowTimer]
 def clearWindowTimerFromRust
     (eventLoopId : USize)
     (timerKey : USize) :
     IO Unit := do
-  enqueueUserAgentRuntimeMessage <|
-    .eventLoop eventLoopId.toNat (.clearTimeout timerKey.toNat)
+  sendEventLoopMessage eventLoopId.toNat (.clearTimeout timerKey.toNat)
 
 @[export startNavigation]
 def startNavigationFromRust
@@ -111,8 +108,7 @@ def startNavigationFromRust
       UserNavigationInvolvement.browserUI
     else
       UserNavigationInvolvement.none
-  enqueueUserAgentRuntimeMessage <|
-    .task
+  enqueueUserAgentTaskMessage
       (.navigateRequested
         documentId.toNat
         destinationURL
@@ -126,8 +122,7 @@ def completeBeforeUnloadFromRust
     (checkId : USize)
     (canceled : USize) :
     IO Unit := do
-  enqueueUserAgentRuntimeMessage <|
-    .task
+  enqueueUserAgentTaskMessage
       (.beforeUnloadCompleted
         documentId.toNat
         checkId.toNat
@@ -138,34 +133,32 @@ def finalizeNavigationFromRust
     (documentId : USize)
     (url : String) :
     IO Unit := do
-  enqueueUserAgentRuntimeMessage <|
-    .task
+  enqueueUserAgentTaskMessage
       (.finalizeNavigation documentId.toNat url)
 
 @[export runNextEventLoopTask]
 def runNextEventLoopTaskFromRust
     (eventLoopId : USize) :
     IO Unit := do
-  enqueueUserAgentRuntimeMessage <|
-    .eventLoop eventLoopId.toNat .runNextTask
+  sendEventLoopMessage eventLoopId.toNat .runNextTask
 
 @[export abortNavigation]
 def abortNavigationFromRust
     (documentId : USize) :
     IO Unit := do
-  enqueueUserAgentRuntimeMessage <|
-    .task (.abortNavigationRequested documentId.toNat)
+  enqueueUserAgentTaskMessage
+    (.abortNavigationRequested documentId.toNat)
 
 @[export formalWebStartKernel]
 def startKernel : IO Unit := do
   if ← runtimeStarted then
     throw <| IO.userError "formal-web Lean kernel is already running"
 
-  let userAgentChannel ← Std.CloseableChannel.new
+  let userAgentChannel : Std.CloseableChannel UserAgentTaskMessage ← Std.CloseableChannel.new
   let fetchChannel ← Std.CloseableChannel.new
   let timerChannel ← Std.CloseableChannel.new
 
-  userAgentMessageChannelRef.set (some userAgentChannel)
+  userAgentMessageChannelRef.set (some (userAgentChannel : Std.CloseableChannel UserAgentTaskMessage))
   fetchMessageChannelRef.set (some fetchChannel)
   timerMessageChannelRef.set (some timerChannel)
 
@@ -173,7 +166,7 @@ def startKernel : IO Unit := do
     FormalWeb.runFetchRuntime fetchChannel fun notification => do
       match notification with
       | .fetchCompleted fetchId response =>
-          let _ ← userAgentChannel.trySend (.task (.fetchCompleted fetchId response))
+          let _ ← userAgentChannel.trySend (.fetchCompleted fetchId response)
           pure ()
   let timerWorker ← IO.asTask <|
     FormalWeb.runTimerRuntime timerChannel
@@ -193,7 +186,7 @@ def shutdownKernel : IO Unit := do
   let fetchWorker? ← fetchWorkerRef.get
   let timerWorker? ← timerWorkerRef.get
 
-  userAgentMessageChannelRef.set (none : Option (Std.CloseableChannel UserAgentRuntimeMessage))
+  userAgentMessageChannelRef.set (none : Option (Std.CloseableChannel UserAgentTaskMessage))
   fetchMessageChannelRef.set (none : Option (Std.CloseableChannel FetchRuntimeMessage))
   timerMessageChannelRef.set (none : Option (Std.CloseableChannel TimerRuntimeMessage))
   userAgentWorkerRef.set (none : Option (_root_.Task (Except IO.Error Unit)))
@@ -205,6 +198,9 @@ def shutdownKernel : IO Unit := do
 
   if let some userAgentWorker := userAgentWorker? then
     let _ ← IO.wait userAgentWorker
+  -- Clear the event-loop channel registry. The channels are already closed by
+  -- shutdownUserAgentRuntime above, so we only need to reset the ref (§6).
+  eventLoopChannelRegistry.set Std.TreeMap.empty
 
   if let some fetchChannel := fetchChannel? then
     fetchChannel.close
