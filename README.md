@@ -10,11 +10,11 @@ formal-web runs a verified Lean kernel dealing with all engine-wide coordination
 
 ## The problem
 
-Some of the hardest bugs in browsers are in the coordination. Navigation races, session history corruption, fetch ordering errors. These are concurrency bugs, and they happen because nobody has formally proven the concurrent logic correct.
+Some of the hardest bugs in browsers are in the coordination. Navigation races, session history corruption, fetch ordering errors. These are concurrency bugs.
 
 ## The approach
 
-formal-web moves all of that into a verified Lean kernel. The kernel handles every concurrent decision — navigation, session history, fetch — using formally proven state machines. Rust modules handle the rest: DOM, layout, rendering, JavaScript. They stay simple and sequential, called from Lean over FFI, with no shared mutable state.
+formal-web moves as much of this logic as possible into a verified Lean kernel. The kernel handles every concurrent decision — navigation, session history, fetch — using formally proven state machines. Rust modules handle the rest: DOM, layout, rendering, JavaScript.
 
 ---
 
@@ -45,7 +45,7 @@ The process model is designed to meet Apple's [architectural requirements](https
 
 - **Content processes** (one per tab) — DOM, JavaScript, display list production
 - **Network process** — fetch, TLS
-- **GPU process** — Vello rendering
+- **GPU process** — Vello rendering (note: this happens in the main process for now)
 - **Main process** — browser chrome, embedder
 ---
 
