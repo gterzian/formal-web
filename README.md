@@ -2,6 +2,57 @@
 
 formal-web runs a verified Lean kernel dealing with all engine-wide coordination(navigation, session history, etc...), coupled with individual Rust modules for things like running HTML event-loop tasks, managing the DOM, a winit embedder, a window renderer, and other things interfacing with the outside world.
 
+---
+
+![formal-web architecture](formal-web-diagram.svg)
+
+---
+
+## The problem
+
+Some of the hardest bugs in browsers are in the coordination. Navigation races, session history corruption, fetch ordering errors. These are concurrency bugs.
+
+## The approach
+
+formal-web moves as much of this logic as possible into a verified Lean kernel. The kernel handles every concurrent decision — navigation, session history, fetch — using formally proven state machines. Rust modules handle the rest: DOM, layout, rendering, JavaScript.
+
+---
+
+## Four pillars
+
+### Correctness
+
+The most complicated concurrent algorithms — navigation, session history, fetch — live in the Lean verified kernel. Rust modules are kept as simple as possible, focused purely on interacting with the outside world. Each module is a black box: a sequential function with an input and an output.
+
+### Performance
+
+Perceived performance is about latency, not throughput. formal-web ensures the main render path is never blocked. Even with a modest JS engine like Boa, the browser stays snappy. 
+
+### Modularity
+
+The engine composes best-in-class open components:
+
+- **Blitz** — DOM and layout
+- **Vello** — GPU-accelerated rendering
+- **Wasmtime** — WebAssembly runtime
+- **Boa** — JavaScript engine
+
+The Blitz + Vello + anyrender pipeline is naturally composable, supporting advanced use cases like cross-process iframes and media elements with minimal coordination overhead. Anything beyond core web standards — WebNN, WebBluetooth, Web MIDI — is implemented as a plain Rust module, keeping the verified kernel lean and the extension surface explicit.
+
+### Security
+
+The process model is designed to meet Apple's [architectural requirements](https://developer.apple.com/documentation/browserenginekit/designing-your-browser-architecture) for an independent web engine on iOS — from day one:
+
+- **Content processes** (one per tab) — DOM, JavaScript, display list production
+- **Network process** — fetch, TLS
+- **GPU process** — Vello rendering (note: this happens in the main process for now)
+- **Main process** — browser chrome, embedder
+---
+
+## The bet
+
+A formally verified core plus composable Rust modules is a tractable path to a correct, secure, and performant web engine.
+
 ## Requirements
 
 - `elan`
