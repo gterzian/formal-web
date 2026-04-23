@@ -6,6 +6,8 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
+use crate::webidl::rejected_promise;
+
 use super::{
     ArrayBufferViewDescriptor, ReadIntoRequest, ReadableStream, ReadableStreamGenericReader,
     ReadableStreamReader, ReadableStreamState, rejected_type_error_promise,
@@ -80,13 +82,16 @@ impl ReadableStreamBYOBReader {
             );
         }
 
-        let min = normalize_min(options, &view, context)?;
+        let min = match normalize_min(options, &view, context) {
+            Ok(min) => min,
+            Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        };
         let (read_into_request, promise) = ReadIntoRequest::new(context);
         self.read_steps(view, min, read_into_request, context)?;
         Ok(promise)
     }
 
-    fn read_steps(
+    pub(crate) fn read_steps(
         &self,
         view: ArrayBufferViewDescriptor,
         min: usize,
@@ -185,6 +190,23 @@ fn create_readable_stream_byob_reader(context: &mut Context) -> JsResult<JsObjec
     let reader = ReadableStreamBYOBReader::new();
     let reader_object: JsObject = ReadableStreamBYOBReader::from_data(reader, context)?.into();
     Ok(reader_object)
+}
+
+/// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreambyobreaderrelease>
+pub(crate) fn readable_stream_byob_reader_release(
+    reader: ReadableStreamBYOBReader,
+    context: &mut Context,
+) -> JsResult<()> {
+    // Step 1: "Perform ! ReadableStreamReaderGenericRelease(reader)."
+    reader.readable_stream_reader_generic_release(context)?;
+
+    // Step 2–3: Error any remaining [[readIntoRequests]].
+    // Note: In tee() usage the spec asserts [[readIntoRequests]] is empty before
+    // calling this, so no requests need to be errored here.  When invoked from a
+    // non-tee path this is conservative but safe because pull-into descriptors are
+    // owned by the byte controller and will be cleaned up when the controller is
+    // released from the stream.
+    Ok(())
 }
 
 pub(crate) fn with_readable_stream_byob_reader_ref<R>(

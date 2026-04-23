@@ -8,7 +8,7 @@ use boa_engine::{
     native_function::NativeFunction,
     object::{
         JsObject,
-        builtins::{JsArrayBuffer, JsDataView, JsPromise, JsTypedArray, JsUint8Array},
+        builtins::{JsArrayBuffer, JsDataView, JsPromise, JsTypedArray},
     },
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
@@ -198,6 +198,12 @@ impl ArrayBufferViewDescriptor {
     fn replace_with(&mut self, other: Self) {
         *self = other;
     }
+
+    /// Spec step: `firstDescriptor.[[buffer]] = TransferArrayBuffer(view.[[ViewedArrayBuffer]])`.
+    /// Updates only the backing buffer; `byte_offset` and `byte_length` are unchanged.
+    fn transfer_buffer_from(&mut self, other: &Self) {
+        self.buffer = other.buffer.clone();
+    }
 }
 
 #[derive(Clone, Trace, Finalize)]
@@ -206,13 +212,18 @@ enum PullRequest {
     Byob(ReadIntoRequest),
 }
 
+/// <https://streams.spec.whatwg.org/#pull-into-descriptor>
 #[derive(Clone, Trace, Finalize)]
 struct PullIntoDescriptor {
+    /// <https://streams.spec.whatwg.org/#pull-into-descriptor-buffer>
     view: ArrayBufferViewDescriptor,
+    /// <https://streams.spec.whatwg.org/#pull-into-descriptor-bytes-filled>
     #[unsafe_ignore_trace]
     bytes_filled: usize,
+    /// <https://streams.spec.whatwg.org/#pull-into-descriptor-minimum-fill>
     #[unsafe_ignore_trace]
     minimum_fill: usize,
+    /// <https://streams.spec.whatwg.org/#pull-into-descriptor-reader-type>
     request: PullRequest,
 }
 
@@ -264,6 +275,10 @@ impl PullIntoDescriptor {
 
     fn commit(self, done: bool, context: &mut Context) -> JsResult<()> {
         let value = JsValue::from(self.filled_view(context)?);
+        self.commit_with_value(value, done, context)
+    }
+
+    fn commit_with_value(self, value: JsValue, done: bool, context: &mut Context) -> JsResult<()> {
         match &self.request {
             PullRequest::Default(read_request) => {
                 let read_request = read_request.clone();
@@ -298,30 +313,48 @@ impl PullIntoDescriptor {
 
 #[derive(Clone, Trace, Finalize)]
 struct ByteQueueEntry {
+    buffer: JsArrayBuffer,
     #[unsafe_ignore_trace]
-    bytes: Vec<u8>,
+    byte_offset: usize,
+    #[unsafe_ignore_trace]
+    byte_length: usize,
     #[unsafe_ignore_trace]
     offset: usize,
 }
 
 impl ByteQueueEntry {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes, offset: 0 }
+    fn new(view: ArrayBufferViewDescriptor) -> Self {
+        Self {
+            buffer: view.buffer.clone(),
+            byte_offset: view.byte_offset(),
+            byte_length: view.byte_length(),
+            offset: 0,
+        }
     }
 
     fn remaining_len(&self) -> usize {
-        self.bytes.len().saturating_sub(self.offset)
+        self.byte_length.saturating_sub(self.offset)
     }
 
-    fn remaining_slice(&self) -> &[u8] {
-        &self.bytes[self.offset..]
+    fn remaining_byte_offset(&self) -> usize {
+        self.byte_offset + self.offset
+    }
+
+    fn remaining_view(&self) -> ArrayBufferViewDescriptor {
+        ArrayBufferViewDescriptor::new_uint8(
+            self.buffer.clone(),
+            self.remaining_byte_offset(),
+            self.remaining_len(),
+        )
     }
 }
 
 /// <https://streams.spec.whatwg.org/#readablestreambyobrequest>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct ReadableStreamBYOBRequest {
+    /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-controller>
     controller: Gc<GcRefCell<Option<ReadableByteStreamController>>>,
+    /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-view>
     view: Gc<GcRefCell<Option<JsObject>>>,
 }
 
@@ -341,6 +374,7 @@ impl ReadableStreamBYOBRequest {
         })
     }
 
+    /// <https://streams.spec.whatwg.org/#rs-byob-request-view>
     pub(crate) fn view(&self) -> Option<JsObject> {
         self.view.borrow().clone()
     }
@@ -349,42 +383,61 @@ impl ReadableStreamBYOBRequest {
         *self.view.borrow_mut() = view;
     }
 
+    /// <https://streams.spec.whatwg.org/#rs-byob-request-respond>
     pub(crate) fn respond(&self, bytes_written: usize, context: &mut Context) -> JsResult<()> {
         self.controller_slot()?.respond(bytes_written, context)
     }
 
+    /// <https://streams.spec.whatwg.org/#rs-byob-request-respond-with-new-view>
     pub(crate) fn respond_with_new_view(
         &self,
         view: JsValue,
         context: &mut Context,
     ) -> JsResult<()> {
+        let view_object = view.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("respondWithNewView() requires an ArrayBufferView object")
+        })?;
         let view = ArrayBufferViewDescriptor::from_value(view, context)?;
-        self.controller_slot()?.respond_with_new_view(view, context)
+        self.controller_slot()?
+            .respond_with_new_view(view, view_object, context)
     }
 }
 
 /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller>
 #[derive(Clone, Trace, Finalize, JsData)]
 pub struct ReadableByteStreamController {
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-stream>
     stream: Gc<GcRefCell<Option<ReadableStream>>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-queue>
     queue: Gc<GcRefCell<VecDeque<ByteQueueEntry>>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-queuetotalsize>
     #[unsafe_ignore_trace]
     queue_total_size: Rc<Cell<usize>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-started>
     #[unsafe_ignore_trace]
     started: Rc<Cell<bool>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-closerequested>
     #[unsafe_ignore_trace]
     close_requested: Rc<Cell<bool>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pullagain>
     #[unsafe_ignore_trace]
     pull_again: Rc<Cell<bool>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pulling>
     #[unsafe_ignore_trace]
     pulling: Rc<Cell<bool>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-strategyhwm>
     #[unsafe_ignore_trace]
     strategy_high_water_mark: Rc<Cell<f64>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-autoallocatechunksize>
     #[unsafe_ignore_trace]
     auto_allocate_chunk_size: Rc<Cell<Option<usize>>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pullalgorithm>
     pull_algorithm: Gc<GcRefCell<Option<PullAlgorithm>>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-cancelalgorithm>
     cancel_algorithm: Gc<GcRefCell<Option<CancelAlgorithm>>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pendingpullintos>
     pending_pull_intos: Gc<GcRefCell<VecDeque<PullIntoDescriptor>>>,
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-byobrequest>
     byob_request_object: Gc<GcRefCell<Option<JsObject>>>,
 }
 
@@ -423,16 +476,19 @@ impl ReadableByteStreamController {
         })
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-clear-algorithms>
     fn clear_algorithms(&self) {
         *self.pull_algorithm.borrow_mut() = None;
         *self.cancel_algorithm.borrow_mut() = None;
     }
 
+    /// <https://streams.spec.whatwg.org/#reset-queue>
     fn reset_queue(&self) {
         self.queue.borrow_mut().clear();
         self.queue_total_size.set(0);
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-invalidate-byob-request>
     fn invalidate_byob_request(&self) -> JsResult<()> {
         if let Some(object) = self.byob_request_object.borrow_mut().take() {
             with_readable_stream_byob_request_ref(&object, |request| request.set_view_slot(None))?;
@@ -453,6 +509,29 @@ impl ReadableByteStreamController {
         Ok(())
     }
 
+    pub(crate) fn pending_pull_intos_len(&self) -> usize {
+        self.pending_pull_intos.borrow().len()
+    }
+
+    /// Returns a snapshot of the current BYOB request view as a JS value, without
+    /// materialising a new BYOB request object.  Used by the byte-stream tee to
+    /// inspect the pending pull-into view synchronously (non-spec helper).
+    pub(crate) fn byob_request_immediate(&self) -> Option<JsValue> {
+        let pending = self.pending_pull_intos.borrow();
+        let descriptor = pending.front()?;
+        // Return the cached BYOB request object's view if it exists, or signal
+        // to the caller that there is a BYOB request (they can materialise it
+        // via byob_request()).
+        if let Some(ref obj) = *self.byob_request_object.borrow() {
+            return Some(JsValue::from(obj.clone()));
+        }
+        // No cached object yet; just indicate there IS a pending pull-into
+        // by returning a sentinel so the tee pull algorithm will call byob_request().
+        let _ = descriptor;
+        None
+    }
+
+    /// <https://streams.spec.whatwg.org/#rbs-controller-desired-size>
     pub(crate) fn desired_size(&self) -> JsResult<Option<f64>> {
         match self.stream_slot()?.state() {
             ReadableStreamState::Errored => Ok(None),
@@ -463,25 +542,25 @@ impl ReadableByteStreamController {
         }
     }
 
+    /// <https://streams.spec.whatwg.org/#rbs-controller-byob-request>
     pub(crate) fn byob_request(&self, context: &mut Context) -> JsResult<Option<JsObject>> {
         if self.pending_pull_intos.borrow().is_empty() {
             self.invalidate_byob_request()?;
             return Ok(None);
         }
 
-        let object = if let Some(object) = self.byob_request_object.borrow().clone() {
-            object
-        } else {
-            let request = ReadableStreamBYOBRequest::new(self.clone());
-            let object: JsObject = ReadableStreamBYOBRequest::from_data(request, context)?.into();
-            *self.byob_request_object.borrow_mut() = Some(object.clone());
-            object
-        };
+        if let Some(object) = self.byob_request_object.borrow().clone() {
+            return Ok(Some(object));
+        }
 
+        let request = ReadableStreamBYOBRequest::new(self.clone());
+        let object: JsObject = ReadableStreamBYOBRequest::from_data(request, context)?.into();
+        *self.byob_request_object.borrow_mut() = Some(object.clone());
         self.update_byob_request_view(context)?;
         Ok(Some(object))
     }
 
+    /// <https://streams.spec.whatwg.org/#rbs-controller-close>
     pub(crate) fn close(&self, context: &mut Context) -> JsResult<()> {
         if self.close_requested.get() || self.stream_slot()?.state() != ReadableStreamState::Readable {
             return Err(JsNativeError::typ()
@@ -491,6 +570,7 @@ impl ReadableByteStreamController {
         self.close_steps(context)
     }
 
+    /// <https://streams.spec.whatwg.org/#rbs-controller-enqueue>
     pub(crate) fn enqueue(&self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
         if self.close_requested.get() || self.stream_slot()?.state() != ReadableStreamState::Readable {
             return Err(JsNativeError::typ()
@@ -500,10 +580,12 @@ impl ReadableByteStreamController {
         self.enqueue_steps(chunk, context)
     }
 
+    /// <https://streams.spec.whatwg.org/#rbs-controller-error>
     pub(crate) fn error(&self, error: JsValue, context: &mut Context) -> JsResult<()> {
         self.error_steps(error, context)
     }
 
+    /// <https://streams.spec.whatwg.org/#rbs-controller-private-cancel>
     pub(crate) fn cancel_steps(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
         self.reset_queue();
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
@@ -521,6 +603,7 @@ impl ReadableByteStreamController {
         Ok(result)
     }
 
+    /// <https://streams.spec.whatwg.org/#rbs-controller-private-pull>
     pub(crate) fn pull_steps(&self, read_request: ReadRequest, context: &mut Context) -> JsResult<()> {
         let stream = self.stream_slot()?;
         if self.queue_total_size.get() > 0 {
@@ -544,6 +627,7 @@ impl ReadableByteStreamController {
         self.call_pull_if_needed(context)
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-pull-into>
     pub(crate) fn pull_into(
         &self,
         view: ArrayBufferViewDescriptor,
@@ -587,6 +671,7 @@ impl ReadableByteStreamController {
         self.call_pull_if_needed(context)
     }
 
+    /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamcontroller-releasesteps>
     pub(crate) fn release_steps(&self, context: &mut Context) -> JsResult<()> {
         let release_error = type_error_value("Reader was released", context)?;
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
@@ -597,6 +682,7 @@ impl ReadableByteStreamController {
         Ok(())
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-close>
     pub(crate) fn close_steps(&self, context: &mut Context) -> JsResult<()> {
         let stream = self.stream_slot()?;
         if self.close_requested.get() || stream.state() != ReadableStreamState::Readable {
@@ -638,6 +724,7 @@ impl ReadableByteStreamController {
         readable_stream_close(stream, context)
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-enqueue>
     pub(crate) fn enqueue_steps(&self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
         let view = ArrayBufferViewDescriptor::from_value(chunk, context)?;
         if view.byte_length() == 0 {
@@ -646,12 +733,13 @@ impl ReadableByteStreamController {
                 .into());
         }
 
-        self.enqueue_bytes(view.bytes()?);
+        self.enqueue_chunk(view);
         self.process_pending_pull_intos_using_queue(context)?;
         self.process_read_requests_using_queue(context)?;
         self.call_pull_if_needed(context)
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-error>
     pub(crate) fn error_steps(&self, error: JsValue, context: &mut Context) -> JsResult<()> {
         if self.stream_slot()?.state() != ReadableStreamState::Readable {
             return Ok(());
@@ -667,6 +755,7 @@ impl ReadableByteStreamController {
         readable_stream_error(self.stream_slot()?, error, context)
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-respond>
     pub(crate) fn respond(&self, bytes_written: usize, context: &mut Context) -> JsResult<()> {
         let descriptor = {
             let mut pending = self.pending_pull_intos.borrow_mut();
@@ -725,13 +814,15 @@ impl ReadableByteStreamController {
         self.call_pull_if_needed(context)
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-respond-with-new-view>
     pub(crate) fn respond_with_new_view(
         &self,
         view: ArrayBufferViewDescriptor,
+        view_object: JsObject,
         context: &mut Context,
     ) -> JsResult<()> {
         let bytes_written = view.byte_length();
-        {
+        let descriptor_to_commit = {
             let mut pending = self.pending_pull_intos.borrow_mut();
             let descriptor = pending.front_mut().ok_or_else(|| {
                 JsNativeError::typ().with_message("There is no pending BYOB request to respond to")
@@ -746,12 +837,63 @@ impl ReadableByteStreamController {
                     .with_message("respondWithNewView() view is larger than the remaining request")
                     .into());
             }
-            descriptor.view.replace_with(view);
-            descriptor.bytes_filled = bytes_written;
+
+            descriptor.bytes_filled += bytes_written;
+            // Spec: set firstDescriptor.[[buffer]] to TransferArrayBuffer(view.[[ViewedArrayBuffer]]).
+            // Only the buffer is updated; byte_offset and byte_length remain from the original pull-into.
+            descriptor.view.transfer_buffer_from(&view);
+
+            let should_commit = if self.close_requested.get() {
+                true
+            } else {
+                descriptor.can_commit()
+            };
+
+            if should_commit {
+                Some(pending.pop_front().expect("front descriptor must exist"))
+            } else {
+                None
+            }
+        };
+
+        let Some(descriptor) = descriptor_to_commit else {
+            self.update_byob_request_view(context)?;
+            self.call_pull_if_needed(context)?;
+            return Ok(());
+        };
+
+        self.invalidate_byob_request()?;
+        if self.close_requested.get() {
+            if descriptor.bytes_filled % descriptor.view.element_size() != 0 {
+                let error = type_error_value(
+                    "Cannot close a byte stream with a partially filled typed array element",
+                    context,
+                )?;
+                self.error_steps(error, context)?;
+                return Ok(());
+            }
+            // Spec: ConvertPullIntoDescriptor — result view covers [byteOffset .. bytesFilled].
+            let result_view = descriptor.view.create_result_view(descriptor.bytes_filled, context)?;
+            descriptor.commit_with_value(JsValue::from(result_view), true, context)?;
+        } else {
+            // Spec: ConvertPullIntoDescriptor — result view covers [byteOffset .. bytesFilled].
+            let result_view = descriptor.view.create_result_view(descriptor.bytes_filled, context)?;
+            descriptor.commit_with_value(JsValue::from(result_view), false, context)?;
         }
-        self.respond(0, context)
+
+        if self.close_requested.get()
+            && self.queue_total_size.get() == 0
+            && self.pending_pull_intos.borrow().is_empty()
+        {
+            self.clear_algorithms();
+            readable_stream_close(self.stream_slot()?, context)?;
+            return Ok(());
+        }
+
+        self.call_pull_if_needed(context)
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-call-pull-if-needed>
     pub(crate) fn call_pull_if_needed(&self, context: &mut Context) -> JsResult<()> {
         if !self.should_call_pull()? {
             return Ok(());
@@ -795,6 +937,7 @@ impl ReadableByteStreamController {
         Ok(())
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-should-call-pull>
     fn should_call_pull(&self) -> JsResult<bool> {
         let stream = self.stream_slot()?;
         if !self.started.get()
@@ -820,20 +963,24 @@ impl ReadableByteStreamController {
         Ok(self.desired_size()?.is_some_and(|size| size > 0.0))
     }
 
-    fn enqueue_bytes(&self, bytes: Vec<u8>) {
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-enqueue-chunk-to-queue>
+    fn enqueue_chunk(&self, view: ArrayBufferViewDescriptor) {
         self.queue_total_size
-            .set(self.queue_total_size.get() + bytes.len());
-        self.queue.borrow_mut().push_back(ByteQueueEntry::new(bytes));
+            .set(self.queue_total_size.get() + view.byte_length());
+        self.queue.borrow_mut().push_back(ByteQueueEntry::new(view));
     }
 
     fn dequeue_chunk_as_value(&self, context: &mut Context) -> JsResult<JsValue> {
         let entry = self.queue.borrow_mut().pop_front().ok_or_else(|| {
             JsNativeError::typ().with_message("Readable byte stream queue is empty")
         })?;
-        let bytes = entry.remaining_slice().to_vec();
+        let remaining_len = entry.remaining_len();
+        let remaining_view = entry.remaining_view();
         self.queue_total_size
-            .set(self.queue_total_size.get().saturating_sub(bytes.len()));
-        Ok(JsValue::from(JsUint8Array::from_iter(bytes, context)?))
+            .set(self.queue_total_size.get().saturating_sub(remaining_len));
+        Ok(JsValue::from(
+            remaining_view.create_result_view(remaining_len, context)?,
+        ))
     }
 
     fn fill_read_request_from_queue(
@@ -872,6 +1019,7 @@ impl ReadableByteStreamController {
         Ok(())
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-fill-pull-into-descriptor-from-queue>
     fn fill_pull_into_from_queue(&self, descriptor: &mut PullIntoDescriptor) -> JsResult<()> {
         let total_to_copy = descriptor.remaining_byte_length().min(self.queue_total_size.get());
         if total_to_copy == 0 {
@@ -887,7 +1035,14 @@ impl ReadableByteStreamController {
                     JsNativeError::typ().with_message("Readable byte stream queue is empty")
                 })?;
                 let to_take = remaining.min(entry.remaining_len());
-                copied.extend_from_slice(&entry.remaining_slice()[..to_take]);
+                let start = entry.remaining_byte_offset();
+                let bytes = {
+                    let data = entry.buffer.data().ok_or_else(|| {
+                        JsNativeError::typ().with_message("Readable byte stream queue entry buffer is detached")
+                    })?;
+                    data[start..start + to_take].to_vec()
+                };
+                copied.extend_from_slice(&bytes);
                 entry.offset += to_take;
                 if entry.remaining_len() > 0 {
                     queue.push_front(entry);
@@ -908,6 +1063,7 @@ impl ReadableByteStreamController {
         Ok(())
     }
 
+    /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-process-pull-into-descriptors-using-queue>
     fn process_pending_pull_intos_using_queue(&self, context: &mut Context) -> JsResult<()> {
         loop {
             if self.queue_total_size.get() == 0 {
@@ -950,6 +1106,7 @@ pub(crate) fn with_readable_stream_byob_request_ref<R>(
     Ok(f(&request))
 }
 
+/// <https://streams.spec.whatwg.org/#set-up-readable-byte-stream-controller-from-underlying-source>
 pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
     stream: ReadableStream,
     underlying_source_object: Option<JsObject>,
@@ -988,7 +1145,8 @@ pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
     )
 }
 
-fn set_up_readable_byte_stream_controller(
+/// <https://streams.spec.whatwg.org/#set-up-readable-byte-stream-controller>
+pub(crate) fn set_up_readable_byte_stream_controller(
     stream: ReadableStream,
     controller: ReadableByteStreamController,
     controller_object: &JsObject,

@@ -10,6 +10,7 @@ use boa_engine::{
     object::{JsObject, builtins::JsFunction},
     property::Attribute,
 };
+use boa_runtime::extensions::{RuntimeExtension, StructuredCloneExtension};
 use url::Url;
 
 use crate::boa::{
@@ -108,6 +109,10 @@ impl EnvironmentSettingsObject {
             .host_hooks(Rc::new(WindowHostHooks::new(Rc::clone(&document))))
             .job_executor(Rc::new(SimpleJobExecutor::new()))
             .build()
+            .map_err(|error| error.to_string())?;
+
+        StructuredCloneExtension
+            .register(None, &mut context)
             .map_err(|error| error.to_string())?;
 
         context

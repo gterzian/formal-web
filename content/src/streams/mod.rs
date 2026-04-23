@@ -33,12 +33,13 @@ pub(crate) use readablestreamdefaultcontroller::{
     set_up_readable_stream_default_controller_from_underlying_source,
 };
 pub(crate) use readablebytestreamcontroller::{
-    ArrayBufferViewDescriptor, set_up_readable_byte_stream_controller_from_underlying_source,
+    ArrayBufferViewDescriptor, set_up_readable_byte_stream_controller,
+    set_up_readable_byte_stream_controller_from_underlying_source,
     with_readable_byte_stream_controller_ref, with_readable_stream_byob_request_ref,
 };
 pub(crate) use readablestreambyobreader::{
     acquire_readable_stream_byob_reader, construct_readable_stream_byob_reader,
-    with_readable_stream_byob_reader_ref,
+    readable_stream_byob_reader_release, with_readable_stream_byob_reader_ref,
 };
 pub(crate) use readablestreamdefaultreader::{
     ReadableStreamGenericReader, acquire_readable_stream_default_reader,
