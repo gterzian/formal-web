@@ -1,8 +1,9 @@
 mod chrome;
-pub mod ui_event;
+pub use webview::ui_event;
+pub use webview::set_runtime_hooks;
 
 use crate::chrome::{ChromeAction, ChromeUi, ChromeViewState};
-use anyrender::{PaintScene, Scene as RenderScene, WindowRenderer};
+use anyrender::{PaintScene, WindowRenderer};
 use anyrender_vello::VelloWindowRenderer;
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
@@ -11,15 +12,14 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ColorScheme, Viewport};
 use ipc_messages::content::{
-    BeforeUnloadResult, FontTransportReceiver, NavigateRequest, PaintFrame,
-    SceneSummary, ScrollOffset, WebviewId,
+    BeforeUnloadResult, NavigateRequest, PaintFrame, ScrollOffset, WebviewId,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Instant;
+use webview::{WebviewProvider, EmbedderApi};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalPosition};
 use winit::event::{
@@ -38,21 +38,12 @@ const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX: &str = "NewTopLevelTraversable|"
 const NAVIGATION_REQUESTED_MESSAGE_PREFIX: &str = "NavigationRequested|";
 const BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX: &str = "BeforeUnloadCompleted|";
 const FINALIZE_NAVIGATION_MESSAGE_PREFIX: &str = "FinalizeNavigation|";
-const DISPATCH_EVENT_MESSAGE_PREFIX: &str = "DispatchEvent|";
 
 #[derive(Clone, Default)]
 pub struct EventLoopOptions {
     pub headless: bool,
     pub startup_url: Option<String>,
     pub window_title: Option<String>,
-}
-
-#[derive(Clone, Copy)]
-pub struct RuntimeHooks {
-    pub handle_runtime_message: fn(&str),
-    pub start_navigation_parts: fn(usize, &str, &str, &str, bool) -> Result<(), String>,
-    pub abort_navigation_parts: fn(usize) -> Result<(), String>,
-    pub note_rendering_opportunity: fn(&str),
 }
 
 #[derive(Clone, Copy)]
@@ -66,27 +57,6 @@ pub struct FinalizeNavigation {
     pub url: String,
 }
 
-#[derive(Clone)]
-struct WebviewState {
-    scene: Option<RenderScene>,
-    viewport_scroll: ScrollOffset,
-    current_document_id: Option<u64>,
-}
-
-impl Default for WebviewState {
-    fn default() -> Self {
-        Self {
-            scene: None,
-            viewport_scroll: ScrollOffset { x: 0.0, y: 0.0 },
-            current_document_id: None,
-        }
-    }
-}
-
-pub trait EmbedderApi: Send + Sync {
-    fn request_redraw(&self, webview_id: WebviewId);
-}
-
 struct WinitEmbedderApi {
     proxy: EventLoopProxy<FormalWebUserEvent>,
 }
@@ -94,105 +64,6 @@ struct WinitEmbedderApi {
 impl EmbedderApi for WinitEmbedderApi {
     fn request_redraw(&self, webview_id: WebviewId) {
         let _ = self.proxy.send_event(FormalWebUserEvent::RequestRedraw(webview_id));
-    }
-}
-
-pub struct WebviewProvider {
-    webviews: HashMap<WebviewId, WebviewState>,
-    font_receiver: FontTransportReceiver,
-    embedder: Arc<dyn EmbedderApi>,
-}
-
-impl WebviewProvider {
-    pub fn new(embedder: Arc<dyn EmbedderApi>) -> Self {
-        Self {
-            webviews: HashMap::new(),
-            font_receiver: FontTransportReceiver::default(),
-            embedder,
-        }
-    }
-
-    pub fn start(&self, startup_url: Option<&str>) -> Result<(), String> {
-        let message = startup_runtime_message_for(startup_url)?;
-        call_lean_runtime_message_handler(&message);
-        Ok(())
-    }
-
-    pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
-        match webview_id {
-            Some(webview_id) => call_lean_navigation_start_parts(
-                webview_id.0 as usize,
-                url,
-                "",
-                "browser-ui",
-                false,
-            ),
-            None => {
-                let message = format!("FreshTopLevelTraversable|{url}");
-                call_lean_runtime_message_handler(&message);
-                Ok(())
-            }
-        }
-    }
-
-    pub fn send_ui_event(&self, _webview_id: WebviewId, event: UiEvent) -> Result<(), String> {
-        let event_message = ui_event::serialize_ui_event(&event)?;
-        let message = format!("{DISPATCH_EVENT_MESSAGE_PREFIX}{event_message}");
-        call_lean_runtime_message_handler(&message);
-        user_agent_note_rendering_opportunity("ui_event");
-        Ok(())
-    }
-
-    pub fn update_viewport(&self, width: u32, height: u32, scale: f32, color_scheme: ColorScheme) {
-        let snapshot = Some((width, height, scale, color_scheme));
-        update_window_viewport_snapshot(snapshot);
-        broadcast_content_viewport(snapshot);
-    }
-
-    pub fn on_paint_frame(&mut self, frame: PaintFrame) -> Result<(), String> {
-        let traversable_id = frame.traversable_id;
-        let document_id = frame.frame_id.0;
-        let viewport_scroll = frame.viewport_scroll.clone();
-        let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver)?;
-        if render_debug_enabled() {
-            log_embedder_scene("received", document_id, recorded_scene.summary());
-        }
-        let scene = recorded_scene.into_scene(&self.font_receiver);
-
-        let state = self.webviews.entry(traversable_id).or_default();
-        state.scene = Some(scene);
-        state.viewport_scroll = viewport_scroll;
-        state.current_document_id = Some(document_id);
-
-        self.embedder.request_redraw(traversable_id);
-        Ok(())
-    }
-
-    pub fn on_finalize_navigation(&mut self, webview_id: WebviewId, _url: &str) {
-        self.webviews.entry(webview_id).or_default();
-    }
-
-    pub fn on_new_top_level_traversable(&mut self, webview_id: WebviewId) {
-        self.webviews.entry(webview_id).or_default();
-    }
-
-    pub fn current_scene(&self, webview_id: WebviewId) -> Option<(&RenderScene, ScrollOffset)> {
-        let state = self.webviews.get(&webview_id)?;
-        let scene = state.scene.as_ref()?;
-        Some((scene, state.viewport_scroll.clone()))
-    }
-
-    pub fn current_document_id(&self, webview_id: WebviewId) -> Option<u64> {
-        self.webviews
-            .get(&webview_id)
-            .and_then(|state| state.current_document_id)
-    }
-
-    pub fn scroll_offset(&self, webview_id: WebviewId) -> ScrollOffset {
-        self.webviews
-            .get(&webview_id)
-            .map(|state| state.viewport_scroll.clone())
-            .unwrap_or(ScrollOffset { x: 0.0, y: 0.0 })
     }
 }
 
@@ -315,8 +186,6 @@ static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent
     LazyLock::new(|| Mutex::new(None));
 pub(crate) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
     LazyLock::new(|| Mutex::new(None));
-static RUNTIME_HOOKS: LazyLock<Mutex<Option<RuntimeHooks>>> =
-    LazyLock::new(|| Mutex::new(None));
 static CONTENT_BRIDGE_HOOKS: LazyLock<Mutex<Option<ContentBridgeHooks>>> =
     LazyLock::new(|| Mutex::new(None));
 static EVENT_LOOP_OPTIONS: LazyLock<Mutex<EventLoopOptions>> =
@@ -343,54 +212,11 @@ fn event_loop_options() -> EventLoopOptions {
         .clone()
 }
 
-pub fn set_runtime_hooks(hooks: RuntimeHooks) {
-    let mut guard = RUNTIME_HOOKS.lock().expect("runtime hooks mutex poisoned");
-    *guard = Some(hooks);
-}
-
 pub fn set_content_bridge_hooks(hooks: ContentBridgeHooks) {
     let mut guard = CONTENT_BRIDGE_HOOKS
         .lock()
         .expect("content bridge hooks mutex poisoned");
     *guard = Some(hooks);
-}
-
-fn runtime_hooks() -> Result<RuntimeHooks, String> {
-    RUNTIME_HOOKS
-        .lock()
-        .expect("runtime hooks mutex poisoned")
-        .as_ref()
-        .copied()
-        .ok_or_else(|| String::from("embedder runtime hooks are not initialized"))
-}
-
-fn call_lean_runtime_message_handler(message: &str) {
-    if let Ok(hooks) = runtime_hooks() {
-        (hooks.handle_runtime_message)(message);
-    }
-}
-
-pub(crate) fn call_lean_navigation_start_parts(
-    document_id: usize,
-    destination_url: &str,
-    target: &str,
-    user_involvement: &str,
-    noopener: bool,
-) -> Result<(), String> {
-    let hooks = runtime_hooks()?;
-    (hooks.start_navigation_parts)(
-        document_id,
-        destination_url,
-        target,
-        user_involvement,
-        noopener,
-    )
-}
-
-fn user_agent_note_rendering_opportunity(message: &str) {
-    if let Ok(hooks) = runtime_hooks() {
-        (hooks.note_rendering_opportunity)(message);
-    }
 }
 
 fn broadcast_content_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
@@ -586,23 +412,6 @@ fn theme_to_color_scheme(theme: winit::window::Theme) -> ColorScheme {
         winit::window::Theme::Light => ColorScheme::Light,
         winit::window::Theme::Dark => ColorScheme::Dark,
     }
-}
-
-fn render_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_RENDER").is_some()
-}
-
-fn log_embedder_scene(stage: &str, frame_id: u64, summary: SceneSummary) {
-    if !render_debug_enabled() {
-        return;
-    }
-
-    eprintln!(
-        "[render-debug][embedder] stage={} frame={} {}",
-        stage,
-        frame_id,
-        summary.describe(),
-    );
 }
 
 fn update_window_viewport_snapshot(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
@@ -876,7 +685,9 @@ impl FormalWebApp {
             return;
         }
         self.request_window_redraw();
-        user_agent_note_rendering_opportunity(reason);
+        if let Some(provider) = self.provider.as_ref() {
+            provider.note_rendering_opportunity(reason);
+        }
     }
 
     fn request_window_redraw(&self) {
@@ -901,17 +712,8 @@ impl FormalWebApp {
 
     fn update_content_viewport_snapshot(&self, window: &Window) {
         let viewport_snapshot = self.content_viewport_snapshot(window);
-        if let Some(provider) = self.provider.as_ref() {
-            provider.update_viewport(
-                viewport_snapshot.0,
-                viewport_snapshot.1,
-                viewport_snapshot.2,
-                viewport_snapshot.3,
-            );
-        } else {
-            update_window_viewport_snapshot(Some(viewport_snapshot));
-            broadcast_content_viewport(Some(viewport_snapshot));
-        }
+        update_window_viewport_snapshot(Some(viewport_snapshot));
+        broadcast_content_viewport(Some(viewport_snapshot));
     }
 
     fn current_chrome_view_state(&self) -> ChromeViewState {

@@ -1,10 +1,10 @@
 mod content_bridge;
 
-use embedder::RuntimeHooks;
 use ipc_messages::content::{Command as ContentCommand, DispatchEventEntry};
 use std::ffi::{CStr, c_char};
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
+use webview::RuntimeHooks;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -58,7 +58,6 @@ unsafe extern "C" {
     -> *mut lean_object;
     fn finalizeNavigation(document_id: usize, url: *mut lean_object) -> *mut lean_object;
     fn runNextEventLoopTask(event_loop_id: usize) -> *mut lean_object;
-    fn abortNavigation(document_id: usize) -> *mut lean_object;
     fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
     fn leanIoResultMkOkUnit() -> *mut lean_object;
     fn leanIoResultMkOkUsize(value: usize) -> *mut lean_object;
@@ -274,18 +273,6 @@ pub(crate) fn call_lean_run_next_event_loop_task(event_loop_id: usize) -> Result
     Ok(())
 }
 
-fn call_lean_abort_navigation_parts(document_id: usize) -> Result<(), String> {
-    let io_result = unsafe { abortNavigation(document_id) };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean navigation abort failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
 fn user_agent_note_rendering_opportunity(message: &str) {
     let lean_message = lean_string_from_owned(message.to_owned());
     let io_result = unsafe { userAgentNoteRenderingOpportunity(lean_message) };
@@ -300,7 +287,6 @@ fn runtime_hooks() -> RuntimeHooks {
     RuntimeHooks {
         handle_runtime_message: call_lean_runtime_message_handler,
         start_navigation_parts: call_lean_navigation_start_parts,
-        abort_navigation_parts: call_lean_abort_navigation_parts,
         note_rendering_opportunity: user_agent_note_rendering_opportunity,
     }
 }
