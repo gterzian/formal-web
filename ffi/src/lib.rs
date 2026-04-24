@@ -389,11 +389,16 @@ pub extern "C" fn contentProcessStop(handle: usize) -> *mut lean_object {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn contentProcessCreateEmptyDocument(handle: usize, document_id: usize) -> *mut lean_object {
+pub extern "C" fn contentProcessCreateEmptyDocument(
+    handle: usize,
+    traversable_id: usize,
+    document_id: usize,
+) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
         content_bridge::send_command(
             handle,
             ContentCommand::CreateEmptyDocument {
+                traversable_id: traversable_id as u64,
                 document_id: document_id as u64,
             },
         )
@@ -407,6 +412,7 @@ pub extern "C" fn contentProcessCreateEmptyDocument(handle: usize, document_id: 
 #[unsafe(no_mangle)]
 pub extern "C" fn contentProcessCreateLoadedDocument(
     handle: usize,
+    traversable_id: usize,
     document_id: usize,
     url: *mut lean_object,
     body: *mut lean_object,
@@ -419,6 +425,7 @@ pub extern "C" fn contentProcessCreateLoadedDocument(
         content_bridge::send_command(
             handle,
             ContentCommand::CreateLoadedDocument {
+                traversable_id: traversable_id as u64,
                 document_id: document_id as u64,
                 url,
                 body,
@@ -492,11 +499,16 @@ pub extern "C" fn contentProcessRunBeforeUnload(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn contentProcessUpdateTheRendering(handle: usize, document_id: usize) -> *mut lean_object {
+pub extern "C" fn contentProcessUpdateTheRendering(
+    handle: usize,
+    traversable_id: usize,
+    document_id: usize,
+) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
         content_bridge::send_command(
             handle,
             ContentCommand::UpdateTheRendering {
+                traversable_id: traversable_id as u64,
                 document_id: document_id as u64,
             },
         )

@@ -130,7 +130,7 @@ def completeBeforeUnloadFromRust
 
 @[export finalizeNavigation]
 def finalizeNavigationFromRust
-    (documentId : USize)
+  (documentId : USize)
     (url : String) :
     IO Unit := do
   enqueueUserAgentTaskMessage

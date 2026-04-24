@@ -52,10 +52,10 @@ inductive UserAgentEffect where
   | startEventLoop (eventLoopId : Nat)
   | startFetch (request : PendingFetchRequest)
   | eventLoopMessage (eventLoopId : Nat) (message : EventLoopTaskMessage)
-  | notifyTopLevelTraversableCreated
+  | notifyTopLevelTraversableCreated (webviewId : Nat)
   | notifyNavigationRequested (destinationURL : String)
   | notifyBeforeUnloadCompleted (documentId : Nat) (checkId : Nat) (canceled : Bool)
-  | notifyFinalizeNavigation (documentId : Nat) (url : String)
+  | notifyFinalizeNavigation (webviewId : Nat) (url : String)
   | logError (message : String)
 deriving Repr, DecidableEq
 
@@ -1734,7 +1734,7 @@ def createTopLevelTraversableM
   let (nextUserAgent, traversable) := createNewTopLevelTraversable userAgent none targetName
   set nextUserAgent
   let finish : M TopLevelTraversable := do
-    tell #[.notifyTopLevelTraversableCreated]
+    tell #[.notifyTopLevelTraversableCreated traversable.id]
     pure traversable
   let some document := traversable.toTraversableNavigable.activeDocument | do
     tell #[.logError
@@ -1747,7 +1747,7 @@ def createTopLevelTraversableM
     finish
   tell #[.eventLoopMessage
     document.eventLoopId
-    (.createEmptyDocument document.documentId)]
+    (.createEmptyDocument traversable.id document.documentId)]
   finish
 
 def navigateM
@@ -1913,7 +1913,7 @@ def continueNavigationAfterBeforeUnloadM
       pure ()
 
 def chooseTargetTraversableM
-    (sourceDocumentId : Nat)
+    (sourceId : Nat)
     (targetName : String)
     (noopener : Bool) :
     M TopLevelTraversable := do
@@ -1923,11 +1923,15 @@ def chooseTargetTraversableM
   else
     let userAgent ← get
     if normalizedTargetName.isEmpty then
-      match traversableContainingDocument? userAgent sourceDocumentId with
+      match traversable? userAgent sourceId with
       | some traversable =>
           pure traversable
       | none =>
-          createTopLevelTraversableM
+        match traversableContainingDocument? userAgent sourceId with
+        | some traversable =>
+            pure traversable
+        | none =>
+            createTopLevelTraversableM
     else
       match traversableWithTargetName? userAgent normalizedTargetName with
       | some traversable =>
@@ -2056,9 +2060,12 @@ def handleFetchCompletedM
       if nextUserAgent.eventLoop? document.eventLoopId |>.isSome then
         let eventLoopMessage :=
           if document.url = "about:blank" then
-            EventLoopTaskMessage.createEmptyDocument document.documentId
+            EventLoopTaskMessage.createEmptyDocument
+              pendingNavigationFinalization.traversableId
+              document.documentId
           else
             EventLoopTaskMessage.createLoadedDocument
+              pendingNavigationFinalization.traversableId
               document.documentId
               navigationResponse.url
               navigationResponse.body
@@ -2127,7 +2134,7 @@ def finalizeNavigationM
           let (userAgent, renderingDispatch?) :=
             queueUpdateTheRendering userAgent pendingNavigationFinalization.traversableId
           set userAgent
-          tell #[.notifyFinalizeNavigation documentId url]
+          tell #[.notifyFinalizeNavigation pendingNavigationFinalization.traversableId url]
           match staleDocumentDispatch? with
           | some (eventLoopId, eventLoopMessage) =>
               tell #[UserAgentEffect.eventLoopMessage eventLoopId eventLoopMessage]
@@ -2233,8 +2240,8 @@ private def performUserAgentEffect
   | .eventLoopMessage eventLoopId eventLoopMessage =>
       dispatchEventLoopMessage state eventLoopId eventLoopMessage
       pure state
-  | .notifyTopLevelTraversableCreated =>
-      FormalWeb.sendEmbedderMessage "NewTopLevelTraversable"
+    | .notifyTopLevelTraversableCreated webviewId =>
+      FormalWeb.sendEmbedderMessage s!"NewTopLevelTraversable|{webviewId}"
       pure state
   | .notifyNavigationRequested destinationURL =>
       FormalWeb.sendEmbedderMessage s!"NavigationRequested|{destinationURL}"
@@ -2243,8 +2250,8 @@ private def performUserAgentEffect
       FormalWeb.sendEmbedderMessage
         s!"BeforeUnloadCompleted|{documentId}|{checkId}|{if canceled then "1" else "0"}"
       pure state
-  | .notifyFinalizeNavigation documentId url =>
-      FormalWeb.sendEmbedderMessage s!"FinalizeNavigation|{documentId}|{url}"
+    | .notifyFinalizeNavigation webviewId url =>
+      FormalWeb.sendEmbedderMessage s!"FinalizeNavigation|{webviewId}|{url}"
       pure state
   | .logError errorMessage =>
       IO.eprintln errorMessage

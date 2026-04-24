@@ -11,11 +11,12 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ColorScheme, Viewport};
 use ipc_messages::content::{
-    BeforeUnloadResult, FinalizeNavigation, FontTransportReceiver, NavigateRequest, PaintFrame,
-    SceneSummary, ScrollOffset,
+    BeforeUnloadResult, FontTransportReceiver, NavigateRequest, PaintFrame,
+    SceneSummary, ScrollOffset, WebviewId,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Instant;
@@ -33,7 +34,7 @@ use winit::keyboard::{
 use winit::window::{Window, WindowAttributes, WindowId};
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
-const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE: &str = "NewTopLevelTraversable";
+const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX: &str = "NewTopLevelTraversable|";
 const NAVIGATION_REQUESTED_MESSAGE_PREFIX: &str = "NavigationRequested|";
 const BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX: &str = "BeforeUnloadCompleted|";
 const FINALIZE_NAVIGATION_MESSAGE_PREFIX: &str = "FinalizeNavigation|";
@@ -59,20 +60,149 @@ pub struct ContentBridgeHooks {
     pub broadcast_viewport: fn(Option<(u32, u32, f32, ColorScheme)>),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FinalizeNavigation {
+    pub webview_id: WebviewId,
+    pub url: String,
+}
+
 #[derive(Clone)]
-struct EmbedderPaintFrame {
-    document_id: u64,
-    scene: RenderScene,
-    debug_summary: Option<SceneSummary>,
+struct WebviewState {
+    scene: Option<RenderScene>,
     viewport_scroll: ScrollOffset,
+    current_document_id: Option<u64>,
+}
+
+impl Default for WebviewState {
+    fn default() -> Self {
+        Self {
+            scene: None,
+            viewport_scroll: ScrollOffset { x: 0.0, y: 0.0 },
+            current_document_id: None,
+        }
+    }
+}
+
+pub trait EmbedderApi: Send + Sync {
+    fn request_redraw(&self, webview_id: WebviewId);
+}
+
+struct WinitEmbedderApi {
+    proxy: EventLoopProxy<FormalWebUserEvent>,
+}
+
+impl EmbedderApi for WinitEmbedderApi {
+    fn request_redraw(&self, webview_id: WebviewId) {
+        let _ = self.proxy.send_event(FormalWebUserEvent::RequestRedraw(webview_id));
+    }
+}
+
+pub struct WebviewProvider {
+    webviews: HashMap<WebviewId, WebviewState>,
+    font_receiver: FontTransportReceiver,
+    embedder: Arc<dyn EmbedderApi>,
+}
+
+impl WebviewProvider {
+    pub fn new(embedder: Arc<dyn EmbedderApi>) -> Self {
+        Self {
+            webviews: HashMap::new(),
+            font_receiver: FontTransportReceiver::default(),
+            embedder,
+        }
+    }
+
+    pub fn start(&self, startup_url: Option<&str>) -> Result<(), String> {
+        let message = startup_runtime_message_for(startup_url)?;
+        call_lean_runtime_message_handler(&message);
+        Ok(())
+    }
+
+    pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
+        match webview_id {
+            Some(webview_id) => call_lean_navigation_start_parts(
+                webview_id.0 as usize,
+                url,
+                "",
+                "browser-ui",
+                false,
+            ),
+            None => {
+                let message = format!("FreshTopLevelTraversable|{url}");
+                call_lean_runtime_message_handler(&message);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn send_ui_event(&self, _webview_id: WebviewId, event: UiEvent) -> Result<(), String> {
+        let event_message = ui_event::serialize_ui_event(&event)?;
+        let message = format!("{DISPATCH_EVENT_MESSAGE_PREFIX}{event_message}");
+        call_lean_runtime_message_handler(&message);
+        user_agent_note_rendering_opportunity("ui_event");
+        Ok(())
+    }
+
+    pub fn update_viewport(&self, width: u32, height: u32, scale: f32, color_scheme: ColorScheme) {
+        let snapshot = Some((width, height, scale, color_scheme));
+        update_window_viewport_snapshot(snapshot);
+        broadcast_content_viewport(snapshot);
+    }
+
+    pub fn on_paint_frame(&mut self, frame: PaintFrame) -> Result<(), String> {
+        let traversable_id = frame.traversable_id;
+        let document_id = frame.frame_id.0;
+        let viewport_scroll = frame.viewport_scroll.clone();
+        let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver)?;
+        if render_debug_enabled() {
+            log_embedder_scene("received", document_id, recorded_scene.summary());
+        }
+        let scene = recorded_scene.into_scene(&self.font_receiver);
+
+        let state = self.webviews.entry(traversable_id).or_default();
+        state.scene = Some(scene);
+        state.viewport_scroll = viewport_scroll;
+        state.current_document_id = Some(document_id);
+
+        self.embedder.request_redraw(traversable_id);
+        Ok(())
+    }
+
+    pub fn on_finalize_navigation(&mut self, webview_id: WebviewId, _url: &str) {
+        self.webviews.entry(webview_id).or_default();
+    }
+
+    pub fn on_new_top_level_traversable(&mut self, webview_id: WebviewId) {
+        self.webviews.entry(webview_id).or_default();
+    }
+
+    pub fn current_scene(&self, webview_id: WebviewId) -> Option<(&RenderScene, ScrollOffset)> {
+        let state = self.webviews.get(&webview_id)?;
+        let scene = state.scene.as_ref()?;
+        Some((scene, state.viewport_scroll.clone()))
+    }
+
+    pub fn current_document_id(&self, webview_id: WebviewId) -> Option<u64> {
+        self.webviews
+            .get(&webview_id)
+            .and_then(|state| state.current_document_id)
+    }
+
+    pub fn scroll_offset(&self, webview_id: WebviewId) -> ScrollOffset {
+        self.webviews
+            .get(&webview_id)
+            .map(|state| state.viewport_scroll.clone())
+            .unwrap_or(ScrollOffset { x: 0.0, y: 0.0 })
+    }
 }
 
 pub enum FormalWebUserEvent {
     Paint(PaintFrame),
+    RequestRedraw(WebviewId),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
-    NewTopLevelTraversable,
+    NewTopLevelTraversable(WebviewId),
     Automation(AutomationCommand),
     Exit,
 }
@@ -134,9 +264,8 @@ impl BrowserState {
         self.pending_navigation = None;
     }
 
-    fn commit_navigation(&mut self, document_id: u64, url: String) {
+    fn commit_navigation(&mut self, url: String) {
         self.pending_navigation.take();
-        self.current_document_id = Some(document_id);
 
         if let Some(index) = self.history_index {
             if self.history.get(index).is_some_and(|current| current == &url) {
@@ -160,6 +289,10 @@ impl BrowserState {
             has_top_level_traversable,
         }
     }
+
+    fn set_current_document_id(&mut self, document_id: Option<u64>) {
+        self.current_document_id = document_id;
+    }
 }
 
 struct FormalWebApp {
@@ -167,8 +300,8 @@ struct FormalWebApp {
     renderer: VelloWindowRenderer,
     chrome: Option<ChromeUi>,
     browser: BrowserState,
-    current_paint_frame: Option<EmbedderPaintFrame>,
-    font_receiver: FontTransportReceiver,
+    provider: Option<WebviewProvider>,
+    current_webview_id: Option<WebviewId>,
     has_top_level_traversable: bool,
     window_occluded: bool,
     animation_timer: Option<Instant>,
@@ -357,9 +490,9 @@ pub fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
         .copied()
 }
 
-fn startup_runtime_message() -> Result<String, String> {
-    let startup_url = match event_loop_options().startup_url {
-        Some(url) => url,
+fn startup_runtime_message_for(startup_url: Option<&str>) -> Result<String, String> {
+    let startup_url = match startup_url {
+        Some(url) => url.to_owned(),
         None => startup_artifact_url()?,
     };
     Ok(format!("FreshTopLevelTraversable|{startup_url}"))
@@ -387,8 +520,12 @@ fn normalize_browser_destination(input: &str) -> Option<String> {
 }
 
 fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
-    if message == NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE {
-        return Ok(FormalWebUserEvent::NewTopLevelTraversable);
+    if let Some(id_str) = message.strip_prefix(NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX) {
+        let webview_id = id_str
+            .parse::<u64>()
+            .map(WebviewId)
+            .map_err(|error| format!("invalid webview id: {error}"))?;
+        return Ok(FormalWebUserEvent::NewTopLevelTraversable(webview_id));
     }
 
     if let Some(destination_url) = message.strip_prefix(NAVIGATION_REQUESTED_MESSAGE_PREFIX) {
@@ -420,13 +557,14 @@ fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, St
     }
 
     if let Some(payload) = message.strip_prefix(FINALIZE_NAVIGATION_MESSAGE_PREFIX) {
-        let Some((document_id, url)) = payload.split_once('|') else {
+        let Some((webview_id, url)) = payload.split_once('|') else {
             return Err(format!("invalid finalize-navigation runtime message: {message}"));
         };
         return Ok(FormalWebUserEvent::FinalizeNavigation(FinalizeNavigation {
-            document_id: document_id
+            webview_id: webview_id
                 .parse()
-                .map_err(|error| format!("invalid finalize-navigation document id: {error}"))?,
+                .map(WebviewId)
+                .map_err(|error| format!("invalid finalize-navigation webview id: {error}"))?,
             url: url.to_owned(),
         }));
     }
@@ -454,17 +592,24 @@ fn render_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_RENDER").is_some()
 }
 
-fn log_embedder_scene(stage: &str, document_id: u64, summary: SceneSummary) {
+fn log_embedder_scene(stage: &str, frame_id: u64, summary: SceneSummary) {
     if !render_debug_enabled() {
         return;
     }
 
     eprintln!(
-        "[render-debug][embedder] stage={} doc={} {}",
+        "[render-debug][embedder] stage={} frame={} {}",
         stage,
-        document_id,
+        frame_id,
         summary.describe(),
     );
+}
+
+fn update_window_viewport_snapshot(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
+    let mut guard = WINDOW_VIEWPORT_SNAPSHOT
+        .lock()
+        .expect("window viewport snapshot mutex poisoned");
+    *guard = snapshot;
 }
 
 fn viewport_snapshot_for_window(window: &Window) -> (u32, u32, f32, ColorScheme) {
@@ -649,8 +794,8 @@ impl Default for FormalWebApp {
             renderer: VelloWindowRenderer::new(),
             chrome: None,
             browser: BrowserState::default(),
-            current_paint_frame: None,
-            font_receiver: FontTransportReceiver::default(),
+            provider: None,
+            current_webview_id: None,
             has_top_level_traversable: false,
             window_occluded: false,
             animation_timer: None,
@@ -744,19 +889,6 @@ impl FormalWebApp {
         window.request_redraw();
     }
 
-    fn paint_frame(&mut self, snapshot: PaintFrame) -> Result<EmbedderPaintFrame, String> {
-        let document_id = snapshot.document_id;
-        let viewport_scroll = snapshot.viewport_scroll.clone();
-        let scene = snapshot.into_recorded_scene(&mut self.font_receiver)?;
-        let debug_summary = render_debug_enabled().then(|| scene.summary());
-        Ok(EmbedderPaintFrame {
-            document_id,
-            scene: scene.into_scene(&self.font_receiver),
-            debug_summary,
-            viewport_scroll,
-        })
-    }
-
     fn content_viewport_snapshot(&self, window: &Window) -> (u32, u32, f32, ColorScheme) {
         let (width, height, scale, color_scheme) = viewport_snapshot_for_window(window);
         (
@@ -769,11 +901,17 @@ impl FormalWebApp {
 
     fn update_content_viewport_snapshot(&self, window: &Window) {
         let viewport_snapshot = self.content_viewport_snapshot(window);
-        let mut snapshot = WINDOW_VIEWPORT_SNAPSHOT
-            .lock()
-            .expect("window viewport snapshot mutex poisoned");
-        *snapshot = Some(viewport_snapshot);
-        broadcast_content_viewport(Some(viewport_snapshot));
+        if let Some(provider) = self.provider.as_ref() {
+            provider.update_viewport(
+                viewport_snapshot.0,
+                viewport_snapshot.1,
+                viewport_snapshot.2,
+                viewport_snapshot.3,
+            );
+        } else {
+            update_window_viewport_snapshot(Some(viewport_snapshot));
+            broadcast_content_viewport(Some(viewport_snapshot));
+        }
     }
 
     fn current_chrome_view_state(&self) -> ChromeViewState {
@@ -839,12 +977,12 @@ impl FormalWebApp {
         };
         let chrome_height = f64::from(self.chrome_height_physical());
         let chrome_scene = self.chrome.as_mut().map(ChromeUi::paint_scene);
-        let content_scene = self.current_paint_frame.as_ref().map(|current_paint_frame| {
-            if let Some(summary) = current_paint_frame.debug_summary {
-                log_embedder_scene("render", current_paint_frame.document_id, summary);
-            }
-            current_paint_frame.scene.clone()
-        });
+        let content_scene = self
+            .provider
+            .as_ref()
+            .zip(self.current_webview_id)
+            .and_then(|(provider, webview_id)| provider.current_scene(webview_id))
+            .map(|(scene, _scroll)| scene.clone());
 
         if chrome_scene.is_none() && content_scene.is_none() {
             return;
@@ -894,26 +1032,19 @@ impl FormalWebApp {
         let LogicalPosition::<f32> { x: screen_x, y: screen_y } = self.logical_position(position);
         let client_x = screen_x;
         let client_y = screen_y - self.chrome_height_css();
-        if let Some(current_paint_frame) = self.current_paint_frame.as_ref() {
-            let page_x = client_x + current_paint_frame.viewport_scroll.x;
-            let page_y = client_y + current_paint_frame.viewport_scroll.y;
-            PointerCoords {
-                screen_x,
-                screen_y,
-                client_x,
-                client_y,
-                page_x,
-                page_y,
-            }
-        } else {
-            PointerCoords {
-                screen_x,
-                screen_y,
-                client_x: screen_x,
-                client_y: screen_y,
-                page_x: screen_x,
-                page_y: screen_y,
-            }
+        let scroll = self
+            .provider
+            .as_ref()
+            .zip(self.current_webview_id)
+            .map(|(provider, webview_id)| provider.scroll_offset(webview_id))
+            .unwrap_or(ScrollOffset { x: 0.0, y: 0.0 });
+        PointerCoords {
+            screen_x,
+            screen_y,
+            client_x,
+            client_y,
+            page_x: client_x + scroll.x,
+            page_y: client_y + scroll.y,
         }
     }
 
@@ -922,13 +1053,15 @@ impl FormalWebApp {
             return;
         }
 
-        let Ok(event_message) = ui_event::serialize_ui_event(&event) else {
+        let Some(provider) = self.provider.as_ref() else {
             return;
         };
-        let message = format!("{DISPATCH_EVENT_MESSAGE_PREFIX}{event_message}");
-        call_lean_runtime_message_handler(&message);
-        user_agent_note_rendering_opportunity("ui_event");
-        self.request_window_redraw();
+        let Some(webview_id) = self.current_webview_id else {
+            return;
+        };
+        if provider.send_ui_event(webview_id, event).is_ok() {
+            self.request_window_redraw();
+        }
     }
 
     fn handle_chrome_ui_event(&mut self, event: UiEvent) {
@@ -947,20 +1080,11 @@ impl FormalWebApp {
     }
 
     fn start_navigation_request(&self, destination_url: &str) -> Result<(), String> {
-        match self.browser.current_document_id {
-            Some(document_id) => call_lean_navigation_start_parts(
-                document_id as usize,
-                destination_url,
-                "",
-                "browser-ui",
-                false,
-            ),
-            None => {
-                let message = format!("FreshTopLevelTraversable|{destination_url}");
-                call_lean_runtime_message_handler(&message);
-                Ok(())
-            }
-        }
+        let provider = self
+            .provider
+            .as_ref()
+            .ok_or_else(|| String::from("webview provider is not initialized"))?;
+        provider.navigate(self.current_webview_id, destination_url)
     }
 
     fn begin_navigation(&mut self, pending_navigation: PendingNavigation) -> Result<(), String> {
@@ -1010,17 +1134,20 @@ impl FormalWebApp {
         }
     }
 
-    fn handle_finalize_navigation(&mut self, finalized: FinalizeNavigation) {
-        if let Some(pending_navigation) = self.browser.pending_navigation.as_ref() {
-            if pending_navigation.url != finalized.url.as_str() {
-                return;
-            }
-        }
-        self.browser
-            .commit_navigation(finalized.document_id, finalized.url);
-        self.sync_chrome_state();
-        self.request_window_redraw();
+    fn sync_browser_document_id_from_provider(&mut self) {
+        let document_id = self
+            .provider
+            .as_ref()
+            .zip(self.current_webview_id)
+            .and_then(|(provider, webview_id)| provider.current_document_id(webview_id));
+        self.browser.set_current_document_id(document_id);
+    }
 
+    fn complete_pending_automation_navigation_if_ready(&mut self) {
+        self.sync_browser_document_id_from_provider();
+        if self.browser.current_document_id.is_none() {
+            return;
+        }
         if let Some(pending_navigation) = self.pending_automation_navigation.take() {
             let _ = pending_navigation
                 .reply
@@ -1028,9 +1155,26 @@ impl FormalWebApp {
         }
     }
 
+    fn handle_finalize_navigation(&mut self, finalized: FinalizeNavigation) {
+        if let Some(pending_navigation) = self.browser.pending_navigation.as_ref() {
+            if pending_navigation.url != finalized.url.as_str() {
+                return;
+            }
+        }
+        self.current_webview_id = Some(finalized.webview_id);
+        if let Some(provider) = self.provider.as_mut() {
+            provider.on_finalize_navigation(finalized.webview_id, &finalized.url);
+        }
+        self.browser.commit_navigation(finalized.url);
+        self.sync_chrome_state();
+        self.request_window_redraw();
+        self.complete_pending_automation_navigation_if_ready();
+    }
+
     fn handle_automation_command(&mut self, command: AutomationCommand) {
         match command {
             AutomationCommand::Snapshot { reply } => {
+                self.sync_browser_document_id_from_provider();
                 let _ = reply.send(Ok(self.browser.automation_snapshot(self.has_top_level_traversable)));
             }
             AutomationCommand::Navigate { url, reply } => {
@@ -1068,11 +1212,18 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         }
                     };
                     self.chrome = Some(chrome);
+                    let Some(proxy) = with_event_loop_proxy(Clone::clone) else {
+                        event_loop.exit();
+                        return;
+                    };
+                    let embedder: Arc<dyn EmbedderApi> = Arc::new(WinitEmbedderApi { proxy });
+                    self.provider = Some(WebviewProvider::new(embedder));
                     self.window = Some(window.clone());
                     self.sync_chrome_state();
                     self.update_content_viewport_snapshot(&window);
                     self.resume_renderer_for_window(&window);
-                    match startup_runtime_message() {
+                    let startup_url = event_loop_options().startup_url;
+                    match startup_runtime_message_for(startup_url.as_deref()) {
                         Ok(message) => {
                             if let Some(destination_url) =
                                 message.strip_prefix("FreshTopLevelTraversable|")
@@ -1082,7 +1233,11 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                                 });
                                 self.sync_chrome_state();
                             }
-                            call_lean_runtime_message_handler(&message)
+                            if let Some(provider) = self.provider.as_ref() {
+                                if provider.start(startup_url.as_deref()).is_err() {
+                                    event_loop.exit();
+                                }
+                            }
                         }
                         Err(_error) => event_loop.exit(),
                     }
@@ -1103,7 +1258,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
 
         match event {
             WindowEvent::RedrawRequested => {
-                if self.current_paint_frame.is_some() || self.chrome.is_some() {
+                if self.provider.is_some() || self.chrome.is_some() {
                     self.paint_current_frame();
                 }
             }
@@ -1137,12 +1292,11 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 self.animation_timer = None;
                 self.chrome = None;
                 self.browser = BrowserState::default();
-                self.current_paint_frame = None;
+                self.provider = None;
+                self.current_webview_id = None;
                 self.has_top_level_traversable = false;
                 self.window_occluded = false;
-                if let Ok(mut snapshot) = WINDOW_VIEWPORT_SNAPSHOT.lock() {
-                    *snapshot = None;
-                }
+                update_window_viewport_snapshot(None);
                 broadcast_content_viewport(None);
                 self.window = None;
                 event_loop.exit();
@@ -1326,15 +1480,20 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
             FormalWebUserEvent::Paint(snapshot) => {
-                let Ok(paint_frame) = self.paint_frame(snapshot) else {
+                let Some(provider) = self.provider.as_mut() else {
                     return;
                 };
-                if let Some(summary) = paint_frame.debug_summary {
-                    log_embedder_scene("received", paint_frame.document_id, summary);
+                match provider.on_paint_frame(snapshot) {
+                    Ok(()) => {
+                    self.complete_pending_automation_navigation_if_ready();
+                    }
+                    Err(error) => {
+                        eprintln!("paint error: {error}");
+                    }
                 }
-                self.browser.current_document_id = Some(paint_frame.document_id);
-                self.current_paint_frame = Some(paint_frame);
-                if self.has_visible_viewport() {
+            }
+            FormalWebUserEvent::RequestRedraw(webview_id) => {
+                if self.current_webview_id == Some(webview_id) {
                     self.request_window_redraw();
                 }
             }
@@ -1347,8 +1506,12 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             FormalWebUserEvent::FinalizeNavigation(finalized) => {
                 self.handle_finalize_navigation(finalized);
             }
-            FormalWebUserEvent::NewTopLevelTraversable => {
+            FormalWebUserEvent::NewTopLevelTraversable(webview_id) => {
                 self.has_top_level_traversable = true;
+                self.current_webview_id = Some(webview_id);
+                if let Some(provider) = self.provider.as_mut() {
+                    provider.on_new_top_level_traversable(webview_id);
+                }
                 self.request_visible_redraw("request_redraw");
             }
             FormalWebUserEvent::Automation(command) => {

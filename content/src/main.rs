@@ -28,8 +28,9 @@ use ipc_messages::content::Command::{
 };
 use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    Event as ContentEvent, FetchRequest as ContentFetchRequest, FontTransportSender, PaintFrame,
-    RecordedScene, ScriptEvaluationResult, ScrollOffset, ViewportSnapshot,
+    Event as ContentEvent, FetchRequest as ContentFetchRequest, FontTransportSender, FrameId,
+    PaintFrame, RecordedScene, ScriptEvaluationResult, ScrollOffset, ViewportSnapshot,
+    WebviewId,
 };
 use std::{
     cell::RefCell,
@@ -212,6 +213,7 @@ impl NetProvider for ContentNetProvider {
 }
 
 struct ContentDocument {
+    traversable_id: u64,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
     pending_update_the_rendering: bool,
@@ -446,7 +448,7 @@ impl ContentRuntime {
 
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
-    fn create_empty_document(&mut self, document_id: u64) -> Result<(), String> {
+    fn create_empty_document(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
         let document = Rc::new(RefCell::new(BaseDocument::new(
             self.document_config(document_id, None),
         )));
@@ -478,6 +480,7 @@ impl ContentRuntime {
         self.documents.insert(
             document_id,
             ContentDocument {
+                traversable_id,
                 document,
                 settings,
                 pending_update_the_rendering: false,
@@ -491,6 +494,7 @@ impl ContentRuntime {
     /// Note: This continues the HTML document loading algorithm through the end-of-document load steps and into `completely finish loading`.
     fn create_loaded_document(
         &mut self,
+        traversable_id: u64,
         document_id: u64,
         url: String,
         body: String,
@@ -523,6 +527,7 @@ impl ContentRuntime {
         self.documents.insert(
             document_id,
             ContentDocument {
+                traversable_id,
                 document: Rc::clone(&document),
                 settings,
                 pending_update_the_rendering: false,
@@ -638,18 +643,22 @@ impl ContentRuntime {
             .map_err(|error| format!("failed to send beforeunload completion: {error}"))
     }
 
-    fn update_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
+    fn update_the_rendering(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
         let document = self
             .documents
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document id: {document_id}"))?;
         document.pending_update_the_rendering = true;
-        self.continue_updating_the_rendering(document_id)
+        self.continue_updating_the_rendering(traversable_id, document_id)
     }
 
     /// <https://html.spec.whatwg.org/#update-the-rendering>
     /// Note: Lean queues this rendering task via `FormalWeb.UserAgent.queueUpdateTheRendering` and `FormalWeb.EventLoop.runEventLoopMessage`, and the content runtime continues the noted rendering opportunity once critical fetches finish.
-    fn continue_updating_the_rendering(&mut self, document_id: u64) -> Result<(), String> {
+    fn continue_updating_the_rendering(
+        &mut self,
+        traversable_id: u64,
+        document_id: u64,
+    ) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
         let paint_frame = {
             let document = self
@@ -704,7 +713,8 @@ impl ContentRuntime {
                 log_paint_debug(document_id, &document_guard, &scene.scene);
                 let viewport_scroll = document_guard.viewport_scroll();
                 PaintFrame::new(
-                    document_id,
+                    WebviewId(traversable_id),
+                    FrameId(document_id),
                     ScrollOffset {
                         x: viewport_scroll.x as f32,
                         y: viewport_scroll.y as f32,
@@ -747,10 +757,13 @@ impl ContentRuntime {
                 handler,
             } => {
                 handler.bytes(resolved_url, Bytes::copy_from_slice(&body));
-                if self.documents.contains_key(&document_id) {
-                    self.continue_document_load(document_id)?;
-                    self.continue_updating_the_rendering(document_id)?;
-                }
+                let Some(content_document) = self.documents.get(&document_id) else {
+                    eprintln!("[content] complete_document_fetch: document {document_id} not found");
+                    return Ok(());
+                };
+                let traversable_id = content_document.traversable_id;
+                self.continue_document_load(document_id)?;
+                self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
             }
             PendingNetworkHandler::DeferredScript {
@@ -759,10 +772,13 @@ impl ContentRuntime {
             } => {
                 let _ = resolved_url;
                 self.complete_deferred_script_fetch(document_id, script_index, body);
-                if self.documents.contains_key(&document_id) {
-                    self.continue_document_load(document_id)?;
-                    self.continue_updating_the_rendering(document_id)?;
-                }
+                let Some(content_document) = self.documents.get(&document_id) else {
+                    eprintln!("[content] complete_document_fetch (deferred script): document {document_id} not found");
+                    return Ok(());
+                };
+                let traversable_id = content_document.traversable_id;
+                self.continue_document_load(document_id)?;
+                self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
             }
         }
@@ -788,10 +804,13 @@ impl ContentRuntime {
                 handler,
             } => {
                 handler.bytes(request_url, Bytes::new());
-                if self.documents.contains_key(&document_id) {
-                    self.continue_document_load(document_id)?;
-                    self.continue_updating_the_rendering(document_id)?;
-                }
+                let Some(content_document) = self.documents.get(&document_id) else {
+                    eprintln!("[content] fail_document_fetch: document {document_id} not found");
+                    return Ok(());
+                };
+                let traversable_id = content_document.traversable_id;
+                self.continue_document_load(document_id)?;
+                self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
             }
             PendingNetworkHandler::DeferredScript {
@@ -799,10 +818,13 @@ impl ContentRuntime {
                 script_index,
             } => {
                 self.mark_deferred_script_failed(document_id, script_index);
-                if self.documents.contains_key(&document_id) {
-                    self.continue_document_load(document_id)?;
-                    self.continue_updating_the_rendering(document_id)?;
-                }
+                let Some(content_document) = self.documents.get(&document_id) else {
+                    eprintln!("[content] fail_document_fetch (deferred script): document {document_id} not found");
+                    return Ok(());
+                };
+                let traversable_id = content_document.traversable_id;
+                self.continue_document_load(document_id)?;
+                self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
             }
         }
@@ -844,16 +866,20 @@ impl ContentRuntime {
                 self.set_viewport(viewport);
                 Ok(true)
             }
-            CreateEmptyDocument { document_id } => {
-                self.create_empty_document(document_id)?;
+            CreateEmptyDocument {
+                traversable_id,
+                document_id,
+            } => {
+                self.create_empty_document(traversable_id, document_id)?;
                 Ok(true)
             }
             CreateLoadedDocument {
+                traversable_id,
                 document_id,
                 url,
                 body,
             } => {
-                self.create_loaded_document(document_id, url, body)?;
+                self.create_loaded_document(traversable_id, document_id, url, body)?;
                 Ok(true)
             }
             DestroyDocument { document_id } => {
@@ -889,8 +915,11 @@ impl ContentRuntime {
                 self.run_before_unload(document_id, check_id)?;
                 Ok(true)
             }
-            UpdateTheRendering { document_id } => {
-                self.update_the_rendering(document_id)?;
+            UpdateTheRendering {
+                traversable_id,
+                document_id,
+            } => {
+                self.update_the_rendering(traversable_id, document_id)?;
                 Ok(true)
             }
             RunWindowTimer {

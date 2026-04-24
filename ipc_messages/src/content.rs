@@ -64,6 +64,12 @@ pub struct FinalizeNavigation {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct WebviewId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FrameId(pub u64);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptEvaluationResult {
     pub request_id: u64,
@@ -401,7 +407,8 @@ fn deserialize_scene_from_shared_memory(scene_bytes: &IpcSharedMemory) -> Result
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaintFrame {
-    pub document_id: u64,
+    pub traversable_id: WebviewId,
+    pub frame_id: FrameId,
     pub viewport_scroll: ScrollOffset,
     font_registrations: Vec<RegisteredFont>,
     scene_bytes: IpcSharedMemory,
@@ -416,7 +423,8 @@ pub struct PaintTransportSummary {
 
 impl PaintFrame {
     pub fn new(
-        document_id: u64,
+        traversable_id: WebviewId,
+        frame_id: FrameId,
         viewport_scroll: ScrollOffset,
         scene: PreparedScene,
     ) -> Result<Self, String> {
@@ -425,7 +433,8 @@ impl PaintFrame {
             registered_fonts,
         } = scene;
         Ok(Self {
-            document_id,
+            traversable_id,
+            frame_id,
             viewport_scroll,
             font_registrations: registered_fonts,
             scene_bytes: serialize_scene_to_shared_memory(&scene)?,
@@ -457,8 +466,12 @@ impl PaintFrame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetViewport(ViewportSnapshot),
-    CreateEmptyDocument { document_id: u64 },
+    CreateEmptyDocument {
+        traversable_id: u64,
+        document_id: u64,
+    },
     CreateLoadedDocument {
+        traversable_id: u64,
         document_id: u64,
         url: String,
         body: String,
@@ -476,7 +489,10 @@ pub enum Command {
         document_id: u64,
         check_id: u64,
     },
-    UpdateTheRendering { document_id: u64 },
+    UpdateTheRendering {
+        traversable_id: u64,
+        document_id: u64,
+    },
     RunWindowTimer {
         document_id: u64,
         timer_id: u32,
@@ -511,8 +527,8 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::{
-        FontTransportReceiver, FontTransportSender, PaintFrame, PaintTransportSummary,
-        SceneSummary, ScrollOffset,
+        FontTransportReceiver, FontTransportSender, FrameId, PaintFrame,
+        PaintTransportSummary, SceneSummary, ScrollOffset, WebviewId,
     };
     use anyrender::{
         Glyph, PaintScene, Scene,
@@ -627,7 +643,8 @@ mod tests {
         let prepared = sender.prepare_scene(23, scene);
         let expected_recorded = prepared.scene.clone();
         let paint_frame = PaintFrame::new(
-            7,
+            WebviewId(7),
+            FrameId(7),
             ScrollOffset { x: 10.0, y: 20.0 },
             prepared,
         )
@@ -648,7 +665,8 @@ mod tests {
         let mut receiver = FontTransportReceiver::default();
 
         let first_frame = PaintFrame::new(
-            7,
+            WebviewId(7),
+            FrameId(7),
             ScrollOffset { x: 0.0, y: 0.0 },
             sender.prepare_scene(29, scene_with_glyph(&font, 7, 12.0, 18.0)),
         )
@@ -670,7 +688,8 @@ mod tests {
         assert_single_glyph_run_font(&first_scene, &[1, 2, 3, 4], 7);
 
         let second_frame = PaintFrame::new(
-            7,
+            WebviewId(7),
+            FrameId(7),
             ScrollOffset { x: 0.0, y: 0.0 },
             sender.prepare_scene(29, scene_with_glyph(&font, 8, 28.0, 18.0)),
         )
