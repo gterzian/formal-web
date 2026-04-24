@@ -62,8 +62,8 @@ instance : Inhabited EventLoop where
   default := { id := 0 }
 
 inductive EventLoopTaskMessage where
-  | createEmptyDocument (documentId : DocumentId)
-  | createLoadedDocument (documentId : DocumentId) (url : String) (body : String)
+  | createEmptyDocument (traversableId : Nat) (documentId : DocumentId)
+  | createLoadedDocument (traversableId : Nat) (documentId : DocumentId) (url : String) (body : String)
   | destroyDocument (documentId : DocumentId)
   | queueUpdateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | queueDispatchEvent (documentId : DocumentId) (event : String)
@@ -130,10 +130,12 @@ def takeNextTask?
 end EventLoop
 
 structure PendingCreateEmptyDocumentTask where
+  traversableId : Nat
   documentId : DocumentId
 deriving DecidableEq
 
 structure PendingCreateLoadedDocumentTask where
+  traversableId : Nat
   documentId : DocumentId
   url : String
   body : String
@@ -145,6 +147,7 @@ deriving DecidableEq
 
 /-- Model-local runtime payload for an UpdateTheRendering task. -/
 structure PendingUpdateTheRenderingTask where
+  traversableId : Nat
   documentId : DocumentId
 deriving DecidableEq
 
@@ -548,10 +551,10 @@ instance : Inhabited EventLoopTaskState where
   default := { eventLoop := { id := 0 } }
 
 inductive EventLoopRuntimeEffect where
-  | createEmptyDocument (documentId : DocumentId)
-  | createLoadedDocument (documentId : DocumentId) (url : String) (body : String)
+  | createEmptyDocument (traversableId : Nat) (documentId : DocumentId)
+  | createLoadedDocument (traversableId : Nat) (documentId : DocumentId) (url : String) (body : String)
   | destroyDocument (documentId : DocumentId)
-  | updateTheRendering (documentId : DocumentId)
+  | updateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | dispatchEvent (events : List PendingDispatchEvent)
   | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
   | startDocumentFetch
@@ -587,19 +590,24 @@ def handleRuntimeEffect
     (runtimeEffect : EventLoopRuntimeEffect) :
     IO Unit := do
   match runtimeEffect with
-  | .createEmptyDocument documentId =>
-      contentProcessCreateEmptyDocument state.contentProcess.raw (USize.ofNat documentId.id)
-  | .createLoadedDocument documentId url body =>
+  | .createEmptyDocument traversableId documentId =>
+      contentProcessCreateEmptyDocument
+        state.contentProcess.raw
+        (USize.ofNat traversableId)
+        (USize.ofNat documentId.id)
+  | .createLoadedDocument traversableId documentId url body =>
       contentProcessCreateLoadedDocument
         state.contentProcess.raw
+        (USize.ofNat traversableId)
         (USize.ofNat documentId.id)
         url
         body
   | .destroyDocument documentId =>
       contentProcessDestroyDocument state.contentProcess.raw (USize.ofNat documentId.id)
-  | .updateTheRendering documentId =>
+  | .updateTheRendering traversableId documentId =>
       contentProcessUpdateTheRendering
         state.contentProcess.raw
+        (USize.ofNat traversableId)
         (USize.ofNat documentId.id)
   | .dispatchEvent events =>
       contentProcessDispatchEvent
@@ -713,7 +721,7 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
             | [] =>
                 (none, readyState)
             | pendingTask :: pendingTasks =>
-                (some (.createEmptyDocument pendingTask.documentId),
+                (some (.createEmptyDocument pendingTask.traversableId pendingTask.documentId),
                   {
                     blockedState with
                       liveDocumentIds := blockedState.liveDocumentIds.insert pendingTask.documentId.id ()
@@ -724,7 +732,7 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
             | [] =>
                 (none, readyState)
             | pendingTask :: pendingTasks =>
-                (some (.createLoadedDocument pendingTask.documentId pendingTask.url pendingTask.body),
+                (some (.createLoadedDocument pendingTask.traversableId pendingTask.documentId pendingTask.url pendingTask.body),
                   {
                     blockedState with
                       liveDocumentIds := blockedState.liveDocumentIds.insert pendingTask.documentId.id ()
@@ -746,7 +754,7 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
             | [] =>
                 (none, readyState)
             | pendingTask :: pendingTasks =>
-                (some (.updateTheRendering pendingTask.documentId),
+            (some (.updateTheRendering pendingTask.traversableId pendingTask.documentId),
                   { blockedState with pendingUpdateTheRenderingTasks := pendingTasks })
         | .dispatchEvent =>
             match state.pendingDispatchEventTasks with
@@ -826,7 +834,7 @@ def handleEventLoopTaskMessage
     (message : EventLoopTaskMessage) :
     EventLoopM Unit := fun state =>
   match message with
-  | .createEmptyDocument documentId =>
+  | .createEmptyDocument traversableId documentId =>
       let task : Task := {
         step := .createEmptyDocument
         documentId := some documentId.id
@@ -836,10 +844,10 @@ def handleEventLoopTaskMessage
           eventLoop := state.eventLoop.enqueueTask task
           liveDocumentIds := state.liveDocumentIds
           pendingCreateEmptyDocumentTasks :=
-            state.pendingCreateEmptyDocumentTasks.concat { documentId }
+            state.pendingCreateEmptyDocumentTasks.concat { traversableId, documentId }
       }
       (((), #[]), state)
-  | .createLoadedDocument documentId url body =>
+  | .createLoadedDocument traversableId documentId url body =>
       let task : Task := {
         step := .createLoadedDocument
         documentId := some documentId.id
@@ -848,7 +856,7 @@ def handleEventLoopTaskMessage
         state with
           eventLoop := state.eventLoop.enqueueTask task
           pendingCreateLoadedDocumentTasks :=
-            state.pendingCreateLoadedDocumentTasks.concat { documentId, url, body }
+            state.pendingCreateLoadedDocumentTasks.concat { traversableId, documentId, url, body }
       }
       (((), #[]), state)
   | .destroyDocument documentId =>
@@ -863,13 +871,13 @@ def handleEventLoopTaskMessage
             state.pendingDestroyDocumentTasks.concat { documentId }
       }
       (((), #[]), state)
-  | .queueUpdateTheRendering _ documentId =>
+  | .queueUpdateTheRendering traversableId documentId =>
       let task : Task := { step := .updateTheRendering }
       let state := {
         state with
           eventLoop := state.eventLoop.enqueueTask task
           pendingUpdateTheRenderingTasks :=
-            state.pendingUpdateTheRenderingTasks.concat { documentId }
+            state.pendingUpdateTheRenderingTasks.concat { traversableId, documentId }
       }
       (((), #[]), state)
   | .queueDispatchEvent documentId event =>

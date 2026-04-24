@@ -34,11 +34,11 @@ opaque contentProcessStop : USize → IO Unit
 
 /-- Sends a create-empty-document command to the event loop's content process. -/
 @[extern "contentProcessCreateEmptyDocument"]
-opaque contentProcessCreateEmptyDocument : USize → USize → IO Unit
+opaque contentProcessCreateEmptyDocument : USize → USize → USize → IO Unit
 
 /-- Sends a create-loaded-document command to the event loop's content process. -/
 @[extern "contentProcessCreateLoadedDocument"]
-opaque contentProcessCreateLoadedDocument : USize → USize → @& String → @& String → IO Unit
+opaque contentProcessCreateLoadedDocument : USize → USize → USize → @& String → @& String → IO Unit
 
 /-- Sends a destroy-document command to the event loop's content process. -/
 @[extern "contentProcessDestroyDocument"]
@@ -54,7 +54,7 @@ opaque contentProcessRunBeforeUnload : USize → USize → USize → IO Unit
 
 /-- Runs the I/O part of update-the-rendering for a document in the event loop's content process. -/
 @[extern "contentProcessUpdateTheRendering"]
-opaque contentProcessUpdateTheRendering : USize → USize → IO Unit
+opaque contentProcessUpdateTheRendering : USize → USize → USize → IO Unit
 
 /-- Runs one queued timer task inside the event loop's content process. -/
 @[extern "contentProcessRunWindowTimer"]
