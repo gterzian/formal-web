@@ -38,7 +38,7 @@ opaque contentProcessCreateEmptyDocument : USize → USize → USize → IO Unit
 
 /-- Sends a create-loaded-document command to the event loop's content process. -/
 @[extern "contentProcessCreateLoadedDocument"]
-opaque contentProcessCreateLoadedDocument : USize → USize → USize → @& String → @& String → IO Unit
+opaque contentProcessCreateLoadedDocument : USize → USize → USize → @& String → USize → @& String → @& String → IO Unit
 
 /-- Sends a destroy-document command to the event loop's content process. -/
 @[extern "contentProcessDestroyDocument"]
@@ -66,6 +66,6 @@ opaque contentProcessFailDocumentFetch : USize → USize → IO Unit
 
 /-- Completes a queued document fetch inside the event loop's content process. -/
 @[extern "contentProcessCompleteDocumentFetch"]
-opaque contentProcessCompleteDocumentFetch : USize → USize → @& String → ByteArray → IO Unit
+opaque contentProcessCompleteDocumentFetch : USize → USize → @& String → USize → @& String → ByteArray → IO Unit
 
 end FormalWeb

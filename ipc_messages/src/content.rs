@@ -35,6 +35,22 @@ pub struct FetchRequest {
     pub body: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadedDocumentResponse {
+    pub final_url: String,
+    pub status: u16,
+    pub content_type: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FetchResponse {
+    pub final_url: String,
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserNavigationInvolvement {
     None,
@@ -473,8 +489,7 @@ pub enum Command {
     CreateLoadedDocument {
         traversable_id: u64,
         document_id: u64,
-        url: String,
-        body: String,
+        response: LoadedDocumentResponse,
     },
     DestroyDocument { document_id: u64 },
     EvaluateScript {
@@ -501,8 +516,7 @@ pub enum Command {
     },
     CompleteDocumentFetch {
         handler_id: u64,
-        resolved_url: String,
-        body: Vec<u8>,
+        response: FetchResponse,
     },
     FailDocumentFetch {
         handler_id: u64,
@@ -527,8 +541,9 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::{
-        FontTransportReceiver, FontTransportSender, FrameId, PaintFrame,
-        PaintTransportSummary, SceneSummary, ScrollOffset, WebviewId,
+        Command, FetchResponse, FontTransportReceiver, FontTransportSender, FrameId,
+        LoadedDocumentResponse, PaintFrame, PaintTransportSummary, SceneSummary, ScrollOffset,
+        WebviewId,
     };
     use anyrender::{
         Glyph, PaintScene, Scene,
@@ -708,5 +723,78 @@ mod tests {
             .expect("second frame should decode")
             .into_scene(&receiver);
         assert_single_glyph_run_font(&second_scene, &[1, 2, 3, 4], 8);
+    }
+
+    #[test]
+    fn create_loaded_document_command_round_trips_response_metadata() {
+        let encoded = postcard::to_allocvec(&Command::CreateLoadedDocument {
+            traversable_id: 3,
+            document_id: 7,
+            response: LoadedDocumentResponse {
+                final_url: String::from("https://example.test/final"),
+                status: 201,
+                content_type: String::from("text/html; charset=utf-8"),
+                body: String::from("<p>ok</p>"),
+            },
+        })
+        .expect("create-loaded-document should serialize");
+        let decoded: Command =
+            postcard::from_bytes(&encoded).expect("create-loaded-document should deserialize");
+
+        match decoded {
+            Command::CreateLoadedDocument {
+                traversable_id,
+                document_id,
+                response,
+            } => {
+                assert_eq!(traversable_id, 3);
+                assert_eq!(document_id, 7);
+                assert_eq!(
+                    response,
+                    LoadedDocumentResponse {
+                        final_url: String::from("https://example.test/final"),
+                        status: 201,
+                        content_type: String::from("text/html; charset=utf-8"),
+                        body: String::from("<p>ok</p>"),
+                    }
+                );
+            }
+            other => panic!("expected CreateLoadedDocument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn complete_document_fetch_command_round_trips_response_metadata() {
+        let encoded = postcard::to_allocvec(&Command::CompleteDocumentFetch {
+            handler_id: 19,
+            response: FetchResponse {
+                final_url: String::from("https://example.test/script.js"),
+                status: 404,
+                content_type: String::from("text/html"),
+                body: vec![1, 2, 3, 4],
+            },
+        })
+        .expect("complete-document-fetch should serialize");
+        let decoded: Command =
+            postcard::from_bytes(&encoded).expect("complete-document-fetch should deserialize");
+
+        match decoded {
+            Command::CompleteDocumentFetch {
+                handler_id,
+                response,
+            } => {
+                assert_eq!(handler_id, 19);
+                assert_eq!(
+                    response,
+                    FetchResponse {
+                        final_url: String::from("https://example.test/script.js"),
+                        status: 404,
+                        content_type: String::from("text/html"),
+                        body: vec![1, 2, 3, 4],
+                    }
+                );
+            }
+            other => panic!("expected CompleteDocumentFetch, got {other:?}"),
+        }
     }
 }

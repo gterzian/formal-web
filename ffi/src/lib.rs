@@ -400,12 +400,22 @@ pub extern "C" fn contentProcessCreateLoadedDocument(
     handle: usize,
     traversable_id: usize,
     document_id: usize,
-    url: *mut lean_object,
+    final_url: *mut lean_object,
+    status: usize,
+    content_type: *mut lean_object,
     body: *mut lean_object,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        let c_url = unsafe { leanStringCstr(url) };
-        let url = unsafe { CStr::from_ptr(c_url) }.to_string_lossy().into_owned();
+        let status = u16::try_from(status)
+            .map_err(|_| format!("loaded document status out of range: {status}"))?;
+        let c_final_url = unsafe { leanStringCstr(final_url) };
+        let final_url = unsafe { CStr::from_ptr(c_final_url) }
+            .to_string_lossy()
+            .into_owned();
+        let c_content_type = unsafe { leanStringCstr(content_type) };
+        let content_type = unsafe { CStr::from_ptr(c_content_type) }
+            .to_string_lossy()
+            .into_owned();
         let c_body = unsafe { leanStringCstr(body) };
         let body = unsafe { CStr::from_ptr(c_body) }.to_string_lossy().into_owned();
         content_bridge::send_command(
@@ -413,8 +423,12 @@ pub extern "C" fn contentProcessCreateLoadedDocument(
             ContentCommand::CreateLoadedDocument {
                 traversable_id: traversable_id as u64,
                 document_id: document_id as u64,
-                url,
-                body,
+                response: ipc_messages::content::LoadedDocumentResponse {
+                    final_url,
+                    status,
+                    content_type,
+                    body,
+                },
             },
         )
     })) {
@@ -557,12 +571,22 @@ pub extern "C" fn contentProcessFailDocumentFetch(
 pub extern "C" fn contentProcessCompleteDocumentFetch(
     handle: usize,
     handler_id: usize,
-    resolved_url: *mut lean_object,
+    final_url: *mut lean_object,
+    status: usize,
+    content_type: *mut lean_object,
     bytes: *mut lean_object,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        let c_resolved_url = unsafe { leanStringCstr(resolved_url) };
-        let resolved_url = unsafe { CStr::from_ptr(c_resolved_url) }.to_string_lossy().into_owned();
+        let status = u16::try_from(status)
+            .map_err(|_| format!("document fetch status out of range: {status}"))?;
+        let c_final_url = unsafe { leanStringCstr(final_url) };
+        let final_url = unsafe { CStr::from_ptr(c_final_url) }
+            .to_string_lossy()
+            .into_owned();
+        let c_content_type = unsafe { leanStringCstr(content_type) };
+        let content_type = unsafe { CStr::from_ptr(c_content_type) }
+            .to_string_lossy()
+            .into_owned();
         let size = unsafe { leanByteArraySize(bytes) };
         let bytes_ptr = unsafe { leanByteArrayCptr(bytes) };
         let payload = unsafe { std::slice::from_raw_parts(bytes_ptr, size) };
@@ -570,8 +594,12 @@ pub extern "C" fn contentProcessCompleteDocumentFetch(
             handle,
             ContentCommand::CompleteDocumentFetch {
                 handler_id: handler_id as u64,
-                resolved_url,
-                body: payload.to_vec(),
+                response: ipc_messages::content::FetchResponse {
+                    final_url,
+                    status,
+                    content_type,
+                    body: payload.to_vec(),
+                },
             },
         )
     })) {

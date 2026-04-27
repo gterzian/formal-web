@@ -63,7 +63,7 @@ instance : Inhabited EventLoop where
 
 inductive EventLoopTaskMessage where
   | createEmptyDocument (traversableId : Nat) (documentId : DocumentId)
-  | createLoadedDocument (traversableId : Nat) (documentId : DocumentId) (url : String) (body : String)
+  | createLoadedDocument (traversableId : Nat) (documentId : DocumentId) (response : NavigationResponse)
   | destroyDocument (documentId : DocumentId)
   | queueUpdateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | queueDispatchEvent (documentId : DocumentId) (event : String)
@@ -81,8 +81,7 @@ inductive EventLoopTaskMessage where
   | runNextTask
   | queueDocumentFetchCompletion
       (handler : RustNetHandlerPointer)
-      (resolvedUrl : String)
-      (body : ByteArray)
+      (response : FetchResponse)
     | queueWindowTimerTask
       (documentId : DocumentId)
       (timerId : Nat)
@@ -137,8 +136,7 @@ deriving DecidableEq
 structure PendingCreateLoadedDocumentTask where
   traversableId : Nat
   documentId : DocumentId
-  url : String
-  body : String
+  response : NavigationResponse
 deriving DecidableEq
 
 structure PendingDestroyDocumentTask where
@@ -172,8 +170,7 @@ deriving DecidableEq
 
 structure PendingDocumentFetchCompletionTask where
   handler : RustNetHandlerPointer
-  resolvedUrl : String
-  body : ByteArray
+  response : FetchResponse
 deriving DecidableEq
 
 structure PendingRunWindowTimerTask where
@@ -552,7 +549,7 @@ instance : Inhabited EventLoopTaskState where
 
 inductive EventLoopRuntimeEffect where
   | createEmptyDocument (traversableId : Nat) (documentId : DocumentId)
-  | createLoadedDocument (traversableId : Nat) (documentId : DocumentId) (url : String) (body : String)
+  | createLoadedDocument (traversableId : Nat) (documentId : DocumentId) (response : NavigationResponse)
   | destroyDocument (documentId : DocumentId)
   | updateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | dispatchEvent (events : List PendingDispatchEvent)
@@ -564,8 +561,7 @@ inductive EventLoopRuntimeEffect where
     | clearTimeout (timerKey : Nat)
   | documentFetchCompletion
       (handler : RustNetHandlerPointer)
-      (resolvedUrl : String)
-      (body : ByteArray)
+      (response : FetchResponse)
     | runWindowTimer
       (documentId : DocumentId)
       (timerId : Nat)
@@ -595,13 +591,15 @@ def handleRuntimeEffect
         state.contentProcess.raw
         (USize.ofNat traversableId)
         (USize.ofNat documentId.id)
-  | .createLoadedDocument traversableId documentId url body =>
+  | .createLoadedDocument traversableId documentId response =>
       contentProcessCreateLoadedDocument
         state.contentProcess.raw
         (USize.ofNat traversableId)
         (USize.ofNat documentId.id)
-        url
-        body
+        response.url
+        (USize.ofNat response.status)
+        response.contentType
+        response.body
   | .destroyDocument documentId =>
       contentProcessDestroyDocument state.contentProcess.raw (USize.ofNat documentId.id)
   | .updateTheRendering traversableId documentId =>
@@ -624,12 +622,14 @@ def handleRuntimeEffect
       hooks.scheduleTimeout request
   | .clearTimeout timerKey =>
       hooks.clearTimeout timerKey
-  | .documentFetchCompletion handler resolvedUrl body =>
+  | .documentFetchCompletion handler response =>
       contentProcessCompleteDocumentFetch
         state.contentProcess.raw
         handler.raw
-        resolvedUrl
-        body
+        response.url
+        (USize.ofNat response.status)
+        response.contentType
+        response.body
   | .runWindowTimer documentId timerId timerKey nestingLevel =>
       contentProcessRunWindowTimer
         state.contentProcess.raw
@@ -732,7 +732,7 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
             | [] =>
                 (none, readyState)
             | pendingTask :: pendingTasks =>
-                (some (.createLoadedDocument pendingTask.traversableId pendingTask.documentId pendingTask.url pendingTask.body),
+                (some (.createLoadedDocument pendingTask.traversableId pendingTask.documentId pendingTask.response),
                   {
                     blockedState with
                       liveDocumentIds := blockedState.liveDocumentIds.insert pendingTask.documentId.id ()
@@ -780,7 +780,7 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
                 (none, readyState)
             | pendingTask :: pendingTasks =>
                 if hasPendingDocumentFetchRequest blockedState.pendingDocumentFetchRequests pendingTask.handler then
-                  (some (.documentFetchCompletion pendingTask.handler pendingTask.resolvedUrl pendingTask.body),
+                  (some (.documentFetchCompletion pendingTask.handler pendingTask.response),
                     {
                       blockedState with
                         pendingDocumentFetchRequests :=
@@ -847,7 +847,7 @@ def handleEventLoopTaskMessage
             state.pendingCreateEmptyDocumentTasks.concat { traversableId, documentId }
       }
       (((), #[]), state)
-  | .createLoadedDocument traversableId documentId url body =>
+  | .createLoadedDocument traversableId documentId response =>
       let task : Task := {
         step := .createLoadedDocument
         documentId := some documentId.id
@@ -856,7 +856,7 @@ def handleEventLoopTaskMessage
         state with
           eventLoop := state.eventLoop.enqueueTask task
           pendingCreateLoadedDocumentTasks :=
-            state.pendingCreateLoadedDocumentTasks.concat { traversableId, documentId, url, body }
+            state.pendingCreateLoadedDocumentTasks.concat { traversableId, documentId, response }
       }
       (((), #[]), state)
   | .destroyDocument documentId =>
@@ -942,13 +942,13 @@ def handleEventLoopTaskMessage
           eventLoop := state.eventLoop.wakeForNextTask
       }
       (((), #[]), state)
-  | .queueDocumentFetchCompletion handler resolvedUrl body =>
+  | .queueDocumentFetchCompletion handler response =>
       let task : Task := { step := .completeDocumentFetch }
       let state := {
         state with
           eventLoop := state.eventLoop.enqueueTask task
           pendingDocumentFetchCompletionTasks :=
-            state.pendingDocumentFetchCompletionTasks.concat { handler, resolvedUrl, body }
+            state.pendingDocumentFetchCompletionTasks.concat { handler, response }
       }
       (((), #[EventLoopEffect.performRuntimeEffect (.clearTimeout handler.raw.toNat)]), state)
   | .queueWindowTimerTask documentId timerId timerKey nestingLevel =>
@@ -1094,7 +1094,7 @@ def startEventLoopWorker
       let onComplete := fun response => do
         trySendAndForget
           channel
-          (.queueDocumentFetchCompletion handler response.url response.body)
+          (.queueDocumentFetchCompletion handler response)
       trySendAndForget fetchChannel (.startDocumentFetch handler request onComplete)
     scheduleTimeout := fun request => do
       let nowMs ← IO.monoMsNow

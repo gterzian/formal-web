@@ -28,9 +28,10 @@ use ipc_messages::content::Command::{
 };
 use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    Event as ContentEvent, FetchRequest as ContentFetchRequest, FontTransportSender, FrameId,
-    PaintFrame, RecordedScene, ScriptEvaluationResult, ScrollOffset, ViewportSnapshot,
-    WebviewId,
+    Event as ContentEvent, FetchRequest as ContentFetchRequest,
+    FetchResponse as ContentFetchResponse, FontTransportSender, FrameId,
+    LoadedDocumentResponse, PaintFrame, RecordedScene, ScriptEvaluationResult, ScrollOffset,
+    ViewportSnapshot, WebviewId,
 };
 use std::{
     cell::RefCell,
@@ -43,6 +44,36 @@ use std::{
 use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
+
+fn normalized_content_type_essence(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+fn is_javascript_mime_essence(essence: &str) -> bool {
+    matches!(
+        essence,
+        "text/javascript"
+            | "application/javascript"
+            | "application/ecmascript"
+            | "text/ecmascript"
+            | "application/x-javascript"
+            | "text/x-javascript"
+    )
+}
+
+fn deferred_script_response_is_executable(response: &ContentFetchResponse) -> bool {
+    if !(200..=299).contains(&response.status) {
+        return false;
+    }
+
+    let essence = normalized_content_type_essence(&response.content_type);
+    essence.is_empty() || is_javascript_mime_essence(&essence)
+}
 
 fn new_font_namespace() -> u64 {
     let pid = u64::from(std::process::id());
@@ -496,18 +527,23 @@ impl ContentRuntime {
         &mut self,
         traversable_id: u64,
         document_id: u64,
-        url: String,
-        body: String,
+        response: LoadedDocumentResponse,
     ) -> Result<(), String> {
+        let LoadedDocumentResponse {
+            final_url,
+            status: _,
+            content_type: _,
+            body,
+        } = response;
         // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
         // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the DOM carrier and the JavaScript environment settings object.
         let document = Rc::new(RefCell::new(BaseDocument::new(
-            self.document_config(document_id, Some(url.clone())),
+            self.document_config(document_id, Some(final_url.clone())),
         )));
         let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
-            Url::parse(&url).map_err(|error| error.to_string())?,
+            Url::parse(&final_url).map_err(|error| error.to_string())?,
         )?;
         settings.install_timer_host(document_id, self.event_sender.clone())?;
 
@@ -532,7 +568,7 @@ impl ContentRuntime {
                 settings,
                 pending_update_the_rendering: false,
                 pending_document_load: Some(PendingDocumentLoad {
-                    finalize_url: url.clone(),
+                    finalize_url: final_url.clone(),
                     scripts: deferred_scripts,
                 }),
             },
@@ -735,8 +771,7 @@ impl ContentRuntime {
     fn complete_document_fetch(
         &mut self,
         handler_id: u64,
-        resolved_url: String,
-        body: Vec<u8>,
+        response: ContentFetchResponse,
     ) -> Result<(), String> {
         let pending_handler = {
             let mut local_state = self
@@ -756,7 +791,7 @@ impl ContentRuntime {
                 request_url: _,
                 handler,
             } => {
-                handler.bytes(resolved_url, Bytes::copy_from_slice(&body));
+                handler.bytes(response.final_url.clone(), Bytes::copy_from_slice(&response.body));
                 let Some(content_document) = self.documents.get(&document_id) else {
                     eprintln!("[content] complete_document_fetch: document {document_id} not found");
                     return Ok(());
@@ -770,8 +805,15 @@ impl ContentRuntime {
                 document_id,
                 script_index,
             } => {
-                let _ = resolved_url;
-                self.complete_deferred_script_fetch(document_id, script_index, body);
+                if deferred_script_response_is_executable(&response) {
+                    self.complete_deferred_script_fetch(document_id, script_index, response.body);
+                } else {
+                    eprintln!(
+                        "content deferred script rejected: url={} status={} content-type={}",
+                        response.final_url, response.status, response.content_type,
+                    );
+                    self.mark_deferred_script_failed(document_id, script_index);
+                }
                 let Some(content_document) = self.documents.get(&document_id) else {
                     eprintln!("[content] complete_document_fetch (deferred script): document {document_id} not found");
                     return Ok(());
@@ -876,10 +918,9 @@ impl ContentRuntime {
             CreateLoadedDocument {
                 traversable_id,
                 document_id,
-                url,
-                body,
+                response,
             } => {
-                self.create_loaded_document(traversable_id, document_id, url, body)?;
+                self.create_loaded_document(traversable_id, document_id, response)?;
                 Ok(true)
             }
             DestroyDocument { document_id } => {
@@ -933,10 +974,9 @@ impl ContentRuntime {
             }
             CompleteDocumentFetch {
                 handler_id,
-                resolved_url,
-                body,
+                response,
             } => {
-                self.complete_document_fetch(handler_id, resolved_url, body)?;
+                self.complete_document_fetch(handler_id, response)?;
                 Ok(true)
             }
             FailDocumentFetch { handler_id } => {
@@ -1016,4 +1056,57 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ContentFetchResponse, deferred_script_response_is_executable,
+        is_javascript_mime_essence, normalized_content_type_essence,
+    };
+
+    fn response(status: u16, content_type: &str) -> ContentFetchResponse {
+        ContentFetchResponse {
+            final_url: String::from("https://example.test/script.js"),
+            status,
+            content_type: content_type.to_string(),
+            body: b"console.log('ok');".to_vec(),
+        }
+    }
+
+    #[test]
+    fn deferred_scripts_accept_successful_javascript_mime() {
+        assert!(deferred_script_response_is_executable(&response(
+            200,
+            "text/javascript; charset=utf-8"
+        )));
+    }
+
+    #[test]
+    fn deferred_scripts_reject_non_success_status() {
+        assert!(!deferred_script_response_is_executable(&response(
+            404,
+            "text/javascript"
+        )));
+    }
+
+    #[test]
+    fn deferred_scripts_reject_clearly_wrong_mime() {
+        assert!(!deferred_script_response_is_executable(&response(
+            200,
+            "text/html"
+        )));
+    }
+
+    #[test]
+    fn deferred_scripts_allow_missing_content_type() {
+        assert!(deferred_script_response_is_executable(&response(200, "")));
+    }
+
+    #[test]
+    fn content_type_essence_is_case_and_parameter_insensitive() {
+        let essence = normalized_content_type_essence("Application/JavaScript; Charset=UTF-8");
+        assert_eq!(essence, "application/javascript");
+        assert!(is_javascript_mime_essence(&essence));
+    }
 }
