@@ -89,10 +89,37 @@ struct DependencyArtifacts {
     external_objects: BTreeSet<PathBuf>,
 }
 
+fn object_file_matches_target(object_path: &Path, target: &str) -> bool {
+    let Ok(header) = fs::read(object_path) else {
+        return false;
+    };
+
+    let header = &header[..header.len().min(4)];
+
+    if target.contains("apple") {
+        matches!(
+            header,
+            [0xfe, 0xed, 0xfa, 0xce]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xca, 0xfe, 0xba, 0xbe]
+                | [0xbe, 0xba, 0xfe, 0xca]
+                | [0xca, 0xfe, 0xba, 0xbf]
+                | [0xbf, 0xba, 0xfe, 0xca]
+        )
+    } else if target.contains("windows") {
+        header.starts_with(b"MZ")
+    } else {
+        header == b"\x7fELF"
+    }
+}
+
 fn collect_dependency_artifacts(
     entry_c_files: &[PathBuf],
     root_ir_dir: &Path,
     package_ir_dirs: &BTreeMap<String, PathBuf>,
+    target: &str,
 ) -> DependencyArtifacts {
     let mut pending = VecDeque::from(entry_c_files.to_vec());
     let mut visited = BTreeSet::new();
@@ -125,7 +152,7 @@ fn collect_dependency_artifacts(
 
             if dep_c_file.starts_with(root_ir_dir) {
                 compiled_c_files.insert(dep_c_file.clone());
-            } else if dep_object.is_file() {
+            } else if dep_object.is_file() && object_file_matches_target(&dep_object, target) {
                 external_objects.insert(dep_object);
             } else {
                 compiled_c_files.insert(dep_c_file.clone());
@@ -192,6 +219,7 @@ fn main() {
         std::slice::from_ref(&runtime_entry),
         &lake_ir_dir,
         &package_ir_dirs,
+        &target,
     );
 
     println!("cargo:rustc-link-search=native={}", lean_lib_dir.display());

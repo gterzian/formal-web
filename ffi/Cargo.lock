@@ -802,6 +802,7 @@ dependencies = [
  "kurbo",
  "serde",
  "serde_json",
+ "webview",
  "winit",
 ]
 
@@ -865,6 +866,7 @@ dependencies = [
  "ipc-channel",
  "ipc_messages",
  "serde_json",
+ "webview",
 ]
 
 [[package]]
@@ -3978,6 +3980,18 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
+]
+
+[[package]]
+name = "webview"
+version = "0.1.0"
+dependencies = [
+ "anyrender",
+ "blitz-traits",
+ "ipc_messages",
+ "keyboard-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

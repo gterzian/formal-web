@@ -2067,8 +2067,7 @@ def handleFetchCompletedM
             EventLoopTaskMessage.createLoadedDocument
               pendingNavigationFinalization.traversableId
               document.documentId
-              navigationResponse.url
-              navigationResponse.body
+              navigationResponse
         tell #[.eventLoopMessage document.eventLoopId eventLoopMessage]
   match renderingDispatch? with
   | some (eventLoopId, eventLoopMessage) =>

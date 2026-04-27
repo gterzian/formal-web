@@ -207,4 +207,67 @@ theorem runEventLoopMonadic_trace
       (runEventLoopMonadic state message).2 := by
   simpa [runEventLoopMonadic] using runEventLoopMessagesMonadic_trace state [message]
 
+theorem createLoadedDocument_preserves_navigation_response_metadata :
+    (runEventLoopMonadic
+      { eventLoop := { id := 3 } }
+      (.createLoadedDocument
+        { id := 7 }
+        {
+          url := "https://example.test/final"
+          status := 201
+          contentType := "text/html; charset=utf-8"
+          body := "<p>ok</p>"
+        })).1 =
+      #[EventLoopEffect.runNextTask
+        {
+          step := .createLoadedDocument
+          documentId := some 7
+        }
+        (some (.createLoadedDocument
+          { id := 7 }
+          {
+            url := "https://example.test/final"
+            status := 201
+            contentType := "text/html; charset=utf-8"
+            body := "<p>ok</p>"
+          }))] := by
+  native_decide
+
+theorem queueDocumentFetchCompletion_preserves_fetch_response_metadata :
+    (runEventLoopMonadic
+      {
+        eventLoop := { id := 3 }
+        pendingDocumentFetchRequests :=
+          [{
+            handler := { raw := 9 }
+            request := {
+              url := "https://example.test/script.js"
+            }
+          }]
+      }
+      (.queueDocumentFetchCompletion
+        { raw := 9 }
+        {
+          url := "https://example.test/script.js"
+          status := 404
+          contentType := "text/html"
+          body := "<html>missing</html>".toUTF8
+        })).1 =
+      #[
+        EventLoopEffect.performRuntimeEffect (.clearTimeout 9),
+        EventLoopEffect.runNextTask
+          {
+            step := .completeDocumentFetch
+          }
+          (some (.documentFetchCompletion
+            { raw := 9 }
+            {
+              url := "https://example.test/script.js"
+              status := 404
+              contentType := "text/html"
+              body := "<html>missing</html>".toUTF8
+            }))
+      ] := by
+  native_decide
+
 end FormalWeb
