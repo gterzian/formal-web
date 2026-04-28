@@ -60,7 +60,7 @@ pub enum UserNavigationInvolvement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigateRequest {
-    pub document_id: u64,
+    pub source_navigable_id: u64,
     pub destination_url: String,
     pub target: String,
     pub user_involvement: UserNavigationInvolvement,

@@ -30,7 +30,7 @@ pub trait EmbedderApi: Send + Sync {
 #[derive(Clone, Copy)]
 pub struct RuntimeHooks {
     pub handle_runtime_message: fn(&str),
-    pub start_navigation_parts: fn(usize, &str, &str, &str, bool) -> Result<(), String>,
+    pub start_navigation_parts: fn(usize, usize, &str, &str, &str, bool) -> Result<(), String>,
     pub note_rendering_opportunity: fn(&str),
 }
 
@@ -58,6 +58,7 @@ fn call_lean_runtime_message_handler(message: &str) {
 }
 
 fn call_lean_navigation_start_parts(
+    event_loop_id: usize,
     webview_id: usize,
     destination_url: &str,
     target: &str,
@@ -66,6 +67,7 @@ fn call_lean_navigation_start_parts(
 ) -> Result<(), String> {
     let hooks = runtime_hooks()?;
     (hooks.start_navigation_parts)(
+        event_loop_id,
         webview_id,
         destination_url,
         target,
@@ -123,6 +125,7 @@ impl WebviewProvider {
     pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
         match webview_id {
             Some(webview_id) => call_lean_navigation_start_parts(
+                webview_id.0 as usize,
                 webview_id.0 as usize,
                 url,
                 "",

@@ -16,14 +16,20 @@ use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch_with_chain}
 /// Note: This bridges Blitz input events into the DOM dispatch algorithm by first letting Blitz compute the native event path and then dispatching the corresponding JavaScript `UIEvent`.
 pub(crate) fn dispatch_ui_event(
     document_id: u64,
+    source_navigable_id: u64,
     document: Rc<RefCell<BaseDocument>>,
     settings: &mut EnvironmentSettingsObject,
     event_sender: &IpcSender<ContentEvent>,
     event: UiEvent,
 ) -> Result<(), String> {
     let mut document = document;
-    let handler =
-        BlitzJSEventHandler::new(document_id, Rc::clone(&document), settings, event_sender);
+    let handler = BlitzJSEventHandler::new(
+        document_id,
+        source_navigable_id,
+        Rc::clone(&document),
+        settings,
+        event_sender,
+    );
     let mut driver = EventDriver::new(&mut document, handler);
     driver.handle_ui_event(event);
     Ok(())
@@ -31,6 +37,7 @@ pub(crate) fn dispatch_ui_event(
 
 struct BlitzJSEventHandler<'a> {
     document_id: u64,
+    source_navigable_id: u64,
     document: Rc<RefCell<BaseDocument>>,
     settings: &'a mut EnvironmentSettingsObject,
     event_sender: &'a IpcSender<ContentEvent>,
@@ -39,12 +46,14 @@ struct BlitzJSEventHandler<'a> {
 impl<'a> BlitzJSEventHandler<'a> {
     fn new(
         document_id: u64,
+        source_navigable_id: u64,
         document: Rc<RefCell<BaseDocument>>,
         settings: &'a mut EnvironmentSettingsObject,
         event_sender: &'a IpcSender<ContentEvent>,
     ) -> Self {
         Self {
             document_id,
+            source_navigable_id,
             document,
             settings,
             event_sender,
@@ -89,7 +98,7 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
     fn run_activation_behavior(&mut self, target: &JsObject, event: &JsObject) -> JsResult<()> {
         if let Some(anchor) = target.downcast_ref::<HTMLAnchorElement>() {
             anchor.activation_behavior(
-                self.document_id,
+                self.source_navigable_id,
                 &self.settings.creation_url,
                 event,
                 self.event_sender,

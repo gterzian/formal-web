@@ -20,6 +20,7 @@ use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use data_url::DataUrl;
+use html5ever::{local_name, ns};
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
     CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
@@ -35,7 +36,7 @@ use ipc_messages::content::{
 };
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -94,6 +95,11 @@ enum PendingNetworkHandler {
         document_id: u64,
         script_index: usize,
     },
+    IframeDocument {
+        parent_document_id: u64,
+        iframe_node_id: usize,
+        request_key: String,
+    },
 }
 
 struct LocalContentState {
@@ -108,6 +114,24 @@ enum DeferredScriptState {
     ExternalPending { src: String },
     ExternalReady { source: String },
     ExternalFailed { src: String },
+}
+
+#[derive(Clone)]
+struct IframeState {
+    source_navigable_id: u64,
+    current_key: String,
+}
+
+struct IframeSnapshot {
+    node_id: usize,
+    src: Option<String>,
+    srcdoc: Option<String>,
+}
+
+enum IframeNavigationTarget {
+    AboutBlank,
+    Srcdoc { html: String },
+    Url { url: Url },
 }
 
 struct PendingDocumentLoad {
@@ -249,6 +273,7 @@ struct ContentDocument {
     settings: EnvironmentSettingsObject,
     pending_update_the_rendering: bool,
     pending_document_load: Option<PendingDocumentLoad>,
+    iframe_states: HashMap<usize, IframeState>,
 }
 
 struct ContentRuntime {
@@ -256,6 +281,7 @@ struct ContentRuntime {
     local_state: LocalContentStateRef,
     viewport: Option<ViewportSnapshot>,
     documents: HashMap<u64, ContentDocument>,
+    next_iframe_navigable_id: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
 }
@@ -270,6 +296,7 @@ impl ContentRuntime {
             })),
             viewport: None,
             documents: HashMap::new(),
+            next_iframe_navigable_id: 1_u64 << 63,
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
         }
@@ -408,7 +435,237 @@ impl ContentRuntime {
         self.request_remote_fetch(handler_id, Request::get(resolved_url))
     }
 
+    fn allocate_iframe_navigable_id(&mut self) -> u64 {
+        let source_navigable_id = self.next_iframe_navigable_id;
+        self.next_iframe_navigable_id = self.next_iframe_navigable_id.wrapping_add(1);
+        source_navigable_id
+    }
+
+    /// <https://html.spec.whatwg.org/#process-the-iframe-attributes>
+    fn iframe_navigation_target(
+        creation_url: &Url,
+        snapshot: &IframeSnapshot,
+    ) -> (String, IframeNavigationTarget) {
+        // Step 1: "If element has a srcdoc attribute specified, then:"
+        if let Some(srcdoc) = snapshot.srcdoc.as_ref() {
+            // Step 1.1: "Set url to about:srcdoc."
+            // Step 1.2: "Set srcdoc to the value of element's srcdoc attribute."
+            return (
+                format!("srcdoc:{srcdoc}"),
+                IframeNavigationTarget::Srcdoc {
+                    html: srcdoc.clone(),
+                },
+            );
+        }
+
+        // Step 2: "Otherwise, let url be the result of running the shared attribute processing steps for iframe and frame elements."
+        if let Some(src) = snapshot.src.as_ref().map(|value| value.trim().to_owned()) {
+            if !src.is_empty() {
+                if let Ok(url) = creation_url.join(&src) {
+                    return (format!("src:{}", url), IframeNavigationTarget::Url { url });
+                }
+            }
+        }
+
+        // Step 3: "If url is failure, set url to about:blank."
+        (String::from("about:blank"), IframeNavigationTarget::AboutBlank)
+    }
+
+    fn collect_iframe_snapshots(document: &BaseDocument) -> Vec<IframeSnapshot> {
+        let mut snapshots = Vec::new();
+        document.visit(|node_id, node| {
+            let Some(element) = node.element_data() else {
+                return;
+            };
+            if element.name.ns != ns!(html)
+                || element.name.local != local_name!("iframe")
+                || !node.flags.is_in_document()
+            {
+                return;
+            }
+
+            snapshots.push(IframeSnapshot {
+                node_id,
+                src: element.attr(local_name!("src")).map(ToOwned::to_owned),
+                srcdoc: element.attr(local_name!("srcdoc")).map(ToOwned::to_owned),
+            });
+        });
+        snapshots
+    }
+
+    fn attach_iframe_subdocument_from_html(
+        &mut self,
+        parent_document_id: u64,
+        iframe_node_id: usize,
+        base_url: String,
+        html: String,
+    ) -> Result<(), String> {
+        let sub_document = Rc::new(RefCell::new(BaseDocument::new(
+            self.document_config(parent_document_id, Some(base_url)),
+        )));
+        {
+            let mut sub_document_guard = sub_document.borrow_mut();
+            parse_html_into_document(&mut sub_document_guard, &html);
+        }
+
+        let Some(content_document) = self.documents.get_mut(&parent_document_id) else {
+            return Ok(());
+        };
+        let mut document = content_document.document.borrow_mut();
+        if document.get_node(iframe_node_id).is_none() {
+            return Ok(());
+        }
+        let mut mutator = document.mutate();
+        mutator.set_sub_document(iframe_node_id, Box::new(sub_document));
+        Ok(())
+    }
+
+    fn attach_iframe_about_blank(
+        &mut self,
+        parent_document_id: u64,
+        iframe_node_id: usize,
+    ) -> Result<(), String> {
+        self.attach_iframe_subdocument_from_html(
+            parent_document_id,
+            iframe_node_id,
+            String::from("about:blank"),
+            String::from(EMPTY_HTML_DOCUMENT),
+        )
+    }
+
+    fn remove_iframe_subdocument(&mut self, parent_document_id: u64, iframe_node_id: usize) {
+        let Some(content_document) = self.documents.get_mut(&parent_document_id) else {
+            return;
+        };
+        let mut document = content_document.document.borrow_mut();
+        if document.get_node(iframe_node_id).is_none() {
+            return;
+        }
+        let mut mutator = document.mutate();
+        mutator.remove_sub_document(iframe_node_id);
+    }
+
+    /// <https://html.spec.whatwg.org/#html-element-post-connection-steps>
+    /// Note: This scans for connected iframe elements and applies iframe post-connection/attribute-processing behavior as part of the content runtime's mutation checkpoints.
+    fn refresh_iframe_embeddings(&mut self, parent_document_id: u64) -> Result<(), String> {
+        let (creation_url, snapshots) = {
+            let Some(content_document) = self.documents.get(&parent_document_id) else {
+                return Ok(());
+            };
+            let creation_url = content_document.settings.creation_url.clone();
+            let document = content_document.document.borrow();
+            (creation_url, Self::collect_iframe_snapshots(&document))
+        };
+
+        let live_iframe_node_ids = snapshots
+            .iter()
+            .map(|snapshot| snapshot.node_id)
+            .collect::<HashSet<_>>();
+        let stale_iframe_node_ids = self
+            .documents
+            .get(&parent_document_id)
+            .map(|content_document| {
+                content_document
+                    .iframe_states
+                    .keys()
+                    .copied()
+                    .filter(|node_id| !live_iframe_node_ids.contains(node_id))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        for stale_iframe_node_id in stale_iframe_node_ids.iter().copied() {
+            // <https://html.spec.whatwg.org/#the-iframe-element:html-element-removing-steps>
+            // Step 1: "Destroy a child navigable given removedNode."
+            self.remove_iframe_subdocument(parent_document_id, stale_iframe_node_id);
+        }
+        if let Some(content_document) = self.documents.get_mut(&parent_document_id) {
+            for stale_iframe_node_id in stale_iframe_node_ids {
+                content_document.iframe_states.remove(&stale_iframe_node_id);
+            }
+        }
+
+        for snapshot in snapshots {
+            let (desired_key, target) = Self::iframe_navigation_target(&creation_url, &snapshot);
+            let current_key = self
+                .documents
+                .get(&parent_document_id)
+                .and_then(|content_document| content_document.iframe_states.get(&snapshot.node_id))
+                .map(|state| state.current_key.clone());
+            if current_key.as_deref() == Some(desired_key.as_str()) {
+                continue;
+            }
+
+            let source_navigable_id = self
+                .documents
+                .get(&parent_document_id)
+                .and_then(|content_document| content_document.iframe_states.get(&snapshot.node_id))
+                .map(|state| state.source_navigable_id)
+                .unwrap_or_else(|| self.allocate_iframe_navigable_id());
+            if let Some(content_document) = self.documents.get_mut(&parent_document_id) {
+                content_document.iframe_states.insert(
+                    snapshot.node_id,
+                    IframeState {
+                        source_navigable_id,
+                        current_key: desired_key.clone(),
+                    },
+                );
+            }
+
+            // <https://html.spec.whatwg.org/#process-the-iframe-attributes>
+            // Step 4: "Navigate element's content navigable to url."
+            match target {
+                IframeNavigationTarget::AboutBlank => {
+                    self.attach_iframe_about_blank(parent_document_id, snapshot.node_id)?;
+                }
+                IframeNavigationTarget::Srcdoc { html } => {
+                    self.attach_iframe_subdocument_from_html(
+                        parent_document_id,
+                        snapshot.node_id,
+                        creation_url.to_string(),
+                        html,
+                    )?;
+                }
+                IframeNavigationTarget::Url { url } => {
+                    if url.scheme() == "data" {
+                        let html = match DataUrl::process(url.as_str()) {
+                            Ok(data_url) => data_url
+                                .decode_to_vec()
+                                .map(|(bytes, _fragment)| {
+                                    String::from_utf8_lossy(&bytes).into_owned()
+                                })
+                                .unwrap_or_default(),
+                            Err(_error) => String::new(),
+                        };
+                        self.attach_iframe_subdocument_from_html(
+                            parent_document_id,
+                            snapshot.node_id,
+                            url.to_string(),
+                            html,
+                        )?;
+                    } else {
+                        let handler_id = self.register_pending_handler(
+                            PendingNetworkHandler::IframeDocument {
+                                parent_document_id,
+                                iframe_node_id: snapshot.node_id,
+                                request_key: desired_key,
+                            },
+                        );
+                        if let Err(error) = self.request_remote_fetch(handler_id, Request::get(url)) {
+                            eprintln!("content iframe fetch error: {error}");
+                            self.attach_iframe_about_blank(parent_document_id, snapshot.node_id)?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
+        self.refresh_iframe_embeddings(document_id)?;
+
         let ready_to_finish = {
             let content_document = self
                 .documents
@@ -516,6 +773,7 @@ impl ContentRuntime {
                 settings,
                 pending_update_the_rendering: false,
                 pending_document_load: None,
+                iframe_states: HashMap::new(),
             },
         );
         Ok(())
@@ -571,6 +829,7 @@ impl ContentRuntime {
                     finalize_url: final_url.clone(),
                     scripts: deferred_scripts,
                 }),
+                iframe_states: HashMap::new(),
             },
         );
 
@@ -635,6 +894,10 @@ impl ContentRuntime {
                 | PendingNetworkHandler::DeferredScript {
                     document_id: pending_document_id,
                     ..
+                }
+                | PendingNetworkHandler::IframeDocument {
+                    parent_document_id: pending_document_id,
+                    ..
                 } => *pending_document_id != document_id,
             });
         Ok(())
@@ -642,15 +905,15 @@ impl ContentRuntime {
 
     fn dispatch_events(&mut self, events: Vec<DispatchEventEntry>) -> Result<(), String> {
         for DispatchEventEntry { document_id, event } in events {
-            let document = self
-                .documents
-                .get_mut(&document_id)
-                .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+            let Some(document) = self.documents.get_mut(&document_id) else {
+                continue;
+            };
 
             // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event batch to the content runtime.
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
+                document.traversable_id,
                 Rc::clone(&document.document),
                 &mut document.settings,
                 &self.event_sender,
@@ -662,12 +925,12 @@ impl ContentRuntime {
     }
 
     fn run_before_unload(&mut self, document_id: u64, check_id: u64) -> Result<(), String> {
-        let document = self
-            .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
-        let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
-            .map_err(|error| error.to_string())?;
+        let canceled = if let Some(document) = self.documents.get_mut(&document_id) {
+            !dispatch_window_event(&mut document.settings, "beforeunload", true)
+                .map_err(|error| error.to_string())?
+        } else {
+            false
+        };
         self.event_sender
             .send(ContentEvent::BeforeUnloadCompleted(
                 ipc_messages::content::BeforeUnloadResult {
@@ -680,10 +943,9 @@ impl ContentRuntime {
     }
 
     fn update_the_rendering(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
-        let document = self
-            .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
         document.pending_update_the_rendering = true;
         self.continue_updating_the_rendering(traversable_id, document_id)
     }
@@ -695,6 +957,8 @@ impl ContentRuntime {
         traversable_id: u64,
         document_id: u64,
     ) -> Result<(), String> {
+        self.refresh_iframe_embeddings(document_id)?;
+
         let event_sender = self.event_sender.clone();
         let paint_frame = {
             let document = self
@@ -823,6 +1087,39 @@ impl ContentRuntime {
                 self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
             }
+            PendingNetworkHandler::IframeDocument {
+                parent_document_id,
+                iframe_node_id,
+                request_key,
+            } => {
+                let current_key = self
+                    .documents
+                    .get(&parent_document_id)
+                    .and_then(|content_document| content_document.iframe_states.get(&iframe_node_id))
+                    .map(|state| state.current_key.clone());
+                if current_key.as_deref() != Some(request_key.as_str()) {
+                    return Ok(());
+                }
+
+                let html = String::from_utf8_lossy(&response.body).into_owned();
+                self.attach_iframe_subdocument_from_html(
+                    parent_document_id,
+                    iframe_node_id,
+                    response.final_url,
+                    html,
+                )?;
+
+                let Some(content_document) = self.documents.get(&parent_document_id) else {
+                    eprintln!(
+                        "[content] complete_document_fetch (iframe): parent document {parent_document_id} not found"
+                    );
+                    return Ok(());
+                };
+                let traversable_id = content_document.traversable_id;
+                self.continue_document_load(parent_document_id)?;
+                self.continue_updating_the_rendering(traversable_id, parent_document_id)?;
+                Ok(())
+            }
         }
     }
 
@@ -869,6 +1166,32 @@ impl ContentRuntime {
                 self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
             }
+            PendingNetworkHandler::IframeDocument {
+                parent_document_id,
+                iframe_node_id,
+                request_key,
+            } => {
+                let current_key = self
+                    .documents
+                    .get(&parent_document_id)
+                    .and_then(|content_document| content_document.iframe_states.get(&iframe_node_id))
+                    .map(|state| state.current_key.clone());
+                if current_key.as_deref() != Some(request_key.as_str()) {
+                    return Ok(());
+                }
+
+                self.attach_iframe_about_blank(parent_document_id, iframe_node_id)?;
+                let Some(content_document) = self.documents.get(&parent_document_id) else {
+                    eprintln!(
+                        "[content] fail_document_fetch (iframe): parent document {parent_document_id} not found"
+                    );
+                    return Ok(());
+                };
+                let traversable_id = content_document.traversable_id;
+                self.continue_document_load(parent_document_id)?;
+                self.continue_updating_the_rendering(traversable_id, parent_document_id)?;
+                Ok(())
+            }
         }
     }
 
@@ -879,13 +1202,10 @@ impl ContentRuntime {
         timer_key: u64,
         nesting_level: u32,
     ) -> Result<(), String> {
-        let document = self
-            .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
-        document
-            .settings
-            .run_window_timer(timer_id, timer_key, nesting_level)
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        document.settings.run_window_timer(timer_id, timer_key, nesting_level)
     }
 
     fn note_command_completed(&self) -> Result<(), String> {
@@ -932,15 +1252,20 @@ impl ContentRuntime {
                 request_id,
                 source,
             } => {
-                let value = self.evaluate_script(document_id, source)?;
-                let value_json = serde_json::to_string(&value).map_err(|error| {
-                    format!("failed to encode script evaluation result: {error}")
-                })?;
+                let (value_json, error) = match self.evaluate_script(document_id, source) {
+                    Ok(value) => {
+                        let value_json = serde_json::to_string(&value).map_err(|error| {
+                            format!("failed to encode script evaluation result: {error}")
+                        })?;
+                        (value_json, None)
+                    }
+                    Err(error) => (String::from("null"), Some(error)),
+                };
                 self.event_sender
                     .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
                         request_id,
                         value_json,
-                        error: None,
+                        error,
                     }))
                     .map_err(|error| format!("failed to send script evaluation result: {error}"))?;
                 Ok(true)
@@ -1061,9 +1386,11 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentFetchResponse, deferred_script_response_is_executable,
-        is_javascript_mime_essence, normalized_content_type_essence,
+        ContentFetchResponse, ContentRuntime, IframeNavigationTarget, IframeSnapshot,
+        deferred_script_response_is_executable, is_javascript_mime_essence,
+        normalized_content_type_essence,
     };
+    use url::Url;
 
     fn response(status: u16, content_type: &str) -> ContentFetchResponse {
         ContentFetchResponse {
@@ -1096,6 +1423,54 @@ mod tests {
             200,
             "text/html"
         )));
+    }
+
+    fn iframe_snapshot(src: Option<&str>, srcdoc: Option<&str>) -> IframeSnapshot {
+        IframeSnapshot {
+            node_id: 1,
+            src: src.map(str::to_owned),
+            srcdoc: srcdoc.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn iframe_navigation_prefers_srcdoc_over_src() {
+        let base = Url::parse("https://example.test/page.html").expect("valid base URL");
+        let (request_key, target) = ContentRuntime::iframe_navigation_target(
+            &base,
+            &iframe_snapshot(Some("https://other.test/frame"), Some("<p>srcdoc</p>")),
+        );
+        assert_eq!(request_key, "srcdoc:<p>srcdoc</p>");
+        match target {
+            IframeNavigationTarget::Srcdoc { html } => assert_eq!(html, "<p>srcdoc</p>"),
+            _ => panic!("expected srcdoc target"),
+        }
+    }
+
+    #[test]
+    fn iframe_navigation_resolves_relative_src() {
+        let base = Url::parse("https://example.test/page.html").expect("valid base URL");
+        let (request_key, target) =
+            ContentRuntime::iframe_navigation_target(&base, &iframe_snapshot(Some("child.html"), None));
+        assert_eq!(request_key, "src:https://example.test/child.html");
+        match target {
+            IframeNavigationTarget::Url { url } => {
+                assert_eq!(url.as_str(), "https://example.test/child.html")
+            }
+            _ => panic!("expected URL target"),
+        }
+    }
+
+    #[test]
+    fn iframe_navigation_falls_back_to_about_blank_when_src_missing() {
+        let base = Url::parse("https://example.test/page.html").expect("valid base URL");
+        let (request_key, target) =
+            ContentRuntime::iframe_navigation_target(&base, &iframe_snapshot(None, None));
+        assert_eq!(request_key, "about:blank");
+        match target {
+            IframeNavigationTarget::AboutBlank => {}
+            _ => panic!("expected about:blank target"),
+        }
     }
 
     #[test]

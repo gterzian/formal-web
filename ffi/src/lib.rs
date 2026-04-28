@@ -48,7 +48,8 @@ unsafe extern "C" {
     ) -> *mut lean_object;
     fn clearWindowTimer(event_loop_id: usize, timer_key: usize) -> *mut lean_object;
     fn startNavigation(
-        document_id: usize,
+        event_loop_id: usize,
+        source_navigable_id: usize,
         destination_url: *mut lean_object,
         target: *mut lean_object,
         user_involvement: *mut lean_object,
@@ -201,7 +202,8 @@ pub(crate) fn call_lean_clear_window_timer_parts(
 }
 
 pub(crate) fn call_lean_navigation_start_parts(
-    document_id: usize,
+    event_loop_id: usize,
+    source_navigable_id: usize,
     destination_url: &str,
     target: &str,
     user_involvement: &str,
@@ -212,7 +214,8 @@ pub(crate) fn call_lean_navigation_start_parts(
     let lean_user_involvement = lean_string_from_owned(user_involvement.to_owned());
     let io_result = unsafe {
         startNavigation(
-            document_id,
+            event_loop_id,
+            source_navigable_id,
             lean_destination_url,
             lean_target,
             lean_user_involvement,

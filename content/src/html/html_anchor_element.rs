@@ -34,7 +34,7 @@ impl HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
     pub(crate) fn activation_behavior(
         &self,
-        document_id: u64,
+        source_navigable_id: u64,
         document_creation_url: &Url,
         _event: &JsObject,
         event_sender: &IpcSender<ContentEvent>,
@@ -69,7 +69,7 @@ impl HTMLAnchorElement {
             return Ok(());
         };
         let request = NavigateRequest {
-            document_id,
+            source_navigable_id,
             destination_url,
             target: self.target(),
             user_involvement,

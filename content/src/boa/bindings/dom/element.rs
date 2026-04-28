@@ -9,7 +9,7 @@ use boa_engine::{
 
 use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
 use crate::dom::Element;
-use crate::html::{HTMLAnchorElement, HTMLElement};
+use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
 
 use super::{event_target::register_event_target_methods, node::register_node_methods};
 
@@ -94,6 +94,9 @@ pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R)
     }
     if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
         return Ok(f(&html_anchor_element.html_element.element));
+    }
+    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
+        return Ok(f(&html_iframe_element.html_element.element));
     }
     Err(JsNativeError::typ()
         .with_message("receiver is not an Element")

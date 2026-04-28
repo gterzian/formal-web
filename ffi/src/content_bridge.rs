@@ -155,7 +155,8 @@ fn spawn_listener(
                 }
                 ContentEvent::NavigationRequested(request) => {
                     let _ = super::call_lean_navigation_start_parts(
-                        request.document_id as usize,
+                        event_loop_id,
+                        request.source_navigable_id as usize,
                         &request.destination_url,
                         &request.target,
                         navigation_user_involvement_name(request.user_involvement.clone()),

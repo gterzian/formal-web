@@ -356,7 +356,7 @@ fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, St
 
     if let Some(destination_url) = message.strip_prefix(NAVIGATION_REQUESTED_MESSAGE_PREFIX) {
         return Ok(FormalWebUserEvent::NavigationRequested(NavigateRequest {
-            document_id: 0,
+            source_navigable_id: 0,
             destination_url: destination_url.to_owned(),
             target: String::new(),
             user_involvement: ipc_messages::content::UserNavigationInvolvement::None,

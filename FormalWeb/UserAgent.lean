@@ -404,6 +404,26 @@ def traversableWithTargetName?
             loop (index + 1) remaining
   loop 0 userAgent.topLevelTraversableSet.members.size
 
+    def sourceNavigationTraversable?
+      (userAgent : UserAgent)
+      (sourceNavigableId : Nat) :
+      Option TopLevelTraversable :=
+      match traversable? userAgent sourceNavigableId with
+      | some traversable =>
+        some traversable
+      | none =>
+        -- Compatibility fallback while Rust/Lean call sites transition to
+        -- strictly navigable identifiers.
+        traversableContainingDocument? userAgent sourceNavigableId
+
+    def sourceNavigableEventLoopId?
+      (userAgent : UserAgent)
+      (sourceNavigableId : Nat) :
+      Option Nat := do
+      let traversable <- sourceNavigationTraversable? userAgent sourceNavigableId
+      let document <- traversable.toTraversableNavigable.activeDocument
+      pure document.eventLoopId
+
 def browsingContextGroupOfBrowsingContext?
     (userAgent : UserAgent)
     (browsingContextId : Nat) :
@@ -632,12 +652,17 @@ def queueRunBeforeUnload
     documentId
   )
 
+structure BrowsingContextNavigationSelection where
+  browsingContextId : Nat
+  swappedGroup : Bool
+deriving Repr, DecidableEq
+
 /-- https://html.spec.whatwg.org/multipage/#obtain-browsing-context-navigation -/
 def obtainBrowsingContextToUseForNavigationResponse
     (userAgent : UserAgent)
     (traversable : TopLevelTraversable)
     (navigationParams : NavigationParams) :
-    UserAgent × Nat :=
+    UserAgent × BrowsingContextNavigationSelection :=
   Id.run do
     -- Step 1: Let browsingContext be navigationParams's navigable's active browsing context.
     let browsingContextId := traversable.toTraversableNavigable.activeBrowsingContextId.getD 0
@@ -652,20 +677,21 @@ def obtainBrowsingContextToUseForNavigationResponse
     let destinationOrigin := navigationParams.origin
 
     -- Step 8: If swapGroup is false, then return browsingContext.
-    -- Note: The current model approximates the COOP and same-site checks with direct same-origin reuse.
-    if sourceOrigin? = some destinationOrigin then
-      (userAgent, browsingContextId)
+    -- Note: The current model approximates swap-group by a same-site check.
+    let sameSite : Bool :=
+      match sourceOrigin? with
+      | some sourceOrigin => sourceOrigin.site == destinationOrigin.site
+      | none => true
+    if sameSite then
+      (userAgent, { browsingContextId, swappedGroup := false })
     else
       -- Step 9: Let newBrowsingContext be the first return value of creating a new top-level browsing context and document.
-      -- Note: The current model allocates a fresh browsing-context identifier in the existing group and lets the navigation response allocate the replacement `Document`.
-      let some group := browsingContextGroupOfBrowsingContext? userAgent browsingContextId
-        | (userAgent, browsingContextId)
+      -- Note: For the swap-group branch we allocate a fresh browsing context in a fresh group and defer document allocation to navigation loading.
+      let (groupSet, group) := userAgent.browsingContextGroupSet.appendFresh
       let (group, browsingContext) := group.append { id := group.nextBrowsingContextId }
-      let userAgent := {
-        userAgent with
-          browsingContextGroupSet := userAgent.browsingContextGroupSet.replace group
-      }
-      (userAgent, browsingContext.id)
+      let groupSet := groupSet.replace group
+      let userAgent := { userAgent with browsingContextGroupSet := groupSet }
+      (userAgent, { browsingContextId := browsingContext.id, swappedGroup := true })
 
 /-- https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags -/
 def determineCreationSandboxingFlags
@@ -776,9 +802,10 @@ where
       UserAgent.M Document := do
     -- Step 1: Let browsingContext be the result of obtaining a browsing context to use for a navigation response.
     let userAgent ← get
-    let (userAgent, browsingContextId) :=
+    let (userAgent, browsingContextSelection) :=
       obtainBrowsingContextToUseForNavigationResponse userAgent traversable navigationParams
     set userAgent
+    let browsingContextId := browsingContextSelection.browsingContextId
 
     -- Step 2: Let permissionsPolicy be the result of creating a permissions policy from a response.
     let permissionsPolicy := createPermissionsPolicy none navigationParams.origin
@@ -794,9 +821,18 @@ where
     let loadTimingInfo : DocumentLoadTimingInfo := {}
     -- TODO: Thread actual response timing info into load timing.
 
-    -- Notes: Response-driven document creation stays on the traversable's existing event loop.
-    let eventLoopId :=
-      (traversable.toTraversableNavigable.activeDocument.map (·.eventLoopId)).getD 0
+    -- Step 7 / otherwise branch: when obtain-browsing-context swapped group,
+    -- obtain a similar-origin window agent for the destination group.
+    let eventLoopId ←
+      if browsingContextSelection.swappedGroup then
+        let userAgent ← get
+        -- Swapped-group navigations obtain a fresh agent/event-loop for the
+        -- destination browsing context.
+        let (userAgent, agent) := createAgent userAgent false
+        set userAgent
+        pure agent.eventLoop.id
+      else
+        pure ((traversable.toTraversableNavigable.activeDocument.map (·.eventLoopId)).getD 0)
 
     -- Step 12: Let document be a new Document, with:
     let documentId ← UserAgent.allocateDocumentIdM
@@ -1598,8 +1634,15 @@ where
 
 inductive UserAgentTaskMessage where
   | freshTopLevelTraversable (destinationURL : String)
+  | startNavigationFromEventLoop
+      (sourceEventLoopId : Nat)
+      (sourceNavigableId : Nat)
+      (destinationURL : String)
+      (targetName : String)
+      (userInvolvement : UserNavigationInvolvement)
+      (noopener : Bool)
   | navigateRequested
-      (sourceDocumentId : Nat)
+  (sourceNavigableId : Nat)
       (destinationURL : String)
       (targetName : String)
       (userInvolvement : UserNavigationInvolvement)
@@ -1913,7 +1956,7 @@ def continueNavigationAfterBeforeUnloadM
       pure ()
 
 def chooseTargetTraversableM
-    (sourceId : Nat)
+  (sourceNavigableId : Nat)
     (targetName : String)
     (noopener : Bool) :
     M TopLevelTraversable := do
@@ -1923,15 +1966,11 @@ def chooseTargetTraversableM
   else
     let userAgent ← get
     if normalizedTargetName.isEmpty then
-      match traversable? userAgent sourceId with
+      match sourceNavigationTraversable? userAgent sourceNavigableId with
       | some traversable =>
-          pure traversable
+        pure traversable
       | none =>
-        match traversableContainingDocument? userAgent sourceId with
-        | some traversable =>
-            pure traversable
-        | none =>
-            createTopLevelTraversableM
+        createTopLevelTraversableM
     else
       match traversableWithTargetName? userAgent normalizedTargetName with
       | some traversable =>
@@ -1940,14 +1979,14 @@ def chooseTargetTraversableM
           createTopLevelTraversableM normalizedTargetName
 
 def navigateRequestedM
-    (sourceDocumentId : Nat)
+    (sourceNavigableId : Nat)
     (destinationURL : String)
     (targetName : String)
     (userInvolvement : UserNavigationInvolvement)
     (noopener : Bool) :
     M Unit := do
   tell #[.notifyNavigationRequested destinationURL]
-  let traversable ← chooseTargetTraversableM sourceDocumentId targetName noopener
+  let traversable ← chooseTargetTraversableM sourceNavigableId targetName noopener
   let unloadStatus ←
     checkIfUnloadingIsCanceledM traversable destinationURL userInvolvement
   match unloadStatus with
@@ -1960,6 +1999,39 @@ def navigateRequestedM
   | .pending
   | .canceledByBeforeUnload =>
       pure ()
+
+/-- https://html.spec.whatwg.org/multipage/#navigate -/
+def startNavigationFromEventLoopM
+    (sourceEventLoopId : Nat)
+    (sourceNavigableId : Nat)
+    (destinationURL : String)
+    (targetName : String)
+    (userInvolvement : UserNavigationInvolvement)
+    (noopener : Bool) :
+    M Unit := do
+  let userAgent ← get
+  let destinationEventLoopId :=
+    (sourceNavigableEventLoopId? userAgent sourceNavigableId).getD sourceEventLoopId
+  if destinationEventLoopId != sourceEventLoopId then
+    -- The event-loop handoff reached the wrong relevant agent; requeue the
+    -- navigation-start task on the destination event loop.
+    tell #[.eventLoopMessage
+      destinationEventLoopId
+      (.startNavigation
+        sourceNavigableId
+        destinationURL
+        targetName
+        userInvolvement
+        noopener)]
+  else
+    -- Continue from the navigate algorithm's in-parallel handoff on the
+    -- relevant user agent thread.
+    navigateRequestedM
+      sourceNavigableId
+      destinationURL
+      targetName
+      userInvolvement
+      noopener
 
 /-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
 def beforeUnloadCompletedM
@@ -2068,7 +2140,10 @@ def handleFetchCompletedM
               pendingNavigationFinalization.traversableId
               document.documentId
               navigationResponse
-        tell #[.eventLoopMessage document.eventLoopId eventLoopMessage]
+        tell #[
+          .startEventLoop document.eventLoopId,
+          .eventLoopMessage document.eventLoopId eventLoopMessage
+        ]
   match renderingDispatch? with
   | some (eventLoopId, eventLoopMessage) =>
       tell #[.eventLoopMessage eventLoopId eventLoopMessage]
@@ -2156,8 +2231,16 @@ def handleUserAgentTaskMessage
   | .freshTopLevelTraversable destinationURL =>
       let _ ← bootstrapFreshTopLevelTraversableM destinationURL
       pure ()
-  | .navigateRequested sourceDocumentId destinationURL targetName userInvolvement noopener =>
-    navigateRequestedM sourceDocumentId destinationURL targetName userInvolvement noopener
+  | .startNavigationFromEventLoop sourceEventLoopId sourceNavigableId destinationURL targetName userInvolvement noopener =>
+    startNavigationFromEventLoopM
+      sourceEventLoopId
+      sourceNavigableId
+      destinationURL
+      targetName
+      userInvolvement
+      noopener
+  | .navigateRequested sourceNavigableId destinationURL targetName userInvolvement noopener =>
+    navigateRequestedM sourceNavigableId destinationURL targetName userInvolvement noopener
   | .beforeUnloadCompleted documentId checkId canceled =>
     beforeUnloadCompletedM documentId checkId canceled
   | .finalizeNavigation documentId url =>
@@ -2182,6 +2265,7 @@ def runMonadic
 
 structure UserAgentRuntimeState where
   userAgent : UserAgent := default
+  userAgentChannel : Std.CloseableChannel UserAgentTaskMessage
   fetchChannel : Std.CloseableChannel FetchRuntimeMessage
   timerChannel : Std.CloseableChannel TimerRuntimeMessage
   eventLoopWorkers : Std.TreeMap Nat EventLoopWorker := Std.TreeMap.empty
@@ -2220,19 +2304,32 @@ private def performUserAgentEffect
     IO UserAgentRuntimeState := do
   match effect with
   | .startEventLoop eventLoopId =>
-      -- Eagerly create the event-loop worker and register its channel in the global
-      -- registry so Rust FFI callers can route messages without going through the UA channel (§2, §3).
-      let some eventLoop := state.userAgent.eventLoop? eventLoopId | pure state
-      let worker ←
-        FormalWeb.startEventLoopWorker
-          state.fetchChannel
-          state.timerChannel
-          eventLoop
-      eventLoopChannelRegistry.modify (·.insert eventLoopId worker.channel)
-      pure {
-        state with
-          eventLoopWorkers := state.eventLoopWorkers.insert eventLoopId worker
-      }
+      if state.eventLoopWorkers.get? eventLoopId |>.isSome then
+        pure state
+      else do
+        -- Eagerly create the event-loop worker and register its channel in the global
+        -- registry so Rust FFI callers can route messages without going through the UA channel (§2, §3).
+        let some eventLoop := state.userAgent.eventLoop? eventLoopId | pure state
+        let worker ←
+          FormalWeb.startEventLoopWorker
+            state.fetchChannel
+            state.timerChannel
+            (fun sourceEventLoopId sourceNavigableId destinationURL targetName userInvolvement noopener =>
+              trySendAndForget
+                state.userAgentChannel
+                (.startNavigationFromEventLoop
+                  sourceEventLoopId
+                  sourceNavigableId
+                  destinationURL
+                  targetName
+                  userInvolvement
+                  noopener))
+            eventLoop
+        eventLoopChannelRegistry.modify (·.insert eventLoopId worker.channel)
+        pure {
+          state with
+            eventLoopWorkers := state.eventLoopWorkers.insert eventLoopId worker
+        }
   | .startFetch request =>
       trySendAndForget state.fetchChannel (.task (.startFetch request))
       pure state
@@ -2295,6 +2392,7 @@ def runUserAgent
     (timerChannel : Std.CloseableChannel TimerRuntimeMessage) :
     IO Unit := do
   let initialState : UserAgentRuntimeState := {
+    userAgentChannel := channel
     fetchChannel
     timerChannel
   }

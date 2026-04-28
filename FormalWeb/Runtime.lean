@@ -95,7 +95,8 @@ def clearWindowTimerFromRust
 
 @[export startNavigation]
 def startNavigationFromRust
-    (documentId : USize)
+  (eventLoopId : USize)
+  (sourceNavigableId : USize)
     (destinationURL : String)
     (targetName : String)
     (userInvolvement : String)
@@ -108,13 +109,14 @@ def startNavigationFromRust
       UserNavigationInvolvement.browserUI
     else
       UserNavigationInvolvement.none
-  enqueueUserAgentTaskMessage
-      (.navigateRequested
-        documentId.toNat
-        destinationURL
-        targetName
-        parsedUserInvolvement
-        (noopener.toNat != 0))
+  sendEventLoopMessage
+    eventLoopId.toNat
+    (.startNavigation
+      sourceNavigableId.toNat
+      destinationURL
+      targetName
+      parsedUserInvolvement
+      (noopener.toNat != 0))
 
 @[export completeBeforeUnload]
 def completeBeforeUnloadFromRust

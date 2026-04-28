@@ -35,6 +35,7 @@
 - Keep `FormalWeb.Runtime` limited to starting the top-level user-agent, fetch, and timer workers plus holding their top-level channels; let `UserAgent` own event-loop worker lifecycle, and let each `EventLoop` worker talk directly to fetch/timer workers through the channels cloned into it.
 - Model HTML timer waiting in `FormalWeb.Timer`, use `EventLoop` runtime effects to schedule and clear `run steps after a timeout`, and route timer completions back into the owning event loop as explicit task messages.
 - Keep cross-document session-history commit/finalization helpers in `FormalWeb.SessionHistoryNavigation`; model them against navigable/session-history state there instead of embedding that logic in runtime-facing `UserAgent` code.
+- Route Rust-originated navigation starts through an event-loop task message keyed by source navigable identity, and hand off to `UserAgent` at the in-parallel continuation boundary; the event-loop start-navigation task is a wake-only handoff and must not wait for content-command completion.
 - When a Lean helper models only a prefix or continuation of an in-parallel spec algorithm, state explicitly where that helper enters the algorithm and keep `Step n:` comments limited to the steps that helper actually executes.
 - A guide on Lean FFI can be found in `/scratchpad/ffi_guide/md`.
 - Keep proof-only transition helper modules such as `TransitionSystem` and `TransitionTrace` under `FormalWeb/Proofs/`.

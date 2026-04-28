@@ -20,6 +20,8 @@ inductive TaskStep
   | createLoadedDocument
   | destroyDocument
   | completeNav (navigationId : Nat)
+  /-- Model-local task step queued for https://html.spec.whatwg.org/multipage/#navigate up to the in-parallel handoff. -/
+  | startNavigation
   /-- Model-local UpdateTheRendering task step queued when rendering should be updated. -/
   | updateTheRendering
   /-- Model-local task step queued when the embedder runtime dispatches a serialized UI event. -/
@@ -65,6 +67,12 @@ inductive EventLoopTaskMessage where
   | createEmptyDocument (traversableId : Nat) (documentId : DocumentId)
   | createLoadedDocument (traversableId : Nat) (documentId : DocumentId) (response : NavigationResponse)
   | destroyDocument (documentId : DocumentId)
+  | startNavigation
+      (sourceNavigableId : Nat)
+      (destinationURL : String)
+      (targetName : String)
+      (userInvolvement : UserNavigationInvolvement)
+      (noopener : Bool)
   | queueUpdateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | queueDispatchEvent (documentId : DocumentId) (event : String)
   | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
@@ -142,6 +150,14 @@ deriving DecidableEq
 structure PendingDestroyDocumentTask where
   documentId : DocumentId
 deriving DecidableEq
+
+structure PendingStartNavigationTask where
+  sourceNavigableId : Nat
+  destinationURL : String
+  targetName : String
+  userInvolvement : UserNavigationInvolvement
+  noopener : Bool
+deriving Repr, DecidableEq
 
 /-- Model-local runtime payload for an UpdateTheRendering task. -/
 structure PendingUpdateTheRenderingTask where
@@ -536,6 +552,7 @@ structure EventLoopTaskState where
   pendingCreateEmptyDocumentTasks : List PendingCreateEmptyDocumentTask := []
   pendingCreateLoadedDocumentTasks : List PendingCreateLoadedDocumentTask := []
   pendingDestroyDocumentTasks : List PendingDestroyDocumentTask := []
+  pendingStartNavigationTasks : List PendingStartNavigationTask := []
   pendingUpdateTheRenderingTasks : List PendingUpdateTheRenderingTask := []
   pendingDispatchEventTasks : List PendingDispatchEventTask := []
   pendingRunBeforeUnloadTasks : List PendingRunBeforeUnloadTask := []
@@ -551,6 +568,13 @@ inductive EventLoopRuntimeEffect where
   | createEmptyDocument (traversableId : Nat) (documentId : DocumentId)
   | createLoadedDocument (traversableId : Nat) (documentId : DocumentId) (response : NavigationResponse)
   | destroyDocument (documentId : DocumentId)
+  | startNavigationInUserAgent
+      (eventLoopId : Nat)
+      (sourceNavigableId : Nat)
+      (destinationURL : String)
+      (targetName : String)
+      (userInvolvement : UserNavigationInvolvement)
+      (noopener : Bool)
   | updateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | dispatchEvent (events : List PendingDispatchEvent)
   | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
@@ -577,6 +601,8 @@ deriving Repr, DecidableEq
 
 structure EventLoopRuntimeHooks where
   startDocumentFetch : RustNetHandlerPointer -> NavigationRequest -> IO Unit
+  startNavigationInUserAgent :
+    Nat -> Nat -> String -> String -> UserNavigationInvolvement -> Bool -> IO Unit
   scheduleTimeout : RunStepsAfterTimeoutRequest -> IO Unit
   clearTimeout : Nat -> IO Unit
 
@@ -602,6 +628,20 @@ def handleRuntimeEffect
         response.body
   | .destroyDocument documentId =>
       contentProcessDestroyDocument state.contentProcess.raw (USize.ofNat documentId.id)
+  | .startNavigationInUserAgent
+      eventLoopId
+      sourceNavigableId
+      destinationURL
+      targetName
+      userInvolvement
+      noopener =>
+      hooks.startNavigationInUserAgent
+        eventLoopId
+        sourceNavigableId
+        destinationURL
+        targetName
+        userInvolvement
+        noopener
   | .updateTheRendering traversableId documentId =>
       contentProcessUpdateTheRendering
         state.contentProcess.raw
@@ -653,6 +693,7 @@ def coalesceQueuedHighFrequencyWork
       pendingCreateEmptyDocumentTasks
       pendingCreateLoadedDocumentTasks
       pendingDestroyDocumentTasks
+      pendingStartNavigationTasks
       pendingUpdateTheRenderingTasks
       pendingDispatchEventTasks
       pendingRunBeforeUnloadTasks
@@ -680,6 +721,7 @@ def coalesceQueuedHighFrequencyWork
         pendingCreateEmptyDocumentTasks
         pendingCreateLoadedDocumentTasks
         pendingDestroyDocumentTasks
+        pendingStartNavigationTasks
         pendingUpdateTheRenderingTasks
         pendingDispatchEventTasks
         pendingRunBeforeUnloadTasks
@@ -749,6 +791,26 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
                       liveDocumentIds := blockedState.liveDocumentIds.erase pendingTask.documentId.id
                       pendingDestroyDocumentTasks := pendingTasks
                   })
+        | .startNavigation =>
+            match state.pendingStartNavigationTasks with
+            | [] =>
+                (none, readyState)
+            | pendingTask :: pendingTasks =>
+            -- `startNavigation` is queued on the originating event loop so
+            -- navigation starts on that loop before the in-parallel
+            -- continuation is handed to the user agent runtime.
+                let nextState := {
+                  readyState with
+                    pendingStartNavigationTasks := pendingTasks
+                }
+                (some (.startNavigationInUserAgent
+                  blockedState.eventLoop.id
+                  pendingTask.sourceNavigableId
+                  pendingTask.destinationURL
+                  pendingTask.targetName
+                  pendingTask.userInvolvement
+                  pendingTask.noopener),
+                  nextState)
         | .updateTheRendering =>
             match state.pendingUpdateTheRenderingTasks with
             | [] =>
@@ -869,6 +931,21 @@ def handleEventLoopTaskMessage
           eventLoop := state.eventLoop.enqueueTask task
           pendingDestroyDocumentTasks :=
             state.pendingDestroyDocumentTasks.concat { documentId }
+      }
+      (((), #[]), state)
+  | .startNavigation sourceNavigableId destinationURL targetName userInvolvement noopener =>
+      let task : Task := { step := .startNavigation }
+      let state := {
+        state with
+          eventLoop := state.eventLoop.enqueueTask task
+          pendingStartNavigationTasks :=
+            state.pendingStartNavigationTasks.concat {
+              sourceNavigableId
+              destinationURL
+              targetName
+              userInvolvement
+              noopener
+            }
       }
       (((), #[]), state)
   | .queueUpdateTheRendering traversableId documentId =>
@@ -1085,6 +1162,8 @@ private def trySendAndForget
 def startEventLoopWorker
     (fetchChannel : Std.CloseableChannel FetchRuntimeMessage)
     (timerChannel : Std.CloseableChannel TimerRuntimeMessage)
+    (onStartNavigationInUserAgent :
+      Nat -> Nat -> String -> String -> UserNavigationInvolvement -> Bool -> IO Unit)
     (eventLoop : EventLoop)
     (onStopped : IO Unit := pure ()) :
     IO EventLoopWorker := do
@@ -1112,6 +1191,8 @@ def startEventLoopWorker
     clearTimeout := fun timerKey => do
       let nowMs ← IO.monoMsNow
       trySendAndForget timerChannel (.task (.clearTimeout nowMs timerKey))
+    startNavigationInUserAgent :=
+      onStartNavigationInUserAgent
   }
   let task ← IO.asTask <| do
     try

@@ -25,7 +25,8 @@ use crate::dom::{
     EventTarget, Node, UIEvent,
 };
 use crate::html::{
-    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLElement, TimerHandler, Window,
+    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLIFrameElement, HTMLElement,
+    TimerHandler, Window,
 };
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
@@ -147,6 +148,9 @@ impl EnvironmentSettingsObject {
             .map_err(|error| error.to_string())?;
         context
             .register_global_class::<HTMLAnchorElement>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<HTMLIFrameElement>()
             .map_err(|error| error.to_string())?;
         context
             .register_global_class::<Window>()
@@ -399,6 +403,7 @@ fn wire_interface_prototypes(context: &mut Context) {
     set_registered_interface_prototype::<Element, Node>(context);
     set_registered_interface_prototype::<HTMLElement, Element>(context);
     set_registered_interface_prototype::<HTMLAnchorElement, HTMLElement>(context);
+    set_registered_interface_prototype::<HTMLIFrameElement, HTMLElement>(context);
 }
 
 fn set_registered_interface_prototype<Child: Class, Parent: Class>(context: &mut Context) {

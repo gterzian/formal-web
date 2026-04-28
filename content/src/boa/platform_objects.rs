@@ -5,7 +5,7 @@ use boa_engine::{Context, JsError, JsNativeError, JsResult, class::Class, object
 use html5ever::{local_name, ns};
 
 use crate::dom::{Element, Node};
-use crate::html::{GlobalScope, HTMLAnchorElement, HTMLElement, Window};
+use crate::html::{GlobalScope, HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Window};
 
 pub(crate) fn with_global_scope<R>(
     context: &Context,
@@ -101,6 +101,8 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
                 if element.name.ns == ns!(html) {
                     if element.name.local == local_name!("a") {
                         2_u8
+                    } else if element.name.local == local_name!("iframe") {
+                        3_u8
                     } else {
                         1_u8
                     }
@@ -111,6 +113,7 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
             .unwrap_or(0);
 
         match kind {
+            3 => HTMLIFrameElement::from_data(HTMLIFrameElement::new(document, node_id), context)?,
             2 => HTMLAnchorElement::from_data(HTMLAnchorElement::new(document, node_id), context)?,
             1 => HTMLElement::from_data(HTMLElement::new(document, node_id), context)?,
             _ => Element::from_data(Element::new(document, node_id), context)?,
