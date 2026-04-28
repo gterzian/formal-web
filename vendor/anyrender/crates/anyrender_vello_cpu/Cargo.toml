@@ -1,0 +1,40 @@
+[package]
+name = "anyrender_vello_cpu"
+description = "vello_cpu backend for anyrender"
+version = "0.10.0"
+documentation = "https://docs.rs/anyrender_vello_cpu"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+pixels_window_renderer = ["dep:pixels_window_renderer"]
+softbuffer_window_renderer = ["dep:softbuffer_window_renderer"]
+multithreading = ["vello_cpu/multithreading"]
+log_frame_times = [
+  "debug_timer/enable",
+  "softbuffer_window_renderer?/log_frame_times",
+  "pixels_window_renderer?/log_frame_times",
+]
+
+# Caches image premultiplication, but the cache is never cleared
+# Useful for benchmarking (as we expect to eventually eliminate this cost)
+# but not recommended for use in production
+experimental_image_cache = []
+
+[dependencies]
+anyrender = { workspace = true }
+debug_timer = { workspace = true }
+kurbo = { workspace = true }
+peniko = { workspace = true }
+
+# WindowRenderer backends
+softbuffer_window_renderer = { workspace = true, optional = true }
+pixels_window_renderer = { workspace = true, optional = true }
+
+# External vello_cpu
+vello_cpu = { workspace = true }
+
+[package.metadata.docs.rs]
+features = ["pixels_window_renderer", "softbuffer_window_renderer"]
