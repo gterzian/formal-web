@@ -116,7 +116,8 @@ def startNavigationFromRust
       destinationURL
       targetName
       parsedUserInvolvement
-      (noopener.toNat != 0))
+      (noopener.toNat != 0)
+      none)
 
 @[export completeBeforeUnload]
 def completeBeforeUnloadFromRust

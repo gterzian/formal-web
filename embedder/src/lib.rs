@@ -1085,6 +1085,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 }
             }
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                if let Some(window) = self.window.as_ref() {
+                    window.set_visible(false);
+                }
                 if let Some(pending_navigation) = self.pending_automation_navigation.take() {
                     let _ = pending_navigation.reply.send(Err(String::from(
                         "window closed before navigation completed",

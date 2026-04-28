@@ -11,7 +11,9 @@ use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -105,6 +107,7 @@ fn spawn_listener(
     bridge: Arc<ContentBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
+        let mut suppress_next_command_completed = false;
         loop {
             let event = match event_receiver.recv() {
                 Ok(event) => event,
@@ -162,6 +165,7 @@ fn spawn_listener(
                         navigation_user_involvement_name(request.user_involvement.clone()),
                         request.noopener,
                     );
+                    suppress_next_command_completed = true;
                 }
                 ContentEvent::BeforeUnloadCompleted(result) => {
                     let _ = super::call_lean_before_unload_completed_parts(
@@ -177,7 +181,11 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::CommandCompleted => {
-                    let _ = super::call_lean_run_next_event_loop_task(event_loop_id);
+                    if suppress_next_command_completed {
+                        suppress_next_command_completed = false;
+                    } else {
+                        let _ = super::call_lean_run_next_event_loop_task(event_loop_id);
+                    }
                 }
                 ContentEvent::ScriptEvaluated(result) => {
                     let waiter = bridge
@@ -286,22 +294,16 @@ pub fn stop(handle: usize) -> Result<(), String> {
     }
 
     let _ = send_command_inner(&bridge, ContentCommand::Shutdown);
-    if let Some(listener) = bridge
-        .listener
-        .lock()
-        .expect("content listener mutex poisoned")
-        .take()
-    {
-        let _ = listener.join();
-    }
-    if let Some(mut child) = bridge
+    let child = bridge
         .child
         .lock()
         .expect("content child mutex poisoned")
-        .take()
-    {
-        let _ = child.wait();
-    }
+        .take();
+    let listener = bridge
+        .listener
+        .lock()
+        .expect("content listener mutex poisoned")
+        .take();
 
     let waiters = bridge
         .script_waiters
@@ -313,7 +315,52 @@ pub fn stop(handle: usize) -> Result<(), String> {
         let _ = waiter.send(Err(String::from("content process stopped")));
     }
 
+    finish_shutdown_async(child, listener);
+
     Ok(())
+}
+
+fn finish_shutdown_async(child: Option<Child>, listener: Option<JoinHandle<()>>) {
+    thread::spawn(move || {
+        finish_shutdown(child, listener);
+    });
+}
+
+fn finish_shutdown(mut child: Option<Child>, listener: Option<JoinHandle<()>>) {
+    if let Some(child) = child.as_mut() {
+        match wait_for_child_exit(child, CONTENT_SHUTDOWN_GRACE_TIMEOUT) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Err(error) => {
+                eprintln!("content bridge shutdown poll error: {error}");
+            }
+        }
+    }
+
+    if let Some(listener) = listener {
+        let _ = listener.join();
+    }
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => return Ok(true),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return Ok(false);
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => {
+                return Err(format!("failed to poll content process exit: {error}"));
+            }
+        }
+    }
 }
 
 pub fn send_command(handle: usize, command: ContentCommand) -> Result<(), String> {

@@ -20,8 +20,6 @@ inductive TaskStep
   | createLoadedDocument
   | destroyDocument
   | completeNav (navigationId : Nat)
-  /-- Model-local task step queued for https://html.spec.whatwg.org/multipage/#navigate up to the in-parallel handoff. -/
-  | startNavigation
   /-- Model-local UpdateTheRendering task step queued when rendering should be updated. -/
   | updateTheRendering
   /-- Model-local task step queued when the embedder runtime dispatches a serialized UI event. -/
@@ -52,6 +50,8 @@ deriving Repr, DecidableEq
 structure EventLoop where
   /-- Model-local identifier for https://html.spec.whatwg.org/multipage/#event-loop -/
   id : Nat
+  /-- Model-local allocator state for navigation ids scoped to this event loop. -/
+  nextNavigationTaskId : Nat := 0
   /-- Model-local collapse of https://html.spec.whatwg.org/multipage/#task-queue to a single queue containing https://html.spec.whatwg.org/multipage/#concept-task values. -/
   taskQueue : List Task := []
   /-- https://html.spec.whatwg.org/multipage/#termination-nesting-level -/
@@ -73,6 +73,7 @@ inductive EventLoopTaskMessage where
       (targetName : String)
       (userInvolvement : UserNavigationInvolvement)
       (noopener : Bool)
+      (navigationId : Option Nat)
   | queueUpdateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | queueDispatchEvent (documentId : DocumentId) (event : String)
   | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
@@ -90,6 +91,9 @@ inductive EventLoopTaskMessage where
   | queueDocumentFetchCompletion
       (handler : RustNetHandlerPointer)
       (response : FetchResponse)
+    | queueNavigationContinuation
+      (navigationId : Nat)
+      (response : NavigationResponse)
     | queueWindowTimerTask
       (documentId : DocumentId)
       (timerId : Nat)
@@ -99,6 +103,21 @@ inductive EventLoopTaskMessage where
 deriving Repr, DecidableEq
 
 namespace EventLoop
+
+private def scopedNavigationId
+    (eventLoopId : Nat)
+    (localNavigationId : Nat) : Nat :=
+  let sum := eventLoopId + localNavigationId
+  (sum * (sum + 1)) / 2 + localNavigationId
+
+def allocateNavigationId
+    (eventLoop : EventLoop) :
+    Nat × EventLoop :=
+  let navigationId := scopedNavigationId eventLoop.id eventLoop.nextNavigationTaskId
+  (navigationId, {
+    eventLoop with
+      nextNavigationTaskId := eventLoop.nextNavigationTaskId + 1
+  })
 
 private structure ScheduledTaskRun where
   task : Task
@@ -151,14 +170,6 @@ structure PendingDestroyDocumentTask where
   documentId : DocumentId
 deriving DecidableEq
 
-structure PendingStartNavigationTask where
-  sourceNavigableId : Nat
-  destinationURL : String
-  targetName : String
-  userInvolvement : UserNavigationInvolvement
-  noopener : Bool
-deriving Repr, DecidableEq
-
 /-- Model-local runtime payload for an UpdateTheRendering task. -/
 structure PendingUpdateTheRenderingTask where
   traversableId : Nat
@@ -187,6 +198,11 @@ deriving DecidableEq
 structure PendingDocumentFetchCompletionTask where
   handler : RustNetHandlerPointer
   response : FetchResponse
+deriving DecidableEq
+
+structure PendingCompleteNavigationTask where
+  navigationId : Nat
+  response : NavigationResponse
 deriving DecidableEq
 
 structure PendingRunWindowTimerTask where
@@ -527,6 +543,23 @@ private def hasPendingDocumentFetchRequest
   pendingDocumentFetchRequests.any fun pendingRequest =>
     pendingRequest.handler.raw = handler.raw
 
+private def takePendingCompleteNavigationTask
+    (pendingCompleteNavigationTasks : List PendingCompleteNavigationTask)
+    (navigationId : Nat) :
+  Option (PendingCompleteNavigationTask × List PendingCompleteNavigationTask) :=
+  match pendingCompleteNavigationTasks with
+  | [] =>
+      none
+  | pendingTask :: remainingTasks =>
+      if pendingTask.navigationId = navigationId then
+        some (pendingTask, remainingTasks)
+      else
+        match takePendingCompleteNavigationTask remainingTasks navigationId with
+        | some (matchedTask, nextRemainingTasks) =>
+            some (matchedTask, pendingTask :: nextRemainingTasks)
+        | none =>
+            none
+
 private def documentFetchTimeoutMilliseconds : Nat :=
   5000
 
@@ -552,12 +585,12 @@ structure EventLoopTaskState where
   pendingCreateEmptyDocumentTasks : List PendingCreateEmptyDocumentTask := []
   pendingCreateLoadedDocumentTasks : List PendingCreateLoadedDocumentTask := []
   pendingDestroyDocumentTasks : List PendingDestroyDocumentTask := []
-  pendingStartNavigationTasks : List PendingStartNavigationTask := []
   pendingUpdateTheRenderingTasks : List PendingUpdateTheRenderingTask := []
   pendingDispatchEventTasks : List PendingDispatchEventTask := []
   pendingRunBeforeUnloadTasks : List PendingRunBeforeUnloadTask := []
   pendingDocumentFetchRequests : List PendingDocumentFetchRequest := []
   pendingDocumentFetchCompletionTasks : List PendingDocumentFetchCompletionTask := []
+  pendingCompleteNavigationTasks : List PendingCompleteNavigationTask := []
   pendingRunWindowTimerTasks : List PendingRunWindowTimerTask := []
   pendingDocumentFetchTimeoutTasks : List PendingDocumentFetchTimeoutTask := []
 
@@ -570,11 +603,16 @@ inductive EventLoopRuntimeEffect where
   | destroyDocument (documentId : DocumentId)
   | startNavigationInUserAgent
       (eventLoopId : Nat)
+    (navigationId : Nat)
       (sourceNavigableId : Nat)
       (destinationURL : String)
       (targetName : String)
       (userInvolvement : UserNavigationInvolvement)
       (noopener : Bool)
+  | continueNavigationInUserAgent
+    (eventLoopId : Nat)
+    (navigationId : Nat)
+    (response : NavigationResponse)
   | updateTheRendering (traversableId : Nat) (documentId : DocumentId)
   | dispatchEvent (events : List PendingDispatchEvent)
   | runBeforeUnload (documentId : DocumentId) (checkId : Nat)
@@ -602,7 +640,9 @@ deriving Repr, DecidableEq
 structure EventLoopRuntimeHooks where
   startDocumentFetch : RustNetHandlerPointer -> NavigationRequest -> IO Unit
   startNavigationInUserAgent :
-    Nat -> Nat -> String -> String -> UserNavigationInvolvement -> Bool -> IO Unit
+    Nat -> Nat -> Nat -> String -> String -> UserNavigationInvolvement -> Bool -> IO Unit
+  continueNavigationInUserAgent :
+    Nat -> Nat -> NavigationResponse -> IO Unit
   scheduleTimeout : RunStepsAfterTimeoutRequest -> IO Unit
   clearTimeout : Nat -> IO Unit
 
@@ -630,6 +670,7 @@ def handleRuntimeEffect
       contentProcessDestroyDocument state.contentProcess.raw (USize.ofNat documentId.id)
   | .startNavigationInUserAgent
       eventLoopId
+      navigationId
       sourceNavigableId
       destinationURL
       targetName
@@ -637,11 +678,17 @@ def handleRuntimeEffect
       noopener =>
       hooks.startNavigationInUserAgent
         eventLoopId
+        navigationId
         sourceNavigableId
         destinationURL
         targetName
         userInvolvement
         noopener
+  | .continueNavigationInUserAgent eventLoopId navigationId response =>
+      hooks.continueNavigationInUserAgent
+        eventLoopId
+        navigationId
+        response
   | .updateTheRendering traversableId documentId =>
       contentProcessUpdateTheRendering
         state.contentProcess.raw
@@ -693,12 +740,12 @@ def coalesceQueuedHighFrequencyWork
       pendingCreateEmptyDocumentTasks
       pendingCreateLoadedDocumentTasks
       pendingDestroyDocumentTasks
-      pendingStartNavigationTasks
       pendingUpdateTheRenderingTasks
       pendingDispatchEventTasks
       pendingRunBeforeUnloadTasks
       pendingDocumentFetchRequests
       pendingDocumentFetchCompletionTasks
+      pendingCompleteNavigationTasks
       pendingRunWindowTimerTasks
       pendingDocumentFetchTimeoutTasks =>
       let taskQueueAfterDispatch :=
@@ -721,12 +768,12 @@ def coalesceQueuedHighFrequencyWork
         pendingCreateEmptyDocumentTasks
         pendingCreateLoadedDocumentTasks
         pendingDestroyDocumentTasks
-        pendingStartNavigationTasks
         pendingUpdateTheRenderingTasks
         pendingDispatchEventTasks
         pendingRunBeforeUnloadTasks
         pendingDocumentFetchRequests
         pendingDocumentFetchCompletionTasks
+        pendingCompleteNavigationTasks
         pendingRunWindowTimerTasks
         pendingDocumentFetchTimeoutTasks
 
@@ -791,26 +838,19 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
                       liveDocumentIds := blockedState.liveDocumentIds.erase pendingTask.documentId.id
                       pendingDestroyDocumentTasks := pendingTasks
                   })
-        | .startNavigation =>
-            match state.pendingStartNavigationTasks with
-            | [] =>
-                (none, readyState)
-            | pendingTask :: pendingTasks =>
-            -- `startNavigation` is queued on the originating event loop so
-            -- navigation starts on that loop before the in-parallel
-            -- continuation is handed to the user agent runtime.
-                let nextState := {
-                  readyState with
-                    pendingStartNavigationTasks := pendingTasks
-                }
-                (some (.startNavigationInUserAgent
+        | .completeNav navigationId =>
+            match takePendingCompleteNavigationTask state.pendingCompleteNavigationTasks navigationId with
+            | some (pendingTask, pendingTasks) =>
+                (some (.continueNavigationInUserAgent
                   blockedState.eventLoop.id
-                  pendingTask.sourceNavigableId
-                  pendingTask.destinationURL
-                  pendingTask.targetName
-                  pendingTask.userInvolvement
-                  pendingTask.noopener),
-                  nextState)
+                  navigationId
+                  pendingTask.response),
+                  {
+                    blockedState with
+                      pendingCompleteNavigationTasks := pendingTasks
+                  })
+            | none =>
+                (none, readyState)
         | .updateTheRendering =>
             match state.pendingUpdateTheRenderingTasks with
             | [] =>
@@ -888,8 +928,6 @@ def runNextQueuedTaskM : EventLoopM Unit := fun state =>
                       blockedState with
                         pendingDocumentFetchTimeoutTasks := pendingTasks
                     })
-        | _ =>
-            (none, readyState)
         (((), #[EventLoopEffect.runNextTask task runtimeEffect?]), nextState)
 
 def handleEventLoopTaskMessage
@@ -933,21 +971,25 @@ def handleEventLoopTaskMessage
             state.pendingDestroyDocumentTasks.concat { documentId }
       }
       (((), #[]), state)
-  | .startNavigation sourceNavigableId destinationURL targetName userInvolvement noopener =>
-      let task : Task := { step := .startNavigation }
+  | .startNavigation sourceNavigableId destinationURL targetName userInvolvement noopener navigationId =>
+      let (navigationId, eventLoop) :=
+        match navigationId with
+        | some navigationId =>
+            (navigationId, state.eventLoop)
+        | none =>
+            state.eventLoop.allocateNavigationId
       let state := {
         state with
-          eventLoop := state.eventLoop.enqueueTask task
-          pendingStartNavigationTasks :=
-            state.pendingStartNavigationTasks.concat {
-              sourceNavigableId
-              destinationURL
-              targetName
-              userInvolvement
-              noopener
-            }
+          eventLoop := eventLoop
       }
-      (((), #[]), state)
+      (((), #[EventLoopEffect.performRuntimeEffect (.startNavigationInUserAgent
+        state.eventLoop.id
+        navigationId
+        sourceNavigableId
+        destinationURL
+        targetName
+        userInvolvement
+        noopener)]), state)
   | .queueUpdateTheRendering traversableId documentId =>
       let task : Task := { step := .updateTheRendering }
       let state := {
@@ -1028,6 +1070,15 @@ def handleEventLoopTaskMessage
             state.pendingDocumentFetchCompletionTasks.concat { handler, response }
       }
       (((), #[EventLoopEffect.performRuntimeEffect (.clearTimeout handler.raw.toNat)]), state)
+  | .queueNavigationContinuation navigationId response =>
+      let task : Task := { step := .completeNav navigationId }
+      let state := {
+        state with
+          eventLoop := state.eventLoop.enqueueTask task
+          pendingCompleteNavigationTasks :=
+            state.pendingCompleteNavigationTasks.concat { navigationId, response }
+      }
+      (((), #[]), state)
   | .queueWindowTimerTask documentId timerId timerKey nestingLevel =>
       let task : Task := {
         step := .runWindowTimer
@@ -1163,7 +1214,9 @@ def startEventLoopWorker
     (fetchChannel : Std.CloseableChannel FetchRuntimeMessage)
     (timerChannel : Std.CloseableChannel TimerRuntimeMessage)
     (onStartNavigationInUserAgent :
-      Nat -> Nat -> String -> String -> UserNavigationInvolvement -> Bool -> IO Unit)
+      Nat -> Nat -> Nat -> String -> String -> UserNavigationInvolvement -> Bool -> IO Unit)
+    (onContinueNavigationInUserAgent :
+      Nat -> Nat -> NavigationResponse -> IO Unit)
     (eventLoop : EventLoop)
     (onStopped : IO Unit := pure ()) :
     IO EventLoopWorker := do
@@ -1193,6 +1246,8 @@ def startEventLoopWorker
       trySendAndForget timerChannel (.task (.clearTimeout nowMs timerKey))
     startNavigationInUserAgent :=
       onStartNavigationInUserAgent
+    continueNavigationInUserAgent :=
+      onContinueNavigationInUserAgent
   }
   let task ← IO.asTask <| do
     try

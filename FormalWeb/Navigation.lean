@@ -139,6 +139,8 @@ deriving Repr, DecidableEq
 structure PendingBeforeUnloadNavigation where
   /-- Model-local identifier for the queued beforeunload check. -/
   checkId : Nat
+  /-- Model-local identifier corresponding to https://html.spec.whatwg.org/multipage/#navigation-params-id. -/
+  navigationId : Nat
   /-- Model-local reference to the document whose relevant global object receives `beforeunload`. -/
   documentId : Nat
   /-- Model-local reference to the target traversable that will navigate if the check continues. -/
