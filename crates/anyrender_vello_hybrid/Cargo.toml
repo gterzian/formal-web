@@ -1,0 +1,25 @@
+[package]
+name = "anyrender_vello_hybrid"
+description = "vello_hybrid backend for anyrender"
+version = "0.3.0"
+documentation = "https://docs.rs/anyrender_vello_hybrid"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+log_frame_times = ["debug_timer/enable"]
+webgl = ["vello_hybrid/webgl"]
+
+[dependencies]
+anyrender = { workspace = true }
+debug_timer = { workspace = true }
+kurbo = { workspace = true }
+peniko = { workspace = true }
+vello_hybrid = { workspace = true }
+vello_common = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+rustc-hash = { workspace = true }
+wgpu_context = { workspace = true }

@@ -1,0 +1,24 @@
+[package]
+name = "anyrender_vello"
+description = "Vello backend for anyrender"
+version = "0.8.0"
+documentation = "https://docs.rs/anyrender_vello"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+log_frame_times = ["debug_timer/enable"]
+
+[dependencies]
+anyrender = { workspace = true }
+wgpu_context = { workspace = true }
+
+debug_timer = { workspace = true }
+kurbo = { workspace = true }
+peniko = { workspace = true }
+vello = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+rustc-hash = { workspace = true }

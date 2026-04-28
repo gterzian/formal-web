@@ -1,0 +1,27 @@
+[package]
+name = "anyrender_svg"
+description = "Render SVGs with anyrender"
+version = "0.9.1"
+documentation = "https://docs.rs/anyrender-svg"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+default = ["text", "image_format_png", "image_format_gif", "image_format_jpeg", "image_format_webp"]
+
+text = ["usvg/text", "usvg/memmap-fonts", "usvg/system-fonts"]
+
+image = ["dep:image"]
+image_format_png = ["image", "image/png"]
+image_format_jpeg = ["image", "image/jpeg"]
+image_format_gif = ["image", "image/gif"]
+image_format_webp = ["image", "image/webp"]
+
+[dependencies]
+anyrender = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+usvg = { workspace = true, default-features = false }
+image = { workspace = true, default-features = false, optional = true }
