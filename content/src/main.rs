@@ -28,7 +28,7 @@ use ipc_messages::content::Command::{
     UpdateTheRendering,
 };
 use ipc_messages::content::{
-    Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
+    AttachChildFrame, Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
     Event as ContentEvent, FetchRequest as ContentFetchRequest,
     FetchResponse as ContentFetchResponse, FontTransportSender, FrameId,
     LoadedDocumentResponse, PaintFrame, RecordedScene, ScriptEvaluationResult, ScrollOffset,
@@ -120,6 +120,7 @@ enum DeferredScriptState {
 struct IframeState {
     source_navigable_id: u64,
     current_key: String,
+    cross_origin: bool,
 }
 
 struct IframeSnapshot {
@@ -520,6 +521,45 @@ impl ContentRuntime {
         Ok(())
     }
 
+    fn attach_cross_origin_iframe(
+        &mut self,
+        parent_document_id: u64,
+        iframe_node_id: usize,
+        frame_id: u64,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get_mut(&parent_document_id) else {
+            return Ok(());
+        };
+        let mut document = content_document.document.borrow_mut();
+        if document.get_node(iframe_node_id).is_none() {
+            return Ok(());
+        }
+        let mut mutator = document.mutate();
+        mutator.set_cross_origin_iframe(iframe_node_id, frame_id);
+        Ok(())
+    }
+
+    fn spawn_cross_origin_iframe_process(
+        &self,
+        traversable_id: u64,
+        frame_id: u64,
+        response: LoadedDocumentResponse,
+    ) -> Result<(), String> {
+        self.event_sender
+            .send(ContentEvent::AttachChildFrame(AttachChildFrame {
+                traversable_id,
+                frame_id,
+                response,
+            }))
+            .map_err(|error| format!("failed to send child-frame attach event: {error}"))
+    }
+
+    fn destroy_cross_origin_iframe_process(&self, frame_id: u64) -> Result<(), String> {
+        self.event_sender
+            .send(ContentEvent::DetachChildFrame { frame_id })
+            .map_err(|error| format!("failed to send child-frame detach event: {error}"))
+    }
+
     fn attach_iframe_about_blank(
         &mut self,
         parent_document_id: u64,
@@ -534,15 +574,26 @@ impl ContentRuntime {
     }
 
     fn remove_iframe_subdocument(&mut self, parent_document_id: u64, iframe_node_id: usize) {
+        let cross_origin_frame_id = self
+            .documents
+            .get(&parent_document_id)
+            .and_then(|content_document| content_document.iframe_states.get(&iframe_node_id))
+            .and_then(|state| state.cross_origin.then_some(state.source_navigable_id));
         let Some(content_document) = self.documents.get_mut(&parent_document_id) else {
             return;
         };
-        let mut document = content_document.document.borrow_mut();
-        if document.get_node(iframe_node_id).is_none() {
-            return;
+        {
+            let mut document = content_document.document.borrow_mut();
+            if document.get_node(iframe_node_id).is_none() {
+                return;
+            }
+            let mut mutator = document.mutate();
+            mutator.remove_sub_document(iframe_node_id);
+            mutator.remove_cross_origin_iframe(iframe_node_id);
         }
-        let mut mutator = document.mutate();
-        mutator.remove_sub_document(iframe_node_id);
+        if let Some(frame_id) = cross_origin_frame_id {
+            let _ = self.destroy_cross_origin_iframe_process(frame_id);
+        }
     }
 
     /// <https://html.spec.whatwg.org/#html-element-post-connection-steps>
@@ -596,18 +647,27 @@ impl ContentRuntime {
                 continue;
             }
 
+            if current_key.is_some() {
+                self.remove_iframe_subdocument(parent_document_id, snapshot.node_id);
+            }
+
             let source_navigable_id = self
                 .documents
                 .get(&parent_document_id)
                 .and_then(|content_document| content_document.iframe_states.get(&snapshot.node_id))
                 .map(|state| state.source_navigable_id)
                 .unwrap_or_else(|| self.allocate_iframe_navigable_id());
+            let cross_origin = matches!(
+                &target,
+                IframeNavigationTarget::Url { url } if creation_url.origin() != url.origin()
+            );
             if let Some(content_document) = self.documents.get_mut(&parent_document_id) {
                 content_document.iframe_states.insert(
                     snapshot.node_id,
                     IframeState {
                         source_navigable_id,
                         current_key: desired_key.clone(),
+                        cross_origin,
                     },
                 );
             }
@@ -627,7 +687,62 @@ impl ContentRuntime {
                     )?;
                 }
                 IframeNavigationTarget::Url { url } => {
-                    if url.scheme() == "data" {
+                    if cross_origin {
+                        let Some(parent_traversable_id) = self
+                            .documents
+                            .get(&parent_document_id)
+                            .map(|content_document| content_document.traversable_id)
+                        else {
+                            return Ok(());
+                        };
+                        self.attach_cross_origin_iframe(
+                            parent_document_id,
+                            snapshot.node_id,
+                            source_navigable_id,
+                        )?;
+                        if url.scheme() == "data" {
+                            let html = match DataUrl::process(url.as_str()) {
+                                Ok(data_url) => data_url
+                                    .decode_to_vec()
+                                    .map(|(bytes, _fragment)| {
+                                        String::from_utf8_lossy(&bytes).into_owned()
+                                    })
+                                    .unwrap_or_default(),
+                                Err(_error) => String::new(),
+                            };
+                            self.spawn_cross_origin_iframe_process(
+                                parent_traversable_id,
+                                source_navigable_id,
+                                LoadedDocumentResponse {
+                                    final_url: url.to_string(),
+                                    status: 200,
+                                    content_type: String::new(),
+                                    body: html,
+                                },
+                            )?;
+                        } else {
+                            let handler_id = self.register_pending_handler(
+                                PendingNetworkHandler::IframeDocument {
+                                    parent_document_id,
+                                    iframe_node_id: snapshot.node_id,
+                                    request_key: desired_key,
+                                },
+                            );
+                            if let Err(error) = self.request_remote_fetch(handler_id, Request::get(url)) {
+                                eprintln!("content iframe fetch error: {error}");
+                                self.spawn_cross_origin_iframe_process(
+                                    parent_traversable_id,
+                                    source_navigable_id,
+                                    LoadedDocumentResponse {
+                                        final_url: String::from("about:blank"),
+                                        status: 200,
+                                        content_type: String::from("text/html"),
+                                        body: String::from(EMPTY_HTML_DOCUMENT),
+                                    },
+                                )?;
+                            }
+                        }
+                    } else if url.scheme() == "data" {
                         let html = match DataUrl::process(url.as_str()) {
                             Ok(data_url) => data_url
                                 .decode_to_vec()
@@ -877,6 +992,21 @@ impl ContentRuntime {
     }
 
     fn destroy_document(&mut self, document_id: u64) -> Result<(), String> {
+        let cross_origin_frame_ids = self
+            .documents
+            .get(&document_id)
+            .map(|content_document| {
+                content_document
+                    .iframe_states
+                    .values()
+                    .filter(|state| state.cross_origin)
+                    .map(|state| state.source_navigable_id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for frame_id in cross_origin_frame_ids {
+            let _ = self.destroy_cross_origin_iframe_process(frame_id);
+        }
         if let Some(content_document) = self.documents.remove(&document_id) {
             let _ = content_document.settings.clear_all_window_timers();
         }
@@ -1092,23 +1222,19 @@ impl ContentRuntime {
                 iframe_node_id,
                 request_key,
             } => {
-                let current_key = self
+                let iframe_state = self
                     .documents
                     .get(&parent_document_id)
                     .and_then(|content_document| content_document.iframe_states.get(&iframe_node_id))
-                    .map(|state| state.current_key.clone());
-                if current_key.as_deref() != Some(request_key.as_str()) {
+                    .cloned();
+                let Some(iframe_state) = iframe_state else {
+                    return Ok(());
+                };
+                if iframe_state.current_key != request_key {
                     return Ok(());
                 }
 
                 let html = String::from_utf8_lossy(&response.body).into_owned();
-                self.attach_iframe_subdocument_from_html(
-                    parent_document_id,
-                    iframe_node_id,
-                    response.final_url,
-                    html,
-                )?;
-
                 let Some(content_document) = self.documents.get(&parent_document_id) else {
                     eprintln!(
                         "[content] complete_document_fetch (iframe): parent document {parent_document_id} not found"
@@ -1116,8 +1242,36 @@ impl ContentRuntime {
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
-                self.continue_document_load(parent_document_id)?;
-                self.continue_updating_the_rendering(traversable_id, parent_document_id)?;
+                if iframe_state.cross_origin {
+                    self.attach_cross_origin_iframe(
+                        parent_document_id,
+                        iframe_node_id,
+                        iframe_state.source_navigable_id,
+                    )?;
+                    self.spawn_cross_origin_iframe_process(
+                        traversable_id,
+                        iframe_state.source_navigable_id,
+                        LoadedDocumentResponse {
+                            final_url: response.final_url,
+                            status: response.status,
+                            content_type: response.content_type,
+                            body: html,
+                        },
+                    )?;
+                    self.continue_updating_the_rendering(
+                        traversable_id,
+                        parent_document_id,
+                    )?;
+                } else {
+                    self.attach_iframe_subdocument_from_html(
+                        parent_document_id,
+                        iframe_node_id,
+                        response.final_url,
+                        html,
+                    )?;
+                    self.continue_document_load(parent_document_id)?;
+                    self.continue_updating_the_rendering(traversable_id, parent_document_id)?;
+                }
                 Ok(())
             }
         }
@@ -1171,16 +1325,17 @@ impl ContentRuntime {
                 iframe_node_id,
                 request_key,
             } => {
-                let current_key = self
+                let iframe_state = self
                     .documents
                     .get(&parent_document_id)
                     .and_then(|content_document| content_document.iframe_states.get(&iframe_node_id))
-                    .map(|state| state.current_key.clone());
-                if current_key.as_deref() != Some(request_key.as_str()) {
+                    .cloned();
+                let Some(iframe_state) = iframe_state else {
+                    return Ok(());
+                };
+                if iframe_state.current_key != request_key {
                     return Ok(());
                 }
-
-                self.attach_iframe_about_blank(parent_document_id, iframe_node_id)?;
                 let Some(content_document) = self.documents.get(&parent_document_id) else {
                     eprintln!(
                         "[content] fail_document_fetch (iframe): parent document {parent_document_id} not found"
@@ -1188,8 +1343,31 @@ impl ContentRuntime {
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
-                self.continue_document_load(parent_document_id)?;
-                self.continue_updating_the_rendering(traversable_id, parent_document_id)?;
+                if iframe_state.cross_origin {
+                    self.attach_cross_origin_iframe(
+                        parent_document_id,
+                        iframe_node_id,
+                        iframe_state.source_navigable_id,
+                    )?;
+                    self.spawn_cross_origin_iframe_process(
+                        traversable_id,
+                        iframe_state.source_navigable_id,
+                        LoadedDocumentResponse {
+                            final_url: String::from("about:blank"),
+                            status: 200,
+                            content_type: String::from("text/html"),
+                            body: String::from(EMPTY_HTML_DOCUMENT),
+                        },
+                    )?;
+                    self.continue_updating_the_rendering(
+                        traversable_id,
+                        parent_document_id,
+                    )?;
+                } else {
+                    self.attach_iframe_about_blank(parent_document_id, iframe_node_id)?;
+                    self.continue_document_load(parent_document_id)?;
+                    self.continue_updating_the_rendering(traversable_id, parent_document_id)?;
+                }
                 Ok(())
             }
         }

@@ -781,10 +781,10 @@ impl FormalWebApp {
         let chrome_scene = self.chrome.as_mut().map(ChromeUi::paint_scene);
         let content_scene = self
             .provider
-            .as_ref()
+            .as_mut()
             .zip(self.current_webview_id)
             .and_then(|(provider, webview_id)| provider.current_scene(webview_id))
-            .map(|(scene, _scroll)| scene.clone());
+            .map(|(scene, _scroll)| scene);
 
         if chrome_scene.is_none() && content_scene.is_none() {
             return;

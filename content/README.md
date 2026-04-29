@@ -93,6 +93,10 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - If `update the rendering` is noted while a document still has pending critical resources, keep that rendering opportunity pending and resume it from the corresponding fetch completion instead of painting a stale frame.
 
+- Keep same-origin iframe documents on Blitz's `SubDocument` path, but mark cross-origin iframe elements with a stable iframe navigable id so Blitz paint can emit a placeholder command for embedder-side composition.
+- When a cross-origin iframe switches to the placeholder path, keep producing a child paint frame for that iframe's fetched document; a placeholder without a cached child frame leaves the embedder with only the iframe element's chrome.
+- Hand off cross-origin iframe document payloads to a dedicated child content sidecar and keep the parent sidecar responsible for placeholder attachment and detach notifications; the child process paints into the same traversable under the iframe's stable frame id.
+
 - When a JavaScript-visible Web IDL attribute or algorithm is implemented for a DOM type, keep the spec-linked method on the corresponding `content/src/dom` type and have `content/src/boa/bindings` delegate to that method instead of embedding the algorithm in the binding layer.
 
 - When a carrier-side helper owns a named HTML algorithm or a specific suffix of its steps, prefer the spec algorithm name for the helper when practical and note exactly which steps that helper continues instead of repeating a bare anchor.
