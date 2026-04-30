@@ -512,7 +512,7 @@ pub enum Command {
     },
     DestroyDocument { document_id: u64 },
     EvaluateScript {
-        document_id: u64,
+        traversable_id: u64,
         request_id: u64,
         source: String,
     },

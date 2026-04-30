@@ -1842,7 +1842,7 @@ where
 
 inductive UserAgentTaskMessage where
   | freshTopLevelTraversable (destinationURL : String)
-  | startNavigationFromRust
+  | routeNavigationFromRust
       (sourceNavigableId : Nat)
       (destinationURL : String)
       (targetName : String)
@@ -2304,58 +2304,57 @@ def startNavigationFromEventLoopM
     (userInvolvement : UserNavigationInvolvement)
     (noopener : Bool) :
     M Unit := do
-  let userAgent ← get
-  let destinationEventLoopId :=
-    (sourceNavigableEventLoopId? userAgent sourceNavigableId).getD sourceEventLoopId
-  if destinationEventLoopId = sourceEventLoopId then
-    navigateRequestedM
-      navigationId
-      sourceNavigableId
-      destinationURL
-      targetName
-      userInvolvement
-      noopener
+  let normalizedTargetName := normalizeNavigationTargetName targetName
+  if userInvolvement = .browserUI && normalizedTargetName.isEmpty && !noopener then
+    startBrowserUiTopLevelNavigationM sourceNavigableId destinationURL
   else
-    tell #[.eventLoopMessage
-      destinationEventLoopId
-      (.startNavigation
+    let userAgent ← get
+    let destinationEventLoopId :=
+      (sourceNavigableEventLoopId? userAgent sourceNavigableId).getD sourceEventLoopId
+    if destinationEventLoopId = sourceEventLoopId then
+      navigateRequestedM
+        navigationId
         sourceNavigableId
         destinationURL
         targetName
         userInvolvement
         noopener
-        (some navigationId))]
-  tell #[.eventLoopMessage sourceEventLoopId .runNextTask]
+    else
+      tell #[.eventLoopMessage
+        destinationEventLoopId
+        (.startNavigation
+          sourceNavigableId
+          destinationURL
+          targetName
+          userInvolvement
+          noopener
+          (some navigationId))]
+    tell #[.eventLoopMessage sourceEventLoopId .runNextTask]
 
-def startNavigationFromRustM
+def routeNavigationFromRustM
     (sourceNavigableId : Nat)
     (destinationURL : String)
     (targetName : String)
     (userInvolvement : UserNavigationInvolvement)
     (noopener : Bool) :
     M Unit := do
-  let normalizedTargetName := normalizeNavigationTargetName targetName
-  if userInvolvement = .browserUI && normalizedTargetName.isEmpty && !noopener then
-    startBrowserUiTopLevelNavigationM sourceNavigableId destinationURL
-  else
-    let userAgent ← get
-    let some sourceEventLoopId := sourceNavigableEventLoopId? userAgent sourceNavigableId | do
-      tell #[.logError
-        (startNavigationFromRustFailureDetails
-          userAgent
-          sourceNavigableId
-          destinationURL)]
-      pure ()
-    let (userAgent, navigationId) := userAgent.allocateNavigationId
-    set userAgent
-    startNavigationFromEventLoopM
-      sourceEventLoopId
-      navigationId
+  let userAgent ← get
+  let some sourceEventLoopId := sourceNavigableEventLoopId? userAgent sourceNavigableId | do
+    tell #[.logError
+      (startNavigationFromRustFailureDetails
+        userAgent
+        sourceNavigableId
+        destinationURL)]
+    pure ()
+  tell #[.eventLoopMessage
+    sourceEventLoopId
+    (.startNavigation
       sourceNavigableId
       destinationURL
       targetName
       userInvolvement
       noopener
+      none)]
 
 /-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
 def beforeUnloadCompletedM
@@ -2628,8 +2627,8 @@ def handleUserAgentTaskMessage
   | .freshTopLevelTraversable destinationURL =>
       let _ ← bootstrapFreshTopLevelTraversableM destinationURL
       pure ()
-  | .startNavigationFromRust sourceNavigableId destinationURL targetName userInvolvement noopener =>
-    startNavigationFromRustM
+  | .routeNavigationFromRust sourceNavigableId destinationURL targetName userInvolvement noopener =>
+    routeNavigationFromRustM
       sourceNavigableId
       destinationURL
       targetName

@@ -109,7 +109,7 @@ def startNavigationFromRust
     else
       UserNavigationInvolvement.none
   enqueueUserAgentTaskMessage
-    (.startNavigationFromRust
+    (.routeNavigationFromRust
       sourceNavigableId.toNat
       destinationURL
       targetName

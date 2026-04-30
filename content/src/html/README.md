@@ -1,1 +1,2 @@
 - Spec is found under the top-level `/web_standards/HTML.html`
+- Keep iframe post-connection and attribute-processing helpers under `content/src/html/iframe`, and trigger parser-discovered iframe work from document-load parsing completion instead of root-runtime snapshot staging.

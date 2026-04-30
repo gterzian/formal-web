@@ -51,9 +51,7 @@ static CONTENT_REGISTRY: LazyLock<Mutex<HashMap<usize, Arc<ContentBridge>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static ACTIVE_CONTENT_BRIDGE: LazyLock<Mutex<Option<Arc<ContentBridge>>>> =
     LazyLock::new(|| Mutex::new(None));
-static TRAVERSABLE_STATE_REGISTRY: LazyLock<Mutex<HashMap<u64, (usize, u64)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static DOCUMENT_TRAVERSABLE_REGISTRY: LazyLock<Mutex<HashMap<u64, u64>>> =
+static TRAVERSABLE_BRIDGE_REGISTRY: LazyLock<Mutex<HashMap<u64, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_CONTENT_HANDLE: AtomicUsize = AtomicUsize::new(1);
 static NEXT_SCRIPT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -291,38 +289,17 @@ fn send_command_inner(bridge: &ContentBridge, command: ContentCommand) -> Result
     match command {
         ContentCommand::CreateEmptyDocument {
             traversable_id,
-            document_id,
+            document_id: _,
         }
         | ContentCommand::CreateLoadedDocument {
             traversable_id,
-            document_id,
+            document_id: _,
             ..
         } => {
-            TRAVERSABLE_STATE_REGISTRY
+            TRAVERSABLE_BRIDGE_REGISTRY
                 .lock()
                 .expect("content traversable registry mutex poisoned")
-                .insert(traversable_id, (bridge.event_loop_id, document_id));
-            DOCUMENT_TRAVERSABLE_REGISTRY
-                .lock()
-                .expect("content document registry mutex poisoned")
-                .insert(document_id, traversable_id);
-        }
-        ContentCommand::DestroyDocument { document_id } => {
-            let traversable_id = DOCUMENT_TRAVERSABLE_REGISTRY
-                .lock()
-                .expect("content document registry mutex poisoned")
-                .remove(&document_id);
-            if let Some(traversable_id) = traversable_id {
-                let mut traversable_state_registry = TRAVERSABLE_STATE_REGISTRY
-                    .lock()
-                    .expect("content traversable registry mutex poisoned");
-                if traversable_state_registry
-                    .get(&traversable_id)
-                    .is_some_and(|(_, current_document_id)| *current_document_id == document_id)
-                {
-                    traversable_state_registry.remove(&traversable_id);
-                }
-            }
+                .insert(traversable_id, bridge.event_loop_id);
         }
         _ => {}
     }
@@ -412,24 +389,22 @@ pub fn stop(handle: usize) -> Result<(), String> {
     }
 
     let removed_traversable_ids = {
-        let mut traversable_state_registry = TRAVERSABLE_STATE_REGISTRY
+        let mut traversable_bridge_registry = TRAVERSABLE_BRIDGE_REGISTRY
             .lock()
             .expect("content traversable registry mutex poisoned");
-        let removed_traversable_ids = traversable_state_registry
+        let removed_traversable_ids = traversable_bridge_registry
             .iter()
-            .filter_map(|(traversable_id, (owner_event_loop_id, _))| {
+            .filter_map(|(traversable_id, owner_event_loop_id)| {
                 (*owner_event_loop_id == bridge.event_loop_id).then_some(*traversable_id)
             })
             .collect::<Vec<_>>();
-        traversable_state_registry.retain(|_, (owner_event_loop_id, _)| {
-            *owner_event_loop_id != bridge.event_loop_id
-        });
+        traversable_bridge_registry.retain(|_, owner_event_loop_id| *owner_event_loop_id != bridge.event_loop_id);
         removed_traversable_ids
     };
-    DOCUMENT_TRAVERSABLE_REGISTRY
+    TRAVERSABLE_BRIDGE_REGISTRY
         .lock()
-        .expect("content document registry mutex poisoned")
-        .retain(|_, traversable_id| !removed_traversable_ids.contains(traversable_id));
+        .expect("content traversable registry mutex poisoned")
+        .retain(|traversable_id, _| !removed_traversable_ids.contains(traversable_id));
 
     let _ = send_command_inner(&bridge, ContentCommand::Shutdown);
     let child = bridge
@@ -523,10 +498,8 @@ pub fn send_command(handle: usize, command: ContentCommand) -> Result<(), String
     send_command_inner(&bridge, command)
 }
 
-fn bridge_and_document_for_traversable_id(
-    traversable_id: u64,
-) -> Result<(Arc<ContentBridge>, u64), String> {
-    let (event_loop_id, document_id) = TRAVERSABLE_STATE_REGISTRY
+fn bridge_for_traversable_id(traversable_id: u64) -> Result<Arc<ContentBridge>, String> {
+    let event_loop_id = TRAVERSABLE_BRIDGE_REGISTRY
         .lock()
         .expect("content traversable registry mutex poisoned")
         .get(&traversable_id)
@@ -546,7 +519,7 @@ fn bridge_and_document_for_traversable_id(
             )
         })?;
 
-    Ok((bridge, document_id))
+    Ok(bridge)
 }
 
 pub fn evaluate_script(
@@ -554,7 +527,7 @@ pub fn evaluate_script(
     source: String,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let (bridge, document_id) = bridge_and_document_for_traversable_id(traversable_id)?;
+    let bridge = bridge_for_traversable_id(traversable_id)?;
     let request_id = NEXT_SCRIPT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = mpsc::channel();
 
@@ -567,7 +540,7 @@ pub fn evaluate_script(
     if let Err(error) = send_command_inner(
         &bridge,
         ContentCommand::EvaluateScript {
-            document_id,
+            traversable_id,
             request_id,
             source,
         },

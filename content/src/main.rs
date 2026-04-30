@@ -20,7 +20,7 @@ use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use data_url::DataUrl;
-use html5ever::{local_name, ns};
+use html5ever::local_name;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
     CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
@@ -31,9 +31,8 @@ use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
     Event as ContentEvent, FetchRequest as ContentFetchRequest,
     FetchResponse as ContentFetchResponse, FontTransportSender, FrameId,
-    IframeTraversableRemoval,
-    LoadedDocumentResponse, NavigateRequest, PaintFrame, RecordedScene,
-    ScriptEvaluationResult, ScrollOffset, UserNavigationInvolvement, ViewportSnapshot,
+    LoadedDocumentResponse, PaintFrame, RecordedScene, ScriptEvaluationResult, ScrollOffset,
+    ViewportSnapshot,
     WebviewId,
 };
 use std::{
@@ -120,18 +119,6 @@ struct IframeState {
     cross_origin: bool,
 }
 
-struct IframeSnapshot {
-    node_id: usize,
-    src: Option<String>,
-    srcdoc: Option<String>,
-}
-
-enum IframeNavigationTarget {
-    AboutBlank,
-    Srcdoc { html: String },
-    Url { url: Url },
-}
-
 struct PendingDocumentLoad {
     finalize_url: String,
     scripts: Vec<DeferredScriptState>,
@@ -174,14 +161,6 @@ fn log_iframe_debug(message: impl AsRef<str>) {
 
 fn is_subframe_document_id(document_id: u64) -> bool {
     document_id >= (1_u64 << 63)
-}
-
-fn iframe_target_description(target: &IframeNavigationTarget) -> String {
-    match target {
-        IframeNavigationTarget::AboutBlank => String::from("about:blank"),
-        IframeNavigationTarget::Srcdoc { html } => format!("srcdoc(len={})", html.len()),
-        IframeNavigationTarget::Url { url } => format!("url={url}"),
-    }
 }
 
 fn render_debug_enabled() -> bool {
@@ -358,6 +337,7 @@ struct ContentRuntime {
     local_state: LocalContentStateRef,
     viewport: Option<ViewportSnapshot>,
     documents: HashMap<u64, ContentDocument>,
+    active_documents_by_traversable: HashMap<u64, u64>,
     next_iframe_navigable_id: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
@@ -373,6 +353,7 @@ impl ContentRuntime {
             })),
             viewport: None,
             documents: HashMap::new(),
+            active_documents_by_traversable: HashMap::new(),
             next_iframe_navigable_id: 1_u64 << 63,
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
@@ -525,318 +506,7 @@ impl ContentRuntime {
         source_navigable_id
     }
 
-    /// <https://html.spec.whatwg.org/#process-the-iframe-attributes>
-    fn iframe_navigation_target(
-        creation_url: &Url,
-        snapshot: &IframeSnapshot,
-    ) -> (String, IframeNavigationTarget) {
-        // Step 1: "If element has a srcdoc attribute specified, then:"
-        if let Some(srcdoc) = snapshot.srcdoc.as_ref() {
-            // Step 1.1: "Set url to about:srcdoc."
-            // Step 1.2: "Set srcdoc to the value of element's srcdoc attribute."
-            return (
-                format!("srcdoc:{srcdoc}"),
-                IframeNavigationTarget::Srcdoc {
-                    html: srcdoc.clone(),
-                },
-            );
-        }
-
-        // Step 2: "Otherwise, let url be the result of running the shared attribute processing steps for iframe and frame elements."
-        if let Some(src) = snapshot.src.as_ref().map(|value| value.trim().to_owned()) {
-            if !src.is_empty() {
-                if let Ok(url) = creation_url.join(&src) {
-                    return (format!("src:{}", url), IframeNavigationTarget::Url { url });
-                }
-            }
-        }
-
-        // Step 3: "If url is failure, set url to about:blank."
-        (String::from("about:blank"), IframeNavigationTarget::AboutBlank)
-    }
-
-    fn collect_iframe_snapshots(document: &BaseDocument) -> Vec<IframeSnapshot> {
-        let mut snapshots = Vec::new();
-        document.visit(|node_id, node| {
-            let Some(element) = node.element_data() else {
-                return;
-            };
-            if element.name.ns != ns!(html)
-                || element.name.local != local_name!("iframe")
-                || !node.flags.is_in_document()
-            {
-                return;
-            }
-
-            snapshots.push(IframeSnapshot {
-                node_id,
-                src: element.attr(local_name!("src")).map(ToOwned::to_owned),
-                srcdoc: element.attr(local_name!("srcdoc")).map(ToOwned::to_owned),
-            });
-        });
-        snapshots
-    }
-
-    fn attach_iframe_subdocument_from_html(
-        &mut self,
-        parent_document_id: u64,
-        iframe_node_id: usize,
-        base_url: String,
-        html: String,
-    ) -> Result<(), String> {
-        let sub_document = Rc::new(RefCell::new(BaseDocument::new(
-            self.document_config(parent_document_id, Some(base_url)),
-        )));
-        {
-            let mut sub_document_guard = sub_document.borrow_mut();
-            parse_html_into_document(&mut sub_document_guard, &html);
-        }
-
-        let Some(content_document) = self.documents.get_mut(&parent_document_id) else {
-            return Ok(());
-        };
-        let mut document = content_document.document.borrow_mut();
-        if document.get_node(iframe_node_id).is_none() {
-            return Ok(());
-        }
-        let mut mutator = document.mutate();
-        mutator.set_sub_document(iframe_node_id, Box::new(sub_document));
-        Ok(())
-    }
-
-    fn attach_cross_origin_iframe(
-        &mut self,
-        parent_document_id: u64,
-        iframe_node_id: usize,
-        frame_id: u64,
-    ) -> Result<(), String> {
-        log_iframe_debug(format!(
-            "attach_cross_origin_iframe parent_doc={} node={} frame={}",
-            parent_document_id, iframe_node_id, frame_id
-        ));
-        let Some(content_document) = self.documents.get_mut(&parent_document_id) else {
-            return Ok(());
-        };
-        let mut document = content_document.document.borrow_mut();
-        if document.get_node(iframe_node_id).is_none() {
-            return Ok(());
-        }
-        let mut mutator = document.mutate();
-        mutator.set_cross_origin_iframe(iframe_node_id, frame_id);
-        Ok(())
-    }
-
-    fn request_iframe_navigation(
-        &self,
-        parent_document_id: u64,
-        source_navigable_id: u64,
-        destination_url: &Url,
-    ) -> Result<(), String> {
-        log_iframe_debug(format!(
-            "request_iframe_navigation source={} destination={}",
-            source_navigable_id, destination_url
-        ));
-        let parent_traversable_id = self
-            .documents
-            .get(&parent_document_id)
-            .map(|d| d.traversable_id)
-            .unwrap_or(0);
-        self.event_sender
-            .send(ContentEvent::NavigationRequested(NavigateRequest {
-                source_navigable_id,
-                destination_url: destination_url.to_string(),
-                target: format!("_iframe|{}|{}", parent_traversable_id, source_navigable_id),
-                user_involvement: UserNavigationInvolvement::None,
-                noopener: false,
-            }))
-            .map_err(|error| format!("failed to send iframe navigation request: {error}"))
-    }
-
-    fn attach_iframe_about_blank(
-        &mut self,
-        parent_document_id: u64,
-        iframe_node_id: usize,
-    ) -> Result<(), String> {
-        self.attach_iframe_subdocument_from_html(
-            parent_document_id,
-            iframe_node_id,
-            String::from("about:blank"),
-            String::from(EMPTY_HTML_DOCUMENT),
-        )
-    }
-
-    fn remove_iframe_subdocument(&mut self, parent_document_id: u64, iframe_node_id: usize) {
-        log_iframe_debug(format!(
-            "remove_iframe_subdocument parent_doc={} node={}",
-            parent_document_id, iframe_node_id
-        ));
-        let Some(content_document) = self.documents.get_mut(&parent_document_id) else {
-            return;
-        };
-        {
-            let mut document = content_document.document.borrow_mut();
-            if document.get_node(iframe_node_id).is_none() {
-                return;
-            }
-            let mut mutator = document.mutate();
-            mutator.remove_sub_document(iframe_node_id);
-            mutator.remove_cross_origin_iframe(iframe_node_id);
-        }
-    }
-
-    fn retire_iframe_traversable(
-        &self,
-        parent_traversable_id: u64,
-        iframe_state: &IframeState,
-    ) -> Result<(), String> {
-        if !iframe_state.cross_origin {
-            return Ok(());
-        }
-
-        log_iframe_debug(format!(
-            "retire_iframe_traversable parent_traversable={} source_navigable={}",
-            parent_traversable_id, iframe_state.source_navigable_id
-        ));
-        self.event_sender
-            .send(ContentEvent::IframeTraversableRemoved(
-                IframeTraversableRemoval {
-                    parent_traversable_id,
-                    source_navigable_id: iframe_state.source_navigable_id,
-                },
-            ))
-            .map_err(|error| format!("failed to send iframe traversable removal: {error}"))
-    }
-
-    /// <https://html.spec.whatwg.org/#html-element-post-connection-steps>
-    /// Note: This scans for connected iframe elements and applies iframe post-connection/attribute-processing behavior as part of the content runtime's mutation checkpoints.
-    fn refresh_iframe_embeddings(&mut self, parent_document_id: u64) -> Result<(), String> {
-        let (creation_url, parent_traversable_id, snapshots) = {
-            let Some(content_document) = self.documents.get(&parent_document_id) else {
-                return Ok(());
-            };
-            let creation_url = content_document.settings.creation_url.clone();
-            let document = content_document.document.borrow();
-            (
-                creation_url,
-                content_document.traversable_id,
-                Self::collect_iframe_snapshots(&document),
-            )
-        };
-
-        let live_iframe_node_ids = snapshots
-            .iter()
-            .map(|snapshot| snapshot.node_id)
-            .collect::<HashSet<_>>();
-        let stale_iframe_states = self
-            .documents
-            .get(&parent_document_id)
-            .map(|content_document| {
-                content_document
-                    .iframe_states
-                    .iter()
-                    .filter(|(node_id, _state)| !live_iframe_node_ids.contains(node_id))
-                    .map(|(node_id, state)| (*node_id, state.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        for (stale_iframe_node_id, stale_iframe_state) in stale_iframe_states.iter() {
-            // <https://html.spec.whatwg.org/#the-iframe-element:html-element-removing-steps>
-            // Step 1: "Destroy a child navigable given removedNode."
-            self.remove_iframe_subdocument(parent_document_id, *stale_iframe_node_id);
-            self.retire_iframe_traversable(parent_traversable_id, stale_iframe_state)?;
-        }
-        if let Some(content_document) = self.documents.get_mut(&parent_document_id) {
-            for (stale_iframe_node_id, _stale_iframe_state) in stale_iframe_states {
-                content_document.iframe_states.remove(&stale_iframe_node_id);
-            }
-        }
-
-        for snapshot in snapshots {
-            let (desired_key, target) = Self::iframe_navigation_target(&creation_url, &snapshot);
-            let previous_iframe_state = self
-                .documents
-                .get(&parent_document_id)
-                .and_then(|content_document| content_document.iframe_states.get(&snapshot.node_id))
-                .cloned();
-            let current_key = previous_iframe_state.as_ref().map(|state| state.current_key.clone());
-            if current_key.as_deref() == Some(desired_key.as_str()) {
-                continue;
-            }
-
-            if previous_iframe_state.is_some() {
-                self.remove_iframe_subdocument(parent_document_id, snapshot.node_id);
-            }
-
-            let source_navigable_id = previous_iframe_state
-                .as_ref()
-                .map(|state| state.source_navigable_id)
-                .unwrap_or_else(|| self.allocate_iframe_navigable_id());
-            let cross_origin = matches!(
-                &target,
-                IframeNavigationTarget::Url { url } if creation_url.origin() != url.origin()
-            );
-            if let Some(previous_iframe_state) = previous_iframe_state.as_ref() {
-                if previous_iframe_state.cross_origin && !cross_origin {
-                    self.retire_iframe_traversable(parent_traversable_id, previous_iframe_state)?;
-                }
-            }
-            log_iframe_debug(format!(
-                "refresh_iframe parent_doc={} node={} current_key={:?} desired_key={} source_navigable={} cross_origin={} target={}",
-                parent_document_id,
-                snapshot.node_id,
-                current_key,
-                desired_key,
-                source_navigable_id,
-                cross_origin,
-                iframe_target_description(&target)
-            ));
-            if let Some(content_document) = self.documents.get_mut(&parent_document_id) {
-                content_document.iframe_states.insert(
-                    snapshot.node_id,
-                    IframeState {
-                        source_navigable_id,
-                        current_key: desired_key.clone(),
-                        cross_origin,
-                    },
-                );
-            }
-
-            // <https://html.spec.whatwg.org/#process-the-iframe-attributes>
-            // Step 4: "Navigate element's content navigable to url."
-            match target {
-                IframeNavigationTarget::AboutBlank => {
-                    self.attach_iframe_about_blank(parent_document_id, snapshot.node_id)?;
-                }
-                IframeNavigationTarget::Srcdoc { html } => {
-                    self.attach_iframe_subdocument_from_html(
-                        parent_document_id,
-                        snapshot.node_id,
-                        creation_url.to_string(),
-                        html,
-                    )?;
-                }
-                IframeNavigationTarget::Url { url } => {
-                    if cross_origin {
-                        self.attach_cross_origin_iframe(
-                            parent_document_id,
-                            snapshot.node_id,
-                            source_navigable_id,
-                        )?;
-                    } else {
-                        self.attach_iframe_about_blank(parent_document_id, snapshot.node_id)?;
-                    }
-                    self.request_iframe_navigation(parent_document_id, source_navigable_id, &url)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
-        self.refresh_iframe_embeddings(document_id)?;
-
         let ready_to_finish = {
             let content_document = self
                 .documents
@@ -895,6 +565,9 @@ impl ContentRuntime {
         fire_event(&mut content_document.settings, &window, "load", true)
             .map_err(|error| error.to_string())?;
 
+        let traversable_id = content_document.traversable_id;
+        self.run_iframe_load_event_steps_for_traversable(traversable_id)?;
+
         self.event_sender
             .send(ContentEvent::FinalizeNavigation(
                 ipc_messages::content::FinalizeNavigation {
@@ -915,7 +588,7 @@ impl ContentRuntime {
         let document = Rc::new(RefCell::new(BaseDocument::new(
             self.document_config(document_id, None),
         )));
-        let mut settings = EnvironmentSettingsObject::new(
+        let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
         )?;
@@ -936,8 +609,6 @@ impl ContentRuntime {
         // Step 10: "Completely finish loading document."
         // Note: The content runtime executes parser-discovered classic scripts immediately after the initial tree build.
         // TODO: Model the rest of the `completely finish loading` bookkeeping explicitly instead of relying on parser-discovered script execution alone.
-        execute_parser_scripts(&mut settings, parser_scripts)?;
-
         // Step 9: "Make active document."
         // Note: The runtime records the document as addressable for future commands by storing it under `document_id` after initialization completes.
         self.documents.insert(
@@ -951,6 +622,14 @@ impl ContentRuntime {
                 iframe_states: HashMap::new(),
             },
         );
+        self.active_documents_by_traversable
+            .insert(traversable_id, document_id);
+        self.run_iframe_post_connection_steps_for_document(document_id)?;
+        let content_document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        execute_parser_scripts(&mut content_document.settings, parser_scripts)?;
         Ok(())
     }
 
@@ -1014,6 +693,9 @@ impl ContentRuntime {
                 iframe_states: HashMap::new(),
             },
         );
+        self.active_documents_by_traversable
+            .insert(traversable_id, document_id);
+        self.run_iframe_post_connection_steps_for_document(document_id)?;
 
         let deferred_fetches = self
             .documents
@@ -1048,9 +730,13 @@ impl ContentRuntime {
 
     fn evaluate_script(
         &mut self,
-        document_id: u64,
+        traversable_id: u64,
         source: String,
     ) -> Result<serde_json::Value, String> {
+        let document_id = *self
+            .active_documents_by_traversable
+            .get(&traversable_id)
+            .ok_or_else(|| format!("unknown traversable id: {traversable_id}"))?;
         let document = self
             .documents
             .get_mut(&document_id)
@@ -1064,6 +750,14 @@ impl ContentRuntime {
             document_id
         ));
         if let Some(content_document) = self.documents.remove(&document_id) {
+            if self
+                .active_documents_by_traversable
+                .get(&content_document.traversable_id)
+                .is_some_and(|current_document_id| *current_document_id == document_id)
+            {
+                self.active_documents_by_traversable
+                    .remove(&content_document.traversable_id);
+            }
             let _ = content_document.settings.clear_all_window_timers();
             for iframe_state in content_document.iframe_states.values() {
                 self.retire_iframe_traversable(content_document.traversable_id, iframe_state)?;
@@ -1142,8 +836,6 @@ impl ContentRuntime {
         traversable_id: u64,
         document_id: u64,
     ) -> Result<(), String> {
-        self.refresh_iframe_embeddings(document_id)?;
-
         let event_sender = self.event_sender.clone();
         let paint_frame = {
             let document = self
@@ -1397,11 +1089,11 @@ impl ContentRuntime {
                 Ok(true)
             }
             EvaluateScript {
-                document_id,
+                traversable_id,
                 request_id,
                 source,
             } => {
-                let (value_json, error) = match self.evaluate_script(document_id, source) {
+                let (value_json, error) = match self.evaluate_script(traversable_id, source) {
                     Ok(value) => {
                         let value_json = serde_json::to_string(&value).map_err(|error| {
                             format!("failed to encode script evaluation result: {error}")
@@ -1535,11 +1227,9 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentFetchResponse, ContentRuntime, IframeNavigationTarget, IframeSnapshot,
-        deferred_script_response_is_executable, is_javascript_mime_essence,
-        normalized_content_type_essence,
+        ContentFetchResponse, deferred_script_response_is_executable,
+        is_javascript_mime_essence, normalized_content_type_essence,
     };
-    use url::Url;
 
     fn response(status: u16, content_type: &str) -> ContentFetchResponse {
         ContentFetchResponse {
@@ -1572,54 +1262,6 @@ mod tests {
             200,
             "text/html"
         )));
-    }
-
-    fn iframe_snapshot(src: Option<&str>, srcdoc: Option<&str>) -> IframeSnapshot {
-        IframeSnapshot {
-            node_id: 1,
-            src: src.map(str::to_owned),
-            srcdoc: srcdoc.map(str::to_owned),
-        }
-    }
-
-    #[test]
-    fn iframe_navigation_prefers_srcdoc_over_src() {
-        let base = Url::parse("https://example.test/page.html").expect("valid base URL");
-        let (request_key, target) = ContentRuntime::iframe_navigation_target(
-            &base,
-            &iframe_snapshot(Some("https://other.test/frame"), Some("<p>srcdoc</p>")),
-        );
-        assert_eq!(request_key, "srcdoc:<p>srcdoc</p>");
-        match target {
-            IframeNavigationTarget::Srcdoc { html } => assert_eq!(html, "<p>srcdoc</p>"),
-            _ => panic!("expected srcdoc target"),
-        }
-    }
-
-    #[test]
-    fn iframe_navigation_resolves_relative_src() {
-        let base = Url::parse("https://example.test/page.html").expect("valid base URL");
-        let (request_key, target) =
-            ContentRuntime::iframe_navigation_target(&base, &iframe_snapshot(Some("child.html"), None));
-        assert_eq!(request_key, "src:https://example.test/child.html");
-        match target {
-            IframeNavigationTarget::Url { url } => {
-                assert_eq!(url.as_str(), "https://example.test/child.html")
-            }
-            _ => panic!("expected URL target"),
-        }
-    }
-
-    #[test]
-    fn iframe_navigation_falls_back_to_about_blank_when_src_missing() {
-        let base = Url::parse("https://example.test/page.html").expect("valid base URL");
-        let (request_key, target) =
-            ContentRuntime::iframe_navigation_target(&base, &iframe_snapshot(None, None));
-        assert_eq!(request_key, "about:blank");
-        match target {
-            IframeNavigationTarget::AboutBlank => {}
-            _ => panic!("expected about:blank target"),
-        }
     }
 
     #[test]
