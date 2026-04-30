@@ -95,6 +95,29 @@ def clearWindowTimerFromRust
 
 @[export startNavigation]
 def startNavigationFromRust
+  (sourceNavigableId : USize)
+    (destinationURL : String)
+    (targetName : String)
+    (userInvolvement : String)
+    (noopener : USize) :
+    IO Unit := do
+  let parsedUserInvolvement :=
+    if userInvolvement = "activation" then
+      UserNavigationInvolvement.activation
+    else if userInvolvement = "browser-ui" then
+      UserNavigationInvolvement.browserUI
+    else
+      UserNavigationInvolvement.none
+  enqueueUserAgentTaskMessage
+    (.startNavigationFromRust
+      sourceNavigableId.toNat
+      destinationURL
+      targetName
+      parsedUserInvolvement
+      (noopener.toNat != 0))
+
+@[export startNavigationFromEventLoop]
+def startNavigationFromEventLoopFromRust
   (eventLoopId : USize)
   (sourceNavigableId : USize)
     (destinationURL : String)
@@ -138,6 +161,14 @@ def finalizeNavigationFromRust
     IO Unit := do
   enqueueUserAgentTaskMessage
       (.finalizeNavigation documentId.toNat url)
+
+@[export removeIframeTraversable]
+def removeIframeTraversableFromRust
+    (parentTraversableId : USize)
+    (sourceNavigableId : USize) :
+    IO Unit := do
+  enqueueUserAgentTaskMessage
+      (.iframeTraversableRemoved parentTraversableId.toNat sourceNavigableId.toNat)
 
 @[export runNextEventLoopTask]
 def runNextEventLoopTaskFromRust

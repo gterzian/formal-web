@@ -32,12 +32,22 @@ pub trait EmbedderApi: Send + Sync {
 #[derive(Clone, Copy)]
 pub struct RuntimeHooks {
     pub handle_runtime_message: fn(&str),
-    pub start_navigation_parts: fn(usize, usize, &str, &str, &str, bool) -> Result<(), String>,
+    pub start_navigation_parts: fn(usize, &str, &str, &str, bool) -> Result<(), String>,
     pub note_rendering_opportunity: fn(&str),
 }
 
 static RUNTIME_HOOKS: LazyLock<Mutex<Option<RuntimeHooks>>> =
     LazyLock::new(|| Mutex::new(None));
+
+pub(crate) fn log_iframe_debug(message: impl AsRef<str>) {
+    if std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some() {
+        eprintln!(
+            "[iframe-debug][webview][pid={}] {}",
+            std::process::id(),
+            message.as_ref()
+        );
+    }
+}
 
 pub fn set_runtime_hooks(hooks: RuntimeHooks) {
     let mut guard = RUNTIME_HOOKS.lock().expect("runtime hooks mutex poisoned");
@@ -60,8 +70,7 @@ fn call_lean_runtime_message_handler(message: &str) {
 }
 
 fn call_lean_navigation_start_parts(
-    event_loop_id: usize,
-    webview_id: usize,
+    source_navigable_id: usize,
     destination_url: &str,
     target: &str,
     user_involvement: &str,
@@ -69,8 +78,7 @@ fn call_lean_navigation_start_parts(
 ) -> Result<(), String> {
     let hooks = runtime_hooks()?;
     (hooks.start_navigation_parts)(
-        event_loop_id,
-        webview_id,
+        source_navigable_id,
         destination_url,
         target,
         user_involvement,
@@ -105,6 +113,7 @@ fn startup_artifact_url() -> Result<String, String> {
 
 pub struct WebviewProvider {
     webviews: HashMap<WebviewId, WebviewState>,
+    iframe_aliases: HashMap<WebviewId, (WebviewId, ipc_messages::content::FrameId)>,
     font_receiver: FontTransportReceiver,
     embedder: Arc<dyn EmbedderApi>,
 }
@@ -113,6 +122,7 @@ impl WebviewProvider {
     pub fn new(embedder: Arc<dyn EmbedderApi>) -> Self {
         Self {
             webviews: HashMap::new(),
+            iframe_aliases: HashMap::new(),
             font_receiver: FontTransportReceiver::default(),
             embedder,
         }
@@ -127,7 +137,6 @@ impl WebviewProvider {
     pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
         match webview_id {
             Some(webview_id) => call_lean_navigation_start_parts(
-                webview_id.0 as usize,
                 webview_id.0 as usize,
                 url,
                 "",
@@ -155,26 +164,73 @@ impl WebviewProvider {
         user_agent_note_rendering_opportunity(reason);
     }
 
-    pub fn on_paint_frame(&mut self, frame: PaintFrame) -> Result<(), String> {
+    pub fn register_iframe_alias(&mut self, child_webview_id: WebviewId, parent_webview_id: WebviewId, placeholder_id: ipc_messages::content::FrameId) {
+        log_iframe_debug(format!("register_iframe_alias child={} parent={} placeholder={}", child_webview_id.0, parent_webview_id.0, placeholder_id.0));
+        self.iframe_aliases.insert(child_webview_id, (parent_webview_id, placeholder_id));
+    }
+
+    pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
+        let transport = frame.transport_summary();
+        if let Some((parent_webview_id, placeholder_id)) = self.iframe_aliases.get(&frame.traversable_id) {
+            frame.traversable_id = *parent_webview_id;
+            frame.frame_id = *placeholder_id;
+        }
         let traversable_id = frame.traversable_id;
         let frame_id = frame.frame_id;
+        let viewport_width = frame.viewport_width;
+        let viewport_height = frame.viewport_height;
         let viewport_scroll = frame.viewport_scroll.clone();
         let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver)?;
+        let scene_summary = recorded_scene.summary();
+        log_iframe_debug(format!(
+            "on_paint_frame traversable={} frame={} viewport={}x{} scroll=({:.1}, {:.1}) scene={} transport(scene_bytes={} fonts={} font_bytes={})",
+            traversable_id.0,
+            frame_id.0,
+            viewport_width,
+            viewport_height,
+            viewport_scroll.x,
+            viewport_scroll.y,
+            scene_summary.describe(),
+            transport.scene_bytes,
+            transport.registered_fonts,
+            transport.registered_font_bytes,
+        ));
 
         let state = self.webviews.entry(traversable_id).or_default();
         state
             .compositor
-            .store_frame(frame_id, viewport_scroll, recorded_scene);
+            .store_frame(
+                frame_id,
+                viewport_width,
+                viewport_height,
+                viewport_scroll,
+                recorded_scene,
+            );
         state.viewport_scroll = state.compositor.root_viewport_scroll();
         if state.compositor.committed_root_frame_id() == Some(frame_id) {
             state.current_document_id = Some(frame_id.0);
         }
+        log_iframe_debug(format!(
+            "stored_frame traversable={} frame={} root={:?} current_document={:?}",
+            traversable_id.0,
+            frame_id.0,
+            state.compositor.committed_root_frame_id().map(|id| id.0),
+            state.current_document_id,
+        ));
 
         self.embedder.request_redraw(traversable_id);
         Ok(())
     }
 
     pub fn on_finalize_navigation(&mut self, webview_id: WebviewId, _url: &str) {
+        log_iframe_debug(format!(
+            "finalize_navigation traversable={} root_before={:?}",
+            webview_id.0,
+            self.webviews
+                .get(&webview_id)
+                .and_then(|state| state.compositor.committed_root_frame_id())
+                .map(|id| id.0)
+        ));
         let state = self.webviews.entry(webview_id).or_default();
         state.compositor.note_navigation_finalized();
         state.current_document_id = None;

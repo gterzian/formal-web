@@ -44,13 +44,6 @@ pub struct LoadedDocumentResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AttachChildFrame {
-    pub traversable_id: u64,
-    pub frame_id: u64,
-    pub response: LoadedDocumentResponse,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FetchResponse {
     pub final_url: String,
     pub status: u16,
@@ -85,6 +78,12 @@ pub struct BeforeUnloadResult {
 pub struct FinalizeNavigation {
     pub document_id: u64,
     pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IframeTraversableRemoval {
+    pub parent_traversable_id: u64,
+    pub source_navigable_id: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -439,6 +438,8 @@ fn deserialize_scene_from_shared_memory(scene_bytes: &IpcSharedMemory) -> Result
 pub struct PaintFrame {
     pub traversable_id: WebviewId,
     pub frame_id: FrameId,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
     pub viewport_scroll: ScrollOffset,
     font_registrations: Vec<RegisteredFont>,
     scene_bytes: IpcSharedMemory,
@@ -455,6 +456,8 @@ impl PaintFrame {
     pub fn new(
         traversable_id: WebviewId,
         frame_id: FrameId,
+        viewport_width: u32,
+        viewport_height: u32,
         viewport_scroll: ScrollOffset,
         scene: PreparedScene,
     ) -> Result<Self, String> {
@@ -465,6 +468,8 @@ impl PaintFrame {
         Ok(Self {
             traversable_id,
             frame_id,
+            viewport_width,
+            viewport_height,
             viewport_scroll,
             font_registrations: registered_fonts,
             scene_bytes: serialize_scene_to_shared_memory(&scene)?,
@@ -544,10 +549,9 @@ pub enum Event {
     WindowTimerRequested(WindowTimerRequest),
     WindowTimerCleared(WindowTimerClearRequest),
     NavigationRequested(NavigateRequest),
-    AttachChildFrame(AttachChildFrame),
-    DetachChildFrame { frame_id: u64 },
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
+    IframeTraversableRemoved(IframeTraversableRemoval),
     ScriptEvaluated(ScriptEvaluationResult),
     CommandCompleted,
     PaintReady(PaintFrame),
@@ -676,6 +680,8 @@ mod tests {
         let paint_frame = PaintFrame::new(
             WebviewId(7),
             FrameId(7),
+            320,
+            240,
             ScrollOffset { x: 10.0, y: 20.0 },
             prepared,
         )
@@ -698,6 +704,8 @@ mod tests {
         let first_frame = PaintFrame::new(
             WebviewId(7),
             FrameId(7),
+            320,
+            240,
             ScrollOffset { x: 0.0, y: 0.0 },
             sender.prepare_scene(29, scene_with_glyph(&font, 7, 12.0, 18.0)),
         )
@@ -721,6 +729,8 @@ mod tests {
         let second_frame = PaintFrame::new(
             WebviewId(7),
             FrameId(7),
+            320,
+            240,
             ScrollOffset { x: 0.0, y: 0.0 },
             sender.prepare_scene(29, scene_with_glyph(&font, 8, 28.0, 18.0)),
         )

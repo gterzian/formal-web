@@ -1,24 +1,33 @@
 use blitz_traits::shell::ColorScheme;
-use data_url::DataUrl;
 use embedder::{ContentBridgeHooks, FormalWebUserEvent};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_messages::content::{
-    AttachChildFrame, Bootstrap, ColorScheme as MessageColorScheme,
-    Command as ContentCommand, Event as ContentEvent, FetchRequest, FetchResponse,
-    LoadedDocumentResponse, NavigateRequest, UserNavigationInvolvement, ViewportSnapshot,
-    WindowTimerRequest,
+    Bootstrap, ColorScheme as MessageColorScheme, Command as ContentCommand,
+    Event as ContentEvent, UserNavigationInvolvement, ViewportSnapshot,
 };
-use reqwest::{Method, blocking::Client, header::CONTENT_TYPE};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
-const LOCAL_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn iframe_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some()
+}
+
+fn log_iframe_debug(message: impl AsRef<str>) {
+    if iframe_debug_enabled() {
+        eprintln!(
+            "[iframe-debug][bridge][pid={}] {}",
+            std::process::id(),
+            message.as_ref()
+        );
+    }
+}
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -34,30 +43,20 @@ struct ContentBridge {
     command_sender: IpcSender<ContentCommand>,
     child: Mutex<Option<Child>>,
     listener: Mutex<Option<JoinHandle<()>>>,
-    mode: BridgeMode,
-    owned_subframes: Mutex<HashMap<u64, usize>>,
-    local_timer_cancellations: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    event_loop_id: usize,
     script_waiters: Mutex<HashMap<u64, mpsc::Sender<Result<serde_json::Value, String>>>>,
-}
-
-#[derive(Clone, Copy)]
-enum BridgeMode {
-    TopLevel { event_loop_id: usize },
-    Subframe { traversable_id: u64, frame_id: u64 },
 }
 
 static CONTENT_REGISTRY: LazyLock<Mutex<HashMap<usize, Arc<ContentBridge>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static ACTIVE_CONTENT_BRIDGE: LazyLock<Mutex<Option<Arc<ContentBridge>>>> =
     LazyLock::new(|| Mutex::new(None));
+static TRAVERSABLE_STATE_REGISTRY: LazyLock<Mutex<HashMap<u64, (usize, u64)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static DOCUMENT_TRAVERSABLE_REGISTRY: LazyLock<Mutex<HashMap<u64, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_CONTENT_HANDLE: AtomicUsize = AtomicUsize::new(1);
 static NEXT_SCRIPT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-static LOCAL_FETCH_CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    Client::builder()
-        .timeout(LOCAL_FETCH_TIMEOUT)
-        .build()
-        .expect("failed to build local content fetch client")
-});
 
 fn executable_file_name(stem: &str) -> String {
     if std::env::consts::EXE_EXTENSION.is_empty() {
@@ -121,242 +120,6 @@ fn navigation_user_involvement_name(user_involvement: UserNavigationInvolvement)
     }
 }
 
-fn clear_local_timer(bridge: &ContentBridge, timer_key: u64) {
-    if let Some(cancellation) = bridge
-        .local_timer_cancellations
-        .lock()
-        .expect("content timer cancellation mutex poisoned")
-        .remove(&timer_key)
-    {
-        cancellation.store(true, Ordering::Relaxed);
-    }
-}
-
-fn clear_all_local_timers(bridge: &ContentBridge) {
-    let cancellations = bridge
-        .local_timer_cancellations
-        .lock()
-        .expect("content timer cancellation mutex poisoned")
-        .drain()
-        .map(|(_timer_key, cancellation)| cancellation)
-        .collect::<Vec<_>>();
-    for cancellation in cancellations {
-        cancellation.store(true, Ordering::Relaxed);
-    }
-}
-
-fn run_local_fetch(request: &FetchRequest) -> Result<FetchResponse, String> {
-    if request.url.starts_with("data:") {
-        let data_url = DataUrl::process(&request.url)
-            .map_err(|error| format!("failed to parse data URL: {error}"))?;
-        let (body, _fragment) = data_url
-            .decode_to_vec()
-            .map_err(|error| format!("failed to decode data URL: {error}"))?;
-        return Ok(FetchResponse {
-            final_url: request.url.clone(),
-            status: 200,
-            content_type: String::new(),
-            body,
-        });
-    }
-
-    let method = Method::from_bytes(request.method.as_bytes())
-        .map_err(|error| format!("unsupported local fetch method {}: {error}", request.method))?;
-    let mut builder = LOCAL_FETCH_CLIENT.request(method, &request.url);
-    if !request.body.is_empty() {
-        builder = builder.body(request.body.clone());
-    }
-    let response = builder
-        .send()
-        .map_err(|error| format!("local content fetch failed for {}: {error}", request.url))?;
-    let final_url = response.url().to_string();
-    let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    let body = response
-        .bytes()
-        .map_err(|error| format!("failed to read local fetch body for {}: {error}", request.url))?
-        .to_vec();
-    Ok(FetchResponse {
-        final_url,
-        status,
-        content_type,
-        body,
-    })
-}
-
-fn run_local_navigation(request: &NavigateRequest) -> Result<LoadedDocumentResponse, String> {
-    let response = run_local_fetch(&FetchRequest {
-        handler_id: 0,
-        url: request.destination_url.clone(),
-        method: String::from("GET"),
-        body: String::new(),
-    })?;
-    Ok(LoadedDocumentResponse {
-        final_url: response.final_url,
-        status: response.status,
-        content_type: response.content_type,
-        body: String::from_utf8_lossy(&response.body).into_owned(),
-    })
-}
-
-fn spawn_local_fetch(bridge: Arc<ContentBridge>, request: FetchRequest) {
-    thread::spawn(move || {
-        let command = match run_local_fetch(&request) {
-            Ok(response) => ContentCommand::CompleteDocumentFetch {
-                handler_id: request.handler_id,
-                response,
-            },
-            Err(error) => {
-                eprintln!("content bridge local fetch error: {error}");
-                ContentCommand::FailDocumentFetch {
-                    handler_id: request.handler_id,
-                }
-            }
-        };
-        let _ = send_command_inner(&bridge, command);
-    });
-}
-
-fn spawn_local_navigation(
-    bridge: Arc<ContentBridge>,
-    traversable_id: u64,
-    frame_id: u64,
-    request: NavigateRequest,
-) {
-    thread::spawn(move || match run_local_navigation(&request) {
-        Ok(response) => {
-            let _ = send_command_inner(
-                &bridge,
-                ContentCommand::DestroyDocument {
-                    document_id: frame_id,
-                },
-            );
-            let _ = send_command_inner(
-                &bridge,
-                ContentCommand::CreateLoadedDocument {
-                    traversable_id,
-                    document_id: frame_id,
-                    response,
-                },
-            );
-            let _ = send_command_inner(
-                &bridge,
-                ContentCommand::UpdateTheRendering {
-                    traversable_id,
-                    document_id: frame_id,
-                },
-            );
-        }
-        Err(error) => eprintln!("content bridge local navigation error: {error}"),
-    });
-}
-
-fn schedule_local_timer(bridge: Arc<ContentBridge>, request: WindowTimerRequest) {
-    let cancellation = Arc::new(AtomicBool::new(false));
-    {
-        let mut timers = bridge
-            .local_timer_cancellations
-            .lock()
-            .expect("content timer cancellation mutex poisoned");
-        if let Some(previous) = timers.insert(request.timer_key, Arc::clone(&cancellation)) {
-            previous.store(true, Ordering::Relaxed);
-        }
-    }
-
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(u64::from(request.timeout_ms)));
-        if cancellation.load(Ordering::Relaxed) {
-            return;
-        }
-        let _ = send_command_inner(
-            &bridge,
-            ContentCommand::RunWindowTimer {
-                document_id: request.document_id,
-                timer_id: request.timer_id,
-                timer_key: request.timer_key,
-                nesting_level: request.nesting_level,
-            },
-        );
-        bridge
-            .local_timer_cancellations
-            .lock()
-            .expect("content timer cancellation mutex poisoned")
-            .remove(&request.timer_key);
-    });
-}
-
-fn take_owned_subframe_handle(bridge: &Arc<ContentBridge>, frame_id: u64) -> Option<usize> {
-    bridge
-        .owned_subframes
-        .lock()
-        .expect("content child bridge mutex poisoned")
-        .remove(&frame_id)
-}
-
-fn drain_owned_subframe_handles(bridge: &Arc<ContentBridge>) -> Vec<usize> {
-    bridge
-        .owned_subframes
-        .lock()
-        .expect("content child bridge mutex poisoned")
-        .drain()
-        .map(|(_frame_id, handle)| handle)
-        .collect()
-}
-
-fn attach_child_frame(bridge: &Arc<ContentBridge>, attach: AttachChildFrame) -> Result<(), String> {
-    if let Some(handle) = take_owned_subframe_handle(bridge, attach.frame_id) {
-        stop(handle)?;
-    }
-
-    let handle = start_bridge(
-        BridgeMode::Subframe {
-            traversable_id: attach.traversable_id,
-            frame_id: attach.frame_id,
-        },
-        false,
-    )?;
-
-    if let Err(error) = send_command(
-        handle,
-        ContentCommand::CreateLoadedDocument {
-            traversable_id: attach.traversable_id,
-            document_id: attach.frame_id,
-            response: attach.response.clone(),
-        },
-    )
-    .and_then(|()| {
-        send_command(
-            handle,
-            ContentCommand::UpdateTheRendering {
-                traversable_id: attach.traversable_id,
-                document_id: attach.frame_id,
-            },
-        )
-    }) {
-        let _ = stop(handle);
-        return Err(error);
-    }
-
-    bridge
-        .owned_subframes
-        .lock()
-        .expect("content child bridge mutex poisoned")
-        .insert(attach.frame_id, handle);
-    Ok(())
-}
-
-fn detach_child_frame(bridge: &Arc<ContentBridge>, frame_id: u64) -> Result<(), String> {
-    if let Some(handle) = take_owned_subframe_handle(bridge, frame_id) {
-        stop(handle)?;
-    }
-    Ok(())
-}
-
 fn spawn_listener(
     event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>,
     bridge: Arc<ContentBridge>,
@@ -373,116 +136,99 @@ fn spawn_listener(
             };
 
             match event {
-                ContentEvent::DocumentFetchRequested(request) => match bridge.mode {
-                    BridgeMode::TopLevel { event_loop_id } => {
-                        let _ = super::call_lean_document_fetch_start_parts(
-                            event_loop_id,
-                            request.handler_id as usize,
-                            &request.url,
-                            &request.method,
-                            &request.body,
-                        );
-                    }
-                    BridgeMode::Subframe { .. } => {
-                        spawn_local_fetch(Arc::clone(&bridge), request);
-                    }
-                },
-                ContentEvent::WindowTimerRequested(request) => match bridge.mode {
-                    BridgeMode::TopLevel { event_loop_id } => {
-                        log_timer_debug(format!(
-                            "forward schedule document={} id={} key={} timeout_ms={} nesting={}",
-                            request.document_id,
-                            request.timer_id,
-                            request.timer_key,
-                            request.timeout_ms,
-                            request.nesting_level
-                        ));
-                        let _ = super::call_lean_schedule_window_timer_parts(
-                            event_loop_id,
-                            request.document_id as usize,
-                            request.timer_id as usize,
-                            request.timer_key as usize,
-                            request.timeout_ms as usize,
-                            request.nesting_level as usize,
-                        );
-                    }
-                    BridgeMode::Subframe { .. } => {
-                        schedule_local_timer(Arc::clone(&bridge), request);
-                    }
-                },
-                ContentEvent::WindowTimerCleared(request) => match bridge.mode {
-                    BridgeMode::TopLevel { event_loop_id } => {
-                        log_timer_debug(format!(
-                            "forward clear document={} key={}",
-                            request.document_id, request.timer_key
-                        ));
-                        let _ = request.document_id;
-                        let _ = super::call_lean_clear_window_timer_parts(
-                            event_loop_id,
-                            request.timer_key as usize,
-                        );
-                    }
-                    BridgeMode::Subframe { .. } => {
-                        clear_local_timer(&bridge, request.timer_key);
-                    }
-                },
-                ContentEvent::NavigationRequested(request) => match bridge.mode {
-                    BridgeMode::TopLevel { event_loop_id } => {
-                        let _ = super::call_lean_navigation_start_parts(
-                            event_loop_id,
-                            request.source_navigable_id as usize,
-                            &request.destination_url,
-                            &request.target,
-                            navigation_user_involvement_name(request.user_involvement.clone()),
-                            request.noopener,
-                        );
-                        suppress_next_command_completed = true;
-                    }
-                    BridgeMode::Subframe {
-                        traversable_id,
-                        frame_id,
-                    } => {
-                        let local_target = request.target.is_empty() || request.target == "_self";
-                        if local_target && !request.noopener && request.source_navigable_id == frame_id {
-                            spawn_local_navigation(
-                                Arc::clone(&bridge),
-                                traversable_id,
-                                frame_id,
-                                request,
-                            );
-                        }
-                    }
-                },
-                ContentEvent::AttachChildFrame(attach) => {
-                    let _ = attach_child_frame(&bridge, attach);
+                ContentEvent::DocumentFetchRequested(request) => {
+                    log_iframe_debug(format!(
+                        "forward_fetch_request event_loop={} handler={} method={} url={}",
+                        bridge.event_loop_id,
+                        request.handler_id,
+                        request.method,
+                        request.url
+                    ));
+                    let _ = super::call_lean_document_fetch_start_parts(
+                        bridge.event_loop_id,
+                        request.handler_id as usize,
+                        &request.url,
+                        &request.method,
+                        &request.body,
+                    );
                 }
-                ContentEvent::DetachChildFrame { frame_id } => {
-                    let _ = detach_child_frame(&bridge, frame_id);
+                ContentEvent::WindowTimerRequested(request) => {
+                    log_timer_debug(format!(
+                        "forward schedule document={} id={} key={} timeout_ms={} nesting={}",
+                        request.document_id,
+                        request.timer_id,
+                        request.timer_key,
+                        request.timeout_ms,
+                        request.nesting_level
+                    ));
+                    let _ = super::call_lean_schedule_window_timer_parts(
+                        bridge.event_loop_id,
+                        request.document_id as usize,
+                        request.timer_id as usize,
+                        request.timer_key as usize,
+                        request.timeout_ms as usize,
+                        request.nesting_level as usize,
+                    );
+                }
+                ContentEvent::WindowTimerCleared(request) => {
+                    log_timer_debug(format!(
+                        "forward clear document={} key={}",
+                        request.document_id, request.timer_key
+                    ));
+                    let _ = request.document_id;
+                    let _ = super::call_lean_clear_window_timer_parts(
+                        bridge.event_loop_id,
+                        request.timer_key as usize,
+                    );
+                }
+                ContentEvent::NavigationRequested(request) => {
+                    log_iframe_debug(format!(
+                        "forward_navigation event_loop={} source={} target={} noopener={} destination={}",
+                        bridge.event_loop_id,
+                        request.source_navigable_id,
+                        request.target,
+                        request.noopener,
+                        request.destination_url
+                    ));
+                    let _ = super::call_lean_navigation_start_from_event_loop_parts(
+                        bridge.event_loop_id,
+                        request.source_navigable_id as usize,
+                        &request.destination_url,
+                        &request.target,
+                        navigation_user_involvement_name(request.user_involvement.clone()),
+                        request.noopener,
+                    );
+                    suppress_next_command_completed = true;
                 }
                 ContentEvent::BeforeUnloadCompleted(result) => {
-                    if matches!(bridge.mode, BridgeMode::TopLevel { .. }) {
-                        let _ = super::call_lean_before_unload_completed_parts(
-                            result.document_id as usize,
-                            result.check_id as usize,
-                            result.canceled,
-                        );
-                    }
+                    let _ = super::call_lean_before_unload_completed_parts(
+                        result.document_id as usize,
+                        result.check_id as usize,
+                        result.canceled,
+                    );
                 }
                 ContentEvent::FinalizeNavigation(finalized) => {
-                    if matches!(bridge.mode, BridgeMode::TopLevel { .. }) {
-                        let _ = super::call_lean_finalize_navigation_parts(
-                            finalized.document_id as usize,
-                            &finalized.url,
-                        );
-                    }
+                    let _ = super::call_lean_finalize_navigation_parts(
+                        finalized.document_id as usize,
+                        &finalized.url,
+                    );
+                }
+                ContentEvent::IframeTraversableRemoved(removal) => {
+                    log_iframe_debug(format!(
+                        "forward_iframe_removal parent_traversable={} source_navigable={}",
+                        removal.parent_traversable_id,
+                        removal.source_navigable_id
+                    ));
+                    let _ = super::call_lean_remove_iframe_traversable_parts(
+                        removal.parent_traversable_id as usize,
+                        removal.source_navigable_id as usize,
+                    );
                 }
                 ContentEvent::CommandCompleted => {
-                    if let BridgeMode::TopLevel { event_loop_id } = bridge.mode {
-                        if suppress_next_command_completed {
-                            suppress_next_command_completed = false;
-                        } else {
-                            let _ = super::call_lean_run_next_event_loop_task(event_loop_id);
-                        }
+                    if suppress_next_command_completed {
+                        suppress_next_command_completed = false;
+                    } else {
+                        let _ = super::call_lean_run_next_event_loop_task(bridge.event_loop_id);
                     }
                 }
                 ContentEvent::ScriptEvaluated(result) => {
@@ -504,6 +250,20 @@ fn spawn_listener(
                     }
                 }
                 ContentEvent::PaintReady(snapshot) => {
+                    let transport = snapshot.transport_summary();
+                    log_iframe_debug(format!(
+                        "paint_ready event_loop={} traversable={} frame={} viewport={}x{} scroll=({:.1}, {:.1}) transport(scene_bytes={} fonts={} font_bytes={})",
+                        bridge.event_loop_id,
+                        snapshot.traversable_id.0,
+                        snapshot.frame_id.0,
+                        snapshot.viewport_width,
+                        snapshot.viewport_height,
+                        snapshot.viewport_scroll.x,
+                        snapshot.viewport_scroll.y,
+                        transport.scene_bytes,
+                        transport.registered_fonts,
+                        transport.registered_font_bytes,
+                    ));
                     let _ = embedder::send_user_event(FormalWebUserEvent::Paint(snapshot));
                 }
                 ContentEvent::ShutdownCompleted => break,
@@ -525,8 +285,49 @@ fn spawn_listener(
 fn send_command_inner(bridge: &ContentBridge, command: ContentCommand) -> Result<(), String> {
     bridge
         .command_sender
-        .send(command)
-        .map_err(|error| format!("failed to send content IPC message: {error}"))
+        .send(command.clone())
+        .map_err(|error| format!("failed to send content IPC message: {error}"))?;
+
+    match command {
+        ContentCommand::CreateEmptyDocument {
+            traversable_id,
+            document_id,
+        }
+        | ContentCommand::CreateLoadedDocument {
+            traversable_id,
+            document_id,
+            ..
+        } => {
+            TRAVERSABLE_STATE_REGISTRY
+                .lock()
+                .expect("content traversable registry mutex poisoned")
+                .insert(traversable_id, (bridge.event_loop_id, document_id));
+            DOCUMENT_TRAVERSABLE_REGISTRY
+                .lock()
+                .expect("content document registry mutex poisoned")
+                .insert(document_id, traversable_id);
+        }
+        ContentCommand::DestroyDocument { document_id } => {
+            let traversable_id = DOCUMENT_TRAVERSABLE_REGISTRY
+                .lock()
+                .expect("content document registry mutex poisoned")
+                .remove(&document_id);
+            if let Some(traversable_id) = traversable_id {
+                let mut traversable_state_registry = TRAVERSABLE_STATE_REGISTRY
+                    .lock()
+                    .expect("content traversable registry mutex poisoned");
+                if traversable_state_registry
+                    .get(&traversable_id)
+                    .is_some_and(|(_, current_document_id)| *current_document_id == document_id)
+                {
+                    traversable_state_registry.remove(&traversable_id);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 pub fn install_hooks() {
@@ -534,15 +335,15 @@ pub fn install_hooks() {
 }
 
 pub fn start(event_loop_id: usize) -> Result<usize, String> {
-    start_bridge(BridgeMode::TopLevel { event_loop_id }, true)
+    start_bridge(event_loop_id, true)
 }
 
-fn start_bridge(mode: BridgeMode, make_active: bool) -> Result<usize, String> {
+fn start_bridge(event_loop_id: usize, make_active: bool) -> Result<usize, String> {
     let executable_path = content_executable_path()?;
     let (server, token) = IpcOneShotServer::<Bootstrap>::new()
         .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
 
-    let mut child_process = Command::new(executable_path);
+    let mut child_process = Command::new(&executable_path);
     setup_common(&mut child_process, &token);
 
     let child = child_process
@@ -556,9 +357,7 @@ fn start_bridge(mode: BridgeMode, make_active: bool) -> Result<usize, String> {
         command_sender: bootstrap.command_sender,
         child: Mutex::new(Some(child)),
         listener: Mutex::new(None),
-        mode,
-        owned_subframes: Mutex::new(HashMap::new()),
-        local_timer_cancellations: Mutex::new(HashMap::new()),
+        event_loop_id,
         script_waiters: Mutex::new(HashMap::new()),
     });
     let listener = spawn_listener(bootstrap.event_receiver, Arc::clone(&bridge));
@@ -572,6 +371,13 @@ fn start_bridge(mode: BridgeMode, make_active: bool) -> Result<usize, String> {
     }
 
     let handle = NEXT_CONTENT_HANDLE.fetch_add(1, Ordering::Relaxed);
+    log_iframe_debug(format!(
+        "start_bridge handle={} event_loop={} make_active={} executable={}",
+        handle,
+        event_loop_id,
+        make_active,
+        executable_path.display()
+    ));
     CONTENT_REGISTRY
         .lock()
         .expect("content registry mutex poisoned")
@@ -589,7 +395,12 @@ pub fn stop(handle: usize) -> Result<(), String> {
         .lock()
         .expect("content registry mutex poisoned")
         .remove(&handle)
-        .ok_or_else(|| format!("unknown content handle: {handle}"))?;
+        .ok_or(())
+        .ok();
+
+    let Some(bridge) = bridge else {
+        return Ok(());
+    };
 
     {
         let mut active = ACTIVE_CONTENT_BRIDGE
@@ -600,11 +411,25 @@ pub fn stop(handle: usize) -> Result<(), String> {
         }
     }
 
-    clear_all_local_timers(&bridge);
-    let child_handles = drain_owned_subframe_handles(&bridge);
-    for child_handle in child_handles {
-        let _ = stop(child_handle);
-    }
+    let removed_traversable_ids = {
+        let mut traversable_state_registry = TRAVERSABLE_STATE_REGISTRY
+            .lock()
+            .expect("content traversable registry mutex poisoned");
+        let removed_traversable_ids = traversable_state_registry
+            .iter()
+            .filter_map(|(traversable_id, (owner_event_loop_id, _))| {
+                (*owner_event_loop_id == bridge.event_loop_id).then_some(*traversable_id)
+            })
+            .collect::<Vec<_>>();
+        traversable_state_registry.retain(|_, (owner_event_loop_id, _)| {
+            *owner_event_loop_id != bridge.event_loop_id
+        });
+        removed_traversable_ids
+    };
+    DOCUMENT_TRAVERSABLE_REGISTRY
+        .lock()
+        .expect("content document registry mutex poisoned")
+        .retain(|_, traversable_id| !removed_traversable_ids.contains(traversable_id));
 
     let _ = send_command_inner(&bridge, ContentCommand::Shutdown);
     let child = bridge
@@ -631,6 +456,18 @@ pub fn stop(handle: usize) -> Result<(), String> {
     finish_shutdown_async(child, listener);
 
     Ok(())
+}
+
+pub fn stop_event_loop(event_loop_id: usize) -> Result<(), String> {
+    let handle = CONTENT_REGISTRY
+        .lock()
+        .expect("content registry mutex poisoned")
+        .iter()
+        .find_map(|(handle, bridge)| (bridge.event_loop_id == event_loop_id).then_some(*handle));
+    match handle {
+        Some(handle) => stop(handle),
+        None => Ok(()),
+    }
 }
 
 fn finish_shutdown_async(child: Option<Child>, listener: Option<JoinHandle<()>>) {
@@ -686,21 +523,38 @@ pub fn send_command(handle: usize, command: ContentCommand) -> Result<(), String
     send_command_inner(&bridge, command)
 }
 
-fn active_bridge() -> Result<Arc<ContentBridge>, String> {
-    ACTIVE_CONTENT_BRIDGE
+fn bridge_and_document_for_traversable_id(
+    traversable_id: u64,
+) -> Result<(Arc<ContentBridge>, u64), String> {
+    let (event_loop_id, document_id) = TRAVERSABLE_STATE_REGISTRY
         .lock()
-        .expect("active content bridge mutex poisoned")
-        .as_ref()
+        .expect("content traversable registry mutex poisoned")
+        .get(&traversable_id)
+        .copied()
+        .ok_or_else(|| format!("no content process owns traversable {traversable_id}"))?;
+
+    let bridge = CONTENT_REGISTRY
+        .lock()
+        .expect("content registry mutex poisoned")
+        .values()
+        .find(|bridge| bridge.event_loop_id == event_loop_id)
         .cloned()
-        .ok_or_else(|| String::from("no active content process"))
+        .ok_or_else(|| {
+            format!(
+                "no content bridge found for event loop {} owning traversable {}",
+                event_loop_id, traversable_id
+            )
+        })?;
+
+    Ok((bridge, document_id))
 }
 
 pub fn evaluate_script(
-    document_id: u64,
+    traversable_id: u64,
     source: String,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let bridge = active_bridge()?;
+    let (bridge, document_id) = bridge_and_document_for_traversable_id(traversable_id)?;
     let request_id = NEXT_SCRIPT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = mpsc::channel();
 
@@ -756,12 +610,20 @@ pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
     };
 
     let command = viewport_command(snapshot);
+    let (width, height, scale, _color_scheme) = snapshot;
     let bridges = CONTENT_REGISTRY
         .lock()
         .expect("content registry mutex poisoned")
         .values()
         .cloned()
         .collect::<Vec<_>>();
+    log_iframe_debug(format!(
+        "broadcast_viewport width={} height={} scale={} bridge_count={}",
+        width,
+        height,
+        scale,
+        bridges.len()
+    ));
     for bridge in bridges {
         let _ = send_command_inner(&bridge, command.clone());
     }

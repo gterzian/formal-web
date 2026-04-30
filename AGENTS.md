@@ -34,4 +34,6 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 
 At the end of a task, always comfirm `cargo run --release` builds the project successfully, and then exit the terminal. Also always run the wpt tests without a path.
 
-Plans and TODOS belong in `scratchpad`. 
+Plans, TODOS, and temporary logs, belong in `scratchpad`. Things that are not needed after a task should be removed from that folder at the end of a task.
+
+At the end of each task, output as part of your closing comment a good possible commit message for the work done.

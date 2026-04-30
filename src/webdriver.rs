@@ -244,7 +244,7 @@ fn dispatch_session_request(
 fn status_payload() -> Value {
     let ready = embedder::automation_is_ready()
         && embedder::automation_snapshot(Duration::from_millis(250))
-            .map(|snapshot| snapshot.document_id.is_some())
+            .map(|snapshot| snapshot.webview_id.is_some() && snapshot.current_url.is_some())
             .unwrap_or(false);
     json!({
         "ready": ready,
@@ -329,17 +329,18 @@ fn current_snapshot() -> Result<embedder::AutomationSnapshot, WebDriverError> {
 
 fn execute_script_value(script: &str, args: &[Value]) -> Result<Value, WebDriverError> {
     let snapshot = current_snapshot()?;
-    let document_id = snapshot.document_id.ok_or_else(|| {
+    let webview_id = snapshot.webview_id.ok_or_else(|| {
         WebDriverError::http(
             500,
             "Internal Server Error",
             "javascript error",
-            String::from("no active document is available for script execution"),
+            String::from("no active top-level traversable is available for script execution"),
         )
     })?;
 
     let wrapped = wrap_execute_script(script, args).map_err(WebDriverError::invalid_argument)?;
-    ffi::evaluate_script(document_id, wrapped, SCRIPT_TIMEOUT).map_err(WebDriverError::javascript)
+    ffi::evaluate_script(webview_id.0, wrapped, SCRIPT_TIMEOUT)
+        .map_err(WebDriverError::javascript)
 }
 
 fn wrap_execute_script(script: &str, args: &[Value]) -> Result<String, serde_json::Error> {

@@ -167,7 +167,9 @@ end BrowsingContextGroup
 namespace BrowsingContextGroupSet
 
 def nextId (groupSet : BrowsingContextGroupSet) : Nat :=
-  groupSet.members.size
+  groupSet.members.foldl
+    (init := 0)
+    (fun nextId groupId _ => max nextId (groupId + 1))
 
 def appendFresh
     (groupSet : BrowsingContextGroupSet) :
@@ -187,7 +189,9 @@ end BrowsingContextGroupSet
 namespace TopLevelTraversableSet
 
 def nextId (topLevelTraversableSet : TopLevelTraversableSet) : Nat :=
-  topLevelTraversableSet.members.size
+  topLevelTraversableSet.members.foldl
+    (init := 0)
+    (fun nextId traversableId _ => max nextId (traversableId + 1))
 
 def appendFresh
     (topLevelTraversableSet : TopLevelTraversableSet) :
@@ -205,6 +209,12 @@ def replace
     (updatedTraversable : TopLevelTraversable) :
     TopLevelTraversableSet :=
   { topLevelTraversableSet with members := topLevelTraversableSet.members.insert updatedTraversable.id updatedTraversable }
+
+def erase
+    (topLevelTraversableSet : TopLevelTraversableSet)
+    (id : Nat) :
+    TopLevelTraversableSet :=
+  { topLevelTraversableSet with members := topLevelTraversableSet.members.erase id }
 
 def find?
     (topLevelTraversableSet : TopLevelTraversableSet)

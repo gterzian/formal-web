@@ -87,6 +87,7 @@ inductive EventLoopTaskMessage where
       (timeoutMs : Nat)
       (nestingLevel : Nat)
     | clearTimeout (timerKey : Nat)
+  | shutdown
   | runNextTask
   | queueDocumentFetchCompletion
       (handler : RustNetHandlerPointer)
@@ -593,6 +594,7 @@ structure EventLoopTaskState where
   pendingCompleteNavigationTasks : List PendingCompleteNavigationTask := []
   pendingRunWindowTimerTasks : List PendingRunWindowTimerTask := []
   pendingDocumentFetchTimeoutTasks : List PendingDocumentFetchTimeoutTask := []
+  stopRequested : Bool := false
 
 instance : Inhabited EventLoopTaskState where
   default := { eventLoop := { id := 0 } }
@@ -747,7 +749,8 @@ def coalesceQueuedHighFrequencyWork
       pendingDocumentFetchCompletionTasks
       pendingCompleteNavigationTasks
       pendingRunWindowTimerTasks
-      pendingDocumentFetchTimeoutTasks =>
+      pendingDocumentFetchTimeoutTasks
+      stopRequested =>
       let taskQueueAfterDispatch :=
         coalesceDispatchTaskQueue eventLoop.taskQueue
       let taskQueue :=
@@ -776,6 +779,7 @@ def coalesceQueuedHighFrequencyWork
         pendingCompleteNavigationTasks
         pendingRunWindowTimerTasks
         pendingDocumentFetchTimeoutTasks
+        stopRequested
 
 abbrev EventLoopM := WriterT (Array EventLoopEffect) (StateM EventLoopTaskState)
 
@@ -1055,6 +1059,29 @@ def handleEventLoopTaskMessage
       (((), #[EventLoopEffect.performRuntimeEffect (.scheduleTimeout request)]), state)
   | .clearTimeout timerKey =>
       (((), #[EventLoopEffect.performRuntimeEffect (.clearTimeout timerKey)]), state)
+  | .shutdown =>
+      let eventLoop := {
+        state.eventLoop.wakeForNextTask with
+          taskQueue := []
+      }
+      let state := {
+        state with
+          eventLoop
+          liveDocumentIds := Std.TreeMap.empty
+          pendingCreateEmptyDocumentTasks := []
+          pendingCreateLoadedDocumentTasks := []
+          pendingDestroyDocumentTasks := []
+          pendingUpdateTheRenderingTasks := []
+          pendingDispatchEventTasks := []
+          pendingRunBeforeUnloadTasks := []
+          pendingDocumentFetchRequests := []
+          pendingDocumentFetchCompletionTasks := []
+          pendingCompleteNavigationTasks := []
+          pendingRunWindowTimerTasks := []
+          pendingDocumentFetchTimeoutTasks := []
+          stopRequested := true
+      }
+      (((), #[]), state)
   | .runNextTask =>
       let state := {
         state with
@@ -1181,7 +1208,7 @@ partial def runEventLoopLoop
     IO Unit := do
   let some messages ← recvDrainedMessages? channel | pure ()
   let state ← runEventLoopMessages performRuntimeEffect state messages
-  if state.liveDocumentIds.isEmpty && state.eventLoop.taskQueue.isEmpty && !state.eventLoop.awaitingTaskCompletion then
+  if state.stopRequested || (state.liveDocumentIds.isEmpty && state.eventLoop.taskQueue.isEmpty && !state.eventLoop.awaitingTaskCompletion) then
     channel.close
   else
     runEventLoopLoop performRuntimeEffect channel state

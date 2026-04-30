@@ -14,6 +14,7 @@ The `webview` crate owns:
 
 - **`WebviewProvider`**: Manages a HashMap of webviews keyed by `WebviewId` (stable traversable identifier). Each webview tracks its latest rendered scene and associated document ID.
 - Each webview now keeps recorded paint frames in a hidden compositor keyed by `frame_id`; the compositor lazily replays the committed root frame and resolves `IframePlaceholder` commands against cached child frames when the embedder asks for the current scene.
+- Treat only top-level document frame ids as compositor roots; nested iframe frame ids stay cached as child frames and are scaled into the placeholder bounds using the viewport size recorded on their paint frame.
 
 - **`EmbedderApi` trait**: Abstract interface for embedder-specific concerns like redraw signaling. This allows the webview crate to remain independent of platform/window details (winit, rendering backend, etc.).
 

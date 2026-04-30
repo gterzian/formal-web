@@ -32,6 +32,10 @@ opaque contentProcessStart : USize → IO RustContentProcessPointer
 @[extern "contentProcessStop"]
 opaque contentProcessStop : USize → IO Unit
 
+/-- Stops the content process currently associated with the given event loop, if one exists. -/
+@[extern "contentProcessStopEventLoop"]
+opaque contentProcessStopEventLoop : USize → IO Unit
+
 /-- Sends a create-empty-document command to the event loop's content process. -/
 @[extern "contentProcessCreateEmptyDocument"]
 opaque contentProcessCreateEmptyDocument : USize → USize → USize → IO Unit

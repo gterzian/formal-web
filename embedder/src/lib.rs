@@ -12,7 +12,7 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ColorScheme, Viewport};
 use ipc_messages::content::{
-    BeforeUnloadResult, NavigateRequest, PaintFrame, ScrollOffset, WebviewId,
+    BeforeUnloadResult, PaintFrame, ScrollOffset, WebviewId,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
@@ -70,16 +70,17 @@ impl EmbedderApi for WinitEmbedderApi {
 pub enum FormalWebUserEvent {
     Paint(PaintFrame),
     RequestRedraw(WebviewId),
-    NavigationRequested(NavigateRequest),
+    NavigationRequested { webview_id: WebviewId, destination_url: String },
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
-    NewTopLevelTraversable(WebviewId),
+    NewTopLevelTraversable(WebviewId, String),
     Automation(AutomationCommand),
     Exit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutomationSnapshot {
+    pub webview_id: Option<WebviewId>,
     pub current_url: Option<String>,
     pub displayed_url: String,
     pub document_id: Option<u64>,
@@ -152,8 +153,13 @@ impl BrowserState {
         }
     }
 
-    fn automation_snapshot(&self, has_top_level_traversable: bool) -> AutomationSnapshot {
+    fn automation_snapshot(
+        &self,
+        current_webview_id: Option<WebviewId>,
+        has_top_level_traversable: bool,
+    ) -> AutomationSnapshot {
         AutomationSnapshot {
+            webview_id: current_webview_id,
             current_url: self.current_url().map(ToOwned::to_owned),
             displayed_url: self.displayed_url(),
             document_id: self.current_document_id,
@@ -346,22 +352,27 @@ fn normalize_browser_destination(input: &str) -> Option<String> {
 }
 
 fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
-    if let Some(id_str) = message.strip_prefix(NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX) {
+    if let Some(payload) = message.strip_prefix(NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX) {
+        let (id_str, target_name) = payload.split_once('|').unwrap_or((payload, ""));
         let webview_id = id_str
             .parse::<u64>()
             .map(WebviewId)
             .map_err(|error| format!("invalid webview id: {error}"))?;
-        return Ok(FormalWebUserEvent::NewTopLevelTraversable(webview_id));
+        return Ok(FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name.to_owned()));
     }
 
-    if let Some(destination_url) = message.strip_prefix(NAVIGATION_REQUESTED_MESSAGE_PREFIX) {
-        return Ok(FormalWebUserEvent::NavigationRequested(NavigateRequest {
-            source_navigable_id: 0,
+    if let Some(payload) = message.strip_prefix(NAVIGATION_REQUESTED_MESSAGE_PREFIX) {
+        let Some((webview_id_str, destination_url)) = payload.split_once('|') else {
+            return Err(format!("invalid navigation requested runtime message: {message}"));
+        };
+        let webview_id = webview_id_str
+            .parse::<u64>()
+            .map(WebviewId)
+            .map_err(|error| format!("invalid webview id: {error}"))?;
+        return Ok(FormalWebUserEvent::NavigationRequested {
+            webview_id,
             destination_url: destination_url.to_owned(),
-            target: String::new(),
-            user_involvement: ipc_messages::content::UserNavigationInvolvement::None,
-            noopener: false,
-        }));
+        });
     }
 
     if let Some(payload) = message.strip_prefix(BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX) {
@@ -915,12 +926,14 @@ impl FormalWebApp {
         }
     }
 
-    fn handle_navigation_requested(&mut self, request: NavigateRequest) {
-        self.browser.begin_navigation(PendingNavigation {
-            url: request.destination_url,
-        });
-        self.sync_chrome_state();
-        self.request_window_redraw();
+    fn handle_navigation_requested(&mut self, webview_id: WebviewId, destination_url: String) {
+        if self.current_webview_id == Some(webview_id) {
+            self.browser.begin_navigation(PendingNavigation {
+                url: destination_url,
+            });
+            self.sync_chrome_state();
+            self.request_window_redraw();
+        }
     }
 
     fn handle_before_unload_completed(&mut self, result: BeforeUnloadResult) {
@@ -953,31 +966,41 @@ impl FormalWebApp {
         if let Some(pending_navigation) = self.pending_automation_navigation.take() {
             let _ = pending_navigation
                 .reply
-                .send(Ok(self.browser.automation_snapshot(self.has_top_level_traversable)));
+                .send(Ok(self.browser.automation_snapshot(
+                    self.current_webview_id,
+                    self.has_top_level_traversable,
+                )));
         }
     }
 
     fn handle_finalize_navigation(&mut self, finalized: FinalizeNavigation) {
-        if let Some(pending_navigation) = self.browser.pending_navigation.as_ref() {
-            if pending_navigation.url != finalized.url.as_str() {
-                return;
+        let is_current = self.current_webview_id == Some(finalized.webview_id);
+
+        if is_current {
+            if let Some(pending_navigation) = self.browser.pending_navigation.as_ref() {
+                if pending_navigation.url != finalized.url.as_str() {
+                    return;
+                }
             }
+            self.browser.commit_navigation(finalized.url.clone());
+            self.sync_chrome_state();
+            self.request_window_redraw();
+            self.complete_pending_automation_navigation_if_ready();
         }
-        self.current_webview_id = Some(finalized.webview_id);
+
         if let Some(provider) = self.provider.as_mut() {
             provider.on_finalize_navigation(finalized.webview_id, &finalized.url);
         }
-        self.browser.commit_navigation(finalized.url);
-        self.sync_chrome_state();
-        self.request_window_redraw();
-        self.complete_pending_automation_navigation_if_ready();
     }
 
     fn handle_automation_command(&mut self, command: AutomationCommand) {
         match command {
             AutomationCommand::Snapshot { reply } => {
                 self.sync_browser_document_id_from_provider();
-                let _ = reply.send(Ok(self.browser.automation_snapshot(self.has_top_level_traversable)));
+                let _ = reply.send(Ok(self.browser.automation_snapshot(
+                    self.current_webview_id,
+                    self.has_top_level_traversable,
+                )));
             }
             AutomationCommand::Navigate { url, reply } => {
                 if self.pending_automation_navigation.is_some() {
@@ -1302,8 +1325,8 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                     self.request_window_redraw();
                 }
             }
-            FormalWebUserEvent::NavigationRequested(request) => {
-                self.handle_navigation_requested(request);
+            FormalWebUserEvent::NavigationRequested { webview_id, destination_url } => {
+                self.handle_navigation_requested(webview_id, destination_url);
             }
             FormalWebUserEvent::BeforeUnloadCompleted(result) => {
                 self.handle_before_unload_completed(result);
@@ -1311,13 +1334,24 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             FormalWebUserEvent::FinalizeNavigation(finalized) => {
                 self.handle_finalize_navigation(finalized);
             }
-            FormalWebUserEvent::NewTopLevelTraversable(webview_id) => {
-                self.has_top_level_traversable = true;
-                self.current_webview_id = Some(webview_id);
-                if let Some(provider) = self.provider.as_mut() {
-                    provider.on_new_top_level_traversable(webview_id);
+            FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name) => {
+                if target_name.starts_with("_iframe|") {
+                    let parts: Vec<&str> = target_name.split('|').collect();
+                    if parts.len() == 3 {
+                        if let (Ok(parent_webview_id), Ok(placeholder_id)) = (parts[1].parse::<u64>(), parts[2].parse::<u64>()) {
+                            if let Some(provider) = self.provider.as_mut() {
+                                provider.register_iframe_alias(webview_id, WebviewId(parent_webview_id), ipc_messages::content::FrameId(placeholder_id));
+                            }
+                        }
+                    }
+                } else {
+                    self.has_top_level_traversable = true;
+                    self.current_webview_id = Some(webview_id);
+                    if let Some(provider) = self.provider.as_mut() {
+                        provider.on_new_top_level_traversable(webview_id);
+                    }
+                    self.request_visible_redraw("request_redraw");
                 }
-                self.request_visible_redraw("request_redraw");
             }
             FormalWebUserEvent::Automation(command) => {
                 self.handle_automation_command(command);

@@ -50,10 +50,11 @@ instance : Inhabited UserAgent where
 /-- Effects that the user-agent model can emit during a state transition. -/
 inductive UserAgentEffect where
   | startEventLoop (eventLoopId : Nat)
+  | stopEventLoop (eventLoopId : Nat)
   | startFetch (request : PendingFetchRequest)
   | eventLoopMessage (eventLoopId : Nat) (message : EventLoopTaskMessage)
-  | notifyTopLevelTraversableCreated (webviewId : Nat)
-  | notifyNavigationRequested (destinationURL : String)
+  | notifyTopLevelTraversableCreated (webviewId : Nat) (targetName : String)
+  | notifyNavigationRequested (webviewId : Nat) (destinationURL : String)
   | notifyBeforeUnloadCompleted (documentId : Nat) (checkId : Nat) (canceled : Bool)
   | notifyFinalizeNavigation (webviewId : Nat) (url : String)
   | logError (message : String)
@@ -93,6 +94,15 @@ def setEventLoop
   {
     userAgent with
       eventLoops := userAgent.eventLoops.insert eventLoop.id eventLoop
+  }
+
+def eraseEventLoop
+    (userAgent : UserAgent)
+    (eventLoopId : Nat) :
+    UserAgent :=
+  {
+    userAgent with
+      eventLoops := userAgent.eventLoops.erase eventLoopId
   }
 
 def eventLoop?
@@ -336,6 +346,18 @@ def replaceTraversable
       topLevelTraversableSet := userAgent.topLevelTraversableSet.replace traversable
   }
 
+def eraseTraversable
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    UserAgent :=
+  {
+    userAgent with
+      topLevelTraversableSet := {
+        userAgent.topLevelTraversableSet with
+          members := userAgent.topLevelTraversableSet.members.erase traversableId
+      }
+  }
+
 def traversable?
     (userAgent : UserAgent)
     (traversableId : Nat) :
@@ -345,19 +367,12 @@ def traversable?
 def activeTraversable?
     (userAgent : UserAgent) :
     Option TopLevelTraversable :=
-  let rec loop (index remaining : Nat) : Option TopLevelTraversable :=
-    match remaining with
-    | 0 => none
-    | remaining + 1 =>
-        match traversable? userAgent index with
-        | some traversable =>
-            if traversable.isActive then
-              some traversable
-            else
-              loop (index + 1) remaining
-        | none =>
-            loop (index + 1) remaining
-  loop 0 userAgent.topLevelTraversableSet.members.size
+  userAgent.topLevelTraversableSet.members.foldl
+    (init := none)
+    (fun found? _ traversable =>
+      match found? with
+      | some _ => found?
+      | none => if traversable.isActive then some traversable else none)
 
 def activeTraversableId?
     (userAgent : UserAgent) :
@@ -368,41 +383,31 @@ def traversableContainingDocument?
     (userAgent : UserAgent)
     (documentId : Nat) :
     Option TopLevelTraversable :=
-  let rec loop (index remaining : Nat) : Option TopLevelTraversable :=
-    match remaining with
-    | 0 => none
-    | remaining + 1 =>
-        match traversable? userAgent index with
-        | some traversable =>
-            match traversable.toTraversableNavigable.activeDocument with
-            | some document =>
-                if document.documentId.id = documentId then
-                  some traversable
-                else
-                  loop (index + 1) remaining
-            | none =>
-                loop (index + 1) remaining
-        | none =>
-            loop (index + 1) remaining
-  loop 0 userAgent.topLevelTraversableSet.members.size
+  userAgent.topLevelTraversableSet.members.foldl
+    (init := none)
+    (fun found? _ traversable =>
+      match found? with
+      | some _ => found?
+      | none =>
+          match traversable.toTraversableNavigable.activeDocument with
+          | some document =>
+              if document.documentId.id = documentId then
+                some traversable
+              else
+                none
+          | none =>
+              none)
 
 def traversableWithTargetName?
     (userAgent : UserAgent)
     (targetName : String) :
     Option TopLevelTraversable :=
-  let rec loop (index remaining : Nat) : Option TopLevelTraversable :=
-    match remaining with
-    | 0 => none
-    | remaining + 1 =>
-        match traversable? userAgent index with
-        | some traversable =>
-            if traversable.targetName = targetName then
-              some traversable
-            else
-              loop (index + 1) remaining
-        | none =>
-            loop (index + 1) remaining
-  loop 0 userAgent.topLevelTraversableSet.members.size
+  userAgent.topLevelTraversableSet.members.foldl
+    (init := none)
+    (fun found? _ traversable =>
+      match found? with
+      | some _ => found?
+      | none => if traversable.targetName = targetName then some traversable else none)
 
     def sourceNavigationTraversable?
       (userAgent : UserAgent)
@@ -428,19 +433,16 @@ def browsingContextGroupOfBrowsingContext?
     (userAgent : UserAgent)
     (browsingContextId : Nat) :
     Option BrowsingContextGroup :=
-  let rec loop (index remaining : Nat) : Option BrowsingContextGroup :=
-    match remaining with
-    | 0 => none
-    | remaining + 1 =>
-        match userAgent.browsingContextGroupSet.members.get? index with
-        | some group =>
-            if group.browsingContextSet.get? browsingContextId |>.isSome then
-              some group
-            else
-              loop (index + 1) remaining
-        | none =>
-            loop (index + 1) remaining
-  loop 0 userAgent.browsingContextGroupSet.members.size
+  userAgent.browsingContextGroupSet.members.foldl
+    (init := none)
+    (fun found? _ group =>
+      match found? with
+      | some _ => found?
+      | none =>
+          if group.browsingContextSet.get? browsingContextId |>.isSome then
+            some group
+          else
+            none)
 
 def setActiveTraversable
     (userAgent : UserAgent)
@@ -471,6 +473,208 @@ def activeDocumentId?
   let some traversable := traversable? userAgent traversableId | none
   let some document := traversable.toTraversableNavigable.activeDocument | none
   pure document.documentId
+
+private def targetNameKeepsBrowserUiFocus
+    (targetName : String) :
+    Bool :=
+  !targetName.startsWith "_iframe|"
+
+private def iframeTargetNamePrefix
+    (parentTraversableId : Nat) :
+    String :=
+  s!"_iframe|{parentTraversableId}|"
+
+private def iframeTargetName
+    (parentTraversableId : Nat)
+    (sourceNavigableId : Nat) :
+    String :=
+  s!"_iframe|{parentTraversableId}|{sourceNavigableId}"
+
+private partial def collectIframeDescendantTraversables
+    (userAgent : UserAgent)
+    (pendingParentIds : List Nat)
+    (seenTraversableIds : Std.TreeMap Nat Unit := Std.TreeMap.empty)
+    (descendants : List TopLevelTraversable := []) :
+    List TopLevelTraversable :=
+  if pendingParentIds.isEmpty then
+    descendants
+  else
+    Id.run do
+      let parentTraversableId := pendingParentIds.head!
+      let remainingParentIds := pendingParentIds.tail
+      let targetPrefix := iframeTargetNamePrefix parentTraversableId
+      let result :=
+        userAgent.topLevelTraversableSet.members.foldl
+          (init := (remainingParentIds, seenTraversableIds, descendants))
+          (fun acc traversableId traversable =>
+            match acc with
+            | (worklist, seen, collected) =>
+                if traversable.targetName.startsWith targetPrefix then
+                  if seen.get? traversableId |>.isSome then
+                    (worklist, seen, collected)
+                  else
+                    (traversableId :: worklist, seen.insert traversableId (), traversable :: collected)
+                else
+                  (worklist, seen, collected))
+      let nextPendingParentIds := result.1
+      let nextSeenTraversableIds := result.2.1
+      let nextDescendants := result.2.2
+      pure <|
+        collectIframeDescendantTraversables
+          userAgent
+          nextPendingParentIds
+          nextSeenTraversableIds
+          nextDescendants
+
+private def cleanupPendingNavigationFetchesForTraversables
+    (userAgent : UserAgent)
+    (traversableIds : Std.TreeMap Nat Unit) :
+    UserAgent :=
+  let pendingNavigationFetches : Std.TreeMap Nat PendingNavigationFetch :=
+    userAgent.pendingNavigationFetches.foldl
+      (init := Std.TreeMap.empty)
+      (fun pending _ pendingNavigationFetch =>
+        if traversableIds.get? pendingNavigationFetch.traversableId |>.isSome then
+          pending
+        else
+          pending.insert pendingNavigationFetch.navigationId pendingNavigationFetch)
+  let pendingNavigationFetchIdsByFetchId : Std.TreeMap Nat Nat :=
+    pendingNavigationFetches.foldl
+      (init := Std.TreeMap.empty)
+      (fun fetchIds navigationId pendingNavigationFetch =>
+        fetchIds.insert pendingNavigationFetch.fetchId navigationId)
+  {
+    userAgent with
+      pendingNavigationFetches
+      pendingNavigationFetchIdsByFetchId
+  }
+
+private def cleanupPendingBeforeUnloadNavigationsForTraversables
+    (userAgent : UserAgent)
+    (traversableIds : Std.TreeMap Nat Unit) :
+    UserAgent :=
+  let pendingBeforeUnloadNavigations : Std.TreeMap Nat PendingBeforeUnloadNavigation :=
+    userAgent.pendingBeforeUnloadNavigations.foldl
+      (init := Std.TreeMap.empty)
+      (fun pending checkId pendingBeforeUnloadNavigation =>
+        if traversableIds.get? pendingBeforeUnloadNavigation.traversableId |>.isSome then
+          pending
+        else
+          pending.insert checkId pendingBeforeUnloadNavigation)
+  {
+    userAgent with
+      pendingBeforeUnloadNavigations
+  }
+
+private def cleanupPendingNavigationFinalizationsForTraversables
+    (userAgent : UserAgent)
+    (traversableIds : Std.TreeMap Nat Unit) :
+    UserAgent :=
+  let pendingNavigationFinalizations : Std.TreeMap Nat PendingNavigationFinalization :=
+    userAgent.pendingNavigationFinalizations.foldl
+      (init := Std.TreeMap.empty)
+      (fun pending documentId pendingNavigationFinalization =>
+        if traversableIds.get? pendingNavigationFinalization.traversableId |>.isSome then
+          pending
+        else
+          pending.insert documentId pendingNavigationFinalization)
+  let pendingNavigationFinalizationIdsByNavigationId : Std.TreeMap Nat Nat :=
+    pendingNavigationFinalizations.foldl
+      (init := Std.TreeMap.empty)
+      (fun navigationIds documentId pendingNavigationFinalization =>
+        navigationIds.insert pendingNavigationFinalization.navigationId documentId)
+  {
+    userAgent with
+      pendingNavigationFinalizations
+      pendingNavigationFinalizationIdsByNavigationId
+  }
+
+private def cleanupTraversables
+    (userAgent : UserAgent)
+    (traversables : List TopLevelTraversable) :
+  UserAgent × List Nat :=
+  let traversableEventLoopId? := fun traversable =>
+    let currentEntryEventLoopId? :=
+      traversable.toTraversableNavigable.toNavigable.currentSessionHistoryEntry >>= fun entry =>
+        entry.documentState.document.map (·.eventLoopId)
+    let activeEntryEventLoopId? :=
+      traversable.toTraversableNavigable.toNavigable.activeSessionHistoryEntry >>= fun entry =>
+        entry.documentState.document.map (·.eventLoopId)
+    let sessionHistoryEventLoopId? :=
+      traversable.toTraversableNavigable.sessionHistoryEntries.foldl
+        (fun found? entry =>
+          match found? with
+          | some _ => found?
+          | none => entry.documentState.document.map (·.eventLoopId))
+        none
+    match traversable.toTraversableNavigable.activeDocument.map (·.eventLoopId) with
+    | some eventLoopId => some eventLoopId
+    | none =>
+        match currentEntryEventLoopId? with
+        | some eventLoopId => some eventLoopId
+        | none =>
+            match activeEntryEventLoopId? with
+            | some eventLoopId => some eventLoopId
+            | none => sessionHistoryEventLoopId?
+  let traversableIds : Std.TreeMap Nat Unit :=
+    traversables.foldl
+      (fun ids traversable => ids.insert traversable.id ())
+      Std.TreeMap.empty
+  let cleanedUserAgent :=
+    traversables.foldl
+      (fun ua traversable =>
+        let ua := eraseTraversable ua traversable.id
+        match traversableEventLoopId? traversable with
+        | some eventLoopId =>
+            UserAgent.eraseEventLoop ua eventLoopId
+        | none =>
+            ua)
+      userAgent
+  let cleanedUserAgent :=
+    cleanupPendingNavigationFetchesForTraversables cleanedUserAgent traversableIds
+  let cleanedUserAgent :=
+    cleanupPendingBeforeUnloadNavigationsForTraversables cleanedUserAgent traversableIds
+  let cleanedUserAgent :=
+    cleanupPendingNavigationFinalizationsForTraversables cleanedUserAgent traversableIds
+  let stoppedEventLoopIds :=
+    traversables.foldl
+      (fun eventLoopIds traversable =>
+        match traversableEventLoopId? traversable with
+        | some eventLoopId =>
+            eventLoopId :: eventLoopIds
+        | none =>
+            eventLoopIds)
+      []
+  (cleanedUserAgent, stoppedEventLoopIds)
+
+private def cleanupRelatedIframeTraversables
+    (userAgent : UserAgent)
+    (parentTraversableId : Nat) :
+    UserAgent × List Nat :=
+  let descendants := collectIframeDescendantTraversables userAgent [parentTraversableId]
+  cleanupTraversables userAgent descendants
+
+private def cleanupTraversableSubtree
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    UserAgent × List Nat :=
+  match traversable? userAgent traversableId with
+  | some traversable =>
+      let descendants := collectIframeDescendantTraversables userAgent [traversable.id]
+      cleanupTraversables userAgent (traversable :: descendants)
+  | none =>
+      (userAgent, [])
+
+private def cleanupIframeTraversableByTargetName
+    (userAgent : UserAgent)
+    (targetName : String) :
+    UserAgent × List Nat :=
+  match traversableWithTargetName? userAgent targetName with
+  | some traversable =>
+      let descendants := collectIframeDescendantTraversables userAgent [traversable.id]
+      cleanupTraversables userAgent (traversable :: descendants)
+  | none =>
+      (userAgent, [])
 
 private def updateOptionDocument
     (optionDocument : Option Document)
@@ -1611,9 +1815,14 @@ where
         targetName
     }
     modify fun userAgent =>
-      setActiveTraversable
-        { userAgent with topLevelTraversableSet := userAgent.topLevelTraversableSet.replace traversable }
-        traversable.id
+      let userAgent := {
+        userAgent with
+          topLevelTraversableSet := userAgent.topLevelTraversableSet.replace traversable
+      }
+      if targetNameKeepsBrowserUiFocus targetName then
+        setActiveTraversable userAgent traversable.id
+      else
+        userAgent
 
     let userAgent ← get
     let some traversable := traversable? userAgent traversable.id
@@ -1633,6 +1842,12 @@ where
 
 inductive UserAgentTaskMessage where
   | freshTopLevelTraversable (destinationURL : String)
+  | startNavigationFromRust
+      (sourceNavigableId : Nat)
+      (destinationURL : String)
+      (targetName : String)
+      (userInvolvement : UserNavigationInvolvement)
+      (noopener : Bool)
   | startNavigationFromEventLoop
       (sourceEventLoopId : Nat)
     (navigationId : Nat)
@@ -1659,6 +1874,10 @@ inductive UserAgentTaskMessage where
   | finalizeNavigation
       (documentId : Nat)
       (url : String)
+    | iframeTraversableRemoved
+      (parentTraversableId : Nat)
+      (sourceNavigableId : Nat)
+  | eventLoopStopped (eventLoopId : Nat)
   | abortNavigationRequested (documentId : Nat)
   | dispatchEvent (event : String)
   | renderingOpportunity
@@ -1782,7 +2001,7 @@ def createTopLevelTraversableM
   let (nextUserAgent, traversable) := createNewTopLevelTraversable userAgent none targetName
   set nextUserAgent
   let finish : M TopLevelTraversable := do
-    tell #[.notifyTopLevelTraversableCreated traversable.id]
+    tell #[.notifyTopLevelTraversableCreated traversable.id targetName]
     pure traversable
   let some document := traversable.toTraversableNavigable.activeDocument | do
     tell #[.logError
@@ -1847,6 +2066,59 @@ def bootstrapFreshTopLevelTraversableM
 
 private def normalizeNavigationTargetName (targetName : String) : String :=
   if targetName.toLower = "_self" then "" else targetName
+
+private def startNavigationFromRustFailureDetails
+    (userAgent : UserAgent)
+    (sourceNavigableId : Nat)
+    (destinationURL : String) :
+    String :=
+  let activeTraversableDescription :=
+    match activeTraversableId? userAgent with
+    | some traversableId => toString traversableId
+    | none => "<none>"
+  s!"cannot route Rust-originated navigation for source navigable {sourceNavigableId}; destinationURL={destinationURL}, activeTraversable={activeTraversableDescription}"
+
+private def startFreshTopLevelNavigationM
+    (destinationURL : String)
+    (userInvolvement : UserNavigationInvolvement := .none) :
+    M Nat := do
+  let traversable ← createTopLevelTraversableM
+  tell #[.notifyNavigationRequested traversable.id destinationURL]
+  let pendingFetchRequest? ←
+    navigateAllocatingNavigationIdM traversable destinationURL none userInvolvement
+  match pendingFetchRequest? with
+  | some _ =>
+      pure traversable.id
+  | none =>
+      let userAgent ← get
+      let errorMessage :=
+        startupNavigationFailureDetails destinationURL userAgent traversable.id
+      tell #[.logError errorMessage]
+      pure traversable.id
+
+private def startBrowserUiTopLevelNavigationM
+    (sourceNavigableId : Nat)
+    (destinationURL : String) :
+    M Unit := do
+  let userAgent ← get
+  let sourceTraversable? := sourceNavigationTraversable? userAgent sourceNavigableId
+  let (nextUserAgent, stoppedEventLoopIds) :=
+    match sourceTraversable? with
+    | some sourceTraversable =>
+        cleanupTraversableSubtree userAgent sourceTraversable.id
+    | none =>
+        (userAgent, [])
+  set nextUserAgent
+  if sourceTraversable?.isNone then
+    tell #[.logError
+      (startNavigationFromRustFailureDetails
+        userAgent
+        sourceNavigableId
+        destinationURL)]
+  for eventLoopId in stoppedEventLoopIds do
+    tell #[.stopEventLoop eventLoopId]
+  let _ ← startFreshTopLevelNavigationM destinationURL .browserUI
+  pure ()
 
 /-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
 def advancePendingBeforeUnloadNavigation
@@ -1998,8 +2270,16 @@ def navigateRequestedM
     (userInvolvement : UserNavigationInvolvement)
     (noopener : Bool) :
     M Unit := do
-  tell #[.notifyNavigationRequested destinationURL]
+  let normalizedTargetName := normalizeNavigationTargetName targetName
+  if normalizedTargetName.isEmpty then
+    let userAgent ← get
+    let some _sourceTraversable := sourceNavigationTraversable? userAgent sourceNavigableId
+      | do
+          tell #[.logError
+            s!"ignoring empty-target navigation from unknown source navigable {sourceNavigableId} to {destinationURL}; child navigables are not modeled yet"]
+          pure ()
   let traversable ← chooseTargetTraversableM sourceNavigableId targetName noopener
+  tell #[.notifyNavigationRequested traversable.id destinationURL]
   let unloadStatus ←
     checkIfUnloadingIsCanceledM traversable navigationId destinationURL userInvolvement
   match unloadStatus with
@@ -2046,6 +2326,36 @@ def startNavigationFromEventLoopM
         noopener
         (some navigationId))]
   tell #[.eventLoopMessage sourceEventLoopId .runNextTask]
+
+def startNavigationFromRustM
+    (sourceNavigableId : Nat)
+    (destinationURL : String)
+    (targetName : String)
+    (userInvolvement : UserNavigationInvolvement)
+    (noopener : Bool) :
+    M Unit := do
+  let normalizedTargetName := normalizeNavigationTargetName targetName
+  if userInvolvement = .browserUI && normalizedTargetName.isEmpty && !noopener then
+    startBrowserUiTopLevelNavigationM sourceNavigableId destinationURL
+  else
+    let userAgent ← get
+    let some sourceEventLoopId := sourceNavigableEventLoopId? userAgent sourceNavigableId | do
+      tell #[.logError
+        (startNavigationFromRustFailureDetails
+          userAgent
+          sourceNavigableId
+          destinationURL)]
+      pure ()
+    let (userAgent, navigationId) := userAgent.allocateNavigationId
+    set userAgent
+    startNavigationFromEventLoopM
+      sourceEventLoopId
+      navigationId
+      sourceNavigableId
+      destinationURL
+      targetName
+      userInvolvement
+      noopener
 
 /-- https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled -/
 def beforeUnloadCompletedM
@@ -2299,6 +2609,18 @@ def finalizeNavigationM
     | none =>
         set userAgent
 
+def iframeTraversableRemovedM
+    (parentTraversableId : Nat)
+    (sourceNavigableId : Nat) :
+    M Unit := do
+  let targetName := iframeTargetName parentTraversableId sourceNavigableId
+  let userAgent ← get
+  let (nextUserAgent, stoppedEventLoopIds) :=
+    cleanupIframeTraversableByTargetName userAgent targetName
+  set nextUserAgent
+  for eventLoopId in stoppedEventLoopIds do
+    tell #[.stopEventLoop eventLoopId]
+
 def handleUserAgentTaskMessage
     (message : UserAgentTaskMessage) :
     M Unit := do
@@ -2306,6 +2628,13 @@ def handleUserAgentTaskMessage
   | .freshTopLevelTraversable destinationURL =>
       let _ ← bootstrapFreshTopLevelTraversableM destinationURL
       pure ()
+  | .startNavigationFromRust sourceNavigableId destinationURL targetName userInvolvement noopener =>
+    startNavigationFromRustM
+      sourceNavigableId
+      destinationURL
+      targetName
+      userInvolvement
+      noopener
   | .startNavigationFromEventLoop sourceEventLoopId navigationId sourceNavigableId destinationURL targetName userInvolvement noopener =>
     startNavigationFromEventLoopM
       sourceEventLoopId
@@ -2323,6 +2652,10 @@ def handleUserAgentTaskMessage
     beforeUnloadCompletedM documentId checkId canceled
   | .finalizeNavigation documentId url =>
     finalizeNavigationM documentId url
+  | .iframeTraversableRemoved parentTraversableId sourceNavigableId =>
+    iframeTraversableRemovedM parentTraversableId sourceNavigableId
+  | .eventLoopStopped _ =>
+    pure ()
   | .abortNavigationRequested documentId =>
     abortNavigationRequestedM documentId
   | .dispatchEvent event =>
@@ -2376,6 +2709,25 @@ private def dispatchEventLoopMessage
   let _ ← worker.channel.trySend message
   pure ()
 
+private def cleanupStoppedEventLoopWorker
+    (state : UserAgentRuntimeState)
+    (eventLoopId : Nat) :
+    IO UserAgentRuntimeState := do
+  eventLoopChannelRegistry.modify (·.erase eventLoopId)
+  pure {
+    state with
+      userAgent := UserAgent.eraseEventLoop state.userAgent eventLoopId
+      eventLoopWorkers := state.eventLoopWorkers.erase eventLoopId
+  }
+
+private def requestStopEventLoopWorker
+    (state : UserAgentRuntimeState)
+    (eventLoopId : Nat) :
+    IO UserAgentRuntimeState := do
+  dispatchEventLoopMessage state eventLoopId .shutdown
+  contentProcessStopEventLoop (USize.ofNat eventLoopId)
+  pure state
+
 private def performUserAgentEffect
     (state : UserAgentRuntimeState)
     (effect : UserAgentEffect) :
@@ -2411,22 +2763,25 @@ private def performUserAgentEffect
                   navigationId
                   response))
             eventLoop
+            (trySendAndForget state.userAgentChannel (.eventLoopStopped eventLoopId))
         eventLoopChannelRegistry.modify (·.insert eventLoopId worker.channel)
         pure {
           state with
             eventLoopWorkers := state.eventLoopWorkers.insert eventLoopId worker
         }
+  | .stopEventLoop eventLoopId =>
+      requestStopEventLoopWorker state eventLoopId
   | .startFetch request =>
       trySendAndForget state.fetchChannel (.task (.startFetch request))
       pure state
   | .eventLoopMessage eventLoopId eventLoopMessage =>
       dispatchEventLoopMessage state eventLoopId eventLoopMessage
       pure state
-    | .notifyTopLevelTraversableCreated webviewId =>
-      FormalWeb.sendEmbedderMessage s!"NewTopLevelTraversable|{webviewId}"
+    | .notifyTopLevelTraversableCreated webviewId targetName =>
+      FormalWeb.sendEmbedderMessage s!"NewTopLevelTraversable|{webviewId}|{targetName}"
       pure state
-  | .notifyNavigationRequested destinationURL =>
-      FormalWeb.sendEmbedderMessage s!"NavigationRequested|{destinationURL}"
+  | .notifyNavigationRequested webviewId destinationURL =>
+      FormalWeb.sendEmbedderMessage s!"NavigationRequested|{webviewId}|{destinationURL}"
       pure state
   | .notifyBeforeUnloadCompleted documentId checkId canceled =>
       FormalWeb.sendEmbedderMessage
@@ -2443,11 +2798,15 @@ private def runUserAgentTaskMessage
     (state : UserAgentRuntimeState)
     (message : UserAgentTaskMessage) :
     IO UserAgentRuntimeState := do
-  let (effects, nextUserAgent) := runMonadic state.userAgent message
-  let mut nextState := { state with userAgent := nextUserAgent }
-  for effect in effects do
-    nextState ← performUserAgentEffect nextState effect
-  pure nextState
+  match message with
+  | .eventLoopStopped eventLoopId =>
+      cleanupStoppedEventLoopWorker state eventLoopId
+  | _ =>
+      let (effects, nextUserAgent) := runMonadic state.userAgent message
+      let mut nextState := { state with userAgent := nextUserAgent }
+      for effect in effects do
+        nextState ← performUserAgentEffect nextState effect
+      pure nextState
 
 
 partial def runUserAgentLoop

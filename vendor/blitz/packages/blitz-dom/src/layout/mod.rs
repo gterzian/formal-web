@@ -103,6 +103,19 @@ impl BaseDocument {
                 // })
             }
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
+                if *element_data.name.local == *"iframe"
+                    && std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some()
+                {
+                    eprintln!(
+                        "[iframe-debug][blitz-layout][pid={}] enter_iframe_layout node={} replaced={} display={:?} children={}",
+                        std::process::id(),
+                        usize::from(node_id),
+                        node.style.item_is_replaced,
+                        node.style.display,
+                        node.children.len(),
+                    );
+                }
+
                 // TODO: deduplicate with single-line text input
                 if *element_data.name.local == *"textarea" {
                     let rows = element_data
@@ -175,8 +188,12 @@ impl BaseDocument {
                     }
                 }
 
+                let is_iframe =
+                    *element_data.name.local == *"iframe" || *element_data.name.local == *"frame";
+
                 if *element_data.name.local == *"img"
                     || *element_data.name.local == *"canvas"
+                    || is_iframe
                     || (cfg!(feature = "svg") && *element_data.name.local == *"svg")
                 {
                     // Get width and height attributes on image element
@@ -192,26 +209,34 @@ impl BaseDocument {
                             .and_then(|val| val.parse::<f32>().ok()),
                     };
 
-                    // Get image's native sizespecial_data
-                    let inherent_size = match &element_data.special_data {
-                        SpecialElementData::Image(image_data) => match &**image_data {
-                            ImageData::Raster(image) => taffy::Size {
-                                width: image.width as f32,
-                                height: image.height as f32,
-                            },
-                            #[cfg(feature = "svg")]
-                            ImageData::Svg(svg) => {
-                                let size = svg.size();
-                                taffy::Size {
-                                    width: size.width(),
-                                    height: size.height(),
+                    // Iframes use the default embedded-content object size when no explicit
+                    // dimensions are present, even when the content is composed out-of-process.
+                    let inherent_size = if is_iframe {
+                        taffy::Size {
+                            width: 300.0,
+                            height: 150.0,
+                        }
+                    } else {
+                        match &element_data.special_data {
+                            SpecialElementData::Image(image_data) => match &**image_data {
+                                ImageData::Raster(image) => taffy::Size {
+                                    width: image.width as f32,
+                                    height: image.height as f32,
+                                },
+                                #[cfg(feature = "svg")]
+                                ImageData::Svg(svg) => {
+                                    let size = svg.size();
+                                    taffy::Size {
+                                        width: size.width(),
+                                        height: size.height(),
+                                    }
                                 }
-                            }
-                            ImageData::None => taffy::Size::ZERO,
-                        },
-                        SpecialElementData::Canvas(_) => taffy::Size::ZERO,
-                        SpecialElementData::None => taffy::Size::ZERO,
-                        _ => unreachable!(),
+                                ImageData::None => taffy::Size::ZERO,
+                            },
+                            SpecialElementData::Canvas(_) => taffy::Size::ZERO,
+                            SpecialElementData::None => taffy::Size::ZERO,
+                            _ => unreachable!(),
+                        }
                     };
 
                     let replaced_context = ReplacedContext {
@@ -227,6 +252,22 @@ impl BaseDocument {
                         &node.style,
                         false,
                     );
+
+                    if is_iframe && std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some() {
+                        eprintln!(
+                            "[iframe-debug][blitz-layout][pid={}] measure_iframe node={} replaced={} known={:?} parent={:?} available={:?} attr=({:?}, {:?}) computed=({:.1}, {:.1})",
+                            std::process::id(),
+                            usize::from(node_id),
+                            node.style.item_is_replaced,
+                            inputs.known_dimensions,
+                            inputs.parent_size,
+                            inputs.available_space,
+                            attr_size.width,
+                            attr_size.height,
+                            computed.width,
+                            computed.height,
+                        );
+                    }
 
                     return taffy::LayoutOutput {
                         size: computed,

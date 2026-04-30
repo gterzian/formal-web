@@ -48,6 +48,13 @@ unsafe extern "C" {
     ) -> *mut lean_object;
     fn clearWindowTimer(event_loop_id: usize, timer_key: usize) -> *mut lean_object;
     fn startNavigation(
+        source_navigable_id: usize,
+        destination_url: *mut lean_object,
+        target: *mut lean_object,
+        user_involvement: *mut lean_object,
+        noopener: usize,
+    ) -> *mut lean_object;
+    fn startNavigationFromEventLoop(
         event_loop_id: usize,
         source_navigable_id: usize,
         destination_url: *mut lean_object,
@@ -58,6 +65,10 @@ unsafe extern "C" {
     fn completeBeforeUnload(document_id: usize, check_id: usize, canceled: usize)
     -> *mut lean_object;
     fn finalizeNavigation(document_id: usize, url: *mut lean_object) -> *mut lean_object;
+    fn removeIframeTraversable(
+        parent_traversable_id: usize,
+        source_navigable_id: usize,
+    ) -> *mut lean_object;
     fn runNextEventLoopTask(event_loop_id: usize) -> *mut lean_object;
     fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
     fn leanIoResultMkOkUnit() -> *mut lean_object;
@@ -202,7 +213,6 @@ pub(crate) fn call_lean_clear_window_timer_parts(
 }
 
 pub(crate) fn call_lean_navigation_start_parts(
-    event_loop_id: usize,
     source_navigable_id: usize,
     destination_url: &str,
     target: &str,
@@ -214,7 +224,6 @@ pub(crate) fn call_lean_navigation_start_parts(
     let lean_user_involvement = lean_string_from_owned(user_involvement.to_owned());
     let io_result = unsafe {
         startNavigation(
-            event_loop_id,
             source_navigable_id,
             lean_destination_url,
             lean_target,
@@ -227,6 +236,37 @@ pub(crate) fn call_lean_navigation_start_parts(
         unsafe { leanIoResultShowError(io_result) };
         unsafe { leanDec(io_result) };
         return Err(String::from("Lean navigation start failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
+pub(crate) fn call_lean_navigation_start_from_event_loop_parts(
+    event_loop_id: usize,
+    source_navigable_id: usize,
+    destination_url: &str,
+    target: &str,
+    user_involvement: &str,
+    noopener: bool,
+) -> Result<(), String> {
+    let lean_destination_url = lean_string_from_owned(destination_url.to_owned());
+    let lean_target = lean_string_from_owned(target.to_owned());
+    let lean_user_involvement = lean_string_from_owned(user_involvement.to_owned());
+    let io_result = unsafe {
+        startNavigationFromEventLoop(
+            event_loop_id,
+            source_navigable_id,
+            lean_destination_url,
+            lean_target,
+            lean_user_involvement,
+            usize::from(noopener),
+        )
+    };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean event-loop navigation start failed"));
     }
     unsafe { leanDec(io_result) };
     Ok(())
@@ -259,6 +299,23 @@ pub(crate) fn call_lean_finalize_navigation_parts(
         unsafe { leanIoResultShowError(io_result) };
         unsafe { leanDec(io_result) };
         return Err(String::from("Lean finalize-navigation failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
+pub(crate) fn call_lean_remove_iframe_traversable_parts(
+    parent_traversable_id: usize,
+    source_navigable_id: usize,
+) -> Result<(), String> {
+    let io_result = unsafe {
+        removeIframeTraversable(parent_traversable_id, source_navigable_id)
+    };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean iframe traversable removal failed"));
     }
     unsafe { leanDec(io_result) };
     Ok(())
@@ -313,11 +370,11 @@ pub fn install_content_bridge_hooks() {
 }
 
 pub fn evaluate_script(
-    document_id: u64,
+    traversable_id: u64,
     source: String,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    content_bridge::evaluate_script(document_id, source, timeout)
+    content_bridge::evaluate_script(traversable_id, source, timeout)
 }
 
 pub fn start_kernel() -> Result<(), String> {
@@ -374,6 +431,15 @@ pub extern "C" fn contentProcessStop(handle: usize) -> *mut lean_object {
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic stopping content"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn contentProcessStopEventLoop(event_loop_id: usize) -> *mut lean_object {
+    match panic::catch_unwind(AssertUnwindSafe(|| content_bridge::stop_event_loop(event_loop_id))) {
+        Ok(Ok(())) => ok_unit_result(),
+        Ok(Err(error)) => error_result(&error),
+        Err(_) => error_result("panic stopping content by event loop"),
     }
 }
 
