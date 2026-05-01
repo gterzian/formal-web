@@ -11,7 +11,8 @@ mod webidl;
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
-    parse_html_into_document,
+    parse_html_into_document, run_dom_post_connection_steps_for_document,
+    run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
 use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
@@ -20,7 +21,6 @@ use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use data_url::DataUrl;
-use html5ever::local_name;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
     CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
@@ -37,10 +37,10 @@ use ipc_messages::content::{
 };
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env,
     rc::Rc,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use url::Url;
@@ -145,79 +145,8 @@ fn viewport_of_snapshot(snapshot: &ViewportSnapshot) -> Viewport {
     )
 }
 
-fn iframe_debug_enabled() -> bool {
-    env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some()
-}
-
-fn log_iframe_debug(message: impl AsRef<str>) {
-    if iframe_debug_enabled() {
-        eprintln!(
-            "[iframe-debug][content][pid={}] {}",
-            std::process::id(),
-            message.as_ref()
-        );
-    }
-}
-
-fn is_subframe_document_id(document_id: u64) -> bool {
-    document_id >= (1_u64 << 63)
-}
-
 fn render_debug_enabled() -> bool {
     env::var_os("FORMAL_WEB_DEBUG_RENDER").is_some()
-}
-
-fn log_iframe_layout_debug(document_id: u64, document: &BaseDocument) {
-    static LOGGED_IFRAMES: OnceLock<Mutex<HashSet<(u64, usize)>>> = OnceLock::new();
-
-    if !iframe_debug_enabled() {
-        return;
-    }
-
-    let logged_iframes = LOGGED_IFRAMES.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut logged_iframes = logged_iframes
-        .lock()
-        .expect("iframe layout debug set mutex poisoned");
-    let mut iframe_nodes = Vec::new();
-
-    document.visit(|node_id, node| {
-        let is_iframe = node
-            .element_data()
-            .map(|element| {
-                *element.name.local == local_name!("iframe")
-                    || *element.name.local == local_name!("frame")
-            })
-            .unwrap_or(false);
-
-        if is_iframe && logged_iframes.insert((document_id, node_id)) {
-            iframe_nodes.push((node_id, node.parent, node.layout_parent.get()));
-        }
-    });
-    drop(logged_iframes);
-
-    for (node_id, parent_id, layout_parent_id) in iframe_nodes {
-        log_iframe_debug(format!(
-            "dump_iframe_layout document={} node={} parent={:?} layout_parent={:?}",
-            document_id, node_id, parent_id, layout_parent_id,
-        ));
-        document.debug_log_node(node_id);
-
-        if let Some(parent_id) = parent_id {
-            log_iframe_debug(format!(
-                "dump_iframe_parent document={} node={} parent={}",
-                document_id, node_id, parent_id,
-            ));
-            document.debug_log_node(parent_id);
-        }
-
-        if let Some(layout_parent_id) = layout_parent_id.filter(|id| Some(*id) != parent_id) {
-            log_iframe_debug(format!(
-                "dump_iframe_layout_parent document={} node={} layout_parent={}",
-                document_id, node_id, layout_parent_id,
-            ));
-            document.debug_log_node(layout_parent_id);
-        }
-    }
 }
 
 fn log_paint_debug(document_id: u64, document: &BaseDocument, scene: &RecordedScene) {
@@ -376,13 +305,6 @@ impl ContentRuntime {
 
     fn set_viewport(&mut self, viewport: ViewportSnapshot) {
         let runtime_viewport = viewport_of_snapshot(&viewport);
-        log_iframe_debug(format!(
-            "set_viewport width={} height={} scale={} documents={}",
-            viewport.width,
-            viewport.height,
-            viewport.scale,
-            self.documents.len()
-        ));
         self.viewport = Some(viewport);
         for document in self.documents.values_mut() {
             document
@@ -566,7 +488,7 @@ impl ContentRuntime {
             .map_err(|error| error.to_string())?;
 
         let traversable_id = content_document.traversable_id;
-        self.run_iframe_load_event_steps_for_traversable(traversable_id)?;
+        run_iframe_load_event_steps_for_traversable(self, traversable_id)?;
 
         self.event_sender
             .send(ContentEvent::FinalizeNavigation(
@@ -581,10 +503,6 @@ impl ContentRuntime {
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
-        log_iframe_debug(format!(
-            "create_empty_document traversable={} document={}",
-            traversable_id, document_id
-        ));
         let document = Rc::new(RefCell::new(BaseDocument::new(
             self.document_config(document_id, None),
         )));
@@ -624,7 +542,7 @@ impl ContentRuntime {
         );
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
-        self.run_iframe_post_connection_steps_for_document(document_id)?;
+        run_dom_post_connection_steps_for_document(self, document_id)?;
         let content_document = self
             .documents
             .get_mut(&document_id)
@@ -647,13 +565,6 @@ impl ContentRuntime {
             content_type: _,
             body,
         } = response;
-        log_iframe_debug(format!(
-            "create_loaded_document traversable={} document={} url={} body_len={}",
-            traversable_id,
-            document_id,
-            final_url,
-            body.len()
-        ));
         // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
         // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the DOM carrier and the JavaScript environment settings object.
@@ -695,7 +606,7 @@ impl ContentRuntime {
         );
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
-        self.run_iframe_post_connection_steps_for_document(document_id)?;
+        run_dom_post_connection_steps_for_document(self, document_id)?;
 
         let deferred_fetches = self
             .documents
@@ -745,10 +656,7 @@ impl ContentRuntime {
     }
 
     fn destroy_document(&mut self, document_id: u64) -> Result<(), String> {
-        log_iframe_debug(format!(
-            "destroy_document document={}",
-            document_id
-        ));
+        run_dom_removing_steps_for_document(self, document_id)?;
         if let Some(content_document) = self.documents.remove(&document_id) {
             if self
                 .active_documents_by_traversable
@@ -759,9 +667,6 @@ impl ContentRuntime {
                     .remove(&content_document.traversable_id);
             }
             let _ = content_document.settings.clear_all_window_timers();
-            for iframe_state in content_document.iframe_states.values() {
-                self.retire_iframe_traversable(content_document.traversable_id, iframe_state)?;
-            }
         }
         let mut local_state = self
             .local_state
@@ -888,8 +793,6 @@ impl ContentRuntime {
                 );
                 let scene = self.font_sender.prepare_scene(self.font_namespace, scene);
                 log_paint_debug(document_id, &document_guard, &scene.scene);
-                log_iframe_layout_debug(document_id, &document_guard);
-                let scene_summary = scene.scene.summary();
                 let viewport_scroll = document_guard.viewport_scroll();
                 let paint_frame = PaintFrame::new(
                     WebviewId(traversable_id),
@@ -902,24 +805,6 @@ impl ContentRuntime {
                     },
                     scene,
                 )?;
-                if is_subframe_document_id(document_id)
-                    || scene_summary.iframe_placeholder_commands > 0
-                {
-                    let transport = paint_frame.transport_summary();
-                    log_iframe_debug(format!(
-                        "paint_ready traversable={} document={} viewport={}x{} scroll=({:.1}, {:.1}) scene={} transport(scene_bytes={} fonts={} font_bytes={})",
-                        traversable_id,
-                        document_id,
-                        width,
-                        height,
-                        viewport_scroll.x,
-                        viewport_scroll.y,
-                        scene_summary.describe(),
-                        transport.scene_bytes,
-                        transport.registered_fonts,
-                        transport.registered_font_bytes,
-                    ));
-                }
                 paint_frame
             };
 
@@ -1222,57 +1107,4 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ContentFetchResponse, deferred_script_response_is_executable,
-        is_javascript_mime_essence, normalized_content_type_essence,
-    };
-
-    fn response(status: u16, content_type: &str) -> ContentFetchResponse {
-        ContentFetchResponse {
-            final_url: String::from("https://example.test/script.js"),
-            status,
-            content_type: content_type.to_string(),
-            body: b"console.log('ok');".to_vec(),
-        }
-    }
-
-    #[test]
-    fn deferred_scripts_accept_successful_javascript_mime() {
-        assert!(deferred_script_response_is_executable(&response(
-            200,
-            "text/javascript; charset=utf-8"
-        )));
-    }
-
-    #[test]
-    fn deferred_scripts_reject_non_success_status() {
-        assert!(!deferred_script_response_is_executable(&response(
-            404,
-            "text/javascript"
-        )));
-    }
-
-    #[test]
-    fn deferred_scripts_reject_clearly_wrong_mime() {
-        assert!(!deferred_script_response_is_executable(&response(
-            200,
-            "text/html"
-        )));
-    }
-
-    #[test]
-    fn deferred_scripts_allow_missing_content_type() {
-        assert!(deferred_script_response_is_executable(&response(200, "")));
-    }
-
-    #[test]
-    fn content_type_essence_is_case_and_parameter_insensitive() {
-        let essence = normalized_content_type_essence("Application/JavaScript; Charset=UTF-8");
-        assert_eq!(essence, "application/javascript");
-        assert!(is_javascript_mime_essence(&essence));
-    }
 }

@@ -15,20 +15,6 @@ use std::time::{Duration, Instant};
 
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
 
-fn iframe_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some()
-}
-
-fn log_iframe_debug(message: impl AsRef<str>) {
-    if iframe_debug_enabled() {
-        eprintln!(
-            "[iframe-debug][bridge][pid={}] {}",
-            std::process::id(),
-            message.as_ref()
-        );
-    }
-}
-
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
 }
@@ -135,13 +121,6 @@ fn spawn_listener(
 
             match event {
                 ContentEvent::DocumentFetchRequested(request) => {
-                    log_iframe_debug(format!(
-                        "forward_fetch_request event_loop={} handler={} method={} url={}",
-                        bridge.event_loop_id,
-                        request.handler_id,
-                        request.method,
-                        request.url
-                    ));
                     let _ = super::call_lean_document_fetch_start_parts(
                         bridge.event_loop_id,
                         request.handler_id as usize,
@@ -180,14 +159,6 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::NavigationRequested(request) => {
-                    log_iframe_debug(format!(
-                        "forward_navigation event_loop={} source={} target={} noopener={} destination={}",
-                        bridge.event_loop_id,
-                        request.source_navigable_id,
-                        request.target,
-                        request.noopener,
-                        request.destination_url
-                    ));
                     let _ = super::call_lean_navigation_start_from_event_loop_parts(
                         bridge.event_loop_id,
                         request.source_navigable_id as usize,
@@ -212,22 +183,12 @@ fn spawn_listener(
                     );
                 }
                 ContentEvent::IframeTraversableRemoved(removal) => {
-                    log_iframe_debug(format!(
-                        "forward_iframe_removal parent_traversable={} source_navigable={}",
-                        removal.parent_traversable_id,
-                        removal.source_navigable_id
-                    ));
                     let _ = super::call_lean_remove_iframe_traversable_parts(
                         removal.parent_traversable_id as usize,
                         removal.source_navigable_id as usize,
                     );
                 }
                 ContentEvent::ChildNavigableCreated(creation) => {
-                    log_iframe_debug(format!(
-                        "forward_child_navigable_created parent_traversable={} source_navigable={}",
-                        creation.parent_traversable_id,
-                        creation.source_navigable_id
-                    ));
                     let _ = super::call_lean_child_navigable_created_parts(
                         creation.parent_traversable_id as usize,
                         creation.source_navigable_id as usize,
@@ -259,20 +220,6 @@ fn spawn_listener(
                     }
                 }
                 ContentEvent::PaintReady(snapshot) => {
-                    let transport = snapshot.transport_summary();
-                    log_iframe_debug(format!(
-                        "paint_ready event_loop={} traversable={} frame={} viewport={}x{} scroll=({:.1}, {:.1}) transport(scene_bytes={} fonts={} font_bytes={})",
-                        bridge.event_loop_id,
-                        snapshot.traversable_id.0,
-                        snapshot.frame_id.0,
-                        snapshot.viewport_width,
-                        snapshot.viewport_height,
-                        snapshot.viewport_scroll.x,
-                        snapshot.viewport_scroll.y,
-                        transport.scene_bytes,
-                        transport.registered_fonts,
-                        transport.registered_font_bytes,
-                    ));
                     let _ = embedder::send_user_event(FormalWebUserEvent::Paint(snapshot));
                 }
                 ContentEvent::ShutdownCompleted => break,
@@ -359,13 +306,6 @@ fn start_bridge(event_loop_id: usize, make_active: bool) -> Result<usize, String
     }
 
     let handle = NEXT_CONTENT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    log_iframe_debug(format!(
-        "start_bridge handle={} event_loop={} make_active={} executable={}",
-        handle,
-        event_loop_id,
-        make_active,
-        executable_path.display()
-    ));
     CONTENT_REGISTRY
         .lock()
         .expect("content registry mutex poisoned")
@@ -601,13 +541,7 @@ pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
         .values()
         .cloned()
         .collect::<Vec<_>>();
-    log_iframe_debug(format!(
-        "broadcast_viewport width={} height={} scale={} bridge_count={}",
-        width,
-        height,
-        scale,
-        bridges.len()
-    ));
+    let _ = (width, height, scale);
     for bridge in bridges {
         let _ = send_command_inner(&bridge, command.clone());
     }
