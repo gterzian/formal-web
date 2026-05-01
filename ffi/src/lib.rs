@@ -69,6 +69,10 @@ unsafe extern "C" {
         parent_traversable_id: usize,
         source_navigable_id: usize,
     ) -> *mut lean_object;
+    fn childNavigableCreated(
+        parent_traversable_id: usize,
+        source_navigable_id: usize,
+    ) -> *mut lean_object;
     fn runNextEventLoopTask(event_loop_id: usize) -> *mut lean_object;
     fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
     fn leanIoResultMkOkUnit() -> *mut lean_object;
@@ -316,6 +320,21 @@ pub(crate) fn call_lean_remove_iframe_traversable_parts(
         unsafe { leanIoResultShowError(io_result) };
         unsafe { leanDec(io_result) };
         return Err(String::from("Lean iframe traversable removal failed"));
+    }
+    unsafe { leanDec(io_result) };
+    Ok(())
+}
+
+pub(crate) fn call_lean_child_navigable_created_parts(
+    parent_traversable_id: usize,
+    source_navigable_id: usize,
+) -> Result<(), String> {
+    let io_result = unsafe { childNavigableCreated(parent_traversable_id, source_navigable_id) };
+    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
+    if !is_ok {
+        unsafe { leanIoResultShowError(io_result) };
+        unsafe { leanDec(io_result) };
+        return Err(String::from("Lean child navigable created failed"));
     }
     unsafe { leanDec(io_result) };
     Ok(())

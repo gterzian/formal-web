@@ -86,6 +86,12 @@ pub struct IframeTraversableRemoval {
     pub source_navigable_id: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildNavigableCreation {
+    pub parent_traversable_id: u64,
+    pub source_navigable_id: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WebviewId(pub u64);
 
@@ -552,6 +558,7 @@ pub enum Event {
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
     IframeTraversableRemoved(IframeTraversableRemoval),
+    ChildNavigableCreated(ChildNavigableCreation),
     ScriptEvaluated(ScriptEvaluationResult),
     CommandCompleted,
     PaintReady(PaintFrame),

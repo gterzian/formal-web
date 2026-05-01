@@ -4,9 +4,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use html5ever::{local_name, ns};
-use ipc_messages::content::{
-    Event as ContentEvent, IframeTraversableRemoval, NavigateRequest, UserNavigationInvolvement,
-};
+use ipc_messages::content::{ChildNavigableCreation, Event as ContentEvent, IframeTraversableRemoval, NavigateRequest, UserNavigationInvolvement};
 use url::Url;
 
 use crate::{ContentRuntime, EMPTY_HTML_DOCUMENT, IframeState};
@@ -158,11 +156,15 @@ impl ContentRuntime {
             "request_iframe_navigation source={} destination={}",
             source_navigable_id, destination_url
         ));
-        let parent_traversable_id = self
+        let Some(parent_traversable_id) = self
             .documents
             .get(&parent_document_id)
             .map(|d| d.traversable_id)
-            .unwrap_or(0);
+        else {
+            return Err(format!(
+                "request_iframe_navigation: parent document {parent_document_id} not found"
+            ));
+        };
         self.event_sender
             .send(ContentEvent::NavigationRequested(NavigateRequest {
                 source_navigable_id,
@@ -244,6 +246,14 @@ impl ContentRuntime {
         }
 
         let source_navigable_id = self.allocate_iframe_navigable_id();
+        let Some(parent_traversable_id) = self
+            .documents
+            .get(&parent_document_id)
+            .map(|d| d.traversable_id)
+        else {
+            debug_assert!(false, "create_new_child_navigable: parent document {parent_document_id} not found");
+            return Ok(source_navigable_id);
+        };
         if let Some(content_document) = self.documents.get_mut(&parent_document_id) {
             content_document.iframe_states.insert(
                 iframe_node_id,
@@ -254,6 +264,13 @@ impl ContentRuntime {
                 },
             );
         }
+
+        self.event_sender
+            .send(ContentEvent::ChildNavigableCreated(ChildNavigableCreation {
+                parent_traversable_id,
+                source_navigable_id,
+            }))
+            .map_err(|error| format!("failed to send child navigable created event: {error}"))?;
 
         self.attach_iframe_about_blank(parent_document_id, iframe_node_id)?;
         Ok(source_navigable_id)

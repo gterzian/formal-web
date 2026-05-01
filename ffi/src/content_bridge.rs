@@ -222,6 +222,17 @@ fn spawn_listener(
                         removal.source_navigable_id as usize,
                     );
                 }
+                ContentEvent::ChildNavigableCreated(creation) => {
+                    log_iframe_debug(format!(
+                        "forward_child_navigable_created parent_traversable={} source_navigable={}",
+                        creation.parent_traversable_id,
+                        creation.source_navigable_id
+                    ));
+                    let _ = super::call_lean_child_navigable_created_parts(
+                        creation.parent_traversable_id as usize,
+                        creation.source_navigable_id as usize,
+                    );
+                }
                 ContentEvent::CommandCompleted => {
                     if suppress_next_command_completed {
                         suppress_next_command_completed = false;

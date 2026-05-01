@@ -170,6 +170,14 @@ def removeIframeTraversableFromRust
   enqueueUserAgentTaskMessage
       (.iframeTraversableRemoved parentTraversableId.toNat sourceNavigableId.toNat)
 
+@[export childNavigableCreated]
+def childNavigableCreatedFromRust
+    (parentTraversableId : USize)
+    (sourceNavigableId : USize) :
+    IO Unit := do
+  enqueueUserAgentTaskMessage
+      (.childNavigableCreated parentTraversableId.toNat sourceNavigableId.toNat)
+
 @[export runNextEventLoopTask]
 def runNextEventLoopTaskFromRust
     (eventLoopId : USize) :

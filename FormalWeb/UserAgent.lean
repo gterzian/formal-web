@@ -42,6 +42,9 @@ structure UserAgent where
   pendingNavigationFinalizations : Std.TreeMap Nat PendingNavigationFinalization := Std.TreeMap.empty
   /-- Model-local reverse index from https://html.spec.whatwg.org/multipage/#navigation-params-id to pending finalization document ids. -/
   pendingNavigationFinalizationIdsByNavigationId : Std.TreeMap Nat Nat := Std.TreeMap.empty
+  /-- Map from iframe source-navigable identifiers to their parent traversable identifiers.
+      Populated when the content runtime creates a new child navigable for an iframe element. -/
+  knownChildNavigables : Std.TreeMap Nat Nat := Std.TreeMap.empty
 deriving Repr
 
 instance : Inhabited UserAgent where
@@ -417,9 +420,17 @@ def traversableWithTargetName?
       | some traversable =>
         some traversable
       | none =>
-        -- Compatibility fallback while Rust/Lean call sites transition to
-        -- strictly navigable identifiers.
-        traversableContainingDocument? userAgent sourceNavigableId
+        -- Check if this is a known iframe child navigable.
+        match userAgent.knownChildNavigables.get? sourceNavigableId with
+        | some parentTraversableId =>
+          let iframeName := s!"_iframe|{parentTraversableId}|{sourceNavigableId}"
+          match traversableWithTargetName? userAgent iframeName with
+          | some t => some t
+          | none => traversable? userAgent parentTraversableId
+        | none =>
+          -- Compatibility fallback while Rust/Lean call sites transition to
+          -- strictly navigable identifiers.
+          traversableContainingDocument? userAgent sourceNavigableId
 
     def sourceNavigableEventLoopId?
       (userAgent : UserAgent)
@@ -1877,6 +1888,9 @@ inductive UserAgentTaskMessage where
     | iframeTraversableRemoved
       (parentTraversableId : Nat)
       (sourceNavigableId : Nat)
+  | childNavigableCreated
+      (parentTraversableId : Nat)
+      (sourceNavigableId : Nat)
   | eventLoopStopped (eventLoopId : Nat)
   | abortNavigationRequested (documentId : Nat)
   | dispatchEvent (event : String)
@@ -2254,9 +2268,19 @@ def chooseTargetTraversableM
   else
     let userAgent ← get
     if normalizedTargetName.isEmpty then
-      let some traversable := sourceNavigationTraversable? userAgent sourceNavigableId
-        | createTopLevelTraversableM
-      pure traversable
+      -- If the source is a known iframe child navigable, route the navigation
+      -- to its own helper traversable (the _iframe|p|s entry) rather than
+      -- creating an anonymous new top-level traversable.
+      match userAgent.knownChildNavigables.get? sourceNavigableId with
+      | some parentTraversableId =>
+        let iframeName := iframeTargetName parentTraversableId sourceNavigableId
+        let some traversable := traversableWithTargetName? userAgent iframeName
+          | createTopLevelTraversableM iframeName
+        pure traversable
+      | none =>
+        let some traversable := sourceNavigationTraversable? userAgent sourceNavigableId
+          | createTopLevelTraversableM
+        pure traversable
     else
       let some traversable := traversableWithTargetName? userAgent normalizedTargetName
         | createTopLevelTraversableM normalizedTargetName
@@ -2276,7 +2300,7 @@ def navigateRequestedM
     let some _sourceTraversable := sourceNavigationTraversable? userAgent sourceNavigableId
       | do
           tell #[.logError
-            s!"ignoring empty-target navigation from unknown source navigable {sourceNavigableId} to {destinationURL}; child navigables are not modeled yet"]
+            s!"ignoring empty-target navigation from unknown source navigable {sourceNavigableId} to {destinationURL}"]
           pure ()
   let traversable ← chooseTargetTraversableM sourceNavigableId targetName noopener
   tell #[.notifyNavigationRequested traversable.id destinationURL]
@@ -2620,6 +2644,15 @@ def iframeTraversableRemovedM
   for eventLoopId in stoppedEventLoopIds do
     tell #[.stopEventLoop eventLoopId]
 
+def childNavigableCreatedM
+    (parentTraversableId : Nat)
+    (sourceNavigableId : Nat) :
+    M Unit := do
+  modify fun userAgent =>
+    { userAgent with
+        knownChildNavigables :=
+          userAgent.knownChildNavigables.insert sourceNavigableId parentTraversableId }
+
 def handleUserAgentTaskMessage
     (message : UserAgentTaskMessage) :
     M Unit := do
@@ -2653,6 +2686,8 @@ def handleUserAgentTaskMessage
     finalizeNavigationM documentId url
   | .iframeTraversableRemoved parentTraversableId sourceNavigableId =>
     iframeTraversableRemovedM parentTraversableId sourceNavigableId
+  | .childNavigableCreated parentTraversableId sourceNavigableId =>
+    childNavigableCreatedM parentTraversableId sourceNavigableId
   | .eventLoopStopped _ =>
     pure ()
   | .abortNavigationRequested documentId =>
