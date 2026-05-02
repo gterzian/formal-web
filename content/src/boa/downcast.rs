@@ -3,7 +3,7 @@ use boa_engine::{JsNativeError, JsResult, JsValue, object::JsObject};
 use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent,
 };
-use crate::html::{HTMLAnchorElement, HTMLElement, Window};
+use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Window};
 
 pub(crate) fn with_abort_controller_ref<R>(
     object: &JsObject,
@@ -85,6 +85,13 @@ pub(crate) fn with_event_target_mut<R>(
             .node
             .event_target));
     }
+    if let Some(mut html_iframe_element) = object.downcast_mut::<HTMLIFrameElement>() {
+        return Ok(f(&mut html_iframe_element
+            .html_element
+            .element
+            .node
+            .event_target));
+    }
     if let Some(mut node) = object.downcast_mut::<Node>() {
         return Ok(f(&mut node.event_target));
     }
@@ -117,6 +124,13 @@ pub(crate) fn with_event_target_ref<R>(
     }
     if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
         return Ok(f(&html_anchor_element
+            .html_element
+            .element
+            .node
+            .event_target));
+    }
+    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
+        return Ok(f(&html_iframe_element
             .html_element
             .element
             .node

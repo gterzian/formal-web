@@ -1,0 +1,85 @@
+[workspace]
+members = [
+  "crates/anyrender",
+  "crates/anyrender_serialize",
+  "crates/anyrender_skia",
+  "crates/anyrender_vello",
+  "crates/anyrender_vello_cpu",
+  "crates/anyrender_vello_hybrid",
+  "crates/anyrender_svg",
+  "crates/wgpu_context",
+  "crates/pixels_window_renderer",
+  "crates/softbuffer_window_renderer",
+  "examples/player",
+  "examples/bunnymark",
+  "examples/serialize",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.6.0"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/dioxuslabs/anyrender"
+repository = "https://github.com/dioxuslabs/anyrender"
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.92.0"
+
+[workspace.dependencies]
+# AnyRender dependencies (in-repo)
+anyrender = { version = "0.8.0", path = "./crates/anyrender" }
+anyrender_serialize = { version = "0.1.0", path = "./crates/anyrender_serialize" }
+anyrender_skia = { version = "0.5.0", path = "./crates/anyrender_skia" }
+anyrender_vello = { version = "0.8.0", path = "./crates/anyrender_vello" }
+anyrender_vello_cpu = { version = "0.10.0", path = "./crates/anyrender_vello_cpu" }
+anyrender_vello_hybrid = { version = "0.3.0", path = "./crates/anyrender_vello_hybrid" }
+anyrender_svg = { version = "0.9.0", path = "./crates/anyrender_svg" }
+wgpu_context = { version = "0.4.0", path = "./crates/wgpu_context" }
+pixels_window_renderer = { version = "0.3.0", path = "./crates/pixels_window_renderer" }
+softbuffer_window_renderer = { version = "0.3.0", path = "./crates/softbuffer_window_renderer" }
+
+# Serialization
+serde = "1.0.228"
+serde_json = "1.0"
+zip = { version = "2.1", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+skera = "=0.1.0" # pin because of breaking changes in past patch releases
+read-fonts = "0.37"
+ttf2woff2 = "0.11"
+wuff = "0.2"
+
+# Linebender
+color = "0.3"
+linebender_resource_handle = "0.1"
+peniko = "0.6"
+kurbo = "0.13"
+vello = { version = "0.8", features = [ "wgpu" ] }
+vello_cpu = { version = "0.0.7", default-features = false, features = ["std", "text", "u8_pipeline"] }
+vello_hybrid = { version = "0.0.7" }
+vello_common = { version = "0.0.7" }
+
+# Rendering
+wgpu = "28"
+raw-window-handle = "0.6.0"
+softbuffer = "0.4"
+pixels = "0.16"
+
+# SVG
+usvg = { version = "0.46.0", default-features = false }
+image = { version = "0.25", default-features = false }
+
+# Other dependencies
+debug_timer = "0.1.1"
+rustc-hash = "2"
+futures-util = "0.3.31"
+futures-intrusive = "0.5.0"
+pollster = "0.4"
+
+# Dev-dependencies
+winit = { version = "0.30.2", features = ["rwh_06"] }
+
+# [patch.crates-io]
+# vello = { path = "../vello/vello" }
+# vello_cpu = { path = "../vello/sparse_strips/vello_cpu" }
+# vello_hybrid = { path = "../vello/sparse_strips/vello_hybrid" }
+# vello_common = { path = "../vello/sparse_strips/vello_common" }

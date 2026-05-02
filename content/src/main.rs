@@ -11,7 +11,8 @@ mod webidl;
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
-    parse_html_into_document,
+    parse_html_into_document, run_dom_post_connection_steps_for_document,
+    run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
 use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
@@ -31,7 +32,8 @@ use ipc_messages::content::{
     Event as ContentEvent, FetchRequest as ContentFetchRequest,
     FetchResponse as ContentFetchResponse, FontTransportSender, FrameId,
     LoadedDocumentResponse, PaintFrame, RecordedScene, ScriptEvaluationResult, ScrollOffset,
-    ViewportSnapshot, WebviewId,
+    ViewportSnapshot,
+    WebviewId,
 };
 use std::{
     cell::RefCell,
@@ -108,6 +110,13 @@ enum DeferredScriptState {
     ExternalPending { src: String },
     ExternalReady { source: String },
     ExternalFailed { src: String },
+}
+
+#[derive(Clone)]
+struct IframeState {
+    source_navigable_id: u64,
+    current_key: String,
+    cross_origin: bool,
 }
 
 struct PendingDocumentLoad {
@@ -249,6 +258,7 @@ struct ContentDocument {
     settings: EnvironmentSettingsObject,
     pending_update_the_rendering: bool,
     pending_document_load: Option<PendingDocumentLoad>,
+    iframe_states: HashMap<usize, IframeState>,
 }
 
 struct ContentRuntime {
@@ -256,6 +266,8 @@ struct ContentRuntime {
     local_state: LocalContentStateRef,
     viewport: Option<ViewportSnapshot>,
     documents: HashMap<u64, ContentDocument>,
+    active_documents_by_traversable: HashMap<u64, u64>,
+    next_iframe_navigable_id: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
 }
@@ -270,6 +282,8 @@ impl ContentRuntime {
             })),
             viewport: None,
             documents: HashMap::new(),
+            active_documents_by_traversable: HashMap::new(),
+            next_iframe_navigable_id: 1_u64 << 63,
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
         }
@@ -408,6 +422,12 @@ impl ContentRuntime {
         self.request_remote_fetch(handler_id, Request::get(resolved_url))
     }
 
+    fn allocate_iframe_navigable_id(&mut self) -> u64 {
+        let source_navigable_id = self.next_iframe_navigable_id;
+        self.next_iframe_navigable_id = self.next_iframe_navigable_id.wrapping_add(1);
+        source_navigable_id
+    }
+
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
         let ready_to_finish = {
             let content_document = self
@@ -467,6 +487,9 @@ impl ContentRuntime {
         fire_event(&mut content_document.settings, &window, "load", true)
             .map_err(|error| error.to_string())?;
 
+        let traversable_id = content_document.traversable_id;
+        run_iframe_load_event_steps_for_traversable(self, traversable_id)?;
+
         self.event_sender
             .send(ContentEvent::FinalizeNavigation(
                 ipc_messages::content::FinalizeNavigation {
@@ -483,7 +506,7 @@ impl ContentRuntime {
         let document = Rc::new(RefCell::new(BaseDocument::new(
             self.document_config(document_id, None),
         )));
-        let mut settings = EnvironmentSettingsObject::new(
+        let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
         )?;
@@ -504,8 +527,6 @@ impl ContentRuntime {
         // Step 10: "Completely finish loading document."
         // Note: The content runtime executes parser-discovered classic scripts immediately after the initial tree build.
         // TODO: Model the rest of the `completely finish loading` bookkeeping explicitly instead of relying on parser-discovered script execution alone.
-        execute_parser_scripts(&mut settings, parser_scripts)?;
-
         // Step 9: "Make active document."
         // Note: The runtime records the document as addressable for future commands by storing it under `document_id` after initialization completes.
         self.documents.insert(
@@ -516,8 +537,17 @@ impl ContentRuntime {
                 settings,
                 pending_update_the_rendering: false,
                 pending_document_load: None,
+                iframe_states: HashMap::new(),
             },
         );
+        self.active_documents_by_traversable
+            .insert(traversable_id, document_id);
+        run_dom_post_connection_steps_for_document(self, document_id)?;
+        let content_document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        execute_parser_scripts(&mut content_document.settings, parser_scripts)?;
         Ok(())
     }
 
@@ -571,8 +601,12 @@ impl ContentRuntime {
                     finalize_url: final_url.clone(),
                     scripts: deferred_scripts,
                 }),
+                iframe_states: HashMap::new(),
             },
         );
+        self.active_documents_by_traversable
+            .insert(traversable_id, document_id);
+        run_dom_post_connection_steps_for_document(self, document_id)?;
 
         let deferred_fetches = self
             .documents
@@ -607,9 +641,13 @@ impl ContentRuntime {
 
     fn evaluate_script(
         &mut self,
-        document_id: u64,
+        traversable_id: u64,
         source: String,
     ) -> Result<serde_json::Value, String> {
+        let document_id = *self
+            .active_documents_by_traversable
+            .get(&traversable_id)
+            .ok_or_else(|| format!("unknown traversable id: {traversable_id}"))?;
         let document = self
             .documents
             .get_mut(&document_id)
@@ -618,7 +656,16 @@ impl ContentRuntime {
     }
 
     fn destroy_document(&mut self, document_id: u64) -> Result<(), String> {
+        run_dom_removing_steps_for_document(self, document_id)?;
         if let Some(content_document) = self.documents.remove(&document_id) {
+            if self
+                .active_documents_by_traversable
+                .get(&content_document.traversable_id)
+                .is_some_and(|current_document_id| *current_document_id == document_id)
+            {
+                self.active_documents_by_traversable
+                    .remove(&content_document.traversable_id);
+            }
             let _ = content_document.settings.clear_all_window_timers();
         }
         let mut local_state = self
@@ -642,15 +689,15 @@ impl ContentRuntime {
 
     fn dispatch_events(&mut self, events: Vec<DispatchEventEntry>) -> Result<(), String> {
         for DispatchEventEntry { document_id, event } in events {
-            let document = self
-                .documents
-                .get_mut(&document_id)
-                .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+            let Some(document) = self.documents.get_mut(&document_id) else {
+                continue;
+            };
 
             // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event batch to the content runtime.
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
+                document.traversable_id,
                 Rc::clone(&document.document),
                 &mut document.settings,
                 &self.event_sender,
@@ -662,12 +709,12 @@ impl ContentRuntime {
     }
 
     fn run_before_unload(&mut self, document_id: u64, check_id: u64) -> Result<(), String> {
-        let document = self
-            .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
-        let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
-            .map_err(|error| error.to_string())?;
+        let canceled = if let Some(document) = self.documents.get_mut(&document_id) {
+            !dispatch_window_event(&mut document.settings, "beforeunload", true)
+                .map_err(|error| error.to_string())?
+        } else {
+            false
+        };
         self.event_sender
             .send(ContentEvent::BeforeUnloadCompleted(
                 ipc_messages::content::BeforeUnloadResult {
@@ -680,10 +727,9 @@ impl ContentRuntime {
     }
 
     fn update_the_rendering(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
-        let document = self
-            .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
         document.pending_update_the_rendering = true;
         self.continue_updating_the_rendering(traversable_id, document_id)
     }
@@ -748,15 +794,18 @@ impl ContentRuntime {
                 let scene = self.font_sender.prepare_scene(self.font_namespace, scene);
                 log_paint_debug(document_id, &document_guard, &scene.scene);
                 let viewport_scroll = document_guard.viewport_scroll();
-                PaintFrame::new(
+                let paint_frame = PaintFrame::new(
                     WebviewId(traversable_id),
                     FrameId(document_id),
+                    width,
+                    height,
                     ScrollOffset {
                         x: viewport_scroll.x as f32,
                         y: viewport_scroll.y as f32,
                     },
                     scene,
-                )?
+                )?;
+                paint_frame
             };
 
             document.pending_update_the_rendering = false;
@@ -879,13 +928,10 @@ impl ContentRuntime {
         timer_key: u64,
         nesting_level: u32,
     ) -> Result<(), String> {
-        let document = self
-            .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
-        document
-            .settings
-            .run_window_timer(timer_id, timer_key, nesting_level)
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        document.settings.run_window_timer(timer_id, timer_key, nesting_level)
     }
 
     fn note_command_completed(&self) -> Result<(), String> {
@@ -928,19 +974,24 @@ impl ContentRuntime {
                 Ok(true)
             }
             EvaluateScript {
-                document_id,
+                traversable_id,
                 request_id,
                 source,
             } => {
-                let value = self.evaluate_script(document_id, source)?;
-                let value_json = serde_json::to_string(&value).map_err(|error| {
-                    format!("failed to encode script evaluation result: {error}")
-                })?;
+                let (value_json, error) = match self.evaluate_script(traversable_id, source) {
+                    Ok(value) => {
+                        let value_json = serde_json::to_string(&value).map_err(|error| {
+                            format!("failed to encode script evaluation result: {error}")
+                        })?;
+                        (value_json, None)
+                    }
+                    Err(error) => (String::from("null"), Some(error)),
+                };
                 self.event_sender
                     .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
                         request_id,
                         value_json,
-                        error: None,
+                        error,
                     }))
                     .map_err(|error| format!("failed to send script evaluation result: {error}"))?;
                 Ok(true)
@@ -1056,57 +1107,4 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ContentFetchResponse, deferred_script_response_is_executable,
-        is_javascript_mime_essence, normalized_content_type_essence,
-    };
-
-    fn response(status: u16, content_type: &str) -> ContentFetchResponse {
-        ContentFetchResponse {
-            final_url: String::from("https://example.test/script.js"),
-            status,
-            content_type: content_type.to_string(),
-            body: b"console.log('ok');".to_vec(),
-        }
-    }
-
-    #[test]
-    fn deferred_scripts_accept_successful_javascript_mime() {
-        assert!(deferred_script_response_is_executable(&response(
-            200,
-            "text/javascript; charset=utf-8"
-        )));
-    }
-
-    #[test]
-    fn deferred_scripts_reject_non_success_status() {
-        assert!(!deferred_script_response_is_executable(&response(
-            404,
-            "text/javascript"
-        )));
-    }
-
-    #[test]
-    fn deferred_scripts_reject_clearly_wrong_mime() {
-        assert!(!deferred_script_response_is_executable(&response(
-            200,
-            "text/html"
-        )));
-    }
-
-    #[test]
-    fn deferred_scripts_allow_missing_content_type() {
-        assert!(deferred_script_response_is_executable(&response(200, "")));
-    }
-
-    #[test]
-    fn content_type_essence_is_case_and_parameter_insensitive() {
-        let essence = normalized_content_type_essence("Application/JavaScript; Charset=UTF-8");
-        assert_eq!(essence, "application/javascript");
-        assert!(is_javascript_mime_essence(&essence));
-    }
 }

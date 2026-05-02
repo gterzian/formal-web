@@ -22,3 +22,6 @@ serde_json = "1"
 style = { version = "0.15.0", package = "stylo" }
 url = "2"
 xml5ever = "0.37"
+
+[patch.crates-io]
+anyrender = { path = "../vendor/anyrender/crates/anyrender" }

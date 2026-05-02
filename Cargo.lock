@@ -136,8 +136,6 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "anyrender"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf4f4f85f41e104c77b0beb5f9161bd674ce1b8deeb25b7900668ac13cb8b8b6"
 dependencies = [
  "kurbo",
  "peniko",
@@ -161,8 +159,6 @@ dependencies = [
 [[package]]
 name = "anyrender_vello"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "629550801a5fc93061e38423a183de3ba6b2a8f112177707990a7966d84a3950"
 dependencies = [
  "anyrender",
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -4122,6 +4118,8 @@ dependencies = [
  "blitz-traits",
  "ipc_messages",
  "keyboard-types",
+ "kurbo",
+ "peniko",
  "serde",
  "serde_json",
 ]
@@ -4285,8 +4283,6 @@ dependencies = [
 [[package]]
 name = "wgpu_context"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51d6ffedd8185fb255c6adf946591cb3378544d50e4bc1756aee18297e313ba6"
 dependencies = [
  "futures-intrusive",
  "wgpu",

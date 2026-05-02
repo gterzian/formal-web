@@ -1,1 +1,5 @@
 - Spec is found under the top-level `/web_standards/HTML.html`
+- Keep DOM-tree entry points under `content/src/html/html_dom_tree.rs`, and route per-element hooks from there into element modules.
+- Keep iframe element bindings and runtime algorithms together in `content/src/html/html_iframe_element.rs` as free functions that receive `ContentRuntime` references instead of `impl ContentRuntime` blocks.
+- When deriving ids such as traversable ids or source navigable ids, never silently fall back to sentinel ids like `0`; prefer explicit error returns or `debug_assert!` plus a safe early return.
+- Trigger parser-discovered iframe work from document-load parsing completion instead of root-runtime snapshot staging.

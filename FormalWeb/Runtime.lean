@@ -95,7 +95,7 @@ def clearWindowTimerFromRust
 
 @[export startNavigation]
 def startNavigationFromRust
-    (documentId : USize)
+  (sourceNavigableId : USize)
     (destinationURL : String)
     (targetName : String)
     (userInvolvement : String)
@@ -109,12 +109,38 @@ def startNavigationFromRust
     else
       UserNavigationInvolvement.none
   enqueueUserAgentTaskMessage
-      (.navigateRequested
-        documentId.toNat
-        destinationURL
-        targetName
-        parsedUserInvolvement
-        (noopener.toNat != 0))
+    (.routeNavigationFromRust
+      sourceNavigableId.toNat
+      destinationURL
+      targetName
+      parsedUserInvolvement
+      (noopener.toNat != 0))
+
+@[export startNavigationFromEventLoop]
+def startNavigationFromEventLoopFromRust
+  (eventLoopId : USize)
+  (sourceNavigableId : USize)
+    (destinationURL : String)
+    (targetName : String)
+    (userInvolvement : String)
+    (noopener : USize) :
+    IO Unit := do
+  let parsedUserInvolvement :=
+    if userInvolvement = "activation" then
+      UserNavigationInvolvement.activation
+    else if userInvolvement = "browser-ui" then
+      UserNavigationInvolvement.browserUI
+    else
+      UserNavigationInvolvement.none
+  sendEventLoopMessage
+    eventLoopId.toNat
+    (.startNavigation
+      sourceNavigableId.toNat
+      destinationURL
+      targetName
+      parsedUserInvolvement
+      (noopener.toNat != 0)
+      none)
 
 @[export completeBeforeUnload]
 def completeBeforeUnloadFromRust
@@ -135,6 +161,22 @@ def finalizeNavigationFromRust
     IO Unit := do
   enqueueUserAgentTaskMessage
       (.finalizeNavigation documentId.toNat url)
+
+@[export removeIframeTraversable]
+def removeIframeTraversableFromRust
+    (parentTraversableId : USize)
+    (sourceNavigableId : USize) :
+    IO Unit := do
+  enqueueUserAgentTaskMessage
+      (.iframeTraversableRemoved parentTraversableId.toNat sourceNavigableId.toNat)
+
+@[export childNavigableCreated]
+def childNavigableCreatedFromRust
+    (parentTraversableId : USize)
+    (sourceNavigableId : USize) :
+    IO Unit := do
+  enqueueUserAgentTaskMessage
+      (.childNavigableCreated parentTraversableId.toNat sourceNavigableId.toNat)
 
 @[export runNextEventLoopTask]
 def runNextEventLoopTaskFromRust

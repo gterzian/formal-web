@@ -61,6 +61,20 @@ use style::{
 };
 use url::Url;
 
+fn iframe_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some()
+}
+
+fn log_iframe_debug(message: impl AsRef<str>) {
+    if iframe_debug_enabled() {
+        eprintln!(
+            "[iframe-debug][blitz-dom][pid={}] {}",
+            std::process::id(),
+            message.as_ref()
+        );
+    }
+}
+
 #[cfg(feature = "parallel-construct")]
 use thread_local::ThreadLocal;
 
@@ -615,12 +629,35 @@ impl BaseDocument {
         self.sub_document_nodes.insert(node_id);
     }
 
+    pub fn set_cross_origin_iframe(&mut self, node_id: usize, frame_id: u64) {
+        log_iframe_debug(format!(
+            "set_cross_origin_iframe document={} node={} frame={}",
+            self.id, node_id, frame_id
+        ));
+        self.nodes[node_id]
+            .element_data_mut()
+            .unwrap()
+            .set_cross_origin_iframe(frame_id);
+        self.sub_document_nodes.remove(&node_id);
+    }
+
     pub fn remove_sub_document(&mut self, node_id: usize) {
         self.nodes[node_id]
             .element_data_mut()
             .unwrap()
             .remove_sub_document();
         self.sub_document_nodes.remove(&node_id);
+    }
+
+    pub fn remove_cross_origin_iframe(&mut self, node_id: usize) {
+        log_iframe_debug(format!(
+            "remove_cross_origin_iframe document={} node={}",
+            self.id, node_id
+        ));
+        self.nodes[node_id]
+            .element_data_mut()
+            .unwrap()
+            .remove_cross_origin_iframe();
     }
 
     pub fn root_node(&self) -> &Node {

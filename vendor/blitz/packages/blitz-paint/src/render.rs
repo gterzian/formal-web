@@ -39,6 +39,20 @@ use peniko::{self, Fill, ImageData, ImageSampler};
 use style::values::generics::color::{ColorOrAuto, GenericColor};
 use taffy::Layout;
 
+fn iframe_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some()
+}
+
+fn log_iframe_debug(message: impl AsRef<str>) {
+    if iframe_debug_enabled() {
+        eprintln!(
+            "[iframe-debug][blitz-paint][pid={}] {}",
+            std::process::id(),
+            message.as_ref()
+        );
+    }
+}
+
 /// A short-lived struct which holds a bunch of parameters for rendering a scene so
 /// that we don't have to pass them down as parameters
 pub struct BlitzDomPainter<'dom> {
@@ -254,6 +268,21 @@ impl<'dom> BlitzDomPainter<'dom> {
             width: (size.width as f64 - scaled_pb.left - scaled_pb.right) * self.scale,
             height: (size.height as f64 - scaled_pb.top - scaled_pb.bottom) * self.scale,
         };
+        if *node.local_name() == local_name!("iframe") {
+            log_iframe_debug(format!(
+                "render_iframe node={} subdoc={} cross_origin_frame={:?} size=({:.1}, {:.1}) content_box=({:.1}, {:.1}) scroll=({:.1}, {:.1})",
+                node.id,
+                node.element_data().and_then(|element| element.sub_doc_data()).is_some(),
+                node.element_data()
+                    .and_then(|element| element.cross_origin_iframe_data()),
+                size.width,
+                size.height,
+                content_box_size.width,
+                content_box_size.height,
+                node.scroll_offset.x,
+                node.scroll_offset.y,
+            ));
+        }
 
         // Don't render things that are out of view
         let scaled_y = (box_position.y - self.initial_y) * self.scale;
@@ -322,6 +351,7 @@ impl<'dom> BlitzDomPainter<'dom> {
                         cx.draw_svg(scene);
                         cx.draw_canvas(scene);
                         cx.draw_sub_document(scene);
+                        cx.draw_cross_origin_iframe(scene);
                         cx.draw_input(scene);
                         cx.draw_text_input_text(scene, content_position);
                         cx.draw_inline_layout(scene, content_position);
@@ -740,6 +770,22 @@ impl ElementCx<'_> {
         }
     }
 
+    fn fill_embedded_document_background(&self, scene: &mut impl PaintScene) {
+        let width = self.frame.content_box.width();
+        let height = self.frame.content_box.height();
+        let x = self.frame.content_box.origin().x;
+        let y = self.frame.content_box.origin().y;
+        let transform = self.transform.then_translate(Vec2 { x, y });
+
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::WHITE,
+            None,
+            &Rect::from_origin_size((0.0, 0.0), (width, height)),
+        );
+    }
+
     fn draw_sub_document(&self, scene: &mut impl PaintScene) {
         if let Some(sub_doc) = self.element.sub_doc_data().map(|doc| doc.inner()) {
             let scale = self.scale;
@@ -749,10 +795,42 @@ impl ElementCx<'_> {
             let initial_y = self.pos.y + self.frame.content_box.origin().y;
             // let transform = self.transform.then_translate(Vec2 { x, y });
 
+            self.fill_embedded_document_background(scene);
+
             let painter =
                 BlitzDomPainter::new(&sub_doc, scale, width, height, initial_x, initial_y);
             painter.paint_scene(scene);
         }
+    }
+
+    fn draw_cross_origin_iframe(&self, scene: &mut impl PaintScene) {
+        let Some(frame_id) = self.element.cross_origin_iframe_data() else {
+            return;
+        };
+
+        let width = self.frame.content_box.width();
+        let height = self.frame.content_box.height();
+        let x = self.frame.content_box.origin().x;
+        let y = self.frame.content_box.origin().y;
+        let transform = self.transform.then_translate(Vec2 { x, y });
+
+        self.fill_embedded_document_background(scene);
+
+        log_iframe_debug(format!(
+            "emit_iframe_placeholder node={} frame={} content_box_origin=({:.1}, {:.1}) content_box_size=({:.1}, {:.1})",
+            self.node.id,
+            frame_id,
+            x,
+            y,
+            width,
+            height,
+        ));
+
+        scene.iframe_placeholder(
+            frame_id,
+            transform,
+            &Rect::from_origin_size((0.0, 0.0), (width, height)),
+        );
     }
 
     fn stroke_devtools(&self, scene: &mut impl PaintScene) {

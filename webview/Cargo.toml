@@ -9,5 +9,7 @@ anyrender = { version = "0.8", features = ["serde"] }
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
 ipc_messages = { path = "../ipc_messages" }
 keyboard-types = "0.7"
+kurbo = "0.13"
+peniko = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

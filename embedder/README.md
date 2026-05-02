@@ -6,3 +6,5 @@
 - Keep embedder focused on winit and browser chrome; content-process bridging, IPC listeners, and Lean callback plumbing for content events belong in `ffi`.
 - Forward raw content UI events into Lean immediately instead of batching or deduplicating them inside the embedder; the event-loop queue owns coalescing and fairness across `DispatchEvent` and `UpdateTheRendering` work.
 - Request a window redraw for visible content input and when a new paint frame arrives, then let winit coalesce those redraw requests; the embedder should present whatever paint frame it has from `RedrawRequested` rather than maintaining its own paint scheduler.
+- Hide the native window as soon as close is accepted, before runtime teardown continues, so visible shutdown latency is not coupled to Lean, fetch, timer, or content-process cleanup.
+- Browser automation should target the current top-level traversable or webview id, not a transient document id; browser-UI replacement navigation can retire the old document before the next WebDriver script step runs.

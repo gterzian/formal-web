@@ -93,6 +93,9 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - If `update the rendering` is noted while a document still has pending critical resources, keep that rendering opportunity pending and resume it from the corresponding fetch completion instead of painting a stale frame.
 
+- Keep same-origin iframe documents on Blitz's `SubDocument` path, but mark cross-origin iframe elements with a stable iframe navigable id so Blitz paint can emit a placeholder command for embedder-side composition.
+- Do not route iframe document navigations through `PendingNetworkHandler` or a Rust-local fetch path; the content runtime should raise a navigation request and let Lean own the fetch and resulting `CreateLoadedDocument` dispatch.
+
 - When a JavaScript-visible Web IDL attribute or algorithm is implemented for a DOM type, keep the spec-linked method on the corresponding `content/src/dom` type and have `content/src/boa/bindings` delegate to that method instead of embedding the algorithm in the binding layer.
 
 - When a carrier-side helper owns a named HTML algorithm or a specific suffix of its steps, prefer the spec algorithm name for the helper when practical and note exactly which steps that helper continues instead of repeating a bare anchor.
@@ -112,6 +115,8 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 - Parser-script collection must match classic scripts by normalized `type` essence and skip non-classic data blocks such as `application/json`, `speculationrules`, and module scripts.
 
 - Register a newly created content document before running parser-discovered scripts or firing `load` so later dispatch and rendering commands do not lose the document id when a page script throws.
+
+- When tearing down a content sidecar for window shutdown, request content shutdown asynchronously and let child-process cleanup finish off the close path so the embedder does not wait on content exit before the window disappears.
 
 - For content-side work, keep the default WPT runner configuration scoped to the suites under active development by editing `tests/wpt/include.ini` and `tests/formal/include.ini`, record known expected failures under `tests/wpt/meta` with `disabled:` reasons that name the missing feature or blocking bug, and finish by running `cargo run -- test-wpt` with no path so the default selection reports zero unexpected results. When enabling streams coverage, leave readable byte stream and BYOB coverage disabled until those controllers and readers are implemented.
 - Keep the content-side `console` namespace callable for the common logging entry points used by WPT helpers, including `warn`; `vendor/wpt/common/gc.js` falls back to `console.warn(...)` when manual GC hooks are unavailable.

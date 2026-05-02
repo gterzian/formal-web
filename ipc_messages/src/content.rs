@@ -60,7 +60,7 @@ pub enum UserNavigationInvolvement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigateRequest {
-    pub document_id: u64,
+    pub source_navigable_id: u64,
     pub destination_url: String,
     pub target: String,
     pub user_involvement: UserNavigationInvolvement,
@@ -78,6 +78,18 @@ pub struct BeforeUnloadResult {
 pub struct FinalizeNavigation {
     pub document_id: u64,
     pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IframeTraversableRemoval {
+    pub parent_traversable_id: u64,
+    pub source_navigable_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildNavigableCreation {
+    pub parent_traversable_id: u64,
+    pub source_navigable_id: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -224,7 +236,7 @@ impl FontTransportReceiver {
         }
     }
 
-    fn resolve_font(&self, font_ids: &[FontIdentifier], scene_font_id: u32) -> FontData {
+    pub fn resolve_font(&self, font_ids: &[FontIdentifier], scene_font_id: u32) -> FontData {
         let font_id = font_ids
             .get(scene_font_id as usize)
             .copied()
@@ -271,6 +283,9 @@ impl SerializableRenderCommand {
                 }))
             }
             RenderCommand::BoxShadow(command) => Self(RenderCommand::BoxShadow(command)),
+            RenderCommand::IframePlaceholder(command) => {
+                Self(RenderCommand::IframePlaceholder(command))
+            }
         }
     }
 
@@ -296,6 +311,7 @@ impl SerializableRenderCommand {
                 })
             }
             RenderCommand::BoxShadow(command) => RenderCommand::BoxShadow(command),
+            RenderCommand::IframePlaceholder(command) => RenderCommand::IframePlaceholder(command),
         }
     }
 }
@@ -325,6 +341,7 @@ pub struct SceneSummary {
     pub push_clip_layer_commands: usize,
     pub pop_layer_commands: usize,
     pub box_shadow_commands: usize,
+    pub iframe_placeholder_commands: usize,
     pub solid_glyph_brush_runs: usize,
     pub gradient_glyph_brush_runs: usize,
     pub image_glyph_brush_runs: usize,
@@ -333,7 +350,7 @@ pub struct SceneSummary {
 impl SceneSummary {
     pub fn describe(&self) -> String {
         format!(
-            "commands={} glyph_runs={} glyphs={} font_refs={} fills={} strokes={} push_layers={} push_clip_layers={} pops={} box_shadows={} glyph_brushes(solid={}, gradient={}, image={})",
+            "commands={} glyph_runs={} glyphs={} font_refs={} fills={} strokes={} push_layers={} push_clip_layers={} pops={} box_shadows={} iframe_placeholders={} glyph_brushes(solid={}, gradient={}, image={})",
             self.commands,
             self.glyph_runs,
             self.glyphs,
@@ -344,6 +361,7 @@ impl SceneSummary {
             self.push_clip_layer_commands,
             self.pop_layer_commands,
             self.box_shadow_commands,
+            self.iframe_placeholder_commands,
             self.solid_glyph_brush_runs,
             self.gradient_glyph_brush_runs,
             self.image_glyph_brush_runs,
@@ -376,6 +394,7 @@ impl RecordedScene {
                     }
                 }
                 RenderCommand::BoxShadow(_) => summary.box_shadow_commands += 1,
+                RenderCommand::IframePlaceholder(_) => summary.iframe_placeholder_commands += 1,
             }
         }
 
@@ -425,6 +444,8 @@ fn deserialize_scene_from_shared_memory(scene_bytes: &IpcSharedMemory) -> Result
 pub struct PaintFrame {
     pub traversable_id: WebviewId,
     pub frame_id: FrameId,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
     pub viewport_scroll: ScrollOffset,
     font_registrations: Vec<RegisteredFont>,
     scene_bytes: IpcSharedMemory,
@@ -441,6 +462,8 @@ impl PaintFrame {
     pub fn new(
         traversable_id: WebviewId,
         frame_id: FrameId,
+        viewport_width: u32,
+        viewport_height: u32,
         viewport_scroll: ScrollOffset,
         scene: PreparedScene,
     ) -> Result<Self, String> {
@@ -451,6 +474,8 @@ impl PaintFrame {
         Ok(Self {
             traversable_id,
             frame_id,
+            viewport_width,
+            viewport_height,
             viewport_scroll,
             font_registrations: registered_fonts,
             scene_bytes: serialize_scene_to_shared_memory(&scene)?,
@@ -493,7 +518,7 @@ pub enum Command {
     },
     DestroyDocument { document_id: u64 },
     EvaluateScript {
-        document_id: u64,
+        traversable_id: u64,
         request_id: u64,
         source: String,
     },
@@ -532,6 +557,8 @@ pub enum Event {
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
+    IframeTraversableRemoved(IframeTraversableRemoval),
+    ChildNavigableCreated(ChildNavigableCreation),
     ScriptEvaluated(ScriptEvaluationResult),
     CommandCompleted,
     PaintReady(PaintFrame),
@@ -660,6 +687,8 @@ mod tests {
         let paint_frame = PaintFrame::new(
             WebviewId(7),
             FrameId(7),
+            320,
+            240,
             ScrollOffset { x: 10.0, y: 20.0 },
             prepared,
         )
@@ -682,6 +711,8 @@ mod tests {
         let first_frame = PaintFrame::new(
             WebviewId(7),
             FrameId(7),
+            320,
+            240,
             ScrollOffset { x: 0.0, y: 0.0 },
             sender.prepare_scene(29, scene_with_glyph(&font, 7, 12.0, 18.0)),
         )
@@ -705,6 +736,8 @@ mod tests {
         let second_frame = PaintFrame::new(
             WebviewId(7),
             FrameId(7),
+            320,
+            240,
             ScrollOffset { x: 0.0, y: 0.0 },
             sender.prepare_scene(29, scene_with_glyph(&font, 8, 28.0, 18.0)),
         )

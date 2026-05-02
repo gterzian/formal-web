@@ -4,7 +4,7 @@ use blitz_dom::BaseDocument;
 use boa_engine::{JsResult, JsValue, object::JsObject};
 
 use crate::boa::{with_event_mut, with_event_target_mut, with_event_target_ref};
-use crate::html::{HTMLAnchorElement, HTMLElement, Window};
+use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Window};
 use crate::webidl::{EcmascriptHost, call_user_objects_operation};
 
 use super::event::{EventListener, NONE};
@@ -214,6 +214,15 @@ fn path_for_target(
             host,
             Rc::clone(&html_anchor_element.html_element.element.node.document),
             html_anchor_element.html_element.element.node.node_id,
+            target.clone(),
+        );
+    }
+
+    if let Some(html_iframe_element) = target.downcast_ref::<HTMLIFrameElement>() {
+        return path_for_node(
+            host,
+            Rc::clone(&html_iframe_element.html_element.element.node.document),
+            html_iframe_element.html_element.element.node.node_id,
             target.clone(),
         );
     }

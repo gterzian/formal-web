@@ -211,6 +211,7 @@ theorem createLoadedDocument_preserves_navigation_response_metadata :
     (runEventLoopMonadic
       { eventLoop := { id := 3 } }
       (.createLoadedDocument
+        5
         { id := 7 }
         {
           url := "https://example.test/final"
@@ -224,6 +225,7 @@ theorem createLoadedDocument_preserves_navigation_response_metadata :
           documentId := some 7
         }
         (some (.createLoadedDocument
+          5
           { id := 7 }
           {
             url := "https://example.test/final"

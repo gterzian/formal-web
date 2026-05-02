@@ -1,0 +1,25 @@
+[package]
+name = "anyrender"
+description = "2D Canvas abstraction"
+version = "0.8.0"
+documentation = "https://docs.rs/anyrender"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+serde = [
+  "dep:serde",
+  "kurbo/serde",
+  "peniko/serde",
+]
+
+[dependencies]
+kurbo = { workspace = true }
+peniko = { workspace = true }
+raw-window-handle = { workspace = true }
+
+# Serde
+serde = { workspace = true, features = ["derive"], optional = true }

@@ -11,7 +11,9 @@ use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -27,6 +29,7 @@ struct ContentBridge {
     command_sender: IpcSender<ContentCommand>,
     child: Mutex<Option<Child>>,
     listener: Mutex<Option<JoinHandle<()>>>,
+    event_loop_id: usize,
     script_waiters: Mutex<HashMap<u64, mpsc::Sender<Result<serde_json::Value, String>>>>,
 }
 
@@ -34,6 +37,8 @@ static CONTENT_REGISTRY: LazyLock<Mutex<HashMap<usize, Arc<ContentBridge>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static ACTIVE_CONTENT_BRIDGE: LazyLock<Mutex<Option<Arc<ContentBridge>>>> =
     LazyLock::new(|| Mutex::new(None));
+static TRAVERSABLE_BRIDGE_REGISTRY: LazyLock<Mutex<HashMap<u64, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_CONTENT_HANDLE: AtomicUsize = AtomicUsize::new(1);
 static NEXT_SCRIPT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -100,11 +105,11 @@ fn navigation_user_involvement_name(user_involvement: UserNavigationInvolvement)
 }
 
 fn spawn_listener(
-    event_loop_id: usize,
     event_receiver: ipc_channel::ipc::IpcReceiver<ContentEvent>,
     bridge: Arc<ContentBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
+        let mut suppress_next_command_completed = false;
         loop {
             let event = match event_receiver.recv() {
                 Ok(event) => event,
@@ -117,7 +122,7 @@ fn spawn_listener(
             match event {
                 ContentEvent::DocumentFetchRequested(request) => {
                     let _ = super::call_lean_document_fetch_start_parts(
-                        event_loop_id,
+                        bridge.event_loop_id,
                         request.handler_id as usize,
                         &request.url,
                         &request.method,
@@ -134,7 +139,7 @@ fn spawn_listener(
                         request.nesting_level
                     ));
                     let _ = super::call_lean_schedule_window_timer_parts(
-                        event_loop_id,
+                        bridge.event_loop_id,
                         request.document_id as usize,
                         request.timer_id as usize,
                         request.timer_key as usize,
@@ -149,18 +154,20 @@ fn spawn_listener(
                     ));
                     let _ = request.document_id;
                     let _ = super::call_lean_clear_window_timer_parts(
-                        event_loop_id,
+                        bridge.event_loop_id,
                         request.timer_key as usize,
                     );
                 }
                 ContentEvent::NavigationRequested(request) => {
-                    let _ = super::call_lean_navigation_start_parts(
-                        request.document_id as usize,
+                    let _ = super::call_lean_navigation_start_from_event_loop_parts(
+                        bridge.event_loop_id,
+                        request.source_navigable_id as usize,
                         &request.destination_url,
                         &request.target,
                         navigation_user_involvement_name(request.user_involvement.clone()),
                         request.noopener,
                     );
+                    suppress_next_command_completed = true;
                 }
                 ContentEvent::BeforeUnloadCompleted(result) => {
                     let _ = super::call_lean_before_unload_completed_parts(
@@ -175,8 +182,24 @@ fn spawn_listener(
                         &finalized.url,
                     );
                 }
+                ContentEvent::IframeTraversableRemoved(removal) => {
+                    let _ = super::call_lean_remove_iframe_traversable_parts(
+                        removal.parent_traversable_id as usize,
+                        removal.source_navigable_id as usize,
+                    );
+                }
+                ContentEvent::ChildNavigableCreated(creation) => {
+                    let _ = super::call_lean_child_navigable_created_parts(
+                        creation.parent_traversable_id as usize,
+                        creation.source_navigable_id as usize,
+                    );
+                }
                 ContentEvent::CommandCompleted => {
-                    let _ = super::call_lean_run_next_event_loop_task(event_loop_id);
+                    if suppress_next_command_completed {
+                        suppress_next_command_completed = false;
+                    } else {
+                        let _ = super::call_lean_run_next_event_loop_task(bridge.event_loop_id);
+                    }
                 }
                 ContentEvent::ScriptEvaluated(result) => {
                     let waiter = bridge
@@ -218,8 +241,28 @@ fn spawn_listener(
 fn send_command_inner(bridge: &ContentBridge, command: ContentCommand) -> Result<(), String> {
     bridge
         .command_sender
-        .send(command)
-        .map_err(|error| format!("failed to send content IPC message: {error}"))
+        .send(command.clone())
+        .map_err(|error| format!("failed to send content IPC message: {error}"))?;
+
+    match command {
+        ContentCommand::CreateEmptyDocument {
+            traversable_id,
+            document_id: _,
+        }
+        | ContentCommand::CreateLoadedDocument {
+            traversable_id,
+            document_id: _,
+            ..
+        } => {
+            TRAVERSABLE_BRIDGE_REGISTRY
+                .lock()
+                .expect("content traversable registry mutex poisoned")
+                .insert(traversable_id, bridge.event_loop_id);
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 pub fn install_hooks() {
@@ -227,11 +270,15 @@ pub fn install_hooks() {
 }
 
 pub fn start(event_loop_id: usize) -> Result<usize, String> {
+    start_bridge(event_loop_id, true)
+}
+
+fn start_bridge(event_loop_id: usize, make_active: bool) -> Result<usize, String> {
     let executable_path = content_executable_path()?;
     let (server, token) = IpcOneShotServer::<Bootstrap>::new()
         .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
 
-    let mut child_process = Command::new(executable_path);
+    let mut child_process = Command::new(&executable_path);
     setup_common(&mut child_process, &token);
 
     let child = child_process
@@ -245,9 +292,10 @@ pub fn start(event_loop_id: usize) -> Result<usize, String> {
         command_sender: bootstrap.command_sender,
         child: Mutex::new(Some(child)),
         listener: Mutex::new(None),
+        event_loop_id,
         script_waiters: Mutex::new(HashMap::new()),
     });
-    let listener = spawn_listener(event_loop_id, bootstrap.event_receiver, Arc::clone(&bridge));
+    let listener = spawn_listener(bootstrap.event_receiver, Arc::clone(&bridge));
     *bridge
         .listener
         .lock()
@@ -262,9 +310,11 @@ pub fn start(event_loop_id: usize) -> Result<usize, String> {
         .lock()
         .expect("content registry mutex poisoned")
         .insert(handle, Arc::clone(&bridge));
-    *ACTIVE_CONTENT_BRIDGE
-        .lock()
-        .expect("active content bridge mutex poisoned") = Some(bridge);
+    if make_active {
+        *ACTIVE_CONTENT_BRIDGE
+            .lock()
+            .expect("active content bridge mutex poisoned") = Some(bridge);
+    }
     Ok(handle)
 }
 
@@ -273,7 +323,12 @@ pub fn stop(handle: usize) -> Result<(), String> {
         .lock()
         .expect("content registry mutex poisoned")
         .remove(&handle)
-        .ok_or_else(|| format!("unknown content handle: {handle}"))?;
+        .ok_or(())
+        .ok();
+
+    let Some(bridge) = bridge else {
+        return Ok(());
+    };
 
     {
         let mut active = ACTIVE_CONTENT_BRIDGE
@@ -284,23 +339,35 @@ pub fn stop(handle: usize) -> Result<(), String> {
         }
     }
 
-    let _ = send_command_inner(&bridge, ContentCommand::Shutdown);
-    if let Some(listener) = bridge
-        .listener
+    let removed_traversable_ids = {
+        let mut traversable_bridge_registry = TRAVERSABLE_BRIDGE_REGISTRY
+            .lock()
+            .expect("content traversable registry mutex poisoned");
+        let removed_traversable_ids = traversable_bridge_registry
+            .iter()
+            .filter_map(|(traversable_id, owner_event_loop_id)| {
+                (*owner_event_loop_id == bridge.event_loop_id).then_some(*traversable_id)
+            })
+            .collect::<Vec<_>>();
+        traversable_bridge_registry.retain(|_, owner_event_loop_id| *owner_event_loop_id != bridge.event_loop_id);
+        removed_traversable_ids
+    };
+    TRAVERSABLE_BRIDGE_REGISTRY
         .lock()
-        .expect("content listener mutex poisoned")
-        .take()
-    {
-        let _ = listener.join();
-    }
-    if let Some(mut child) = bridge
+        .expect("content traversable registry mutex poisoned")
+        .retain(|traversable_id, _| !removed_traversable_ids.contains(traversable_id));
+
+    let _ = send_command_inner(&bridge, ContentCommand::Shutdown);
+    let child = bridge
         .child
         .lock()
         .expect("content child mutex poisoned")
-        .take()
-    {
-        let _ = child.wait();
-    }
+        .take();
+    let listener = bridge
+        .listener
+        .lock()
+        .expect("content listener mutex poisoned")
+        .take();
 
     let waiters = bridge
         .script_waiters
@@ -312,7 +379,64 @@ pub fn stop(handle: usize) -> Result<(), String> {
         let _ = waiter.send(Err(String::from("content process stopped")));
     }
 
+    finish_shutdown_async(child, listener);
+
     Ok(())
+}
+
+pub fn stop_event_loop(event_loop_id: usize) -> Result<(), String> {
+    let handle = CONTENT_REGISTRY
+        .lock()
+        .expect("content registry mutex poisoned")
+        .iter()
+        .find_map(|(handle, bridge)| (bridge.event_loop_id == event_loop_id).then_some(*handle));
+    match handle {
+        Some(handle) => stop(handle),
+        None => Ok(()),
+    }
+}
+
+fn finish_shutdown_async(child: Option<Child>, listener: Option<JoinHandle<()>>) {
+    thread::spawn(move || {
+        finish_shutdown(child, listener);
+    });
+}
+
+fn finish_shutdown(mut child: Option<Child>, listener: Option<JoinHandle<()>>) {
+    if let Some(child) = child.as_mut() {
+        match wait_for_child_exit(child, CONTENT_SHUTDOWN_GRACE_TIMEOUT) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Err(error) => {
+                eprintln!("content bridge shutdown poll error: {error}");
+            }
+        }
+    }
+
+    if let Some(listener) = listener {
+        let _ = listener.join();
+    }
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => return Ok(true),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return Ok(false);
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => {
+                return Err(format!("failed to poll content process exit: {error}"));
+            }
+        }
+    }
 }
 
 pub fn send_command(handle: usize, command: ContentCommand) -> Result<(), String> {
@@ -325,21 +449,36 @@ pub fn send_command(handle: usize, command: ContentCommand) -> Result<(), String
     send_command_inner(&bridge, command)
 }
 
-fn active_bridge() -> Result<Arc<ContentBridge>, String> {
-    ACTIVE_CONTENT_BRIDGE
+fn bridge_for_traversable_id(traversable_id: u64) -> Result<Arc<ContentBridge>, String> {
+    let event_loop_id = TRAVERSABLE_BRIDGE_REGISTRY
         .lock()
-        .expect("active content bridge mutex poisoned")
-        .as_ref()
+        .expect("content traversable registry mutex poisoned")
+        .get(&traversable_id)
+        .copied()
+        .ok_or_else(|| format!("no content process owns traversable {traversable_id}"))?;
+
+    let bridge = CONTENT_REGISTRY
+        .lock()
+        .expect("content registry mutex poisoned")
+        .values()
+        .find(|bridge| bridge.event_loop_id == event_loop_id)
         .cloned()
-        .ok_or_else(|| String::from("no active content process"))
+        .ok_or_else(|| {
+            format!(
+                "no content bridge found for event loop {} owning traversable {}",
+                event_loop_id, traversable_id
+            )
+        })?;
+
+    Ok(bridge)
 }
 
 pub fn evaluate_script(
-    document_id: u64,
+    traversable_id: u64,
     source: String,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let bridge = active_bridge()?;
+    let bridge = bridge_for_traversable_id(traversable_id)?;
     let request_id = NEXT_SCRIPT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = mpsc::channel();
 
@@ -352,7 +491,7 @@ pub fn evaluate_script(
     if let Err(error) = send_command_inner(
         &bridge,
         ContentCommand::EvaluateScript {
-            document_id,
+            traversable_id,
             request_id,
             source,
         },
@@ -395,12 +534,14 @@ pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
     };
 
     let command = viewport_command(snapshot);
+    let (width, height, scale, _color_scheme) = snapshot;
     let bridges = CONTENT_REGISTRY
         .lock()
         .expect("content registry mutex poisoned")
         .values()
         .cloned()
         .collect::<Vec<_>>();
+    let _ = (width, height, scale);
     for bridge in bridges {
         let _ = send_command_inner(&bridge, command.clone());
     }

@@ -1,6 +1,8 @@
+mod compositor;
 pub mod ui_event;
 
 use anyrender::Scene as RenderScene;
+use compositor::Compositor;
 use ipc_messages::content::{FontTransportReceiver, PaintFrame, ScrollOffset, WebviewId};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,7 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 #[derive(Clone)]
 pub struct WebviewState {
-    pub scene: Option<RenderScene>,
+    pub compositor: Compositor,
     pub viewport_scroll: ScrollOffset,
     pub current_document_id: Option<u64>,
 }
@@ -16,7 +18,7 @@ pub struct WebviewState {
 impl Default for WebviewState {
     fn default() -> Self {
         Self {
-            scene: None,
+            compositor: Compositor::default(),
             viewport_scroll: ScrollOffset { x: 0.0, y: 0.0 },
             current_document_id: None,
         }
@@ -58,7 +60,7 @@ fn call_lean_runtime_message_handler(message: &str) {
 }
 
 fn call_lean_navigation_start_parts(
-    webview_id: usize,
+    source_navigable_id: usize,
     destination_url: &str,
     target: &str,
     user_involvement: &str,
@@ -66,7 +68,7 @@ fn call_lean_navigation_start_parts(
 ) -> Result<(), String> {
     let hooks = runtime_hooks()?;
     (hooks.start_navigation_parts)(
-        webview_id,
+        source_navigable_id,
         destination_url,
         target,
         user_involvement,
@@ -101,6 +103,7 @@ fn startup_artifact_url() -> Result<String, String> {
 
 pub struct WebviewProvider {
     webviews: HashMap<WebviewId, WebviewState>,
+    iframe_aliases: HashMap<WebviewId, (WebviewId, ipc_messages::content::FrameId)>,
     font_receiver: FontTransportReceiver,
     embedder: Arc<dyn EmbedderApi>,
 }
@@ -109,6 +112,7 @@ impl WebviewProvider {
     pub fn new(embedder: Arc<dyn EmbedderApi>) -> Self {
         Self {
             webviews: HashMap::new(),
+            iframe_aliases: HashMap::new(),
             font_receiver: FontTransportReceiver::default(),
             embedder,
         }
@@ -150,33 +154,54 @@ impl WebviewProvider {
         user_agent_note_rendering_opportunity(reason);
     }
 
-    pub fn on_paint_frame(&mut self, frame: PaintFrame) -> Result<(), String> {
+    pub fn register_iframe_alias(&mut self, child_webview_id: WebviewId, parent_webview_id: WebviewId, placeholder_id: ipc_messages::content::FrameId) {
+        self.iframe_aliases.insert(child_webview_id, (parent_webview_id, placeholder_id));
+    }
+
+    pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
+        if let Some((parent_webview_id, placeholder_id)) = self.iframe_aliases.get(&frame.traversable_id) {
+            frame.traversable_id = *parent_webview_id;
+            frame.frame_id = *placeholder_id;
+        }
         let traversable_id = frame.traversable_id;
-        let document_id = frame.frame_id.0;
+        let frame_id = frame.frame_id;
+        let viewport_width = frame.viewport_width;
+        let viewport_height = frame.viewport_height;
         let viewport_scroll = frame.viewport_scroll.clone();
         let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver)?;
-        let scene = recorded_scene.into_scene(&self.font_receiver);
 
         let state = self.webviews.entry(traversable_id).or_default();
-        state.scene = Some(scene);
-        state.viewport_scroll = viewport_scroll;
-        state.current_document_id = Some(document_id);
+        state
+            .compositor
+            .store_frame(
+                frame_id,
+                viewport_width,
+                viewport_height,
+                viewport_scroll,
+                recorded_scene,
+            );
+        state.viewport_scroll = state.compositor.root_viewport_scroll();
+        if state.compositor.committed_root_frame_id() == Some(frame_id) {
+            state.current_document_id = Some(frame_id.0);
+        }
 
         self.embedder.request_redraw(traversable_id);
         Ok(())
     }
 
     pub fn on_finalize_navigation(&mut self, webview_id: WebviewId, _url: &str) {
-        self.webviews.entry(webview_id).or_default();
+        let state = self.webviews.entry(webview_id).or_default();
+        state.compositor.note_navigation_finalized();
+        state.current_document_id = None;
     }
 
     pub fn on_new_top_level_traversable(&mut self, webview_id: WebviewId) {
         self.webviews.entry(webview_id).or_default();
     }
 
-    pub fn current_scene(&self, webview_id: WebviewId) -> Option<(&RenderScene, ScrollOffset)> {
+    pub fn current_scene(&mut self, webview_id: WebviewId) -> Option<(RenderScene, ScrollOffset)> {
         let state = self.webviews.get(&webview_id)?;
-        let scene = state.scene.as_ref()?;
+        let scene = state.compositor.compose_scene(&self.font_receiver)?;
         Some((scene, state.viewport_scroll.clone()))
     }
 
