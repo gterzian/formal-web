@@ -42,8 +42,8 @@ structure UserAgent where
   pendingNavigationFinalizations : Std.TreeMap Nat PendingNavigationFinalization := Std.TreeMap.empty
   /-- Model-local reverse index from https://html.spec.whatwg.org/multipage/#navigation-params-id to pending finalization document ids. -/
   pendingNavigationFinalizationIdsByNavigationId : Std.TreeMap Nat Nat := Std.TreeMap.empty
-  /-- Map from iframe source-navigable identifiers to their parent traversable identifiers.
-      Populated when the content runtime creates a new child navigable for an iframe element. -/
+    /-- Map from iframe child content-navigable identifiers to their parent traversable identifiers.
+      Populated when the content runtime creates a new child navigable for a navigable container. -/
   knownChildNavigables : Std.TreeMap Nat Nat := Std.TreeMap.empty
 deriving Repr
 
@@ -420,7 +420,7 @@ def traversableWithTargetName?
       | some traversable =>
         some traversable
       | none =>
-        -- Check if this is a known iframe child navigable.
+        -- Check if this is a known iframe child content navigable.
         match userAgent.knownChildNavigables.get? sourceNavigableId with
         | some parentTraversableId =>
           let iframeName := s!"_iframe|{parentTraversableId}|{sourceNavigableId}"
@@ -1894,17 +1894,34 @@ inductive UserAgentTaskMessage where
   | eventLoopStopped (eventLoopId : Nat)
   | abortNavigationRequested (documentId : Nat)
   | dispatchEvent (event : String)
+  | dispatchEventFor (traversableId : Nat) (event : String)
   | renderingOpportunity
+  | renderingOpportunityFor (traversableId : Nat)
   | fetchCompleted (fetchId : Nat) (response : FetchResponse)
 deriving Repr, DecidableEq
 
 def userAgentTaskMessageOfString? (message : String) : Option UserAgentTaskMessage := do
   let messagePrefix := "FreshTopLevelTraversable|"
+  let dispatchEventForPrefix := "DispatchEventFor|"
   let dispatchEventPrefix := "DispatchEvent|"
+  let renderingOpportunityForPrefix := "RenderingOpportunityFor|"
   if message.startsWith messagePrefix then
     some (.freshTopLevelTraversable (message.drop messagePrefix.length).toString)
+  else if message.startsWith dispatchEventForPrefix then
+    let payload := (message.drop dispatchEventForPrefix.length).toString
+    match payload.splitOn "|" with
+    | traversableId :: eventParts =>
+        let traversableId := traversableId.toNat?
+        let event := String.intercalate "|" eventParts
+        match traversableId with
+        | some traversableId => some (.dispatchEventFor traversableId event)
+        | none => none
+    | [] => none
   else if message.startsWith dispatchEventPrefix then
     some (.dispatchEvent (message.drop dispatchEventPrefix.length).toString)
+  else if message.startsWith renderingOpportunityForPrefix then
+    let traversableId := (message.drop renderingOpportunityForPrefix.length).toString.toNat?
+    traversableId.map .renderingOpportunityFor
   else
     none
 
@@ -1982,6 +1999,20 @@ def activeTraversableReady?
     let _document <- traversable.toTraversableNavigable.activeDocument
     pure traversable.id
 
+private def dispatchEventFailureDetailsForTraversable
+    (userAgent : UserAgent)
+    (traversableId : Nat)
+    (event : String) :
+    String :=
+  match traversable? userAgent traversableId with
+  | none =>
+      s!"cannot dispatch event for missing traversable {traversableId}: event={event}"
+  | some traversable =>
+      if traversable.toTraversableNavigable.activeDocument.isNone then
+        s!"cannot dispatch event for traversable {traversableId} without an active document: event={event}"
+      else
+        s!"cannot dispatch event for traversable {traversableId}: unknown dispatch precondition failure, event={event}"
+
 def dispatchEventFailureDetails
     (userAgent : UserAgent)
     (event : String) :
@@ -1990,14 +2021,20 @@ def dispatchEventFailureDetails
   | none =>
       s!"cannot dispatch event before an active traversable exists: event={event}"
   | some traversableId =>
-      match traversable? userAgent traversableId with
-      | none =>
-          s!"cannot dispatch event for missing active traversable {traversableId}: event={event}"
-      | some traversable =>
-          if traversable.toTraversableNavigable.activeDocument.isNone then
-            s!"cannot dispatch event for active traversable {traversableId} without an active document: event={event}"
-          else
-            s!"cannot dispatch event for active traversable {traversableId}: unknown dispatch precondition failure, event={event}"
+      dispatchEventFailureDetailsForTraversable userAgent traversableId event
+
+private def renderingOpportunityFailureDetailsForTraversable
+    (userAgent : UserAgent)
+    (traversableId : Nat) :
+    String :=
+  match traversable? userAgent traversableId with
+  | none =>
+      s!"cannot queue update-the-rendering for missing traversable {traversableId}"
+  | some traversable =>
+      if traversable.toTraversableNavigable.activeDocument.isNone then
+        s!"cannot queue update-the-rendering for traversable {traversableId} without an active document"
+      else
+        s!"cannot queue update-the-rendering for traversable {traversableId}"
 
 def renderingOpportunityFailureDetails
     (userAgent : UserAgent) :
@@ -2006,7 +2043,7 @@ def renderingOpportunityFailureDetails
   | none =>
       "cannot queue update-the-rendering before an active traversable exists"
   | some traversableId =>
-      s!"cannot queue update-the-rendering for active traversable {traversableId}"
+      renderingOpportunityFailureDetailsForTraversable userAgent traversableId
 
 def createTopLevelTraversableM
     (targetName : String := "") :
@@ -2268,8 +2305,8 @@ def chooseTargetTraversableM
   else
     let userAgent ← get
     if normalizedTargetName.isEmpty then
-      -- If the source is a known iframe child navigable, route the navigation
-      -- to its own helper traversable (the _iframe|p|s entry) rather than
+      -- If the source is a known iframe child content navigable, route the
+      -- navigation to its existing _iframe|p|c host traversable instead of
       -- creating an anonymous new top-level traversable.
       match userAgent.knownChildNavigables.get? sourceNavigableId with
       | some parentTraversableId =>
@@ -2416,6 +2453,17 @@ def abortNavigationRequestedM
     | pure ()
   set (abortNavigation userAgent traversable.id)
 
+def dispatchEventForTraversableM
+    (traversableId : Nat)
+    (event : String) :
+    M Unit := do
+  let userAgent ← get
+  let some (nextUserAgent, eventLoopId, documentId) := queueDispatchedEvent userAgent traversableId
+    | tell #[.logError (dispatchEventFailureDetailsForTraversable userAgent traversableId event)]
+      pure ()
+  set nextUserAgent
+  tell #[.eventLoopMessage eventLoopId (.queueDispatchEvent documentId event)]
+
 def dispatchEventM
     (event : String) :
     M Unit := do
@@ -2423,22 +2471,20 @@ def dispatchEventM
   let some traversableId := activeTraversableId? userAgent
     | tell #[.logError (dispatchEventFailureDetails userAgent event)]
       pure ()
-  let some (nextUserAgent, eventLoopId, documentId) := queueDispatchedEvent userAgent traversableId
-    | tell #[.logError (dispatchEventFailureDetails userAgent event)]
-      pure ()
-  set nextUserAgent
-  tell #[.eventLoopMessage eventLoopId (.queueDispatchEvent documentId event)]
+  dispatchEventForTraversableM traversableId event
 
-def queueRenderingOpportunityM : M Unit := do
+def queueRenderingOpportunityForTraversableM
+    (traversableId : Nat) :
+    M Unit := do
   let userAgent ← get
-  match activeTraversable? userAgent with
+  match traversable? userAgent traversableId with
   | none =>
-      tell #[.logError (renderingOpportunityFailureDetails userAgent)]
+      tell #[.logError (renderingOpportunityFailureDetailsForTraversable userAgent traversableId)]
   | some traversable =>
       if traversable.toTraversableNavigable.toNavigable.ongoingNavigation.isSome then
         set (notePendingUpdateTheRendering userAgent traversable.id)
       else if traversable.toTraversableNavigable.activeDocument.isNone then
-        tell #[.logError (renderingOpportunityFailureDetails userAgent)]
+        tell #[.logError (renderingOpportunityFailureDetailsForTraversable userAgent traversableId)]
       else
         let (nextUserAgent, dispatch?) := queueUpdateTheRendering userAgent traversable.id
         set nextUserAgent
@@ -2447,6 +2493,14 @@ def queueRenderingOpportunityM : M Unit := do
             tell #[.eventLoopMessage eventLoopId eventLoopMessage]
         | none =>
             pure ()
+
+    def queueRenderingOpportunityM : M Unit := do
+      let userAgent ← get
+      match activeTraversable? userAgent with
+      | none =>
+        tell #[.logError (renderingOpportunityFailureDetails userAgent)]
+      | some traversable =>
+        queueRenderingOpportunityForTraversableM traversable.id
 
 def queueNavigationContinuation
     (userAgent : UserAgent)
@@ -2694,8 +2748,12 @@ def handleUserAgentTaskMessage
     abortNavigationRequestedM documentId
   | .dispatchEvent event =>
       dispatchEventM event
+  | .dispatchEventFor traversableId event =>
+      dispatchEventForTraversableM traversableId event
   | .renderingOpportunity =>
       queueRenderingOpportunityM
+  | .renderingOpportunityFor traversableId =>
+      queueRenderingOpportunityForTraversableM traversableId
   | .fetchCompleted fetchId response =>
       handleFetchCompletedM fetchId response
 

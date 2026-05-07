@@ -21,6 +21,14 @@ pub struct ViewportSnapshot {
     pub color_scheme: ColorScheme,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraversableViewport {
+    pub traversable_id: u64,
+    pub viewport: ViewportSnapshot,
+    pub offset_x: f32,
+    pub offset_y: f32,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Bootstrap {
     pub command_sender: IpcSender<Command>,
@@ -83,13 +91,13 @@ pub struct FinalizeNavigation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IframeTraversableRemoval {
     pub parent_traversable_id: u64,
-    pub source_navigable_id: u64,
+    pub content_navigable_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChildNavigableCreation {
     pub parent_traversable_id: u64,
-    pub source_navigable_id: u64,
+    pub content_navigable_id: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -316,12 +324,6 @@ impl SerializableRenderCommand {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScrollOffset {
-    pub x: f32,
-    pub y: f32,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordedScene {
     pub tolerance: f64,
@@ -446,7 +448,6 @@ pub struct PaintFrame {
     pub frame_id: FrameId,
     pub viewport_width: u32,
     pub viewport_height: u32,
-    pub viewport_scroll: ScrollOffset,
     font_registrations: Vec<RegisteredFont>,
     scene_bytes: IpcSharedMemory,
 }
@@ -464,7 +465,6 @@ impl PaintFrame {
         frame_id: FrameId,
         viewport_width: u32,
         viewport_height: u32,
-        viewport_scroll: ScrollOffset,
         scene: PreparedScene,
     ) -> Result<Self, String> {
         let PreparedScene {
@@ -476,7 +476,6 @@ impl PaintFrame {
             frame_id,
             viewport_width,
             viewport_height,
-            viewport_scroll,
             font_registrations: registered_fonts,
             scene_bytes: serialize_scene_to_shared_memory(&scene)?,
         })
@@ -507,6 +506,7 @@ impl PaintFrame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetViewport(ViewportSnapshot),
+    SetTraversableViewport(TraversableViewport),
     CreateEmptyDocument {
         traversable_id: u64,
         document_id: u64,
@@ -569,8 +569,7 @@ pub enum Event {
 mod tests {
     use super::{
         Command, FetchResponse, FontTransportReceiver, FontTransportSender, FrameId,
-        LoadedDocumentResponse, PaintFrame, PaintTransportSummary, SceneSummary, ScrollOffset,
-        WebviewId,
+        LoadedDocumentResponse, PaintFrame, PaintTransportSummary, SceneSummary, WebviewId,
     };
     use anyrender::{
         Glyph, PaintScene, Scene,
@@ -689,7 +688,6 @@ mod tests {
             FrameId(7),
             320,
             240,
-            ScrollOffset { x: 10.0, y: 20.0 },
             prepared,
         )
         .expect("paint frame should serialize into shared memory");
@@ -713,7 +711,6 @@ mod tests {
             FrameId(7),
             320,
             240,
-            ScrollOffset { x: 0.0, y: 0.0 },
             sender.prepare_scene(29, scene_with_glyph(&font, 7, 12.0, 18.0)),
         )
         .expect("first frame should serialize");
@@ -738,7 +735,6 @@ mod tests {
             FrameId(7),
             320,
             240,
-            ScrollOffset { x: 0.0, y: 0.0 },
             sender.prepare_scene(29, scene_with_glyph(&font, 8, 28.0, 18.0)),
         )
         .expect("second frame should serialize");

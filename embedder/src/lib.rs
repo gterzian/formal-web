@@ -12,7 +12,7 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ColorScheme, Viewport};
 use ipc_messages::content::{
-    BeforeUnloadResult, PaintFrame, ScrollOffset, WebviewId,
+    BeforeUnloadResult, PaintFrame, WebviewId,
 };
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
@@ -48,7 +48,8 @@ pub struct EventLoopOptions {
 
 #[derive(Clone, Copy)]
 pub struct ContentBridgeHooks {
-    pub broadcast_viewport: fn(Option<(u32, u32, f32, ColorScheme)>),
+    pub set_default_viewport: fn(Option<(u32, u32, f32, ColorScheme)>),
+    pub set_traversable_viewport: fn(u64, (u32, u32, f32, ColorScheme), f32, f32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +65,23 @@ struct WinitEmbedderApi {
 impl EmbedderApi for WinitEmbedderApi {
     fn request_redraw(&self, webview_id: WebviewId) {
         let _ = self.proxy.send_event(FormalWebUserEvent::RequestRedraw(webview_id));
+    }
+
+    fn viewport_scale_factor(&self) -> f32 {
+        window_viewport_snapshot()
+            .map(|(_, _, scale, _)| scale)
+            .unwrap_or(1.0)
+    }
+
+    fn update_traversable_viewport(
+        &self,
+        traversable_id: WebviewId,
+        width: u32,
+        height: u32,
+        offset_x: f32,
+        offset_y: f32,
+    ) {
+        update_content_traversable_viewport(traversable_id, width, height, offset_x, offset_y);
     }
 }
 
@@ -83,7 +101,7 @@ pub struct AutomationSnapshot {
     pub webview_id: Option<WebviewId>,
     pub current_url: Option<String>,
     pub displayed_url: String,
-    pub document_id: Option<u64>,
+    pub navigable_id: Option<u64>,
     pub has_top_level_traversable: bool,
 }
 
@@ -94,6 +112,18 @@ pub enum AutomationCommand {
     Navigate {
         url: String,
         reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
+    },
+    Click {
+        x: f32,
+        y: f32,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Scroll {
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+        reply: mpsc::Sender<Result<(), String>>,
     },
 }
 
@@ -106,12 +136,18 @@ struct PendingAutomationNavigation {
     reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
 }
 
+#[derive(Clone, Copy)]
+struct ChildNavigableHostTarget {
+    parent_traversable_id: WebviewId,
+    content_navigable_id: ipc_messages::content::FrameId,
+}
+
 #[derive(Default)]
 struct BrowserState {
     history: Vec<String>,
     history_index: Option<usize>,
     pending_navigation: Option<PendingNavigation>,
-    current_document_id: Option<u64>,
+    current_navigable_id: Option<u64>,
 }
 
 impl BrowserState {
@@ -162,13 +198,13 @@ impl BrowserState {
             webview_id: current_webview_id,
             current_url: self.current_url().map(ToOwned::to_owned),
             displayed_url: self.displayed_url(),
-            document_id: self.current_document_id,
+            navigable_id: self.current_navigable_id,
             has_top_level_traversable,
         }
     }
 
-    fn set_current_document_id(&mut self, document_id: Option<u64>) {
-        self.current_document_id = document_id;
+    fn set_current_navigable_id(&mut self, navigable_id: Option<u64>) {
+        self.current_navigable_id = navigable_id;
     }
 }
 
@@ -196,6 +232,21 @@ static CONTENT_BRIDGE_HOOKS: LazyLock<Mutex<Option<ContentBridgeHooks>>> =
     LazyLock::new(|| Mutex::new(None));
 static EVENT_LOOP_OPTIONS: LazyLock<Mutex<EventLoopOptions>> =
     LazyLock::new(|| Mutex::new(EventLoopOptions::default()));
+
+fn parse_child_navigable_host_target(target_name: &str) -> Option<ChildNavigableHostTarget> {
+    let payload = target_name.strip_prefix("_iframe|")?;
+    let mut parts = payload.split('|');
+    let parent_traversable_id = parts.next()?.parse::<u64>().ok()?;
+    let content_navigable_id = parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some(ChildNavigableHostTarget {
+        parent_traversable_id: WebviewId(parent_traversable_id),
+        content_navigable_id: ipc_messages::content::FrameId(content_navigable_id),
+    })
+}
 
 pub fn set_event_loop_options(options: EventLoopOptions) {
     let mut guard = EVENT_LOOP_OPTIONS
@@ -225,14 +276,40 @@ pub fn set_content_bridge_hooks(hooks: ContentBridgeHooks) {
     *guard = Some(hooks);
 }
 
-fn broadcast_content_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
+fn set_default_content_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
     let hooks = CONTENT_BRIDGE_HOOKS
         .lock()
         .expect("content bridge hooks mutex poisoned")
         .as_ref()
         .copied();
     if let Some(hooks) = hooks {
-        (hooks.broadcast_viewport)(snapshot);
+        (hooks.set_default_viewport)(snapshot);
+    }
+}
+
+fn update_content_traversable_viewport(
+    traversable_id: WebviewId,
+    width: u32,
+    height: u32,
+    offset_x: f32,
+    offset_y: f32,
+) {
+    let Some((_, _, scale, color_scheme)) = window_viewport_snapshot() else {
+        return;
+    };
+
+    let hooks = CONTENT_BRIDGE_HOOKS
+        .lock()
+        .expect("content bridge hooks mutex poisoned")
+        .as_ref()
+        .copied();
+    if let Some(hooks) = hooks {
+        (hooks.set_traversable_viewport)(
+            traversable_id.0,
+            (width, height, scale, color_scheme),
+            offset_x,
+            offset_y,
+        );
     }
 }
 
@@ -279,6 +356,44 @@ pub fn automation_navigate(
     receiver.recv_timeout(timeout).map_err(|error| {
         format!(
             "timed out after {} ms waiting for navigation to complete: {error}",
+            timeout.as_millis()
+        )
+    })?
+}
+
+pub fn automation_click(x: f32, y: f32, timeout: std::time::Duration) -> Result<(), String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::Click {
+        x,
+        y,
+        reply,
+    }))?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting for automation click delivery: {error}",
+            timeout.as_millis()
+        )
+    })?
+}
+
+pub fn automation_scroll(
+    x: f32,
+    y: f32,
+    delta_x: f32,
+    delta_y: f32,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::Scroll {
+        x,
+        y,
+        delta_x,
+        delta_y,
+        reply,
+    }))?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting for automation scroll delivery: {error}",
             timeout.as_millis()
         )
     })?
@@ -696,8 +811,9 @@ impl FormalWebApp {
             return;
         }
         self.request_window_redraw();
-        if let Some(provider) = self.provider.as_ref() {
-            provider.note_rendering_opportunity(reason);
+        if let Some((provider, webview_id)) = self.provider.as_ref().zip(self.current_webview_id)
+        {
+            provider.note_rendering_opportunity(webview_id, reason);
         }
     }
 
@@ -724,7 +840,11 @@ impl FormalWebApp {
     fn update_content_viewport_snapshot(&self, window: &Window) {
         let viewport_snapshot = self.content_viewport_snapshot(window);
         update_window_viewport_snapshot(Some(viewport_snapshot));
-        broadcast_content_viewport(Some(viewport_snapshot));
+        set_default_content_viewport(Some(viewport_snapshot));
+        if let Some(webview_id) = self.current_webview_id {
+            let (width, height, _scale, _color_scheme) = viewport_snapshot;
+            update_content_traversable_viewport(webview_id, width, height, 0.0, 0.0);
+        }
     }
 
     fn current_chrome_view_state(&self) -> ChromeViewState {
@@ -795,7 +915,7 @@ impl FormalWebApp {
             .as_mut()
             .zip(self.current_webview_id)
             .and_then(|(provider, webview_id)| provider.current_scene(webview_id))
-            .map(|(scene, _scroll)| scene);
+            .map(|scene| scene);
 
         if chrome_scene.is_none() && content_scene.is_none() {
             return;
@@ -845,36 +965,54 @@ impl FormalWebApp {
         let LogicalPosition::<f32> { x: screen_x, y: screen_y } = self.logical_position(position);
         let client_x = screen_x;
         let client_y = screen_y - self.chrome_height_css();
-        let scroll = self
-            .provider
-            .as_ref()
-            .zip(self.current_webview_id)
-            .map(|(provider, webview_id)| provider.scroll_offset(webview_id))
-            .unwrap_or(ScrollOffset { x: 0.0, y: 0.0 });
         PointerCoords {
             screen_x,
             screen_y,
             client_x,
             client_y,
-            page_x: client_x + scroll.x,
-            page_y: client_y + scroll.y,
+            page_x: client_x,
+            page_y: client_y,
         }
     }
 
-    fn dispatch_content_ui_event(&mut self, event: UiEvent) {
-        if !self.content_has_visible_viewport() || !self.has_top_level_traversable {
-            return;
+    fn send_content_ui_event(
+        &mut self,
+        event: UiEvent,
+        require_visible_viewport: bool,
+    ) -> Result<(), String> {
+        if require_visible_viewport {
+            if !self.content_has_visible_viewport() {
+                return Err(String::from("content viewport is not visible"));
+            }
+        } else {
+            let Some(window) = self.window.as_ref() else {
+                return Err(String::from("window is not initialized"));
+            };
+            if window.inner_size().height <= self.chrome_height_physical() {
+                return Err(String::from("content viewport is not ready for automation clicks"));
+            }
         }
 
-        let Some(provider) = self.provider.as_ref() else {
-            return;
+        if !self.has_top_level_traversable {
+            return Err(String::from("no top-level traversable is active"));
+        }
+
+        let Some(provider) = self.provider.as_mut() else {
+            return Err(String::from("webview provider is not initialized"));
         };
         let Some(webview_id) = self.current_webview_id else {
-            return;
+            return Err(String::from("no current webview is active"));
         };
-        if provider.send_ui_event(webview_id, event).is_ok() {
+
+        provider.send_ui_event(webview_id, event)?;
+        if require_visible_viewport {
             self.request_window_redraw();
         }
+        Ok(())
+    }
+
+    fn dispatch_content_ui_event(&mut self, event: UiEvent) {
+        let _ = self.send_content_ui_event(event, true);
     }
 
     fn handle_chrome_ui_event(&mut self, event: UiEvent) {
@@ -949,18 +1087,18 @@ impl FormalWebApp {
         }
     }
 
-    fn sync_browser_document_id_from_provider(&mut self) {
-        let document_id = self
+    fn sync_browser_navigable_id_from_provider(&mut self) {
+        let navigable_id = self
             .provider
             .as_ref()
             .zip(self.current_webview_id)
-            .and_then(|(provider, webview_id)| provider.current_document_id(webview_id));
-        self.browser.set_current_document_id(document_id);
+            .and_then(|(provider, webview_id)| provider.current_navigable_id(webview_id));
+        self.browser.set_current_navigable_id(navigable_id);
     }
 
     fn complete_pending_automation_navigation_if_ready(&mut self) {
-        self.sync_browser_document_id_from_provider();
-        if self.browser.current_document_id.is_none() {
+        self.sync_browser_navigable_id_from_provider();
+        if self.browser.current_navigable_id.is_none() {
             return;
         }
         if let Some(pending_navigation) = self.pending_automation_navigation.take() {
@@ -996,7 +1134,7 @@ impl FormalWebApp {
     fn handle_automation_command(&mut self, command: AutomationCommand) {
         match command {
             AutomationCommand::Snapshot { reply } => {
-                self.sync_browser_document_id_from_provider();
+                self.sync_browser_navigable_id_from_provider();
                 let _ = reply.send(Ok(self.browser.automation_snapshot(
                     self.current_webview_id,
                     self.has_top_level_traversable,
@@ -1019,7 +1157,120 @@ impl FormalWebApp {
                     }
                 }
             }
+            AutomationCommand::Click { x, y, reply } => {
+                let _ = reply.send(self.dispatch_automation_click(x, y));
+            }
+            AutomationCommand::Scroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+                reply,
+            } => {
+                let _ = reply.send(self.dispatch_automation_scroll(x, y, delta_x, delta_y));
+            }
         }
+    }
+
+    fn dispatch_automation_click(&mut self, x: f32, y: f32) -> Result<(), String> {
+        let Some(window) = self.window.as_ref() else {
+            return Err(String::from("window is not initialized"));
+        };
+
+        let scale = window.scale_factor();
+        let chrome_height_css = f64::from(self.chrome_height_css());
+        let position = PhysicalPosition::new(
+            f64::from(x) * scale,
+            (f64::from(y) + chrome_height_css) * scale,
+        );
+        self.pointer_pos = position;
+
+        if let Some(chrome) = self.chrome.as_mut() {
+            chrome.clear_focus();
+        }
+        self.request_window_redraw();
+
+        let modifiers = winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state());
+        let move_event = BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: self.content_pointer_coords(position),
+            button: Default::default(),
+            buttons: self.buttons,
+            mods: modifiers,
+            details: PointerDetails::default(),
+        };
+        self.send_content_ui_event(UiEvent::PointerMove(move_event), false)?;
+
+        self.buttons |= MouseEventButton::Main.into();
+        let down_event = BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: self.content_pointer_coords(position),
+            button: MouseEventButton::Main,
+            buttons: self.buttons,
+            mods: modifiers,
+            details: PointerDetails::default(),
+        };
+        self.send_content_ui_event(UiEvent::PointerDown(down_event), false)?;
+
+        self.buttons ^= MouseEventButton::Main.into();
+        let up_event = BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: self.content_pointer_coords(position),
+            button: MouseEventButton::Main,
+            buttons: self.buttons,
+            mods: modifiers,
+            details: PointerDetails::default(),
+        };
+        self.send_content_ui_event(UiEvent::PointerUp(up_event), false)?;
+
+        Ok(())
+    }
+
+    fn dispatch_automation_scroll(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> Result<(), String> {
+        let Some(window) = self.window.as_ref() else {
+            return Err(String::from("window is not initialized"));
+        };
+
+        let scale = window.scale_factor();
+        let chrome_height_css = f64::from(self.chrome_height_css());
+        let position = PhysicalPosition::new(
+            f64::from(x) * scale,
+            (f64::from(y) + chrome_height_css) * scale,
+        );
+        self.pointer_pos = position;
+
+        let modifiers = winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state());
+        let move_event = BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: self.content_pointer_coords(position),
+            button: Default::default(),
+            buttons: self.buttons,
+            mods: modifiers,
+            details: PointerDetails::default(),
+        };
+        self.send_content_ui_event(UiEvent::PointerMove(move_event), false)?;
+
+        self.send_content_ui_event(
+            UiEvent::Wheel(BlitzWheelEvent {
+                delta: BlitzWheelDelta::Pixels(f64::from(delta_x), f64::from(delta_y)),
+                coords: self.content_pointer_coords(position),
+                buttons: self.buttons,
+                mods: modifiers,
+            }),
+            false,
+        )?;
+
+        Ok(())
     }
 }
 
@@ -1125,7 +1376,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 self.has_top_level_traversable = false;
                 self.window_occluded = false;
                 update_window_viewport_snapshot(None);
-                broadcast_content_viewport(None);
+                set_default_content_viewport(None);
                 self.window = None;
                 event_loop.exit();
             }
@@ -1335,14 +1586,15 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 self.handle_finalize_navigation(finalized);
             }
             FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name) => {
-                if target_name.starts_with("_iframe|") {
-                    let parts: Vec<&str> = target_name.split('|').collect();
-                    if parts.len() == 3 {
-                        if let (Ok(parent_webview_id), Ok(placeholder_id)) = (parts[1].parse::<u64>(), parts[2].parse::<u64>()) {
-                            if let Some(provider) = self.provider.as_mut() {
-                                provider.register_iframe_alias(webview_id, WebviewId(parent_webview_id), ipc_messages::content::FrameId(placeholder_id));
-                            }
-                        }
+                if let Some(child_navigable_host) =
+                    parse_child_navigable_host_target(&target_name)
+                {
+                    if let Some(provider) = self.provider.as_mut() {
+                        provider.register_child_navigable_host(
+                            webview_id,
+                            child_navigable_host.parent_traversable_id,
+                            child_navigable_host.content_navigable_id,
+                        );
                     }
                 } else {
                     self.has_top_level_traversable = true;

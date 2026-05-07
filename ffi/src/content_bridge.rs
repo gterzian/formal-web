@@ -3,7 +3,7 @@ use embedder::{ContentBridgeHooks, FormalWebUserEvent};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command as ContentCommand,
-    Event as ContentEvent, UserNavigationInvolvement, ViewportSnapshot,
+    Event as ContentEvent, TraversableViewport, UserNavigationInvolvement, ViewportSnapshot,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -96,6 +96,26 @@ fn viewport_command(snapshot: (u32, u32, f32, ColorScheme)) -> ContentCommand {
     })
 }
 
+fn traversable_viewport_command(
+    traversable_id: u64,
+    snapshot: (u32, u32, f32, ColorScheme),
+    offset_x: f32,
+    offset_y: f32,
+) -> ContentCommand {
+    let (width, height, scale, color_scheme) = snapshot;
+    ContentCommand::SetTraversableViewport(TraversableViewport {
+        traversable_id,
+        viewport: ViewportSnapshot {
+            width,
+            height,
+            scale,
+            color_scheme: content_color_scheme(color_scheme),
+        },
+        offset_x,
+        offset_y,
+    })
+}
+
 fn navigation_user_involvement_name(user_involvement: UserNavigationInvolvement) -> &'static str {
     match user_involvement {
         UserNavigationInvolvement::None => "none",
@@ -185,13 +205,13 @@ fn spawn_listener(
                 ContentEvent::IframeTraversableRemoved(removal) => {
                     let _ = super::call_lean_remove_iframe_traversable_parts(
                         removal.parent_traversable_id as usize,
-                        removal.source_navigable_id as usize,
+                        removal.content_navigable_id as usize,
                     );
                 }
                 ContentEvent::ChildNavigableCreated(creation) => {
                     let _ = super::call_lean_child_navigable_created_parts(
                         creation.parent_traversable_id as usize,
-                        creation.source_navigable_id as usize,
+                        creation.content_navigable_id as usize,
                     );
                 }
                 ContentEvent::CommandCompleted => {
@@ -266,7 +286,10 @@ fn send_command_inner(bridge: &ContentBridge, command: ContentCommand) -> Result
 }
 
 pub fn install_hooks() {
-    embedder::set_content_bridge_hooks(ContentBridgeHooks { broadcast_viewport });
+    embedder::set_content_bridge_hooks(ContentBridgeHooks {
+        set_default_viewport: broadcast_viewport,
+        set_traversable_viewport,
+    });
 }
 
 pub fn start(event_loop_id: usize) -> Result<usize, String> {
@@ -545,4 +568,17 @@ pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
     for bridge in bridges {
         let _ = send_command_inner(&bridge, command.clone());
     }
+}
+
+pub fn set_traversable_viewport(
+    traversable_id: u64,
+    snapshot: (u32, u32, f32, ColorScheme),
+    offset_x: f32,
+    offset_y: f32,
+) {
+    let Ok(bridge) = bridge_for_traversable_id(traversable_id) else {
+        return;
+    };
+    let command = traversable_viewport_command(traversable_id, snapshot, offset_x, offset_y);
+    let _ = send_command_inner(&bridge, command);
 }
