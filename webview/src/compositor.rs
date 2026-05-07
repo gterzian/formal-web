@@ -1,16 +1,69 @@
+use anyrender::recording::{IframePlaceholderCommand, RenderCommand};
 use anyrender::{PaintScene, Scene as RenderScene};
-use anyrender::recording::RenderCommand;
-use ipc_messages::content::{FontTransportReceiver, FrameId, RecordedScene, ScrollOffset};
-use kurbo::{Affine, Shape};
+use ipc_messages::content::{FontTransportReceiver, FrameId, RecordedScene};
+use kurbo::{Affine, Point, Rect, Shape};
 use peniko::{Color, Fill};
+use std::env;
 use std::collections::{HashMap, HashSet};
+
+fn input_debug_enabled() -> bool {
+    env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedViewport {
+    width: f64,
+    height: f64,
+}
+
+impl ResolvedViewport {
+    fn new(width: f64, height: f64) -> Self {
+        Self { width, height }
+    }
+
+    fn contains_local_point(&self, point: Point) -> bool {
+        point.x >= 0.0 && point.y >= 0.0 && point.x < self.width && point.y < self.height
+    }
+
+    fn intersects_local_rect(&self, rect: Rect) -> bool {
+        rect.x0 < self.width && rect.y0 < self.height && rect.x1 > 0.0 && rect.y1 > 0.0
+    }
+}
+
+#[derive(Clone, Debug)]
+struct NavigableContainerLayout {
+    child_frame_id: FrameId,
+    clip_bounds: Rect,
+    root_clip_bounds: Rect,
+    child_local_from_parent: Affine,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VisibleFrameViewport {
+    pub frame_id: FrameId,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub width: u32,
+    pub height: u32,
+}
 
 #[derive(Clone)]
 struct CachedFrame {
-    viewport_scroll: ScrollOffset,
     viewport_width: u32,
     viewport_height: u32,
+    parent_frame_id: Option<FrameId>,
+    resolved_viewport: Option<ResolvedViewport>,
+    child_frames: Vec<NavigableContainerLayout>,
     scene: RecordedScene,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HitTestResult {
+    pub frame_id: FrameId,
+    pub local_x: f32,
+    pub local_y: f32,
+    pub is_child_frame: bool,
+    pub has_child_frames: bool,
 }
 
 #[derive(Clone, Default)]
@@ -19,6 +72,7 @@ pub struct Compositor {
     committed_frames: HashMap<FrameId, CachedFrame>,
     pending_frames: HashMap<FrameId, CachedFrame>,
     replace_root_on_next_paint: bool,
+    resolved_tree_dirty: bool,
 }
 
 impl Compositor {
@@ -29,6 +83,23 @@ impl Compositor {
     pub fn note_navigation_finalized(&mut self) {
         self.pending_frames.clear();
         self.replace_root_on_next_paint = true;
+        self.resolved_tree_dirty = true;
+    }
+
+    pub fn note_child_navigation_finalized(&mut self, frame_id: FrameId) {
+        if Some(frame_id) == self.root_frame_id {
+            self.note_navigation_finalized();
+            return;
+        }
+
+        let mut stale_frame_ids = Vec::new();
+        let mut stack = HashSet::from([frame_id]);
+        self.collect_scene_descendant_frames(frame_id, &mut stale_frame_ids, &mut stack);
+        for stale_frame_id in stale_frame_ids {
+            self.committed_frames.remove(&stale_frame_id);
+            self.pending_frames.remove(&stale_frame_id);
+        }
+        self.resolved_tree_dirty = true;
     }
 
     pub fn store_frame(
@@ -36,13 +107,27 @@ impl Compositor {
         frame_id: FrameId,
         viewport_width: u32,
         viewport_height: u32,
-        viewport_scroll: ScrollOffset,
         scene: RecordedScene,
     ) {
+        if input_debug_enabled() {
+            let summary = scene.summary();
+            eprintln!(
+                "[input-debug][compositor] store_frame frame={} root_candidate={} viewport=({},{}) placeholders={} commands={}",
+                frame_id.0,
+                Self::frame_can_be_root(frame_id),
+                viewport_width,
+                viewport_height,
+                summary.iframe_placeholder_commands,
+                summary.commands,
+            );
+        }
+
         let frame = CachedFrame {
-            viewport_scroll,
             viewport_width,
             viewport_height,
+            parent_frame_id: None,
+            resolved_viewport: None,
+            child_frames: Vec::new(),
             scene,
         };
 
@@ -53,6 +138,7 @@ impl Compositor {
                 self.committed_frames = std::mem::take(&mut self.pending_frames);
                 self.replace_root_on_next_paint = false;
             }
+            self.resolved_tree_dirty = true;
             return;
         }
 
@@ -61,45 +147,122 @@ impl Compositor {
         }
 
         self.committed_frames.insert(frame_id, frame);
+        self.resolved_tree_dirty = true;
     }
 
     pub fn committed_root_frame_id(&self) -> Option<FrameId> {
         self.root_frame_id
     }
 
-    pub fn root_viewport_scroll(&self) -> ScrollOffset {
-        self.root_frame_id
-            .and_then(|frame_id| self.committed_frames.get(&frame_id))
-            .map(|frame| frame.viewport_scroll.clone())
-            .unwrap_or(ScrollOffset { x: 0.0, y: 0.0 })
+    pub fn compose_scene(&mut self, font_receiver: &FontTransportReceiver) -> Option<RenderScene> {
+        let root_frame_id = self.root_frame_id?;
+        self.reset_composed_frame_state();
+        self.prepare_root_frame(root_frame_id)?;
+        let mut stack = HashSet::from([root_frame_id]);
+        let scene = self.compose_frame(root_frame_id, font_receiver, &mut stack, Affine::IDENTITY);
+        self.resolved_tree_dirty = false;
+        scene
     }
 
-    pub fn compose_scene(&self, font_receiver: &FontTransportReceiver) -> Option<RenderScene> {
+    pub fn visible_frame_viewports(
+        &mut self,
+        font_receiver: &FontTransportReceiver,
+    ) -> Vec<VisibleFrameViewport> {
+        let refresh_needed = self.resolved_tree_dirty
+            || self
+                .root_frame_id
+                .and_then(|frame_id| self.committed_frames.get(&frame_id))
+                .and_then(|frame| frame.resolved_viewport.as_ref())
+                .is_none();
+        if refresh_needed {
+            let _ = self.compose_scene(font_receiver);
+        }
+
+        let Some(root_frame_id) = self.root_frame_id else {
+            return Vec::new();
+        };
+
+        let mut viewports = Vec::new();
+        self.collect_visible_frame_viewports(root_frame_id, &mut viewports);
+        viewports
+    }
+
+    pub fn hit_test(
+        &mut self,
+        x: f64,
+        y: f64,
+        font_receiver: &FontTransportReceiver,
+    ) -> Option<HitTestResult> {
+        let refresh_needed = self.resolved_tree_dirty
+            || self
+                .root_frame_id
+                .and_then(|frame_id| self.committed_frames.get(&frame_id))
+                .and_then(|frame| frame.resolved_viewport.as_ref())
+                .is_none();
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][compositor] hit_test client=({x:.1},{y:.1}) refresh_needed={refresh_needed}"
+            );
+        }
+        if refresh_needed {
+            let _ = self.compose_scene(font_receiver);
+        }
+
         let root_frame_id = self.root_frame_id?;
-        let mut stack = HashSet::from([root_frame_id]);
-        self.compose_frame(root_frame_id, font_receiver, &mut stack)
+        if self
+            .committed_frames
+            .get(&root_frame_id)
+            .and_then(|frame| frame.resolved_viewport.as_ref())
+            .is_none()
+        {
+            self.prepare_root_frame(root_frame_id)?;
+        }
+        self.hit_test_frame(root_frame_id, Point::new(x, y))
     }
 
     fn compose_frame(
-        &self,
+        &mut self,
         frame_id: FrameId,
         font_receiver: &FontTransportReceiver,
         stack: &mut HashSet<FrameId>,
+        frame_local_to_root: Affine,
     ) -> Option<RenderScene> {
-        let cached_frame = self.committed_frames.get(&frame_id)?;
-        let decoded_scene = cached_frame.scene.clone().into_scene(font_receiver);
+        let parent_viewport = self
+            .committed_frames
+            .get(&frame_id)?
+            .resolved_viewport
+            .clone()?;
+        let decoded_scene = {
+            let cached_frame = self.committed_frames.get_mut(&frame_id)?;
+            cached_frame.scene.clone().into_scene(font_receiver)
+        };
         let mut composed_scene = RenderScene::with_tolerance(decoded_scene.tolerance);
 
         for command in decoded_scene.commands {
             match command {
                 RenderCommand::IframePlaceholder(placeholder) => {
                     let child_frame_id = FrameId(placeholder.frame_id);
+                    let Some(child_local_to_root) = self.record_child_frame_layout(
+                        frame_id,
+                        &parent_viewport,
+                        frame_local_to_root,
+                        &placeholder,
+                        child_frame_id,
+                    ) else {
+                        continue;
+                    };
+
                     if !stack.insert(child_frame_id) {
                         continue;
                     }
 
                     if let Some(child_scene) =
-                        self.compose_frame(child_frame_id, font_receiver, stack)
+                        self.compose_frame(
+                            child_frame_id,
+                            font_receiver,
+                            stack,
+                            child_local_to_root,
+                        )
                     {
                         let child_transform = self
                             .child_scene_transform(&placeholder.clip, child_frame_id)
@@ -124,6 +287,213 @@ impl Compositor {
         }
 
         Some(composed_scene)
+    }
+
+    fn reset_composed_frame_state(&mut self) {
+        for frame in self.committed_frames.values_mut() {
+            frame.parent_frame_id = None;
+            frame.resolved_viewport = None;
+            frame.child_frames.clear();
+        }
+    }
+
+    fn prepare_root_frame(&mut self, frame_id: FrameId) -> Option<()> {
+        let resolved_viewport = self.frame_viewport(frame_id)?;
+        let frame = self.committed_frames.get_mut(&frame_id)?;
+        frame.parent_frame_id = None;
+        frame.resolved_viewport = Some(resolved_viewport);
+        frame.child_frames.clear();
+        Some(())
+    }
+
+    fn frame_viewport(&self, frame_id: FrameId) -> Option<ResolvedViewport> {
+        let frame = self.committed_frames.get(&frame_id)?;
+        Some(ResolvedViewport::new(
+            f64::from(frame.viewport_width),
+            f64::from(frame.viewport_height),
+        ))
+    }
+
+    fn record_child_frame_layout(
+        &mut self,
+        parent_frame_id: FrameId,
+        parent_viewport: &ResolvedViewport,
+        parent_local_to_root: Affine,
+        placeholder: &IframePlaceholderCommand,
+        child_frame_id: FrameId,
+    ) -> Option<Affine> {
+        let Some(layout) =
+            self.navigable_container_layout(parent_local_to_root, placeholder, child_frame_id)
+        else {
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][compositor] parent={} child={} record=skip reason=no-layout",
+                    parent_frame_id.0,
+                    child_frame_id.0,
+                );
+            }
+            return None;
+        };
+
+        if !parent_viewport.intersects_local_rect(layout.clip_bounds) {
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][compositor] parent={} child={} record=skip visible=false clip=({:.1},{:.1})-({:.1},{:.1}) parent_viewport=({:.1},{:.1})",
+                    parent_frame_id.0,
+                    child_frame_id.0,
+                    layout.clip_bounds.x0,
+                    layout.clip_bounds.y0,
+                    layout.clip_bounds.x1,
+                    layout.clip_bounds.y1,
+                    parent_viewport.width,
+                    parent_viewport.height,
+                );
+            }
+            return None;
+        };
+
+        let child_local_to_root = parent_local_to_root * layout.child_local_from_parent.inverse();
+
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][compositor] parent={} child={} record=ok clip=({:.1},{:.1})-({:.1},{:.1})",
+                parent_frame_id.0,
+                child_frame_id.0,
+                layout.clip_bounds.x0,
+                layout.clip_bounds.y0,
+                layout.clip_bounds.x1,
+                layout.clip_bounds.y1,
+            );
+        }
+
+        if let Some(frame) = self.committed_frames.get_mut(&parent_frame_id) {
+            frame.child_frames.push(layout);
+        }
+
+        if let Some(resolved_viewport) = self.frame_viewport(child_frame_id)
+            && let Some(child_frame) = self.committed_frames.get_mut(&child_frame_id)
+        {
+            child_frame.parent_frame_id = Some(parent_frame_id);
+            child_frame.resolved_viewport = Some(resolved_viewport);
+        }
+
+        Some(child_local_to_root)
+    }
+
+    fn navigable_container_layout(
+        &self,
+        parent_local_to_root: Affine,
+        placeholder: &IframePlaceholderCommand,
+        child_frame_id: FrameId,
+    ) -> Option<NavigableContainerLayout> {
+        let child_scene_transform = self
+            .child_scene_transform(&placeholder.clip, child_frame_id)
+            .unwrap_or(Affine::IDENTITY);
+        let child_local_from_parent = (placeholder.transform * child_scene_transform).inverse();
+        let mut transformed_clip = placeholder.clip.clone();
+        transformed_clip.apply_affine(parent_local_to_root * placeholder.transform);
+        let root_clip_bounds = transformed_clip.bounding_box();
+
+        let mut local_clip = placeholder.clip.clone();
+        local_clip.apply_affine(placeholder.transform);
+        let clip_bounds = local_clip.bounding_box();
+        Some(NavigableContainerLayout {
+            child_frame_id,
+            clip_bounds,
+            root_clip_bounds,
+            child_local_from_parent,
+        })
+    }
+
+    fn collect_visible_frame_viewports(
+        &self,
+        frame_id: FrameId,
+        viewports: &mut Vec<VisibleFrameViewport>,
+    ) {
+        let Some(frame) = self.committed_frames.get(&frame_id) else {
+            return;
+        };
+
+        for child in &frame.child_frames {
+            let Some(child_frame) = self.committed_frames.get(&child.child_frame_id) else {
+                continue;
+            };
+
+            viewports.push(VisibleFrameViewport {
+                frame_id: child.child_frame_id,
+                offset_x: child.root_clip_bounds.x0 as f32,
+                offset_y: child.root_clip_bounds.y0 as f32,
+                width: child_frame.viewport_width,
+                height: child_frame.viewport_height,
+            });
+            self.collect_visible_frame_viewports(child.child_frame_id, viewports);
+        }
+    }
+
+    fn collect_scene_descendant_frames(
+        &self,
+        frame_id: FrameId,
+        frames: &mut Vec<FrameId>,
+        stack: &mut HashSet<FrameId>,
+    ) {
+        if frames.contains(&frame_id) {
+            return;
+        }
+        frames.push(frame_id);
+
+        let Some(frame) = self.committed_frames.get(&frame_id) else {
+            return;
+        };
+
+        let child_frame_ids = frame
+            .scene
+            .commands
+            .iter()
+            .filter_map(|command| match &command.0 {
+                RenderCommand::IframePlaceholder(command) => Some(FrameId(command.frame_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for child_frame_id in child_frame_ids {
+            if !stack.insert(child_frame_id) {
+                continue;
+            }
+            self.collect_scene_descendant_frames(child_frame_id, frames, stack);
+            stack.remove(&child_frame_id);
+        }
+    }
+
+    fn hit_test_frame(&self, frame_id: FrameId, point: Point) -> Option<HitTestResult> {
+        let frame = self.committed_frames.get(&frame_id)?;
+        let resolved_viewport = frame.resolved_viewport.as_ref()?;
+        if !resolved_viewport.contains_local_point(point) {
+            return None;
+        }
+
+        for child in frame.child_frames.iter().rev() {
+            if child.clip_bounds.contains(point) {
+                let child_point = child.child_local_from_parent * point;
+                if let Some(hit) = self.hit_test_frame(child.child_frame_id, child_point) {
+                    return Some(hit);
+                }
+                if let Some(hit) = self.local_hit(child.child_frame_id, child_point) {
+                    return Some(hit);
+                }
+            }
+        }
+
+        self.local_hit(frame_id, point)
+    }
+
+    fn local_hit(&self, frame_id: FrameId, point: Point) -> Option<HitTestResult> {
+        let frame = self.committed_frames.get(&frame_id);
+        Some(HitTestResult {
+            frame_id,
+            local_x: point.x as f32,
+            local_y: point.y as f32,
+            is_child_frame: frame.is_none_or(|frame| frame.parent_frame_id.is_some()),
+            has_child_frames: frame.is_some_and(|frame| !frame.child_frames.is_empty()),
+        })
     }
 
     fn child_scene_transform(&self, clip: &impl Shape, child_frame_id: FrameId) -> Option<Affine> {

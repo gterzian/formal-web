@@ -63,6 +63,22 @@ struct ExecuteScriptRequest {
     args: Vec<Value>,
 }
 
+#[derive(Deserialize)]
+struct ClickRequest {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScrollRequest {
+    x: f32,
+    y: f32,
+    #[serde(default)]
+    delta_x: f32,
+    delta_y: f32,
+}
+
 #[derive(Serialize)]
 struct SuccessResponse<T> {
     value: T,
@@ -222,6 +238,26 @@ fn dispatch_session_request(
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
             embedder::automation_navigate(&request.url, AUTOMATION_TIMEOUT)
                 .map_err(WebDriverError::timeout)?;
+            Ok(Value::Null)
+        }
+        ("POST", ["formal-web", "click"]) => {
+            let request: ClickRequest =
+                serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
+            embedder::automation_click(request.x, request.y, AUTOMATION_TIMEOUT)
+                .map_err(WebDriverError::timeout)?;
+            Ok(Value::Null)
+        }
+        ("POST", ["formal-web", "scroll"]) => {
+            let request: ScrollRequest =
+                serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
+            embedder::automation_scroll(
+                request.x,
+                request.y,
+                request.delta_x,
+                request.delta_y,
+                AUTOMATION_TIMEOUT,
+            )
+            .map_err(WebDriverError::timeout)?;
             Ok(Value::Null)
         }
         ("POST", ["execute", "sync"]) => {

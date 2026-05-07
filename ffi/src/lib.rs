@@ -74,7 +74,6 @@ unsafe extern "C" {
         source_navigable_id: usize,
     ) -> *mut lean_object;
     fn runNextEventLoopTask(event_loop_id: usize) -> *mut lean_object;
-    fn userAgentNoteRenderingOpportunity(message: *mut lean_object) -> *mut lean_object;
     fn leanIoResultMkOkUnit() -> *mut lean_object;
     fn leanIoResultMkOkUsize(value: usize) -> *mut lean_object;
     fn leanIoResultMkErrorFromBytes(value: *const c_char, size: usize) -> *mut lean_object;
@@ -352,21 +351,10 @@ pub(crate) fn call_lean_run_next_event_loop_task(event_loop_id: usize) -> Result
     Ok(())
 }
 
-fn user_agent_note_rendering_opportunity(message: &str) {
-    let lean_message = lean_string_from_owned(message.to_owned());
-    let io_result = unsafe { userAgentNoteRenderingOpportunity(lean_message) };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-    }
-    unsafe { leanDec(io_result) };
-}
-
 fn runtime_hooks() -> RuntimeHooks {
     RuntimeHooks {
         handle_runtime_message: call_lean_runtime_message_handler,
         start_navigation_parts: call_lean_navigation_start_parts,
-        note_rendering_opportunity: user_agent_note_rendering_opportunity,
     }
 }
 

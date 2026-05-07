@@ -24,28 +24,30 @@ use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
     CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
-    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer, SetViewport, Shutdown,
-    UpdateTheRendering,
+    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer, SetTraversableViewport,
+    SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     Bootstrap, ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
     Event as ContentEvent, FetchRequest as ContentFetchRequest,
     FetchResponse as ContentFetchResponse, FontTransportSender, FrameId,
-    LoadedDocumentResponse, PaintFrame, RecordedScene, ScriptEvaluationResult, ScrollOffset,
-    ViewportSnapshot,
-    WebviewId,
+    LoadedDocumentResponse, PaintFrame, RecordedScene, ScriptEvaluationResult,
+    TraversableViewport, ViewportSnapshot, WebviewId,
 };
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 
 const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
+
+static LOGGED_INPUT_LAYOUT_DOCUMENTS: LazyLock<Mutex<HashSet<u64>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
 fn normalized_content_type_essence(content_type: &str) -> String {
     content_type
@@ -113,8 +115,8 @@ enum DeferredScriptState {
 }
 
 #[derive(Clone)]
-struct IframeState {
-    source_navigable_id: u64,
+struct NavigableContainerState {
+    content_navigable_id: u64,
     current_key: String,
     cross_origin: bool,
 }
@@ -149,7 +151,63 @@ fn render_debug_enabled() -> bool {
     env::var_os("FORMAL_WEB_DEBUG_RENDER").is_some()
 }
 
+fn input_debug_enabled() -> bool {
+    env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+}
+
+fn maybe_log_input_layout_debug(document_id: u64, document: &BaseDocument) {
+    if !input_debug_enabled() {
+        return;
+    }
+
+    let mut logged_documents = LOGGED_INPUT_LAYOUT_DOCUMENTS
+        .lock()
+        .expect("input layout debug mutex poisoned");
+    if !logged_documents.insert(document_id) {
+        return;
+    }
+
+    let mut interesting_nodes = Vec::new();
+    document.visit(|node_id, node| {
+        let Some(element) = node.element_data() else {
+            return;
+        };
+        let Some(id) = element.id.as_ref().map(|id| id.as_ref()) else {
+            return;
+        };
+
+        if matches!(id, "click-counter-button" | "click-count" | "signal-card") {
+            interesting_nodes.push(node_id);
+        }
+    });
+
+    if interesting_nodes.is_empty() {
+        eprintln!(
+            "[input-debug][layout] document={} interesting_nodes=none",
+            document_id,
+        );
+        return;
+    }
+
+    eprintln!(
+        "[input-debug][layout] document={} interesting_nodes={interesting_nodes:?}",
+        document_id,
+    );
+
+    for node_id in interesting_nodes {
+        document.debug_log_node(node_id);
+
+        let mut ancestor_id = document.get_node(node_id).and_then(|node| node.parent);
+        while let Some(current_id) = ancestor_id {
+            document.debug_log_node(current_id);
+            ancestor_id = document.get_node(current_id).and_then(|node| node.parent);
+        }
+    }
+}
+
 fn log_paint_debug(document_id: u64, document: &BaseDocument, scene: &RecordedScene) {
+    maybe_log_input_layout_debug(document_id, document);
+
     if !render_debug_enabled() {
         return;
     }
@@ -258,16 +316,26 @@ struct ContentDocument {
     settings: EnvironmentSettingsObject,
     pending_update_the_rendering: bool,
     pending_document_load: Option<PendingDocumentLoad>,
-    iframe_states: HashMap<usize, IframeState>,
+    navigable_container_states: HashMap<usize, NavigableContainerState>,
+    viewport_offset_x: f32,
+    viewport_offset_y: f32,
+}
+
+#[derive(Clone)]
+struct DocumentViewportState {
+    snapshot: ViewportSnapshot,
+    offset_x: f32,
+    offset_y: f32,
 }
 
 struct ContentRuntime {
     event_sender: IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
-    viewport: Option<ViewportSnapshot>,
+    default_viewport: Option<ViewportSnapshot>,
+    traversable_viewports: HashMap<u64, DocumentViewportState>,
     documents: HashMap<u64, ContentDocument>,
     active_documents_by_traversable: HashMap<u64, u64>,
-    next_iframe_navigable_id: u64,
+    next_child_navigable_id: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
 }
@@ -280,18 +348,39 @@ impl ContentRuntime {
                 pending_handlers: HashMap::new(),
                 next_handler_id: 1,
             })),
-            viewport: None,
+            default_viewport: None,
+            traversable_viewports: HashMap::new(),
             documents: HashMap::new(),
             active_documents_by_traversable: HashMap::new(),
-            next_iframe_navigable_id: 1_u64 << 63,
+            next_child_navigable_id: 1_u64 << 63,
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
         }
     }
 
-    fn document_config(&self, document_id: u64, base_url: Option<String>) -> DocumentConfig {
+    fn document_viewport_state(&self, traversable_id: u64) -> Option<DocumentViewportState> {
+        self.traversable_viewports
+            .get(&traversable_id)
+            .cloned()
+            .or_else(|| {
+                self.default_viewport.as_ref().cloned().map(|snapshot| DocumentViewportState {
+                    snapshot,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                })
+            })
+    }
+
+    fn document_config(
+        &self,
+        traversable_id: u64,
+        document_id: u64,
+        base_url: Option<String>,
+    ) -> DocumentConfig {
         DocumentConfig {
-            viewport: self.viewport.as_ref().map(viewport_of_snapshot),
+            viewport: self
+                .document_viewport_state(traversable_id)
+                .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
             base_url,
             net_provider: Some(Arc::new(ContentNetProvider {
                 event_sender: self.event_sender.clone(),
@@ -304,14 +393,36 @@ impl ContentRuntime {
     }
 
     fn set_viewport(&mut self, viewport: ViewportSnapshot) {
-        let runtime_viewport = viewport_of_snapshot(&viewport);
-        self.viewport = Some(viewport);
-        for document in self.documents.values_mut() {
-            document
-                .document
-                .borrow_mut()
-                .set_viewport(runtime_viewport.clone());
-        }
+        self.default_viewport = Some(viewport);
+    }
+
+    fn set_traversable_viewport(&mut self, viewport: TraversableViewport) {
+        let traversable_id = viewport.traversable_id;
+        let viewport_state = DocumentViewportState {
+            snapshot: viewport.viewport,
+            offset_x: viewport.offset_x,
+            offset_y: viewport.offset_y,
+        };
+        self.traversable_viewports
+            .insert(traversable_id, viewport_state.clone());
+
+        let Some(document_id) = self
+            .active_documents_by_traversable
+            .get(&traversable_id)
+            .copied()
+        else {
+            return;
+        };
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return;
+        };
+
+        document
+            .document
+            .borrow_mut()
+            .set_viewport(viewport_of_snapshot(&viewport_state.snapshot));
+        document.viewport_offset_x = viewport_state.offset_x;
+        document.viewport_offset_y = viewport_state.offset_y;
     }
 
     fn register_pending_handler(&self, pending_handler: PendingNetworkHandler) -> u64 {
@@ -422,10 +533,10 @@ impl ContentRuntime {
         self.request_remote_fetch(handler_id, Request::get(resolved_url))
     }
 
-    fn allocate_iframe_navigable_id(&mut self) -> u64 {
-        let source_navigable_id = self.next_iframe_navigable_id;
-        self.next_iframe_navigable_id = self.next_iframe_navigable_id.wrapping_add(1);
-        source_navigable_id
+    fn allocate_child_navigable_id(&mut self) -> u64 {
+        let content_navigable_id = self.next_child_navigable_id;
+        self.next_child_navigable_id = self.next_child_navigable_id.wrapping_add(1);
+        content_navigable_id
     }
 
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
@@ -488,6 +599,8 @@ impl ContentRuntime {
             .map_err(|error| error.to_string())?;
 
         let traversable_id = content_document.traversable_id;
+        self.active_documents_by_traversable
+            .insert(traversable_id, document_id);
         run_iframe_load_event_steps_for_traversable(self, traversable_id)?;
 
         self.event_sender
@@ -503,8 +616,9 @@ impl ContentRuntime {
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
+        let viewport_state = self.document_viewport_state(traversable_id);
         let document = Rc::new(RefCell::new(BaseDocument::new(
-            self.document_config(document_id, None),
+            self.document_config(traversable_id, document_id, None),
         )));
         let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
@@ -537,7 +651,9 @@ impl ContentRuntime {
                 settings,
                 pending_update_the_rendering: false,
                 pending_document_load: None,
-                iframe_states: HashMap::new(),
+                navigable_container_states: HashMap::new(),
+                viewport_offset_x: viewport_state.as_ref().map(|viewport| viewport.offset_x).unwrap_or(0.0),
+                viewport_offset_y: viewport_state.as_ref().map(|viewport| viewport.offset_y).unwrap_or(0.0),
             },
         );
         self.active_documents_by_traversable
@@ -565,11 +681,12 @@ impl ContentRuntime {
             content_type: _,
             body,
         } = response;
+        let viewport_state = self.document_viewport_state(traversable_id);
         // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
         // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the DOM carrier and the JavaScript environment settings object.
         let document = Rc::new(RefCell::new(BaseDocument::new(
-            self.document_config(document_id, Some(final_url.clone())),
+            self.document_config(traversable_id, document_id, Some(final_url.clone())),
         )));
         let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
@@ -601,11 +718,11 @@ impl ContentRuntime {
                     finalize_url: final_url.clone(),
                     scripts: deferred_scripts,
                 }),
-                iframe_states: HashMap::new(),
+                navigable_container_states: HashMap::new(),
+                viewport_offset_x: viewport_state.as_ref().map(|viewport| viewport.offset_x).unwrap_or(0.0),
+                viewport_offset_y: viewport_state.as_ref().map(|viewport| viewport.offset_y).unwrap_or(0.0),
             },
         );
-        self.active_documents_by_traversable
-            .insert(traversable_id, document_id);
         run_dom_post_connection_steps_for_document(self, document_id)?;
 
         let deferred_fetches = self
@@ -693,6 +810,11 @@ impl ContentRuntime {
                 continue;
             };
 
+            {
+                let document_guard = document.document.borrow();
+                maybe_log_input_layout_debug(document_id, &document_guard);
+            }
+
             // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event batch to the content runtime.
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
@@ -701,6 +823,8 @@ impl ContentRuntime {
                 Rc::clone(&document.document),
                 &mut document.settings,
                 &self.event_sender,
+                document.viewport_offset_x,
+                document.viewport_offset_y,
                 event,
             )?;
         }
@@ -793,16 +917,11 @@ impl ContentRuntime {
                 );
                 let scene = self.font_sender.prepare_scene(self.font_namespace, scene);
                 log_paint_debug(document_id, &document_guard, &scene.scene);
-                let viewport_scroll = document_guard.viewport_scroll();
                 let paint_frame = PaintFrame::new(
                     WebviewId(traversable_id),
-                    FrameId(document_id),
+                    FrameId(traversable_id),
                     width,
                     height,
-                    ScrollOffset {
-                        x: viewport_scroll.x as f32,
-                        y: viewport_scroll.y as f32,
-                    },
                     scene,
                 )?;
                 paint_frame
@@ -952,6 +1071,10 @@ impl ContentRuntime {
         match command {
             SetViewport(viewport) => {
                 self.set_viewport(viewport);
+                Ok(true)
+            }
+            SetTraversableViewport(viewport) => {
+                self.set_traversable_viewport(viewport);
                 Ok(true)
             }
             CreateEmptyDocument {

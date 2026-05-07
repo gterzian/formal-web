@@ -10,6 +10,41 @@ use crate::webidl::{EcmascriptHost, call_user_objects_operation};
 use super::event::{EventListener, NONE};
 use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};
 
+fn dispatch_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+}
+
+fn debug_target_label(object: &JsObject) -> String {
+    if object.downcast_ref::<Window>().is_some() {
+        return String::from("Window");
+    }
+    if let Some(document) = object.downcast_ref::<Document>() {
+        return format!("Document(node={})", document.node.node_id);
+    }
+    if let Some(html_anchor) = object.downcast_ref::<HTMLAnchorElement>() {
+        return format!(
+            "HTMLAnchorElement(node={})",
+            html_anchor.html_element.element.node.node_id,
+        );
+    }
+    if let Some(html_iframe) = object.downcast_ref::<HTMLIFrameElement>() {
+        return format!(
+            "HTMLIFrameElement(node={})",
+            html_iframe.html_element.element.node.node_id,
+        );
+    }
+    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
+        return format!("HTMLElement(node={})", html_element.element.node.node_id);
+    }
+    if let Some(element) = object.downcast_ref::<Element>() {
+        return format!("Element(node={})", element.node.node_id);
+    }
+    if let Some(node) = object.downcast_ref::<Node>() {
+        return format!("Node(node={})", node.node_id);
+    }
+    String::from("UnknownTarget")
+}
+
 pub(crate) trait EventDispatchHost: EcmascriptHost {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject>;
 
@@ -456,6 +491,24 @@ fn invoke(
     let listeners = with_event_target_ref(&entry.invocation_target, |event_target| {
         event_target.event_listener_list.clone()
     })?;
+
+    if dispatch_debug_enabled() && event_type(event)? == "click" {
+        let matching_listeners = listeners
+            .iter()
+            .filter(|listener| !listener.removed && listener.type_ == "click")
+            .count();
+        let phase_name = match phase {
+            ListenerPhase::Capturing => "capturing",
+            ListenerPhase::Bubbling => "bubbling",
+        };
+        eprintln!(
+            "[input-debug][dispatch] phase={} current_target={} listeners={} matching_click_listeners={}",
+            phase_name,
+            debug_target_label(&entry.invocation_target),
+            listeners.len(),
+            matching_listeners,
+        );
+    }
 
     // Step 7: "Let invocationTargetInShadowTree be struct's invocation-target-in-shadow-tree."
     // Note: The current runtime does not model shadow trees, so this is always false.

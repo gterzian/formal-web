@@ -11,7 +11,8 @@ use ipc_messages::content::{
 use url::Url;
 
 use crate::{
-    ContentRuntime, EMPTY_HTML_DOCUMENT, IframeState, dom::fire_event, html::HTMLElement,
+    ContentRuntime, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
+    html::HTMLElement,
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
@@ -186,7 +187,15 @@ fn attach_iframe_subdocument_from_html(
     base_url: String,
     html: String,
 ) -> Result<(), String> {
+    let Some(traversable_id) = runtime
+        .documents
+        .get(&parent_document_id)
+        .map(|content_document| content_document.traversable_id)
+    else {
+        return Ok(());
+    };
     let sub_document = Rc::new(RefCell::new(BaseDocument::new(runtime.document_config(
+        traversable_id,
         parent_document_id,
         Some(base_url),
     ))));
@@ -230,7 +239,7 @@ fn attach_cross_origin_iframe(
 fn request_iframe_navigation(
     runtime: &ContentRuntime,
     parent_document_id: u64,
-    source_navigable_id: u64,
+    content_navigable_id: u64,
     destination_url: &Url,
 ) -> Result<(), String> {
     let Some(parent_traversable_id) = runtime
@@ -245,9 +254,9 @@ fn request_iframe_navigation(
     runtime
         .event_sender
         .send(ContentEvent::NavigationRequested(NavigateRequest {
-            source_navigable_id,
+            source_navigable_id: content_navigable_id,
             destination_url: destination_url.to_string(),
-            target: format!("_iframe|{}|{}", parent_traversable_id, source_navigable_id),
+            target: format!("_iframe|{}|{}", parent_traversable_id, content_navigable_id),
             user_involvement: UserNavigationInvolvement::None,
             noopener: false,
         }))
@@ -286,9 +295,9 @@ fn remove_iframe_subdocument(runtime: &mut ContentRuntime, parent_document_id: u
 pub(crate) fn retire_iframe_traversable(
     runtime: &ContentRuntime,
     parent_traversable_id: u64,
-    iframe_state: &IframeState,
+    container_state: &NavigableContainerState,
 ) -> Result<(), String> {
-    if !iframe_state.cross_origin {
+    if !container_state.cross_origin {
         return Ok(());
     }
 
@@ -296,7 +305,7 @@ pub(crate) fn retire_iframe_traversable(
         .event_sender
         .send(ContentEvent::IframeTraversableRemoved(IframeTraversableRemoval {
             parent_traversable_id,
-            source_navigable_id: iframe_state.source_navigable_id,
+            content_navigable_id: container_state.content_navigable_id,
         }))
         .map_err(|error| format!("failed to send iframe traversable removal: {error}"))
 }
@@ -307,15 +316,19 @@ fn create_new_child_navigable(
     parent_document_id: u64,
     iframe_node_id: usize,
 ) -> Result<u64, String> {
-    if let Some(iframe_state) = runtime
+    if let Some(container_state) = runtime
         .documents
         .get(&parent_document_id)
-        .and_then(|content_document| content_document.iframe_states.get(&iframe_node_id))
+        .and_then(|content_document| {
+            content_document
+                .navigable_container_states
+                .get(&iframe_node_id)
+        })
     {
-        return Ok(iframe_state.source_navigable_id);
+        return Ok(container_state.content_navigable_id);
     }
 
-    let source_navigable_id = runtime.allocate_iframe_navigable_id();
+    let content_navigable_id = runtime.allocate_child_navigable_id();
     let Some(parent_traversable_id) = runtime
         .documents
         .get(&parent_document_id)
@@ -325,14 +338,14 @@ fn create_new_child_navigable(
             false,
             "create_new_child_navigable: parent document {parent_document_id} not found"
         );
-        return Ok(source_navigable_id);
+        return Ok(content_navigable_id);
     };
 
     if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
-        content_document.iframe_states.insert(
+        content_document.navigable_container_states.insert(
             iframe_node_id,
-            IframeState {
-                source_navigable_id,
+            NavigableContainerState {
+                content_navigable_id,
                 current_key: String::new(),
                 cross_origin: false,
             },
@@ -343,27 +356,27 @@ fn create_new_child_navigable(
         .event_sender
         .send(ContentEvent::ChildNavigableCreated(ChildNavigableCreation {
             parent_traversable_id,
-            source_navigable_id,
+            content_navigable_id,
         }))
         .map_err(|error| format!("failed to send child navigable created event: {error}"))?;
 
     attach_iframe_about_blank(runtime, parent_document_id, iframe_node_id)?;
-    Ok(source_navigable_id)
+    Ok(content_navigable_id)
 }
 
-fn iframe_parent_for_traversable(
+fn navigable_container_for_child_navigable(
     runtime: &ContentRuntime,
-    traversable_id: u64,
+    content_navigable_id: u64,
 ) -> Option<(u64, usize)> {
     runtime
         .documents
         .iter()
         .find_map(|(parent_document_id, content_document)| {
             content_document
-                .iframe_states
+                .navigable_container_states
                 .iter()
-                .find_map(|(iframe_node_id, iframe_state)| {
-                    (iframe_state.source_navigable_id == traversable_id)
+                .find_map(|(iframe_node_id, container_state)| {
+                    (container_state.content_navigable_id == content_navigable_id)
                         .then_some((*parent_document_id, *iframe_node_id))
                 })
         })
@@ -423,7 +436,7 @@ pub(crate) fn run_iframe_load_event_steps_for_traversable(
     traversable_id: u64,
 ) -> Result<(), String> {
     let Some((parent_document_id, iframe_node_id)) =
-        iframe_parent_for_traversable(runtime, traversable_id)
+        navigable_container_for_child_navigable(runtime, traversable_id)
     else {
         return Ok(());
     };
@@ -477,7 +490,7 @@ fn run_iframe_removing_steps(
         .get(&parent_document_id)
         .and_then(|content_document| {
             content_document
-                .iframe_states
+                .navigable_container_states
                 .get(&iframe_node_id)
                 .cloned()
                 .map(|state| (content_document.traversable_id, state))
@@ -489,7 +502,9 @@ fn run_iframe_removing_steps(
     retire_iframe_traversable(runtime, parent_traversable_id, &iframe_state)?;
     remove_iframe_subdocument(runtime, parent_document_id, iframe_node_id);
     if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
-        content_document.iframe_states.remove(&iframe_node_id);
+        content_document
+            .navigable_container_states
+            .remove(&iframe_node_id);
     }
     Ok(())
 }
@@ -542,7 +557,11 @@ fn process_iframe_attributes(
     let previous_iframe_state = runtime
         .documents
         .get(&parent_document_id)
-        .and_then(|content_document| content_document.iframe_states.get(&iframe_node_id))
+        .and_then(|content_document| {
+            content_document
+                .navigable_container_states
+                .get(&iframe_node_id)
+        })
         .cloned();
     let current_key = previous_iframe_state
         .as_ref()
@@ -551,10 +570,10 @@ fn process_iframe_attributes(
         return Ok(());
     }
 
-    let source_navigable_id = previous_iframe_state
+    let content_navigable_id = previous_iframe_state
         .as_ref()
-        .map(|state| state.source_navigable_id)
-        .unwrap_or_else(|| runtime.allocate_iframe_navigable_id());
+        .map(|state| state.content_navigable_id)
+        .unwrap_or_else(|| runtime.allocate_child_navigable_id());
     let cross_origin =
         matches!(&target, IframeNavigationTarget::Url { url } if creation_url.origin() != url.origin());
     if let Some(previous_iframe_state) = previous_iframe_state.as_ref() {
@@ -566,10 +585,10 @@ fn process_iframe_attributes(
         match &target {
             IframeNavigationTarget::AboutBlank => {
                 if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
-                    content_document.iframe_states.insert(
+                    content_document.navigable_container_states.insert(
                         iframe_node_id,
-                        IframeState {
-                            source_navigable_id,
+                        NavigableContainerState {
+                            content_navigable_id,
                             current_key: desired_key.clone(),
                             cross_origin: false,
                         },
@@ -580,10 +599,10 @@ fn process_iframe_attributes(
             }
             IframeNavigationTarget::Url { url } if matches_about_blank(url) => {
                 if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
-                    content_document.iframe_states.insert(
+                    content_document.navigable_container_states.insert(
                         iframe_node_id,
-                        IframeState {
-                            source_navigable_id,
+                        NavigableContainerState {
+                            content_navigable_id,
                             current_key: desired_key.clone(),
                             cross_origin: false,
                         },
@@ -597,10 +616,10 @@ fn process_iframe_attributes(
     }
 
     if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
-        content_document.iframe_states.insert(
+        content_document.navigable_container_states.insert(
             iframe_node_id,
-            IframeState {
-                source_navigable_id,
+            NavigableContainerState {
+                content_navigable_id,
                 current_key: desired_key.clone(),
                 cross_origin,
             },
@@ -625,9 +644,14 @@ fn process_iframe_attributes(
         }
         IframeNavigationTarget::Url { url } => {
             if cross_origin {
-                attach_cross_origin_iframe(runtime, parent_document_id, iframe_node_id, source_navigable_id)?;
+                attach_cross_origin_iframe(
+                    runtime,
+                    parent_document_id,
+                    iframe_node_id,
+                    content_navigable_id,
+                )?;
             }
-            request_iframe_navigation(runtime, parent_document_id, source_navigable_id, &url)?;
+            request_iframe_navigation(runtime, parent_document_id, content_navigable_id, &url)?;
         }
     }
 
