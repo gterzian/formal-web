@@ -231,10 +231,6 @@ impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
         self.mutr()
             .reparent_children(*old_parent_id, *new_parent_id);
     }
-
-    fn clone_subtree(&self, target: &Self::Handle) -> Self::Handle {
-        self.mutr().deep_clone_node(*target)
-    }
 }
 
 pub enum PendingParserScript {
