@@ -756,8 +756,6 @@ frame {
 
 iframe {
     border: 2px inset;
-    width: 300px;
-    aspect-ratio: 2 / 1;
 }
 
 spacer {
