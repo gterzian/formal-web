@@ -1,7 +1,0 @@
-[application]
-android_main_activity = "MainActivity.kt"
-
-[bundle]
-publisher = "DioxusLabs"
-identifier = "com.dioxuslabs.blitz"
-icon = ["./assets/blitz-logo.png"]
