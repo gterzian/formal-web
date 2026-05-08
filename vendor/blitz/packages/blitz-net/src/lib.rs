@@ -53,6 +53,8 @@ where
 pub struct Provider {
     client: Client,
     waker: Arc<dyn NetWaker>,
+    #[cfg(feature = "cache")]
+    cache_manager: CACacheManager,
 }
 impl Provider {
     pub fn new(waker: Option<Arc<dyn NetWaker>>) -> Self {
@@ -62,16 +64,24 @@ impl Provider {
         let client = builder.build().unwrap();
 
         #[cfg(feature = "cache")]
+        let cache_manager = CACacheManager::new(get_cache_path(), true);
+
+        #[cfg(feature = "cache")]
         let client = reqwest_middleware::ClientBuilder::new(client)
             .with(Cache(HttpCache {
                 mode: CacheMode::Default,
-                manager: CACacheManager::new(get_cache_path(), true),
+                manager: cache_manager.clone(),
                 options: HttpCacheOptions::default(),
             }))
             .build();
 
         let waker = waker.unwrap_or(Arc::new(DummyNetWaker));
-        Self { client, waker }
+        Self {
+            client,
+            waker,
+            #[cfg(feature = "cache")]
+            cache_manager,
+        }
     }
     pub fn shared(waker: Option<Arc<dyn NetWaker>>) -> Arc<dyn NetProvider> {
         Arc::new(Self::new(waker))
@@ -81,6 +91,16 @@ impl Provider {
     }
     pub fn count(&self) -> usize {
         Arc::strong_count(&self.waker) - 1
+    }
+
+    #[cfg(feature = "cache")]
+    pub async fn clear_cache(&self) {
+        if let Err(e) = self.cache_manager.clear().await {
+            #[cfg(feature = "tracing")]
+            tracing::error!("Failed to clear HTTP cache: {:?}", e);
+            #[cfg(not(feature = "tracing"))]
+            let _ = e;
+        }
     }
 }
 impl Provider {
@@ -99,15 +119,17 @@ impl Provider {
                 (request.url.to_string(), Bytes::from(file_content))
             }
             _ => {
-                let response = client
+                let mut req = client
                     .request(request.method, request.url)
                     .headers(request.headers)
-                    .header("Content-Type", request.content_type.as_str())
-                    .header("User-Agent", USER_AGENT)
-                    .apply_body(request.body, request.content_type.as_str())
-                    .await
-                    .send()
-                    .await?;
+                    .header("User-Agent", USER_AGENT);
+
+                if let Some(content_type) = request.content_type.as_ref() {
+                    req = req.header("Content-Type", content_type);
+                }
+
+                let req = req.apply_body(request.body, request.content_type.as_deref());
+                let response = req.await.send().await?;
 
                 (response.url().to_string(), response.bytes().await?)
             }
@@ -286,16 +308,16 @@ impl From<reqwest_middleware::Error> for ProviderError {
 }
 
 trait ReqwestExt {
-    async fn apply_body(self, body: Body, content_type: &str) -> Self;
+    async fn apply_body(self, body: Body, content_type: Option<&str>) -> Self;
 }
 impl ReqwestExt for RequestBuilder {
-    async fn apply_body(self, body: Body, content_type: &str) -> Self {
+    async fn apply_body(self, body: Body, content_type: Option<&str>) -> Self {
         match body {
             Body::Bytes(bytes) => self.body(bytes),
             Body::Form(form_data) => match content_type {
-                "application/x-www-form-urlencoded" => self.form(&form_data),
+                Some("application/x-www-form-urlencoded") => self.form(&form_data),
                 #[cfg(feature = "multipart")]
-                "multipart/form-data" => {
+                Some("multipart/form-data") => {
                     use blitz_traits::net::Entry;
                     use blitz_traits::net::EntryValue;
                     let mut form_data = form_data;

@@ -36,6 +36,7 @@ enum SpecialOp {
     UnloadStylesheet(usize),
     LoadCustomPaintSource(usize),
     ProcessButtonInput(usize),
+    UnloadSubDocument(usize),
 }
 
 pub struct DocumentMutator<'doc> {
@@ -580,6 +581,7 @@ impl<'doc> DocumentMutator<'doc> {
                 SpecialOp::UnloadStylesheet(node_id) => self.unload_stylesheet(node_id),
                 SpecialOp::LoadCustomPaintSource(node_id) => self.load_custom_paint_src(node_id),
                 SpecialOp::ProcessButtonInput(node_id) => self.process_button_input(node_id),
+                SpecialOp::UnloadSubDocument(node_id) => self.remove_sub_document(node_id),
             }
         }
 
@@ -673,7 +675,10 @@ impl<'doc> DocumentMutator<'doc> {
             };
 
             match &element.special_data {
-                SpecialElementData::SubDocument(_) => {}
+                SpecialElementData::SubDocument(_) => {
+                    self.eager_op_queue
+                        .push(SpecialOp::UnloadSubDocument(node_id));
+                }
                 SpecialElementData::CrossOriginIframe(_) => {}
                 SpecialElementData::Stylesheet(_) => self
                     .eager_op_queue
@@ -940,8 +945,11 @@ impl Drop for ViewportMut<'_> {
             return;
         }
 
-        self.doc
-            .set_stylist_device(make_device(&self.doc.viewport, self.doc.font_ctx.clone()));
+        self.doc.set_stylist_device(make_device(
+            &self.doc.viewport,
+            self.doc.media_type.clone(),
+            self.doc.font_ctx.clone(),
+        ));
         self.doc.scroll_viewport_by(0.0, 0.0); // Clamp scroll offset
 
         let scale_has_changed =
@@ -955,9 +963,37 @@ impl Drop for ViewportMut<'_> {
 
 #[cfg(test)]
 mod test {
+    use style::media_queries::MediaType;
     use style_dom::ElementState;
 
     use crate::{Attribute, BaseDocument, DocumentConfig, ElementData, NodeData, qual_name};
+
+    #[test]
+    fn media_type_defaults_to_screen() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        assert_eq!(*document.media_type(), MediaType::screen());
+        assert_eq!(document.stylist_device().media_type(), MediaType::screen());
+    }
+
+    #[test]
+    fn media_type_honors_config() {
+        let mut document = BaseDocument::new(DocumentConfig {
+            media_type: Some(MediaType::print()),
+            ..Default::default()
+        });
+        assert_eq!(*document.media_type(), MediaType::print());
+        assert_eq!(document.stylist_device().media_type(), MediaType::print());
+    }
+
+    #[test]
+    fn set_media_type_updates_stylist_device() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        assert_eq!(document.stylist_device().media_type(), MediaType::screen());
+
+        document.set_media_type(MediaType::print());
+        assert_eq!(*document.media_type(), MediaType::print());
+        assert_eq!(document.stylist_device().media_type(), MediaType::print());
+    }
 
     #[test]
     fn mutator_remove_disabled() {

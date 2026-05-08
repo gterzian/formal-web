@@ -248,6 +248,9 @@ fn apply_keypress_event(
             }
             return Some(GeneratedEvent::Input);
         }
+
+        // On macOS this is handled by the apple standard keybindings
+        #[cfg(not(target_os = "macos"))]
         Key::Backspace => {
             if action_mod {
                 driver.backdelete_word()
@@ -256,6 +259,7 @@ fn apply_keypress_event(
             }
             return Some(GeneratedEvent::Input);
         }
+
         Key::Character(c) if c == "\n" => {
             if is_multiline {
                 driver.insert_or_replace_selection("\n");
@@ -272,11 +276,11 @@ fn apply_keypress_event(
                 return Some(GeneratedEvent::Submit);
             }
         }
-        Key::Character(s) => {
-            if !mods.contains(Modifiers::CONTROL) && !mods.contains(Modifiers::SUPER) {
-                driver.insert_or_replace_selection(&s);
-                return Some(GeneratedEvent::Input);
-            }
+        Key::Character(s)
+            if !mods.contains(Modifiers::CONTROL) && !mods.contains(Modifiers::SUPER) =>
+        {
+            driver.insert_or_replace_selection(&s);
+            return Some(GeneratedEvent::Input);
         }
         _ => {}
     };

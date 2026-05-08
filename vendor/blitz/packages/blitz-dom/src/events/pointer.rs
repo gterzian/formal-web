@@ -12,6 +12,7 @@ use blitz_traits::{
 };
 use keyboard_types::Modifiers;
 use markup5ever::local_name;
+use style::values::computed::UserSelect;
 
 use crate::{BaseDocument, node::SpecialElementData};
 
@@ -157,7 +158,27 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
         if dx.abs() > 2.0 || dy.abs() > 2.0 {
             match event.id {
                 BlitzPointerId::Mouse | BlitzPointerId::Pen => {
-                    doc.drag_mode = DragMode::Selecting;
+                    if let Some(mousedown_node_id) = doc.mousedown_node_id {
+                        let node = &doc.nodes[mousedown_node_id];
+                        if let Some(style) = node.primary_styles() {
+                            let user_select = style.clone_user_select();
+                            if user_select == UserSelect::None {
+                                // Do nothing. Continue with rest of function
+                            } else if user_select == UserSelect::Auto {
+                                if let Some(parent) = node.parent {
+                                    let node = &doc.nodes[parent];
+                                    if let Some(style) = node.primary_styles() {
+                                        let user_select = style.clone_user_select();
+                                        if user_select == UserSelect::None {
+                                            // Do nothing. Continue with rest of function
+                                        } else {
+                                            doc.drag_mode = DragMode::Selecting;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 BlitzPointerId::Finger(_) => {
                     doc.drag_mode = DragMode::Panning(PanState {
@@ -202,7 +223,10 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
     let node = &mut doc.nodes[target];
     let Some(el) = node.data.downcast_element_mut() else {
         // Handle text selection extension for non-element nodes
-        if buttons != MouseEventButtons::None && doc.extend_text_selection_to_point(x, y) {
+        if buttons != MouseEventButtons::None
+            && doc.drag_mode == DragMode::Selecting
+            && doc.extend_text_selection_to_point(x, y)
+        {
             changed = true;
         }
         return changed;
@@ -242,6 +266,7 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
         changed = true;
     } else if event.is_mouse()
         && buttons != MouseEventButtons::None
+        && doc.drag_mode == DragMode::Selecting
         && doc.extend_text_selection_to_point(x, y)
     {
         changed = true;
@@ -516,7 +541,7 @@ pub(crate) fn handle_click(
                         if let Some(url) = doc.url.resolve_relative(href) {
                             doc.navigation_provider.navigate_to(NavigationOptions::new(
                                 url,
-                                String::from("text/plain"),
+                                None,
                                 doc.id(),
                             ));
                         } else {
@@ -529,7 +554,7 @@ pub(crate) fn handle_click(
                         tracing::info!("Clicked link without href: {:?}", el.attrs());
                     }
                 }
-                local_name!("input")
+                local_name!("input") | local_name!("button")
                     if el.is_submit_button() || el.attr(local_name!("type")) == Some("submit") =>
                 {
                     if let Some(form_owner) = doc.controls_to_form.get(&node_id) {

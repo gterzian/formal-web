@@ -347,6 +347,7 @@ impl ElementData {
             /* namespaces = */ Default::default(),
             None,
             None,
+            /* attr_taint = */ Default::default(),
         );
 
         let Ok(property_id) = PropertyId::parse(name, &context) else {
@@ -395,6 +396,7 @@ impl ElementData {
             /* namespaces = */ Default::default(),
             None,
             None,
+            /* attr_taint = */ Default::default(),
         );
         let Ok(property_id) = PropertyId::parse(name, &context) else {
             #[cfg(feature = "tracing")]
