@@ -14,6 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
+const CONTENT_CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -238,6 +239,17 @@ fn spawn_listener(
                         };
                         let _ = waiter.send(send_result);
                     }
+                }
+                ContentEvent::ClipboardReadRequested(request) => {
+                    let response = embedder::clipboard_get_text(CONTENT_CLIPBOARD_TIMEOUT);
+                    let _ = request.reply_sender.send(response);
+                }
+                ContentEvent::ClipboardWriteRequested(request) => {
+                    let response = embedder::clipboard_set_text(
+                        request.text,
+                        CONTENT_CLIPBOARD_TIMEOUT,
+                    );
+                    let _ = request.reply_sender.send(response);
                 }
                 ContentEvent::PaintReady(snapshot) => {
                     let _ = embedder::send_user_event(FormalWebUserEvent::Paint(snapshot));

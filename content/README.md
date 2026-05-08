@@ -76,6 +76,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 **JavaScript runtime**
 
 - `content/src/main.rs` and sibling root modules such as `content/src/html.rs` own the HTML Standard entry points that resume embedder-driven algorithms, create documents, and trigger HTML-defined load/rendering steps.
+- Content documents should install an IPC-backed `ShellProvider`; clipboard shortcuts such as copy and paste belong on the typed content bridge and should talk directly to the embedder instead of routing through Lean runtime messages.
 
 - `DispatchEvent` runtime commands may carry a retained batch of serialized UI events rather than a single raw input; `content/src/main.rs` should dispatch that batch in order instead of assuming a one-command-per-event bridge.
 

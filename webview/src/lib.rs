@@ -17,6 +17,7 @@ const RENDERING_OPPORTUNITY_FOR_MESSAGE_PREFIX: &str = "RenderingOpportunityFor|
 pub struct WebviewState {
     pub compositor: Compositor,
     pub current_navigable_id: Option<u64>,
+    focused_frame_id: Option<FrameId>,
 }
 
 impl Default for WebviewState {
@@ -24,6 +25,7 @@ impl Default for WebviewState {
         Self {
             compositor: Compositor::default(),
             current_navigable_id: None,
+            focused_frame_id: None,
         }
     }
 }
@@ -239,6 +241,7 @@ impl WebviewProvider {
         let state = self.webviews.entry(webview_id).or_default();
         state.compositor.note_navigation_finalized();
         state.current_navigable_id = None;
+        state.focused_frame_id = None;
     }
 
     pub fn on_new_top_level_traversable(&mut self, webview_id: WebviewId) {
@@ -268,9 +271,36 @@ impl WebviewProvider {
         event: UiEvent,
     ) -> (WebviewId, UiEvent, Vec<FrameId>) {
         let viewport_scale = self.embedder.viewport_scale_factor().max(1.0);
+        let is_pointer_down = matches!(&event, UiEvent::PointerDown(_));
         let Some((client_x, client_y)) = ui_event_client_position(&event) else {
-            let composed_frame_ids = self.composed_frame_ids(root_webview_id);
-            return (root_webview_id, event, composed_frame_ids);
+            let (target_frame_id, composed_frame_ids, viewports) = {
+                let Some(state) = self.webviews.get_mut(&root_webview_id) else {
+                    return (root_webview_id, event, Vec::new());
+                };
+                let root_frame_id = state.compositor.committed_root_frame_id();
+                let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
+                let composed_frame_ids = composition_frame_ids(root_frame_id, &viewports);
+                let target_frame_id = state
+                    .focused_frame_id
+                    .filter(|frame_id| composed_frame_ids.contains(frame_id))
+                    .or(root_frame_id);
+                state.focused_frame_id = target_frame_id;
+                (target_frame_id, composed_frame_ids, viewports)
+            };
+            self.publish_visible_child_viewports(viewports);
+            let target_webview_id = target_frame_id
+                .map(|frame_id| self.webview_id_for_frame(root_webview_id, frame_id))
+                .unwrap_or(root_webview_id);
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][webview] root={} frame={} child={} target={} nonpositional=true",
+                    root_webview_id.0,
+                    target_frame_id.map(|frame_id| frame_id.0).unwrap_or(root_webview_id.0),
+                    target_frame_id.is_some_and(|frame_id| frame_id != FrameId(root_webview_id.0)),
+                    target_webview_id.0,
+                );
+            }
+            return (target_webview_id, event, composed_frame_ids);
         };
 
         let (root_frame_id, hit, viewports) = {
@@ -289,6 +319,11 @@ impl WebviewProvider {
         let composed_frame_ids = composition_frame_ids(root_frame_id, &viewports);
 
         let Some(hit) = hit else {
+            if is_pointer_down
+                && let Some(state) = self.webviews.get_mut(&root_webview_id)
+            {
+                state.focused_frame_id = root_frame_id;
+            }
             self.publish_visible_child_viewports(viewports);
             if input_debug_enabled() {
                 eprintln!(
@@ -302,6 +337,11 @@ impl WebviewProvider {
 
         let target_webview_id = self.webview_id_for_frame(root_webview_id, hit.frame_id);
         let routed_event = retarget_ui_event_for_hit(event, hit, &viewports, viewport_scale);
+        if is_pointer_down
+            && let Some(state) = self.webviews.get_mut(&root_webview_id)
+        {
+            state.focused_frame_id = Some(hit.frame_id);
+        }
         self.publish_visible_child_viewports(viewports);
         if input_debug_enabled() {
             let logical_local_x = hit.local_x / viewport_scale;
@@ -339,20 +379,6 @@ impl WebviewProvider {
                 viewport.offset_y / viewport_scale,
             );
         }
-    }
-
-    fn composed_frame_ids(&mut self, root_webview_id: WebviewId) -> Vec<FrameId> {
-        let (root_frame_id, viewports) = {
-            let Some(state) = self.webviews.get_mut(&root_webview_id) else {
-                return Vec::new();
-            };
-            let root_frame_id = state.compositor.committed_root_frame_id();
-            let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
-            (root_frame_id, viewports)
-        };
-        let frame_ids = composition_frame_ids(root_frame_id, &viewports);
-        self.publish_visible_child_viewports(viewports);
-        frame_ids
     }
 
     fn note_rendering_opportunities(
@@ -440,4 +466,3 @@ fn ui_event_client_position(event: &UiEvent) -> Option<(f32, f32)> {
         | UiEvent::AppleStandardKeybinding(_) => None,
     }
 }
-

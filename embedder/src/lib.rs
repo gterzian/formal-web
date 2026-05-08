@@ -19,7 +19,7 @@ use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use webview::{WebviewProvider, EmbedderApi};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
@@ -73,6 +73,22 @@ impl WinitShellProvider {
     }
 }
 
+fn read_clipboard_text() -> Result<String, String> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|error| format!("failed to access clipboard: {error}"))?;
+    clipboard
+        .get_text()
+        .map_err(|error| format!("failed to read clipboard text: {error}"))
+}
+
+fn write_clipboard_text(text: String) -> Result<(), String> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|error| format!("failed to access clipboard: {error}"))?;
+    clipboard
+        .set_text(text)
+        .map_err(|error| format!("failed to write clipboard text: {error}"))
+}
+
 impl ShellProvider for WinitShellProvider {
     fn request_redraw(&self) {
         self.window.request_redraw();
@@ -96,13 +112,11 @@ impl ShellProvider for WinitShellProvider {
     }
 
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
-        let mut clipboard = arboard::Clipboard::new().map_err(|_| ClipboardError)?;
-        clipboard.get_text().map_err(|_| ClipboardError)
+        read_clipboard_text().map_err(|_| ClipboardError)
     }
 
     fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
-        let mut clipboard = arboard::Clipboard::new().map_err(|_| ClipboardError)?;
-        clipboard.set_text(text).map_err(|_| ClipboardError)
+        write_clipboard_text(text).map_err(|_| ClipboardError)
     }
 }
 
@@ -137,6 +151,13 @@ pub enum FormalWebUserEvent {
     FinalizeNavigation(FinalizeNavigation),
     NewTopLevelTraversable(WebviewId, String),
     Automation(AutomationCommand),
+    ClipboardRead {
+        reply: mpsc::Sender<Result<String, String>>,
+    },
+    ClipboardWrite {
+        text: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
     Exit,
 }
 
@@ -369,6 +390,28 @@ pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
 pub fn send_runtime_message(message: &str) -> Result<(), String> {
     let user_event = user_event_of_runtime_message(message)?;
     send_user_event(user_event)
+}
+
+pub fn clipboard_get_text(timeout: Duration) -> Result<String, String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::ClipboardRead { reply })?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting for clipboard text: {error}",
+            timeout.as_millis()
+        )
+    })?
+}
+
+pub fn clipboard_set_text(text: String, timeout: Duration) -> Result<(), String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::ClipboardWrite { text, reply })?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting to write clipboard text: {error}",
+            timeout.as_millis()
+        )
+    })?
 }
 
 pub fn automation_is_ready() -> bool {
@@ -1653,6 +1696,12 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             }
             FormalWebUserEvent::Automation(command) => {
                 self.handle_automation_command(command);
+            }
+            FormalWebUserEvent::ClipboardRead { reply } => {
+                let _ = reply.send(read_clipboard_text());
+            }
+            FormalWebUserEvent::ClipboardWrite { text, reply } => {
+                let _ = reply.send(write_clipboard_text(text));
             }
             FormalWebUserEvent::Exit => {
                 event_loop.exit();

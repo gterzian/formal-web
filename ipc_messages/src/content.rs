@@ -115,6 +115,17 @@ pub struct ScriptEvaluationResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardReadRequest {
+    pub reply_sender: IpcSender<Result<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardWriteRequest {
+    pub text: String,
+    pub reply_sender: IpcSender<Result<(), String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchEventEntry {
     pub document_id: u64,
     pub event: String,
@@ -558,6 +569,8 @@ pub enum Event {
     IframeTraversableRemoved(IframeTraversableRemoval),
     ChildNavigableCreated(ChildNavigableCreation),
     ScriptEvaluated(ScriptEvaluationResult),
+    ClipboardReadRequested(ClipboardReadRequest),
+    ClipboardWriteRequested(ClipboardWriteRequest),
     CommandCompleted,
     PaintReady(PaintFrame),
     ShutdownCompleted,
