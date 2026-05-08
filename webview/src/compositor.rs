@@ -428,12 +428,15 @@ impl Compositor {
                 continue;
             };
 
+            let viewport_width = child.root_clip_bounds.width().ceil().max(1.0) as u32;
+            let viewport_height = child.root_clip_bounds.height().ceil().max(1.0) as u32;
+
             viewports.push(VisibleFrameViewport {
                 frame_id: child.child_frame_id,
                 offset_x: child.root_clip_bounds.x0 as f32,
                 offset_y: child.root_clip_bounds.y0 as f32,
-                width: child_frame.viewport_width,
-                height: child_frame.viewport_height,
+                width: viewport_width,
+                height: viewport_height,
             });
             self.collect_visible_frame_viewports(child.child_frame_id, viewports);
         }
