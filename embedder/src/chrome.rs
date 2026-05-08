@@ -3,8 +3,9 @@ use blitz_dom::{qual_name, BaseDocument, Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
 use blitz_traits::events::{BlitzKeyEvent, UiEvent};
-use blitz_traits::shell::Viewport;
+use blitz_traits::shell::{ShellProvider, Viewport};
 use keyboard_types::Key;
+use std::sync::Arc;
 
 const DEFAULT_CHROME_HEIGHT_CSS: f32 = 40.0;
 const CHROME_HTML: &str = r#"
@@ -113,7 +114,10 @@ pub struct ChromeUi {
 }
 
 impl ChromeUi {
-    pub fn new(full_viewport: Viewport) -> Result<Self, String> {
+    pub fn new(
+        full_viewport: Viewport,
+        shell_provider: Arc<dyn ShellProvider>,
+    ) -> Result<Self, String> {
         let mut document = HtmlDocument::from_html(
             CHROME_HTML,
             DocumentConfig {
@@ -122,6 +126,7 @@ impl ChromeUi {
             },
         )
         .into_inner();
+        document.set_shell_provider(shell_provider);
         document.resolve(0.0);
 
         let node_ids = ChromeNodeIds {

@@ -10,7 +10,8 @@ use blitz_traits::events::{
     BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords,
     PointerDetails, UiEvent,
 };
-use blitz_traits::shell::{ColorScheme, Viewport};
+use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
+use cursor_icon::CursorIcon;
 use ipc_messages::content::{
     BeforeUnloadResult, PaintFrame, WebviewId,
 };
@@ -21,7 +22,7 @@ use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Instant;
 use webview::{WebviewProvider, EmbedderApi};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, PhysicalPosition};
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{
     ElementState, Ime, KeyEvent as WinitKeyEvent, Modifiers, MouseButton, MouseScrollDelta,
     Touch, TouchPhase, WindowEvent,
@@ -31,7 +32,7 @@ use winit::keyboard::{
     Key as WinitKey, KeyCode as WinitKeyCode, KeyLocation as WinitKeyLocation,
     ModifiersState as WinitModifiersState, NamedKey, PhysicalKey,
 };
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{Cursor, Window, WindowAttributes, WindowId};
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
 const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX: &str = "NewTopLevelTraversable|";
@@ -60,6 +61,49 @@ pub struct FinalizeNavigation {
 
 struct WinitEmbedderApi {
     proxy: EventLoopProxy<FormalWebUserEvent>,
+}
+
+struct WinitShellProvider {
+    window: Arc<Window>,
+}
+
+impl WinitShellProvider {
+    fn new(window: Arc<Window>) -> Self {
+        Self { window }
+    }
+}
+
+impl ShellProvider for WinitShellProvider {
+    fn request_redraw(&self) {
+        self.window.request_redraw();
+    }
+
+    fn set_cursor(&self, icon: CursorIcon) {
+        self.window.set_cursor(Cursor::Icon(icon));
+    }
+
+    fn set_window_title(&self, title: String) {
+        self.window.set_title(&title);
+    }
+
+    fn set_ime_enabled(&self, is_enabled: bool) {
+        self.window.set_ime_allowed(is_enabled);
+    }
+
+    fn set_ime_cursor_area(&self, x: f32, y: f32, width: f32, height: f32) {
+        self.window
+            .set_ime_cursor_area(LogicalPosition::new(x, y), LogicalSize::new(width, height));
+    }
+
+    fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
+        let mut clipboard = arboard::Clipboard::new().map_err(|_| ClipboardError)?;
+        clipboard.get_text().map_err(|_| ClipboardError)
+    }
+
+    fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
+        let mut clipboard = arboard::Clipboard::new().map_err(|_| ClipboardError)?;
+        clipboard.set_text(text).map_err(|_| ClipboardError)
+    }
 }
 
 impl EmbedderApi for WinitEmbedderApi {
@@ -1280,7 +1324,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             match Self::create_window(event_loop) {
                 Ok(window) => {
                     let full_viewport = viewport_of_snapshot(viewport_snapshot_for_window(&window));
-                    let chrome = match ChromeUi::new(full_viewport) {
+                    let chrome_shell_provider: Arc<dyn ShellProvider> =
+                        Arc::new(WinitShellProvider::new(window.clone()));
+                    let chrome = match ChromeUi::new(full_viewport, chrome_shell_provider) {
                         Ok(chrome) => chrome,
                         Err(_error) => {
                             event_loop.exit();
