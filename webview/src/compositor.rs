@@ -1,4 +1,4 @@
-use anyrender::recording::{IframePlaceholderCommand, RenderCommand};
+use anyrender::recording::{PlaceholderCommand, PlaceholderKind, RenderCommand};
 use anyrender::{PaintScene, Scene as RenderScene};
 use ipc_messages::content::{FontTransportReceiver, FrameId, RecordedScene};
 use kurbo::{Affine, Point, Rect, Shape};
@@ -80,6 +80,12 @@ impl Compositor {
         frame_id.0 < (1_u64 << 63)
     }
 
+    fn placeholder_child_frame_id(kind: &PlaceholderKind) -> Option<FrameId> {
+        match kind {
+            PlaceholderKind::CrossOriginIframe { frame_id } => Some(FrameId(*frame_id)),
+        }
+    }
+
     pub fn note_navigation_finalized(&mut self) {
         self.pending_frames.clear();
         self.replace_root_on_next_paint = true;
@@ -117,7 +123,7 @@ impl Compositor {
                 Self::frame_can_be_root(frame_id),
                 viewport_width,
                 viewport_height,
-                summary.iframe_placeholder_commands,
+                summary.placeholder_commands,
                 summary.commands,
             );
         }
@@ -240,8 +246,11 @@ impl Compositor {
 
         for command in decoded_scene.commands {
             match command {
-                RenderCommand::IframePlaceholder(placeholder) => {
-                    let child_frame_id = FrameId(placeholder.frame_id);
+                RenderCommand::Placeholder(placeholder) => {
+                    let Some(child_frame_id) = Self::placeholder_child_frame_id(&placeholder.kind)
+                    else {
+                        continue;
+                    };
                     let Some(child_local_to_root) = self.record_child_frame_layout(
                         frame_id,
                         &parent_viewport,
@@ -319,7 +328,7 @@ impl Compositor {
         parent_frame_id: FrameId,
         parent_viewport: &ResolvedViewport,
         parent_local_to_root: Affine,
-        placeholder: &IframePlaceholderCommand,
+        placeholder: &PlaceholderCommand,
         child_frame_id: FrameId,
     ) -> Option<Affine> {
         let Some(layout) =
@@ -383,7 +392,7 @@ impl Compositor {
     fn navigable_container_layout(
         &self,
         parent_local_to_root: Affine,
-        placeholder: &IframePlaceholderCommand,
+        placeholder: &PlaceholderCommand,
         child_frame_id: FrameId,
     ) -> Option<NavigableContainerLayout> {
         let child_scene_transform = self
@@ -450,7 +459,9 @@ impl Compositor {
             .commands
             .iter()
             .filter_map(|command| match &command.0 {
-                RenderCommand::IframePlaceholder(command) => Some(FrameId(command.frame_id)),
+                RenderCommand::Placeholder(command) => {
+                    Self::placeholder_child_frame_id(&command.kind)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();

@@ -13,7 +13,7 @@ The `webview` crate owns:
 ## Design Notes
 
 - **`WebviewProvider`**: Manages a HashMap of webviews keyed by `WebviewId` (stable traversable identifier). Each visible webview tracks its committed root navigable plus any child content navigables whose host webviews paint into that parent traversable's compositor.
-- Each webview keeps recorded paint frames in a hidden compositor keyed by `frame_id`; the compositor lazily replays the committed root frame, resolves `IframePlaceholder` commands against cached child frames, and refreshes placeholder-derived child viewport metadata before hit testing.
+- Each webview keeps recorded paint frames in a hidden compositor keyed by `frame_id`; the compositor lazily replays the committed root frame, resolves typed `Placeholder` commands against cached child frames for the variants it understands, and refreshes placeholder-derived child viewport metadata before hit testing.
 - Rebuild child hit-test regions from the same `compose_frame` walk that decides which iframe placeholders are visible; invisible placeholders must not leave behind child-frame viewports for later hit tests.
 - If input arrives before a redraw has recomposed the scene, refresh the hit-test metadata by running that same compose walk first instead of rebuilding child-frame coordinates from a separate scene-tree pass.
 - The compositor stores iframe placeholder clips in device pixels because paint frames use physical viewport sizes; convert incoming UI-event coordinates into that space for hit testing, then convert child-frame offsets and routed pointer or wheel coordinates back to CSS pixels before forwarding them into content.

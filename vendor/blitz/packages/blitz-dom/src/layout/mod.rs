@@ -103,19 +103,6 @@ impl BaseDocument {
                 // })
             }
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
-                if *element_data.name.local == *"iframe"
-                    && std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some()
-                {
-                    eprintln!(
-                        "[iframe-debug][blitz-layout][pid={}] enter_iframe_layout node={} replaced={} display={:?} children={}",
-                        std::process::id(),
-                        usize::from(node_id),
-                        node.style.item_is_replaced,
-                        node.style.display,
-                        node.children.len(),
-                    );
-                }
-
                 // TODO: deduplicate with single-line text input
                 if *element_data.name.local == *"textarea" {
                     let rows = element_data
@@ -252,22 +239,6 @@ impl BaseDocument {
                         &node.style,
                         false,
                     );
-
-                    if is_iframe && std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some() {
-                        eprintln!(
-                            "[iframe-debug][blitz-layout][pid={}] measure_iframe node={} replaced={} known={:?} parent={:?} available={:?} attr=({:?}, {:?}) computed=({:.1}, {:.1})",
-                            std::process::id(),
-                            usize::from(node_id),
-                            node.style.item_is_replaced,
-                            inputs.known_dimensions,
-                            inputs.parent_size,
-                            inputs.available_space,
-                            attr_size.width,
-                            attr_size.height,
-                            computed.width,
-                            computed.height,
-                        );
-                    }
 
                     return taffy::LayoutOutput {
                         size: computed,

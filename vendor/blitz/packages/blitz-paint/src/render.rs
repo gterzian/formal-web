@@ -12,7 +12,7 @@ use crate::debug_overlay::render_debug_overlay;
 use crate::kurbo_css::NonUniformRoundedRectRadii;
 use crate::layers::LayerManager;
 use crate::sizing::compute_object_fit;
-use anyrender::{CustomPaint, Paint, PaintScene};
+use anyrender::{CustomPaint, Paint, PaintScene, PlaceholderKind};
 use blitz_dom::node::{
     ListItemLayout, ListItemLayoutPosition, Marker, NodeData, RasterImageData, SpecialElementData,
     TextInputData, TextNodeData,
@@ -38,20 +38,6 @@ use kurbo::{self, Affine, BezPath, Insets, Point, Rect, Stroke, Vec2};
 use peniko::{self, Fill, ImageData, ImageSampler};
 use style::values::generics::color::{ColorOrAuto, GenericColor};
 use taffy::Layout;
-
-fn iframe_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some()
-}
-
-fn log_iframe_debug(message: impl AsRef<str>) {
-    if iframe_debug_enabled() {
-        eprintln!(
-            "[iframe-debug][blitz-paint][pid={}] {}",
-            std::process::id(),
-            message.as_ref()
-        );
-    }
-}
 
 /// A short-lived struct which holds a bunch of parameters for rendering a scene so
 /// that we don't have to pass them down as parameters
@@ -268,22 +254,6 @@ impl<'dom> BlitzDomPainter<'dom> {
             width: (size.width as f64 - scaled_pb.left - scaled_pb.right) * self.scale,
             height: (size.height as f64 - scaled_pb.top - scaled_pb.bottom) * self.scale,
         };
-        if *node.local_name() == local_name!("iframe") {
-            log_iframe_debug(format!(
-                "render_iframe node={} subdoc={} cross_origin_frame={:?} size=({:.1}, {:.1}) content_box=({:.1}, {:.1}) scroll=({:.1}, {:.1})",
-                node.id,
-                node.element_data().and_then(|element| element.sub_doc_data()).is_some(),
-                node.element_data()
-                    .and_then(|element| element.cross_origin_iframe_data()),
-                size.width,
-                size.height,
-                content_box_size.width,
-                content_box_size.height,
-                node.scroll_offset.x,
-                node.scroll_offset.y,
-            ));
-        }
-
         // Don't render things that are out of view
         let scaled_y = (box_position.y - self.initial_y) * self.scale;
         let scaled_content_height = content_size.height.max(size.height) as f64 * self.scale;
@@ -816,18 +786,8 @@ impl ElementCx<'_> {
 
         self.fill_embedded_document_background(scene);
 
-        log_iframe_debug(format!(
-            "emit_iframe_placeholder node={} frame={} content_box_origin=({:.1}, {:.1}) content_box_size=({:.1}, {:.1})",
-            self.node.id,
-            frame_id,
-            x,
-            y,
-            width,
-            height,
-        ));
-
-        scene.iframe_placeholder(
-            frame_id,
+        scene.placeholder(
+            PlaceholderKind::CrossOriginIframe { frame_id },
             transform,
             &Rect::from_origin_size((0.0, 0.0), (width, height)),
         );

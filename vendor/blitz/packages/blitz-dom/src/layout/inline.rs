@@ -292,22 +292,6 @@ impl BaseDocument {
                 .margin
                 .resolve_or_zero(inputs.parent_size, resolve_calc_value);
 
-            if std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some() {
-                if let Some(element) = self.nodes[node_id].data.downcast_element() {
-                    if *element.name.local == local_name!("iframe")
-                        || element.cross_origin_iframe_data().is_some()
-                    {
-                        eprintln!(
-                            "[iframe-debug][blitz-inline][pid={}] inline_box node={} tag={} cross_origin_frame={:?}",
-                            std::process::id(),
-                            node_id,
-                            element.name.local.as_ref(),
-                            element.cross_origin_iframe_data(),
-                        );
-                    }
-                }
-            }
-
             let iframe_replaced_output = self.nodes[node_id]
                 .data
                 .downcast_element()
@@ -339,19 +323,6 @@ impl BaseDocument {
                         style,
                         false,
                     );
-
-                    if std::env::var_os("FORMAL_WEB_DEBUG_IFRAMES").is_some() {
-                        eprintln!(
-                            "[iframe-debug][blitz-inline][pid={}] inline_iframe_box node={} available={:?} attr=({:?}, {:?}) size=({:.1}, {:.1})",
-                            std::process::id(),
-                            node_id,
-                            child_inputs.available_space,
-                            attr_size.width,
-                            attr_size.height,
-                            size.width,
-                            size.height,
-                        );
-                    }
 
                     Some(LayoutOutput {
                         size,

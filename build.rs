@@ -23,6 +23,11 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=content/Cargo.toml");
     println!("cargo:rerun-if-changed=content/src");
+    println!("cargo:rerun-if-changed=ipc_messages/src");
+    println!("cargo:rerun-if-changed=vendor/anyrender/crates/anyrender/src");
+    println!("cargo:rerun-if-changed=vendor/blitz/packages/blitz-dom/src");
+    println!("cargo:rerun-if-changed=vendor/blitz/packages/blitz-paint/src");
+    println!("cargo:rerun-if-changed=vendor/blitz/packages/blitz-traits/src");
     println!("cargo:rerun-if-changed=lean-toolchain");
 
     let manifest_dir =
