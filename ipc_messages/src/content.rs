@@ -291,9 +291,7 @@ impl SerializableRenderCommand {
                 }))
             }
             RenderCommand::BoxShadow(command) => Self(RenderCommand::BoxShadow(command)),
-            RenderCommand::IframePlaceholder(command) => {
-                Self(RenderCommand::IframePlaceholder(command))
-            }
+            RenderCommand::Placeholder(command) => Self(RenderCommand::Placeholder(command)),
         }
     }
 
@@ -319,7 +317,7 @@ impl SerializableRenderCommand {
                 })
             }
             RenderCommand::BoxShadow(command) => RenderCommand::BoxShadow(command),
-            RenderCommand::IframePlaceholder(command) => RenderCommand::IframePlaceholder(command),
+            RenderCommand::Placeholder(command) => RenderCommand::Placeholder(command),
         }
     }
 }
@@ -343,7 +341,7 @@ pub struct SceneSummary {
     pub push_clip_layer_commands: usize,
     pub pop_layer_commands: usize,
     pub box_shadow_commands: usize,
-    pub iframe_placeholder_commands: usize,
+    pub placeholder_commands: usize,
     pub solid_glyph_brush_runs: usize,
     pub gradient_glyph_brush_runs: usize,
     pub image_glyph_brush_runs: usize,
@@ -352,7 +350,7 @@ pub struct SceneSummary {
 impl SceneSummary {
     pub fn describe(&self) -> String {
         format!(
-            "commands={} glyph_runs={} glyphs={} font_refs={} fills={} strokes={} push_layers={} push_clip_layers={} pops={} box_shadows={} iframe_placeholders={} glyph_brushes(solid={}, gradient={}, image={})",
+            "commands={} glyph_runs={} glyphs={} font_refs={} fills={} strokes={} push_layers={} push_clip_layers={} pops={} box_shadows={} placeholders={} glyph_brushes(solid={}, gradient={}, image={})",
             self.commands,
             self.glyph_runs,
             self.glyphs,
@@ -363,7 +361,7 @@ impl SceneSummary {
             self.push_clip_layer_commands,
             self.pop_layer_commands,
             self.box_shadow_commands,
-            self.iframe_placeholder_commands,
+            self.placeholder_commands,
             self.solid_glyph_brush_runs,
             self.gradient_glyph_brush_runs,
             self.image_glyph_brush_runs,
@@ -396,7 +394,7 @@ impl RecordedScene {
                     }
                 }
                 RenderCommand::BoxShadow(_) => summary.box_shadow_commands += 1,
-                RenderCommand::IframePlaceholder(_) => summary.iframe_placeholder_commands += 1,
+                RenderCommand::Placeholder(_) => summary.placeholder_commands += 1,
             }
         }
 

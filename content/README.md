@@ -93,7 +93,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - If `update the rendering` is noted while a document still has pending critical resources, keep that rendering opportunity pending and resume it from the corresponding fetch completion instead of painting a stale frame.
 
-- Keep same-origin iframe documents on Blitz's `SubDocument` path, but mark cross-origin iframe elements with a stable iframe navigable id so Blitz paint can emit a placeholder command for embedder-side composition.
+- Keep same-origin iframe documents on Blitz's `SubDocument` path, but mark cross-origin iframe elements with a stable iframe navigable id so Blitz paint can emit a typed placeholder command for embedder-side composition.
 - Track each iframe element as the navigable container for its child content navigable on the content side; the embedder-side placeholder and child-webview host should reuse that same child navigable id instead of inventing a second frame identifier.
 - Do not route iframe document navigations through `PendingNetworkHandler` or a Rust-local fetch path; the content runtime should raise a navigation request and let Lean own the fetch and resulting `CreateLoadedDocument` dispatch.
 
