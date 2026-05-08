@@ -1,0 +1,41 @@
+[package]
+name = "blitz-net"
+description = "Blitz networking"
+documentation = "https://docs.rs/blitz-net"
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+http2 = ["reqwest/http2"]
+cookies = ["reqwest/cookies"]
+multipart = ["reqwest/multipart", "reqwest/stream"]
+cache = ["dep:reqwest-middleware", "dep:http-cache-reqwest", "dep:directories", "dep:http-cache"]
+tracing = ["dep:tracing"]
+
+[dependencies]
+# Blitz dependencies
+blitz-traits = { workspace = true }
+
+# Networking dependencies
+tokio = { workspace = true }
+reqwest = { workspace = true, features = ["charset", "native-tls", "form"] }
+data-url = { workspace = true }
+
+# Caching
+reqwest-middleware = { workspace = true, optional = true, features = ["form"]}
+http-cache-reqwest = { workspace = true, optional = true, features = ["manager-cacache"] }
+http-cache = { workspace = true, optional = true, features = ["url-standard"] }
+directories = { workspace = true, optional = true }
+
+tracing = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { workspace = true, features = ["native-tls-vendored"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = { workspace = true }
