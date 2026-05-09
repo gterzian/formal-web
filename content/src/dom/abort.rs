@@ -9,7 +9,7 @@ use crate::boa::with_event_target_mut;
 use crate::streams::PipeToState;
 use crate::webidl::EcmascriptHost;
 
-use super::{EventDispatchHost, EventTarget, fire_event};
+use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
 #[derive(Clone, Trace, Finalize)]
@@ -316,6 +316,15 @@ pub(crate) fn signal_abort(
     signal: &AbortSignal,
     reason: JsValue,
 ) -> JsResult<()> {
+    let reason = if reason.is_undefined() {
+        JsValue::from(DOMException::from_data(
+            DOMException::abort_error(),
+            host.context(),
+        )?)
+    } else {
+        reason
+    };
+
     // Step 1: "If signal is aborted, then return."
     let Some(dependent_signals_to_abort) = signal.begin_abort(reason) else {
         return Ok(());

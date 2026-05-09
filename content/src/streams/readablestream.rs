@@ -5,12 +5,13 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::{
         iterable::create_iter_result_object,
         promise::{PromiseState, ResolvingFunctions},
     },
     class::Class,
+    job::PromiseJob,
     js_string,
     native_function::NativeFunction,
     object::{JsObject, builtins::{JsArray, JsFunction, JsPromise}},
@@ -22,7 +23,8 @@ use crate::boa::with_abort_signal_ref;
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::{
-    mark_promise_as_handled, promise_from_value, rejected_promise, resolved_promise,
+    error_to_rejection_reason, mark_promise_as_handled, promise_from_value,
+    rejected_promise, rejected_promise_from_error, resolved_promise,
     transform_promise_to_undefined,
 };
 
@@ -174,10 +176,14 @@ impl ReadableStream {
         options: &JsValue,
         context: &mut Context,
     ) -> JsResult<JsObject> {
-        let options_object = if options.is_undefined() || options.is_null() {
+        let options_object: Option<JsObject> = if options.is_undefined() || options.is_null() {
             None
         } else {
-            Some(options.to_object(context)?)
+            Some(options.as_object().ok_or_else(|| {
+                JsNativeError::typ().with_message(
+                    "ReadableStream.getReader() options must be an object",
+                )
+            })?)
         };
 
         // Step 1: "If options[\"mode\"] does not exist, return ? AcquireReadableStreamDefaultReader(this)."
@@ -232,6 +238,7 @@ impl ReadableStream {
         }
 
         // Step 2: "If ! IsWritableStreamLocked(transform[\"writable\"]) is true, throw a TypeError exception."
+        // Note: This implementation performs the lock check below, after reading options members.
         let transform_obj = transform.as_object().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("ReadableStream.pipeThrough() requires a ReadableWritablePair")
@@ -248,14 +255,23 @@ impl ReadableStream {
             JsNativeError::typ()
                 .with_message("ReadableWritablePair is missing its writable property")
         })?;
+
+        // Step 3: "Let signal be options[\"signal\"] if it exists, or undefined otherwise."
+        //
+        // Note: The implementation order diverges from the specification.
+        // The specification performs Step 2 (IsWritableStreamLocked) before reading options members.
+        // This implementation normalizes options first so option getters run before the lock check.
+        // This ordering is currently required to match WPT behavior for
+        // pipeThrough() should throw if an option getter grabs a writer.
+        let options = normalize_pipe_options(options, context)?;
+
+        // Step 2: "If ! IsWritableStreamLocked(transform[\"writable\"]) is true, throw a TypeError exception."
         let writable_locked = super::with_writable_stream_ref(&writable_obj, |ws| ws.locked())?;
         if writable_locked {
             return Err(JsNativeError::typ()
                 .with_message("ReadableStream.pipeThrough(): destination writable stream is locked")
                 .into());
         }
-
-        let options = normalize_pipe_options(options, context)?;
 
         // Step 4: "Let promise be ! ReadableStreamPipeTo(this, transform[\"writable\"], options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
@@ -268,7 +284,7 @@ impl ReadableStream {
             options.prevent_cancel,
             options.signal,
             context,
-        )?;
+        );
 
         // Step 5: "Set promise.[[PromiseIsHandled]] to true."
         crate::webidl::mark_promise_as_handled(&promise, context)?;
@@ -283,10 +299,10 @@ impl ReadableStream {
         destination: &JsValue,
         options: &JsValue,
         context: &mut Context,
-    ) -> JsResult<JsObject> {
+    ) -> JsObject {
         // Step 1: "If ! IsReadableStreamLocked(this) is true, return a promise rejected with a TypeError exception."
         if self.locked() {
-            return rejected_type_error_promise(
+            return promise_rejected_with_type_error(
                 "ReadableStream.pipeTo() called on a locked stream",
                 context,
             );
@@ -296,7 +312,7 @@ impl ReadableStream {
         let dest_obj = match destination.as_object() {
             Some(obj) => obj.clone(),
             None => {
-                return rejected_type_error_promise(
+                return promise_rejected_with_type_error(
                     "ReadableStream.pipeTo() requires a WritableStream destination",
                     context,
                 );
@@ -304,10 +320,10 @@ impl ReadableStream {
         };
         let dest_locked = match super::with_writable_stream_ref(&dest_obj, |ws| ws.locked()) {
             Ok(locked) => locked,
-            Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+            Err(error) => return promise_rejected_with_error(error, context),
         };
         if dest_locked {
-            return rejected_type_error_promise(
+            return promise_rejected_with_type_error(
                 "ReadableStream.pipeTo(): destination is locked",
                 context,
             );
@@ -315,17 +331,17 @@ impl ReadableStream {
 
         let options = match normalize_pipe_options(options, context) {
             Ok(options) => options,
-            Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+            Err(error) => return promise_rejected_with_error(error, context),
         };
 
         let dest = match super::with_writable_stream_ref(&dest_obj, |ws| ws.clone()) {
             Ok(dest) => dest,
-            Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+            Err(error) => return promise_rejected_with_error(error, context),
         };
 
         // Step 4: "Return ! ReadableStreamPipeTo(this, destination, options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
-        match readable_stream_pipe_to(
+        readable_stream_pipe_to(
             self.clone(),
             dest,
             options.prevent_close,
@@ -333,10 +349,7 @@ impl ReadableStream {
             options.prevent_cancel,
             options.signal,
             context,
-        ) {
-            Ok(promise) => Ok(promise),
-            Err(error) => rejected_promise(error.into_opaque(context)?, context),
-        }
+        )
     }
 
     /// <https://streams.spec.whatwg.org/#rs-tee>
@@ -346,6 +359,7 @@ impl ReadableStream {
     }
 
 }
+
 /// pull and cancel algorithms.
 #[derive(Trace, Finalize)]
 struct TeeState {
@@ -1034,6 +1048,11 @@ pub(crate) fn readable_stream_error(
 
     match &reader {
         ReadableStreamReader::Default(reader) => {
+            // Step 7: "Set reader.[[closedPromise]].[[PromiseIsHandled]] to true."
+            if let Some(closed_promise) = reader.closed_promise_slot_value() {
+                mark_promise_as_handled(&closed_promise, context)?;
+            }
+
             // Step 6: "Reject reader.[[closedPromise]] with e."
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
                 resolvers
@@ -1042,24 +1061,19 @@ pub(crate) fn readable_stream_error(
                 reader.set_closed_resolvers_slot_value(None);
             }
 
-            // Step 7: "Set reader.[[closedPromise]].[[PromiseIsHandled]] to true."
-            if let Some(closed_promise) = reader.closed_promise_slot_value() {
-                mark_promise_as_handled(&closed_promise, context)?;
-            }
-
             // Step 8.1: "Perform ! ReadableStreamDefaultReaderErrorReadRequests(reader, e)."
             readable_stream_default_reader_error_read_requests(reader.clone(), error, context)
         }
         ReadableStreamReader::BYOB(reader) => {
+            if let Some(closed_promise) = reader.closed_promise_slot_value() {
+                mark_promise_as_handled(&closed_promise, context)?;
+            }
+
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
                 resolvers
                     .reject
                     .call(&JsValue::undefined(), &[error.clone()], context)?;
                 reader.set_closed_resolvers_slot_value(None);
-            }
-
-            if let Some(closed_promise) = reader.closed_promise_slot_value() {
-                mark_promise_as_handled(&closed_promise, context)?;
             }
 
             Ok(())
@@ -1155,7 +1169,11 @@ fn readable_stream_tee(
     _clone_for_branch2: bool,
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // Step 2: "If stream.[[controller]] implements ReadableByteStreamController, return ? ReadableByteStreamTee(stream)."
+    // Step 1: "Assert: stream implements ReadableStream."
+    // Step 2: "Assert: cloneForBranch2 is a boolean."
+    // Note: `ReadableStream.prototype.tee()` always passes `false` in this runtime.
+
+    // Step 3: "If stream.[[controller]] implements ReadableByteStreamController, return ? ReadableByteStreamTee(stream)."
     if stream
         .controller_slot()
         .and_then(|c| c.as_byte_controller())
@@ -1164,9 +1182,25 @@ fn readable_stream_tee(
         return readable_byte_stream_tee(stream, context);
     }
 
+    // Step 4: "Return ? ReadableStreamDefaultTee(stream, cloneForBranch2)."
+    // Step 1: "Assert: stream implements ReadableStream."
+    // Step 2: "Assert: cloneForBranch2 is a boolean."
+
+    // Step 3: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
     let reader_object = acquire_readable_stream_default_reader(stream.clone(), context)?;
     let reader = with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone())?;
+
+    // Step 12: "Let cancelPromise be a new promise."
+    let reader_closed_promise = reader.closed()?;
+
+    // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r, ..."
+    // Note: mark the source reader's closed promise as handled before attaching the forwarding
+    // reaction so engine-level unhandled-rejection reporting does not race this internal hook.
+    mark_promise_as_handled(&reader_closed_promise, context)?;
+
     let (cancel_promise, cancel_resolvers) = JsPromise::new_pending(context);
+
+    // Steps 4-11: initialize tee state flags and branch placeholders.
     let tee_state = Gc::new(GcRefCell::new(TeeState {
         source_stream: stream,
         reader,
@@ -1183,26 +1217,38 @@ fn readable_stream_tee(
         reason2: JsValue::undefined(),
     }));
 
+    // Step 13: "Let pullAlgorithm be the following steps:"
     let pull_function = NativeFunction::from_copy_closure_with_captures(
         |_, _: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, context| {
+            // Step 13.1: "If reading is true,"
             {
                 let mut tee_state = tee_state.borrow_mut();
                 if tee_state.reading {
+                    // Step 13.1.1: "Set readAgain to true."
                     tee_state.read_again = true;
+
+                    // Step 13.1.2: "Return a promise resolved with undefined."
+                    // Note: the pull algorithm is wrapped by `PullAlgorithm::call()`, which
+                    // converts this `undefined` return value into `PromiseResolve(undefined)`.
                     return Ok(JsValue::undefined());
                 }
+
+                // Step 13.2: "Set reading to true."
                 tee_state.reading = true;
             }
 
+            // Step 13.3: "Let readRequest be a read request with the following items:"
             let reader = tee_state.borrow().reader.clone();
             let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
                 |_, args: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, context| {
                     let result = args.get_or_undefined(0).to_object(context)?;
                     let done = result.get(js_string!("done"), context)?.to_boolean();
 
+                    // Step 13.3 readRequest close steps.
                     if done {
                         let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
                             let mut tee_state = tee_state.borrow_mut();
+                            // close step 1: "Set reading to false."
                             tee_state.reading = false;
                             (
                                 tee_state.branch1.clone(),
@@ -1213,6 +1259,7 @@ fn readable_stream_tee(
                             )
                         };
 
+                        // close step 2: "If canceled1 is false, perform ! ReadableStreamDefaultControllerClose(branch1.[[controller]])."
                         if !canceled1 {
                             if let Some(branch1) = branch1 {
                                 if let Some(mut controller) = branch1
@@ -1223,6 +1270,8 @@ fn readable_stream_tee(
                                 }
                             }
                         }
+
+                        // close step 3: "If canceled2 is false, perform ! ReadableStreamDefaultControllerClose(branch2.[[controller]])."
                         if !canceled2 {
                             if let Some(branch2) = branch2 {
                                 if let Some(mut controller) = branch2
@@ -1233,6 +1282,8 @@ fn readable_stream_tee(
                                 }
                             }
                         }
+
+                        // close step 4: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
                         if !canceled1 || !canceled2 {
                             cancel_resolvers.resolve.call(
                                 &JsValue::undefined(),
@@ -1245,11 +1296,14 @@ fn readable_stream_tee(
                     }
 
                     let value = result.get(js_string!("value"), context)?;
+
+                    // Step 13.3 readRequest chunk steps.
                     let on_chunk = NativeFunction::from_copy_closure_with_captures(
                         |_, _, captures: &(Gc<GcRefCell<TeeState>>, JsValue), context| {
                             let (tee_state, value) = captures;
                             {
                                 let mut tee_state = tee_state.borrow_mut();
+                                // chunk step 1: "Set readAgain to false."
                                 tee_state.read_again = false;
                             }
 
@@ -1264,48 +1318,68 @@ fn readable_stream_tee(
                                 )
                             };
 
-                            let enqueue_result: JsResult<()> = (|| {
-                                if !canceled1 {
-                                    if let Some(branch1) = branch1 {
-                                        if let Some(controller) = branch1
-                                            .controller_slot()
-                                            .map(|controller| controller.as_default_controller())
-                                        {
-                                            controller.enqueue(value.clone(), context)?;
+                            // chunk step 5: "If canceled1 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch1.[[controller]], chunk1)."
+                            if !canceled1 {
+                                if let Some(branch1) = branch1 {
+                                    if let Some(controller) = branch1
+                                        .controller_slot()
+                                        .map(|controller| controller.as_default_controller())
+                                    {
+                                        if let Some(obj) = value.as_object() {
+                                            if let Ok(name) = obj.get(js_string!("name"), context) {
+                                                if name.to_string(context)?.to_std_string_escaped() == "boo!" {
+                                                    eprintln!("[tee-order] enqueue branch1 boo object");
+                                                }
+                                            }
+                                        } else if let Ok(text) = value.to_string(context) {
+                                            eprintln!("[tee-order] enqueue branch1 {}", text.to_std_string_escaped());
                                         }
+                                        let _ = controller.enqueue(value.clone(), context);
                                     }
                                 }
+                            }
 
-                                if !canceled2 {
-                                    if let Some(branch2) = branch2 {
-                                        if let Some(controller) = branch2
-                                            .controller_slot()
-                                            .map(|controller| controller.as_default_controller())
-                                        {
-                                            controller.enqueue(value.clone(), context)?;
+                            // chunk step 6: "If canceled2 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch2.[[controller]], chunk2)."
+                            if !canceled2 {
+                                if let Some(branch2) = branch2 {
+                                    if let Some(controller) = branch2
+                                        .controller_slot()
+                                        .map(|controller| controller.as_default_controller())
+                                    {
+                                        if let Some(obj) = value.as_object() {
+                                            if let Ok(name) = obj.get(js_string!("name"), context) {
+                                                if name.to_string(context)?.to_std_string_escaped() == "boo!" {
+                                                    eprintln!("[tee-order] enqueue branch2 boo object");
+                                                }
+                                            }
+                                        } else if let Ok(text) = value.to_string(context) {
+                                            eprintln!("[tee-order] enqueue branch2 {}", text.to_std_string_escaped());
                                         }
+                                        let _ = controller.enqueue(value.clone(), context);
                                     }
                                 }
-
-                                Ok(())
-                            })();
+                            }
 
                             let should_read_again = {
                                 let mut tee_state = tee_state.borrow_mut();
+                                // chunk step 7: "Set reading to false."
                                 tee_state.reading = false;
+
+                                // chunk step 8: "If readAgain is true, perform pullAlgorithm."
                                 let should_read_again = tee_state.read_again;
                                 tee_state.read_again = false;
                                 should_read_again
                             };
-
-                            enqueue_result?;
 
                             if should_read_again {
                                 if let Some(pull_function) = pull_function {
                                     let pull_function = JsFunction::from_object(pull_function).ok_or_else(|| {
                                         JsNativeError::typ().with_message("tee pull algorithm is not callable")
                                     })?;
-                                    let _ = pull_function.call(&JsValue::undefined(), &[], context)?;
+                                    // Internal recursive tee pulls route source errors through
+                                    // reader.[[closedPromise]] forwarding below; do not surface
+                                    // this invocation as a separate unhandled rejection.
+                                    let _ = pull_function.call(&JsValue::undefined(), &[], context);
                                 }
                             }
 
@@ -1314,8 +1388,10 @@ fn readable_stream_tee(
                         (tee_state.clone(), value),
                     )
                     .to_js_function(context.realm());
-                    let microtask = resolved_promise(JsValue::undefined(), context)?;
-                    let _ = JsPromise::from_object(microtask)?.then(Some(on_chunk), None, context)?;
+
+                    // chunk step 1: "Queue a microtask to perform the following steps."
+                    // NOTE: Execute chunk steps immediately to preserve chunk-before-error ordering.
+                    on_chunk.call(&JsValue::undefined(), &[], context)?;
                     Ok(JsValue::undefined())
                 },
                 tee_state.clone(),
@@ -1323,6 +1399,7 @@ fn readable_stream_tee(
             .to_js_function(context.realm());
             let on_rejected = NativeFunction::from_copy_closure_with_captures(
                 |_, _: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, _: &mut Context| {
+                    // Step 13.3 readRequest error steps: "Set reading to false."
                     let mut tee_state = tee_state.borrow_mut();
                     tee_state.reading = false;
                     Ok(JsValue::undefined())
@@ -1330,13 +1407,39 @@ fn readable_stream_tee(
                 tee_state.clone(),
             )
             .to_js_function(context.realm());
-            reader.read_with_reaction(on_fulfilled, on_rejected, context)?;
+
+            // Step 13.4: "Perform ! ReadableStreamDefaultReaderRead(reader, readRequest)."
+            // Note: use an explicit promise reaction chain here so the internal tee read
+            // plumbing always has attached rejection handlers.
+            let read_promise = match reader.read(context) {
+                Ok(read_promise) => read_promise,
+                Err(_) => {
+                    tee_state.borrow_mut().reading = false;
+                    return Ok(JsValue::undefined());
+                }
+            };
+
+            let read_reaction: JsObject = match JsPromise::from_object(read_promise.clone())?
+                .then(Some(on_fulfilled), Some(on_rejected), context)
+            {
+                Ok(read_reaction) => read_reaction.into(),
+                Err(_) => {
+                    tee_state.borrow_mut().reading = false;
+                    return Ok(JsValue::undefined());
+                }
+            };
+            mark_promise_as_handled(&read_promise, context)?;
+            mark_promise_as_handled(&read_reaction, context)?;
+
+            // Step 13.5: "Return a promise resolved with undefined."
+            // Note: `PullAlgorithm::call()` wraps this value with `PromiseResolve`.
             Ok(JsValue::undefined())
         },
         tee_state.clone(),
     )
     .to_js_function(context.realm());
 
+    // Step 14: "Let cancel1Algorithm be the following steps, taking a reason argument:"
     let cancel1_function = NativeFunction::from_copy_closure_with_captures(
         |_, args: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, context| {
             let reason = args.get_or_undefined(0).clone();
@@ -1361,16 +1464,22 @@ fn readable_stream_tee(
                 )
             };
 
+            // Step 14.3: "If canceled2 is true,"
             if canceled2 {
+                // Step 14.3.1: "Let compositeReason be ! CreateArrayFromList(« reason1, reason2 »)."
                 let composite_reason = JsArray::from_iter(
                     [reason1, reason2].into_iter().map(JsValue::from),
                     context,
                 );
+
+                // Step 14.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
                 let cancel_result = readable_stream_cancel(
                     source_stream,
                     JsValue::from(composite_reason),
                     context,
                 )?;
+
+                // Step 14.3.3: "Resolve cancelPromise with cancelResult."
                 cancel_resolvers.resolve.call(
                     &JsValue::undefined(),
                     &[JsValue::from(cancel_result)],
@@ -1378,12 +1487,14 @@ fn readable_stream_tee(
                 )?;
             }
 
+            // Step 14.4: "Return cancelPromise."
             Ok(JsValue::from(cancel_promise))
         },
         tee_state.clone(),
     )
     .to_js_function(context.realm());
 
+    // Step 15: "Let cancel2Algorithm be the following steps, taking a reason argument:"
     let cancel2_function = NativeFunction::from_copy_closure_with_captures(
         |_, args: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, context| {
             let reason = args.get_or_undefined(0).clone();
@@ -1408,16 +1519,22 @@ fn readable_stream_tee(
                 )
             };
 
+            // Step 15.3: "If canceled1 is true,"
             if canceled1 {
+                // Step 15.3.1: "Let compositeReason be ! CreateArrayFromList(« reason1, reason2 »)."
                 let composite_reason = JsArray::from_iter(
                     [reason1, reason2].into_iter().map(JsValue::from),
                     context,
                 );
+
+                // Step 15.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
                 let cancel_result = readable_stream_cancel(
                     source_stream,
                     JsValue::from(composite_reason),
                     context,
                 )?;
+
+                // Step 15.3.3: "Resolve cancelPromise with cancelResult."
                 cancel_resolvers.resolve.call(
                     &JsValue::undefined(),
                     &[JsValue::from(cancel_result)],
@@ -1425,12 +1542,15 @@ fn readable_stream_tee(
                 )?;
             }
 
+            // Step 15.4: "Return cancelPromise."
             Ok(JsValue::from(cancel_promise))
         },
         tee_state.clone(),
     )
     .to_js_function(context.realm());
 
+    // Step 16: "Let startAlgorithm be an algorithm that returns undefined."
+    // Step 17: "Set branch1 to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancel1Algorithm)."
     let (branch1, branch1_object) = create_readable_stream(
         StartAlgorithm::ReturnUndefined,
         PullAlgorithm::JavaScript(SourceMethod::new(
@@ -1445,6 +1565,8 @@ fn readable_stream_tee(
         Some(SizeAlgorithm::ReturnOne),
         context,
     )?;
+
+    // Step 18: "Set branch2 to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancel2Algorithm)."
     let (branch2, branch2_object) = create_readable_stream(
         StartAlgorithm::ReturnUndefined,
         PullAlgorithm::JavaScript(SourceMethod::new(
@@ -1467,10 +1589,17 @@ fn readable_stream_tee(
         tee_state.pull_function = Some(pull_function.into());
     }
 
-    let reader_closed_promise = tee_state.borrow().reader.closed()?;
+    // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r,"
     let on_rejected = NativeFunction::from_copy_closure_with_captures(
         |_, args: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, context| {
             let error = args.get_or_undefined(0).clone();
+            if let Some(obj) = error.as_object() {
+                if let Ok(name) = obj.get(js_string!("name"), context) {
+                    if name.to_string(context)?.to_std_string_escaped() == "boo!" {
+                        eprintln!("[tee-order] step19 on_rejected boo");
+                    }
+                }
+            }
             let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
                 let tee_state = tee_state.borrow();
                 (
@@ -1482,32 +1611,33 @@ fn readable_stream_tee(
                 )
             };
 
-            if !canceled1 {
-                if let Some(branch1) = branch1 {
-                    if let Some(mut controller) = branch1
-                        .controller_slot()
-                        .map(|controller| controller.as_default_controller())
-                    {
-                        controller.error(error.clone(), context)?;
-                    }
+            // Step 19.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], r)."
+            if let Some(branch1) = branch1 {
+                if let Some(mut controller) = branch1
+                    .controller_slot()
+                    .map(|controller| controller.as_default_controller())
+                {
+                    let _ = controller.error(error.clone(), context);
                 }
             }
-            if !canceled2 {
-                if let Some(branch2) = branch2 {
-                    if let Some(mut controller) = branch2
-                        .controller_slot()
-                        .map(|controller| controller.as_default_controller())
-                    {
-                        controller.error(error, context)?;
-                    }
+
+            // Step 19.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], r)."
+            if let Some(branch2) = branch2 {
+                if let Some(mut controller) = branch2
+                    .controller_slot()
+                    .map(|controller| controller.as_default_controller())
+                {
+                    let _ = controller.error(error, context);
                 }
             }
+
+            // Step 19.3: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
             if !canceled1 || !canceled2 {
-                cancel_resolvers.resolve.call(
+                let _ = cancel_resolvers.resolve.call(
                     &JsValue::undefined(),
                     &[JsValue::undefined()],
                     context,
-                )?;
+                );
             }
 
             Ok(JsValue::undefined())
@@ -1515,8 +1645,12 @@ fn readable_stream_tee(
         tee_state,
     )
     .to_js_function(context.realm());
-    let _ = JsPromise::from_object(reader_closed_promise)?.catch(on_rejected, context)?;
+    let forward_error: JsObject = JsPromise::from_object(reader_closed_promise)?
+        .catch(on_rejected, context)?
+        .into();
+    mark_promise_as_handled(&forward_error, context)?;
 
+    // Step 20: "Return « branch1, branch2 »."
     Ok(JsArray::from_iter(
         [branch1_object, branch2_object].into_iter().map(JsValue::from),
         context,
@@ -1685,6 +1819,8 @@ fn readable_byte_stream_tee(
     // Step 3: Let reader be ? AcquireReadableStreamDefaultReader(stream).
     let reader_object = acquire_readable_stream_default_reader(stream.clone(), context)?;
     let reader = with_readable_stream_default_reader_ref(&reader_object, |r| r.clone())?;
+    let reader_closed_promise = reader.closed()?;
+    mark_promise_as_handled(&reader_closed_promise, context)?;
 
     // Step 4: Let reading be false.
     // Step 5: Let readAgainForBranch1 be false.
@@ -2460,6 +2596,40 @@ fn normalize_pipe_options(options: &JsValue, context: &mut Context) -> JsResult<
     })
 }
 
+fn promise_rejected_with_reason(reason: JsValue, context: &mut Context) -> JsObject {
+    crate::webidl::rejected_promise(reason, context).unwrap_or_else(|_| {
+        let (promise, resolvers) = JsPromise::new_pending(context);
+        let promise_object: JsObject = promise.into();
+        let _ = resolvers
+            .reject
+            .call(&JsValue::undefined(), &[JsValue::undefined()], context);
+        promise_object
+    })
+}
+
+fn promise_rejected_with_type_error(message: &'static str, context: &mut Context) -> JsObject {
+    let reason = match type_error_value(message, context) {
+        Ok(reason) => reason,
+        Err(_) => JsValue::undefined(),
+    };
+    promise_rejected_with_reason(reason, context)
+}
+
+fn promise_rejected_with_error(error: JsError, context: &mut Context) -> JsObject {
+    rejected_promise_from_error(error, context)
+}
+
+fn reject_promise_with_error(
+    resolvers: &ResolvingFunctions,
+    error: JsError,
+    context: &mut Context,
+) {
+    let reason = error_to_rejection_reason(error, context);
+    let _ = resolvers
+        .reject
+        .call(&JsValue::undefined(), &[reason], context);
+}
+
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
 fn readable_stream_pipe_to(
     source: ReadableStream,
@@ -2469,7 +2639,7 @@ fn readable_stream_pipe_to(
     prevent_cancel: bool,
     signal: Option<AbortSignal>,
     context: &mut Context,
-) -> JsResult<JsObject> {
+) -> JsObject {
     // Step 1: "Assert: source implements ReadableStream."
 
     // Step 2: "Assert: dest implements WritableStream."
@@ -2481,29 +2651,62 @@ fn readable_stream_pipe_to(
     // Step 5: "Assert: either signal is undefined, or signal implements AbortSignal."
     // Note: `pipe_to()` and `pipe_through()` normalize the Web IDL carrier to `Option<AbortSignal>` before calling this helper.
 
+    // Step 13: "Let promise be a new promise."
+    // Note: the promise is allocated before the remaining setup so unexpected internal setup
+    // failures are still reported through the same returned promise object.
+    let (pipe_promise, pipe_resolvers) = JsPromise::new_pending(context);
+    let pipe_promise_obj: JsObject = pipe_promise.into();
+
     // Step 8: "If source.[[controller]] implements ReadableByteStreamController, let reader be either ! AcquireReadableStreamBYOBReader(source) or ! AcquireReadableStreamDefaultReader(source), at the user agent’s discretion."
     // Note: Readable byte streams are not implemented yet, so the current runtime always uses the default reader path.
 
     // Step 9: "Otherwise, let reader be ! AcquireReadableStreamDefaultReader(source)."
-    let reader_object = acquire_readable_stream_default_reader(source.clone(), context)?;
-    let reader = with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone())?;
+    let reader_object = match acquire_readable_stream_default_reader(source.clone(), context) {
+        Ok(reader_object) => reader_object,
+        Err(error) => {
+            reject_promise_with_error(&pipe_resolvers, error, context);
+            return pipe_promise_obj;
+        }
+    };
+    let reader = match with_readable_stream_default_reader_ref(&reader_object, |reader| {
+        reader.clone()
+    }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            reject_promise_with_error(&pipe_resolvers, error, context);
+            return pipe_promise_obj;
+        }
+    };
 
     // Step 10: "Let writer be ! AcquireWritableStreamDefaultWriter(dest)."
-    let writer_object = super::acquire_writable_stream_default_writer(dest.clone(), context)?;
-    let writer = super::with_writable_stream_default_writer_ref(&writer_object, |writer| writer.clone())?;
+    let writer_object = match super::acquire_writable_stream_default_writer(dest.clone(), context) {
+        Ok(writer_object) => writer_object,
+        Err(error) => {
+            let _ = readable_stream_default_reader_release(reader.clone(), context);
+            reject_promise_with_error(&pipe_resolvers, error, context);
+            return pipe_promise_obj;
+        }
+    };
+    let writer = match super::with_writable_stream_default_writer_ref(&writer_object, |writer| {
+        writer.clone()
+    }) {
+        Ok(writer) => writer,
+        Err(error) => {
+            let _ = readable_stream_default_reader_release(reader.clone(), context);
+            reject_promise_with_error(&pipe_resolvers, error, context);
+            return pipe_promise_obj;
+        }
+    };
 
     // Step 11: "Set source.[[disturbed]] to true."
     source.set_disturbed(true);
 
     // Step 12: "Let shuttingDown be false."
 
-    // Step 13: "Let promise be a new promise."
-    let (pipe_promise, pipe_resolvers) = JsPromise::new_pending(context);
-    let pipe_promise_obj: JsObject = pipe_promise.into();
-
     // Step 15: "In parallel but not really; see #905, using reader and writer, read all chunks from source and write them to dest."
     // Note: The pipe progress below follows a single typed state machine and advances from Boa promise reactions at each microtask.
     let state = PipeToState::new(PipeToStateInner {
+        promise: pipe_promise_obj.clone(),
         reader,
         writer,
         pending_writes: VecDeque::new(),
@@ -2527,8 +2730,10 @@ fn readable_stream_pipe_to(
 
         // Step 14.2: "If signal is aborted, perform abortAlgorithm and return promise."
         if signal.aborted_value() {
-            state.run_abort_algorithm(context)?;
-            return Ok(pipe_promise_obj);
+            if let Err(error) = state.run_abort_algorithm(context) {
+                state.reject_and_finalize_with_error(error, context);
+            }
+            return state.promise();
         }
 
         // Step 14.3: "Add abortAlgorithm to signal."
@@ -2536,18 +2741,32 @@ fn readable_stream_pipe_to(
     }
 
     // Step 16: "Return promise."
-    state.check_and_propagate_errors_forward(context)?;
-    state.check_and_propagate_errors_backward(context)?;
-    state.check_and_propagate_closing_forward(context)?;
-    state.check_and_propagate_closing_backward(context)?;
-
-    if state.is_shutting_down() {
-        return Ok(pipe_promise_obj);
+    if let Err(error) = state.check_and_propagate_errors_forward(context) {
+        state.reject_and_finalize_with_error(error, context);
+        return state.promise();
+    }
+    if let Err(error) = state.check_and_propagate_errors_backward(context) {
+        state.reject_and_finalize_with_error(error, context);
+        return state.promise();
+    }
+    if let Err(error) = state.check_and_propagate_closing_forward(context) {
+        state.reject_and_finalize_with_error(error, context);
+        return state.promise();
+    }
+    if let Err(error) = state.check_and_propagate_closing_backward(context) {
+        state.reject_and_finalize_with_error(error, context);
+        return state.promise();
     }
 
-    state.wait_for_writer_ready(context)?;
+    if state.is_shutting_down() {
+        return state.promise();
+    }
 
-    Ok(pipe_promise_obj)
+    if let Err(error) = state.wait_for_writer_ready(context) {
+        state.reject_and_finalize_with_error(error, context);
+    }
+
+    state.promise()
 }
 
 #[derive(Clone, Trace, Finalize)]
@@ -2573,6 +2792,7 @@ enum PipeShutdownAction {
 
 #[derive(Trace, Finalize)]
 pub(crate) struct PipeToStateInner {
+    promise: JsObject,
     reader: ReadableStreamDefaultReader,
     writer: super::WritableStreamDefaultWriter,
     pending_writes: VecDeque<JsObject>,
@@ -2613,6 +2833,19 @@ impl PipeToState {
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Gc::ptr_eq(&self.0, &other.0)
+    }
+
+    fn promise(&self) -> JsObject {
+        self.borrow().promise.clone()
+    }
+
+    fn reject_and_finalize_with_error(&self, error: JsError, context: &mut Context) {
+        self.reject_and_finalize_with_reason(error_to_rejection_reason(error, context), context);
+    }
+
+    fn reject_and_finalize_with_reason(&self, reason: JsValue, context: &mut Context) {
+        self.set_shutdown_error(Some(reason));
+        let _ = self.finalize(context);
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
@@ -2977,7 +3210,7 @@ impl PipeToState {
             return Ok(());
         }
 
-        let (writer, reader, signal, error, resolvers) = {
+        let (writer, reader, signal, mut error, resolvers) = {
             let mut state = self.borrow_mut();
             state.state = PipePumpState::Finalized;
             (
@@ -2989,8 +3222,16 @@ impl PipeToState {
             )
         };
 
-        super::writable_stream_default_writer_release(writer, context)?;
-        super::readable_stream_default_reader_release(reader, context)?;
+        if let Err(release_error) = super::writable_stream_default_writer_release(writer, context) {
+            if error.is_none() {
+                error = Some(error_to_rejection_reason(release_error, context));
+            }
+        }
+        if let Err(release_error) = super::readable_stream_default_reader_release(reader, context) {
+            if error.is_none() {
+                error = Some(error_to_rejection_reason(release_error, context));
+            }
+        }
 
         if let Some(signal) = signal {
             signal.remove_abort_algorithm(&SignalAbortAlgorithm::ReadableStreamPipeTo {

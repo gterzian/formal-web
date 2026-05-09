@@ -1,9 +1,13 @@
 **Streams conventions**
 
 - Keep Web IDL-visible stream methods on the native carrier types in this directory, and keep `content/src/boa/bindings/streams` limited to argument conversion, downcasting, and delegation.
+- Match each carrier method's return channel to the Web IDL contract: operations specified to throw should use `JsResult`, while operations specified to return a `Promise` should create and return that promise from the carrier and settle it internally instead of routing spec-defined failures through a binding-side wrapper.
 - Store stream internal slots as native carriers backed by shared Rust state where possible instead of raw `JsObject` handles, so spec algorithms can operate on typed Rust state directly.
 - Prefer typed DOM carriers such as `AbortSignal` over raw wrapper-object handles in stream internals and related DOM integration; convert back to `JsObject` only at Web IDL boundaries.
 - Keep `ReadableStreamPipeTo` abort handling in typed Rust state stored on `AbortSignal` abort algorithms, and unregister that state during pipe finalization instead of wiring signal callbacks through JavaScript.
+- Keep the `ReadableStreamPipeTo` result promise on `PipeToState` and settle that same promise during finalization; if a binding-side invocation adapter is needed for engine interop, it must return that same carrier promise unchanged and keep shutdown/finalization logic on the carrier side.
+- Note: `ReadableStream.prototype.pipeTo` is wrapped in a thin JS forwarding function to work around a Boa native-function dispatch limitation when called from external script contexts; the wrapper returns the carrier's promise unchanged.
+- Note: `ReadableStream.pipeThrough()` normalizes options (evaluating getters) before checking if the destination writable stream is locked, as per Web IDL algorithm Step 5 → Step 6 ordering; this ensures option getters can affect stream state and errors propagate correctly.
 - When `ReadableStreamPipeTo` is waiting for pending writes during shutdown, re-check destination error/close state before executing a queued close action so a last-write failure rejects the pipe instead of being masked by forward close propagation.
 - Model shared stream mixins and algorithm slots with Rust traits and enums when the spec describes them as reusable behavior or polymorphic internal algorithms.
 - Keep abstract operations that primarily mutate `WritableStream`, `WritableStreamDefaultController`, or `WritableStreamDefaultWriter` as methods on those carrier types, so the Rust implementation follows the spec receiver directly.

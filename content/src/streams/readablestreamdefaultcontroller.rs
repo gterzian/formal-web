@@ -9,7 +9,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::streams::SizeAlgorithm;
-use crate::webidl::{promise_from_value, rejected_promise, resolved_promise};
+use crate::webidl::{mark_promise_as_handled, promise_from_value, rejected_promise, resolved_promise};
 
 use super::{
     ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState, SourceMethod,
@@ -36,7 +36,7 @@ impl PullAlgorithm {
                 let arg = JsValue::from(controller_object.clone());
                 match callback.call(&[arg], context) {
                     Ok(value) => promise_from_value(value, context),
-                    Err(error) => rejected_promise(error.into_opaque(context)?, context),
+                    Err(error) => Err(error),
                 }
             }
         }
@@ -55,10 +55,21 @@ impl CancelAlgorithm {
     pub(crate) fn call(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
         match self {
             Self::ReturnUndefined => resolved_promise(JsValue::undefined(), context),
-            Self::JavaScript(callback) => match callback.call(&[reason], context) {
-                Ok(value) => promise_from_value(value, context),
-                Err(error) => rejected_promise(error.into_opaque(context)?, context),
-            },
+            Self::JavaScript(callback) => {
+                match callback.call(&[reason], context) {
+                    Ok(value) => promise_from_value(value, context),
+                    Err(error) => {
+                        let reason = error.into_opaque(context)?;
+                        let (promise, resolvers) = JsPromise::new_pending(context);
+                        let promise_object: JsObject = promise.into();
+                        mark_promise_as_handled(&promise_object, context)?;
+                        resolvers
+                            .reject
+                            .call(&JsValue::undefined(), &[reason], context)?;
+                        Ok(promise_object)
+                    }
+                }
+            }
         }
     }
 }
@@ -244,7 +255,7 @@ impl ReadableStreamDefaultController {
                 let entry = queue.pop_front().expect("queue was checked to be non-empty");
                 {
                     let mut new_size = self.queue_total_size.get() - entry.size;
-                    if new_size == -0.0 {
+                    if new_size <= 0.0 {
                         new_size = 0.0;
                     }
                     self.queue_total_size.set(new_size);
@@ -312,7 +323,13 @@ impl ReadableStreamDefaultController {
         let controller_object = self.controller_object()?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
         let pull_promise = match pull_algorithm {
-            Some(pull_algorithm) => pull_algorithm.call(&controller_object, context)?,
+            Some(pull_algorithm) => match pull_algorithm.call(&controller_object, context) {
+                Ok(pull_promise) => pull_promise,
+                Err(error) => {
+                    self.error_steps(error.into_opaque(context)?, context)?;
+                    return Ok(());
+                }
+            },
             None => resolved_promise(JsValue::undefined(), context)?,
         };
 
@@ -344,8 +361,11 @@ impl ReadableStreamDefaultController {
             self.clone(),
         )
         .to_js_function(context.realm());
-        let _ = JsPromise::from_object(pull_promise)?
-            .then(Some(on_fulfilled), Some(on_rejected), context)?;
+        let pull_reaction: JsObject = JsPromise::from_object(pull_promise.clone())?
+            .then(Some(on_fulfilled), Some(on_rejected), context)?
+            .into();
+        mark_promise_as_handled(&pull_reaction, context)?;
+        mark_promise_as_handled(&pull_promise, context)?;
         Ok(())
     }
 
@@ -624,7 +644,11 @@ pub(crate) fn set_up_readable_stream_default_controller(
         controller,
     )
     .to_js_function(context.realm());
-    let _ = start_promise.then(Some(on_fulfilled), Some(on_rejected), context)?;
+    let start_reaction: JsObject = start_promise
+        .then(Some(on_fulfilled), Some(on_rejected), context)?
+        .into();
+    mark_promise_as_handled(&start_reaction, context)?;
+    mark_promise_as_handled(&JsObject::from(start_promise), context)?;
     Ok(())
 }
 

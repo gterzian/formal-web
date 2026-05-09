@@ -106,12 +106,18 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         debug_assert_eq!(stream.state(), ReadableStreamState::Errored);
 
         // Step 5.2: "Set reader.[[closedPromise]] to a promise rejected with stream.[[storedError]]."
-        let promise = rejected_promise(stream.stored_error(), context)?;
-        self.set_closed_promise_slot_value(Some(promise.clone()));
-        self.set_closed_resolvers_slot_value(None);
-
         // Step 5.3: "Set reader.[[closedPromise]].[[PromiseIsHandled]] to true."
-        mark_promise_as_handled(&promise, context)
+        // Note: create a pending promise, mark it handled first, then reject it to avoid
+        // host-level unhandled-rejection reporting races for already-errored streams.
+        let (promise, resolvers) = JsPromise::new_pending(context);
+        let promise_object: JsObject = promise.into();
+        self.set_closed_promise_slot_value(Some(promise_object.clone()));
+        self.set_closed_resolvers_slot_value(None);
+        mark_promise_as_handled(&promise_object, context)?;
+        resolvers
+            .reject
+            .call(&JsValue::undefined(), &[stream.stored_error()], context)?;
+        Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-reader-generic-release>

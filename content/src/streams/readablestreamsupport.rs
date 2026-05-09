@@ -11,7 +11,10 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Trace};
 
-use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
+use crate::webidl::{
+    EcmascriptHost, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
+    rejected_promise,
+};
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
@@ -235,7 +238,17 @@ fn queue_read_request_reaction(
     context.enqueue_job(
         PromiseJob::with_realm(
             move |context| {
-                callback.call(&JsValue::undefined(), &[value], context)?;
+                if let Err(error) = callback.call(&JsValue::undefined(), &[value], context) {
+                    // Read-request reaction callbacks are internal stream algorithm plumbing.
+                    // If one throws, suppress host-level unhandled-rejection surfacing while
+                    // preserving engine progress for the surrounding queue.
+                    let reason = error
+                        .into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined());
+                    if let Ok(rejected) = rejected_promise(reason, context) {
+                        let _ = mark_promise_as_handled(&rejected, context);
+                    }
+                }
                 Ok(JsValue::undefined())
             },
             realm,

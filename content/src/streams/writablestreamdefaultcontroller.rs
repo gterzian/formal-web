@@ -516,7 +516,7 @@ impl WritableStreamDefaultController {
         let value = entry.value.clone();
 
         let mut queue_total_size = self.queue_total_size.get() - entry.size;
-        if queue_total_size == -0.0 {
+        if queue_total_size <= 0.0 {
             queue_total_size = 0.0;
         }
         self.queue_total_size.set(queue_total_size);
