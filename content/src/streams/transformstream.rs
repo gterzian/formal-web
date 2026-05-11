@@ -328,37 +328,10 @@ fn initialize_transform_stream(
     *stream.writable_object.borrow_mut() = Some(writable_object);
 
     // Step 6: "Let pullAlgorithm be the following steps:"
-    let stream_for_pull = stream.clone();
-    let pull_algorithm = PullAlgorithm::JavaScript(SourceMethod::new(
-        context.global_object(),
-        NativeFunction::from_copy_closure_with_captures(
-            |_, _, stream: &TransformStream, context| {
-                // Step 6.1: "Return ! TransformStreamDefaultSourcePullAlgorithm(stream)."
-                let promise = transform_stream_default_source_pull_algorithm(stream.clone(), context)?;
-                Ok(JsValue::from(promise))
-            },
-            stream_for_pull,
-        )
-        .to_js_function(context.realm())
-        .into(),
-    ));
+    let pull_algorithm = PullAlgorithm::TransformStreamDefaultSourcePull(stream.clone());
 
     // Step 7: "Let cancelAlgorithm be the following steps, taking a reason argument:"
-    let stream_for_cancel = stream.clone();
-    let cancel_algorithm = CancelAlgorithm::JavaScript(SourceMethod::new(
-        context.global_object(),
-        NativeFunction::from_copy_closure_with_captures(
-            |_, args, stream: &TransformStream, context| {
-                // Step 7.1: "Return ! TransformStreamDefaultSourceCancelAlgorithm(stream, reason)."
-                let reason = args.get_or_undefined(0).clone();
-                let promise = transform_stream_default_source_cancel_algorithm(stream.clone(), reason, context)?;
-                Ok(JsValue::from(promise))
-            },
-            stream_for_cancel,
-        )
-        .to_js_function(context.realm())
-        .into(),
-    ));
+    let cancel_algorithm = CancelAlgorithm::TransformStreamDefaultSourceCancel(stream.clone());
 
     // Step 8: "Set stream.[[readable]] to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancelAlgorithm, readableHighWaterMark, readableSizeAlgorithm)."
     let (readable, readable_object) = create_readable_stream(
@@ -986,7 +959,7 @@ fn transform_stream_default_sink_close_algorithm(
 // ---- Default source algorithms ----
 
 /// <https://streams.spec.whatwg.org/#transform-stream-default-source-pull-algorithm>
-fn transform_stream_default_source_pull_algorithm(
+pub(crate) fn transform_stream_default_source_pull_algorithm(
     stream: TransformStream,
     context: &mut Context,
 ) -> JsResult<JsObject> {
@@ -1008,7 +981,7 @@ fn transform_stream_default_source_pull_algorithm(
 }
 
 /// <https://streams.spec.whatwg.org/#transform-stream-default-source-cancel-algorithm>
-fn transform_stream_default_source_cancel_algorithm(
+pub(crate) fn transform_stream_default_source_cancel_algorithm(
     stream: TransformStream,
     reason: JsValue,
     context: &mut Context,

@@ -6,7 +6,7 @@ use boa_engine::{
     class::Class,
     object::{
         JsObject,
-        builtins::{JsFunction, JsPromise},
+        builtins::JsPromise,
     },
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
@@ -251,20 +251,21 @@ impl ReadableStreamDefaultReader {
         }
 
         // Step 2: "Let promise be a new promise."
+        let (promise, resolvers) = JsPromise::new_pending(context);
+
         // Step 3: "Let readRequest be a new read request with the following items:"
-        let (read_request, promise) = ReadRequest::new(context);
+        let read_request = ReadRequest::DefaultReaderRead { resolvers };
 
         // Step 4: "Perform ! ReadableStreamDefaultReaderRead(this, readRequest)."
         self.read_steps(read_request, context)?;
 
         // Step 5: "Return promise."
-        Ok(promise)
+        Ok(promise.into())
     }
 
-    pub(crate) fn read_with_reaction(
+    pub(crate) fn read_with_request(
         &self,
-        on_fulfilled: JsFunction,
-        on_rejected: JsFunction,
+        read_request: ReadRequest,
         context: &mut Context,
     ) -> JsResult<()> {
         if self.stream_slot_value().is_none() {
@@ -273,7 +274,6 @@ impl ReadableStreamDefaultReader {
                 .into());
         }
 
-        let read_request = ReadRequest::new_reaction(on_fulfilled, on_rejected);
         self.read_steps(read_request, context)
     }
 

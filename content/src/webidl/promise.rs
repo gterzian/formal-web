@@ -47,6 +47,17 @@ pub(crate) fn promise_from_value(value: JsValue, context: &mut Context) -> JsRes
     Ok(JsPromise::resolve(value, context)?.into())
 }
 
+/// Converts a completion result into a `Promise`, rejecting it when the completion throws.
+pub(crate) fn promise_from_completion(
+    completion: JsResult<JsValue>,
+    context: &mut Context,
+) -> JsPromise {
+    JsPromise::from_result(completion, context).unwrap_or_else(|error| {
+        JsPromise::from_object(rejected_promise_from_error(error, context))
+            .expect("rejected_promise_from_error must return a Promise object")
+    })
+}
+
 /// Creates a rejected promise from a `JsError`, using the Web IDL coercion rules.
 /// 
 /// When an internal Rust error must be surfaced as a promise rejection, this helper
