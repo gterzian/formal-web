@@ -6,7 +6,7 @@ use boa_engine::{
     class::Class,
     object::{
         JsObject,
-        builtins::{JsFunction, JsPromise},
+        builtins::JsPromise,
     },
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
@@ -106,12 +106,18 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         debug_assert_eq!(stream.state(), ReadableStreamState::Errored);
 
         // Step 5.2: "Set reader.[[closedPromise]] to a promise rejected with stream.[[storedError]]."
-        let promise = rejected_promise(stream.stored_error(), context)?;
-        self.set_closed_promise_slot_value(Some(promise.clone()));
-        self.set_closed_resolvers_slot_value(None);
-
         // Step 5.3: "Set reader.[[closedPromise]].[[PromiseIsHandled]] to true."
-        mark_promise_as_handled(&promise, context)
+        // Note: create a pending promise, mark it handled first, then reject it to avoid
+        // host-level unhandled-rejection reporting races for already-errored streams.
+        let (promise, resolvers) = JsPromise::new_pending(context);
+        let promise_object: JsObject = promise.into();
+        self.set_closed_promise_slot_value(Some(promise_object.clone()));
+        self.set_closed_resolvers_slot_value(None);
+        mark_promise_as_handled(&promise_object, context)?;
+        resolvers
+            .reject
+            .call(&JsValue::undefined(), &[stream.stored_error()], context)?;
+        Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-reader-generic-release>
@@ -245,20 +251,21 @@ impl ReadableStreamDefaultReader {
         }
 
         // Step 2: "Let promise be a new promise."
+        let (promise, resolvers) = JsPromise::new_pending(context);
+
         // Step 3: "Let readRequest be a new read request with the following items:"
-        let (read_request, promise) = ReadRequest::new(context);
+        let read_request = ReadRequest::DefaultReaderRead { resolvers };
 
         // Step 4: "Perform ! ReadableStreamDefaultReaderRead(this, readRequest)."
         self.read_steps(read_request, context)?;
 
         // Step 5: "Return promise."
-        Ok(promise)
+        Ok(promise.into())
     }
 
-    pub(crate) fn read_with_reaction(
+    pub(crate) fn read_with_request(
         &self,
-        on_fulfilled: JsFunction,
-        on_rejected: JsFunction,
+        read_request: ReadRequest,
         context: &mut Context,
     ) -> JsResult<()> {
         if self.stream_slot_value().is_none() {
@@ -267,7 +274,6 @@ impl ReadableStreamDefaultReader {
                 .into());
         }
 
-        let read_request = ReadRequest::new_reaction(on_fulfilled, on_rejected);
         self.read_steps(read_request, context)
     }
 

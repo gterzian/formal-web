@@ -113,17 +113,13 @@ impl TransformStream {
 
     pub(crate) fn writable(&self) -> JsResult<WritableStream> {
         self.writable.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("TransformStream is missing its writable side")
-                .into()
+            JsNativeError::typ().with_message("TransformStream is missing its writable side").into()
         })
     }
 
     pub(crate) fn writable_object(&self) -> JsResult<JsObject> {
         self.writable_object.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("TransformStream is missing its writable JavaScript object")
-                .into()
+            JsNativeError::typ().with_message("TransformStream is missing its writable JavaScript object").into()
         })
     }
 
@@ -332,37 +328,10 @@ fn initialize_transform_stream(
     *stream.writable_object.borrow_mut() = Some(writable_object);
 
     // Step 6: "Let pullAlgorithm be the following steps:"
-    let stream_for_pull = stream.clone();
-    let pull_algorithm = PullAlgorithm::JavaScript(SourceMethod::new(
-        context.global_object(),
-        NativeFunction::from_copy_closure_with_captures(
-            |_, _, stream: &TransformStream, context| {
-                // Step 6.1: "Return ! TransformStreamDefaultSourcePullAlgorithm(stream)."
-                let promise = transform_stream_default_source_pull_algorithm(stream.clone(), context)?;
-                Ok(JsValue::from(promise))
-            },
-            stream_for_pull,
-        )
-        .to_js_function(context.realm())
-        .into(),
-    ));
+    let pull_algorithm = PullAlgorithm::TransformStreamDefaultSourcePull(stream.clone());
 
     // Step 7: "Let cancelAlgorithm be the following steps, taking a reason argument:"
-    let stream_for_cancel = stream.clone();
-    let cancel_algorithm = CancelAlgorithm::JavaScript(SourceMethod::new(
-        context.global_object(),
-        NativeFunction::from_copy_closure_with_captures(
-            |_, args, stream: &TransformStream, context| {
-                // Step 7.1: "Return ! TransformStreamDefaultSourceCancelAlgorithm(stream, reason)."
-                let reason = args.get_or_undefined(0).clone();
-                let promise = transform_stream_default_source_cancel_algorithm(stream.clone(), reason, context)?;
-                Ok(JsValue::from(promise))
-            },
-            stream_for_cancel,
-        )
-        .to_js_function(context.realm())
-        .into(),
-    ));
+    let cancel_algorithm = CancelAlgorithm::TransformStreamDefaultSourceCancel(stream.clone());
 
     // Step 8: "Set stream.[[readable]] to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancelAlgorithm, readableHighWaterMark, readableSizeAlgorithm)."
     let (readable, readable_object) = create_readable_stream(
@@ -799,6 +768,7 @@ fn transform_stream_default_sink_abort_algorithm(
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
     // Step 5: "Let cancelPromise be the result of performing controller.[[cancelAlgorithm]], passing reason."
+    let readable_state_before_cancel = readable.state();
     let cancel_algorithm = controller.cancel_algorithm.borrow().clone();
     let cancel_promise = match cancel_algorithm {
         Some(TransformCancelAlgorithm::ReturnUndefined) => {
@@ -812,17 +782,19 @@ fn transform_stream_default_sink_abort_algorithm(
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
     };
+    let reject_finish_on_fulfilled_cancel =
+        readable_state_before_cancel == super::ReadableStreamState::Readable
+            && readable.state() == super::ReadableStreamState::Errored;
 
     // Step 6: "Perform ! TransformStreamDefaultControllerClearAlgorithms(controller)."
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, captures: &(TransformStreamDefaultController, ReadableStream, JsValue), context| {
-            let (controller, readable, reason) = captures;
-            let readable_state = readable.state();
+        |_, _, captures: &(TransformStreamDefaultController, ReadableStream, JsValue, bool), context| {
+            let (controller, readable, reason, reject_finish_on_fulfilled_cancel) = captures;
 
-            if readable_state == super::ReadableStreamState::Errored {
+            if *reject_finish_on_fulfilled_cancel {
                 // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
                     resolvers.reject.call(&JsValue::undefined(), &[readable.stored_error()], context)?;
@@ -844,7 +816,12 @@ fn transform_stream_default_sink_abort_algorithm(
 
             Ok(JsValue::undefined())
         },
-        (controller.clone(), readable.clone(), reason),
+        (
+            controller.clone(),
+            readable.clone(),
+            reason,
+            reject_finish_on_fulfilled_cancel,
+        ),
     )
     .to_js_function(context.realm());
 
@@ -982,7 +959,7 @@ fn transform_stream_default_sink_close_algorithm(
 // ---- Default source algorithms ----
 
 /// <https://streams.spec.whatwg.org/#transform-stream-default-source-pull-algorithm>
-fn transform_stream_default_source_pull_algorithm(
+pub(crate) fn transform_stream_default_source_pull_algorithm(
     stream: TransformStream,
     context: &mut Context,
 ) -> JsResult<JsObject> {
@@ -1004,7 +981,7 @@ fn transform_stream_default_source_pull_algorithm(
 }
 
 /// <https://streams.spec.whatwg.org/#transform-stream-default-source-cancel-algorithm>
-fn transform_stream_default_source_cancel_algorithm(
+pub(crate) fn transform_stream_default_source_cancel_algorithm(
     stream: TransformStream,
     reason: JsValue,
     context: &mut Context,
@@ -1027,6 +1004,7 @@ fn transform_stream_default_source_cancel_algorithm(
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
     // Step 5: "Let cancelPromise be the result of performing controller.[[cancelAlgorithm]], passing reason."
+    let writable_state_before_cancel = writable.state();
     let cancel_algorithm = controller.cancel_algorithm.borrow().clone();
     let cancel_promise = match cancel_algorithm {
         Some(TransformCancelAlgorithm::ReturnUndefined) => {
@@ -1040,42 +1018,59 @@ fn transform_stream_default_source_cancel_algorithm(
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
     };
+    let reject_finish_on_fulfilled_cancel =
+        writable_state_before_cancel == super::WritableStreamState::Writable
+            && writable.state() != super::WritableStreamState::Writable;
 
     // Step 6: "Perform ! TransformStreamDefaultControllerClearAlgorithms(controller)."
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, captures: &(TransformStreamDefaultController, TransformStream, WritableStream, JsValue), context| {
-            let (controller, stream, writable, reason) = captures;
+        |_, _, captures: &(TransformStreamDefaultController, TransformStream, WritableStream, JsValue, bool), context| {
+            let (controller, stream, writable, reason, reject_finish_on_fulfilled_cancel) = captures;
             let writable_state = writable.state();
             log_stream_debug(format!(
-                "source cancel fulfilled writable_state={:?} stored_error={}",
+                "source cancel fulfilled writable_state={:?} reject_finish={} stored_error={}",
                 writable_state,
+                reject_finish_on_fulfilled_cancel,
                 writable.stored_error().display()
             ));
 
-            // Preserve any existing writable-side failure, but keep readable cancel fulfilled.
-            let writable_controller = writable.controller_slot().ok_or_else(|| {
-                JsNativeError::typ().with_message("WritableStream is missing its controller")
-            })?;
-            writable_stream_default_controller_error_if_needed(
-                writable_controller.as_default_controller(),
-                reason.clone(),
-                context,
-            )?;
+            // Step 7.1.1: "If writable.[[state]] is \"errored\", reject controller.[[finishPromise]] with writable.[[storedError]]."
+            if *reject_finish_on_fulfilled_cancel {
+                if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
+                    resolvers.reject.call(&JsValue::undefined(), &[writable.stored_error()], context)?;
+                }
+            } else {
+                // Step 7.1.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], reason)."
+                let writable_controller = writable.controller_slot().ok_or_else(|| {
+                    JsNativeError::typ().with_message("WritableStream is missing its controller")
+                })?;
+                writable_stream_default_controller_error_if_needed(
+                    writable_controller.as_default_controller(),
+                    reason.clone(),
+                    context,
+                )?;
 
-            // Step 7.1.2.2: "Perform ! TransformStreamUnblockWrite(stream)."
-            transform_stream_unblock_write(stream, context)?;
+                // Step 7.1.2.2: "Perform ! TransformStreamUnblockWrite(stream)."
+                transform_stream_unblock_write(stream, context)?;
 
-            // Step 7.1.2.3: Resolve finishPromise.
-            if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                resolvers.resolve.call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                // Step 7.1.2.3: "Resolve controller.[[finishPromise]] with undefined."
+                if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
+                    resolvers.resolve.call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                }
             }
 
             Ok(JsValue::undefined())
         },
-        (controller.clone(), stream.clone(), writable.clone(), reason),
+        (
+            controller.clone(),
+            stream.clone(),
+            writable.clone(),
+            reason,
+            reject_finish_on_fulfilled_cancel,
+        ),
     )
     .to_js_function(context.realm());
 

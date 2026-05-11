@@ -49,7 +49,7 @@ pub(crate) use readablestreamdefaultreader::{
 pub(crate) use readablestreamsupport::{
     ReadIntoRequest, ReadRequest, ReadableStreamController, ReadableStreamReader,
     ReadableStreamState, SourceMethod, range_error_value, rejected_type_error_promise,
-    type_error_value,
+    type_error_value, queue_internal_stream_microtask,
 };
 pub(crate) use strategy::{
     byte_length_size, count_size, extract_high_water_mark, extract_size_algorithm,

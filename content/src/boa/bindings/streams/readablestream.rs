@@ -1,9 +1,9 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsNativeError, JsResult, JsValue, Source,
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::FunctionObjectBuilder,
+    object::{FunctionObjectBuilder, JsObject},
     property::Attribute,
     symbol::JsSymbol,
 };
@@ -41,6 +41,29 @@ impl Class for ReadableStream {
         .length(0)
         .constructor(false)
         .build();
+        let pipe_to_native = FunctionObjectBuilder::new(
+            class.context().realm(),
+            NativeFunction::from_fn_ptr(pipe_to_native_method),
+        )
+        .name(js_string!("pipeTo"))
+        .length(2)
+        .constructor(false)
+        .build();
+        // WORKAROUND: Wrap the native pipeTo in a JS-visible forwarder.
+        // When external scripts call pipeTo directly, Boa's native-function dispatch
+        // from script context fails with "not a callable function", but wrapping it in
+        // a JS function and using .call() works around the issue. The wrapper returns
+        // the carrier's promise unchanged, preserving the carrier-owned semantics.
+        let pipe_to_wrapper = {
+            class.context().eval(Source::from_bytes(
+                "(function pipeTo() { return ReadableStream.prototype.__formalWebReadableStreamPipeToNative.call(this, arguments[0], arguments[1]); })",
+            ))?
+                .as_object()
+                .ok_or_else(|| {
+                    JsNativeError::typ()
+                        .with_message("ReadableStream.pipeTo wrapper initialization did not return a function")
+                })?
+        };
         class
             .static_method(
                 js_string!("from"),
@@ -54,30 +77,27 @@ impl Class for ReadableStream {
                 Attribute::all(),
             )
             .method(
-                js_string!("cancel"),
-                1,
-                NativeFunction::from_fn_ptr(cancel_method),
+                js_string!("pipeThrough"),
+                2,
+                NativeFunction::from_fn_ptr(pipe_through_method),
             )
+            .method(js_string!("cancel"), 1, NativeFunction::from_fn_ptr(cancel_method))
             .method(
                 js_string!("getReader"),
                 1,
                 NativeFunction::from_fn_ptr(get_reader_method),
             )
-            .method(
-                js_string!("pipeThrough"),
-                2,
-                NativeFunction::from_fn_ptr(pipe_through_method),
+            .property(
+                js_string!("__formalWebReadableStreamPipeToNative"),
+                pipe_to_native,
+                Attribute::WRITABLE | Attribute::CONFIGURABLE,
             )
-            .method(
+            .property(
                 js_string!("pipeTo"),
-                2,
-                NativeFunction::from_fn_ptr(pipe_to_method),
+                pipe_to_wrapper,
+                Attribute::WRITABLE | Attribute::CONFIGURABLE,
             )
-            .method(
-                js_string!("tee"),
-                0,
-                NativeFunction::from_fn_ptr(tee_method),
-            )
+            .method(js_string!("tee"), 0, NativeFunction::from_fn_ptr(tee_method))
             .property(
                 js_string!("values"),
                 values.clone(),
@@ -202,11 +222,7 @@ impl Class for ReadableStreamDefaultReader {
                 1,
                 NativeFunction::from_fn_ptr(cancel_reader_method),
             )
-            .method(
-                js_string!("read"),
-                0,
-                NativeFunction::from_fn_ptr(read_method),
-            )
+            .method(js_string!("read"), 0, NativeFunction::from_fn_ptr(read_method))
             .method(
                 js_string!("releaseLock"),
                 0,
@@ -238,11 +254,7 @@ impl Class for ReadableStreamBYOBReader {
                 1,
                 NativeFunction::from_fn_ptr(cancel_byob_reader_method),
             )
-            .method(
-                js_string!("read"),
-                2,
-                NativeFunction::from_fn_ptr(read_byob_method),
-            )
+            .method(js_string!("read"), 2, NativeFunction::from_fn_ptr(read_byob_method))
             .method(
                 js_string!("releaseLock"),
                 0,
@@ -336,28 +348,26 @@ fn pipe_through_method(this: &JsValue, args: &[JsValue], context: &mut Context) 
     stream.pipe_through(args.get_or_undefined(0), args.get_or_undefined(1), context)
 }
 
-fn pipe_to_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let promise = (|| {
-        let stream_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-        })?;
+fn pipe_to_operation(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsObject> {
+    let stream_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("ReadableStream receiver is not an object")
+    })?;
 
-        let mut stream = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| {
-            stream.clone()
-        })?;
-        stream.pipe_to(args.get_or_undefined(0), args.get_or_undefined(1), context)
-    })();
+    let mut stream = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| {
+        stream.clone()
+    })?;
+    Ok(stream.pipe_to(args.get_or_undefined(0), args.get_or_undefined(1), context))
+}
 
-    let promise = match promise {
+fn pipe_to_native_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let promise = match pipe_to_operation(this, args, context) {
         Ok(promise) => promise,
         Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
     };
-
-    // TODO(formal-web): WPT `streams/piping/throwing-options.any.js` and some
-    // rejected-cancel `pipeTo()` cases still fail with `TypeError: not a callable
-    // function` inside harness promise helpers, even though direct local probes of
-    // `pipeTo(...).then(...)` work. That points to a Boa promise method/binding
-    // issue rather than another stream-layer semantic bug.
     Ok(JsValue::from(promise))
 }
 

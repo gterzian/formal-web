@@ -381,6 +381,7 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
 
     let repo_root = repo_root();
     let config = RunnerConfig::load(&repo_root)?;
+    let ignore_metadata = args.path.is_some();
 
     let wpt_include = IncludeFilter::load(&config.wpt.include_path)?;
     let formal_include = IncludeFilter::load(&config.formal.include_path)?;
@@ -410,6 +411,14 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
         "Browser mode: {}",
         if args.headed { "headed" } else { "headless" }
     );
+    println!(
+        "Metadata expectations: {}",
+        if ignore_metadata {
+            "ignored for explicit path runs"
+        } else {
+            "enabled"
+        }
+    );
     let browser_build = if args.debug_build {
         RunnerBuildProfile::Debug
     } else {
@@ -431,19 +440,21 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
             SuiteKind::Formal => &formal_meta,
         };
 
-        if let Some(reason) = suite_meta
-            .disabled_reason_for(&test.source_relative_path)
-            .or_else(|| {
-                suite_meta
-                    .expectation_for(&test.source_relative_path)
-                    .and_then(|entry| entry.disabled.clone())
-            })
-        {
-            let result = skipped_result(&test.display_path, test.kind, reason);
-            print_test_result(&result);
-            update_summary(&mut summary, &result);
-            results.push(result);
-            continue;
+        if !ignore_metadata {
+            if let Some(reason) = suite_meta
+                .disabled_reason_for(&test.source_relative_path)
+                .or_else(|| {
+                    suite_meta
+                        .expectation_for(&test.source_relative_path)
+                        .and_then(|entry| entry.disabled.clone())
+                })
+            {
+                let result = skipped_result(&test.display_path, test.kind, reason);
+                print_test_result(&result);
+                update_summary(&mut summary, &result);
+                results.push(result);
+                continue;
+            }
         }
 
         let observed = run_with_shared_runner(
@@ -458,6 +469,7 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
         let compared = compare_observed_result(
             observed,
             suite_meta.expectation_for(&test.source_relative_path),
+            ignore_metadata,
         );
         if compared.actual == WptStatus::Crash {
             if let Some(runner) = shared_runner.take() {
@@ -489,7 +501,14 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
     }
 
     if summary.unexpected > 0 {
-        return Err(format!("{} unexpected WPT result(s)", summary.unexpected));
+        eprintln!(
+            "WPT FAILURE: unexpected={} but expected 0. Treat this run as failing until the unexpected results are fixed or covered by metadata.",
+            summary.unexpected
+        );
+        return Err(format!(
+            "WPT run failed: unexpected={} but expected 0",
+            summary.unexpected
+        ));
     }
 
     Ok(())
@@ -1542,20 +1561,30 @@ fn report_status_from_payload(report: &HarnessCompletionReport) -> WptStatus {
 fn compare_observed_result(
     observed: ObservedTestResult,
     expectation: Option<&TestExpectation>,
+    ignore_metadata: bool,
 ) -> ComparedTestResult {
-    let expected = expectation
-        .and_then(|entry| entry.expected)
-        .unwrap_or(WptStatus::Pass);
+    let expected = if ignore_metadata {
+        WptStatus::Pass
+    } else {
+        expectation
+            .and_then(|entry| entry.expected)
+            .unwrap_or(WptStatus::Pass)
+    };
+    let displayed_expected = (!ignore_metadata).then_some(expected);
     let mut unexpected = observed.actual != expected;
     let mut subtests = Vec::new();
 
     if let Some(report) = &observed.harness {
         for subtest in &report.tests {
             let actual = WptStatus::from_test_code(subtest.status).unwrap_or(WptStatus::Error);
-            let expected = expectation
-                .and_then(|entry| entry.subtests.get(&subtest.name))
-                .and_then(|entry| entry.expected)
-                .unwrap_or(WptStatus::Pass);
+            let expected = if ignore_metadata {
+                WptStatus::Pass
+            } else {
+                expectation
+                    .and_then(|entry| entry.subtests.get(&subtest.name))
+                    .and_then(|entry| entry.expected)
+                    .unwrap_or(WptStatus::Pass)
+            };
             let is_unexpected = actual != expected;
             unexpected |= is_unexpected;
             subtests.push(ComparedSubtestResult {
@@ -1572,7 +1601,7 @@ fn compare_observed_result(
         path: observed.path,
         kind: observed.kind,
         actual: observed.actual,
-        expected: Some(expected),
+        expected: displayed_expected,
         unexpected,
         skipped: false,
         reason: None,
@@ -1667,6 +1696,9 @@ fn print_test_result(result: &ComparedTestResult) {
             subtest.name,
             subtest.expected.as_str()
         );
+        if let Some(message) = subtest.message.as_deref() {
+            println!("    message: {message}");
+        }
     }
 }
 
@@ -2504,9 +2536,9 @@ fn reporter_inject_script() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        RunReport, RunSummary, TestKind, WptStatus, any_script_supports_window,
-        parse_test_expectation_file, reporter_inject_script, served_path_for_test, temp_dir_path,
-        write_run_report,
+        ObservedTestResult, RunReport, RunSummary, TestExpectation, TestKind, WptStatus,
+        any_script_supports_window, compare_observed_result, parse_test_expectation_file,
+        reporter_inject_script, served_path_for_test, temp_dir_path, write_run_report,
     };
     use std::{fs, path::Path};
 
@@ -2596,5 +2628,27 @@ mod tests {
         assert!(report_path.exists());
 
         fs::remove_dir_all(base_dir).unwrap();
+    }
+
+    #[test]
+    fn explicit_path_runs_ignore_metadata_expectations() {
+        let observed = ObservedTestResult {
+            path: String::from("streams/example.any.js"),
+            kind: TestKind::AnyWindowScript,
+            actual: WptStatus::Fail,
+            message: None,
+            harness: None,
+            duration_ms: 5,
+        };
+        let expectation = TestExpectation {
+            expected: Some(WptStatus::Fail),
+            ..TestExpectation::default()
+        };
+
+        let compared = compare_observed_result(observed, Some(&expectation), true);
+
+        assert_eq!(compared.expected, None);
+        assert!(compared.unexpected);
+        assert_eq!(compared.actual, WptStatus::Fail);
     }
 }

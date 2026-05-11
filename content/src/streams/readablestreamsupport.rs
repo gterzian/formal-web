@@ -9,10 +9,22 @@ use boa_engine::{
     },
     property::Attribute,
 };
-use boa_gc::{Finalize, Trace};
+use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
-use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
+use crate::webidl::{
+    EcmascriptHost, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
+    rejected_promise,
+};
 
+use super::readablestream::{
+    ByteTeeState, PipeToState, TeeState,
+    readable_byte_stream_tee_default_reader_close_steps,
+    readable_byte_stream_tee_default_reader_chunk_steps,
+    readable_byte_stream_tee_default_reader_error_steps,
+    readable_stream_default_tee_read_request_close_steps,
+    readable_stream_default_tee_read_request_chunk_steps,
+    readable_stream_default_tee_read_request_error_steps,
+};
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
@@ -103,18 +115,19 @@ impl EcmascriptHost for ContextCallbackHost<'_> {
 }
 /// produces a chunk, closes, or errors.
 #[derive(Clone, Trace, Finalize)]
-pub(crate) struct ReadRequest {
-    sink: ReadRequestSink,
-}
-
-#[derive(Clone, Trace, Finalize)]
-enum ReadRequestSink {
-    Promise {
+pub(crate) enum ReadRequest {
+    DefaultReaderRead {
         resolvers: ResolvingFunctions,
     },
-    Reaction {
-        on_fulfilled: JsFunction,
-        on_rejected: JsFunction,
+    ReadableStreamDefaultTee {
+        tee_state: Gc<GcRefCell<TeeState>>,
+        clone_for_branch2: bool,
+    },
+    ReadableByteStreamTee {
+        tee_state: Gc<GcRefCell<ByteTeeState>>,
+    },
+    ReadableStreamPipeTo {
+        state: PipeToState,
     },
 }
 
@@ -158,84 +171,95 @@ impl ReadIntoRequest {
 }
 
 impl ReadRequest {
-    pub(crate) fn new(context: &mut Context) -> (Self, JsObject) {
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        (
-            Self {
-                sink: ReadRequestSink::Promise { resolvers },
-            },
-            promise.into(),
-        )
-    }
-
-    pub(crate) fn new_reaction(on_fulfilled: JsFunction, on_rejected: JsFunction) -> Self {
-        Self {
-            sink: ReadRequestSink::Reaction {
-                on_fulfilled,
-                on_rejected,
-            },
-        }
-    }
-
     pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
-        let result = create_read_result(chunk, false, context)?;
-        match &self.sink {
-            ReadRequestSink::Promise { resolvers } => {
-                let resolvers = resolvers.clone();
+        match self {
+            Self::DefaultReaderRead { resolvers } => {
+                let result = create_read_result(chunk, false, context)?;
                 resolvers
                     .resolve
                     .call(&JsValue::undefined(), &[result], context)?;
                 Ok(())
             }
-            ReadRequestSink::Reaction { on_fulfilled, .. } => {
-                queue_read_request_reaction(on_fulfilled.clone(), result, context)
+            Self::ReadableStreamDefaultTee {
+                tee_state,
+                clone_for_branch2,
+            } => readable_stream_default_tee_read_request_chunk_steps(
+                tee_state,
+                clone_for_branch2,
+                chunk,
+                context,
+            ),
+            Self::ReadableByteStreamTee { tee_state } => {
+                readable_byte_stream_tee_default_reader_chunk_steps(tee_state, chunk, context)
+            }
+            Self::ReadableStreamPipeTo { state } => {
+                let result = create_read_result(chunk, false, context)?;
+                state.on_read_request_settled(result, context)
             }
         }
     }
 
     /// closure.
     pub(crate) fn close_steps(self, context: &mut Context) -> JsResult<()> {
-        let result = create_read_result(JsValue::undefined(), true, context)?;
-        match &self.sink {
-            ReadRequestSink::Promise { resolvers } => {
-                let resolvers = resolvers.clone();
+        match self {
+            Self::DefaultReaderRead { resolvers } => {
+                let result = create_read_result(JsValue::undefined(), true, context)?;
                 resolvers
                     .resolve
                     .call(&JsValue::undefined(), &[result], context)?;
                 Ok(())
             }
-            ReadRequestSink::Reaction { on_fulfilled, .. } => {
-                queue_read_request_reaction(on_fulfilled.clone(), result, context)
+            Self::ReadableStreamDefaultTee { tee_state, .. } => {
+                readable_stream_default_tee_read_request_close_steps(tee_state, context)
+            }
+            Self::ReadableByteStreamTee { tee_state } => {
+                readable_byte_stream_tee_default_reader_close_steps(tee_state, context)
+            }
+            Self::ReadableStreamPipeTo { state } => {
+                let result = create_read_result(JsValue::undefined(), true, context)?;
+                state.on_read_request_settled(result, context)
             }
         }
     }
 
     pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
-        match &self.sink {
-            ReadRequestSink::Promise { resolvers } => {
-                let resolvers = resolvers.clone();
+        match self {
+            Self::DefaultReaderRead { resolvers } => {
                 resolvers
                     .reject
                     .call(&JsValue::undefined(), &[error], context)?;
                 Ok(())
             }
-            ReadRequestSink::Reaction { on_rejected, .. } => {
-                queue_read_request_reaction(on_rejected.clone(), error, context)
+            Self::ReadableStreamDefaultTee { tee_state, .. } => {
+                readable_stream_default_tee_read_request_error_steps(tee_state, context)
             }
+            Self::ReadableByteStreamTee { tee_state } => {
+                readable_byte_stream_tee_default_reader_error_steps(tee_state, context)
+            }
+            Self::ReadableStreamPipeTo { state } => state.on_read_request_settled(error, context),
         }
     }
 }
 
-fn queue_read_request_reaction(
-    callback: JsFunction,
-    value: JsValue,
+pub(crate) fn queue_internal_stream_microtask<F>(
+    task: F,
     context: &mut Context,
-) -> JsResult<()> {
+) -> JsResult<()>
+where
+    F: FnOnce(&mut Context) -> JsResult<()> + 'static,
+{
     let realm = context.realm().clone();
     context.enqueue_job(
         PromiseJob::with_realm(
             move |context| {
-                callback.call(&JsValue::undefined(), &[value], context)?;
+                if let Err(error) = task(context) {
+                    let reason = error
+                        .into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined());
+                    if let Ok(rejected) = rejected_promise(reason, context) {
+                        let _ = mark_promise_as_handled(&rejected, context);
+                    }
+                }
                 Ok(JsValue::undefined())
             },
             realm,
