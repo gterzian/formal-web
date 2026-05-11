@@ -171,6 +171,7 @@ impl ReadableStream {
         readable_stream_cancel(self.clone(), reason, context)
             .map_err(|e| {
                 JsNativeError::typ().with_message(format!("Failed to cancel stream: {}", e))
+                    .into()
             })
     }
 
@@ -360,7 +361,7 @@ impl ReadableStream {
     pub(crate) fn tee(&mut self, context: &mut Context) -> JsResult<JsValue> {
         // Step 1: "Return ? ReadableStreamTee(this, false)."
         Ok(readable_stream_tee(self.clone(), false, context)?.into_js_value(context))
-            let promise = readable_stream_pipe_to(
+}
 
 }
 
@@ -1185,7 +1186,7 @@ pub(crate) fn readable_stream_from_iterable(
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
-fn readable_stream_from_iterable_pull_algorithm(
+pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     state: ReadableStreamFromIterableState,
     context: &mut Context,
 ) -> JsResult<JsObject> {
@@ -1246,7 +1247,7 @@ fn readable_stream_from_iterable_pull_algorithm(
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
-fn readable_stream_from_iterable_cancel_algorithm(
+pub(crate) fn readable_stream_from_iterable_cancel_algorithm(
     state: ReadableStreamFromIterableState,
     reason: JsValue,
     context: &mut Context,
