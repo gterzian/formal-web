@@ -172,7 +172,7 @@ impl ReadIntoRequest {
 
 impl ReadRequest {
     pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
-        match self {
+        match &self {
             Self::DefaultReaderRead { resolvers } => {
                 let result = create_read_result(chunk, false, context)?;
                 resolvers
@@ -184,24 +184,28 @@ impl ReadRequest {
                 tee_state,
                 clone_for_branch2,
             } => readable_stream_default_tee_read_request_chunk_steps(
-                tee_state,
-                clone_for_branch2,
+                tee_state.clone(),
+                *clone_for_branch2,
                 chunk,
                 context,
             ),
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_chunk_steps(tee_state, chunk, context)
+                readable_byte_stream_tee_default_reader_chunk_steps(
+                    tee_state.clone(),
+                    chunk,
+                    context,
+                )
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(chunk, false, context)?;
-                state.on_read_request_settled(result, context)
+                state.clone().on_read_request_settled(result, context)
             }
         }
     }
 
     /// closure.
     pub(crate) fn close_steps(self, context: &mut Context) -> JsResult<()> {
-        match self {
+        match &self {
             Self::DefaultReaderRead { resolvers } => {
                 let result = create_read_result(JsValue::undefined(), true, context)?;
                 resolvers
@@ -210,20 +214,20 @@ impl ReadRequest {
                 Ok(())
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                readable_stream_default_tee_read_request_close_steps(tee_state, context)
+                readable_stream_default_tee_read_request_close_steps(tee_state.clone(), context)
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_close_steps(tee_state, context)
+                readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), context)
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(JsValue::undefined(), true, context)?;
-                state.on_read_request_settled(result, context)
+                state.clone().on_read_request_settled(result, context)
             }
         }
     }
 
     pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
-        match self {
+        match &self {
             Self::DefaultReaderRead { resolvers } => {
                 resolvers
                     .reject
@@ -231,12 +235,14 @@ impl ReadRequest {
                 Ok(())
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                readable_stream_default_tee_read_request_error_steps(tee_state, context)
+                readable_stream_default_tee_read_request_error_steps(tee_state.clone(), context)
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_error_steps(tee_state, context)
+                readable_byte_stream_tee_default_reader_error_steps(tee_state.clone(), context)
             }
-            Self::ReadableStreamPipeTo { state } => state.on_read_request_settled(error, context),
+            Self::ReadableStreamPipeTo { state } => {
+                state.clone().on_read_request_settled(error, context)
+            }
         }
     }
 }
