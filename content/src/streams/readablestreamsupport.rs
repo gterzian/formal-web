@@ -198,7 +198,11 @@ impl ReadRequest {
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(chunk, false, context)?;
-                state.clone().on_read_request_settled(result, context)
+                let state = state.clone();
+                queue_internal_stream_microtask(
+                    move |context| state.on_read_request_settled(result, context),
+                    context,
+                )
             }
         }
     }
@@ -221,7 +225,11 @@ impl ReadRequest {
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(JsValue::undefined(), true, context)?;
-                state.clone().on_read_request_settled(result, context)
+                let state = state.clone();
+                queue_internal_stream_microtask(
+                    move |context| state.on_read_request_settled(result, context),
+                    context,
+                )
             }
         }
     }
@@ -241,7 +249,11 @@ impl ReadRequest {
                 readable_byte_stream_tee_default_reader_error_steps(tee_state.clone(), context)
             }
             Self::ReadableStreamPipeTo { state } => {
-                state.clone().on_read_request_settled(error, context)
+                let state = state.clone();
+                queue_internal_stream_microtask(
+                    move |context| state.on_read_request_settled(error, context),
+                    context,
+                )
             }
         }
     }
