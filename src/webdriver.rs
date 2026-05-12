@@ -375,7 +375,7 @@ fn execute_script_value(script: &str, args: &[Value]) -> Result<Value, WebDriver
     })?;
 
     let wrapped = wrap_execute_script(script, args).map_err(WebDriverError::invalid_argument)?;
-    ffi::evaluate_script(webview_id.0, wrapped, SCRIPT_TIMEOUT)
+    user_agent::evaluate_script(webview_id.0, wrapped, SCRIPT_TIMEOUT)
         .map_err(WebDriverError::javascript)
 }
 

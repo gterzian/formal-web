@@ -4,14 +4,13 @@ pub mod ui_event;
 use anyrender::Scene as RenderScene;
 use blitz_traits::events::UiEvent;
 use compositor::{Compositor, VisibleFrameViewport};
-use ipc_messages::content::{FontTransportReceiver, FrameId, PaintFrame, WebviewId};
+use ipc_messages::content::{
+    FontTransportReceiver, FrameId, NavigateRequest, PaintFrame,
+    UserNavigationInvolvement, WebviewId,
+};
 use std::env;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
-
-const DISPATCH_EVENT_FOR_MESSAGE_PREFIX: &str = "DispatchEventFor|";
-const RENDERING_OPPORTUNITY_FOR_MESSAGE_PREFIX: &str = "RenderingOpportunityFor|";
 
 #[derive(Clone)]
 pub struct WebviewState {
@@ -36,7 +35,7 @@ struct ChildNavigableHost {
     content_navigable_id: FrameId,
 }
 
-pub trait EmbedderApi: Send + Sync {
+pub trait EmbedderApi {
     fn request_redraw(&self, webview_id: WebviewId);
     fn viewport_scale_factor(&self) -> f32;
     fn update_traversable_viewport(
@@ -49,58 +48,18 @@ pub trait EmbedderApi: Send + Sync {
     );
 }
 
-#[derive(Clone, Copy)]
-pub struct RuntimeHooks {
-    pub handle_runtime_message: fn(&str),
-    pub start_navigation_parts: fn(usize, &str, &str, &str, bool) -> Result<(), String>,
+pub trait RuntimeClient {
+    fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String>;
+    fn start_navigation(&self, request: NavigateRequest) -> Result<(), String>;
+    fn dispatch_event_for(&self, traversable_id: u64, event: String) -> Result<(), String>;
+    fn rendering_opportunity_for(&self, traversable_id: u64) -> Result<(), String>;
 }
 
-static RUNTIME_HOOKS: LazyLock<Mutex<Option<RuntimeHooks>>> =
-    LazyLock::new(|| Mutex::new(None));
-
-pub fn set_runtime_hooks(hooks: RuntimeHooks) {
-    let mut guard = RUNTIME_HOOKS.lock().expect("runtime hooks mutex poisoned");
-    *guard = Some(hooks);
-}
-
-fn runtime_hooks() -> Result<RuntimeHooks, String> {
-    RUNTIME_HOOKS
-        .lock()
-        .expect("runtime hooks mutex poisoned")
-        .as_ref()
-        .copied()
-        .ok_or_else(|| String::from("webview runtime hooks are not initialized"))
-}
-
-fn call_lean_runtime_message_handler(message: &str) {
-    if let Ok(hooks) = runtime_hooks() {
-        (hooks.handle_runtime_message)(message);
+fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
+    match startup_url {
+        Some(url) => Ok(url.to_owned()),
+        None => startup_artifact_url(),
     }
-}
-
-fn call_lean_navigation_start_parts(
-    source_navigable_id: usize,
-    destination_url: &str,
-    target: &str,
-    user_involvement: &str,
-    noopener: bool,
-) -> Result<(), String> {
-    let hooks = runtime_hooks()?;
-    (hooks.start_navigation_parts)(
-        source_navigable_id,
-        destination_url,
-        target,
-        user_involvement,
-        noopener,
-    )
-}
-
-fn startup_runtime_message_for(startup_url: Option<&str>) -> Result<String, String> {
-    let startup_url = match startup_url {
-        Some(url) => url.to_owned(),
-        None => startup_artifact_url()?,
-    };
-    Ok(format!("FreshTopLevelTraversable|{startup_url}"))
 }
 
 fn startup_artifact_url() -> Result<String, String> {
@@ -123,40 +82,40 @@ pub struct WebviewProvider {
     child_navigable_hosts_by_webview: HashMap<WebviewId, ChildNavigableHost>,
     child_host_webviews_by_content_navigable: HashMap<FrameId, WebviewId>,
     font_receiver: FontTransportReceiver,
-    embedder: Arc<dyn EmbedderApi>,
+    embedder: Box<dyn EmbedderApi>,
+    runtime_client: Box<dyn RuntimeClient>,
 }
 
 impl WebviewProvider {
-    pub fn new(embedder: Arc<dyn EmbedderApi>) -> Self {
+    pub fn new(embedder: Box<dyn EmbedderApi>, runtime_client: Box<dyn RuntimeClient>) -> Self {
         Self {
             webviews: HashMap::new(),
             child_navigable_hosts_by_webview: HashMap::new(),
             child_host_webviews_by_content_navigable: HashMap::new(),
             font_receiver: FontTransportReceiver::default(),
             embedder,
+            runtime_client,
         }
     }
 
     pub fn start(&self, startup_url: Option<&str>) -> Result<(), String> {
-        let message = startup_runtime_message_for(startup_url)?;
-        call_lean_runtime_message_handler(&message);
-        Ok(())
+        let destination_url = startup_destination_url(startup_url)?;
+        self.runtime_client
+            .start_top_level_traversable(destination_url)
     }
 
     pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
         match webview_id {
-            Some(webview_id) => call_lean_navigation_start_parts(
-                webview_id.0 as usize,
-                url,
-                "",
-                "browser-ui",
-                false,
-            ),
-            None => {
-                let message = format!("FreshTopLevelTraversable|{url}");
-                call_lean_runtime_message_handler(&message);
-                Ok(())
-            }
+            Some(webview_id) => self.runtime_client.start_navigation(NavigateRequest {
+                source_navigable_id: webview_id.0,
+                destination_url: url.to_owned(),
+                target: String::new(),
+                user_involvement: UserNavigationInvolvement::BrowserUi,
+                noopener: false,
+            }),
+            None => self
+                .runtime_client
+                .start_top_level_traversable(url.to_owned()),
         }
     }
 
@@ -165,22 +124,15 @@ impl WebviewProvider {
         let (target_webview_id, routed_event, composed_frame_ids) =
             self.route_ui_event(webview_id, event);
         let event_message = ui_event::serialize_ui_event(&routed_event)?;
-        let message = format!(
-            "{DISPATCH_EVENT_FOR_MESSAGE_PREFIX}{}|{event_message}",
-            target_webview_id.0,
-        );
-        call_lean_runtime_message_handler(&message);
+        self.runtime_client
+            .dispatch_event_for(target_webview_id.0, event_message)?;
         self.note_rendering_opportunities(webview_id, composed_frame_ids, "ui_event");
         Ok(())
     }
 
     pub fn note_rendering_opportunity(&self, webview_id: WebviewId, reason: &str) {
         let _ = reason;
-        let message = format!(
-            "{RENDERING_OPPORTUNITY_FOR_MESSAGE_PREFIX}{}",
-            webview_id.0,
-        );
-        call_lean_runtime_message_handler(&message);
+        let _ = self.runtime_client.rendering_opportunity_for(webview_id.0);
     }
 
     pub fn register_child_navigable_host(
@@ -378,6 +330,7 @@ impl WebviewProvider {
                 viewport.offset_x / viewport_scale,
                 viewport.offset_y / viewport_scale,
             );
+            self.note_rendering_opportunity(child_webview_id, "visible_child_viewport");
         }
     }
 

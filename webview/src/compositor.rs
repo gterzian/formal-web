@@ -424,13 +424,12 @@ impl Compositor {
         };
 
         for child in &frame.child_frames {
-            let Some(child_frame) = self.committed_frames.get(&child.child_frame_id) else {
-                continue;
-            };
-
             let viewport_width = child.root_clip_bounds.width().ceil().max(1.0) as u32;
             let viewport_height = child.root_clip_bounds.height().ceil().max(1.0) as u32;
 
+            // Publish placeholder-derived child viewport bounds even before the child content
+            // has committed its first frame. Cross-origin iframes need that first viewport to
+            // trigger their initial rendering opportunity.
             viewports.push(VisibleFrameViewport {
                 frame_id: child.child_frame_id,
                 offset_x: child.root_clip_bounds.x0 as f32,

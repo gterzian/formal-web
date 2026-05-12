@@ -193,8 +193,18 @@ fn render_debug_enabled() -> bool {
     env::var_os("FORMAL_WEB_DEBUG_RENDER").is_some()
 }
 
+fn render_state_debug_enabled() -> bool {
+    env::var_os("FORMAL_WEB_DEBUG_RENDER_STATE").is_some()
+}
+
 fn input_debug_enabled() -> bool {
     env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+}
+
+fn log_render_state_debug(message: impl AsRef<str>) {
+    if render_state_debug_enabled() {
+        eprintln!("[render-state][content] {}", message.as_ref());
+    }
 }
 
 fn maybe_log_input_layout_debug(document_id: u64, document: &BaseDocument) {
@@ -451,6 +461,21 @@ impl ContentRuntime {
         self.traversable_viewports
             .insert(traversable_id, viewport_state.clone());
 
+        let active_document_id = self
+            .active_documents_by_traversable
+            .get(&traversable_id)
+            .copied();
+        log_render_state_debug(format!(
+            "set traversable viewport traversable={} document={:?} size=({}, {}) scale={} offset=({}, {})",
+            traversable_id,
+            active_document_id,
+            viewport_state.snapshot.width,
+            viewport_state.snapshot.height,
+            viewport_state.snapshot.scale,
+            viewport_state.offset_x,
+            viewport_state.offset_y,
+        ));
+
         let Some(document_id) = self
             .active_documents_by_traversable
             .get(&traversable_id)
@@ -484,6 +509,12 @@ impl ContentRuntime {
     }
 
     fn request_remote_fetch(&self, handler_id: u64, request: Request) -> Result<(), String> {
+        log_render_state_debug(format!(
+            "request remote fetch handler={} method={} url={}",
+            handler_id,
+            request.method,
+            request.url,
+        ));
         self.event_sender
             .send(ContentEvent::DocumentFetchRequested(ContentFetchRequest {
                 handler_id,
@@ -585,11 +616,12 @@ impl ContentRuntime {
     }
 
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
-        let ready_to_finish = {
+        let (ready_to_finish, traversable_id, resources_ready, scripts_ready) = {
             let content_document = self
                 .documents
                 .get_mut(&document_id)
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+            let traversable_id = content_document.traversable_id;
 
             content_document.document.borrow_mut().handle_messages();
             let resources_ready = !content_document
@@ -606,10 +638,19 @@ impl ContentRuntime {
                 .scripts
                 .iter()
                 .all(|script| !matches!(script, DeferredScriptState::ExternalPending { .. }));
-            resources_ready && scripts_ready
+            (
+                resources_ready && scripts_ready,
+                traversable_id,
+                resources_ready,
+                scripts_ready,
+            )
         };
 
         if !ready_to_finish {
+            log_render_state_debug(format!(
+                "defer document load completion document={} traversable={} resources_ready={} scripts_ready={}",
+                document_id, traversable_id, resources_ready, scripts_ready,
+            ));
             return Ok(());
         }
 
@@ -647,6 +688,12 @@ impl ContentRuntime {
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
         run_iframe_load_event_steps_for_traversable(self, traversable_id)?;
+        log_render_state_debug(format!(
+            "finalize document load document={} traversable={} url={}",
+            document_id,
+            traversable_id,
+            pending_document_load.finalize_url,
+        ));
 
         self.event_sender
             .send(ContentEvent::FinalizeNavigation(
@@ -899,6 +946,10 @@ impl ContentRuntime {
         let Some(document) = self.documents.get_mut(&document_id) else {
             return Ok(());
         };
+        log_render_state_debug(format!(
+            "queue update-the-rendering traversable={} document={}",
+            traversable_id, document_id,
+        ));
         document.pending_update_the_rendering = true;
         self.continue_updating_the_rendering(traversable_id, document_id)
     }
@@ -920,6 +971,10 @@ impl ContentRuntime {
             document.document.borrow_mut().handle_messages();
 
             if document.document.borrow().has_pending_critical_resources() {
+                log_render_state_debug(format!(
+                    "skip paint pending critical resources traversable={} document={}",
+                    traversable_id, document_id,
+                ));
                 return Ok(());
             }
 
@@ -962,6 +1017,10 @@ impl ContentRuntime {
                 );
                 let scene = self.font_sender.prepare_scene(self.font_namespace, scene);
                 log_paint_debug(document_id, &document_guard, &scene.scene);
+                log_render_state_debug(format!(
+                    "emit paint traversable={} document={} size=({}, {})",
+                    traversable_id, document_id, width, height,
+                ));
                 let paint_frame = PaintFrame::new(
                     WebviewId(traversable_id),
                     FrameId(traversable_id),
@@ -986,6 +1045,9 @@ impl ContentRuntime {
         handler_id: u64,
         response: ContentFetchResponse,
     ) -> Result<(), String> {
+        let response_url = response.final_url.clone();
+        let response_status = response.status;
+        let response_type = response.content_type.clone();
         let pending_handler = {
             let mut local_state = self
                 .local_state
@@ -1010,6 +1072,10 @@ impl ContentRuntime {
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
+                log_render_state_debug(format!(
+                    "complete resource fetch handler={} traversable={} document={} status={} type={} url={}",
+                    handler_id, traversable_id, document_id, response_status, response_type, response_url,
+                ));
                 self.continue_document_load(document_id)?;
                 self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
@@ -1032,6 +1098,16 @@ impl ContentRuntime {
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
+                log_render_state_debug(format!(
+                    "complete deferred-script fetch handler={} traversable={} document={} script_index={} status={} type={} url={}",
+                    handler_id,
+                    traversable_id,
+                    document_id,
+                    script_index,
+                    response_status,
+                    response_type,
+                    response_url,
+                ));
                 self.continue_document_load(document_id)?;
                 self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
@@ -1064,6 +1140,10 @@ impl ContentRuntime {
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
+                log_render_state_debug(format!(
+                    "fail resource fetch handler={} traversable={} document={}",
+                    handler_id, traversable_id, document_id,
+                ));
                 self.continue_document_load(document_id)?;
                 self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())
@@ -1078,6 +1158,10 @@ impl ContentRuntime {
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
+                log_render_state_debug(format!(
+                    "fail deferred-script fetch handler={} traversable={} document={} script_index={}",
+                    handler_id, traversable_id, document_id, script_index,
+                ));
                 self.continue_document_load(document_id)?;
                 self.continue_updating_the_rendering(traversable_id, document_id)?;
                 Ok(())

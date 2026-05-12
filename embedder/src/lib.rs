@@ -1,6 +1,5 @@
 mod chrome;
 pub use webview::ui_event;
-pub use webview::set_runtime_hooks;
 
 use crate::chrome::{ChromeAction, ChromeUi, ChromeViewState};
 use anyrender::{PaintScene, WindowRenderer};
@@ -15,12 +14,13 @@ use cursor_icon::CursorIcon;
 use ipc_messages::content::{
     BeforeUnloadResult, PaintFrame, WebviewId,
 };
+use ipc_messages::runtime::EmbedderEvent;
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
-use webview::{WebviewProvider, EmbedderApi};
+use webview::{EmbedderApi, RuntimeClient, WebviewProvider};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{
@@ -35,11 +35,6 @@ use winit::keyboard::{
 use winit::window::{Cursor, Window, WindowAttributes, WindowId};
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
-const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX: &str = "NewTopLevelTraversable|";
-const NAVIGATION_REQUESTED_MESSAGE_PREFIX: &str = "NavigationRequested|";
-const BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX: &str = "BeforeUnloadCompleted|";
-const FINALIZE_NAVIGATION_MESSAGE_PREFIX: &str = "FinalizeNavigation|";
-
 #[derive(Clone, Default)]
 pub struct EventLoopOptions {
     pub headless: bool,
@@ -147,6 +142,7 @@ pub enum FormalWebUserEvent {
     Paint(PaintFrame),
     RequestRedraw(WebviewId),
     NavigationRequested { webview_id: WebviewId, destination_url: String },
+    NavigationFailed { webview_id: WebviewId, message: String },
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
     NewTopLevelTraversable(WebviewId, String),
@@ -279,6 +275,7 @@ struct FormalWebApp {
     chrome: Option<ChromeUi>,
     browser: BrowserState,
     provider: Option<WebviewProvider>,
+    runtime_client: Option<Box<dyn RuntimeClient>>,
     current_webview_id: Option<WebviewId>,
     has_top_level_traversable: bool,
     window_occluded: bool,
@@ -388,7 +385,10 @@ pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
 }
 
 pub fn send_runtime_message(message: &str) -> Result<(), String> {
-    let user_event = user_event_of_runtime_message(message)?;
+    let user_event = user_event_of_runtime_event(
+        serde_json::from_str(message)
+            .map_err(|error| format!("invalid runtime event payload: {error}"))?,
+    );
     send_user_event(user_event)
 }
 
@@ -490,7 +490,7 @@ pub fn request_exit() -> Result<(), String> {
     send_user_event(FormalWebUserEvent::Exit)
 }
 
-pub fn run_event_loop() -> Result<(), String> {
+pub fn run_event_loop(runtime_client: Box<dyn RuntimeClient>) -> Result<(), String> {
     let event_loop = EventLoop::<FormalWebUserEvent>::with_user_event()
         .build()
         .map_err(|error| format!("failed to create event loop: {error}"))?;
@@ -501,7 +501,10 @@ pub fn run_event_loop() -> Result<(), String> {
         *guard = Some(event_loop.create_proxy());
     }
 
-    let mut app = FormalWebApp::default();
+    let mut app = FormalWebApp {
+        runtime_client: Some(runtime_client),
+        ..FormalWebApp::default()
+    };
     let run_result = event_loop
         .run_app(&mut app)
         .map_err(|error| format!("winit event loop failed: {error}"));
@@ -524,12 +527,11 @@ pub fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
         .copied()
 }
 
-fn startup_runtime_message_for(startup_url: Option<&str>) -> Result<String, String> {
-    let startup_url = match startup_url {
-        Some(url) => url.to_owned(),
-        None => startup_artifact_url()?,
-    };
-    Ok(format!("FreshTopLevelTraversable|{startup_url}"))
+fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
+    match startup_url {
+        Some(url) => Ok(url.to_owned()),
+        None => startup_artifact_url(),
+    }
 }
 
 fn startup_artifact_url() -> Result<String, String> {
@@ -553,62 +555,26 @@ fn normalize_browser_destination(input: &str) -> Option<String> {
     Some(format!("https://{trimmed}"))
 }
 
-fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
-    if let Some(payload) = message.strip_prefix(NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX) {
-        let (id_str, target_name) = payload.split_once('|').unwrap_or((payload, ""));
-        let webview_id = id_str
-            .parse::<u64>()
-            .map(WebviewId)
-            .map_err(|error| format!("invalid webview id: {error}"))?;
-        return Ok(FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name.to_owned()));
-    }
-
-    if let Some(payload) = message.strip_prefix(NAVIGATION_REQUESTED_MESSAGE_PREFIX) {
-        let Some((webview_id_str, destination_url)) = payload.split_once('|') else {
-            return Err(format!("invalid navigation requested runtime message: {message}"));
-        };
-        let webview_id = webview_id_str
-            .parse::<u64>()
-            .map(WebviewId)
-            .map_err(|error| format!("invalid webview id: {error}"))?;
-        return Ok(FormalWebUserEvent::NavigationRequested {
+fn user_event_of_runtime_event(event: EmbedderEvent) -> FormalWebUserEvent {
+    match event {
+        EmbedderEvent::NewTopLevelTraversable {
             webview_id,
-            destination_url: destination_url.to_owned(),
-        });
+            target_name,
+        } => FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name),
+        EmbedderEvent::NavigationRequested {
+            webview_id,
+            destination_url,
+        } => FormalWebUserEvent::NavigationRequested {
+            webview_id,
+            destination_url,
+        },
+        EmbedderEvent::BeforeUnloadCompleted(result) => {
+            FormalWebUserEvent::BeforeUnloadCompleted(result)
+        }
+        EmbedderEvent::FinalizeNavigation { webview_id, url } => {
+            FormalWebUserEvent::FinalizeNavigation(FinalizeNavigation { webview_id, url })
+        }
     }
-
-    if let Some(payload) = message.strip_prefix(BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX) {
-        let Some((document_id, remainder)) = payload.split_once('|') else {
-            return Err(format!("invalid beforeunload runtime message: {message}"));
-        };
-        let Some((check_id, canceled)) = remainder.split_once('|') else {
-            return Err(format!("invalid beforeunload runtime message: {message}"));
-        };
-        return Ok(FormalWebUserEvent::BeforeUnloadCompleted(BeforeUnloadResult {
-            document_id: document_id
-                .parse()
-                .map_err(|error| format!("invalid beforeunload document id: {error}"))?,
-            check_id: check_id
-                .parse()
-                .map_err(|error| format!("invalid beforeunload check id: {error}"))?,
-            canceled: canceled == "1",
-        }));
-    }
-
-    if let Some(payload) = message.strip_prefix(FINALIZE_NAVIGATION_MESSAGE_PREFIX) {
-        let Some((webview_id, url)) = payload.split_once('|') else {
-            return Err(format!("invalid finalize-navigation runtime message: {message}"));
-        };
-        return Ok(FormalWebUserEvent::FinalizeNavigation(FinalizeNavigation {
-            webview_id: webview_id
-                .parse()
-                .map(WebviewId)
-                .map_err(|error| format!("invalid finalize-navigation webview id: {error}"))?,
-            url: url.to_owned(),
-        }));
-    }
-
-    Err(format!("unknown runtime message: {message}"))
 }
 
 pub(crate) fn with_event_loop_proxy<R>(
@@ -817,6 +783,7 @@ impl Default for FormalWebApp {
             chrome: None,
             browser: BrowserState::default(),
             provider: None,
+            runtime_client: None,
             current_webview_id: None,
             has_top_level_traversable: false,
             window_occluded: false,
@@ -1174,6 +1141,17 @@ impl FormalWebApp {
         }
     }
 
+    fn handle_navigation_failed(&mut self, webview_id: WebviewId, message: String) {
+        if self.current_webview_id == Some(webview_id) {
+            if let Some(pending_navigation) = self.pending_automation_navigation.take() {
+                let _ = pending_navigation.reply.send(Err(message));
+            }
+            self.browser.cancel_pending_navigation();
+            self.sync_chrome_state();
+            self.request_window_redraw();
+        }
+    }
+
     fn sync_browser_navigable_id_from_provider(&mut self) {
         let navigable_id = self
             .provider
@@ -1216,6 +1194,8 @@ impl FormalWebApp {
         if let Some(provider) = self.provider.as_mut() {
             provider.on_finalize_navigation(finalized.webview_id, &finalized.url);
         }
+
+        self.request_window_redraw();
     }
 
     fn handle_automation_command(&mut self, command: AutomationCommand) {
@@ -1381,23 +1361,23 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         event_loop.exit();
                         return;
                     };
-                    let embedder: Arc<dyn EmbedderApi> = Arc::new(WinitEmbedderApi { proxy });
-                    self.provider = Some(WebviewProvider::new(embedder));
+                    let Some(runtime_client) = self.runtime_client.take() else {
+                        event_loop.exit();
+                        return;
+                    };
+                    let embedder: Box<dyn EmbedderApi> = Box::new(WinitEmbedderApi { proxy });
+                    self.provider = Some(WebviewProvider::new(embedder, runtime_client));
                     self.window = Some(window.clone());
                     self.sync_chrome_state();
                     self.update_content_viewport_snapshot(&window);
                     self.resume_renderer_for_window(&window);
                     let startup_url = event_loop_options().startup_url;
-                    match startup_runtime_message_for(startup_url.as_deref()) {
-                        Ok(message) => {
-                            if let Some(destination_url) =
-                                message.strip_prefix("FreshTopLevelTraversable|")
-                            {
-                                self.browser.begin_navigation(PendingNavigation {
-                                    url: destination_url.to_owned(),
-                                });
-                                self.sync_chrome_state();
-                            }
+                    match startup_destination_url(startup_url.as_deref()) {
+                        Ok(destination_url) => {
+                            self.browser.begin_navigation(PendingNavigation {
+                                url: destination_url,
+                            });
+                            self.sync_chrome_state();
                             if let Some(provider) = self.provider.as_ref() {
                                 if provider.start(startup_url.as_deref()).is_err() {
                                     event_loop.exit();
@@ -1667,6 +1647,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             }
             FormalWebUserEvent::NavigationRequested { webview_id, destination_url } => {
                 self.handle_navigation_requested(webview_id, destination_url);
+            }
+            FormalWebUserEvent::NavigationFailed { webview_id, message } => {
+                self.handle_navigation_failed(webview_id, message);
             }
             FormalWebUserEvent::BeforeUnloadCompleted(result) => {
                 self.handle_before_unload_completed(result);

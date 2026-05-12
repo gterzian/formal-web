@@ -1,6 +1,6 @@
-mod content_bridge;
-
-use ipc_messages::content::{Command as ContentCommand, DispatchEventEntry};
+use ipc_messages::{
+    content::{Command as ContentCommand, DispatchEventEntry, NavigateRequest},
+};
 use std::ffi::{CStr, c_char};
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
@@ -29,51 +29,6 @@ unsafe extern "C" {
     fn formalWebFinalizeLeanRuntime() -> *mut lean_object;
     fn formalWebStartKernel() -> *mut lean_object;
     fn formalWebShutdownKernel() -> *mut lean_object;
-    fn lean_mk_string_from_bytes(value: *const c_char, size: usize) -> *mut lean_object;
-    fn handleRuntimeMessage(message: *mut lean_object) -> *mut lean_object;
-    fn startDocumentFetch(
-        event_loop_id: usize,
-        handler: usize,
-        url: *mut lean_object,
-        method: *mut lean_object,
-        body: *mut lean_object,
-    ) -> *mut lean_object;
-    fn scheduleWindowTimer(
-        event_loop_id: usize,
-        document_id: usize,
-        timer_id: usize,
-        timer_key: usize,
-        timeout_ms: usize,
-        nesting_level: usize,
-    ) -> *mut lean_object;
-    fn clearWindowTimer(event_loop_id: usize, timer_key: usize) -> *mut lean_object;
-    fn startNavigation(
-        source_navigable_id: usize,
-        destination_url: *mut lean_object,
-        target: *mut lean_object,
-        user_involvement: *mut lean_object,
-        noopener: usize,
-    ) -> *mut lean_object;
-    fn startNavigationFromEventLoop(
-        event_loop_id: usize,
-        source_navigable_id: usize,
-        destination_url: *mut lean_object,
-        target: *mut lean_object,
-        user_involvement: *mut lean_object,
-        noopener: usize,
-    ) -> *mut lean_object;
-    fn completeBeforeUnload(document_id: usize, check_id: usize, canceled: usize)
-    -> *mut lean_object;
-    fn finalizeNavigation(document_id: usize, url: *mut lean_object) -> *mut lean_object;
-    fn removeIframeTraversable(
-        parent_traversable_id: usize,
-        source_navigable_id: usize,
-    ) -> *mut lean_object;
-    fn childNavigableCreated(
-        parent_traversable_id: usize,
-        source_navigable_id: usize,
-    ) -> *mut lean_object;
-    fn runNextEventLoopTask(event_loop_id: usize) -> *mut lean_object;
     fn leanIoResultMkOkUnit() -> *mut lean_object;
     fn leanIoResultMkOkUsize(value: usize) -> *mut lean_object;
     fn leanIoResultMkErrorFromBytes(value: *const c_char, size: usize) -> *mut lean_object;
@@ -83,10 +38,6 @@ unsafe extern "C" {
     fn leanByteArraySize(value: *mut lean_object) -> usize;
     fn leanByteArrayCptr(value: *mut lean_object) -> *const u8;
     fn leanDec(value: *mut lean_object);
-}
-
-fn lean_string_from_owned(value: String) -> *mut lean_object {
-    unsafe { lean_mk_string_from_bytes(value.as_ptr() as *const c_char, value.len()) }
 }
 
 fn ok_unit_result() -> *mut lean_object {
@@ -112,16 +63,6 @@ fn unit_result_from_lean(io_result: *mut lean_object, context: &str) -> Result<(
     Ok(())
 }
 
-fn call_lean_runtime_message_handler(message: &str) {
-    let lean_message = lean_string_from_owned(message.to_owned());
-    let io_result = unsafe { handleRuntimeMessage(lean_message) };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-    }
-    unsafe { leanDec(io_result) };
-}
-
 fn decode_dispatch_event_batch(batch: &str) -> Result<Vec<DispatchEventEntry>, String> {
     if batch.is_empty() {
         return Ok(Vec::new());
@@ -144,218 +85,15 @@ fn decode_dispatch_event_batch(batch: &str) -> Result<Vec<DispatchEventEntry>, S
         .collect()
 }
 
-pub(crate) fn call_lean_document_fetch_start_parts(
-    event_loop_id: usize,
-    handler: usize,
-    url: &str,
-    method: &str,
-    body: &str,
-) -> Result<(), String> {
-    let lean_url = lean_string_from_owned(url.to_owned());
-    let lean_method = lean_string_from_owned(method.to_owned());
-    let lean_body = lean_string_from_owned(body.to_owned());
-    let io_result = unsafe {
-        startDocumentFetch(event_loop_id, handler, lean_url, lean_method, lean_body)
-    };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean document fetch start failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_schedule_window_timer_parts(
-    event_loop_id: usize,
-    document_id: usize,
-    timer_id: usize,
-    timer_key: usize,
-    timeout_ms: usize,
-    nesting_level: usize,
-) -> Result<(), String> {
-    log_timer_debug(format!(
-        "schedule lean event_loop={} document={} id={} key={} timeout_ms={} nesting={}",
-        event_loop_id, document_id, timer_id, timer_key, timeout_ms, nesting_level
-    ));
-    let io_result = unsafe {
-        scheduleWindowTimer(
-            event_loop_id,
-            document_id,
-            timer_id,
-            timer_key,
-            timeout_ms,
-            nesting_level,
-        )
-    };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean window timer schedule failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_clear_window_timer_parts(
-    event_loop_id: usize,
-    timer_key: usize,
-) -> Result<(), String> {
-    log_timer_debug(format!("clear lean event_loop={} key={}", event_loop_id, timer_key));
-    let io_result = unsafe { clearWindowTimer(event_loop_id, timer_key) };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean window timer clear failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_navigation_start_parts(
-    source_navigable_id: usize,
-    destination_url: &str,
-    target: &str,
-    user_involvement: &str,
-    noopener: bool,
-) -> Result<(), String> {
-    let lean_destination_url = lean_string_from_owned(destination_url.to_owned());
-    let lean_target = lean_string_from_owned(target.to_owned());
-    let lean_user_involvement = lean_string_from_owned(user_involvement.to_owned());
-    let io_result = unsafe {
-        startNavigation(
-            source_navigable_id,
-            lean_destination_url,
-            lean_target,
-            lean_user_involvement,
-            usize::from(noopener),
-        )
-    };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean navigation start failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_navigation_start_from_event_loop_parts(
-    event_loop_id: usize,
-    source_navigable_id: usize,
-    destination_url: &str,
-    target: &str,
-    user_involvement: &str,
-    noopener: bool,
-) -> Result<(), String> {
-    let lean_destination_url = lean_string_from_owned(destination_url.to_owned());
-    let lean_target = lean_string_from_owned(target.to_owned());
-    let lean_user_involvement = lean_string_from_owned(user_involvement.to_owned());
-    let io_result = unsafe {
-        startNavigationFromEventLoop(
-            event_loop_id,
-            source_navigable_id,
-            lean_destination_url,
-            lean_target,
-            lean_user_involvement,
-            usize::from(noopener),
-        )
-    };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean event-loop navigation start failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_before_unload_completed_parts(
-    document_id: usize,
-    check_id: usize,
-    canceled: bool,
-) -> Result<(), String> {
-    let io_result = unsafe { completeBeforeUnload(document_id, check_id, usize::from(canceled)) };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean beforeunload completion failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_finalize_navigation_parts(
-    document_id: usize,
-    url: &str,
-) -> Result<(), String> {
-    let lean_url = lean_string_from_owned(url.to_owned());
-    let io_result = unsafe { finalizeNavigation(document_id, lean_url) };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean finalize-navigation failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_remove_iframe_traversable_parts(
-    parent_traversable_id: usize,
-    source_navigable_id: usize,
-) -> Result<(), String> {
-    let io_result = unsafe {
-        removeIframeTraversable(parent_traversable_id, source_navigable_id)
-    };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean iframe traversable removal failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_child_navigable_created_parts(
-    parent_traversable_id: usize,
-    source_navigable_id: usize,
-) -> Result<(), String> {
-    let io_result = unsafe { childNavigableCreated(parent_traversable_id, source_navigable_id) };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean child navigable created failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
-pub(crate) fn call_lean_run_next_event_loop_task(event_loop_id: usize) -> Result<(), String> {
-    let io_result = unsafe { runNextEventLoopTask(event_loop_id) };
-    let is_ok = unsafe { leanIoResultIsOk(io_result) } != 0;
-    if !is_ok {
-        unsafe { leanIoResultShowError(io_result) };
-        unsafe { leanDec(io_result) };
-        return Err(String::from("Lean run-next-event-loop-task failed"));
-    }
-    unsafe { leanDec(io_result) };
-    Ok(())
-}
-
 fn runtime_hooks() -> RuntimeHooks {
     RuntimeHooks {
-        handle_runtime_message: call_lean_runtime_message_handler,
-        start_navigation_parts: call_lean_navigation_start_parts,
+        handle_runtime_request: user_agent::handle_runtime_request,
+        start_navigation_request: start_navigation_from_runtime_parts,
     }
+}
+
+fn start_navigation_from_runtime_parts(request: NavigateRequest) -> Result<(), String> {
+    user_agent::start_navigation_from_rust(request)
 }
 
 pub fn initialize_lean_runtime() -> Result<(), String> {
@@ -372,8 +110,8 @@ pub fn install_runtime_hooks() {
     embedder::set_runtime_hooks(runtime_hooks());
 }
 
-pub fn install_content_bridge_hooks() {
-    content_bridge::install_hooks();
+pub fn install_user_agent_hooks() {
+    user_agent::install_hooks();
 }
 
 pub fn evaluate_script(
@@ -381,17 +119,28 @@ pub fn evaluate_script(
     source: String,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    content_bridge::evaluate_script(traversable_id, source, timeout)
+    user_agent::evaluate_script(traversable_id, source, timeout)
 }
 
 pub fn start_kernel() -> Result<(), String> {
+    install_user_agent_hooks();
+    user_agent::start_user_agent_thread()?;
     let io_result = unsafe { formalWebStartKernel() };
-    unit_result_from_lean(io_result, "failed to start the Lean kernel")
+    match unit_result_from_lean(io_result, "failed to start the Lean kernel") {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = user_agent::shutdown_user_agent_thread();
+            Err(error)
+        }
+    }
 }
 
 pub fn shutdown_kernel() -> Result<(), String> {
     let io_result = unsafe { formalWebShutdownKernel() };
-    unit_result_from_lean(io_result, "failed to shut down the Lean kernel")
+    let shutdown_result =
+        unit_result_from_lean(io_result, "failed to shut down the Lean kernel");
+    let user_agent_result = user_agent::shutdown_user_agent_thread();
+    shutdown_result.and(user_agent_result)
 }
 
 #[unsafe(no_mangle)]
@@ -410,9 +159,8 @@ pub extern "C" fn sendEmbedderMessage(message: *mut lean_object) -> *mut lean_ob
 #[unsafe(no_mangle)]
 pub extern "C" fn runEmbedderEventLoop(_: *mut lean_object) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        install_runtime_hooks();
-        install_content_bridge_hooks();
-        embedder::run_event_loop()
+        install_user_agent_hooks();
+        embedder::run_event_loop(user_agent::runtime_client())
     })) {
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
@@ -423,8 +171,8 @@ pub extern "C" fn runEmbedderEventLoop(_: *mut lean_object) -> *mut lean_object 
 #[unsafe(no_mangle)]
 pub extern "C" fn contentProcessStart(event_loop_id: usize) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        install_content_bridge_hooks();
-        content_bridge::start(event_loop_id)
+        install_user_agent_hooks();
+        user_agent::start(event_loop_id)
     })) {
         Ok(Ok(handle)) => ok_usize_result(handle),
         Ok(Err(error)) => error_result(&error),
@@ -434,7 +182,7 @@ pub extern "C" fn contentProcessStart(event_loop_id: usize) -> *mut lean_object 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn contentProcessStop(handle: usize) -> *mut lean_object {
-    match panic::catch_unwind(AssertUnwindSafe(|| content_bridge::stop(handle))) {
+    match panic::catch_unwind(AssertUnwindSafe(|| user_agent::stop(handle))) {
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic stopping content"),
@@ -443,7 +191,7 @@ pub extern "C" fn contentProcessStop(handle: usize) -> *mut lean_object {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn contentProcessStopEventLoop(event_loop_id: usize) -> *mut lean_object {
-    match panic::catch_unwind(AssertUnwindSafe(|| content_bridge::stop_event_loop(event_loop_id))) {
+    match panic::catch_unwind(AssertUnwindSafe(|| user_agent::stop_event_loop(event_loop_id))) {
         Ok(Ok(())) => ok_unit_result(),
         Ok(Err(error)) => error_result(&error),
         Err(_) => error_result("panic stopping content by event loop"),
@@ -457,7 +205,7 @@ pub extern "C" fn contentProcessCreateEmptyDocument(
     document_id: usize,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::CreateEmptyDocument {
                 traversable_id: traversable_id as u64,
@@ -494,7 +242,7 @@ pub extern "C" fn contentProcessCreateLoadedDocument(
             .into_owned();
         let c_body = unsafe { leanStringCstr(body) };
         let body = unsafe { CStr::from_ptr(c_body) }.to_string_lossy().into_owned();
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::CreateLoadedDocument {
                 traversable_id: traversable_id as u64,
@@ -520,7 +268,7 @@ pub extern "C" fn contentProcessDestroyDocument(
     document_id: usize,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::DestroyDocument {
                 document_id: document_id as u64,
@@ -542,7 +290,7 @@ pub extern "C" fn contentProcessDispatchEvent(
         let c_batch = unsafe { leanStringCstr(batch) };
         let batch = unsafe { CStr::from_ptr(c_batch) }.to_string_lossy().into_owned();
         let events = decode_dispatch_event_batch(&batch)?;
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::DispatchEvent { events },
         )
@@ -560,7 +308,7 @@ pub extern "C" fn contentProcessRunBeforeUnload(
     check_id: usize,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::RunBeforeUnload {
                 document_id: document_id as u64,
@@ -581,7 +329,7 @@ pub extern "C" fn contentProcessUpdateTheRendering(
     document_id: usize,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::UpdateTheRendering {
                 traversable_id: traversable_id as u64,
@@ -608,7 +356,7 @@ pub extern "C" fn contentProcessRunWindowTimer(
         handle, document_id, timer_id, timer_key, nesting_level
     ));
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::RunWindowTimer {
                 document_id: document_id as u64,
@@ -630,7 +378,7 @@ pub extern "C" fn contentProcessFailDocumentFetch(
     handler_id: usize,
 ) -> *mut lean_object {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::FailDocumentFetch {
                 handler_id: handler_id as u64,
@@ -666,7 +414,7 @@ pub extern "C" fn contentProcessCompleteDocumentFetch(
         let size = unsafe { leanByteArraySize(bytes) };
         let bytes_ptr = unsafe { leanByteArrayCptr(bytes) };
         let payload = unsafe { std::slice::from_raw_parts(bytes_ptr, size) };
-        content_bridge::send_command(
+        user_agent::send_command(
             handle,
             ContentCommand::CompleteDocumentFetch {
                 handler_id: handler_id as u64,

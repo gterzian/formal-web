@@ -1,12 +1,8 @@
 [package]
-name = "ffi"
+name = "user_agent"
 version = "0.1.0"
 edition = "2024"
 publish = false
-build = "build.rs"
-
-[lib]
-crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
@@ -15,8 +11,6 @@ embedder = { path = "../embedder" }
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 serde_json = "1"
-user_agent = { path = "../user_agent" }
 webview = { path = "../webview" }
-
-[build-dependencies]
-cc = "1.2"
+[lib]
+path = "src/user_agent.rs"

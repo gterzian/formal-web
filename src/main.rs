@@ -1,3 +1,4 @@
+mod network;
 mod webdriver;
 mod wpt;
 
@@ -27,26 +28,24 @@ pub(crate) struct AppRunOptions {
 }
 
 pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
-    ffi::initialize_lean_runtime()?;
-    ffi::install_runtime_hooks();
     embedder::set_event_loop_options(embedder::EventLoopOptions {
         headless: options.headless,
         startup_url: options.startup_url,
         window_title: options.window_title,
     });
 
-    if let Err(error) = ffi::start_kernel() {
+    user_agent::install_hooks();
+
+    if let Err(error) = user_agent::start_user_agent_thread() {
         embedder::clear_event_loop_options();
-        let _ = ffi::finalize_lean_runtime();
         return Err(error);
     }
 
-    let event_loop_result = embedder::run_event_loop();
-    let shutdown_result = ffi::shutdown_kernel();
-    let finalize_result = ffi::finalize_lean_runtime();
+    let event_loop_result = embedder::run_event_loop(user_agent::runtime_client());
+    let shutdown_result = user_agent::shutdown_user_agent_thread();
     embedder::clear_event_loop_options();
 
-    event_loop_result.and(shutdown_result).and(finalize_result)
+    event_loop_result.and(shutdown_result)
 }
 
 fn run_app() -> Result<(), String> {
@@ -54,6 +53,14 @@ fn run_app() -> Result<(), String> {
 }
 
 fn main() {
+    if let Some(result) = network::maybe_run_network_process() {
+        if let Err(error) = result {
+            eprintln!("formal-web: {error}");
+            process::exit(1);
+        }
+        return;
+    }
+
     let cli = Cli::parse();
     let result = match cli.command {
         None => run_app(),

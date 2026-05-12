@@ -28,29 +28,12 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor/blitz/packages/blitz-dom/src");
     println!("cargo:rerun-if-changed=vendor/blitz/packages/blitz-paint/src");
     println!("cargo:rerun-if-changed=vendor/blitz/packages/blitz-traits/src");
-    println!("cargo:rerun-if-changed=lean-toolchain");
 
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set"));
     let profile = env::var("PROFILE").expect("PROFILE should be set");
     let cargo = env::var("CARGO").unwrap_or_else(|_| String::from("cargo"));
-
-    let lean_prefix = Command::new("lean")
-        .arg("--print-prefix")
-        .output()
-        .expect("failed to run `lean --print-prefix`");
-    if !lean_prefix.status.success() {
-        panic!(
-            "`lean --print-prefix` exited with status {}",
-            lean_prefix.status
-        );
-    }
-
-    let lean_prefix = String::from_utf8(lean_prefix.stdout)
-        .expect("`lean --print-prefix` returned non-UTF-8 output");
-    let lean_lib_dir = PathBuf::from(lean_prefix.trim()).join("lib").join("lean");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lean_lib_dir.display());
 
     let profile_dir = profile_output_dir(&out_dir);
     let target_dir = profile_dir
