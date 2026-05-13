@@ -1,7 +1,9 @@
 use crossbeam_channel::{Receiver, Sender, unbounded, select};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
-use ipc_messages::content::FetchRequest as ContentFetchRequest;
+use ipc_messages::content::{
+    DocumentFetchId, FetchRequest as ContentFetchRequest, NavigationFetchId,
+};
 use ipc_messages::network::{
     Bootstrap as NetworkBootstrap, Request as NetworkRequest, Response as NetworkResponse,
 };
@@ -14,15 +16,17 @@ use std::time::{Duration, Instant};
 
 use crate::UserAgentCommand;
 
+/// graceful shutdown of the network sidecar owned by the fetch worker.
 const FETCH_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
 
+/// Commands that the user-agent thread can send into the dedicated fetch worker.
 pub enum FetchCommand {
     StartDocumentFetch {
         event_loop_id: usize,
         request: ContentFetchRequest,
     },
     StartNavigationFetch {
-        fetch_id: u64,
+        fetch_id: NavigationFetchId,
         request: ContentFetchRequest,
     },
     Shutdown {
@@ -30,23 +34,28 @@ pub enum FetchCommand {
     },
 }
 
+/// a pending document fetch that must resume one event loop.
 pub struct PendingDocumentFetch {
     /// Event loop that should receive the fetch completion/failure.
     pub event_loop_id: usize,
     /// Content-side handler id for the document fetch request.
-    pub handler_id: u64,
+    pub handler_id: DocumentFetchId,
 }
 
+/// a pending navigation fetch keyed by the user-agent's fetch id.
 pub struct PendingNavigationFetch {
-    /// Model-local identifier corresponding to https://fetch.spec.whatwg.org/#fetch-controller.
-    pub fetch_id: u64,
+    /// Model-local identifier corresponding to <https://fetch.spec.whatwg.org/#fetch-controller>
+    pub fetch_id: NavigationFetchId,
 }
 
+/// distinguishing document and navigation fetch continuations.
 pub enum PendingFetch {
     Document(PendingDocumentFetch),
     Navigation(PendingNavigationFetch),
 }
 
+/// Stateful owner of the network-facing half of HTML's parallel fetch work plus document-fetch
+/// plumbing that resumes event-loop-local fetch handlers.
 struct FetchWorker {
     /// Receiver for user-agent fetch commands.
     command_receiver: Receiver<FetchCommand>,
@@ -67,6 +76,7 @@ struct FetchWorker {
     shutdown_reply: Option<Sender<Result<(), String>>>,
 }
 
+/// waiting on the network sidecar during shutdown.
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, String> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -85,6 +95,7 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, Str
     }
 }
 
+/// gracefully shutting down the network sidecar owned by the fetch worker.
 fn finish_shutdown(mut child: Option<Child>) {
     if let Some(child) = child.as_mut() {
         match wait_for_child_exit(child, FETCH_SHUTDOWN_GRACE_TIMEOUT) {
@@ -100,6 +111,8 @@ fn finish_shutdown(mut child: Option<Child>) {
     }
 }
 
+/// bootstrapping the dedicated network sidecar process used by
+/// fetch-backed navigation and document fetch continuations.
 pub fn start_network_bridge(
 ) -> Result<(IpcSender<NetworkRequest>, Receiver<Result<NetworkResponse, String>>, Child), String> {
     let (server, token) = IpcOneShotServer::<NetworkBootstrap>::new()
@@ -134,6 +147,7 @@ pub fn start_network_bridge(
 }
 
 impl FetchWorker {
+    /// starting the fetch worker with its owned network sidecar.
     fn new(
         command_receiver: Receiver<FetchCommand>,
         user_agent_command_sender: Sender<UserAgentCommand>,
@@ -151,7 +165,11 @@ impl FetchWorker {
         })
     }
 
+    /// failing every pending fetch if the network sidecar stops before
+    /// producing a response.
     fn fail_pending_fetches(&mut self) {
+        // Notes: If the network bridge stops early, report every outstanding fetch back through the
+        // same user-agent continuations that would have handled an ordinary network failure.
         for pending_fetch in self.pending_fetches.drain().map(|(_, pending)| pending) {
             match pending_fetch {
                 PendingFetch::Document(pending_fetch) => {
@@ -173,12 +191,15 @@ impl FetchWorker {
         }
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn handle_command(&mut self, command: FetchCommand) {
         match command {
             FetchCommand::StartDocumentFetch {
                 event_loop_id,
                 request,
             } => {
+                // Notes: Document fetches reuse the same network sidecar, but the completion returns
+                // directly to the owning event loop instead of the navigation finalization path.
                 let request_id = self.next_request_id;
                 self.next_request_id += 1;
                 self.pending_fetches.insert(
@@ -218,6 +239,9 @@ impl FetchWorker {
                 fetch_id,
                 request,
             } => {
+                // Step 1: Assert: this is running in parallel.
+                // Notes: The fetch worker is the concrete owner of the parallel navigation fetch
+                // branch started by `UserAgentWorker::create_navigation_params_by_fetching`.
                 let request_id = self.next_request_id;
                 self.next_request_id += 1;
                 self.pending_fetches.insert(
@@ -242,6 +266,7 @@ impl FetchWorker {
         }
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn handle_network_response(&mut self, response: NetworkResponse) {
         let Some(pending_fetch) = self.pending_fetches.remove(&response.request_id) else {
             return;
@@ -249,6 +274,8 @@ impl FetchWorker {
 
         match (pending_fetch, response.result) {
             (PendingFetch::Document(pending_fetch), Ok(fetch_response)) => {
+                // Notes: Successful document fetches resume the owning event loop's content-side
+                // continuation.
                 let _ = self
                     .user_agent_command_sender
                     .send(UserAgentCommand::DocumentFetchCompleted {
@@ -259,6 +286,8 @@ impl FetchWorker {
             }
             (PendingFetch::Document(pending_fetch), Err(error)) => {
                 eprintln!("document fetch failed: {error}");
+                // Notes: Document fetch failures reenter the owning event loop so the content-side
+                // fetch algorithm can fail the handler in place.
                 let _ = self
                     .user_agent_command_sender
                     .send(UserAgentCommand::DocumentFetchFailed {
@@ -267,6 +296,8 @@ impl FetchWorker {
                     });
             }
             (PendingFetch::Navigation(pending_fetch), Ok(fetch_response)) => {
+                // Notes: Successful navigation fetches resume the user-agent-side document creation
+                // and finalization continuation keyed by `fetch_id`.
                 let _ = self
                     .user_agent_command_sender
                     .send(UserAgentCommand::NavigationFetchCompleted {
@@ -276,6 +307,8 @@ impl FetchWorker {
             }
             (PendingFetch::Navigation(pending_fetch), Err(error)) => {
                 eprintln!("navigation fetch failed: {error}");
+                // Notes: Navigation fetch failures resume the same pending navigation record so the
+                // user agent can clear `ongoing_navigation_id` and surface failure to the embedder.
                 let _ = self
                     .user_agent_command_sender
                     .send(UserAgentCommand::NavigationFetchFailed {
@@ -285,7 +318,10 @@ impl FetchWorker {
         }
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn run(&mut self) {
+        // Notes: The fetch worker owns the network-facing half of HTML's parallel fetch branch and
+        // drains either new user-agent requests or sidecar responses until shutdown.
         loop {
             let command_receiver = &self.command_receiver;
             let network_event_receiver = &self.network_event_receiver;
@@ -325,6 +361,7 @@ impl FetchWorker {
     }
 }
 
+/// spawning the dedicated fetch worker thread owned by `UserAgentWorker`.
 pub fn run_fetch_thread(
     command_receiver: Receiver<FetchCommand>,
     user_agent_command_sender: Sender<UserAgentCommand>,

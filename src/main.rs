@@ -3,6 +3,7 @@ mod wpt;
 
 use clap::{Parser, Subcommand};
 use std::process;
+use webview::UserAgentApi;
 
 #[derive(Parser, Debug)]
 #[command(name = "formal-web")]
@@ -33,10 +34,10 @@ pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String>
         window_title: options.window_title,
     });
 
-    let event_loop_result = match user_agent::UserAgent::start() {
-        Ok(user_agent) => embedder::run_event_loop(Box::new(user_agent)),
-        Err(error) => Err(error),
-    };
+    let event_loop_result = embedder::run_event_loop(|dispatcher| {
+        user_agent::UserAgent::start(dispatcher)
+            .map(|user_agent| Box::new(user_agent) as Box<dyn UserAgentApi>)
+    });
     embedder::clear_event_loop_options();
 
     event_loop_result

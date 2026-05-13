@@ -46,8 +46,25 @@ pub struct FinalizeNavigation {
     pub url: String,
 }
 
-struct WinitEmbedderApi {
+#[derive(Clone)]
+pub struct UserEventDispatcher {
     proxy: EventLoopProxy<FormalWebUserEvent>,
+}
+
+impl UserEventDispatcher {
+    fn new(proxy: EventLoopProxy<FormalWebUserEvent>) -> Self {
+        Self { proxy }
+    }
+
+    pub fn send(&self, event: FormalWebUserEvent) -> Result<(), String> {
+        self.proxy
+            .send_event(event)
+            .map_err(|error| format!("failed to send user event: {error}"))
+    }
+}
+
+struct WinitEmbedderApi {
+    dispatcher: UserEventDispatcher,
 }
 
 struct WinitShellProvider {
@@ -109,7 +126,9 @@ impl ShellProvider for WinitShellProvider {
 
 impl EmbedderApi for WinitEmbedderApi {
     fn request_redraw(&self, webview_id: WebviewId) {
-        let _ = self.proxy.send_event(FormalWebUserEvent::RequestRedraw(webview_id));
+        let _ = self
+            .dispatcher
+            .send(FormalWebUserEvent::RequestRedraw(webview_id));
     }
 
     fn viewport_scale_factor(&self) -> f32 {
@@ -280,17 +299,12 @@ static EVENT_LOOP_OPTIONS: LazyLock<Mutex<EventLoopOptions>> =
     LazyLock::new(|| Mutex::new(EventLoopOptions::default()));
 
 fn parse_child_navigable_host_target(target_name: &str) -> Option<ChildNavigableHostTarget> {
-    let payload = target_name.strip_prefix("_iframe|")?;
-    let mut parts = payload.split('|');
-    let parent_traversable_id = parts.next()?.parse::<u64>().ok()?;
-    let content_navigable_id = parts.next()?.parse::<u64>().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
+    let (parent_traversable_id, _content_navigable_id, content_frame_id) =
+        ipc_messages::content::parse_iframe_target_name(target_name)?;
 
     Some(ChildNavigableHostTarget {
         parent_traversable_id: WebviewId(parent_traversable_id),
-        content_navigable_id: ipc_messages::content::FrameId(content_navigable_id),
+        content_navigable_id: content_frame_id,
     })
 }
 
@@ -437,16 +451,22 @@ pub fn request_exit() -> Result<(), String> {
     send_user_event(FormalWebUserEvent::Exit)
 }
 
-pub fn run_event_loop(user_agent: Box<dyn UserAgentApi>) -> Result<(), String> {
+pub fn run_event_loop<F>(create_user_agent: F) -> Result<(), String>
+where
+    F: FnOnce(UserEventDispatcher) -> Result<Box<dyn UserAgentApi>, String>,
+{
     let event_loop = EventLoop::<FormalWebUserEvent>::with_user_event()
         .build()
         .map_err(|error| format!("failed to create event loop: {error}"))?;
+    let dispatcher = UserEventDispatcher::new(event_loop.create_proxy());
     {
         let mut guard = EVENT_LOOP_PROXY
             .lock()
             .expect("event loop proxy mutex poisoned");
-        *guard = Some(event_loop.create_proxy());
+        *guard = Some(dispatcher.proxy.clone());
     }
+
+    let user_agent = create_user_agent(dispatcher.clone())?;
 
     let mut app = FormalWebApp {
         user_agent: Some(user_agent),
@@ -1304,7 +1324,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         }
                     };
                     self.chrome = Some(chrome);
-                    let Some(proxy) = with_event_loop_proxy(Clone::clone) else {
+                    let Some(dispatcher) = with_event_loop_proxy(Clone::clone)
+                        .map(UserEventDispatcher::new)
+                    else {
                         event_loop.exit();
                         return;
                     };
@@ -1312,7 +1334,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         event_loop.exit();
                         return;
                     };
-                    let embedder: Box<dyn EmbedderApi> = Box::new(WinitEmbedderApi { proxy });
+                    let embedder: Box<dyn EmbedderApi> = Box::new(WinitEmbedderApi { dispatcher });
                     self.provider = Some(WebviewProvider::new(embedder, user_agent));
                     self.window = Some(window.clone());
                     self.sync_chrome_state();

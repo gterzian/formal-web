@@ -21,3 +21,9 @@ Keep traversable target-name bookkeeping in this crate so iframe-host cleanup ca
 Keep the spec-facing browser-global concepts in `UserAgentState` itself: the browsing-context-group set, the top-level traversable set, allocator state, and the pending navigation/fetch continuations. Treat helper hash maps in that file as model-local indices derived from those concepts rather than as replacements for them.
 
 Keep pending navigation state as explicit spec-facing request, snapshot, history-entry, and history-handling records so finalization can follow HTML's `push` versus `replace` session-history steps without flattening those concepts into ad hoc fields.
+
+Use distributed `RuntimeId` UUIDs for fetch controllers, document-fetch handlers, and timer keys so worker-owned components can allocate those ids locally without blocking on user-agent refill traffic. Keep `FrameId(u64)` as the compositor-facing iframe host identity, and reuse that frame id as the synthetic iframe traversable id when the user agent materializes `_iframe|...` helper traversables.
+
+When `user_agent` code implements or continues a standards algorithm, follow the documentation conventions from `content/README.md`: anchor-only top doc-comments for the algorithm, verbatim `Step n:` comments for mapped steps, and separate `Notes:` comments for reduced-model or runtime-bridge explanation.
+
+For spec-facing worker methods and continuations, give each helper its own anchor-only doc comment for the algorithm it continues, keep `Step n:` comments as verbatim standard prose, and move reduced-model or runtime-bridge explanation into separate `Notes:` comments.

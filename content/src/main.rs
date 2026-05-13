@@ -24,16 +24,17 @@ use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
     CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
-    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer, SetTraversableViewport,
-    SetViewport, Shutdown, UpdateTheRendering,
+    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
+    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    Event as ContentEvent, FetchRequest as ContentFetchRequest,
-    FetchResponse as ContentFetchResponse, FontTransportSender, FrameId,
-    LoadedDocumentResponse, PaintFrame, RecordedScene, ScriptEvaluationResult,
-    TraversableViewport, ViewportSnapshot, WebviewId,
+    ContentNavigableId, DocumentFetchId, Event as ContentEvent,
+    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
+    FontTransportSender, FrameId, LoadedDocumentResponse, PaintFrame,
+    PlaceholderFrameMapping, RecordedScene, ScriptEvaluationResult, TraversableViewport,
+    ViewportSnapshot, WebviewId, WindowTimerKey,
 };
 use std::{
     cell::RefCell,
@@ -102,11 +103,14 @@ enum PendingNetworkHandler {
 }
 
 struct LocalContentState {
-    pending_handlers: HashMap<u64, PendingNetworkHandler>,
-    next_handler_id: u64,
+    pending_handlers: HashMap<DocumentFetchId, PendingNetworkHandler>,
 }
 
-type LocalContentStateRef = Arc<Mutex<LocalContentState>>;
+pub(crate) type LocalContentStateRef = Arc<Mutex<LocalContentState>>;
+
+pub(crate) fn new_document_fetch_id() -> DocumentFetchId {
+    DocumentFetchId::new()
+}
 
 struct ContentShellProvider {
     event_sender: IpcSender<ContentEvent>,
@@ -158,7 +162,9 @@ enum DeferredScriptState {
 
 #[derive(Clone)]
 pub(crate) struct NavigableContainerState {
-    content_navigable_id: u64,
+    content_navigable_id: ContentNavigableId,
+    content_frame_id: FrameId,
+    content_frame_token: u64,
     current_key: String,
     cross_origin: bool,
 }
@@ -332,12 +338,11 @@ impl NetProvider for ContentNetProvider {
                 Err(_error) => {}
             },
             _scheme => {
+                let handler_id = new_document_fetch_id();
                 let mut local_state = self
                     .local_state
                     .lock()
                     .expect("local content state mutex poisoned");
-                let handler_id = local_state.next_handler_id;
-                local_state.next_handler_id += 1;
                 local_state.pending_handlers.insert(
                     handler_id,
                     PendingNetworkHandler::Resource {
@@ -364,6 +369,7 @@ impl NetProvider for ContentNetProvider {
 
 struct ContentDocument {
     traversable_id: u64,
+    frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
     pending_update_the_rendering: bool,
@@ -387,7 +393,7 @@ pub(crate) struct ContentRuntime {
     traversable_viewports: HashMap<u64, DocumentViewportState>,
     documents: HashMap<u64, ContentDocument>,
     active_documents_by_traversable: HashMap<u64, u64>,
-    next_child_navigable_id: u64,
+    next_placeholder_frame_token: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
 }
@@ -398,13 +404,12 @@ impl ContentRuntime {
             event_sender,
             local_state: Arc::new(Mutex::new(LocalContentState {
                 pending_handlers: HashMap::new(),
-                next_handler_id: 1,
             })),
             default_viewport: None,
             traversable_viewports: HashMap::new(),
             documents: HashMap::new(),
             active_documents_by_traversable: HashMap::new(),
-            next_child_navigable_id: 1_u64 << 63,
+            next_placeholder_frame_token: 1,
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
         }
@@ -495,20 +500,24 @@ impl ContentRuntime {
         document.viewport_offset_y = viewport_state.offset_y;
     }
 
-    fn register_pending_handler(&self, pending_handler: PendingNetworkHandler) -> u64 {
+    fn register_pending_handler(
+        &self,
+        pending_handler: PendingNetworkHandler,
+    ) -> Result<DocumentFetchId, String> {
+        let handler_id = new_document_fetch_id();
         let mut local_state = self
             .local_state
             .lock()
             .expect("local content state mutex poisoned");
-        let handler_id = local_state.next_handler_id;
-        local_state.next_handler_id += 1;
-        local_state
-            .pending_handlers
-            .insert(handler_id, pending_handler);
-        handler_id
+        local_state.pending_handlers.insert(handler_id, pending_handler);
+        Ok(handler_id)
     }
 
-    fn request_remote_fetch(&self, handler_id: u64, request: Request) -> Result<(), String> {
+    fn request_remote_fetch(
+        &self,
+        handler_id: DocumentFetchId,
+        request: Request,
+    ) -> Result<(), String> {
         log_render_state_debug(format!(
             "request remote fetch handler={} method={} url={}",
             handler_id,
@@ -605,14 +614,22 @@ impl ContentRuntime {
         let handler_id = self.register_pending_handler(PendingNetworkHandler::DeferredScript {
             document_id,
             script_index,
-        });
+        })?;
         self.request_remote_fetch(handler_id, Request::get(resolved_url))
     }
 
-    fn allocate_child_navigable_id(&mut self) -> u64 {
-        let content_navigable_id = self.next_child_navigable_id;
-        self.next_child_navigable_id = self.next_child_navigable_id.wrapping_add(1);
-        content_navigable_id
+    fn allocate_child_navigable_id(&self) -> Result<ContentNavigableId, String> {
+        Ok(ContentNavigableId::new())
+    }
+
+    fn allocate_child_frame_id(&self) -> FrameId {
+        FrameId::new()
+    }
+
+    fn allocate_placeholder_frame_token(&mut self) -> u64 {
+        let token = self.next_placeholder_frame_token;
+        self.next_placeholder_frame_token = self.next_placeholder_frame_token.wrapping_add(1);
+        token
     }
 
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
@@ -702,13 +719,21 @@ impl ContentRuntime {
                     url: pending_document_load.finalize_url,
                 },
             ))
-            .map_err(|error| format!("failed to send finalize-navigation event: {error}"))
+            .map_err(|error| format!("failed to send finalize-navigation event: {error}"))?;
+
+        self.update_the_rendering(traversable_id, document_id)
     }
 
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the user-agent/content command path emits `CreateEmptyDocument`.
-    fn create_empty_document(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
+    fn create_empty_document(
+        &mut self,
+        traversable_id: u64,
+        document_id: u64,
+        frame_id: Option<FrameId>,
+    ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
+        let frame_id = frame_id.unwrap_or_else(FrameId::new);
         let document = Rc::new(RefCell::new(BaseDocument::new(
             self.document_config(traversable_id, document_id, None),
         )));
@@ -739,6 +764,7 @@ impl ContentRuntime {
             document_id,
             ContentDocument {
                 traversable_id,
+                frame_id,
                 document,
                 settings,
                 pending_update_the_rendering: false,
@@ -765,6 +791,7 @@ impl ContentRuntime {
         &mut self,
         traversable_id: u64,
         document_id: u64,
+        frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
     ) -> Result<(), String> {
         let LoadedDocumentResponse {
@@ -774,6 +801,7 @@ impl ContentRuntime {
             body,
         } = response;
         let viewport_state = self.document_viewport_state(traversable_id);
+        let frame_id = frame_id.unwrap_or_else(FrameId::new);
         // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
         // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the DOM carrier and the JavaScript environment settings object.
@@ -803,6 +831,7 @@ impl ContentRuntime {
             document_id,
             ContentDocument {
                 traversable_id,
+                frame_id,
                 document: Rc::clone(&document),
                 settings,
                 pending_update_the_rendering: false,
@@ -999,6 +1028,15 @@ impl ContentRuntime {
             }
 
             let paint_frame = {
+                let placeholder_frame_mappings = document
+                    .navigable_container_states
+                    .values()
+                    .filter(|container_state| container_state.cross_origin)
+                    .map(|container_state| PlaceholderFrameMapping {
+                        token: container_state.content_frame_token,
+                        frame_id: container_state.content_frame_id,
+                    })
+                    .collect::<Vec<_>>();
                 let document_guard = document.document.borrow();
                 let viewport = document_guard.viewport().clone();
                 let (width, height) = viewport.window_size;
@@ -1023,9 +1061,10 @@ impl ContentRuntime {
                 ));
                 let paint_frame = PaintFrame::new(
                     WebviewId(traversable_id),
-                    FrameId(traversable_id),
+                    document.frame_id,
                     width,
                     height,
+                    placeholder_frame_mappings,
                     scene,
                 )?;
                 paint_frame
@@ -1042,7 +1081,7 @@ impl ContentRuntime {
 
     fn complete_document_fetch(
         &mut self,
-        handler_id: u64,
+        handler_id: DocumentFetchId,
         response: ContentFetchResponse,
     ) -> Result<(), String> {
         let response_url = response.final_url.clone();
@@ -1115,7 +1154,7 @@ impl ContentRuntime {
         }
     }
 
-    fn fail_document_fetch(&mut self, handler_id: u64) -> Result<(), String> {
+    fn fail_document_fetch(&mut self, handler_id: DocumentFetchId) -> Result<(), String> {
         let pending_handler = {
             let mut local_state = self
                 .local_state
@@ -1173,7 +1212,7 @@ impl ContentRuntime {
         &mut self,
         document_id: u64,
         timer_id: u32,
-        timer_key: u64,
+        timer_key: WindowTimerKey,
         nesting_level: u32,
     ) -> Result<(), String> {
         let Some(document) = self.documents.get_mut(&document_id) else {
@@ -1209,16 +1248,18 @@ impl ContentRuntime {
             CreateEmptyDocument {
                 traversable_id,
                 document_id,
+                frame_id,
             } => {
-                self.create_empty_document(traversable_id, document_id)?;
+                self.create_empty_document(traversable_id, document_id, frame_id)?;
                 Ok(true)
             }
             CreateLoadedDocument {
                 traversable_id,
                 document_id,
+                frame_id,
                 response,
             } => {
-                self.create_loaded_document(traversable_id, document_id, response)?;
+                self.create_loaded_document(traversable_id, document_id, frame_id, response)?;
                 Ok(true)
             }
             DestroyDocument { document_id } => {

@@ -204,6 +204,7 @@ impl WebviewProvider {
     }
 
     pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
+        let is_root_candidate = !self.child_navigable_hosts_by_webview.contains_key(&frame.traversable_id);
         if let Some(child_navigable_host) =
             self.child_navigable_hosts_by_webview.get(&frame.traversable_id)
         {
@@ -214,14 +215,24 @@ impl WebviewProvider {
         let frame_id = frame.frame_id;
         let viewport_width = frame.viewport_width;
         let viewport_height = frame.viewport_height;
+        let placeholder_token_to_frame_id: HashMap<u64, _> = frame
+            .placeholder_frame_mappings
+            .iter()
+            .map(|m| (m.token, m.frame_id))
+            .collect();
         let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver)?;
 
         let state = self.webviews.entry(traversable_id).or_default();
-        state
-            .compositor
-            .store_frame(frame_id, viewport_width, viewport_height, recorded_scene);
+        state.compositor.store_frame(
+            frame_id,
+            viewport_width,
+            viewport_height,
+            placeholder_token_to_frame_id,
+            recorded_scene,
+            is_root_candidate,
+        );
         if state.compositor.committed_root_frame_id() == Some(frame_id) {
-            state.current_navigable_id = Some(frame_id.0);
+            state.current_navigable_id = Some(traversable_id.0);
         }
 
         self.embedder.request_redraw(traversable_id);
@@ -276,7 +287,7 @@ impl WebviewProvider {
         let viewport_scale = self.embedder.viewport_scale_factor().max(1.0);
         let is_pointer_down = matches!(&event, UiEvent::PointerDown(_));
         let Some((client_x, client_y)) = ui_event_client_position(&event) else {
-            let (target_frame_id, composed_frame_ids, viewports) = {
+            let (target_frame_id, root_frame_id, composed_frame_ids, viewports) = {
                 let Some(state) = self.webviews.get_mut(&root_webview_id) else {
                     return (root_webview_id, event, Vec::new());
                 };
@@ -288,7 +299,7 @@ impl WebviewProvider {
                     .filter(|frame_id| composed_frame_ids.contains(frame_id))
                     .or(root_frame_id);
                 state.focused_frame_id = target_frame_id;
-                (target_frame_id, composed_frame_ids, viewports)
+                (target_frame_id, root_frame_id, composed_frame_ids, viewports)
             };
             self.publish_visible_child_viewports(viewports);
             let target_webview_id = target_frame_id
@@ -298,8 +309,10 @@ impl WebviewProvider {
                 eprintln!(
                     "[input-debug][webview] root={} frame={} child={} target={} nonpositional=true",
                     root_webview_id.0,
-                    target_frame_id.map(|frame_id| frame_id.0).unwrap_or(root_webview_id.0),
-                    target_frame_id.is_some_and(|frame_id| frame_id != FrameId(root_webview_id.0)),
+                    target_frame_id
+                        .map(|frame_id| frame_id.0.to_string())
+                        .unwrap_or_else(|| root_webview_id.0.to_string()),
+                    target_frame_id.is_some_and(|frame_id| Some(frame_id) != root_frame_id),
                     target_webview_id.0,
                 );
             }
