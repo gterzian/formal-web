@@ -1368,10 +1368,3 @@ pub fn maybe_run_content_process() -> Option<Result<(), String>> {
         Err(error) => Some(Err(error)),
     }
 }
-
-fn main() -> Result<(), String> {
-    match maybe_run_content_process() {
-        Some(result) => result,
-        None => Err(String::from("missing --content-token argument")),
-    }
-}

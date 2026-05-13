@@ -14,6 +14,7 @@ use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
 #[derive(Clone, Trace, Finalize)]
 pub(crate) enum AbortAlgorithm {
+    #[allow(dead_code)]
     Native {
         #[unsafe_ignore_trace]
         callback: fn() -> JsResult<()>,
@@ -190,6 +191,7 @@ impl AbortSignal {
             .retain(|candidate| !candidate.matches_entry(algorithm));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn add_native_abort_algorithm(&self, callback: fn() -> JsResult<()>) {
         self.add_abort_algorithm(AbortAlgorithm::Native { callback });
     }

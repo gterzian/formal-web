@@ -159,7 +159,7 @@ pub(crate) fn dispatch_ui_event(
 struct BlitzJSEventHandler<'a> {
     document_id: u64,
     source_navigable_id: u64,
-    document: Rc<RefCell<BaseDocument>>,
+    _document: Rc<RefCell<BaseDocument>>,
     settings: &'a mut EnvironmentSettingsObject,
     event_sender: &'a IpcSender<ContentEvent>,
 }
@@ -175,7 +175,7 @@ impl<'a> BlitzJSEventHandler<'a> {
         Self {
             document_id,
             source_navigable_id,
-            document,
+            _document: document,
             settings,
             event_sender,
         }

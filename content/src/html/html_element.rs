@@ -4,7 +4,7 @@ use blitz_dom::BaseDocument;
 use boa_engine::JsData;
 use boa_gc::{Finalize, Trace};
 
-use crate::dom::{Element, Node};
+use crate::dom::Element;
 
 /// <https://html.spec.whatwg.org/#htmlelement>
 #[derive(Trace, Finalize, JsData)]
@@ -18,10 +18,6 @@ impl HTMLElement {
         Self {
             element: Element::new(document, node_id),
         }
-    }
-
-    pub(crate) fn node(&self) -> &Node {
-        &self.element.node
     }
 
     /// <https://html.spec.whatwg.org/#dom-title>

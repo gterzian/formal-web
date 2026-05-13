@@ -40,10 +40,6 @@ pub(crate) fn with_abort_signal_ref<R>(
     Ok(f(&signal))
 }
 
-pub(crate) fn is_abort_signal_object(object: &JsObject) -> bool {
-    object.downcast_ref::<AbortSignal>().is_some()
-}
-
 pub(crate) fn with_event_mut<R>(this: &JsValue, f: impl FnOnce(&mut Event) -> R) -> JsResult<R> {
     let object = this
         .as_object()

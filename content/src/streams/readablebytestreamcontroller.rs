@@ -53,11 +53,6 @@ impl ArrayBufferViewKind {
             TypedArrayKind::BigUint64 => Self::BigUint64Array,
             TypedArrayKind::Float32 => Self::Float32Array,
             TypedArrayKind::Float64 => Self::Float64Array,
-            _ => {
-                return Err(JsNativeError::typ()
-                    .with_message("Unsupported typed array view kind")
-                    .into())
-            }
         })
     }
 
@@ -195,6 +190,7 @@ impl ArrayBufferViewDescriptor {
         )
     }
 
+    #[allow(dead_code)]
     fn replace_with(&mut self, other: Self) {
         *self = other;
     }
@@ -516,6 +512,7 @@ impl ReadableByteStreamController {
     /// Returns a snapshot of the current BYOB request view as a JS value, without
     /// materialising a new BYOB request object.  Used by the byte-stream tee to
     /// inspect the pending pull-into view synchronously (non-spec helper).
+    #[allow(dead_code)]
     pub(crate) fn byob_request_immediate(&self) -> Option<JsValue> {
         let pending = self.pending_pull_intos.borrow();
         let descriptor = pending.front()?;
@@ -818,7 +815,7 @@ impl ReadableByteStreamController {
     pub(crate) fn respond_with_new_view(
         &self,
         view: ArrayBufferViewDescriptor,
-        view_object: JsObject,
+        _view_object: JsObject,
         context: &mut Context,
     ) -> JsResult<()> {
         let bytes_written = view.byte_length();

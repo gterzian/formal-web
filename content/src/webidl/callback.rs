@@ -14,6 +14,7 @@ pub(crate) trait EcmascriptHost {
         args: &[JsValue],
     ) -> JsResult<JsValue>;
 
+    #[allow(dead_code)]
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()>;
 
     fn report_exception(&mut self, error: JsError, callback: &JsObject);

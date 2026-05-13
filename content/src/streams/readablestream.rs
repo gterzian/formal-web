@@ -30,7 +30,7 @@ use crate::webidl::{
 
 use super::{
     ArrayBufferViewDescriptor, CancelAlgorithm, PullAlgorithm, ReadIntoRequest,
-    ReadableByteStreamController, ReadableStreamBYOBReader, ReadableStreamController,
+    ReadableByteStreamController, ReadableStreamController,
     ReadableStreamReader, ReadableStreamState, StartAlgorithm,
     ReadableStreamDefaultReader, ReadableStreamGenericReader, ReadRequest,
     acquire_readable_stream_byob_reader,
@@ -366,9 +366,9 @@ impl ReadableStream {
 }
 
 struct ReadableStreamTeeBranches {
-    branch1: ReadableStream,
+    _branch1: ReadableStream,
     branch1_object: JsObject,
-    branch2: ReadableStream,
+    _branch2: ReadableStream,
     branch2_object: JsObject,
 }
 
@@ -552,9 +552,9 @@ fn readable_stream_default_tee(
 
     // Step 20: "Return « branch1, branch2 »."
     Ok(ReadableStreamTeeBranches {
-        branch1,
+        _branch1: branch1,
         branch1_object,
-        branch2,
+        _branch2: branch2,
         branch2_object,
     })
 }
@@ -2529,9 +2529,9 @@ fn readable_byte_stream_tee(
     // Step 24: Return « branch1, branch2 ».
 
     Ok(ReadableStreamTeeBranches {
-        branch1,
+        _branch1: branch1,
         branch1_object,
-        branch2,
+        _branch2: branch2,
         branch2_object,
     })
 }
@@ -3441,6 +3441,7 @@ impl PipeToState {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Trace, Finalize)]
 struct WaitForAllState {
     #[unsafe_ignore_trace]
@@ -3587,6 +3588,7 @@ fn pipe_read_result_done(result: &JsValue, context: &mut Context) -> JsResult<Op
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+#[allow(dead_code)]
 fn wait_for_all_promises(
     promises: Vec<JsObject>,
     context: &mut Context,
