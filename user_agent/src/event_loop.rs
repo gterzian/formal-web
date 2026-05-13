@@ -16,10 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::fetch::FetchCommand;
 use crate::timer::{TimerCommand, TimerCompletion};
-use crate::{
-    handle_iframe_traversable_removed, queue_complete_before_unload,
-    queue_finalize_navigation, record_child_navigable_creation, start_navigation_from_rust,
-};
+use crate::UserAgentCommand;
 
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
 const CONTENT_CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(2);
@@ -76,14 +73,6 @@ fn timer_debug_enabled() -> bool {
 fn log_timer_debug(message: impl AsRef<str>) {
     if timer_debug_enabled() {
         eprintln!("[timer-debug][user-agent] {}", message.as_ref());
-    }
-}
-
-fn executable_file_name(stem: &str) -> String {
-    if std::env::consts::EXE_EXTENSION.is_empty() {
-        String::from(stem)
-    } else {
-        format!("{stem}.{}", std::env::consts::EXE_EXTENSION)
     }
 }
 
@@ -155,28 +144,8 @@ pub fn destroyed_document_id(command: &ContentCommand) -> Option<u64> {
 }
 
 fn content_executable_path() -> Result<PathBuf, String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
-    let parent = current_exe
-        .parent()
-        .ok_or_else(|| String::from("failed to resolve executable directory"))?;
-    let profile_dir = parent;
-    let profile_name = profile_dir
-        .file_name()
-        .ok_or_else(|| String::from("failed to resolve build profile directory"))?;
-    let target_dir = profile_dir
-        .parent()
-        .ok_or_else(|| String::from("failed to resolve target directory"))?;
-
-    let dedicated_target = target_dir
-        .join("formal-web-content")
-        .join(profile_name)
-        .join(executable_file_name("content"));
-    if dedicated_target.is_file() {
-        return Ok(dedicated_target);
-    }
-
-    Ok(parent.join(executable_file_name("content")))
+    std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))
 }
 
 struct PendingTaskCommand {
@@ -194,6 +163,7 @@ struct EventLoopWorker {
     command_sender: IpcSender<ContentCommand>,
     event_receiver: Receiver<Result<ContentEvent, String>>,
     child: Option<Child>,
+    user_agent_command_sender: Sender<UserAgentCommand>,
     fetch_command_sender: Sender<FetchCommand>,
     timer_command_sender: Sender<TimerCommand>,
     script_waiters: HashMap<u64, Sender<Result<serde_json::Value, String>>>,
@@ -221,6 +191,7 @@ fn requires_command_completed_wakeup(command: &ContentCommand) -> bool {
 impl EventLoopWorker {
     fn new(
         event_loop_id: usize,
+        user_agent_command_sender: Sender<UserAgentCommand>,
         fetch_command_sender: Sender<FetchCommand>,
         timer_command_sender: Sender<TimerCommand>,
         command_receiver: Receiver<EventLoopCommand>,
@@ -254,6 +225,7 @@ impl EventLoopWorker {
             command_sender: bootstrap.command_sender,
             event_receiver,
             child: Some(child),
+            user_agent_command_sender,
             fetch_command_sender,
             timer_command_sender,
             script_waiters: HashMap::new(),
@@ -434,33 +406,55 @@ impl EventLoopWorker {
                     "queue navigation request from {} to {}",
                     request.source_navigable_id, request.destination_url
                 ));
-                start_navigation_from_rust(request)?;
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::QueueNavigation { request })
+                    .map_err(|error| format!("failed to queue navigation request: {error}"))?;
             }
             ContentEvent::BeforeUnloadCompleted(result) => {
                 log_navigation_debug(format!(
                     "queue beforeunload completion check={} document={} canceled={}",
                     result.check_id, result.document_id, result.canceled
                 ));
-                queue_complete_before_unload(result)?;
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::QueueCompleteBeforeUnload { result })
+                    .map_err(|error| {
+                        format!("failed to queue beforeunload completion: {error}")
+                    })?;
             }
             ContentEvent::FinalizeNavigation(finalized) => {
                 log_navigation_debug(format!(
                     "queue finalize navigation document={} url={}",
                     finalized.document_id, finalized.url
                 ));
-                queue_finalize_navigation(finalized)?;
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::QueueFinalizeNavigation { finalized })
+                    .map_err(|error| format!("failed to queue finalize navigation: {error}"))?;
             }
             ContentEvent::IframeTraversableRemoved(removal) => {
-                handle_iframe_traversable_removed(
-                    removal.parent_traversable_id,
-                    removal.content_navigable_id,
-                )?;
+                let (reply_sender, reply_receiver) = bounded(1);
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::IframeTraversableRemoved {
+                        parent_traversable_id: removal.parent_traversable_id,
+                        content_navigable_id: removal.content_navigable_id,
+                        reply: reply_sender,
+                    })
+                    .map_err(|error| format!("failed to queue iframe traversable removal: {error}"))?;
+                reply_receiver.recv().map_err(|error| {
+                    format!("iframe traversable removal reply channel closed: {error}")
+                })??;
             }
             ContentEvent::ChildNavigableCreated(creation) => {
-                record_child_navigable_creation(
-                    creation.parent_traversable_id,
-                    creation.content_navigable_id,
-                )?;
+                let (reply_sender, reply_receiver) = bounded(1);
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::ChildNavigableCreated {
+                        parent_traversable_id: creation.parent_traversable_id,
+                        content_navigable_id: creation.content_navigable_id,
+                        reply: reply_sender,
+                    })
+                    .map_err(|error| format!("failed to record child navigable: {error}"))?;
+                reply_receiver
+                    .recv()
+                    .map_err(|error| format!("child navigable reply channel closed: {error}"))??;
             }
             ContentEvent::CommandCompleted => {
                 self.awaiting_task_completion = false;
@@ -609,12 +603,14 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, Str
 
 pub fn spawn_event_loop_entry(
     event_loop_id: usize,
+    user_agent_command_sender: Sender<UserAgentCommand>,
     fetch_command_sender: Sender<FetchCommand>,
     timer_command_sender: Sender<TimerCommand>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();
     let mut worker = EventLoopWorker::new(
         event_loop_id,
+        user_agent_command_sender,
         fetch_command_sender,
         timer_command_sender,
         command_receiver,

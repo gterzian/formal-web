@@ -11,16 +11,14 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
-use ipc_messages::content::{
-    BeforeUnloadResult, PaintFrame, WebviewId,
-};
-use ipc_messages::runtime::EmbedderEvent;
+use ipc_messages::content::{BeforeUnloadResult, PaintFrame, WebviewId};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
-use webview::{EmbedderApi, RuntimeClient, WebviewProvider};
+use webview::{EmbedderApi, UserAgentApi, WebviewProvider};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{
@@ -40,12 +38,6 @@ pub struct EventLoopOptions {
     pub headless: bool,
     pub startup_url: Option<String>,
     pub window_title: Option<String>,
-}
-
-#[derive(Clone, Copy)]
-pub struct ContentBridgeHooks {
-    pub set_default_viewport: fn(Option<(u32, u32, f32, ColorScheme)>),
-    pub set_traversable_viewport: fn(u64, (u32, u32, f32, ColorScheme), f32, f32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,17 +117,6 @@ impl EmbedderApi for WinitEmbedderApi {
             .map(|(_, _, scale, _)| scale)
             .unwrap_or(1.0)
     }
-
-    fn update_traversable_viewport(
-        &self,
-        traversable_id: WebviewId,
-        width: u32,
-        height: u32,
-        offset_x: f32,
-        offset_y: f32,
-    ) {
-        update_content_traversable_viewport(traversable_id, width, height, offset_x, offset_y);
-    }
 }
 
 pub enum FormalWebUserEvent {
@@ -185,6 +166,11 @@ pub enum AutomationCommand {
         delta_x: f32,
         delta_y: f32,
         reply: mpsc::Sender<Result<(), String>>,
+    },
+    EvaluateScript {
+        source: String,
+        timeout: Duration,
+        reply: mpsc::Sender<Result<Value, String>>,
     },
 }
 
@@ -275,7 +261,7 @@ struct FormalWebApp {
     chrome: Option<ChromeUi>,
     browser: BrowserState,
     provider: Option<WebviewProvider>,
-    runtime_client: Option<Box<dyn RuntimeClient>>,
+    user_agent: Option<Box<dyn UserAgentApi>>,
     current_webview_id: Option<WebviewId>,
     has_top_level_traversable: bool,
     window_occluded: bool,
@@ -289,8 +275,6 @@ struct FormalWebApp {
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
     LazyLock::new(|| Mutex::new(None));
 pub(crate) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
-    LazyLock::new(|| Mutex::new(None));
-static CONTENT_BRIDGE_HOOKS: LazyLock<Mutex<Option<ContentBridgeHooks>>> =
     LazyLock::new(|| Mutex::new(None));
 static EVENT_LOOP_OPTIONS: LazyLock<Mutex<EventLoopOptions>> =
     LazyLock::new(|| Mutex::new(EventLoopOptions::default()));
@@ -331,50 +315,6 @@ fn event_loop_options() -> EventLoopOptions {
         .clone()
 }
 
-pub fn set_content_bridge_hooks(hooks: ContentBridgeHooks) {
-    let mut guard = CONTENT_BRIDGE_HOOKS
-        .lock()
-        .expect("content bridge hooks mutex poisoned");
-    *guard = Some(hooks);
-}
-
-fn set_default_content_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
-    let hooks = CONTENT_BRIDGE_HOOKS
-        .lock()
-        .expect("content bridge hooks mutex poisoned")
-        .as_ref()
-        .copied();
-    if let Some(hooks) = hooks {
-        (hooks.set_default_viewport)(snapshot);
-    }
-}
-
-fn update_content_traversable_viewport(
-    traversable_id: WebviewId,
-    width: u32,
-    height: u32,
-    offset_x: f32,
-    offset_y: f32,
-) {
-    let Some((_, _, scale, color_scheme)) = window_viewport_snapshot() else {
-        return;
-    };
-
-    let hooks = CONTENT_BRIDGE_HOOKS
-        .lock()
-        .expect("content bridge hooks mutex poisoned")
-        .as_ref()
-        .copied();
-    if let Some(hooks) = hooks {
-        (hooks.set_traversable_viewport)(
-            traversable_id.0,
-            (width, height, scale, color_scheme),
-            offset_x,
-            offset_y,
-        );
-    }
-}
-
 pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
     with_event_loop_proxy(|proxy| match proxy {
         Some(proxy) => proxy
@@ -382,14 +322,6 @@ pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
             .map_err(|error| format!("failed to send user event: {error}")),
         None => Err(String::from("winit event loop proxy is not initialized")),
     })
-}
-
-pub fn send_runtime_message(message: &str) -> Result<(), String> {
-    let user_event = user_event_of_runtime_event(
-        serde_json::from_str(message)
-            .map_err(|error| format!("invalid runtime event payload: {error}"))?,
-    );
-    send_user_event(user_event)
 }
 
 pub fn clipboard_get_text(timeout: Duration) -> Result<String, String> {
@@ -486,11 +418,26 @@ pub fn automation_scroll(
     })?
 }
 
+pub fn automation_evaluate_script(source: String, timeout: Duration) -> Result<Value, String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::EvaluateScript {
+        source,
+        timeout,
+        reply,
+    }))?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting for script evaluation: {error}",
+            timeout.as_millis()
+        )
+    })?
+}
+
 pub fn request_exit() -> Result<(), String> {
     send_user_event(FormalWebUserEvent::Exit)
 }
 
-pub fn run_event_loop(runtime_client: Box<dyn RuntimeClient>) -> Result<(), String> {
+pub fn run_event_loop(user_agent: Box<dyn UserAgentApi>) -> Result<(), String> {
     let event_loop = EventLoop::<FormalWebUserEvent>::with_user_event()
         .build()
         .map_err(|error| format!("failed to create event loop: {error}"))?;
@@ -502,7 +449,7 @@ pub fn run_event_loop(runtime_client: Box<dyn RuntimeClient>) -> Result<(), Stri
     }
 
     let mut app = FormalWebApp {
-        runtime_client: Some(runtime_client),
+        user_agent: Some(user_agent),
         ..FormalWebApp::default()
     };
     let run_result = event_loop
@@ -553,28 +500,6 @@ fn normalize_browser_destination(input: &str) -> Option<String> {
         return Some(trimmed.to_owned());
     }
     Some(format!("https://{trimmed}"))
-}
-
-fn user_event_of_runtime_event(event: EmbedderEvent) -> FormalWebUserEvent {
-    match event {
-        EmbedderEvent::NewTopLevelTraversable {
-            webview_id,
-            target_name,
-        } => FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name),
-        EmbedderEvent::NavigationRequested {
-            webview_id,
-            destination_url,
-        } => FormalWebUserEvent::NavigationRequested {
-            webview_id,
-            destination_url,
-        },
-        EmbedderEvent::BeforeUnloadCompleted(result) => {
-            FormalWebUserEvent::BeforeUnloadCompleted(result)
-        }
-        EmbedderEvent::FinalizeNavigation { webview_id, url } => {
-            FormalWebUserEvent::FinalizeNavigation(FinalizeNavigation { webview_id, url })
-        }
-    }
 }
 
 pub(crate) fn with_event_loop_proxy<R>(
@@ -783,7 +708,7 @@ impl Default for FormalWebApp {
             chrome: None,
             browser: BrowserState::default(),
             provider: None,
-            runtime_client: None,
+            user_agent: None,
             current_webview_id: None,
             has_top_level_traversable: false,
             window_occluded: false,
@@ -891,13 +816,20 @@ impl FormalWebApp {
         )
     }
 
-    fn update_content_viewport_snapshot(&self, window: &Window) {
+    fn update_content_viewport_snapshot(&mut self, window: &Window) {
         let viewport_snapshot = self.content_viewport_snapshot(window);
         update_window_viewport_snapshot(Some(viewport_snapshot));
-        set_default_content_viewport(Some(viewport_snapshot));
-        if let Some(webview_id) = self.current_webview_id {
-            let (width, height, _scale, _color_scheme) = viewport_snapshot;
-            update_content_traversable_viewport(webview_id, width, height, 0.0, 0.0);
+        if let Some(provider) = self.provider.as_mut() {
+            let _ = provider.set_default_viewport(Some(viewport_snapshot));
+            if let Some(webview_id) = self.current_webview_id {
+                let (width, height, scale, color_scheme) = viewport_snapshot;
+                let _ = provider.set_traversable_viewport(
+                    webview_id,
+                    (width, height, scale, color_scheme),
+                    0.0,
+                    0.0,
+                );
+            }
         }
     }
 
@@ -912,8 +844,8 @@ impl FormalWebApp {
         if let Some(chrome) = self.chrome.as_mut() {
             chrome.sync_state(&chrome_view_state);
         }
-        if let Some(window) = self.window.as_ref() {
-            self.update_content_viewport_snapshot(window);
+        if let Some(window) = self.window.clone() {
+            self.update_content_viewport_snapshot(&window);
         }
     }
 
@@ -1236,6 +1168,21 @@ impl FormalWebApp {
             } => {
                 let _ = reply.send(self.dispatch_automation_scroll(x, y, delta_x, delta_y));
             }
+            AutomationCommand::EvaluateScript {
+                source,
+                timeout,
+                reply,
+            } => {
+                let result = match self.provider.as_ref().zip(self.current_webview_id) {
+                    Some((provider, webview_id)) => {
+                        provider.evaluate_script(webview_id, source, timeout)
+                    }
+                    None => Err(String::from(
+                        "no active top-level traversable is available for script execution",
+                    )),
+                };
+                let _ = reply.send(result);
+            }
         }
     }
 
@@ -1361,12 +1308,12 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         event_loop.exit();
                         return;
                     };
-                    let Some(runtime_client) = self.runtime_client.take() else {
+                    let Some(user_agent) = self.user_agent.take() else {
                         event_loop.exit();
                         return;
                     };
                     let embedder: Box<dyn EmbedderApi> = Box::new(WinitEmbedderApi { proxy });
-                    self.provider = Some(WebviewProvider::new(embedder, runtime_client));
+                    self.provider = Some(WebviewProvider::new(embedder, user_agent));
                     self.window = Some(window.clone());
                     self.sync_chrome_state();
                     self.update_content_viewport_snapshot(&window);
@@ -1445,7 +1392,6 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 self.has_top_level_traversable = false;
                 self.window_occluded = false;
                 update_window_viewport_snapshot(None);
-                set_default_content_viewport(None);
                 self.window = None;
                 event_loop.exit();
             }

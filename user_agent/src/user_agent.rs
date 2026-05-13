@@ -4,18 +4,16 @@ mod timer;
 
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-use embedder::{ContentBridgeHooks, FinalizeNavigation, FormalWebUserEvent};
+use embedder::{FinalizeNavigation, FormalWebUserEvent};
 use ipc_messages::{
     content::{
         BeforeUnloadResult, Command as ContentCommand, DispatchEventEntry,
         FetchResponse as ContentFetchResponse, FinalizeNavigation as ContentFinalizeNavigation,
         LoadedDocumentResponse, NavigateRequest, WebviewId,
     },
-    runtime::RuntimeRequest,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -207,348 +205,158 @@ pub enum UserAgentCommand {
     },
 }
 
-pub static USER_AGENT_THREAD_SENDER: OnceLock<Sender<UserAgentCommand>> = OnceLock::new();
 pub static NEXT_SCRIPT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
-pub struct RuntimeThreadClient;
-
-pub fn runtime_client() -> Box<dyn webview::RuntimeClient> {
-    Box::new(RuntimeThreadClient)
+pub struct UserAgent {
+    handle: UserAgentHandle,
+    join_handle: Option<JoinHandle<()>>,
 }
 
-impl webview::RuntimeClient for RuntimeThreadClient {
+#[derive(Clone)]
+pub struct UserAgentHandle {
+    command_sender: Sender<UserAgentCommand>,
+}
+
+impl UserAgent {
+    pub fn start() -> Result<Self, String> {
+        let (command_sender, command_receiver) = unbounded();
+        let handle = UserAgentHandle {
+            command_sender: command_sender.clone(),
+        };
+        let mut worker = UserAgentWorker::new(command_sender, command_receiver);
+        let join_handle = thread::spawn(move || worker.run());
+        Ok(Self {
+            handle,
+            join_handle: Some(join_handle),
+        })
+    }
+
+    pub fn handle(&self) -> UserAgentHandle {
+        self.handle.clone()
+    }
+
+    pub fn shutdown(mut self) -> Result<(), String> {
+        let (reply_sender, reply_receiver) = bounded(1);
+        self.handle
+            .command_sender
+            .send(UserAgentCommand::Shutdown {
+                reply: reply_sender,
+            })
+            .map_err(|error| format!("failed to request user-agent shutdown: {error}"))?;
+        let shutdown_result = reply_receiver
+            .recv()
+            .map_err(|error| format!("user-agent shutdown reply channel closed: {error}"))?;
+
+        if let Some(join_handle) = self.join_handle.take()
+            && join_handle.join().is_err()
+            && shutdown_result.is_ok()
+        {
+            return Err(String::from("user-agent thread panicked"));
+        }
+
+        shutdown_result
+    }
+
+    pub fn evaluate_script(
+        &self,
+        traversable_id: u64,
+        source: String,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        webview::UserAgentApi::evaluate_script(&self.handle, traversable_id, source, timeout)
+    }
+}
+
+impl webview::UserAgentApi for UserAgentHandle {
     fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String> {
-        handle_runtime_request(RuntimeRequest::FreshTopLevelTraversable { destination_url })
+        let (reply_sender, reply_receiver) = bounded(1);
+        self.command_sender
+            .send(UserAgentCommand::StartTopLevelTraversable {
+                destination_url,
+                reply: reply_sender,
+            })
+            .map_err(|error| format!("failed to start top-level traversable: {error}"))?;
+        reply_receiver
+            .recv()
+            .map_err(|error| format!("top-level traversable reply channel closed: {error}"))?
     }
 
     fn start_navigation(&self, request: NavigateRequest) -> Result<(), String> {
-        start_navigation_from_rust(request)
+        let (reply_sender, reply_receiver) = bounded(1);
+        self.command_sender
+            .send(UserAgentCommand::StartNavigation {
+                request,
+                reply: reply_sender,
+            })
+            .map_err(|error| format!("failed to start navigation: {error}"))?;
+        reply_receiver
+            .recv()
+            .map_err(|error| format!("navigation reply channel closed: {error}"))?
     }
 
     fn dispatch_event_for(&self, traversable_id: u64, event: String) -> Result<(), String> {
-        handle_runtime_request(RuntimeRequest::DispatchEventFor {
-            traversable_id,
-            event,
-        })
+        self.command_sender
+            .send(UserAgentCommand::DispatchEventFor {
+                traversable_id,
+                event,
+            })
+            .map_err(|error| format!("failed to queue dispatch-event request: {error}"))
     }
 
-    fn rendering_opportunity_for(&self, traversable_id: u64) -> Result<(), String> {
-        handle_runtime_request(RuntimeRequest::RenderingOpportunityFor { traversable_id })
-    }
-}
-
-fn user_agent_command_sender() -> Result<Sender<UserAgentCommand>, String> {
-    USER_AGENT_THREAD_SENDER
-        .get()
-        .cloned()
-        .ok_or_else(|| String::from("user-agent thread is not running"))
-}
-
-pub fn install_hooks() {
-    embedder::set_content_bridge_hooks(ContentBridgeHooks {
-        set_default_viewport: broadcast_viewport,
-        set_traversable_viewport,
-    });
-}
-
-pub fn handle_runtime_request(request: RuntimeRequest) -> Result<(), String> {
-    match request {
-        RuntimeRequest::FreshTopLevelTraversable { destination_url } => {
-            enqueue_top_level_traversable(&destination_url)
-        }
-        RuntimeRequest::DispatchEventFor {
-            traversable_id,
-            event,
-        } => enqueue_dispatch_event_for_traversable(traversable_id, event),
-        RuntimeRequest::RenderingOpportunityFor { traversable_id } => {
-            enqueue_rendering_opportunity_for_traversable(traversable_id)
-        }
-    }
-}
-
-pub fn start_user_agent_thread() -> Result<(), String> {
-    if USER_AGENT_THREAD_SENDER.get().is_some() {
-        return Ok(());
+    fn note_rendering_opportunity(&self, traversable_id: u64) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::RenderingOpportunityFor { traversable_id })
+            .map_err(|error| format!("failed to queue rendering-opportunity request: {error}"))
     }
 
-    let (command_sender, command_receiver) = unbounded();
-    USER_AGENT_THREAD_SENDER
-        .set(command_sender.clone())
-        .map_err(|_| String::from("user-agent thread sender was already initialized"))?;
-    let mut user_agent_thread = UserAgentThread::new(command_sender, command_receiver);
-    thread::spawn(move || user_agent_thread.run());
-    Ok(())
-}
-
-pub fn shutdown_user_agent_thread() -> Result<(), String> {
-    let Some(command_sender) = USER_AGENT_THREAD_SENDER.get().cloned() else {
-        return Ok(());
-    };
-
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::Shutdown {
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to request user-agent shutdown: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("user-agent shutdown reply channel closed: {error}"))?
-}
-
-pub fn start(event_loop_id: usize) -> Result<usize, String> {
-    start_user_agent_thread()?;
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::StartEventLoop {
-            event_loop_id,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to send content start request: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("content start reply channel closed: {error}"))?
-}
-
-pub fn start_top_level_traversable(destination_url: &str) -> Result<(), String> {
-    start_user_agent_thread()?;
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::StartTopLevelTraversable {
-            destination_url: destination_url.to_owned(),
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to start top-level traversable: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("top-level traversable reply channel closed: {error}"))?
-}
-
-pub fn start_navigation(request: NavigateRequest) -> Result<(), String> {
-    start_user_agent_thread()?;
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::StartNavigation {
-            request,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to start navigation: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("navigation reply channel closed: {error}"))?
-}
-
-pub fn start_navigation_from_rust(request: NavigateRequest) -> Result<(), String> {
-    enqueue_navigation(request)
-}
-
-pub fn complete_before_unload(result: BeforeUnloadResult) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::CompleteBeforeUnload {
-            result,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to complete beforeunload: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("beforeunload reply channel closed: {error}"))?
-}
-
-pub fn finalize_navigation(finalized: ContentFinalizeNavigation) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::FinalizeNavigation {
-            finalized,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to finalize navigation: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("finalize-navigation reply channel closed: {error}"))?
-}
-
-pub fn queue_complete_before_unload(result: BeforeUnloadResult) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    command_sender
-        .send(UserAgentCommand::QueueCompleteBeforeUnload { result })
-        .map_err(|error| format!("failed to queue beforeunload completion: {error}"))
-}
-
-pub fn queue_finalize_navigation(finalized: ContentFinalizeNavigation) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    command_sender
-        .send(UserAgentCommand::QueueFinalizeNavigation { finalized })
-        .map_err(|error| format!("failed to queue finalize-navigation: {error}"))
-}
-
-pub fn stop(handle: usize) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::StopHandle {
-            handle,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to send content stop request: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("content stop reply channel closed: {error}"))?
-}
-
-pub fn stop_event_loop(event_loop_id: usize) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::StopEventLoop {
-            event_loop_id,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to send event-loop stop request: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("event-loop stop reply channel closed: {error}"))?
-}
-
-pub fn send_command(handle: usize, command: ContentCommand) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::SendCommand {
-            handle,
-            command,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to send content command request: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("content command reply channel closed: {error}"))?
-}
-
-pub fn handle_iframe_traversable_removed(
-    parent_traversable_id: u64,
-    content_navigable_id: u64,
-) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::IframeTraversableRemoved {
-            parent_traversable_id,
-            content_navigable_id,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to queue iframe traversable removal: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("iframe traversable removal reply channel closed: {error}"))?
-}
-
-pub fn record_child_navigable_creation(
-    parent_traversable_id: u64,
-    content_navigable_id: u64,
-) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::ChildNavigableCreated {
-            parent_traversable_id,
-            content_navigable_id,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to record child navigable: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("child navigable reply channel closed: {error}"))?
-}
-
-pub fn evaluate_script(
-    traversable_id: u64,
-    source: String,
-    timeout: Duration,
-) -> Result<serde_json::Value, String> {
-    let command_sender = user_agent_command_sender()?;
-    let (reply_sender, reply_receiver) = bounded(1);
-    command_sender
-        .send(UserAgentCommand::EvaluateScript {
-            traversable_id,
-            source,
-            timeout,
-            reply: reply_sender,
-        })
-        .map_err(|error| format!("failed to send script evaluation request: {error}"))?;
-    reply_receiver
-        .recv()
-        .map_err(|error| format!("script evaluation reply channel closed: {error}"))?
-}
-
-pub fn broadcast_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
-    let Some(snapshot) = snapshot else {
-        return;
-    };
-
-    if let Ok(command_sender) = user_agent_command_sender() {
-        let _ = command_sender.send(UserAgentCommand::BroadcastViewport { snapshot });
+    fn set_default_viewport(
+        &self,
+        snapshot: Option<(u32, u32, f32, ColorScheme)>,
+    ) -> Result<(), String> {
+        let Some(snapshot) = snapshot else {
+            return Ok(());
+        };
+        self.command_sender
+            .send(UserAgentCommand::BroadcastViewport { snapshot })
+            .map_err(|error| format!("failed to broadcast viewport: {error}"))
     }
-}
 
-pub fn set_traversable_viewport(
-    traversable_id: u64,
-    snapshot: (u32, u32, f32, ColorScheme),
-    offset_x: f32,
-    offset_y: f32,
-) {
-    let Ok(command_sender) = user_agent_command_sender() else {
-        return;
-    };
-    let _ = command_sender.send(UserAgentCommand::SetTraversableViewport {
-        traversable_id,
-        snapshot,
-        offset_x,
-        offset_y,
-    });
-}
+    fn set_traversable_viewport(
+        &self,
+        traversable_id: u64,
+        snapshot: (u32, u32, f32, ColorScheme),
+        offset_x: f32,
+        offset_y: f32,
+    ) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::SetTraversableViewport {
+                traversable_id,
+                snapshot,
+                offset_x,
+                offset_y,
+            })
+            .map_err(|error| format!("failed to set traversable viewport: {error}"))
+    }
 
-fn enqueue_dispatch_event_for_traversable(
-    traversable_id: u64,
-    event: String,
-) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    command_sender
-        .send(UserAgentCommand::DispatchEventFor {
-            traversable_id,
-            event,
-        })
-        .map_err(|error| format!("failed to queue dispatch-event request: {error}"))
-}
-
-fn enqueue_rendering_opportunity_for_traversable(traversable_id: u64) -> Result<(), String> {
-    let command_sender = user_agent_command_sender()?;
-    command_sender
-        .send(UserAgentCommand::RenderingOpportunityFor { traversable_id })
-        .map_err(|error| format!("failed to queue rendering-opportunity request: {error}"))
-}
-
-fn enqueue_top_level_traversable(destination_url: &str) -> Result<(), String> {
-    start_user_agent_thread()?;
-    let command_sender = user_agent_command_sender()?;
-    command_sender
-        .send(UserAgentCommand::QueueTopLevelTraversable {
-            destination_url: destination_url.to_owned(),
-        })
-        .map_err(|error| format!("failed to queue top-level traversable start: {error}"))
-}
-
-fn enqueue_navigation(request: NavigateRequest) -> Result<(), String> {
-    start_user_agent_thread()?;
-    let command_sender = user_agent_command_sender()?;
-    command_sender
-        .send(UserAgentCommand::QueueNavigation { request })
-        .map_err(|error| format!("failed to queue navigation: {error}"))
+    fn evaluate_script(
+        &self,
+        traversable_id: u64,
+        source: String,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        let (reply_sender, reply_receiver) = bounded(1);
+        self.command_sender
+            .send(UserAgentCommand::EvaluateScript {
+                traversable_id,
+                source,
+                timeout,
+                reply: reply_sender,
+            })
+            .map_err(|error| format!("failed to send script evaluation request: {error}"))?;
+        reply_receiver
+            .recv()
+            .map_err(|error| format!("script evaluation reply channel closed: {error}"))?
+    }
 }
 
 fn render_state_debug_enabled() -> bool {
@@ -618,6 +426,7 @@ fn send_event_loop_command(
 fn create_or_get_event_loop_handle(
     state: &mut UserAgentState,
     event_loop_id: usize,
+    user_agent_command_sender: &Sender<UserAgentCommand>,
     fetch_command_sender: &Sender<FetchCommand>,
     timer_command_sender: &Sender<TimerCommand>,
 ) -> Result<usize, String> {
@@ -631,6 +440,7 @@ fn create_or_get_event_loop_handle(
     state.next_handle += 1;
     let entry = spawn_event_loop_entry(
         event_loop_id,
+        user_agent_command_sender.clone(),
         fetch_command_sender.clone(),
         timer_command_sender.clone(),
     )?;
@@ -667,6 +477,7 @@ fn find_traversable_by_target_name(state: &UserAgentState, target_name: &str) ->
 fn create_top_level_traversable(
     state: &mut UserAgentState,
     target_name: String,
+    user_agent_command_sender: &Sender<UserAgentCommand>,
     fetch_command_sender: &Sender<FetchCommand>,
     timer_command_sender: &Sender<TimerCommand>,
 ) -> Result<u64, String> {
@@ -676,6 +487,7 @@ fn create_top_level_traversable(
     let handle = create_or_get_event_loop_handle(
         state,
         event_loop_id,
+        user_agent_command_sender,
         fetch_command_sender,
         timer_command_sender,
     )?;
@@ -859,6 +671,7 @@ fn resolve_target_traversable(
     source_navigable_id: u64,
     target_name: &str,
     noopener: bool,
+    user_agent_command_sender: &Sender<UserAgentCommand>,
     fetch_command_sender: &Sender<FetchCommand>,
     timer_command_sender: &Sender<TimerCommand>,
 ) -> Result<u64, String> {
@@ -867,6 +680,7 @@ fn resolve_target_traversable(
         return create_top_level_traversable(
             state,
             String::new(),
+            user_agent_command_sender,
             fetch_command_sender,
             timer_command_sender,
         );
@@ -882,6 +696,7 @@ fn resolve_target_traversable(
             return create_top_level_traversable(
                 state,
                 iframe_name,
+                user_agent_command_sender,
                 fetch_command_sender,
                 timer_command_sender,
             );
@@ -894,6 +709,7 @@ fn resolve_target_traversable(
         return create_top_level_traversable(
             state,
             String::new(),
+            user_agent_command_sender,
             fetch_command_sender,
             timer_command_sender,
         );
@@ -907,6 +723,7 @@ fn resolve_target_traversable(
     create_top_level_traversable(
         state,
         normalized_target_name,
+        user_agent_command_sender,
         fetch_command_sender,
         timer_command_sender,
     )
@@ -947,8 +764,9 @@ fn stop_event_loop_handle(state: &mut UserAgentState, handle: usize) -> Result<(
     }
 }
 
-struct UserAgentThread {
+struct UserAgentWorker {
     state: UserAgentState,
+    command_sender: Sender<UserAgentCommand>,
     command_receiver: Receiver<UserAgentCommand>,
     fetch_command_sender: Sender<FetchCommand>,
     fetch_join_handle: Option<JoinHandle<()>>,
@@ -956,7 +774,7 @@ struct UserAgentThread {
     timer_join_handle: Option<JoinHandle<()>>,
 }
 
-impl UserAgentThread {
+impl UserAgentWorker {
     fn new(
         user_agent_command_sender: Sender<UserAgentCommand>,
         command_receiver: Receiver<UserAgentCommand>,
@@ -967,12 +785,14 @@ impl UserAgentThread {
             run_fetch_thread(fetch_command_receiver, fetch_user_agent_command_sender)
         });
         let (timer_command_sender, timer_command_receiver) = unbounded();
+        let timer_user_agent_command_sender = user_agent_command_sender.clone();
         let timer_join_handle = thread::spawn(move || {
-            run_timer_thread(timer_command_receiver, user_agent_command_sender)
+            run_timer_thread(timer_command_receiver, timer_user_agent_command_sender)
         });
 
         Self {
             state: UserAgentState::default(),
+            command_sender: user_agent_command_sender,
             command_receiver,
             fetch_command_sender,
             fetch_join_handle: Some(fetch_join_handle),
@@ -992,6 +812,7 @@ impl UserAgentThread {
                     let traversable_id = create_top_level_traversable(
                         &mut self.state,
                         String::new(),
+                        &self.command_sender,
                         &self.fetch_command_sender,
                         &self.timer_command_sender,
                     )?;
@@ -1009,6 +830,7 @@ impl UserAgentThread {
                     let traversable_id = create_top_level_traversable(
                         &mut self.state,
                         String::new(),
+                        &self.command_sender,
                         &self.fetch_command_sender,
                         &self.timer_command_sender,
                     )?;
@@ -1031,6 +853,7 @@ impl UserAgentThread {
                         request.source_navigable_id,
                         &request.target,
                         request.noopener,
+                        &self.command_sender,
                         &self.fetch_command_sender,
                         &self.timer_command_sender,
                     )?;
@@ -1055,6 +878,7 @@ impl UserAgentThread {
                         request.source_navigable_id,
                         &request.target,
                         request.noopener,
+                        &self.command_sender,
                         &self.fetch_command_sender,
                         &self.timer_command_sender,
                     )?;
@@ -1220,6 +1044,7 @@ impl UserAgentThread {
                     match create_or_get_event_loop_handle(
                         &mut self.state,
                         event_loop_id,
+                        &self.command_sender,
                         &self.fetch_command_sender,
                         &self.timer_command_sender,
                     ) {

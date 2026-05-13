@@ -1,6 +1,6 @@
 # formal-web
 
-formal-web runs a verified Lean kernel dealing with all engine-wide coordination(navigation, session history, etc...), coupled with individual Rust modules for things like running HTML event-loop tasks, managing the DOM, a winit embedder, a window renderer, and other things interfacing with the outside world.
+formal-web is a Rust browser prototype with explicit user-agent, event-loop, timer, fetch, content, and net components. The `FormalWeb` Lean modules remain in-tree as reference models and proofs, while the executable runtime is now implemented in Rust.
 
 ---
 
@@ -14,7 +14,7 @@ Some of the hardest bugs in browsers are in the coordination. Navigation races, 
 
 ## The approach
 
-formal-web moves as much of this logic as possible into a verified Lean kernel. The kernel handles every concurrent decision — navigation, session history, fetch — using formally proven state machines. Rust modules handle the rest: DOM, layout, rendering, JavaScript.
+formal-web keeps the Rust runtime structurally close to the `FormalWeb` reference models. The goal is an idiomatic Rust implementation of the same navigation, session-history, timer, and fetch business logic, with the Lean files serving as specifications and proof artifacts rather than the live runtime.
 
 ---
 
@@ -22,7 +22,7 @@ formal-web moves as much of this logic as possible into a verified Lean kernel. 
 
 ### Correctness
 
-The most complicated concurrent algorithms — navigation, session history, fetch — live in the Lean verified kernel. Rust modules are kept as simple as possible, focused purely on interacting with the outside world. Each module is a black box: a sequential function with an input and an output.
+The most complicated concurrent algorithms — navigation, session history, fetch, timers, and event-loop coordination — live in explicit Rust state machines and worker threads. The Lean modules remain available as reference material for the intended business logic and invariants.
 
 ### Performance
 
@@ -37,7 +37,7 @@ The engine composes best-in-class open components:
 - **Wasmtime** — WebAssembly runtime
 - **Boa** — JavaScript engine
 
-The Blitz + Vello + anyrender pipeline is naturally composable, supporting advanced use cases like cross-process iframes and media elements with minimal coordination overhead. Anything beyond core web standards — WebNN, WebBluetooth, Web MIDI — is implemented as a plain Rust module, keeping the verified kernel lean and the extension surface explicit.
+The Blitz + Vello + anyrender pipeline is naturally composable, supporting advanced use cases like cross-process iframes and media elements with minimal coordination overhead. Anything beyond core web standards — WebNN, WebBluetooth, Web MIDI — is implemented as a plain Rust module, keeping the extension surface explicit.
 
 ### Security
 
@@ -68,9 +68,9 @@ A formally verified core plus composable Rust modules is a tractable path to a c
 rustup run 1.92.0 cargo run --release
 ```
 
-`cargo check` builds the Rust workspace and the Lean runtime artifacts needed by the FFI layer.
+`cargo check` builds the Rust crates that make up the embedder, user agent, content sidecar mode, and net sidecar mode.
 
-`cargo run --release` starts the Rust embedder, initializes the Lean runtime, starts the Lean kernel, and loads `artifacts/StartupExample.html`.
+`cargo run --release` starts the Rust embedder, the user-agent thread, and the hidden content/net sidecar modes that the main executable respawns on demand, then loads `artifacts/StartupExample.html`.
 
 ```bash
 rustup run 1.92.0 cargo run -- test-wpt formal/load-event-fires.html

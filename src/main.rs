@@ -1,4 +1,3 @@
-mod network;
 mod webdriver;
 mod wpt;
 
@@ -34,15 +33,16 @@ pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String>
         window_title: options.window_title,
     });
 
-    user_agent::install_hooks();
+    let user_agent = match user_agent::UserAgent::start() {
+        Ok(user_agent) => user_agent,
+        Err(error) => {
+            embedder::clear_event_loop_options();
+            return Err(error);
+        }
+    };
 
-    if let Err(error) = user_agent::start_user_agent_thread() {
-        embedder::clear_event_loop_options();
-        return Err(error);
-    }
-
-    let event_loop_result = embedder::run_event_loop(user_agent::runtime_client());
-    let shutdown_result = user_agent::shutdown_user_agent_thread();
+    let event_loop_result = embedder::run_event_loop(Box::new(user_agent.handle()));
+    let shutdown_result = user_agent.shutdown();
     embedder::clear_event_loop_options();
 
     event_loop_result.and(shutdown_result)
@@ -53,7 +53,15 @@ fn run_app() -> Result<(), String> {
 }
 
 fn main() {
-    if let Some(result) = network::maybe_run_network_process() {
+    if let Some(result) = content::maybe_run_content_process() {
+        if let Err(error) = result {
+            eprintln!("formal-web: {error}");
+            process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(result) = net::maybe_run_net_process() {
         if let Err(error) = result {
             eprintln!("formal-web: {error}");
             process::exit(1);

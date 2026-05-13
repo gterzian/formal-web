@@ -54,29 +54,13 @@ struct FetchWorker {
     shutdown_reply: Option<Sender<Result<(), String>>>,
 }
 
-fn executable_file_name(stem: &str) -> String {
-    if std::env::consts::EXE_EXTENSION.is_empty() {
-        String::from(stem)
-    } else {
-        format!("{stem}.{}", std::env::consts::EXE_EXTENSION)
-    }
+fn net_sidecar_executable_path() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))
 }
 
-fn network_executable_path() -> Result<PathBuf, String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
-    let parent = current_exe
-        .parent()
-        .ok_or_else(|| String::from("failed to resolve executable directory"))?;
-    let dedicated_executable = parent.join(executable_file_name("network"));
-    if dedicated_executable.is_file() {
-        return Ok(dedicated_executable);
-    }
-    Ok(current_exe)
-}
-
-fn setup_network(command: &mut Command, token: &str) {
-    command.arg("--network-token").arg(token);
+fn setup_net_sidecar(command: &mut Command, token: &str) {
+    command.arg("--net-token").arg(token);
 }
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, String> {
@@ -114,12 +98,12 @@ fn finish_shutdown(mut child: Option<Child>) {
 
 pub fn start_network_bridge(
 ) -> Result<(IpcSender<NetworkRequest>, Receiver<Result<NetworkResponse, String>>, Child), String> {
-    let executable_path = network_executable_path()?;
+    let executable_path = net_sidecar_executable_path()?;
     let (server, token) = IpcOneShotServer::<NetworkBootstrap>::new()
         .map_err(|error| format!("failed to create network IPC one-shot server: {error}"))?;
 
     let mut child_process = Command::new(&executable_path);
-    setup_network(&mut child_process, &token);
+    setup_net_sidecar(&mut child_process, &token);
 
     let child = child_process
         .spawn()

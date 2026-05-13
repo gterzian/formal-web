@@ -25,4 +25,4 @@ The `webview` crate owns:
 
 - **`EmbedderApi` trait**: Abstract interface for embedder-specific concerns like redraw signaling. This allows the webview crate to remain independent of platform/window details (winit, rendering backend, etc.).
 
-- **Embedder-specific helpers**: Navigation, viewport updates, and UI event dispatch remain in the embedder crate as they require access to Lean runtime hooks and global state. The embedder providers the implementations (`webview_provider_navigate`, `webview_provider_send_ui_event`, etc.) that wrap WebviewProvider state access with embedder-specific messaging.
+- **Embedder-specific helpers**: Navigation, viewport updates, and UI event dispatch remain in the embedder crate because they require access to window state, browser chrome, and the owned user-agent handle. The embedder provides the implementations (`webview_provider_navigate`, `webview_provider_send_ui_event`, etc.) that wrap `WebviewProvider` state access with embedder-specific messaging.

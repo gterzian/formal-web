@@ -364,18 +364,8 @@ fn current_snapshot() -> Result<embedder::AutomationSnapshot, WebDriverError> {
 }
 
 fn execute_script_value(script: &str, args: &[Value]) -> Result<Value, WebDriverError> {
-    let snapshot = current_snapshot()?;
-    let webview_id = snapshot.webview_id.ok_or_else(|| {
-        WebDriverError::http(
-            500,
-            "Internal Server Error",
-            "javascript error",
-            String::from("no active top-level traversable is available for script execution"),
-        )
-    })?;
-
     let wrapped = wrap_execute_script(script, args).map_err(WebDriverError::invalid_argument)?;
-    user_agent::evaluate_script(webview_id.0, wrapped, SCRIPT_TIMEOUT)
+    embedder::automation_evaluate_script(wrapped, SCRIPT_TIMEOUT)
         .map_err(WebDriverError::javascript)
 }
 

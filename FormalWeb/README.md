@@ -1,3 +1,4 @@
+- `FormalWeb/` is kept as reference material for the Rust runtime. Historical notes about Lean runtime wiring or FFI remain relevant only when comparing the old executable model against the current Rust translation.
 - `sratchpad/zero-to-qed` contains excellent idiomatic Lean examples: use those.
 - Use `lean-lsp-mcp` when working in Lean, it is documented at `/scratchpad/lean-lsp-mcp/README.md`. Read the documentation before attempting to prove anything in Lean.
 - Use CamelCase filenames such as `FormalWeb/UserAgent.lean` for modules like `FormalWeb.UserAgent`.
@@ -14,7 +15,7 @@
 - The author is not a Lean expert, so make an effort to translate user instruction freely into equivalent idiomatic Lean constructs. 
 - Web standards are in a local-only folder name web_standards. Search these files to document your work as noted above.
 - Prefer a custom Lake `target` plus `moreLinkObjs` for repo-local Rust static libraries; reserve `extern_lib` for cases that truly need it.
-- For Lean FFI callbacks from Rust, prefer exporting a Lean function and calling it from Rust through a tiny C shim that includes `lean/lean.h`; Rust alone cannot directly use Lean's many inline runtime helpers such as `lean_dec`, `lean_string_cstr`, and `lean_io_result_*`.
+- Historical note: when comparing against the former Lean-executed runtime, Lean FFI callbacks from Rust were best handled by exporting a Lean function and calling it from Rust through a tiny C shim that includes `lean/lean.h`; Rust alone could not directly use Lean's many inline runtime helpers such as `lean_dec`, `lean_string_cstr`, and `lean_io_result_*`.
 - Web standards are present under `web_standards`, currently those are: Console, Dom, Fetch, and HTML. 
 - When searching a local standard, search for the exact spec anchor string first, such as `creating-a-new-top-level-traversable`.
 - For concurrent spec algorithms such as fetch-and-wait navigation steps, prefer modeling the pause point as explicit pending state on `UserAgent` plus a separate resume transition before introducing real runtime tasks or I/O.
@@ -43,6 +44,6 @@
 - Retire `_iframe|parent|source` helper traversables from explicit content-side iframe removal or parent-document-destroy notifications, not from parent `FinalizeNavigation`; replacement pages can create new helpers before the old parent navigation commits.
 - When looking up traversables by activity, target name, or active document, iterate the actual `topLevelTraversableSet.members` entries; traversable ids become sparse after helper cleanup, so `0 .. members.size` scans can miss live helpers.
 - When a Lean helper models only a prefix or continuation of an in-parallel spec algorithm, state explicitly where that helper enters the algorithm and keep `Step n:` comments limited to the steps that helper actually executes.
-- A guide on Lean FFI can be found in `/scratchpad/ffi_guide/md`.
+- Historical FFI notes remain in `/scratchpad/ffi_guide.md`.
 - Keep proof-only transition helper modules such as `TransitionSystem` and `TransitionTrace` under `FormalWeb/Proofs/`.
 - AGAIN: Use `lean-lsp-mcp` when working in Lean, it is documented at `/scratchpad/lean-lsp-mcp/README.md`. Read the documentation before attempting to do anything in Lean.

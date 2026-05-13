@@ -1,12 +1,12 @@
 #[allow(dead_code)]
 #[path = "../../embedder/src/ui_event.rs"]
-mod ui_event;
+pub(crate) mod ui_event;
 
-mod boa;
-mod dom;
-mod html;
-mod streams;
-mod webidl;
+pub mod boa;
+pub mod dom;
+pub mod html;
+pub mod streams;
+pub mod webidl;
 
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
@@ -45,7 +45,7 @@ use std::{
 };
 use url::Url;
 
-const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
+pub(crate) const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
 
 static LOGGED_INPUT_LAYOUT_DOCUMENTS: LazyLock<Mutex<HashSet<u64>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -157,7 +157,7 @@ enum DeferredScriptState {
 }
 
 #[derive(Clone)]
-struct NavigableContainerState {
+pub(crate) struct NavigableContainerState {
     content_navigable_id: u64,
     current_key: String,
     cross_origin: bool,
@@ -380,7 +380,7 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
-struct ContentRuntime {
+pub(crate) struct ContentRuntime {
     event_sender: IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     default_viewport: Option<ViewportSnapshot>,
@@ -706,7 +706,7 @@ impl ContentRuntime {
     }
 
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
-    /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the FFI emits `CreateEmptyDocument`.
+    /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the user-agent/content command path emits `CreateEmptyDocument`.
     fn create_empty_document(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let document = Rc::new(RefCell::new(BaseDocument::new(
@@ -1294,20 +1294,20 @@ impl ContentRuntime {
     }
 }
 
-fn content_token() -> Result<String, String> {
+fn content_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--content-token" {
             return args
                 .next()
+                .map(Some)
                 .ok_or_else(|| String::from("missing content token value"));
         }
     }
-    Err(String::from("missing --content-token argument"))
+    Ok(None)
 }
 
-fn main() -> Result<(), String> {
-    let token = content_token()?;
+fn run_content_process(token: String) -> Result<(), String> {
     let (command_sender, command_receiver) =
         ipc::channel::<Command>().map_err(|error| error.to_string())?;
     let (event_sender, event_receiver) =
@@ -1359,4 +1359,19 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub fn maybe_run_content_process() -> Option<Result<(), String>> {
+    match content_token_from_args() {
+        Ok(Some(token)) => Some(run_content_process(token)),
+        Ok(None) => None,
+        Err(error) => Some(Err(error)),
+    }
+}
+
+fn main() -> Result<(), String> {
+    match maybe_run_content_process() {
+        Some(result) => result,
+        None => Err(String::from("missing --content-token argument")),
+    }
 }

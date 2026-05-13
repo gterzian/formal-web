@@ -3,6 +3,7 @@ pub mod ui_event;
 
 use anyrender::Scene as RenderScene;
 use blitz_traits::events::UiEvent;
+use blitz_traits::shell::ColorScheme;
 use compositor::{Compositor, VisibleFrameViewport};
 use ipc_messages::content::{
     FontTransportReceiver, FrameId, NavigateRequest, PaintFrame,
@@ -11,6 +12,7 @@ use ipc_messages::content::{
 use std::env;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct WebviewState {
@@ -35,24 +37,43 @@ struct ChildNavigableHost {
     content_navigable_id: FrameId,
 }
 
+#[derive(Clone, PartialEq)]
+struct PublishedChildViewport {
+    width: u32,
+    height: u32,
+    scale: f32,
+    color_scheme: ColorScheme,
+    offset_x: f32,
+    offset_y: f32,
+}
+
 pub trait EmbedderApi {
     fn request_redraw(&self, webview_id: WebviewId);
     fn viewport_scale_factor(&self) -> f32;
-    fn update_traversable_viewport(
-        &self,
-        traversable_id: WebviewId,
-        width: u32,
-        height: u32,
-        offset_x: f32,
-        offset_y: f32,
-    );
 }
 
-pub trait RuntimeClient {
+pub trait UserAgentApi {
     fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String>;
     fn start_navigation(&self, request: NavigateRequest) -> Result<(), String>;
     fn dispatch_event_for(&self, traversable_id: u64, event: String) -> Result<(), String>;
-    fn rendering_opportunity_for(&self, traversable_id: u64) -> Result<(), String>;
+    fn note_rendering_opportunity(&self, traversable_id: u64) -> Result<(), String>;
+    fn set_default_viewport(
+        &self,
+        snapshot: Option<(u32, u32, f32, ColorScheme)>,
+    ) -> Result<(), String>;
+    fn set_traversable_viewport(
+        &self,
+        traversable_id: u64,
+        snapshot: (u32, u32, f32, ColorScheme),
+        offset_x: f32,
+        offset_y: f32,
+    ) -> Result<(), String>;
+    fn evaluate_script(
+        &self,
+        traversable_id: u64,
+        source: String,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String>;
 }
 
 fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
@@ -81,41 +102,42 @@ pub struct WebviewProvider {
     webviews: HashMap<WebviewId, WebviewState>,
     child_navigable_hosts_by_webview: HashMap<WebviewId, ChildNavigableHost>,
     child_host_webviews_by_content_navigable: HashMap<FrameId, WebviewId>,
+    published_child_viewports: HashMap<WebviewId, PublishedChildViewport>,
     font_receiver: FontTransportReceiver,
+    viewport_snapshot: Option<(u32, u32, f32, ColorScheme)>,
     embedder: Box<dyn EmbedderApi>,
-    runtime_client: Box<dyn RuntimeClient>,
+    user_agent: Box<dyn UserAgentApi>,
 }
 
 impl WebviewProvider {
-    pub fn new(embedder: Box<dyn EmbedderApi>, runtime_client: Box<dyn RuntimeClient>) -> Self {
+    pub fn new(embedder: Box<dyn EmbedderApi>, user_agent: Box<dyn UserAgentApi>) -> Self {
         Self {
             webviews: HashMap::new(),
             child_navigable_hosts_by_webview: HashMap::new(),
             child_host_webviews_by_content_navigable: HashMap::new(),
+            published_child_viewports: HashMap::new(),
             font_receiver: FontTransportReceiver::default(),
+            viewport_snapshot: None,
             embedder,
-            runtime_client,
+            user_agent,
         }
     }
 
     pub fn start(&self, startup_url: Option<&str>) -> Result<(), String> {
         let destination_url = startup_destination_url(startup_url)?;
-        self.runtime_client
-            .start_top_level_traversable(destination_url)
+        self.user_agent.start_top_level_traversable(destination_url)
     }
 
     pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
         match webview_id {
-            Some(webview_id) => self.runtime_client.start_navigation(NavigateRequest {
+            Some(webview_id) => self.user_agent.start_navigation(NavigateRequest {
                 source_navigable_id: webview_id.0,
                 destination_url: url.to_owned(),
                 target: String::new(),
                 user_involvement: UserNavigationInvolvement::BrowserUi,
                 noopener: false,
             }),
-            None => self
-                .runtime_client
-                .start_top_level_traversable(url.to_owned()),
+            None => self.user_agent.start_top_level_traversable(url.to_owned()),
         }
     }
 
@@ -124,7 +146,7 @@ impl WebviewProvider {
         let (target_webview_id, routed_event, composed_frame_ids) =
             self.route_ui_event(webview_id, event);
         let event_message = ui_event::serialize_ui_event(&routed_event)?;
-        self.runtime_client
+        self.user_agent
             .dispatch_event_for(target_webview_id.0, event_message)?;
         self.note_rendering_opportunities(webview_id, composed_frame_ids, "ui_event");
         Ok(())
@@ -132,7 +154,36 @@ impl WebviewProvider {
 
     pub fn note_rendering_opportunity(&self, webview_id: WebviewId, reason: &str) {
         let _ = reason;
-        let _ = self.runtime_client.rendering_opportunity_for(webview_id.0);
+        let _ = self.user_agent.note_rendering_opportunity(webview_id.0);
+    }
+
+    pub fn set_default_viewport(
+        &mut self,
+        snapshot: Option<(u32, u32, f32, ColorScheme)>,
+    ) -> Result<(), String> {
+        self.viewport_snapshot = snapshot;
+        self.user_agent.set_default_viewport(snapshot)
+    }
+
+    pub fn set_traversable_viewport(
+        &self,
+        traversable_id: WebviewId,
+        snapshot: (u32, u32, f32, ColorScheme),
+        offset_x: f32,
+        offset_y: f32,
+    ) -> Result<(), String> {
+        self.user_agent
+            .set_traversable_viewport(traversable_id.0, snapshot, offset_x, offset_y)
+    }
+
+    pub fn evaluate_script(
+        &self,
+        traversable_id: WebviewId,
+        source: String,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        self.user_agent
+            .evaluate_script(traversable_id.0, source, timeout)
     }
 
     pub fn register_child_navigable_host(
@@ -312,8 +363,13 @@ impl WebviewProvider {
         (target_webview_id, routed_event, composed_frame_ids)
     }
 
-    fn publish_visible_child_viewports(&self, viewports: Vec<VisibleFrameViewport>) {
-        let viewport_scale = self.embedder.viewport_scale_factor().max(1.0);
+    fn publish_visible_child_viewports(&mut self, viewports: Vec<VisibleFrameViewport>) {
+        let Some((_, _, viewport_scale, color_scheme)) = self.viewport_snapshot else {
+            self.published_child_viewports.clear();
+            return;
+        };
+        let viewport_scale = viewport_scale.max(1.0);
+        let mut next_published_child_viewports = HashMap::new();
         for viewport in viewports {
             let Some(child_webview_id) = self
                 .child_host_webviews_by_content_navigable
@@ -323,15 +379,38 @@ impl WebviewProvider {
                 continue;
             };
 
-            self.embedder.update_traversable_viewport(
+            let published_viewport = PublishedChildViewport {
+                width: viewport.width,
+                height: viewport.height,
+                scale: viewport_scale,
+                color_scheme: color_scheme.clone(),
+                offset_x: viewport.offset_x / viewport_scale,
+                offset_y: viewport.offset_y / viewport_scale,
+            };
+            let viewport_changed = self
+                .published_child_viewports
+                .get(&child_webview_id)
+                != Some(&published_viewport);
+            next_published_child_viewports.insert(child_webview_id, published_viewport.clone());
+
+            if !viewport_changed {
+                continue;
+            }
+
+            let _ = self.set_traversable_viewport(
                 child_webview_id,
-                viewport.width,
-                viewport.height,
-                viewport.offset_x / viewport_scale,
-                viewport.offset_y / viewport_scale,
+                (
+                    published_viewport.width,
+                    published_viewport.height,
+                    published_viewport.scale,
+                    published_viewport.color_scheme.clone(),
+                ),
+                published_viewport.offset_x,
+                published_viewport.offset_y,
             );
             self.note_rendering_opportunity(child_webview_id, "visible_child_viewport");
         }
+        self.published_child_viewports = next_published_child_viewports;
     }
 
     fn note_rendering_opportunities(
