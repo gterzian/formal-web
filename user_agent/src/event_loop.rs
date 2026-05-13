@@ -131,23 +131,6 @@ fn traversable_id_from_command(command: &ContentCommand) -> Option<u64> {
     }
 }
 
-/// commands that create a document on the content side.
-pub fn document_id_from_command(command: &ContentCommand) -> Option<u64> {
-    match command {
-        ContentCommand::CreateEmptyDocument { document_id, .. }
-        | ContentCommand::CreateLoadedDocument { document_id, .. } => Some(*document_id),
-        _ => None,
-    }
-}
-
-/// commands that destroy a content document.
-pub fn destroyed_document_id(command: &ContentCommand) -> Option<u64> {
-    match command {
-        ContentCommand::DestroyDocument { document_id } => Some(*document_id),
-        _ => None,
-    }
-}
-
 /// the queued task-bearing commands in one HTML event loop.
 struct PendingTaskCommand {
     command: ContentCommand,
@@ -175,7 +158,7 @@ struct EventLoopWorker {
     fetch_command_sender: Sender<FetchCommand>,
     /// Sender into the dedicated timer worker for window timers and fetch timeouts.
     timer_command_sender: Sender<TimerCommand>,
-    /// Pending script evaluation replies keyed by model-local request ids.
+    /// Pending script evaluation replies keyed by request ids.
     script_waiters: HashMap<u64, Sender<Result<serde_json::Value, String>>>,
     /// Receiver for commands from the user-agent thread into this event-loop/content pair.
     command_receiver: Receiver<EventLoopCommand>,
@@ -184,7 +167,7 @@ struct EventLoopWorker {
     user_event_dispatcher: UserEventDispatcher,
     /// Deferred shutdown reply completed after the content process acknowledges shutdown.
     stop_reply: Option<Sender<Result<(), String>>>,
-    /// Model-local flag that mirrors the single in-flight task step in the HTML event loop
+    /// flag that mirrors the single in-flight task step in the HTML event loop
     /// processing model.
     awaiting_task_completion: bool,
     /// FIFO queue of commands that must observe `CommandCompleted` before the next task-bearing
@@ -194,7 +177,7 @@ struct EventLoopWorker {
 
 /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
 fn requires_command_completed_wakeup(command: &ContentCommand) -> bool {
-    // Notes: These commands correspond to task-bearing steps whose next dequeue must wait for the
+    // These commands correspond to task-bearing steps whose next dequeue must wait for the
     // content side to emit `CommandCompleted`.
     matches!(
         command,
@@ -266,7 +249,7 @@ impl EventLoopWorker {
         };
 
         if let Some(snapshot) = embedder::window_viewport_snapshot() {
-            // Notes: Initial viewport state is host configuration, not an HTML task, so it seeds the
+            // Initial viewport state is host configuration, not an HTML task, so it seeds the
             // content process immediately after bootstrap.
             let command = viewport_command(snapshot);
             let _ = worker.send_command_inner(&command);
@@ -290,7 +273,7 @@ impl EventLoopWorker {
         command: ContentCommand,
         reply: Option<Sender<Result<Option<u64>, String>>>,
     ) {
-        // Notes: Commands that do not emit `CommandCompleted` stay out-of-band relative to the
+        // Commands that do not emit `CommandCompleted` stay out-of-band relative to the
         // task queue.
         let result = self.send_command_inner(&command);
         if let Some(reply) = reply {
@@ -391,7 +374,7 @@ impl EventLoopWorker {
     fn handle_content_event_message(&mut self, event: ContentEvent) -> Result<bool, String> {
         match event {
             ContentEvent::DocumentFetchRequested(request) => {
-                // Notes: Keep network work off the event-loop thread and arm the model-local timeout
+                // Keep network work off the event-loop thread and arm the timeout
                 // that will reenter this event loop if content never receives a response.
                 self.fetch_command_sender
                     .send(FetchCommand::StartDocumentFetch {
@@ -411,7 +394,7 @@ impl EventLoopWorker {
                     .map_err(|error| format!("failed to schedule document fetch timeout: {error}"))?;
             }
             ContentEvent::WindowTimerRequested(request) => {
-                // Notes: Content already ran the timer initialization algorithm far enough to assign
+                // Content already ran the timer initialization algorithm far enough to assign
                 // the timer id, key, and nesting level; the timer worker owns the host-side wait.
                 log_timer_debug(format!(
                     "forward schedule document={} id={} key={} timeout_ms={} nesting={}",
@@ -436,7 +419,7 @@ impl EventLoopWorker {
                     .map_err(|error| format!("failed to schedule window timer: {error}"))?;
             }
             ContentEvent::WindowTimerCleared(request) => {
-                // Notes: Clearing a timer removes the host-side deadline so no later task can be
+                // Clearing a timer removes the host-side deadline so no later task can be
                 // re-enqueued for this timer key.
                 log_timer_debug(format!(
                     "forward clear document={} key={}",
@@ -449,7 +432,7 @@ impl EventLoopWorker {
                     .map_err(|error| format!("failed to clear window timer: {error}"))?;
             }
             ContentEvent::NavigationRequested(request) => {
-                // Notes: Navigation start leaves the content event loop and reenters the user-agent
+                // Navigation start leaves the content event loop and reenters the user-agent
                 // navigation algorithm immediately; it does not wait for a `CommandCompleted` wakeup.
                 log_navigation_debug(format!(
                     "queue navigation request from {} to {}",
@@ -460,7 +443,7 @@ impl EventLoopWorker {
                     .map_err(|error| format!("failed to queue navigation request: {error}"))?;
             }
             ContentEvent::BeforeUnloadCompleted(result) => {
-                // Notes: Resume HTML's `checking if unloading is canceled` continuation in
+                // Resume HTML's `checking if unloading is canceled` continuation in
                 // `UserAgentWorker`.
                 log_navigation_debug(format!(
                     "queue beforeunload completion check={} document={} canceled={}",
@@ -473,7 +456,7 @@ impl EventLoopWorker {
                     })?;
             }
             ContentEvent::FinalizeNavigation(finalized) => {
-                // Notes: Resume HTML's `finalize a cross-document navigation` continuation in
+                // Resume HTML's `finalize a cross-document navigation` continuation in
                 // `UserAgentWorker`.
                 log_navigation_debug(format!(
                     "queue finalize navigation document={} url={}",
@@ -484,7 +467,7 @@ impl EventLoopWorker {
                     .map_err(|error| format!("failed to queue finalize navigation: {error}"))?;
             }
             ContentEvent::IframeTraversableRemoved(removal) => {
-                // Notes: Keep child-navigable target-name bookkeeping in the user-agent so event-loop
+                // Keep child-navigable target-name bookkeeping in the user-agent so event-loop
                 // teardown and retargeting share one source of truth.
                 let (reply_sender, reply_receiver) = bounded(1);
                 self.user_agent_command_sender
@@ -500,7 +483,7 @@ impl EventLoopWorker {
                 })??;
             }
             ContentEvent::CommandCompleted => {
-                // Notes: The currently running task-bearing command finished, so the next queued task
+                // The currently running task-bearing command finished, so the next queued task
                 // can run.
                 self.awaiting_task_completion = false;
                 self.flush_next_task_command();
@@ -571,7 +554,7 @@ impl EventLoopWorker {
 
     /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
     fn run(&mut self) {
-        // Notes: This loop is the model-local dispatcher for one HTML event loop, interleaving
+        // This loop is the dispatcher for one HTML event loop, interleaving
         // user-agent commands with content-generated completion and continuation events.
         loop {
             let command_receiver = &self.command_receiver;

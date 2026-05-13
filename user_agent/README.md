@@ -29,3 +29,5 @@ Use distributed `RuntimeId` UUIDs for fetch controllers, document-fetch handlers
 When `user_agent` code implements or continues a standards algorithm, follow the documentation conventions from `content/README.md`: anchor-only top doc-comments for the algorithm, verbatim `Step n:` comments for mapped steps, and separate `Notes:` comments for reduced-model or runtime-bridge explanation.
 
 For spec-facing worker methods and continuations, give each helper its own anchor-only doc comment for the algorithm it continues, keep `Step n:` comments as verbatim standard prose, and move reduced-model or runtime-bridge explanation into separate `Notes:` comments.
+
+Avoid introducing synchronous user-agent command bridges that block on content replies unless the corresponding standard algorithm has an explicit wait point; prefer queueing work and resuming through existing continuation events.

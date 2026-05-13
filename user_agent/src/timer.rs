@@ -41,21 +41,21 @@ pub enum TimerCompletion {
 pub struct ScheduledTimer {
     /// Deadline used by the Rust timer thread to wake the next due timer.
     pub deadline: Instant,
-    /// Model-local tiebreaker and wake-generation analogue for timers scheduled at the same
+    /// tiebreaker and wake-generation analogue for timers scheduled at the same
     /// instant.
     pub sequence_number: u64,
     /// Completion routed back into the user-agent thread when the deadline expires.
     pub completion: TimerCompletion,
 }
 
-/// Stateful owner of HTML timer deadlines plus the model-local fetch watchdog deadlines used by the
-/// user-agent runtime.
+/// Stateful owner of HTML timer deadlines plus the fetch watchdog deadlines used by the
+/// user-agent implementation.
 struct TimerWorker {
     /// Receiver for timer schedule/clear/shutdown commands.
     command_receiver: Receiver<TimerCommand>,
     /// Sender back into the user-agent thread for timer expirations.
     user_agent_command_sender: Sender<UserAgentCommand>,
-    /// Active timers keyed by the raw UUID from the model-local timer key supplied by content or
+    /// Active timers keyed by the raw UUID from the timer key supplied by content or
     /// fetch callers. Both WindowTimerKey and DocumentFetchId wrap Uuid so the timer worker uses
     /// the inner Uuid directly as a neutral key.
     active_timers: HashMap<Uuid, ScheduledTimer>,
@@ -113,7 +113,7 @@ impl TimerWorker {
                     event_loop_id,
                     handler_id,
                 } => {
-                    // Notes: Document fetch timeouts are a model-local watchdog around fetches owned
+                    // Document fetch timeouts are a watchdog around fetches owned
                     // by an event loop; they are not Window timers.
                     let _ = self
                         .user_agent_command_sender
@@ -129,7 +129,7 @@ impl TimerWorker {
                     timer_key,
                     nesting_level,
                 } => {
-                    // Notes: Content already computed the timer id, key, and nesting level; the timer
+                    // Content already computed the timer id, key, and nesting level; the timer
                     // worker now re-enqueues the timer task on the owning event loop.
                     let _ = self
                         .user_agent_command_sender
@@ -154,8 +154,8 @@ impl TimerWorker {
                 delay,
                 completion,
             } => {
-                // Notes: Scheduling records the host-side deadline associated with a timer created by
-                // HTML's timer initialization steps or with a model-local document fetch timeout.
+                // Scheduling records the host-side deadline associated with a timer created by
+                // HTML's timer initialization steps or with a document fetch timeout.
                 log_timer_debug(format!(
                     "schedule key={} delay_ms={}",
                     timer_key,
@@ -185,7 +185,7 @@ impl TimerWorker {
 
     /// <https://html.spec.whatwg.org/multipage/#timers>
     fn run(&mut self) {
-        // Notes: This loop waits until the next host-side deadline or until new schedule, clear, or
+        // This loop waits until the next host-side deadline or until new schedule, clear, or
         // shutdown commands arrive from the user-agent and event-loop workers.
         loop {
             self.dispatch_due_timers();

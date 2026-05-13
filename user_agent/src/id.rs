@@ -1,18 +1,18 @@
 use ipc_messages::content::NavigationFetchId;
 
-/// Model-local allocator state for the browser-global identifiers owned by the user-agent.
+/// allocator state for the browser-global identifiers owned by the user-agent.
 ///
-/// The Rust runtime still uses primitive integer ids on the wire, but grouping the allocators in
+/// The implementation still uses primitive integer ids on the wire, but grouping the allocators in
 /// one struct keeps the state surface aligned with the HTML and Fetch concepts it tracks.
 #[derive(Clone, Debug)]
 pub struct UserAgentIds {
-    /// Model-local identifier for the content worker handle owned by the user agent.
+    /// identifier for the content worker handle owned by the user agent.
     pub next_handle: usize,
     /// <https://html.spec.whatwg.org/multipage/#event-loop>
     pub next_event_loop_id: usize,
-    /// Model-local identifier for the Rust-owned top-level traversable/webview surface.
+    /// identifier for the Rust-owned top-level traversable/webview surface.
     pub next_traversable_id: u64,
-    /// Model-local identifier for <https://html.spec.whatwg.org/multipage/#browsing-context>
+    /// identifier for <https://html.spec.whatwg.org/multipage/#browsing-context>
     pub next_browsing_context_id: u64,
     /// <https://dom.spec.whatwg.org/#concept-document>
     pub next_document_id: u64,
@@ -22,7 +22,7 @@ pub struct UserAgentIds {
     pub next_agent_id: u64,
     /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation>
     pub next_navigation_id: u64,
-    /// Model-local identifier for pending
+    /// identifier for pending
     /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
     /// continuations.
     pub next_before_unload_check_id: u64,
@@ -72,7 +72,7 @@ impl UserAgentIds {
         traversable_id
     }
 
-    /// observing a traversable id created by another runtime component.
+    /// observing a traversable id created by another component.
     pub fn observe_traversable_id(&mut self, traversable_id: u64) {
         self.next_traversable_id = self.next_traversable_id.max(traversable_id + 1);
     }

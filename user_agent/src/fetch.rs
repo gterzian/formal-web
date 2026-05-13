@@ -44,7 +44,7 @@ pub struct PendingDocumentFetch {
 
 /// a pending navigation fetch keyed by the user-agent's fetch id.
 pub struct PendingNavigationFetch {
-    /// Model-local identifier corresponding to <https://fetch.spec.whatwg.org/#fetch-controller>
+    /// identifier corresponding to <https://fetch.spec.whatwg.org/#fetch-controller>
     pub fetch_id: NavigationFetchId,
 }
 
@@ -168,7 +168,7 @@ impl FetchWorker {
     /// failing every pending fetch if the network sidecar stops before
     /// producing a response.
     fn fail_pending_fetches(&mut self) {
-        // Notes: If the network bridge stops early, report every outstanding fetch back through the
+        // If the network bridge stops early, report every outstanding fetch back through the
         // same user-agent continuations that would have handled an ordinary network failure.
         for pending_fetch in self.pending_fetches.drain().map(|(_, pending)| pending) {
             match pending_fetch {
@@ -198,7 +198,7 @@ impl FetchWorker {
                 event_loop_id,
                 request,
             } => {
-                // Notes: Document fetches reuse the same network sidecar, but the completion returns
+                // Document fetches reuse the same network sidecar, but the completion returns
                 // directly to the owning event loop instead of the navigation finalization path.
                 let request_id = self.next_request_id;
                 self.next_request_id += 1;
@@ -240,7 +240,7 @@ impl FetchWorker {
                 request,
             } => {
                 // Step 1: Assert: this is running in parallel.
-                // Notes: The fetch worker is the concrete owner of the parallel navigation fetch
+                // The fetch worker is the concrete owner of the parallel navigation fetch
                 // branch started by `UserAgentWorker::create_navigation_params_by_fetching`.
                 let request_id = self.next_request_id;
                 self.next_request_id += 1;
@@ -274,7 +274,7 @@ impl FetchWorker {
 
         match (pending_fetch, response.result) {
             (PendingFetch::Document(pending_fetch), Ok(fetch_response)) => {
-                // Notes: Successful document fetches resume the owning event loop's content-side
+                // Successful document fetches resume the owning event loop's content-side
                 // continuation.
                 let _ = self
                     .user_agent_command_sender
@@ -286,7 +286,7 @@ impl FetchWorker {
             }
             (PendingFetch::Document(pending_fetch), Err(error)) => {
                 eprintln!("document fetch failed: {error}");
-                // Notes: Document fetch failures reenter the owning event loop so the content-side
+                // Document fetch failures reenter the owning event loop so the content-side
                 // fetch algorithm can fail the handler in place.
                 let _ = self
                     .user_agent_command_sender
@@ -296,7 +296,7 @@ impl FetchWorker {
                     });
             }
             (PendingFetch::Navigation(pending_fetch), Ok(fetch_response)) => {
-                // Notes: Successful navigation fetches resume the user-agent-side document creation
+                // Successful navigation fetches resume the user-agent-side document creation
                 // and finalization continuation keyed by `fetch_id`.
                 let _ = self
                     .user_agent_command_sender
@@ -307,7 +307,7 @@ impl FetchWorker {
             }
             (PendingFetch::Navigation(pending_fetch), Err(error)) => {
                 eprintln!("navigation fetch failed: {error}");
-                // Notes: Navigation fetch failures resume the same pending navigation record so the
+                // Navigation fetch failures resume the same pending navigation record so the
                 // user agent can clear `ongoing_navigation_id` and surface failure to the embedder.
                 let _ = self
                     .user_agent_command_sender
@@ -320,7 +320,7 @@ impl FetchWorker {
 
     /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn run(&mut self) {
-        // Notes: The fetch worker owns the network-facing half of HTML's parallel fetch branch and
+        // The fetch worker owns the network-facing half of HTML's parallel fetch branch and
         // drains either new user-agent requests or sidecar responses until shutdown.
         loop {
             let command_receiver = &self.command_receiver;
