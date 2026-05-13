@@ -159,17 +159,32 @@ struct PendingTaskCommand {
 /// thread-owned struct itself. That preserves the Lean event-loop model directly in Rust instead
 /// of splitting the state across a separate bridge helper.
 struct EventLoopWorker {
+    /// https://html.spec.whatwg.org/multipage/webappapis.html#event-loop
     event_loop_id: usize,
+    /// IPC sender for commands routed into the dedicated content process.
     command_sender: IpcSender<ContentCommand>,
+    /// IPC receiver for content-originated events, including fetch requests, timers, and
+    /// navigation continuations.
     event_receiver: Receiver<Result<ContentEvent, String>>,
+    /// Child process handle for the content sidecar tied to this event loop.
     child: Option<Child>,
+    /// Sender back into the owning user-agent worker for navigation and lifecycle coordination.
     user_agent_command_sender: Sender<UserAgentCommand>,
+    /// Sender into the dedicated fetch worker for document fetch requests.
     fetch_command_sender: Sender<FetchCommand>,
+    /// Sender into the dedicated timer worker for window timers and fetch timeouts.
     timer_command_sender: Sender<TimerCommand>,
+    /// Pending script evaluation replies keyed by model-local request ids.
     script_waiters: HashMap<u64, Sender<Result<serde_json::Value, String>>>,
+    /// Receiver for commands from the user-agent thread into this event-loop/content pair.
     command_receiver: Receiver<EventLoopCommand>,
+    /// Deferred shutdown reply completed after the content process acknowledges shutdown.
     stop_reply: Option<Sender<Result<(), String>>>,
+    /// Model-local flag that mirrors the single in-flight task step in the HTML event loop
+    /// processing model.
     awaiting_task_completion: bool,
+    /// FIFO queue of commands that must observe `CommandCompleted` before the next task-bearing
+    /// step can run.
     pending_task_commands: VecDeque<PendingTaskCommand>,
 }
 

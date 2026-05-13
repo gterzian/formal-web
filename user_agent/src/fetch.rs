@@ -21,7 +21,7 @@ pub enum FetchCommand {
         request: ContentFetchRequest,
     },
     StartNavigationFetch {
-        navigation_id: u64,
+        fetch_id: u64,
         request: ContentFetchRequest,
     },
     Shutdown {
@@ -30,12 +30,15 @@ pub enum FetchCommand {
 }
 
 pub struct PendingDocumentFetch {
+    /// Event loop that should receive the fetch completion/failure.
     pub event_loop_id: usize,
+    /// Content-side handler id for the document fetch request.
     pub handler_id: u64,
 }
 
 pub struct PendingNavigationFetch {
-    pub navigation_id: u64,
+    /// Model-local identifier corresponding to https://fetch.spec.whatwg.org/#fetch-controller.
+    pub fetch_id: u64,
 }
 
 pub enum PendingFetch {
@@ -44,13 +47,22 @@ pub enum PendingFetch {
 }
 
 struct FetchWorker {
+    /// Receiver for user-agent fetch commands.
     command_receiver: Receiver<FetchCommand>,
+    /// Sender back into the user-agent thread for navigation/document fetch completions.
     user_agent_command_sender: Sender<UserAgentCommand>,
+    /// IPC sender to the dedicated network sidecar process.
     network_request_sender: IpcSender<NetworkRequest>,
+    /// IPC receiver for network sidecar responses.
     network_event_receiver: Receiver<Result<NetworkResponse, String>>,
+    /// Child process handle for the network sidecar.
     child: Option<Child>,
+    /// Transport-local request id allocator for the network IPC bridge.
     next_request_id: u64,
+    /// Pending fetches keyed by transport request id so sidecar responses can be mapped back into
+    /// user-agent concepts.
     pending_fetches: HashMap<u64, PendingFetch>,
+    /// Deferred shutdown reply completed after the network sidecar exits.
     shutdown_reply: Option<Sender<Result<(), String>>>,
 }
 
@@ -158,7 +170,7 @@ impl FetchWorker {
                     let _ = self
                         .user_agent_command_sender
                         .send(UserAgentCommand::NavigationFetchFailed {
-                            navigation_id: pending_fetch.navigation_id,
+                            fetch_id: pending_fetch.fetch_id,
                         });
                 }
             }
@@ -197,7 +209,7 @@ impl FetchWorker {
                             PendingFetch::Navigation(pending_fetch) => {
                                 let _ = self.user_agent_command_sender.send(
                                     UserAgentCommand::NavigationFetchFailed {
-                                        navigation_id: pending_fetch.navigation_id,
+                                        fetch_id: pending_fetch.fetch_id,
                                     },
                                 );
                             }
@@ -207,14 +219,14 @@ impl FetchWorker {
                 }
             }
             FetchCommand::StartNavigationFetch {
-                navigation_id,
+                fetch_id,
                 request,
             } => {
                 let request_id = self.next_request_id;
                 self.next_request_id += 1;
                 self.pending_fetches.insert(
                     request_id,
-                    PendingFetch::Navigation(PendingNavigationFetch { navigation_id }),
+                    PendingFetch::Navigation(PendingNavigationFetch { fetch_id }),
                 );
                 if let Err(error) = self.network_request_sender.send(NetworkRequest::Fetch {
                     request_id,
@@ -223,7 +235,7 @@ impl FetchWorker {
                     self.pending_fetches.remove(&request_id);
                     let _ = self
                         .user_agent_command_sender
-                        .send(UserAgentCommand::NavigationFetchFailed { navigation_id });
+                        .send(UserAgentCommand::NavigationFetchFailed { fetch_id });
                     eprintln!("failed to send navigation fetch request to network process: {error}");
                 }
             }
@@ -262,7 +274,7 @@ impl FetchWorker {
                 let _ = self
                     .user_agent_command_sender
                     .send(UserAgentCommand::NavigationFetchCompleted {
-                        navigation_id: pending_fetch.navigation_id,
+                        fetch_id: pending_fetch.fetch_id,
                         response: fetch_response,
                     });
             }
@@ -271,7 +283,7 @@ impl FetchWorker {
                 let _ = self
                     .user_agent_command_sender
                     .send(UserAgentCommand::NavigationFetchFailed {
-                        navigation_id: pending_fetch.navigation_id,
+                        fetch_id: pending_fetch.fetch_id,
                     });
             }
         }

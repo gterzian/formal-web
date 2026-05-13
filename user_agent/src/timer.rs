@@ -34,15 +34,23 @@ pub enum TimerCompletion {
 }
 
 pub struct ScheduledTimer {
+    /// Deadline used by the Rust timer thread to wake the next due timer.
     pub deadline: Instant,
+    /// Model-local tiebreaker and wake-generation analogue for timers scheduled at the same
+    /// instant.
     pub sequence_number: u64,
+    /// Completion routed back into the user-agent thread when the deadline expires.
     pub completion: TimerCompletion,
 }
 
 struct TimerWorker {
+    /// Receiver for timer schedule/clear/shutdown commands.
     command_receiver: Receiver<TimerCommand>,
+    /// Sender back into the user-agent thread for timer expirations.
     user_agent_command_sender: Sender<UserAgentCommand>,
+    /// Active timers keyed by the model-local timer key supplied by content or fetch callers.
     active_timers: HashMap<u64, ScheduledTimer>,
+    /// Monotonic sequence used to preserve deterministic ordering among equal deadlines.
     next_sequence_number: u64,
 }
 
