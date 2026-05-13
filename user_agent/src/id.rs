@@ -1,8 +1,7 @@
-/// Model-local allocator state mirroring the identifier bookkeeping in `FormalWeb.UserAgent`.
+/// Model-local allocator state for the browser-global identifiers owned by the user-agent.
 ///
 /// The Rust runtime still uses primitive integer ids on the wire, but grouping the allocators in
-/// one struct makes the state surface line up with the Lean model and the HTML/Fetch concepts it
-/// tracks.
+/// one struct keeps the state surface aligned with the HTML and Fetch concepts it tracks.
 #[derive(Clone, Debug)]
 pub struct UserAgentIds {
     /// Model-local identifier for the content worker handle owned by the user agent.

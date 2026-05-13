@@ -159,10 +159,117 @@ pub struct TopLevelTraversable {
     pub has_deferred_update_the_rendering: bool,
     /// https://html.spec.whatwg.org/multipage/#tn-current-session-history-step
     pub current_session_history_step: usize,
-    /// Model-local mirror of
-    /// https://html.spec.whatwg.org/multipage/#tn-session-history-entries using active document
-    /// identifiers.
-    pub session_history_document_ids: Vec<u64>,
+    /// Model-local mirror of https://html.spec.whatwg.org/multipage/#tn-session-history-entries.
+    pub session_history_entries: Vec<SessionHistoryEntry>,
+}
+
+/// https://html.spec.whatwg.org/multipage/#session-history-entry
+#[derive(Clone, Debug)]
+pub struct SessionHistoryEntry {
+    /// https://html.spec.whatwg.org/multipage/#she-step
+    pub step: usize,
+    /// Model-local reference to https://dom.spec.whatwg.org/#concept-document.
+    pub document_id: u64,
+    /// https://html.spec.whatwg.org/multipage/#session-history-entry-url
+    pub url: String,
+}
+
+/// https://html.spec.whatwg.org/multipage/#history-handling-behavior
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryHandlingBehavior {
+    Push,
+    Replace,
+}
+
+/// https://w3c.github.io/navigation-timing/#dom-navigationtimingtype
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NavigationTimingType {
+    #[default]
+    Navigate,
+}
+
+/// https://html.spec.whatwg.org/multipage/#source-snapshot-params
+#[derive(Clone, Debug, Default)]
+pub struct SourceSnapshotParams {
+    /// https://html.spec.whatwg.org/multipage/#source-snapshot-params-activation
+    pub has_transient_activation: bool,
+    /// Model-local placeholder for
+    /// https://html.spec.whatwg.org/multipage/#source-snapshot-params-client.
+    pub fetch_client_id: Option<u64>,
+    /// Model-local serialized placeholder for
+    /// https://html.spec.whatwg.org/multipage/#source-snapshot-params-policy-container.
+    pub source_policy_container: Option<String>,
+}
+
+impl SourceSnapshotParams {
+    fn for_user_involvement(user_involvement: &UserNavigationInvolvement) -> Self {
+        Self {
+            has_transient_activation: matches!(user_involvement, UserNavigationInvolvement::Activation),
+            fetch_client_id: None,
+            source_policy_container: None,
+        }
+    }
+}
+
+/// https://html.spec.whatwg.org/multipage/#target-snapshot-params
+#[derive(Clone, Debug, Default)]
+pub struct TargetSnapshotParams {
+    /// Model-local serialized placeholder for
+    /// https://html.spec.whatwg.org/multipage/#target-snapshot-params-sandbox.
+    pub sandboxing_flags: Vec<String>,
+    /// https://html.spec.whatwg.org/multipage/#target-snapshot-params-iframe-referrer-policy
+    pub iframe_element_referrer_policy: Option<String>,
+}
+
+/// https://fetch.spec.whatwg.org/#concept-request
+#[derive(Clone, Debug)]
+pub struct NavigationRequest {
+    /// https://fetch.spec.whatwg.org/#concept-request-url
+    pub url: String,
+    /// https://fetch.spec.whatwg.org/#concept-request-method
+    pub method: String,
+    /// https://fetch.spec.whatwg.org/#concept-request-referrer
+    pub referrer: String,
+    /// https://fetch.spec.whatwg.org/#concept-request-referrer-policy
+    pub referrer_policy: String,
+    /// Model-local serialized placeholder for
+    /// https://fetch.spec.whatwg.org/#concept-request-policy-container.
+    pub policy_container: Option<String>,
+    /// https://fetch.spec.whatwg.org/#concept-request-body
+    pub body: Option<String>,
+}
+
+impl NavigationRequest {
+    fn for_destination_url(
+        destination_url: String,
+        user_involvement: &UserNavigationInvolvement,
+    ) -> Self {
+        // https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching
+        // If request's client is null, this only occurs in the case of a browser UI-initiated
+        // navigation. Set request's referrer to "no-referrer".
+        let referrer = if matches!(user_involvement, UserNavigationInvolvement::BrowserUi) {
+            String::from("no-referrer")
+        } else {
+            String::from("client")
+        };
+        Self {
+            url: destination_url,
+            method: String::from("GET"),
+            referrer,
+            referrer_policy: String::new(),
+            policy_container: None,
+            body: None,
+        }
+    }
+
+    fn to_content_fetch_request(&self, handler_id: u64) -> ContentFetchRequest {
+        ContentFetchRequest {
+            handler_id,
+            url: self.url.clone(),
+            method: self.method.clone(),
+            body: self.body.clone().unwrap_or_default(),
+        }
+    }
 }
 
 /// https://html.spec.whatwg.org/multipage/#top-level-traversable-set
@@ -267,7 +374,20 @@ pub struct PendingNavigationFetch {
     pub navigation_id: u64,
     pub traversable_id: u64,
     pub previous_document_id: Option<u64>,
-    pub destination_url: String,
+    /// https://fetch.spec.whatwg.org/#concept-request
+    pub request: NavigationRequest,
+    /// https://html.spec.whatwg.org/multipage/#source-snapshot-params
+    pub source_snapshot_params: SourceSnapshotParams,
+    /// https://html.spec.whatwg.org/multipage/#target-snapshot-params
+    pub target_snapshot_params: TargetSnapshotParams,
+    /// https://w3c.github.io/navigation-timing/#dom-navigationtimingtype
+    pub navigation_timing_type: NavigationTimingType,
+    /// Model-local summary of the CSP navigation type from
+    /// https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching.
+    pub csp_navigation_type: String,
+    /// Model-local flag for the POST branch in
+    /// https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document.
+    pub allow_post: bool,
     pub user_involvement: ipc_messages::content::UserNavigationInvolvement,
 }
 
@@ -282,7 +402,12 @@ pub struct PendingNavigationFinalization {
     pub navigation_id: u64,
     pub traversable_id: u64,
     pub previous_document_id: Option<u64>,
-    pub url: String,
+    /// https://html.spec.whatwg.org/multipage/#session-history-entry
+    pub history_entry: SessionHistoryEntry,
+    /// https://html.spec.whatwg.org/multipage/#history-handling-behavior
+    pub history_handling: HistoryHandlingBehavior,
+    /// https://html.spec.whatwg.org/multipage/#user-navigation-involvement
+    pub user_involvement: ipc_messages::content::UserNavigationInvolvement,
 }
 
 impl Default for UserAgentState {
@@ -332,13 +457,49 @@ impl UserAgentState {
         }
     }
 
-    fn append_session_history_document(&mut self, traversable_id: u64, document_id: u64) {
+    fn commit_session_history_entry(
+        &mut self,
+        traversable_id: u64,
+        history_entry: SessionHistoryEntry,
+        history_handling: HistoryHandlingBehavior,
+    ) {
         if let Some(traversable) = self.top_level_traversable_set.members.get_mut(&traversable_id) {
-            traversable.session_history_document_ids.push(document_id);
-            traversable.current_session_history_step = traversable
-                .session_history_document_ids
-                .len()
-                .saturating_sub(1);
+            // https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation
+            // Step 5: Let entryToReplace be navigable's active session history entry if
+            // historyHandling is "replace", otherwise null.
+            // Step 9: If entryToReplace is null, clear the forward session history, set
+            // historyEntry's step, and append it.
+            // Step 10: Apply the push/replace history step targetStep to traversable given
+            // historyHandling and userInvolvement.
+            match history_handling {
+                HistoryHandlingBehavior::Push => {
+                    traversable
+                        .session_history_entries
+                        .retain(|entry| entry.step <= traversable.current_session_history_step);
+                    let next_step = traversable.current_session_history_step.saturating_add(1);
+                    traversable.current_session_history_step = next_step;
+                    traversable.session_history_entries.push(SessionHistoryEntry {
+                        step: next_step,
+                        ..history_entry
+                    });
+                }
+                HistoryHandlingBehavior::Replace => {
+                    let current_step = traversable.current_session_history_step;
+                    let replacement_entry = SessionHistoryEntry {
+                        step: current_step,
+                        ..history_entry
+                    };
+                    if let Some(entry) = traversable
+                        .session_history_entries
+                        .iter_mut()
+                        .find(|entry| entry.step == current_step)
+                    {
+                        *entry = replacement_entry;
+                    } else {
+                        traversable.session_history_entries.push(replacement_entry);
+                    }
+                }
+            }
         }
     }
 
@@ -890,7 +1051,11 @@ fn create_top_level_traversable(
             ongoing_navigation_id: None,
             has_deferred_update_the_rendering: false,
             current_session_history_step: 0,
-            session_history_document_ids: vec![document_id],
+            session_history_entries: vec![SessionHistoryEntry {
+                step: 0,
+                document_id,
+                url: String::from("about:blank"),
+            }],
         },
     );
     if target_name_keeps_browser_ui_focus(&target_name) {
@@ -953,24 +1118,27 @@ fn start_navigation_fetch(
 ) -> Result<(), String> {
     let fetch_id = state.ids.allocate_fetch_id();
     let previous_document_id = state.active_documents_by_traversable.get(&traversable_id).copied();
+    // https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching
+    // Step 3: Let request be a new request.
+    let request = NavigationRequest::for_destination_url(destination_url.clone(), &user_involvement);
     state.insert_pending_navigation_fetch(PendingNavigationFetch {
         fetch_id,
         navigation_id,
         traversable_id,
         previous_document_id,
-        destination_url: destination_url.clone(),
+        request: request.clone(),
+        source_snapshot_params: SourceSnapshotParams::for_user_involvement(&user_involvement),
+        target_snapshot_params: TargetSnapshotParams::default(),
+        navigation_timing_type: NavigationTimingType::Navigate,
+        csp_navigation_type: String::from("other"),
+        allow_post: false,
         user_involvement: user_involvement.clone(),
     });
     state.set_traversable_ongoing_navigation(traversable_id, Some(navigation_id));
 
     if let Err(error) = fetch_command_sender.send(FetchCommand::StartNavigationFetch {
         fetch_id,
-        request: ContentFetchRequest {
-            handler_id: fetch_id,
-            url: destination_url,
-            method: String::from("GET"),
-            body: String::new(),
-        },
+        request: request.to_content_fetch_request(fetch_id),
     }) {
         let _ = state.take_pending_navigation_fetch_by_navigation_id(navigation_id);
         state.set_traversable_ongoing_navigation(traversable_id, None);
@@ -1357,13 +1525,24 @@ impl UserAgentWorker {
                     .state
                     .take_pending_navigation_finalization_by_document_id(finalized.document_id)
                 {
+                    let navigation_is_current = self
+                        .state
+                        .top_level_traversable_set
+                        .members
+                        .get(&pending.traversable_id)
+                        .and_then(|traversable| traversable.ongoing_navigation_id)
+                        == Some(pending.navigation_id);
+                    if pending.history_entry.url != finalized.url || !navigation_is_current {
+                        Ok(())
+                    } else {
                     self.state.set_traversable_active_document(
                         pending.traversable_id,
                         finalized.document_id,
                     );
-                    self.state.append_session_history_document(
+                    self.state.commit_session_history_entry(
                         pending.traversable_id,
-                        finalized.document_id,
+                        pending.history_entry.clone(),
+                        pending.history_handling,
                     );
                     self.state
                         .set_traversable_ongoing_navigation(pending.traversable_id, None);
@@ -1395,6 +1574,7 @@ impl UserAgentWorker {
                     }
 
                     notify_result
+                    }
                 } else {
                     Ok(())
                 };
@@ -1405,13 +1585,24 @@ impl UserAgentWorker {
                     .state
                     .take_pending_navigation_finalization_by_document_id(finalized.document_id)
                 {
+                    let navigation_is_current = self
+                        .state
+                        .top_level_traversable_set
+                        .members
+                        .get(&pending.traversable_id)
+                        .and_then(|traversable| traversable.ongoing_navigation_id)
+                        == Some(pending.navigation_id);
+                    if pending.history_entry.url != finalized.url || !navigation_is_current {
+                        Ok(())
+                    } else {
                     self.state.set_traversable_active_document(
                         pending.traversable_id,
                         finalized.document_id,
                     );
-                    self.state.append_session_history_document(
+                    self.state.commit_session_history_entry(
                         pending.traversable_id,
-                        finalized.document_id,
+                        pending.history_entry.clone(),
+                        pending.history_handling,
                     );
                     self.state
                         .set_traversable_ongoing_navigation(pending.traversable_id, None);
@@ -1443,6 +1634,7 @@ impl UserAgentWorker {
                     }
 
                     notify_result
+                    }
                 } else {
                     Ok(())
                 };
@@ -1516,7 +1708,7 @@ impl UserAgentWorker {
                                             ongoing_navigation_id: None,
                                             has_deferred_update_the_rendering: false,
                                             current_session_history_step: 0,
-                                            session_history_document_ids: Vec::new(),
+                                            session_history_entries: Vec::new(),
                                         });
                                         if let Some(document_id) = document_id_from_command(&tracked_command) {
                                             self.state.ids.observe_document_id(document_id);
@@ -1788,7 +1980,13 @@ impl UserAgentWorker {
                             navigation_id: pending.navigation_id,
                             traversable_id: pending.traversable_id,
                             previous_document_id: pending.previous_document_id,
-                            url: final_url,
+                            history_entry: SessionHistoryEntry {
+                                step: 0,
+                                document_id,
+                                url: final_url,
+                            },
+                            history_handling: HistoryHandlingBehavior::Push,
+                            user_involvement: pending.user_involvement,
                         });
                     }
                     Err(error) => {
@@ -1808,7 +2006,7 @@ impl UserAgentWorker {
                     pending.traversable_id,
                     format!(
                         "navigation fetch failed for {}",
-                        pending.destination_url
+                        pending.request.url
                     ),
                 );
             }

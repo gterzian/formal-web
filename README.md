@@ -1,6 +1,6 @@
 # formal-web
 
-formal-web is a Rust browser prototype with explicit user-agent, event-loop, timer, fetch, content, and net components. The `FormalWeb` Lean modules remain in-tree as reference models and proofs, while the executable runtime is now implemented in Rust.
+formal-web is a Rust browser prototype with explicit user-agent, event-loop, timer, fetch, content, and net components. The executable browser and its coordination logic live entirely in Rust, and the long-term verification direction is TLA+ trace checking over those Rust state transitions.
 
 ---
 
@@ -10,11 +10,11 @@ formal-web is a Rust browser prototype with explicit user-agent, event-loop, tim
 
 ## The problem
 
-Some of the hardest bugs in browsers are in the coordination. Navigation races, session history corruption, fetch ordering errors. These are concurrency bugs.
+Some of the hardest bugs in browsers are in the coordination. Navigation races, session history corruption, fetch ordering errors, and timer ordering mistakes are concurrency bugs.
 
 ## The approach
 
-formal-web keeps the Rust runtime structurally close to the `FormalWeb` reference models. The goal is an idiomatic Rust implementation of the same navigation, session-history, timer, and fetch business logic, with the Lean files serving as specifications and proof artifacts rather than the live runtime.
+formal-web keeps navigation, session-history, timer, fetch, and event-loop coordination as explicit Rust state machines with direct links back to the relevant standards. The TLA+ models under `tla_specs/` are the remaining formal artifacts in-tree, and a trace-based verification workflow for the Rust runtime is planned on top of those models.
 
 ---
 
@@ -22,11 +22,11 @@ formal-web keeps the Rust runtime structurally close to the `FormalWeb` referenc
 
 ### Correctness
 
-The most complicated concurrent algorithms — navigation, session history, fetch, timers, and event-loop coordination — live in explicit Rust state machines and worker threads. The Lean modules remain available as reference material for the intended business logic and invariants.
+The most complicated concurrent algorithms live in explicit Rust worker threads and state machines. The implementation is documented against the HTML, Fetch, DOM, Streams, and Web IDL standards, with local copies of those standards checked into `web_standards/`.
 
 ### Performance
 
-Perceived performance is about latency, not throughput. formal-web ensures the main render path is never blocked. Even with a modest JS engine like Boa, the browser stays snappy. 
+Perceived performance is about latency, not throughput. formal-web keeps the main render path unblocked, and heavy browser coordination work runs in dedicated threads or sidecars.
 
 ### Modularity
 
@@ -37,30 +37,30 @@ The engine composes best-in-class open components:
 - **Wasmtime** — WebAssembly runtime
 - **Boa** — JavaScript engine
 
-The Blitz + Vello + anyrender pipeline is naturally composable, supporting advanced use cases like cross-process iframes and media elements with minimal coordination overhead. Anything beyond core web standards — WebNN, WebBluetooth, Web MIDI — is implemented as a plain Rust module, keeping the extension surface explicit.
+The Blitz + Vello + anyrender pipeline is naturally composable, supporting advanced use cases like cross-process iframes and media elements with minimal coordination overhead. Anything beyond core web standards is implemented as an explicit Rust module instead of hidden runtime wiring.
 
 ### Security
 
-The process model is designed to meet Apple's [architectural requirements](https://developer.apple.com/documentation/browserenginekit/designing-your-browser-architecture) for an independent web engine on iOS — from day one:
+The process model is designed to meet Apple's [architectural requirements](https://developer.apple.com/documentation/browserenginekit/designing-your-browser-architecture) for an independent web engine on iOS:
 
-- **Content processes** (one per tab) — DOM, JavaScript, display list production
+- **Content processes** (one per tab) — DOM, JavaScript, display-list production
 - **Network process** — fetch, TLS
-- **GPU process** — Vello rendering (note: this happens in the main process for now)
-- **Main process** — browser chrome, embedder
+- **GPU process** — Vello rendering (currently still in the main process)
+- **Main process** — browser chrome, embedder, and worker bootstrap
+
 ---
 
 ## The bet
 
-A formally verified core plus composable Rust modules is a tractable path to a correct, secure, and performant web engine.
+Composable Rust modules plus protocol-level TLA+ verification is a tractable path to a correct, secure, and performant web engine.
 
 ## Requirements
 
-- `elan`
 - `rustup`
 - Rust toolchain `1.92.0`: `rustup toolchain install 1.92.0`
 - `python3`
 - `curl`
-- On macOS, Xcode and the macOS SDK at the path referenced in `lakefile.lean`
+- On macOS, Xcode and a current macOS SDK
 
 ## Commands
 
@@ -70,7 +70,7 @@ rustup run 1.92.0 cargo run --release
 
 `cargo check` builds the Rust crates that make up the embedder, user agent, content sidecar mode, and net sidecar mode.
 
-`cargo run --release` starts the Rust embedder, the user-agent thread, and the hidden content/net sidecar modes that the main executable respawns on demand, then loads `artifacts/StartupExample.html`.
+`cargo run --release` starts the embedder, the user-agent thread, and the hidden content/net sidecar modes that the main executable respawns on demand, then loads `artifacts/StartupExample.html`.
 
 ```bash
 rustup run 1.92.0 cargo run -- test-wpt formal/load-event-fires.html
@@ -86,8 +86,6 @@ The runner writes generated `wpt serve` config and injection files under `scratc
 
 Without a path it uses both `tests/wpt/include.ini` and `tests/formal/include.ini`. With `--list` it prints the selected tests without launching the embedder. Explicit paths can point at the upstream WPT tree or at the local suite through the `formal/` prefix.
 
-```bash
-rustup run 1.92.0 cargo run -- test-wpt captured-mouse-events/captured-mouse-event-constructor.html
-```
+## Verification direction
 
-The repository is still a normal Lake project. `lake build`, Lean LSP, and `lean-lsp-mcp` continue to work against the same sources, including the proof files under `FormalWeb/Proofs`.
+The TLA+ specifications live under `tla_specs/`. The next verification step is a trace-based workflow that compares Rust runtime behavior against those protocol models.

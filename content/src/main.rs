@@ -955,7 +955,7 @@ impl ContentRuntime {
     }
 
     /// <https://html.spec.whatwg.org/#update-the-rendering>
-    /// Note: Lean queues this rendering task via `FormalWeb.UserAgent.queueUpdateTheRendering` and `FormalWeb.EventLoop.runEventLoopMessage`, and the content runtime continues the noted rendering opportunity once critical fetches finish.
+    /// Note: The Rust user-agent and event-loop workers queue this rendering task, and the content runtime continues the noted rendering opportunity once critical fetches finish.
     fn continue_updating_the_rendering(
         &mut self,
         traversable_id: u64,
@@ -1195,7 +1195,7 @@ impl ContentRuntime {
     }
 
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
-    /// Note: Lean emits these runtime effects from `FormalWeb.EventLoop.runEventLoopMessage`, and each branch below resumes the corresponding Rust-owned continuation.
+    /// Note: The Rust event-loop worker emits these runtime effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         match command {
             SetViewport(viewport) => {

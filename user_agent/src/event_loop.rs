@@ -156,8 +156,8 @@ struct PendingTaskCommand {
 /// Stateful owner of one HTML event loop thread and its dedicated content process.
 ///
 /// The worker keeps the content subprocess IPC, pending task queue, and script waiters on the
-/// thread-owned struct itself. That preserves the Lean event-loop model directly in Rust instead
-/// of splitting the state across a separate bridge helper.
+/// thread-owned struct itself. That preserves the spec-facing event-loop model directly in Rust
+/// instead of splitting the state across a separate bridge helper.
 struct EventLoopWorker {
     /// https://html.spec.whatwg.org/multipage/webappapis.html#event-loop
     event_loop_id: usize,

@@ -296,7 +296,7 @@ impl GlobalScope {
         let timer_id = previous_id.unwrap_or_else(|| self.next_timer_id());
 
         // Step 11: "Set uniqueHandle to the result of running steps after a timeout given global, \"setTimeout/setInterval\", timeout, and completionStep."
-        // Note: The content/embedder boundary forwards this request into the Lean timer worker, which models `run steps after a timeout`.
+        // Note: The content/embedder boundary forwards this request into the dedicated timer worker, which models `run steps after a timeout`.
         let timer_key = self.next_timer_key();
         log_timer_debug(format!(
             "schedule timer id={} key={} timeout_ms={} nesting={} repeat={} previous_id={:?}",
@@ -356,7 +356,7 @@ impl GlobalScope {
             return;
         };
 
-        // Note: The embedder-facing clear mirrors the map removal into the Lean timer worker's active-timer state.
+        // Note: The embedder-facing clear mirrors the map removal into the timer worker's active-timer state.
         if let Err(error) =
             host.event_sender
                 .send(ContentEvent::WindowTimerCleared(WindowTimerClearRequest {
