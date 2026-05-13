@@ -124,7 +124,10 @@ impl WebDriverServer {
             exit_on_session_delete,
         });
         let thread_state = Arc::clone(&state);
-        let thread = thread::spawn(move || run_server(listener, thread_state, thread_stop));
+        let thread = thread::Builder::new()
+            .name(String::from("formal-web-webdriver"))
+            .spawn(move || run_server(listener, thread_state, thread_stop))
+            .map_err(|error| format!("failed to spawn WebDriver server thread: {error}"))?;
 
         Ok(Self {
             stop,

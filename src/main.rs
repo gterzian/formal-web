@@ -33,19 +33,13 @@ pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String>
         window_title: options.window_title,
     });
 
-    let user_agent = match user_agent::UserAgent::start() {
-        Ok(user_agent) => user_agent,
-        Err(error) => {
-            embedder::clear_event_loop_options();
-            return Err(error);
-        }
+    let event_loop_result = match user_agent::UserAgent::start() {
+        Ok(user_agent) => embedder::run_event_loop(Box::new(user_agent)),
+        Err(error) => Err(error),
     };
-
-    let event_loop_result = embedder::run_event_loop(Box::new(user_agent.handle()));
-    let shutdown_result = user_agent.shutdown();
     embedder::clear_event_loop_options();
 
-    event_loop_result.and(shutdown_result)
+    event_loop_result
 }
 
 fn run_app() -> Result<(), String> {

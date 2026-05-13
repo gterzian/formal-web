@@ -6,7 +6,8 @@ use ipc_messages::network::{
     Bootstrap as NetworkBootstrap, Request as NetworkRequest, Response as NetworkResponse,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -66,15 +67,6 @@ struct FetchWorker {
     shutdown_reply: Option<Sender<Result<(), String>>>,
 }
 
-fn net_sidecar_executable_path() -> Result<PathBuf, String> {
-    std::env::current_exe()
-        .map_err(|error| format!("failed to resolve current executable: {error}"))
-}
-
-fn setup_net_sidecar(command: &mut Command, token: &str) {
-    command.arg("--net-token").arg(token);
-}
-
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, String> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -110,12 +102,16 @@ fn finish_shutdown(mut child: Option<Child>) {
 
 pub fn start_network_bridge(
 ) -> Result<(IpcSender<NetworkRequest>, Receiver<Result<NetworkResponse, String>>, Child), String> {
-    let executable_path = net_sidecar_executable_path()?;
     let (server, token) = IpcOneShotServer::<NetworkBootstrap>::new()
         .map_err(|error| format!("failed to create network IPC one-shot server: {error}"))?;
 
+    let executable_path = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+
     let mut child_process = Command::new(&executable_path);
-    setup_net_sidecar(&mut child_process, &token);
+    #[cfg(unix)]
+    child_process.arg0("formal-web-net");
+    child_process.arg("--net-token").arg(&token);
 
     let child = child_process
         .spawn()

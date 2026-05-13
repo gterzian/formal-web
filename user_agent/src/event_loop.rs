@@ -9,7 +9,8 @@ use ipc_messages::content::{
     TraversableViewport, ViewportSnapshot,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as ProcessCommand};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -143,11 +144,6 @@ pub fn destroyed_document_id(command: &ContentCommand) -> Option<u64> {
     }
 }
 
-fn content_executable_path() -> Result<PathBuf, String> {
-    std::env::current_exe()
-        .map_err(|error| format!("failed to resolve current executable: {error}"))
-}
-
 struct PendingTaskCommand {
     command: ContentCommand,
     reply: Option<Sender<Result<Option<u64>, String>>>,
@@ -211,11 +207,15 @@ impl EventLoopWorker {
         timer_command_sender: Sender<TimerCommand>,
         command_receiver: Receiver<EventLoopCommand>,
     ) -> Result<Self, String> {
-        let executable_path = content_executable_path()?;
         let (server, token) = IpcOneShotServer::<Bootstrap>::new()
             .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
 
+        let executable_path = std::env::current_exe()
+            .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+
         let mut child_process = ProcessCommand::new(&executable_path);
+        #[cfg(unix)]
+        child_process.arg0(format!("formal-web-content-{event_loop_id}"));
         child_process.arg("--content-token").arg(&token);
 
         let child = child_process
@@ -630,7 +630,10 @@ pub fn spawn_event_loop_entry(
         timer_command_sender,
         command_receiver,
     )?;
-    let join_handle = thread::spawn(move || worker.run());
+    let join_handle = thread::Builder::new()
+        .name(format!("formal-web-event-loop-{event_loop_id}"))
+        .spawn(move || worker.run())
+        .map_err(|error| format!("failed to spawn event-loop thread {event_loop_id}: {error}"))?;
     Ok(EventLoopEntry {
         event_loop_id,
         command_sender,

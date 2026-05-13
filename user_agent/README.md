@@ -10,6 +10,10 @@ Keep ownership and cross-thread coordination here, split by responsibility:
 
 Model long-running workers as stateful structs with `run(&mut self)` so thread-local state stays on the owning component instead of being spread across helper functions.
 
+Implement each `UserAgentCommand` branch as a dedicated `handle_*` method on `UserAgentWorker`, and keep spec-facing algorithms such as `create_agent`, `create_new_top_level_traversable`, `create_navigation_params_by_fetching`, and `finalize_cross_document_navigation` as named worker methods instead of free helper functions.
+
+Inline single-use sidecar spawn setup at the `Command::new(...)` site and give first-party user-agent threads and sidecar processes stable names where they are created.
+
 Route browser, embedder, automation, and webview requests through this crate so traversable ownership, navigation state, viewport updates, and rendering opportunities stay in one place.
 
 Keep traversable target-name bookkeeping in this crate so iframe-host cleanup can stop the correct event loop without pushing that state into the embedder or content side.
