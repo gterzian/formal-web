@@ -16,6 +16,8 @@ Inline single-use sidecar spawn setup at the `Command::new(...)` site and give f
 
 Route browser, embedder, automation, and webview requests through this crate so traversable ownership, navigation state, viewport updates, and rendering opportunities stay in one place.
 
+When a cross-document navigation runs `beforeunload`, fan it out across the traversable's inclusive descendant tree instead of stopping at the active document, and queue a rendering opportunity after navigation commit so history traversal repaints without relying on incidental input.
+
 Keep traversable target-name bookkeeping in this crate so iframe-host cleanup can stop the correct event loop without pushing that state into the embedder or content side.
 
 Keep the spec-facing browser-global concepts in `UserAgentState` itself: the browsing-context-group set, the top-level traversable set, allocator state, and the pending navigation/fetch continuations. Treat helper hash maps in that file as model-local indices derived from those concepts rather than as replacements for them.

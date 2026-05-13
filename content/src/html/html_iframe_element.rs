@@ -221,7 +221,6 @@ fn attach_cross_origin_iframe(
     runtime: &mut ContentRuntime,
     parent_document_id: u64,
     iframe_node_id: usize,
-    frame_id: FrameId,
     frame_token: u64,
 ) -> Result<(), String> {
     let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
@@ -679,7 +678,6 @@ fn process_iframe_attributes(
                     runtime,
                     parent_document_id,
                     iframe_node_id,
-                    content_frame_id,
                     content_frame_token,
                 )?;
             }

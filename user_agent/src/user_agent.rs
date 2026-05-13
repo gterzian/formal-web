@@ -16,7 +16,7 @@ use ipc_messages::{
         WindowTimerKey, iframe_target_name, parse_iframe_target_name,
     },
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -366,9 +366,12 @@ pub struct PendingBeforeUnloadNavigation {
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     pub navigation_id: u64,
     pub traversable_id: u64,
-    pub document_id: u64,
     pub destination_url: String,
     pub user_involvement: ipc_messages::content::UserNavigationInvolvement,
+    /// Documents still expected to report their beforeunload result for this navigation.
+    pub pending_document_ids: HashSet<u64>,
+    /// Whether any descendant beforeunload handler canceled the navigation.
+    pub canceled: bool,
 }
 
 /// Pending fetch-backed navigation paused at the response wait point.
@@ -908,6 +911,29 @@ fn find_traversable_by_target_name(state: &UserAgentState, target_name: &str) ->
     state.top_level_traversable_set.find_by_target_name(target_name)
 }
 
+fn descendant_traversable_ids(state: &UserAgentState, traversable_id: u64) -> Vec<u64> {
+    let mut descendants = Vec::new();
+    let mut stack = vec![traversable_id];
+    let mut visited = HashSet::from([traversable_id]);
+
+    while let Some(parent_id) = stack.pop() {
+        for (candidate_id, traversable) in &state.top_level_traversable_set.members {
+            let Some((candidate_parent_id, _, _)) =
+                parse_iframe_target_name(&traversable.target_name)
+            else {
+                continue;
+            };
+            if candidate_parent_id != parent_id || !visited.insert(*candidate_id) {
+                continue;
+            }
+            descendants.push(*candidate_id);
+            stack.push(*candidate_id);
+        }
+    }
+
+    descendants
+}
+
 /// Stateful owner of browser-global state plus the fetch, timer, and event-loop workers that the
 /// user-agent thread coordinates.
 struct UserAgentWorker {
@@ -1440,14 +1466,19 @@ impl UserAgentWorker {
         self.clear_pending_navigation_for_traversable(traversable_id);
 
         let navigation_id = self.state.ids.allocate_navigation_id();
-        let active_document_id = self
-            .state
-            .active_documents_by_traversable
-            .get(&traversable_id)
-            .copied();
-        let should_run_before_unload = active_document_id
-            .and_then(|document_id| self.state.documents.get(&document_id))
-            .is_some_and(|document| !document.is_initial_about_blank);
+        let beforeunload_traversable_ids = std::iter::once(traversable_id)
+            .chain(descendant_traversable_ids(&self.state, traversable_id))
+            .collect::<Vec<_>>();
+        let beforeunload_traversable_ids = beforeunload_traversable_ids
+            .into_iter()
+            .filter(|candidate_traversable_id| {
+                self.state
+                    .active_documents_by_traversable
+                    .get(candidate_traversable_id)
+                    .and_then(|document_id| self.state.documents.get(document_id))
+                    .is_some_and(|document| !document.is_initial_about_blank)
+            })
+            .collect::<Vec<_>>();
 
         // Step 16: In parallel, run these steps:
         // Notes: The user-agent thread records the navigation ID before handing control to either the
@@ -1455,9 +1486,17 @@ impl UserAgentWorker {
         self.state
             .set_traversable_ongoing_navigation(traversable_id, Some(navigation_id));
 
-        if should_run_before_unload {
-            let document_id = active_document_id.expect("beforeunload document id disappeared");
+        if !beforeunload_traversable_ids.is_empty() {
             let check_id = self.state.ids.allocate_before_unload_check_id();
+            let pending_document_ids = beforeunload_traversable_ids
+                .iter()
+                .filter_map(|candidate_traversable_id| {
+                    self.state
+                        .active_documents_by_traversable
+                        .get(candidate_traversable_id)
+                        .copied()
+                })
+                .collect::<HashSet<_>>();
             // Step 16.1: Let unloadPromptCanceled be the result of checking if unloading is
             // canceled for navigable's active document's inclusive descendant navigables.
             self.state.pending_before_unload_navigations.insert(
@@ -1466,25 +1505,37 @@ impl UserAgentWorker {
                     check_id,
                     navigation_id,
                     traversable_id,
-                    document_id,
                     destination_url,
                     user_involvement,
+                    pending_document_ids,
+                    canceled: false,
                 },
             );
-            let command_sender = self.command_sender_for_traversable(traversable_id)?;
-            // Notes: Content runs the queued `beforeunload` task and reports the result back through
-            // `handle_complete_before_unload_result`.
-            if let Err(error) = self.send_event_loop_command(
-                &command_sender,
-                ContentCommand::RunBeforeUnload {
-                    document_id,
-                    check_id,
-                },
-            ) {
-                self.state.pending_before_unload_navigations.remove(&check_id);
-                self.state
-                    .set_traversable_ongoing_navigation(traversable_id, None);
-                return Err(error);
+            for candidate_traversable_id in beforeunload_traversable_ids {
+                let Some(document_id) = self
+                    .state
+                    .active_documents_by_traversable
+                    .get(&candidate_traversable_id)
+                    .copied()
+                else {
+                    continue;
+                };
+                let command_sender = self.command_sender_for_traversable(candidate_traversable_id)?;
+                // Notes: Content runs the queued `beforeunload` task for every active document in the
+                // traversable's descendant tree and reports each completion back through
+                // `handle_complete_before_unload_result`.
+                if let Err(error) = self.send_event_loop_command(
+                    &command_sender,
+                    ContentCommand::RunBeforeUnload {
+                        document_id,
+                        check_id,
+                    },
+                ) {
+                    self.state.pending_before_unload_navigations.remove(&check_id);
+                    self.state
+                        .set_traversable_ongoing_navigation(traversable_id, None);
+                    return Err(error);
+                }
             }
             Ok(())
         } else {
@@ -1659,25 +1710,34 @@ impl UserAgentWorker {
     ) -> Result<(), String> {
         // Notes: Ignore late `beforeunload` completions once the pending continuation has been
         // cleared or superseded by a different document.
+        if let Some(pending) = self.state.pending_before_unload_navigations.get_mut(&result.check_id) {
+            if !pending.pending_document_ids.remove(&result.document_id) {
+                return Ok(());
+            }
+            pending.canceled |= result.canceled;
+            if !pending.pending_document_ids.is_empty() {
+                return Ok(());
+            }
+        }
+
         if let Some(pending) = self
             .state
             .pending_before_unload_navigations
             .remove(&result.check_id)
         {
-            if pending.document_id == result.document_id {
-                if result.canceled {
-                    // Notes: A canceled `beforeunload` result aborts the navigation and clears the
-                    // ongoing-navigation marker so stale fetch or finalization completions are ignored.
-                    self.state
-                        .set_traversable_ongoing_navigation(pending.traversable_id, None);
-                    self.user_event_dispatcher
-                        .send(FormalWebUserEvent::BeforeUnloadCompleted(result))
-                } else {
-                    // Notes: The "continue" result resumes the fetch-backed navigation branch.
-                    self.continue_navigation_after_before_unload(pending)
-                }
+            if pending.canceled || result.canceled {
+                // Notes: A canceled `beforeunload` result aborts the navigation and clears the
+                // ongoing-navigation marker so stale fetch or finalization completions are ignored.
+                self.state
+                    .set_traversable_ongoing_navigation(pending.traversable_id, None);
+                self.user_event_dispatcher
+                    .send(FormalWebUserEvent::BeforeUnloadCompleted(BeforeUnloadResult {
+                        canceled: true,
+                        ..result
+                    }))
             } else {
-                Ok(())
+                // Notes: The "continue" result resumes the fetch-backed navigation branch.
+                self.continue_navigation_after_before_unload(pending)
             }
         } else {
             Ok(())
@@ -1755,6 +1815,7 @@ impl UserAgentWorker {
             document.url = finalized.url.clone();
             document.is_initial_about_blank = finalized.url == "about:blank";
         }
+        self.handle_rendering_opportunity_for(pending.traversable_id);
         let notify_result = self.user_event_dispatcher.send(
             FormalWebUserEvent::FinalizeNavigation(FinalizeNavigation {
                 webview_id: WebviewId(pending.traversable_id),
