@@ -1,11 +1,10 @@
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue,
+    Context, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Trace};
 
-use super::writablestream::WritableStream;
 use super::writablestreamdefaultcontroller::WritableStreamDefaultController;
 use super::writablestreamdefaultwriter::WritableStreamDefaultWriter;
 

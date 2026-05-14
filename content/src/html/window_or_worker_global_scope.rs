@@ -93,10 +93,10 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         // Note: The current content runtime executes all timer callbacks inside the owning `EnvironmentSettingsObject` realm, so the realm selection is implicit.
 
         // Step 8: "Let uniqueHandle be null."
-        // Note: The content runtime reserves the implementation-defined timer key during scheduling so the ID map can update synchronously before Lean runs `run steps after a timeout`.
+        // Note: The content runtime reserves the implementation-defined timer key during scheduling so the ID map can update synchronously before the timer worker runs `run steps after a timeout`.
 
         // Step 9: "Let task be a task that runs the following steps:"
-        // Note: Lean queues the task on the timer task source and later re-enters the content runtime with `RunWindowTimer`.
+        // Note: The timer worker queues the task on the timer task source and later re-enters the content runtime with `RunWindowTimer`.
 
         // Step 10: "Set task's timer nesting level to nesting level + 1."
         let task_nesting_level = nesting_level.saturating_add(1);

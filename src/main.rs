@@ -3,6 +3,7 @@ mod wpt;
 
 use clap::{Parser, Subcommand};
 use std::process;
+use webview::UserAgentApi;
 
 #[derive(Parser, Debug)]
 #[command(name = "formal-web")]
@@ -27,26 +28,19 @@ pub(crate) struct AppRunOptions {
 }
 
 pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
-    ffi::initialize_lean_runtime()?;
-    ffi::install_runtime_hooks();
     embedder::set_event_loop_options(embedder::EventLoopOptions {
         headless: options.headless,
         startup_url: options.startup_url,
         window_title: options.window_title,
     });
 
-    if let Err(error) = ffi::start_kernel() {
-        embedder::clear_event_loop_options();
-        let _ = ffi::finalize_lean_runtime();
-        return Err(error);
-    }
-
-    let event_loop_result = embedder::run_event_loop();
-    let shutdown_result = ffi::shutdown_kernel();
-    let finalize_result = ffi::finalize_lean_runtime();
+    let event_loop_result = embedder::run_event_loop(|dispatcher| {
+        user_agent::UserAgent::start(dispatcher)
+            .map(|user_agent| Box::new(user_agent) as Box<dyn UserAgentApi>)
+    });
     embedder::clear_event_loop_options();
 
-    event_loop_result.and(shutdown_result).and(finalize_result)
+    event_loop_result
 }
 
 fn run_app() -> Result<(), String> {
@@ -54,6 +48,22 @@ fn run_app() -> Result<(), String> {
 }
 
 fn main() {
+    if let Some(result) = content::maybe_run_content_process() {
+        if let Err(error) = result {
+            eprintln!("formal-web: {error}");
+            process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(result) = net::maybe_run_net_process() {
+        if let Err(error) = result {
+            eprintln!("formal-web: {error}");
+            process::exit(1);
+        }
+        return;
+    }
+
     let cli = Cli::parse();
     let result = match cli.command {
         None => run_app(),

@@ -5,7 +5,6 @@
 *.tlc
 /web_standards/
 /scratchpad/
-/ffi/target/
 /embedder/target/
 content/target/
 ipc_messages/target/

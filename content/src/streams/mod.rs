@@ -56,7 +56,7 @@ pub(crate) use strategy::{
     validate_and_normalize_high_water_mark,
 };
 pub(crate) use writablestream::{
-    construct_writable_stream, create_writable_stream, with_writable_stream_ref,
+    construct_writable_stream, with_writable_stream_ref,
 };
 pub(crate) use writablestreamdefaultcontroller::{
     AbortAlgorithm, CloseAlgorithm, StartAlgorithm as WritableStartAlgorithm, WriteAlgorithm,
@@ -65,7 +65,6 @@ pub(crate) use writablestreamdefaultcontroller::{
     set_up_writable_stream_default_controller_from_underlying_sink,
     with_writable_stream_default_controller_ref,
     writable_stream_default_controller_close,
-    writable_stream_default_controller_error_if_needed,
     writable_stream_default_controller_get_chunk_size,
     writable_stream_default_controller_get_desired_size,
     writable_stream_default_controller_write,

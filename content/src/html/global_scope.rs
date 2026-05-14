@@ -8,7 +8,9 @@ use blitz_dom::BaseDocument;
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{Event as ContentEvent, WindowTimerClearRequest, WindowTimerRequest};
+use ipc_messages::content::{
+    Event as ContentEvent, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
+};
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -71,7 +73,7 @@ pub struct WindowTimer {
 
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
     #[unsafe_ignore_trace]
-    pub timer_key: u64,
+    pub timer_key: WindowTimerKey,
 
     /// <https://html.spec.whatwg.org/#timerhandler>
     pub handler: TimerHandler,
@@ -122,10 +124,6 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     timer_callback_identifier: Cell<u32>,
 
-    /// <https://html.spec.whatwg.org/#timers>
-    #[unsafe_ignore_trace]
-    timer_key_identifier: Cell<u64>,
-
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
     window_timers: GcRefCell<Vec<WindowTimer>>,
 
@@ -147,7 +145,6 @@ impl GlobalScope {
             animation_frame_callback_identifier: Cell::new(0),
             animation_frame_callbacks: GcRefCell::new(Vec::new()),
             timer_callback_identifier: Cell::new(0),
-            timer_key_identifier: Cell::new(0),
             window_timers: GcRefCell::new(Vec::new()),
             current_timer_nesting_level: Cell::new(None),
             timer_host: RefCell::new(None),
@@ -173,18 +170,8 @@ impl GlobalScope {
         handle
     }
 
-    fn next_timer_key(&self) -> u64 {
-        let mut timer_key = self.timer_key_identifier.get();
-
-        loop {
-            timer_key = timer_key.wrapping_add(1);
-            if timer_key != 0 {
-                break;
-            }
-        }
-
-        self.timer_key_identifier.set(timer_key);
-        timer_key
+    fn next_timer_key(&self) -> Result<WindowTimerKey, String> {
+        Ok(WindowTimerKey::new())
     }
 
     fn timer_host(&self) -> Result<TimerHost, String> {
@@ -296,8 +283,8 @@ impl GlobalScope {
         let timer_id = previous_id.unwrap_or_else(|| self.next_timer_id());
 
         // Step 11: "Set uniqueHandle to the result of running steps after a timeout given global, \"setTimeout/setInterval\", timeout, and completionStep."
-        // Note: The content/embedder boundary forwards this request into the Lean timer worker, which models `run steps after a timeout`.
-        let timer_key = self.next_timer_key();
+        // Note: The content/embedder boundary forwards this request into the dedicated timer worker, which models `run steps after a timeout`.
+        let timer_key = self.next_timer_key()?;
         log_timer_debug(format!(
             "schedule timer id={} key={} timeout_ms={} nesting={} repeat={} previous_id={:?}",
             timer_id, timer_key, timeout_ms, nesting_level, repeat, previous_id
@@ -356,7 +343,7 @@ impl GlobalScope {
             return;
         };
 
-        // Note: The embedder-facing clear mirrors the map removal into the Lean timer worker's active-timer state.
+        // Note: The embedder-facing clear mirrors the map removal into the timer worker's active-timer state.
         if let Err(error) =
             host.event_sender
                 .send(ContentEvent::WindowTimerCleared(WindowTimerClearRequest {
@@ -369,7 +356,11 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
-    pub(crate) fn window_timer(&self, timer_id: u32, timer_key: u64) -> Option<WindowTimer> {
+    pub(crate) fn window_timer(
+        &self,
+        timer_id: u32,
+        timer_key: WindowTimerKey,
+    ) -> Option<WindowTimer> {
         // Note: This model-local lookup exposes the stored `(id, uniqueHandle)` registration so the queued timer task can check whether the timer still exists and still maps to the same handle before running the handler.
         self.window_timers
             .borrow()
@@ -382,7 +373,7 @@ impl GlobalScope {
     pub(crate) fn complete_window_timer(
         &self,
         timer_id: u32,
-        timer_key: u64,
+        timer_key: WindowTimerKey,
     ) -> Result<(), String> {
         // Note: This helper continues the queued timer task after the handler and the stale-handle checks have already run inside `EnvironmentSettingsObject::run_window_timer`.
         let timer = self.window_timer(timer_id, timer_key);
@@ -413,7 +404,7 @@ impl GlobalScope {
             .unwrap_or(0)
             .saturating_add(1);
         let host = self.timer_host()?;
-        let next_timer_key = self.next_timer_key();
+        let next_timer_key = self.next_timer_key()?;
         log_timer_debug(format!(
             "reschedule interval id={} old_key={} new_key={} timeout_ms={} nesting={}",
             timer_id, timer_key, next_timer_key, timer.timeout_ms, next_nesting_level

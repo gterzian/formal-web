@@ -10,14 +10,14 @@
 
   <!-- Title -->
   <text x="340" y="36" text-anchor="middle" font-size="17" font-weight="500" fill="#1a1a18">formal-web</text>
-  <text x="340" y="56" text-anchor="middle" font-size="12" fill="#73726c">a formally verified web engine</text>
+  <text x="340" y="56" text-anchor="middle" font-size="12" fill="#73726c">a spec-driven Rust web engine</text>
 
   <!-- Correctness -->
   <rect x="40" y="78" width="138" height="108" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
   <text x="109" y="104" text-anchor="middle" font-size="14" font-weight="500" fill="#3C3489">Correctness</text>
-  <text x="109" y="122" text-anchor="middle" font-size="12" fill="#534AB7">Lean verified kernel</text>
-  <text x="109" y="140" text-anchor="middle" font-size="12" fill="#534AB7">for all concurrent</text>
-  <text x="109" y="158" text-anchor="middle" font-size="12" fill="#534AB7">logic</text>
+  <text x="109" y="122" text-anchor="middle" font-size="12" fill="#534AB7">Rust + TLA+ model</text>
+  <text x="109" y="140" text-anchor="middle" font-size="12" fill="#534AB7">for concurrent</text>
+  <text x="109" y="158" text-anchor="middle" font-size="12" fill="#534AB7">browser logic</text>
 
   <!-- Performance -->
   <rect x="194" y="78" width="138" height="108" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
@@ -48,24 +48,24 @@
   <text x="200" y="251" text-anchor="middle" font-size="14" font-weight="500" fill="#2C2C2A">TLA+ specs</text>
   <text x="480" y="251" text-anchor="middle" font-size="12" fill="#5F5E5A">high-level design &amp; concurrency thinking</text>
 
-  <!-- Lean specs -->
+  <!-- Web standards -->
   <rect x="40" y="274" width="600" height="38" rx="6" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
-  <text x="200" y="297" text-anchor="middle" font-size="14" font-weight="500" fill="#3C3489">Lean specs</text>
-  <text x="480" y="297" text-anchor="middle" font-size="12" fill="#534AB7">TLA-style state machines, formally verified</text>
+  <text x="200" y="297" text-anchor="middle" font-size="14" font-weight="500" fill="#3C3489">Web standards</text>
+  <text x="480" y="297" text-anchor="middle" font-size="12" fill="#534AB7">local HTML, Fetch, DOM, Streams, and Web IDL references</text>
 
-  <!-- Lean implementations -->
-  <rect x="40" y="320" width="600" height="38" rx="6" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
-  <text x="200" y="343" text-anchor="middle" font-size="14" font-weight="500" fill="#3C3489">Lean implementations</text>
-  <text x="480" y="343" text-anchor="middle" font-size="12" fill="#534AB7">concurrent logic, I/O, navigation, fetch</text>
+  <!-- Rust state machines -->
+  <rect x="40" y="320" width="600" height="38" rx="6" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="200" y="343" text-anchor="middle" font-size="14" font-weight="500" fill="#085041">Rust state machines</text>
+  <text x="480" y="343" text-anchor="middle" font-size="12" fill="#0F6E56">navigation, session history, timers, fetch, and event loops</text>
 
-  <!-- FFI arrow -->
+  <!-- Implementation arrow -->
   <line x1="340" y1="358" x2="340" y2="374" stroke="#888" stroke-width="1.2" marker-end="url(#arrow)"/>
-  <text x="354" y="370" font-size="11" fill="#888">FFI</text>
+  <text x="346" y="370" font-size="11" fill="#888">Implements</text>
 
-  <!-- Rust modules -->
+  <!-- Rust runtime -->
   <rect x="40" y="378" width="600" height="38" rx="6" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
-  <text x="200" y="401" text-anchor="middle" font-size="14" font-weight="500" fill="#085041">Rust modules</text>
-  <text x="480" y="401" text-anchor="middle" font-size="12" fill="#0F6E56">sequential algorithms, called as black boxes</text>
+  <text x="200" y="401" text-anchor="middle" font-size="14" font-weight="500" fill="#085041">Rust runtime</text>
+  <text x="480" y="401" text-anchor="middle" font-size="12" fill="#0F6E56">user agent, content, embedder, timers, fetch, net</text>
 
   <!-- Process model label -->
   <text x="340" y="440" text-anchor="middle" font-size="12" fill="#73726c">Process model</text>

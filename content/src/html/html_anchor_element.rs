@@ -4,7 +4,9 @@ use blitz_dom::BaseDocument;
 use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{Event as ContentEvent, NavigateRequest, UserNavigationInvolvement};
+use ipc_messages::content::{
+    Event as ContentEvent, NavigateRequest, NavigationId, UserNavigationInvolvement,
+};
 use url::Url;
 
 use crate::html::{HTMLElement, HyperlinkElementUtils};
@@ -69,6 +71,7 @@ impl HTMLAnchorElement {
             return Ok(());
         };
         let request = NavigateRequest {
+            navigation_id: Some(NavigationId::new()),
             source_navigable_id,
             destination_url,
             target: self.target(),

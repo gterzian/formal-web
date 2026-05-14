@@ -750,7 +750,8 @@ impl WptServeProcess {
             "check_subdomains": false,
             "doc_root": config.wpt.root,
             "ports": {
-                "http": [port, "auto"]
+                "http": [port, "auto"],
+                "https": ["auto", "auto"]
             }
         });
         fs::write(

@@ -54,6 +54,9 @@ struct CachedFrame {
     parent_frame_id: Option<FrameId>,
     resolved_viewport: Option<ResolvedViewport>,
     child_frames: Vec<NavigableContainerLayout>,
+    /// Maps vendor placeholder tokens (u64) to compositor FrameIds for this frame's children.
+    /// Populated from PaintFrame.placeholder_frame_mappings when the frame is stored.
+    placeholder_token_to_frame_id: HashMap<u64, FrameId>,
     scene: RecordedScene,
 }
 
@@ -76,13 +79,25 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    fn frame_can_be_root(frame_id: FrameId) -> bool {
-        frame_id.0 < (1_u64 << 63)
+    fn placeholder_child_frame_id(
+        cached_frame: &CachedFrame,
+        kind: &PlaceholderKind,
+    ) -> Option<FrameId> {
+        match kind {
+            PlaceholderKind::CrossOriginIframe { frame_id } => {
+                cached_frame.placeholder_token_to_frame_id.get(frame_id).copied()
+            }
+        }
     }
 
-    fn placeholder_child_frame_id(kind: &PlaceholderKind) -> Option<FrameId> {
+    fn placeholder_child_frame_id_from_map(
+        placeholder_token_to_frame_id: &HashMap<u64, FrameId>,
+        kind: &PlaceholderKind,
+    ) -> Option<FrameId> {
         match kind {
-            PlaceholderKind::CrossOriginIframe { frame_id } => Some(FrameId(*frame_id)),
+            PlaceholderKind::CrossOriginIframe { frame_id } => {
+                placeholder_token_to_frame_id.get(frame_id).copied()
+            }
         }
     }
 
@@ -113,14 +128,16 @@ impl Compositor {
         frame_id: FrameId,
         viewport_width: u32,
         viewport_height: u32,
+        placeholder_token_to_frame_id: HashMap<u64, FrameId>,
         scene: RecordedScene,
+        is_root_candidate: bool,
     ) {
         if input_debug_enabled() {
             let summary = scene.summary();
             eprintln!(
                 "[input-debug][compositor] store_frame frame={} root_candidate={} viewport=({},{}) placeholders={} commands={}",
                 frame_id.0,
-                Self::frame_can_be_root(frame_id),
+                is_root_candidate,
                 viewport_width,
                 viewport_height,
                 summary.placeholder_commands,
@@ -134,12 +151,13 @@ impl Compositor {
             parent_frame_id: None,
             resolved_viewport: None,
             child_frames: Vec::new(),
+            placeholder_token_to_frame_id,
             scene,
         };
 
         if self.replace_root_on_next_paint {
             self.pending_frames.insert(frame_id, frame);
-            if Self::frame_can_be_root(frame_id) {
+            if is_root_candidate {
                 self.root_frame_id = Some(frame_id);
                 self.committed_frames = std::mem::take(&mut self.pending_frames);
                 self.replace_root_on_next_paint = false;
@@ -148,7 +166,7 @@ impl Compositor {
             return;
         }
 
-        if self.root_frame_id.is_none() && Self::frame_can_be_root(frame_id) {
+        if self.root_frame_id.is_none() && is_root_candidate {
             self.root_frame_id = Some(frame_id);
         }
 
@@ -238,6 +256,11 @@ impl Compositor {
             .get(&frame_id)?
             .resolved_viewport
             .clone()?;
+        let placeholder_token_to_frame_id = self
+            .committed_frames
+            .get(&frame_id)?
+            .placeholder_token_to_frame_id
+            .clone();
         let decoded_scene = {
             let cached_frame = self.committed_frames.get_mut(&frame_id)?;
             cached_frame.scene.clone().into_scene(font_receiver)
@@ -247,8 +270,10 @@ impl Compositor {
         for command in decoded_scene.commands {
             match command {
                 RenderCommand::Placeholder(placeholder) => {
-                    let Some(child_frame_id) = Self::placeholder_child_frame_id(&placeholder.kind)
-                    else {
+                    let Some(child_frame_id) = Self::placeholder_child_frame_id_from_map(
+                        &placeholder_token_to_frame_id,
+                        &placeholder.kind,
+                    ) else {
                         continue;
                     };
                     let Some(child_local_to_root) = self.record_child_frame_layout(
@@ -424,13 +449,12 @@ impl Compositor {
         };
 
         for child in &frame.child_frames {
-            let Some(child_frame) = self.committed_frames.get(&child.child_frame_id) else {
-                continue;
-            };
-
             let viewport_width = child.root_clip_bounds.width().ceil().max(1.0) as u32;
             let viewport_height = child.root_clip_bounds.height().ceil().max(1.0) as u32;
 
+            // Publish placeholder-derived child viewport bounds even before the child content
+            // has committed its first frame. Cross-origin iframes need that first viewport to
+            // trigger their initial rendering opportunity.
             viewports.push(VisibleFrameViewport {
                 frame_id: child.child_frame_id,
                 offset_x: child.root_clip_bounds.x0 as f32,
@@ -463,7 +487,7 @@ impl Compositor {
             .iter()
             .filter_map(|command| match &command.0 {
                 RenderCommand::Placeholder(command) => {
-                    Self::placeholder_child_frame_id(&command.kind)
+                    Self::placeholder_child_frame_id(frame, &command.kind)
                 }
                 _ => None,
             })

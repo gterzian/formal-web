@@ -1,0 +1,12 @@
+[package]
+name = "net"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ipc-channel = "0.21"
+ipc_messages = { path = "../ipc_messages" }
+mime_guess = "2"
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }
+url = "2"

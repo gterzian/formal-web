@@ -231,7 +231,7 @@ impl EnvironmentSettingsObject {
         self.time_origin.elapsed().as_secs_f64() * 1000.0
     }
 
-    pub fn install_timer_host(
+    pub(crate) fn install_timer_host(
         &self,
         document_id: u64,
         event_sender: IpcSender<ContentEvent>,
@@ -301,7 +301,7 @@ impl EnvironmentSettingsObject {
     pub(crate) fn run_window_timer(
         &mut self,
         timer_id: u32,
-        timer_key: u64,
+        timer_key: ipc_messages::content::WindowTimerKey,
         nesting_level: u32,
     ) -> Result<(), String> {
         log_timer_debug(format!(

@@ -6,6 +6,43 @@ use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
 use peniko::{Brush, FontData};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::fmt;
+use uuid::Uuid;
+
+macro_rules! uuid_id {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(pub Uuid);
+
+        impl $name {
+            pub fn new() -> Self {
+                Self(Uuid::new_v4())
+            }
+
+            pub fn parse_str(value: &str) -> Result<Self, uuid::Error> {
+                Uuid::parse_str(value).map(Self)
+            }
+
+            pub fn from_u128(value: u128) -> Self {
+                Self(Uuid::from_u128(value))
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+    };
+}
+
+uuid_id!(DocumentFetchId);
+uuid_id!(NavigationFetchId);
+uuid_id!(WindowTimerKey);
+uuid_id!(ContentNavigableId);
+uuid_id!(FrameId);
+uuid_id!(NavigationId);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ColorScheme {
@@ -37,7 +74,7 @@ pub struct Bootstrap {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchRequest {
-    pub handler_id: u64,
+    pub handler_id: DocumentFetchId,
     pub url: String,
     pub method: String,
     pub body: String,
@@ -68,6 +105,8 @@ pub enum UserNavigationInvolvement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigateRequest {
+    #[serde(default)]
+    pub navigation_id: Option<NavigationId>,
     pub source_navigable_id: u64,
     pub destination_url: String,
     pub target: String,
@@ -91,20 +130,39 @@ pub struct FinalizeNavigation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IframeTraversableRemoval {
     pub parent_traversable_id: u64,
-    pub content_navigable_id: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChildNavigableCreation {
-    pub parent_traversable_id: u64,
-    pub content_navigable_id: u64,
+    pub content_navigable_id: ContentNavigableId,
+    pub content_frame_id: FrameId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WebviewId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FrameId(pub u64);
+pub fn iframe_target_name(
+    parent_traversable_id: u64,
+    content_navigable_id: ContentNavigableId,
+    content_frame_id: FrameId,
+) -> String {
+    format!("_iframe|{parent_traversable_id}|{content_navigable_id}|{content_frame_id}")
+}
+
+pub fn parse_iframe_target_name(
+    target_name: &str,
+) -> Option<(u64, ContentNavigableId, FrameId)> {
+    let payload = target_name.strip_prefix("_iframe|")?;
+    let mut parts = payload.split('|');
+    let parent_traversable_id = parts.next()?.parse::<u64>().ok()?;
+    let content_navigable_id = ContentNavigableId::parse_str(parts.next()?).ok()?;
+    let content_frame_id = FrameId::parse_str(parts.next()?).ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some((
+        parent_traversable_id,
+        content_navigable_id,
+        content_frame_id,
+    ))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptEvaluationResult {
@@ -135,7 +193,7 @@ pub struct DispatchEventEntry {
 pub struct WindowTimerRequest {
     pub document_id: u64,
     pub timer_id: u32,
-    pub timer_key: u64,
+    pub timer_key: WindowTimerKey,
     pub timeout_ms: u32,
     pub nesting_level: u32,
 }
@@ -143,7 +201,13 @@ pub struct WindowTimerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowTimerClearRequest {
     pub document_id: u64,
-    pub timer_key: u64,
+    pub timer_key: WindowTimerKey,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaceholderFrameMapping {
+    pub token: u64,
+    pub frame_id: FrameId,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -457,6 +521,7 @@ pub struct PaintFrame {
     pub frame_id: FrameId,
     pub viewport_width: u32,
     pub viewport_height: u32,
+    pub placeholder_frame_mappings: Vec<PlaceholderFrameMapping>,
     font_registrations: Vec<RegisteredFont>,
     scene_bytes: IpcSharedMemory,
 }
@@ -474,6 +539,7 @@ impl PaintFrame {
         frame_id: FrameId,
         viewport_width: u32,
         viewport_height: u32,
+        placeholder_frame_mappings: Vec<PlaceholderFrameMapping>,
         scene: PreparedScene,
     ) -> Result<Self, String> {
         let PreparedScene {
@@ -485,6 +551,7 @@ impl PaintFrame {
             frame_id,
             viewport_width,
             viewport_height,
+            placeholder_frame_mappings,
             font_registrations: registered_fonts,
             scene_bytes: serialize_scene_to_shared_memory(&scene)?,
         })
@@ -519,10 +586,12 @@ pub enum Command {
     CreateEmptyDocument {
         traversable_id: u64,
         document_id: u64,
+        frame_id: Option<FrameId>,
     },
     CreateLoadedDocument {
         traversable_id: u64,
         document_id: u64,
+        frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
     },
     DestroyDocument { document_id: u64 },
@@ -545,15 +614,15 @@ pub enum Command {
     RunWindowTimer {
         document_id: u64,
         timer_id: u32,
-        timer_key: u64,
+        timer_key: WindowTimerKey,
         nesting_level: u32,
     },
     CompleteDocumentFetch {
-        handler_id: u64,
+        handler_id: DocumentFetchId,
         response: FetchResponse,
     },
     FailDocumentFetch {
-        handler_id: u64,
+        handler_id: DocumentFetchId,
     },
     Shutdown,
 }
@@ -567,7 +636,6 @@ pub enum Event {
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
     IframeTraversableRemoved(IframeTraversableRemoval),
-    ChildNavigableCreated(ChildNavigableCreation),
     ScriptEvaluated(ScriptEvaluationResult),
     ClipboardReadRequested(ClipboardReadRequest),
     ClipboardWriteRequested(ClipboardWriteRequest),
@@ -579,8 +647,9 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::{
-        Command, FetchResponse, FontTransportReceiver, FontTransportSender, FrameId,
-        LoadedDocumentResponse, PaintFrame, PaintTransportSummary, SceneSummary, WebviewId,
+        Command, DocumentFetchId, FetchResponse, FontTransportReceiver, FontTransportSender,
+        FrameId, LoadedDocumentResponse, PaintFrame, PaintTransportSummary,
+        PlaceholderFrameMapping, SceneSummary, WebviewId,
     };
     use anyrender::{
         Glyph, PaintScene, Scene,
@@ -696,9 +765,10 @@ mod tests {
         let expected_recorded = prepared.scene.clone();
         let paint_frame = PaintFrame::new(
             WebviewId(7),
-            FrameId(7),
+            FrameId::from_u128(7),
             320,
             240,
+            Vec::<PlaceholderFrameMapping>::new(),
             prepared,
         )
         .expect("paint frame should serialize into shared memory");
@@ -719,9 +789,10 @@ mod tests {
 
         let first_frame = PaintFrame::new(
             WebviewId(7),
-            FrameId(7),
+            FrameId::from_u128(7),
             320,
             240,
+            Vec::<PlaceholderFrameMapping>::new(),
             sender.prepare_scene(29, scene_with_glyph(&font, 7, 12.0, 18.0)),
         )
         .expect("first frame should serialize");
@@ -743,9 +814,10 @@ mod tests {
 
         let second_frame = PaintFrame::new(
             WebviewId(7),
-            FrameId(7),
+            FrameId::from_u128(7),
             320,
             240,
+            Vec::<PlaceholderFrameMapping>::new(),
             sender.prepare_scene(29, scene_with_glyph(&font, 8, 28.0, 18.0)),
         )
         .expect("second frame should serialize");
@@ -770,6 +842,7 @@ mod tests {
         let encoded = postcard::to_allocvec(&Command::CreateLoadedDocument {
             traversable_id: 3,
             document_id: 7,
+            frame_id: None,
             response: LoadedDocumentResponse {
                 final_url: String::from("https://example.test/final"),
                 status: 201,
@@ -785,10 +858,12 @@ mod tests {
             Command::CreateLoadedDocument {
                 traversable_id,
                 document_id,
+                frame_id,
                 response,
             } => {
                 assert_eq!(traversable_id, 3);
                 assert_eq!(document_id, 7);
+                assert_eq!(frame_id, None);
                 assert_eq!(
                     response,
                     LoadedDocumentResponse {
@@ -805,8 +880,9 @@ mod tests {
 
     #[test]
     fn complete_document_fetch_command_round_trips_response_metadata() {
+        let handler_id = DocumentFetchId::from_u128(19);
         let encoded = postcard::to_allocvec(&Command::CompleteDocumentFetch {
-            handler_id: 19,
+            handler_id,
             response: FetchResponse {
                 final_url: String::from("https://example.test/script.js"),
                 status: 404,
@@ -823,7 +899,7 @@ mod tests {
                 handler_id,
                 response,
             } => {
-                assert_eq!(handler_id, 19);
+                assert_eq!(handler_id, DocumentFetchId::from_u128(19));
                 assert_eq!(
                     response,
                     FetchResponse {

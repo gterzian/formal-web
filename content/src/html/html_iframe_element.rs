@@ -5,8 +5,9 @@ use boa_engine::JsData;
 use boa_gc::{Finalize, Trace};
 use html5ever::{local_name, ns};
 use ipc_messages::content::{
-    ChildNavigableCreation, Event as ContentEvent, IframeTraversableRemoval, NavigateRequest,
-    UserNavigationInvolvement,
+    ContentNavigableId, Event as ContentEvent, FrameId, IframeTraversableRemoval,
+    NavigateRequest, NavigationId, UserNavigationInvolvement,
+    iframe_target_name,
 };
 use url::Url;
 
@@ -221,7 +222,7 @@ fn attach_cross_origin_iframe(
     runtime: &mut ContentRuntime,
     parent_document_id: u64,
     iframe_node_id: usize,
-    frame_id: u64,
+    frame_token: u64,
 ) -> Result<(), String> {
     let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
         return Ok(());
@@ -232,14 +233,15 @@ fn attach_cross_origin_iframe(
     }
     let mut mutator = document.mutate();
     mutator.remove_sub_document(iframe_node_id);
-    mutator.set_cross_origin_iframe(iframe_node_id, frame_id);
+    mutator.set_cross_origin_iframe(iframe_node_id, frame_token);
     Ok(())
 }
 
 fn request_iframe_navigation(
     runtime: &ContentRuntime,
     parent_document_id: u64,
-    content_navigable_id: u64,
+    content_navigable_id: ContentNavigableId,
+    content_frame_id: FrameId,
     destination_url: &Url,
 ) -> Result<(), String> {
     let Some(parent_traversable_id) = runtime
@@ -254,9 +256,14 @@ fn request_iframe_navigation(
     runtime
         .event_sender
         .send(ContentEvent::NavigationRequested(NavigateRequest {
-            source_navigable_id: content_navigable_id,
+            navigation_id: Some(NavigationId::new()),
+            source_navigable_id: parent_traversable_id,
             destination_url: destination_url.to_string(),
-            target: format!("_iframe|{}|{}", parent_traversable_id, content_navigable_id),
+            target: iframe_target_name(
+                parent_traversable_id,
+                content_navigable_id,
+                content_frame_id,
+            ),
             user_involvement: UserNavigationInvolvement::None,
             noopener: false,
         }))
@@ -306,6 +313,7 @@ pub(crate) fn retire_iframe_traversable(
         .send(ContentEvent::IframeTraversableRemoved(IframeTraversableRemoval {
             parent_traversable_id,
             content_navigable_id: container_state.content_navigable_id,
+            content_frame_id: container_state.content_frame_id,
         }))
         .map_err(|error| format!("failed to send iframe traversable removal: {error}"))
 }
@@ -315,7 +323,7 @@ fn create_new_child_navigable(
     runtime: &mut ContentRuntime,
     parent_document_id: u64,
     iframe_node_id: usize,
-) -> Result<u64, String> {
+) -> Result<ContentNavigableId, String> {
     if let Some(container_state) = runtime
         .documents
         .get(&parent_document_id)
@@ -328,37 +336,29 @@ fn create_new_child_navigable(
         return Ok(container_state.content_navigable_id);
     }
 
-    let content_navigable_id = runtime.allocate_child_navigable_id();
-    let Some(parent_traversable_id) = runtime
-        .documents
-        .get(&parent_document_id)
-        .map(|d| d.traversable_id)
-    else {
+    let content_navigable_id = runtime.allocate_child_navigable_id()?;
+    let content_frame_id = runtime.allocate_child_frame_id();
+    let content_frame_token = runtime.allocate_placeholder_frame_token();
+    if runtime.documents.get(&parent_document_id).is_none() {
         debug_assert!(
             false,
             "create_new_child_navigable: parent document {parent_document_id} not found"
         );
         return Ok(content_navigable_id);
-    };
+    }
 
     if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
         content_document.navigable_container_states.insert(
             iframe_node_id,
             NavigableContainerState {
                 content_navigable_id,
+                content_frame_id,
+                content_frame_token,
                 current_key: String::new(),
                 cross_origin: false,
             },
         );
     }
-
-    runtime
-        .event_sender
-        .send(ContentEvent::ChildNavigableCreated(ChildNavigableCreation {
-            parent_traversable_id,
-            content_navigable_id,
-        }))
-        .map_err(|error| format!("failed to send child navigable created event: {error}"))?;
 
     attach_iframe_about_blank(runtime, parent_document_id, iframe_node_id)?;
     Ok(content_navigable_id)
@@ -366,7 +366,7 @@ fn create_new_child_navigable(
 
 fn navigable_container_for_child_navigable(
     runtime: &ContentRuntime,
-    content_navigable_id: u64,
+    content_frame_id: FrameId,
 ) -> Option<(u64, usize)> {
     runtime
         .documents
@@ -376,7 +376,7 @@ fn navigable_container_for_child_navigable(
                 .navigable_container_states
                 .iter()
                 .find_map(|(iframe_node_id, container_state)| {
-                    (container_state.content_navigable_id == content_navigable_id)
+                    (container_state.content_frame_id == content_frame_id)
                         .then_some((*parent_document_id, *iframe_node_id))
                 })
         })
@@ -435,8 +435,19 @@ pub(crate) fn run_iframe_load_event_steps_for_traversable(
     runtime: &mut ContentRuntime,
     traversable_id: u64,
 ) -> Result<(), String> {
+    let Some(document_id) = runtime
+        .active_documents_by_traversable
+        .get(&traversable_id)
+        .copied()
+    else {
+        return Ok(());
+    };
+    let Some(content_frame_id) = runtime.documents.get(&document_id).map(|document| document.frame_id)
+    else {
+        return Ok(());
+    };
     let Some((parent_document_id, iframe_node_id)) =
-        navigable_container_for_child_navigable(runtime, traversable_id)
+        navigable_container_for_child_navigable(runtime, content_frame_id)
     else {
         return Ok(());
     };
@@ -570,10 +581,25 @@ fn process_iframe_attributes(
         return Ok(());
     }
 
-    let content_navigable_id = previous_iframe_state
+    let content_navigable_id = match previous_iframe_state
         .as_ref()
         .map(|state| state.content_navigable_id)
-        .unwrap_or_else(|| runtime.allocate_child_navigable_id());
+    {
+        Some(content_navigable_id) => content_navigable_id,
+        None => runtime.allocate_child_navigable_id()?,
+    };
+    let content_frame_id = match previous_iframe_state.as_ref().map(|state| state.content_frame_id)
+    {
+        Some(content_frame_id) => content_frame_id,
+        None => runtime.allocate_child_frame_id(),
+    };
+    let content_frame_token = match previous_iframe_state
+        .as_ref()
+        .map(|state| state.content_frame_token)
+    {
+        Some(content_frame_token) => content_frame_token,
+        None => runtime.allocate_placeholder_frame_token(),
+    };
     let cross_origin =
         matches!(&target, IframeNavigationTarget::Url { url } if creation_url.origin() != url.origin());
     if let Some(previous_iframe_state) = previous_iframe_state.as_ref() {
@@ -589,6 +615,8 @@ fn process_iframe_attributes(
                         iframe_node_id,
                         NavigableContainerState {
                             content_navigable_id,
+                            content_frame_id,
+                            content_frame_token,
                             current_key: desired_key.clone(),
                             cross_origin: false,
                         },
@@ -603,6 +631,8 @@ fn process_iframe_attributes(
                         iframe_node_id,
                         NavigableContainerState {
                             content_navigable_id,
+                            content_frame_id,
+                            content_frame_token,
                             current_key: desired_key.clone(),
                             cross_origin: false,
                         },
@@ -620,6 +650,8 @@ fn process_iframe_attributes(
             iframe_node_id,
             NavigableContainerState {
                 content_navigable_id,
+                content_frame_id,
+                content_frame_token,
                 current_key: desired_key.clone(),
                 cross_origin,
             },
@@ -648,10 +680,16 @@ fn process_iframe_attributes(
                     runtime,
                     parent_document_id,
                     iframe_node_id,
-                    content_navigable_id,
+                    content_frame_token,
                 )?;
             }
-            request_iframe_navigation(runtime, parent_document_id, content_navigable_id, &url)?;
+            request_iframe_navigation(
+                runtime,
+                parent_document_id,
+                content_navigable_id,
+                content_frame_id,
+                &url,
+            )?;
         }
     }
 

@@ -1,6 +1,5 @@
 mod chrome;
 pub use webview::ui_event;
-pub use webview::set_runtime_hooks;
 
 use crate::chrome::{ChromeAction, ChromeUi, ChromeViewState};
 use anyrender::{PaintScene, WindowRenderer};
@@ -12,15 +11,14 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
-use ipc_messages::content::{
-    BeforeUnloadResult, PaintFrame, WebviewId,
-};
+use ipc_messages::content::{BeforeUnloadResult, PaintFrame, WebviewId};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
-use webview::{WebviewProvider, EmbedderApi};
+use webview::{EmbedderApi, UserAgentApi, WebviewProvider};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{
@@ -35,22 +33,11 @@ use winit::keyboard::{
 use winit::window::{Cursor, Window, WindowAttributes, WindowId};
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
-const NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX: &str = "NewTopLevelTraversable|";
-const NAVIGATION_REQUESTED_MESSAGE_PREFIX: &str = "NavigationRequested|";
-const BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX: &str = "BeforeUnloadCompleted|";
-const FINALIZE_NAVIGATION_MESSAGE_PREFIX: &str = "FinalizeNavigation|";
-
 #[derive(Clone, Default)]
 pub struct EventLoopOptions {
     pub headless: bool,
     pub startup_url: Option<String>,
     pub window_title: Option<String>,
-}
-
-#[derive(Clone, Copy)]
-pub struct ContentBridgeHooks {
-    pub set_default_viewport: fn(Option<(u32, u32, f32, ColorScheme)>),
-    pub set_traversable_viewport: fn(u64, (u32, u32, f32, ColorScheme), f32, f32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,8 +46,25 @@ pub struct FinalizeNavigation {
     pub url: String,
 }
 
-struct WinitEmbedderApi {
+#[derive(Clone)]
+pub struct UserEventDispatcher {
     proxy: EventLoopProxy<FormalWebUserEvent>,
+}
+
+impl UserEventDispatcher {
+    fn new(proxy: EventLoopProxy<FormalWebUserEvent>) -> Self {
+        Self { proxy }
+    }
+
+    pub fn send(&self, event: FormalWebUserEvent) -> Result<(), String> {
+        self.proxy
+            .send_event(event)
+            .map_err(|error| format!("failed to send user event: {error}"))
+    }
+}
+
+struct WinitEmbedderApi {
+    dispatcher: UserEventDispatcher,
 }
 
 struct WinitShellProvider {
@@ -122,7 +126,9 @@ impl ShellProvider for WinitShellProvider {
 
 impl EmbedderApi for WinitEmbedderApi {
     fn request_redraw(&self, webview_id: WebviewId) {
-        let _ = self.proxy.send_event(FormalWebUserEvent::RequestRedraw(webview_id));
+        let _ = self
+            .dispatcher
+            .send(FormalWebUserEvent::RequestRedraw(webview_id));
     }
 
     fn viewport_scale_factor(&self) -> f32 {
@@ -130,23 +136,13 @@ impl EmbedderApi for WinitEmbedderApi {
             .map(|(_, _, scale, _)| scale)
             .unwrap_or(1.0)
     }
-
-    fn update_traversable_viewport(
-        &self,
-        traversable_id: WebviewId,
-        width: u32,
-        height: u32,
-        offset_x: f32,
-        offset_y: f32,
-    ) {
-        update_content_traversable_viewport(traversable_id, width, height, offset_x, offset_y);
-    }
 }
 
 pub enum FormalWebUserEvent {
     Paint(PaintFrame),
     RequestRedraw(WebviewId),
     NavigationRequested { webview_id: WebviewId, destination_url: String },
+    NavigationFailed { webview_id: WebviewId, message: String },
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
     NewTopLevelTraversable(WebviewId, String),
@@ -189,6 +185,11 @@ pub enum AutomationCommand {
         delta_x: f32,
         delta_y: f32,
         reply: mpsc::Sender<Result<(), String>>,
+    },
+    EvaluateScript {
+        source: String,
+        timeout: Duration,
+        reply: mpsc::Sender<Result<Value, String>>,
     },
 }
 
@@ -279,6 +280,7 @@ struct FormalWebApp {
     chrome: Option<ChromeUi>,
     browser: BrowserState,
     provider: Option<WebviewProvider>,
+    user_agent: Option<Box<dyn UserAgentApi>>,
     current_webview_id: Option<WebviewId>,
     has_top_level_traversable: bool,
     window_occluded: bool,
@@ -293,23 +295,16 @@ static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent
     LazyLock::new(|| Mutex::new(None));
 pub(crate) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
     LazyLock::new(|| Mutex::new(None));
-static CONTENT_BRIDGE_HOOKS: LazyLock<Mutex<Option<ContentBridgeHooks>>> =
-    LazyLock::new(|| Mutex::new(None));
 static EVENT_LOOP_OPTIONS: LazyLock<Mutex<EventLoopOptions>> =
     LazyLock::new(|| Mutex::new(EventLoopOptions::default()));
 
 fn parse_child_navigable_host_target(target_name: &str) -> Option<ChildNavigableHostTarget> {
-    let payload = target_name.strip_prefix("_iframe|")?;
-    let mut parts = payload.split('|');
-    let parent_traversable_id = parts.next()?.parse::<u64>().ok()?;
-    let content_navigable_id = parts.next()?.parse::<u64>().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
+    let (parent_traversable_id, _content_navigable_id, content_frame_id) =
+        ipc_messages::content::parse_iframe_target_name(target_name)?;
 
     Some(ChildNavigableHostTarget {
         parent_traversable_id: WebviewId(parent_traversable_id),
-        content_navigable_id: ipc_messages::content::FrameId(content_navigable_id),
+        content_navigable_id: content_frame_id,
     })
 }
 
@@ -334,50 +329,6 @@ fn event_loop_options() -> EventLoopOptions {
         .clone()
 }
 
-pub fn set_content_bridge_hooks(hooks: ContentBridgeHooks) {
-    let mut guard = CONTENT_BRIDGE_HOOKS
-        .lock()
-        .expect("content bridge hooks mutex poisoned");
-    *guard = Some(hooks);
-}
-
-fn set_default_content_viewport(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
-    let hooks = CONTENT_BRIDGE_HOOKS
-        .lock()
-        .expect("content bridge hooks mutex poisoned")
-        .as_ref()
-        .copied();
-    if let Some(hooks) = hooks {
-        (hooks.set_default_viewport)(snapshot);
-    }
-}
-
-fn update_content_traversable_viewport(
-    traversable_id: WebviewId,
-    width: u32,
-    height: u32,
-    offset_x: f32,
-    offset_y: f32,
-) {
-    let Some((_, _, scale, color_scheme)) = window_viewport_snapshot() else {
-        return;
-    };
-
-    let hooks = CONTENT_BRIDGE_HOOKS
-        .lock()
-        .expect("content bridge hooks mutex poisoned")
-        .as_ref()
-        .copied();
-    if let Some(hooks) = hooks {
-        (hooks.set_traversable_viewport)(
-            traversable_id.0,
-            (width, height, scale, color_scheme),
-            offset_x,
-            offset_y,
-        );
-    }
-}
-
 pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
     with_event_loop_proxy(|proxy| match proxy {
         Some(proxy) => proxy
@@ -385,11 +336,6 @@ pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
             .map_err(|error| format!("failed to send user event: {error}")),
         None => Err(String::from("winit event loop proxy is not initialized")),
     })
-}
-
-pub fn send_runtime_message(message: &str) -> Result<(), String> {
-    let user_event = user_event_of_runtime_message(message)?;
-    send_user_event(user_event)
 }
 
 pub fn clipboard_get_text(timeout: Duration) -> Result<String, String> {
@@ -486,22 +432,46 @@ pub fn automation_scroll(
     })?
 }
 
+pub fn automation_evaluate_script(source: String, timeout: Duration) -> Result<Value, String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::EvaluateScript {
+        source,
+        timeout,
+        reply,
+    }))?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting for script evaluation: {error}",
+            timeout.as_millis()
+        )
+    })?
+}
+
 pub fn request_exit() -> Result<(), String> {
     send_user_event(FormalWebUserEvent::Exit)
 }
 
-pub fn run_event_loop() -> Result<(), String> {
+pub fn run_event_loop<F>(create_user_agent: F) -> Result<(), String>
+where
+    F: FnOnce(UserEventDispatcher) -> Result<Box<dyn UserAgentApi>, String>,
+{
     let event_loop = EventLoop::<FormalWebUserEvent>::with_user_event()
         .build()
         .map_err(|error| format!("failed to create event loop: {error}"))?;
+    let dispatcher = UserEventDispatcher::new(event_loop.create_proxy());
     {
         let mut guard = EVENT_LOOP_PROXY
             .lock()
             .expect("event loop proxy mutex poisoned");
-        *guard = Some(event_loop.create_proxy());
+        *guard = Some(dispatcher.proxy.clone());
     }
 
-    let mut app = FormalWebApp::default();
+    let user_agent = create_user_agent(dispatcher.clone())?;
+
+    let mut app = FormalWebApp {
+        user_agent: Some(user_agent),
+        ..FormalWebApp::default()
+    };
     let run_result = event_loop
         .run_app(&mut app)
         .map_err(|error| format!("winit event loop failed: {error}"));
@@ -524,12 +494,11 @@ pub fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
         .copied()
 }
 
-fn startup_runtime_message_for(startup_url: Option<&str>) -> Result<String, String> {
-    let startup_url = match startup_url {
-        Some(url) => url.to_owned(),
-        None => startup_artifact_url()?,
-    };
-    Ok(format!("FreshTopLevelTraversable|{startup_url}"))
+fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
+    match startup_url {
+        Some(url) => Ok(url.to_owned()),
+        None => startup_artifact_url(),
+    }
 }
 
 fn startup_artifact_url() -> Result<String, String> {
@@ -551,64 +520,6 @@ fn normalize_browser_destination(input: &str) -> Option<String> {
         return Some(trimmed.to_owned());
     }
     Some(format!("https://{trimmed}"))
-}
-
-fn user_event_of_runtime_message(message: &str) -> Result<FormalWebUserEvent, String> {
-    if let Some(payload) = message.strip_prefix(NEW_TOP_LEVEL_TRAVERSABLE_MESSAGE_PREFIX) {
-        let (id_str, target_name) = payload.split_once('|').unwrap_or((payload, ""));
-        let webview_id = id_str
-            .parse::<u64>()
-            .map(WebviewId)
-            .map_err(|error| format!("invalid webview id: {error}"))?;
-        return Ok(FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name.to_owned()));
-    }
-
-    if let Some(payload) = message.strip_prefix(NAVIGATION_REQUESTED_MESSAGE_PREFIX) {
-        let Some((webview_id_str, destination_url)) = payload.split_once('|') else {
-            return Err(format!("invalid navigation requested runtime message: {message}"));
-        };
-        let webview_id = webview_id_str
-            .parse::<u64>()
-            .map(WebviewId)
-            .map_err(|error| format!("invalid webview id: {error}"))?;
-        return Ok(FormalWebUserEvent::NavigationRequested {
-            webview_id,
-            destination_url: destination_url.to_owned(),
-        });
-    }
-
-    if let Some(payload) = message.strip_prefix(BEFORE_UNLOAD_COMPLETED_MESSAGE_PREFIX) {
-        let Some((document_id, remainder)) = payload.split_once('|') else {
-            return Err(format!("invalid beforeunload runtime message: {message}"));
-        };
-        let Some((check_id, canceled)) = remainder.split_once('|') else {
-            return Err(format!("invalid beforeunload runtime message: {message}"));
-        };
-        return Ok(FormalWebUserEvent::BeforeUnloadCompleted(BeforeUnloadResult {
-            document_id: document_id
-                .parse()
-                .map_err(|error| format!("invalid beforeunload document id: {error}"))?,
-            check_id: check_id
-                .parse()
-                .map_err(|error| format!("invalid beforeunload check id: {error}"))?,
-            canceled: canceled == "1",
-        }));
-    }
-
-    if let Some(payload) = message.strip_prefix(FINALIZE_NAVIGATION_MESSAGE_PREFIX) {
-        let Some((webview_id, url)) = payload.split_once('|') else {
-            return Err(format!("invalid finalize-navigation runtime message: {message}"));
-        };
-        return Ok(FormalWebUserEvent::FinalizeNavigation(FinalizeNavigation {
-            webview_id: webview_id
-                .parse()
-                .map(WebviewId)
-                .map_err(|error| format!("invalid finalize-navigation webview id: {error}"))?,
-            url: url.to_owned(),
-        }));
-    }
-
-    Err(format!("unknown runtime message: {message}"))
 }
 
 pub(crate) fn with_event_loop_proxy<R>(
@@ -817,6 +728,7 @@ impl Default for FormalWebApp {
             chrome: None,
             browser: BrowserState::default(),
             provider: None,
+            user_agent: None,
             current_webview_id: None,
             has_top_level_traversable: false,
             window_occluded: false,
@@ -924,13 +836,20 @@ impl FormalWebApp {
         )
     }
 
-    fn update_content_viewport_snapshot(&self, window: &Window) {
+    fn update_content_viewport_snapshot(&mut self, window: &Window) {
         let viewport_snapshot = self.content_viewport_snapshot(window);
         update_window_viewport_snapshot(Some(viewport_snapshot));
-        set_default_content_viewport(Some(viewport_snapshot));
-        if let Some(webview_id) = self.current_webview_id {
-            let (width, height, _scale, _color_scheme) = viewport_snapshot;
-            update_content_traversable_viewport(webview_id, width, height, 0.0, 0.0);
+        if let Some(provider) = self.provider.as_mut() {
+            let _ = provider.set_default_viewport(Some(viewport_snapshot));
+            if let Some(webview_id) = self.current_webview_id {
+                let (width, height, scale, color_scheme) = viewport_snapshot;
+                let _ = provider.set_traversable_viewport(
+                    webview_id,
+                    (width, height, scale, color_scheme),
+                    0.0,
+                    0.0,
+                );
+            }
         }
     }
 
@@ -945,8 +864,8 @@ impl FormalWebApp {
         if let Some(chrome) = self.chrome.as_mut() {
             chrome.sync_state(&chrome_view_state);
         }
-        if let Some(window) = self.window.as_ref() {
-            self.update_content_viewport_snapshot(window);
+        if let Some(window) = self.window.clone() {
+            self.update_content_viewport_snapshot(&window);
         }
     }
 
@@ -1174,6 +1093,17 @@ impl FormalWebApp {
         }
     }
 
+    fn handle_navigation_failed(&mut self, webview_id: WebviewId, message: String) {
+        if self.current_webview_id == Some(webview_id) {
+            if let Some(pending_navigation) = self.pending_automation_navigation.take() {
+                let _ = pending_navigation.reply.send(Err(message));
+            }
+            self.browser.cancel_pending_navigation();
+            self.sync_chrome_state();
+            self.request_window_redraw();
+        }
+    }
+
     fn sync_browser_navigable_id_from_provider(&mut self) {
         let navigable_id = self
             .provider
@@ -1216,6 +1146,8 @@ impl FormalWebApp {
         if let Some(provider) = self.provider.as_mut() {
             provider.on_finalize_navigation(finalized.webview_id, &finalized.url);
         }
+
+        self.request_window_redraw();
     }
 
     fn handle_automation_command(&mut self, command: AutomationCommand) {
@@ -1255,6 +1187,21 @@ impl FormalWebApp {
                 reply,
             } => {
                 let _ = reply.send(self.dispatch_automation_scroll(x, y, delta_x, delta_y));
+            }
+            AutomationCommand::EvaluateScript {
+                source,
+                timeout,
+                reply,
+            } => {
+                let result = match self.provider.as_ref().zip(self.current_webview_id) {
+                    Some((provider, webview_id)) => {
+                        provider.evaluate_script(webview_id, source, timeout)
+                    }
+                    None => Err(String::from(
+                        "no active top-level traversable is available for script execution",
+                    )),
+                };
+                let _ = reply.send(result);
             }
         }
     }
@@ -1377,27 +1324,29 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         }
                     };
                     self.chrome = Some(chrome);
-                    let Some(proxy) = with_event_loop_proxy(Clone::clone) else {
+                    let Some(dispatcher) = with_event_loop_proxy(Clone::clone)
+                        .map(UserEventDispatcher::new)
+                    else {
                         event_loop.exit();
                         return;
                     };
-                    let embedder: Arc<dyn EmbedderApi> = Arc::new(WinitEmbedderApi { proxy });
-                    self.provider = Some(WebviewProvider::new(embedder));
+                    let Some(user_agent) = self.user_agent.take() else {
+                        event_loop.exit();
+                        return;
+                    };
+                    let embedder: Box<dyn EmbedderApi> = Box::new(WinitEmbedderApi { dispatcher });
+                    self.provider = Some(WebviewProvider::new(embedder, user_agent));
                     self.window = Some(window.clone());
                     self.sync_chrome_state();
                     self.update_content_viewport_snapshot(&window);
                     self.resume_renderer_for_window(&window);
                     let startup_url = event_loop_options().startup_url;
-                    match startup_runtime_message_for(startup_url.as_deref()) {
-                        Ok(message) => {
-                            if let Some(destination_url) =
-                                message.strip_prefix("FreshTopLevelTraversable|")
-                            {
-                                self.browser.begin_navigation(PendingNavigation {
-                                    url: destination_url.to_owned(),
-                                });
-                                self.sync_chrome_state();
-                            }
+                    match startup_destination_url(startup_url.as_deref()) {
+                        Ok(destination_url) => {
+                            self.browser.begin_navigation(PendingNavigation {
+                                url: destination_url,
+                            });
+                            self.sync_chrome_state();
                             if let Some(provider) = self.provider.as_ref() {
                                 if provider.start(startup_url.as_deref()).is_err() {
                                     event_loop.exit();
@@ -1465,7 +1414,6 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 self.has_top_level_traversable = false;
                 self.window_occluded = false;
                 update_window_viewport_snapshot(None);
-                set_default_content_viewport(None);
                 self.window = None;
                 event_loop.exit();
             }
@@ -1667,6 +1615,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             }
             FormalWebUserEvent::NavigationRequested { webview_id, destination_url } => {
                 self.handle_navigation_requested(webview_id, destination_url);
+            }
+            FormalWebUserEvent::NavigationFailed { webview_id, message } => {
+                self.handle_navigation_failed(webview_id, message);
             }
             FormalWebUserEvent::BeforeUnloadCompleted(result) => {
                 self.handle_before_unload_completed(result);

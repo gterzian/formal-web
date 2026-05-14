@@ -23,13 +23,12 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 - Document the *current* design/state only — do **not** leave change‑history or "I did X" comments in source or README files (for example, avoid comments like "create a single sender"). Historical context belongs in the PR description or a changelog, not inline.
 - Use neutral, factual language. Avoid subjective or minimizing words such as "small", "tiny", "minimal", "just", or "only" when describing a component or its responsibilities.
 
-- Coalesce high-frequency embedder input such as pointer moves and wheel bursts before forwarding them into Lean/content, and note a rendering opportunity once per flushed batch rather than once per raw event.
+- Coalesce high-frequency embedder input such as pointer moves and wheel bursts before forwarding them into content, and note a rendering opportunity once per flushed batch rather than once per raw event.
 - Move large paint-scene payloads across the content/embedder boundary via `IpcSharedMemory`, and keep the typed IPC message focused on control metadata and shared-memory handles.
 - Keep cross-frame paint resources such as fonts in a transport registry keyed by stable identifiers, send new blobs via shared memory when first used for a content-runtime namespace, and keep recorded scenes focused on lightweight references.
 - Track navigation completion with an explicit content-to-embedder commit signal instead of inferring it from paint delivery; stale content can repaint while `beforeunload` or replacement navigation is still pending.
 - When compositing fixed embedder chrome above scrollable content, append the content scene first and the chrome scene last so scrolled content cannot overpaint fixed controls.
-- Launch the content sidecar from the dedicated `target/formal-web-content/<profile>/content` build output; on macOS the copied sibling binary may fail to complete the `ipc-channel` bootstrap.
-- In `ffi/build.rs`, treat external package `.c.o.export` artifacts as an optimization rather than a requirement; if a dependency ships generated Lean `.c` without a matching export object, compile that `.c` directly.
+- Launch content and net sidecars by respawning the main `formal-web` executable with hidden `--content-token` and `--net-token` arguments so `cargo run --release` builds a single runnable binary without staged sidecar outputs.
 - Treat vendored third-party code and WPT resources as read-only unless the task explicitly calls for vendor changes; debug compatibility issues from local code or scratchpad artifacts instead.
 - Web standards should be available locally under `web_standards`, so before fetching a web standard over the internet, check that folder first. 
 

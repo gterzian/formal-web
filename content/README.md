@@ -76,7 +76,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 **JavaScript runtime**
 
 - `content/src/main.rs` and sibling root modules such as `content/src/html.rs` own the HTML Standard entry points that resume embedder-driven algorithms, create documents, and trigger HTML-defined load/rendering steps.
-- Content documents should install an IPC-backed `ShellProvider`; clipboard shortcuts such as copy and paste belong on the typed content bridge and should talk directly to the embedder instead of routing through Lean runtime messages.
+- Content documents should install an IPC-backed `ShellProvider`; clipboard shortcuts such as copy and paste belong on typed content IPC and should talk directly to the embedder instead of routing through ad hoc global hooks.
 
 - `DispatchEvent` runtime commands may carry a retained batch of serialized UI events rather than a single raw input; `content/src/main.rs` should dispatch that batch in order instead of assuming a one-command-per-event bridge.
 
@@ -96,7 +96,7 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - Keep same-origin iframe documents on Blitz's `SubDocument` path, but mark cross-origin iframe elements with a stable iframe navigable id so Blitz paint can emit a typed placeholder command for embedder-side composition.
 - Track each iframe element as the navigable container for its child content navigable on the content side; the embedder-side placeholder and child-webview host should reuse that same child navigable id instead of inventing a second frame identifier.
-- Do not route iframe document navigations through `PendingNetworkHandler` or a Rust-local fetch path; the content runtime should raise a navigation request and let Lean own the fetch and resulting `CreateLoadedDocument` dispatch.
+- Do not route iframe document navigations through `PendingNetworkHandler` or a Rust-local fetch path; the content runtime should raise a navigation request and let the user-agent fetch-backed navigation path own the fetch and resulting `CreateLoadedDocument` dispatch.
 
 - When a JavaScript-visible Web IDL attribute or algorithm is implemented for a DOM type, keep the spec-linked method on the corresponding `content/src/dom` type and have `content/src/boa/bindings` delegate to that method instead of embedding the algorithm in the binding layer.
 
