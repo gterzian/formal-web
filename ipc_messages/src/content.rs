@@ -42,6 +42,7 @@ uuid_id!(NavigationFetchId);
 uuid_id!(WindowTimerKey);
 uuid_id!(ContentNavigableId);
 uuid_id!(FrameId);
+uuid_id!(NavigationId);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ColorScheme {
@@ -104,6 +105,8 @@ pub enum UserNavigationInvolvement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigateRequest {
+    #[serde(default)]
+    pub navigation_id: Option<NavigationId>,
     pub source_navigable_id: u64,
     pub destination_url: String,
     pub target: String,

@@ -131,6 +131,7 @@ impl WebviewProvider {
     pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
         match webview_id {
             Some(webview_id) => self.user_agent.start_navigation(NavigateRequest {
+                navigation_id: None,
                 source_navigable_id: webview_id.0,
                 destination_url: url.to_owned(),
                 target: String::new(),

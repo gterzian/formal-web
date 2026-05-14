@@ -12,7 +12,7 @@ use ipc_messages::{
         ContentNavigableId, DocumentFetchId, FetchRequest as ContentFetchRequest,
         FetchResponse as ContentFetchResponse,
         FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse,
-        NavigateRequest, NavigationFetchId, UserNavigationInvolvement, WebviewId,
+        NavigateRequest, NavigationFetchId, NavigationId, UserNavigationInvolvement, WebviewId,
         WindowTimerKey, iframe_target_name, parse_iframe_target_name,
     },
 };
@@ -23,7 +23,7 @@ use std::time::Duration;
 use crate::id::UserAgentIds;
 use crate::event_loop::{
     EventLoopCommand, EventLoopEntry, spawn_event_loop_entry, stop_event_loop_entry,
-    traversable_viewport_command, viewport_command,
+    traversable_viewport_command,
 };
 use crate::fetch::{FetchCommand, run_fetch_thread};
 use crate::timer::{TimerCommand, run_timer_thread};
@@ -155,13 +155,26 @@ pub struct Traversable {
     /// Owning handle.
     pub handle: usize,
     /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation>
-    pub ongoing_navigation_id: Option<u64>,
+    pub ongoing_navigation_id: Option<NavigationId>,
     /// Marker for deferred update-the-rendering work while navigation is still ongoing.
     pub has_deferred_update_the_rendering: bool,
     /// <https://html.spec.whatwg.org/multipage/#tn-current-session-history-step>
     pub current_session_history_step: usize,
     /// <https://html.spec.whatwg.org/multipage/#tn-session-history-entries>
     pub session_history_entries: Vec<SessionHistoryEntry>,
+}
+
+/// <https://html.spec.whatwg.org/multipage/#navigable>
+#[derive(Clone, Debug)]
+pub struct Navigable {
+    /// Identifier for <https://html.spec.whatwg.org/multipage/#navigable-id>.
+    pub id: u64,
+    /// <https://html.spec.whatwg.org/multipage/#nav-parent>
+    pub parent_navigable_id: Option<u64>,
+    /// Active document exposed by this navigable.
+    pub active_document_id: Option<u64>,
+    /// Present when this navigable also controls current/active session-history selection.
+    pub traversable: Option<Traversable>,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#session-history-entry>
@@ -306,6 +319,8 @@ pub struct UserAgentState {
     pub browsing_context_group_set: BrowsingContextGroupSet,
     /// <https://html.spec.whatwg.org/multipage/#top-level-traversable-set>
     pub traversable_set: TraversableSet,
+    /// <https://html.spec.whatwg.org/multipage/#navigable>
+    pub navigables: HashMap<u64, Navigable>,
     /// <https://html.spec.whatwg.org/multipage/#tlbc-group>
     pub top_level_browsing_context_group_ids: HashMap<u64, u64>,
     /// map from Rust worker handles to the owned event-loop workers.
@@ -327,16 +342,16 @@ pub struct UserAgentState {
     /// queue of navigations paused while content runs `beforeunload`.
     pub pending_before_unload_navigations: HashMap<u64, PendingBeforeUnloadNavigation>,
     /// queue of fetch-backed navigations suspended at the response wait point.
-    pub pending_navigation_fetches: HashMap<u64, PendingNavigationFetch>,
+    pub pending_navigation_fetches: HashMap<NavigationId, PendingNavigationFetch>,
     /// reverse index from <https://fetch.spec.whatwg.org/#fetch-controller> ids to
     /// pending navigation ids.
-    pub pending_navigation_fetch_ids_by_fetch_id: HashMap<NavigationFetchId, u64>,
+    pub pending_navigation_fetch_ids_by_fetch_id: HashMap<NavigationFetchId, NavigationId>,
     /// queue of documents waiting for
     /// <https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation>
     pub pending_navigation_finalizations: HashMap<u64, PendingNavigationFinalization>,
     /// reverse index from <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     /// to pending finalization document ids.
-    pub pending_navigation_finalization_ids_by_navigation_id: HashMap<u64, u64>,
+    pub pending_navigation_finalization_ids_by_navigation_id: HashMap<NavigationId, u64>,
 }
 
 /// cache of the active document state held by the user agent.
@@ -359,12 +374,12 @@ pub struct DocumentState {
 /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
 #[derive(Clone)]
 pub struct PendingBeforeUnloadNavigation {
-    /// identifier for the queued beforeunload check.
+    /// identifier for the active beforeunload check.
     pub check_id: u64,
     /// identifier corresponding to
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
-    pub navigation_id: u64,
-    pub traversable_id: u64,
+    pub navigation_id: NavigationId,
+    pub navigable_id: u64,
     pub destination_url: String,
     pub user_involvement: ipc_messages::content::UserNavigationInvolvement,
     /// Documents still expected to report their beforeunload result for this navigation.
@@ -380,7 +395,7 @@ pub struct PendingNavigationFetch {
     pub fetch_id: NavigationFetchId,
     /// identifier corresponding to
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
-    pub navigation_id: u64,
+    pub navigation_id: NavigationId,
     pub traversable_id: u64,
     pub previous_document_id: Option<u64>,
     /// <https://fetch.spec.whatwg.org/#concept-request>
@@ -408,7 +423,7 @@ pub struct PendingNavigationFinalization {
     pub document_id: u64,
     /// identifier corresponding to
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
-    pub navigation_id: u64,
+    pub navigation_id: NavigationId,
     pub traversable_id: u64,
     pub previous_document_id: Option<u64>,
     /// <https://html.spec.whatwg.org/multipage/#session-history-entry>
@@ -426,6 +441,7 @@ impl Default for UserAgentState {
             ids: UserAgentIds::default(),
             browsing_context_group_set: BrowsingContextGroupSet::default(),
             traversable_set: TraversableSet::default(),
+            navigables: HashMap::new(),
             top_level_browsing_context_group_ids: HashMap::new(),
             event_loops: HashMap::new(),
             handles_by_event_loop_id: HashMap::new(),
@@ -481,6 +497,11 @@ impl UserAgentState {
                 continue;
             }
             traversable.is_active = Some(*candidate_id) == top_level_id;
+            if let Some(navigable) = self.navigables.get_mut(candidate_id)
+                && let Some(navigable_traversable) = navigable.traversable.as_mut()
+            {
+                navigable_traversable.is_active = traversable.is_active;
+            }
         }
     }
 
@@ -488,7 +509,15 @@ impl UserAgentState {
     fn set_traversable_active_document(&mut self, traversable_id: u64, document_id: u64) {
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
+        if let Some(navigable) = self.navigables.get_mut(&traversable_id) {
+            navigable.active_document_id = Some(document_id);
+        }
         if let Some(traversable) = self.traversable_set.members.get_mut(&traversable_id) {
+            traversable.active_document_id = Some(document_id);
+        }
+        if let Some(navigable) = self.navigables.get_mut(&traversable_id)
+            && let Some(traversable) = navigable.traversable.as_mut()
+        {
             traversable.active_document_id = Some(document_id);
         }
     }
@@ -498,9 +527,14 @@ impl UserAgentState {
     fn set_traversable_ongoing_navigation(
         &mut self,
         traversable_id: u64,
-        navigation_id: Option<u64>,
+        navigation_id: Option<NavigationId>,
     ) {
         if let Some(traversable) = self.traversable_set.members.get_mut(&traversable_id) {
+            traversable.ongoing_navigation_id = navigation_id;
+        }
+        if let Some(navigable) = self.navigables.get_mut(&traversable_id)
+            && let Some(traversable) = navigable.traversable.as_mut()
+        {
             traversable.ongoing_navigation_id = navigation_id;
         }
     }
@@ -553,6 +587,12 @@ impl UserAgentState {
                     }
                 }
             }
+
+            if let Some(navigable) = self.navigables.get_mut(&traversable_id)
+                && let Some(navigable_traversable) = navigable.traversable.as_mut()
+            {
+                *navigable_traversable = traversable.clone();
+            }
         }
     }
 
@@ -567,7 +607,7 @@ impl UserAgentState {
     /// removing a pending navigation fetch by navigation id.
     fn take_pending_navigation_fetch_by_navigation_id(
         &mut self,
-        navigation_id: u64,
+        navigation_id: NavigationId,
     ) -> Option<PendingNavigationFetch> {
         let pending = self.pending_navigation_fetches.remove(&navigation_id)?;
         self.pending_navigation_fetch_ids_by_fetch_id
@@ -651,6 +691,7 @@ impl UserAgentState {
             .and_then(|browsing_context_id| self.top_level_browsing_context_id(browsing_context_id));
 
         self.traversable_set.members.remove(&traversable_id);
+        self.navigables.remove(&traversable_id);
         self.traversable_handles.remove(&traversable_id);
         self.traversable_target_names.remove(&traversable_id);
         self.active_documents_by_traversable.remove(&traversable_id);
@@ -669,37 +710,17 @@ impl UserAgentState {
 /// Commands that enter the user-agent thread from the embedder, event-loop workers, fetch worker,
 /// and timer worker.
 pub enum UserAgentCommand {
-    QueueTopLevelTraversable {
+    CreateFreshTopLevelTraversable {
         destination_url: String,
     },
-    QueueNavigation {
+    Navigate {
         request: NavigateRequest,
     },
     CompleteBeforeUnload {
         result: BeforeUnloadResult,
-        reply: Sender<Result<(), String>>,
     },
-    QueueCompleteBeforeUnload {
-        result: BeforeUnloadResult,
-    },
-    FinalizeNavigation {
+    FinalizeCrossDocumentNavigation {
         finalized: ContentFinalizeNavigation,
-        reply: Sender<Result<(), String>>,
-    },
-    QueueFinalizeNavigation {
-        finalized: ContentFinalizeNavigation,
-    },
-    StartEventLoop {
-        event_loop_id: usize,
-        reply: Sender<Result<usize, String>>,
-    },
-    StopHandle {
-        handle: usize,
-        reply: Sender<Result<(), String>>,
-    },
-    StopEventLoop {
-        event_loop_id: usize,
-        reply: Sender<Result<(), String>>,
     },
     EvaluateScript {
         traversable_id: u64,
@@ -836,15 +857,17 @@ impl webview::UserAgentApi for UserAgent {
     /// <https://html.spec.whatwg.org/multipage/#create-a-fresh-top-level-traversable>
     fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String> {
         self.command_sender
-            .send(UserAgentCommand::QueueTopLevelTraversable { destination_url })
-            .map_err(|error| format!("failed to queue top-level traversable start: {error}"))
+            .send(UserAgentCommand::CreateFreshTopLevelTraversable { destination_url })
+            .map_err(|error| {
+                format!("failed to start create-a-fresh-top-level-traversable: {error}")
+            })
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate>
     fn start_navigation(&self, request: NavigateRequest) -> Result<(), String> {
         self.command_sender
-            .send(UserAgentCommand::QueueNavigation { request })
-            .map_err(|error| format!("failed to queue navigation: {error}"))
+            .send(UserAgentCommand::Navigate { request })
+            .map_err(|error| format!("failed to send navigate command: {error}"))
     }
 
     /// queuing DOM event dispatch on the traversable's owning
@@ -855,14 +878,14 @@ impl webview::UserAgentApi for UserAgent {
                 traversable_id,
                 event,
             })
-            .map_err(|error| format!("failed to queue dispatch-event request: {error}"))
+            .map_err(|error| format!("failed to send dispatch-event request: {error}"))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
     fn note_rendering_opportunity(&self, traversable_id: u64) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::RenderingOpportunityFor { traversable_id })
-            .map_err(|error| format!("failed to queue rendering-opportunity request: {error}"))
+            .map_err(|error| format!("failed to send rendering-opportunity request: {error}"))
     }
 
     /// broadcasting the embedder viewport to every owned content event loop.
@@ -941,8 +964,14 @@ fn target_name_keeps_browser_ui_focus(target_name: &str) -> bool {
 }
 
 /// <https://html.spec.whatwg.org/multipage/#find-a-navigable-by-target-name>
-fn find_traversable_by_target_name(state: &UserAgentState, target_name: &str) -> Option<u64> {
-    state.traversable_set.find_by_target_name(target_name)
+fn find_navigable_by_target_name(state: &UserAgentState, target_name: &str) -> Option<u64> {
+    state.navigables.iter().find_map(|(navigable_id, navigable)| {
+        navigable
+            .traversable
+            .as_ref()
+            .filter(|traversable| traversable.target_name == target_name)
+            .map(|_| *navigable_id)
+    })
 }
 
 fn descendant_traversable_ids(state: &UserAgentState, traversable_id: u64) -> Vec<u64> {
@@ -953,6 +982,27 @@ fn descendant_traversable_ids(state: &UserAgentState, traversable_id: u64) -> Ve
     while let Some(parent_id) = stack.pop() {
         for (candidate_id, traversable) in &state.traversable_set.members {
             let Some(candidate_parent_id) = traversable.parent_traversable_id else {
+                continue;
+            };
+            if candidate_parent_id != parent_id || !visited.insert(*candidate_id) {
+                continue;
+            }
+            descendants.push(*candidate_id);
+            stack.push(*candidate_id);
+        }
+    }
+
+    descendants
+}
+
+fn descendant_navigable_ids(state: &UserAgentState, navigable_id: u64) -> Vec<u64> {
+    let mut descendants = Vec::new();
+    let mut stack = vec![navigable_id];
+    let mut visited = HashSet::from([navigable_id]);
+
+    while let Some(parent_id) = stack.pop() {
+        for (candidate_id, navigable) in &state.navigables {
+            let Some(candidate_parent_id) = navigable.parent_navigable_id else {
                 continue;
             };
             if candidate_parent_id != parent_id || !visited.insert(*candidate_id) {
@@ -1030,136 +1080,113 @@ impl UserAgentWorker {
     fn run(&mut self) {
         while let Ok(command) = self.command_receiver.recv() {
             match command {
-            UserAgentCommand::QueueTopLevelTraversable { destination_url } => {
-                self.handle_queue_top_level_traversable(destination_url);
-            }
-            UserAgentCommand::QueueNavigation { request } => {
-                self.handle_queue_navigation(request);
-            }
-            UserAgentCommand::CompleteBeforeUnload { result, reply } => {
-                self.handle_complete_before_unload(result, reply);
-            }
-            UserAgentCommand::QueueCompleteBeforeUnload { result } => {
-                self.handle_queue_complete_before_unload(result);
-            }
-            UserAgentCommand::FinalizeNavigation { finalized, reply } => {
-                self.handle_finalize_navigation(finalized, reply);
-            }
-            UserAgentCommand::QueueFinalizeNavigation { finalized } => {
-                self.handle_queue_finalize_navigation(finalized);
-            }
-            UserAgentCommand::StartEventLoop {
-                event_loop_id,
-                reply,
-            } => {
-                self.handle_start_event_loop(event_loop_id, reply);
-            }
-            UserAgentCommand::StopHandle { handle, reply } => {
-                self.handle_stop_handle(handle, reply);
-            }
-            UserAgentCommand::StopEventLoop {
-                event_loop_id,
-                reply,
-            } => {
-                self.handle_stop_event_loop(event_loop_id, reply);
-            }
-            UserAgentCommand::EvaluateScript {
-                traversable_id,
-                source,
-                timeout,
-                reply,
-            } => {
-                self.handle_evaluate_script(traversable_id, source, timeout, reply);
-            }
-            UserAgentCommand::BroadcastViewport { snapshot } => {
-                self.handle_broadcast_viewport(snapshot);
-            }
-            UserAgentCommand::SetTraversableViewport {
-                traversable_id,
-                snapshot,
-                offset_x,
-                offset_y,
-            } => {
-                self.handle_set_traversable_viewport(
+                UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
+                    self.create_a_fresh_top_level_traversable(destination_url);
+                }
+                UserAgentCommand::Navigate { request } => {
+                    self.handle_navigate(request);
+                }
+                UserAgentCommand::CompleteBeforeUnload { result } => {
+                    self.handle_complete_before_unload(result);
+                }
+                UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
+                    self.handle_finalize_cross_document_navigation(finalized);
+                }
+                UserAgentCommand::EvaluateScript {
+                    traversable_id,
+                    source,
+                    timeout,
+                    reply,
+                } => {
+                    self.handle_evaluate_script(traversable_id, source, timeout, reply);
+                }
+                UserAgentCommand::BroadcastViewport { snapshot } => {
+                    self.handle_set_default_viewport(snapshot);
+                }
+                UserAgentCommand::SetTraversableViewport {
                     traversable_id,
                     snapshot,
                     offset_x,
                     offset_y,
-                );
-            }
-            UserAgentCommand::DispatchEventFor {
-                traversable_id,
-                event,
-            } => {
-                self.handle_dispatch_event_for(traversable_id, event);
-            }
-            UserAgentCommand::RenderingOpportunityFor {
-                traversable_id,
-            } => {
-                self.handle_rendering_opportunity_for(traversable_id);
-            }
-            UserAgentCommand::DocumentFetchCompleted {
-                event_loop_id,
-                handler_id,
-                response,
-            } => {
-                self.handle_document_fetch_completed(event_loop_id, handler_id, response);
-            }
-            UserAgentCommand::DocumentFetchFailed {
-                event_loop_id,
-                handler_id,
-            } => {
-                self.handle_document_fetch_failed(event_loop_id, handler_id);
-            }
-            UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
-                self.handle_navigation_fetch_completed(fetch_id, response);
-            }
-            UserAgentCommand::NavigationFetchFailed { fetch_id } => {
-                self.handle_navigation_fetch_failed(fetch_id);
-            }
-            UserAgentCommand::DocumentFetchTimeout {
-                event_loop_id,
-                handler_id,
-            } => {
-                self.handle_document_fetch_timeout(event_loop_id, handler_id);
-            }
-            UserAgentCommand::WindowTimerTask {
-                event_loop_id,
-                document_id,
-                timer_id,
-                timer_key,
-                nesting_level,
-            } => {
-                self.handle_window_timer_task(
+                } => {
+                    self.handle_set_traversable_viewport(
+                        traversable_id,
+                        snapshot,
+                        offset_x,
+                        offset_y,
+                    );
+                }
+                UserAgentCommand::DispatchEventFor {
+                    traversable_id,
+                    event,
+                } => {
+                    self.handle_dispatch_event_for(traversable_id, event);
+                }
+                UserAgentCommand::RenderingOpportunityFor {
+                    traversable_id,
+                } => {
+                    self.handle_rendering_opportunity_for(traversable_id);
+                }
+                UserAgentCommand::DocumentFetchCompleted {
+                    event_loop_id,
+                    handler_id,
+                    response,
+                } => {
+                    self.handle_document_fetch_completed(event_loop_id, handler_id, response);
+                }
+                UserAgentCommand::DocumentFetchFailed {
+                    event_loop_id,
+                    handler_id,
+                } => {
+                    self.handle_document_fetch_failed(event_loop_id, handler_id);
+                }
+                UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
+                    self.handle_navigation_fetch_completed(fetch_id, response);
+                }
+                UserAgentCommand::NavigationFetchFailed { fetch_id } => {
+                    self.handle_navigation_fetch_failed(fetch_id);
+                }
+                UserAgentCommand::DocumentFetchTimeout {
+                    event_loop_id,
+                    handler_id,
+                } => {
+                    self.handle_document_fetch_timeout(event_loop_id, handler_id);
+                }
+                UserAgentCommand::WindowTimerTask {
                     event_loop_id,
                     document_id,
                     timer_id,
                     timer_key,
                     nesting_level,
-                );
-            }
-            UserAgentCommand::IframeTraversableRemoved {
-                parent_traversable_id,
-                content_navigable_id,
-                content_frame_id,
-                reply,
-            } => {
-                self.handle_iframe_traversable_removed(
+                } => {
+                    self.handle_window_timer_task(
+                        event_loop_id,
+                        document_id,
+                        timer_id,
+                        timer_key,
+                        nesting_level,
+                    );
+                }
+                UserAgentCommand::IframeTraversableRemoved {
                     parent_traversable_id,
                     content_navigable_id,
                     content_frame_id,
                     reply,
-                );
-            }
-            UserAgentCommand::Shutdown { reply } => {
-                self.handle_shutdown(reply);
-                break;
+                } => {
+                    self.handle_iframe_traversable_removed(
+                        parent_traversable_id,
+                        content_navigable_id,
+                        content_frame_id,
+                        reply,
+                    );
+                }
+                UserAgentCommand::Shutdown { reply } => {
+                    self.handle_shutdown(reply);
+                    break;
+                }
             }
         }
     }
-
-    }
-
 }
 
 impl UserAgentWorker {
@@ -1266,6 +1293,15 @@ impl UserAgentWorker {
         traversable_id: u64,
         target_name: String,
     ) -> Result<u64, String> {
+        let iframe_parent_traversable_id = parse_iframe_target_name(&target_name)
+            .map(|(parent_traversable_id, _, _)| parent_traversable_id)
+            .filter(|parent_traversable_id| {
+                self.state
+                    .traversable_set
+                    .members
+                    .contains_key(parent_traversable_id)
+            });
+
         // Step 1: Let document be null.
         // Note: The null placeholder stays implicit; the Rust model materializes the initial
         // about:blank document directly in the browsing-context setup below.
@@ -1351,25 +1387,35 @@ impl UserAgentWorker {
         // Note: This helper models the null-opener branch only, so it intentionally skips storage
         // shed cloning.
         // Step 11: Append traversable to the user agent's top-level traversable set.
-        self.state.traversable_set.members.insert(
+        let traversable = Traversable {
+            id: traversable_id,
+            parent_traversable_id: iframe_parent_traversable_id,
+            is_active: false,
+            target_name: target_name.clone(),
+            active_browsing_context_id: Some(browsing_context_id),
+            active_document_id: Some(document_id),
+            event_loop_id: agent.event_loop_id,
+            handle,
+            ongoing_navigation_id: None,
+            has_deferred_update_the_rendering: false,
+            current_session_history_step: 0,
+            session_history_entries: vec![SessionHistoryEntry {
+                step: 0,
+                document_id,
+                url: String::from("about:blank"),
+            }],
+        };
+        self.state
+            .traversable_set
+            .members
+            .insert(traversable_id, traversable.clone());
+        self.state.navigables.insert(
             traversable_id,
-            Traversable {
+            Navigable {
                 id: traversable_id,
-                parent_traversable_id: None,
-                is_active: false,
-                target_name: target_name.clone(),
-                active_browsing_context_id: Some(browsing_context_id),
+                parent_navigable_id: iframe_parent_traversable_id,
                 active_document_id: Some(document_id),
-                event_loop_id: agent.event_loop_id,
-                handle,
-                ongoing_navigation_id: None,
-                has_deferred_update_the_rendering: false,
-                current_session_history_step: 0,
-                session_history_entries: vec![SessionHistoryEntry {
-                    step: 0,
-                    document_id,
-                    url: String::from("about:blank"),
-                }],
+                traversable: Some(traversable),
             },
         );
         if target_name_keeps_browser_ui_focus(&target_name) {
@@ -1402,7 +1448,7 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn create_navigation_params_by_fetching(
         &mut self,
-        navigation_id: u64,
+        navigation_id: NavigationId,
         traversable_id: u64,
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
@@ -1454,23 +1500,41 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate>
-    fn begin_navigation_for_traversable(
+    fn navigate(
         &mut self,
-        traversable_id: u64,
+        navigable_id: u64,
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
     ) -> Result<(), String> {
-        let navigation_id = self.state.ids.allocate_navigation_id();
-        let beforeunload_traversable_ids = std::iter::once(traversable_id)
-            .chain(descendant_traversable_ids(&self.state, traversable_id))
+        let navigation_id = NavigationId::new();
+        self.navigate_with_navigation_id(
+            navigable_id,
+            destination_url,
+            user_involvement,
+            navigation_id,
+        )
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#navigate>
+    fn navigate_with_navigation_id(
+        &mut self,
+        navigable_id: u64,
+        destination_url: String,
+        user_involvement: UserNavigationInvolvement,
+        navigation_id: NavigationId,
+    ) -> Result<(), String> {
+        let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
+        let beforeunload_navigable_ids = std::iter::once(navigable_id)
+            .chain(descendant_navigable_ids(&self.state, navigable_id))
             .collect::<Vec<_>>();
-        let beforeunload_traversable_ids = beforeunload_traversable_ids
+        let beforeunload_navigable_ids = beforeunload_navigable_ids
             .into_iter()
-            .filter(|candidate_traversable_id| {
+            .filter(|candidate_navigable_id| {
                 self.state
-                    .active_documents_by_traversable
-                    .get(candidate_traversable_id)
-                    .and_then(|document_id| self.state.documents.get(document_id))
+                    .navigables
+                    .get(candidate_navigable_id)
+                    .and_then(|navigable| navigable.active_document_id)
+                    .and_then(|document_id| self.state.documents.get(&document_id))
                     .is_some_and(|document| !document.is_initial_about_blank)
             })
             .collect::<Vec<_>>();
@@ -1479,13 +1543,13 @@ impl UserAgentWorker {
         self.state
             .set_traversable_ongoing_navigation(traversable_id, Some(navigation_id));
 
-        if !beforeunload_traversable_ids.is_empty() {
+        if !beforeunload_navigable_ids.is_empty() {
             self.check_if_unloading_is_canceled(
                 navigation_id,
-                traversable_id,
+                navigable_id,
                 destination_url,
                 user_involvement,
-                beforeunload_traversable_ids,
+                beforeunload_navigable_ids,
             )
         } else {
             self.create_navigation_params_by_fetching(
@@ -1500,8 +1564,8 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
     fn check_if_unloading_is_canceled(
         &mut self,
-        navigation_id: u64,
-        traversable_id: u64,
+        navigation_id: NavigationId,
+        navigable_id: u64,
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
         navigables_that_need_before_unload: Vec<u64>,
@@ -1510,11 +1574,11 @@ impl UserAgentWorker {
         // navigablesThatNeedBeforeUnload.
         let documents_to_fire_beforeunload = navigables_that_need_before_unload
             .iter()
-            .filter_map(|candidate_traversable_id| {
+            .filter_map(|candidate_navigable_id| {
                 self.state
-                    .active_documents_by_traversable
-                    .get(candidate_traversable_id)
-                    .copied()
+                    .navigables
+                    .get(candidate_navigable_id)
+                    .and_then(|navigable| navigable.active_document_id)
             })
             .collect::<Vec<_>>();
 
@@ -1524,7 +1588,7 @@ impl UserAgentWorker {
             PendingBeforeUnloadNavigation {
                 check_id,
                 navigation_id,
-                traversable_id,
+                navigable_id,
                 destination_url,
                 user_involvement,
                 pending_document_ids: documents_to_fire_beforeunload.iter().copied().collect(),
@@ -1532,12 +1596,17 @@ impl UserAgentWorker {
             },
         );
 
-        for candidate_traversable_id in navigables_that_need_before_unload {
+        for candidate_navigable_id in navigables_that_need_before_unload {
+            let Ok(candidate_traversable_id) =
+                self.traversable_id_for_navigable(candidate_navigable_id)
+            else {
+                continue;
+            };
             let Some(document_id) = self
                 .state
-                .active_documents_by_traversable
-                .get(&candidate_traversable_id)
-                .copied()
+                .navigables
+                .get(&candidate_navigable_id)
+                .and_then(|navigable| navigable.active_document_id)
             else {
                 continue;
             };
@@ -1562,11 +1631,12 @@ impl UserAgentWorker {
         &mut self,
         pending: PendingBeforeUnloadNavigation,
     ) -> Result<(), String> {
+        let traversable_id = self.traversable_id_for_navigable(pending.navigable_id)?;
         let navigation_is_current = self
             .state
             .traversable_set
             .members
-            .get(&pending.traversable_id)
+            .get(&traversable_id)
             .and_then(|traversable| traversable.ongoing_navigation_id)
             == Some(pending.navigation_id);
         if !navigation_is_current {
@@ -1574,7 +1644,7 @@ impl UserAgentWorker {
         }
         self.create_navigation_params_by_fetching(
             pending.navigation_id,
-            pending.traversable_id,
+            traversable_id,
             pending.destination_url,
             pending.user_involvement,
         )
@@ -1582,7 +1652,7 @@ impl UserAgentWorker {
 
     /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
     /// <https://html.spec.whatwg.org/multipage/#find-a-navigable-by-target-name>
-    fn resolve_target_traversable(
+    fn choose_navigable(
         &mut self,
         source_navigable_id: u64,
         target_name: &str,
@@ -1606,14 +1676,26 @@ impl UserAgentWorker {
             // traversable here.
             // Step 6: Otherwise, if name is an ASCII case-insensitive match for "_top", set chosen
             // to currentNavigable's traversable navigable.
-            if self.state.traversable_handles.contains_key(&source_navigable_id) {
+            if self
+                .state
+                .navigables
+                .get(&source_navigable_id)
+                .and_then(|navigable| navigable.traversable.as_ref())
+                .is_some()
+            {
                 return Ok(source_navigable_id);
             }
             return self.create_new_top_level_traversable(String::new());
         }
 
         if normalized_target_name.is_empty() {
-            if self.state.traversable_handles.contains_key(&source_navigable_id) {
+            if self
+                .state
+                .navigables
+                .get(&source_navigable_id)
+                .and_then(|navigable| navigable.traversable.as_ref())
+                .is_some()
+            {
                 return Ok(source_navigable_id);
             }
 
@@ -1623,10 +1705,10 @@ impl UserAgentWorker {
         // Step 7: Otherwise, if name is not an ASCII case-insensitive match for "_blank" and
         // noopener is false, then set chosen to the result of finding a navigable by target name
         // given name and currentNavigable.
-        if let Some(traversable_id) =
-            find_traversable_by_target_name(&self.state, &normalized_target_name)
+        if let Some(chosen_navigable_id) =
+            find_navigable_by_target_name(&self.state, &normalized_target_name)
         {
-            return Ok(traversable_id);
+            return Ok(chosen_navigable_id);
         }
 
         // Step 8: If chosen is null, then a new top-level traversable is being requested.
@@ -1638,6 +1720,14 @@ impl UserAgentWorker {
         }
 
         self.create_new_top_level_traversable(normalized_target_name)
+    }
+
+    fn traversable_id_for_navigable(&self, navigable_id: u64) -> Result<u64, String> {
+        self.state
+            .navigables
+            .get(&navigable_id)
+            .and_then(|navigable| navigable.traversable.as_ref().map(|traversable| traversable.id))
+            .ok_or_else(|| format!("navigable {navigable_id} is not a traversable navigable"))
     }
 
     /// removing an event-loop worker and every derived index owned by it.
@@ -1656,9 +1746,26 @@ impl UserAgentWorker {
         self.state.documents.retain(|_, document| {
             !removed_traversable_ids.contains(&document.traversable_id)
         });
-        self.state.pending_before_unload_navigations.retain(|_, pending| {
-            !removed_traversable_ids.contains(&pending.traversable_id)
-        });
+        let before_unload_checks_to_remove = self
+            .state
+            .pending_before_unload_navigations
+            .iter()
+            .filter_map(|(check_id, pending)| {
+                let traversable_id = self
+                    .state
+                    .navigables
+                    .get(&pending.navigable_id)
+                    .and_then(|navigable| {
+                        navigable.traversable.as_ref().map(|traversable| traversable.id)
+                    })?;
+                removed_traversable_ids
+                    .contains(&traversable_id)
+                    .then_some(*check_id)
+            })
+            .collect::<Vec<_>>();
+        for check_id in before_unload_checks_to_remove {
+            self.state.pending_before_unload_navigations.remove(&check_id);
+        }
         Some(entry)
     }
 
@@ -1671,42 +1778,48 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-a-fresh-top-level-traversable>
-    fn handle_queue_top_level_traversable(&mut self, destination_url: String) {
+    fn create_a_fresh_top_level_traversable(&mut self, destination_url: String) {
         let result = (|| {
             // Step 1: Let traversable be the result of creating a new top-level traversable given
             // null and the empty string.
-            // Note: The fresh traversable is created immediately below and then reused for the
-            // initial browser-UI navigation.
             let traversable_id = self.create_new_top_level_traversable(String::new())?;
             // Step 2: Navigate traversable to initialNavigationURL using traversable's active document.
-            self.begin_navigation_for_traversable(
+            self.navigate(
                 traversable_id,
                 destination_url,
                 UserNavigationInvolvement::BrowserUi,
             )
         })();
         if let Err(error) = result {
-            eprintln!("failed to queue top-level traversable start: {error}");
+            eprintln!("failed to create a fresh top-level traversable: {error}");
         }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
     /// <https://html.spec.whatwg.org/multipage/#navigate>
-    fn handle_queue_navigation(&mut self, request: NavigateRequest) {
+    fn handle_navigate(&mut self, request: NavigateRequest) {
         let destination_url = request.destination_url.clone();
         let result = (|| {
-            // Resolve the target traversable before entering the `navigate` algorithm's
-            // beforeunload, fetch, and finalization path.
-            let traversable_id = self.resolve_target_traversable(
+            let navigable_id = self.choose_navigable(
                 request.source_navigable_id,
                 &request.target,
                 request.noopener,
             )?;
-            self.begin_navigation_for_traversable(
-                traversable_id,
-                destination_url.clone(),
-                request.user_involvement.clone(),
-            )?;
+            let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
+            if let Some(navigation_id) = request.navigation_id {
+                self.navigate_with_navigation_id(
+                    navigable_id,
+                    destination_url.clone(),
+                    request.user_involvement.clone(),
+                    navigation_id,
+                )?;
+            } else {
+                self.navigate(
+                    navigable_id,
+                    destination_url.clone(),
+                    request.user_involvement.clone(),
+                )?;
+            }
             self.user_event_dispatcher
                 .send(FormalWebUserEvent::NavigationRequested {
                     webview_id: WebviewId(traversable_id),
@@ -1714,7 +1827,7 @@ impl UserAgentWorker {
                 })
         })();
         if let Err(error) = result {
-            eprintln!("failed to queue navigation: {error}");
+            eprintln!("failed to run navigate: {error}");
         }
     }
 
@@ -1739,16 +1852,17 @@ impl UserAgentWorker {
             .remove(&result.check_id)
         {
             if pending.canceled || result.canceled {
+                let traversable_id = self.traversable_id_for_navigable(pending.navigable_id)?;
                 let navigation_is_current = self
                     .state
                     .traversable_set
                     .members
-                    .get(&pending.traversable_id)
+                    .get(&traversable_id)
                     .and_then(|traversable| traversable.ongoing_navigation_id)
                     == Some(pending.navigation_id);
                 if navigation_is_current {
                     self.state
-                        .set_traversable_ongoing_navigation(pending.traversable_id, None);
+                        .set_traversable_ongoing_navigation(traversable_id, None);
                 }
                 self.user_event_dispatcher
                     .send(FormalWebUserEvent::BeforeUnloadCompleted(BeforeUnloadResult {
@@ -1764,18 +1878,9 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
-    fn handle_complete_before_unload(
-        &mut self,
-        result: BeforeUnloadResult,
-        reply: Sender<Result<(), String>>,
-    ) {
-        let _ = reply.send(self.handle_complete_before_unload_result(result));
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
-    fn handle_queue_complete_before_unload(&mut self, result: BeforeUnloadResult) {
+    fn handle_complete_before_unload(&mut self, result: BeforeUnloadResult) {
         if let Err(error) = self.handle_complete_before_unload_result(result) {
-            eprintln!("failed to complete queued beforeunload: {error}");
+            eprintln!("failed to complete beforeunload: {error}");
         }
     }
 
@@ -1863,53 +1968,10 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation>
-    fn handle_finalize_navigation(
-        &mut self,
-        finalized: ContentFinalizeNavigation,
-        reply: Sender<Result<(), String>>,
-    ) {
-        let _ = reply.send(self.finalize_cross_document_navigation(finalized));
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation>
-    fn handle_queue_finalize_navigation(&mut self, finalized: ContentFinalizeNavigation) {
+    fn handle_finalize_cross_document_navigation(&mut self, finalized: ContentFinalizeNavigation) {
         if let Err(error) = self.finalize_cross_document_navigation(finalized) {
-            eprintln!("failed to finalize queued navigation: {error}");
+            eprintln!("failed to finalize cross-document navigation: {error}");
         }
-    }
-
-    /// ensuring that the user-agent owns an event-loop worker for the
-    /// requested <https://html.spec.whatwg.org/multipage/#event-loop> id.
-    fn handle_start_event_loop(
-        &mut self,
-        event_loop_id: usize,
-        reply: Sender<Result<usize, String>>,
-    ) {
-        let result = if let Some(handle) = self.state.handles_by_event_loop_id.get(&event_loop_id)
-        {
-            Ok(*handle)
-        } else {
-            self.ensure_event_loop_handle(event_loop_id)
-        };
-        let _ = reply.send(result);
-    }
-
-    /// stopping an event-loop worker by its Rust handle.
-    fn handle_stop_handle(&mut self, handle: usize, reply: Sender<Result<(), String>>) {
-        let _ = reply.send(self.stop_event_loop_handle(handle));
-    }
-
-    /// stopping an event-loop worker by its HTML event-loop id.
-    fn handle_stop_event_loop(
-        &mut self,
-        event_loop_id: usize,
-        reply: Sender<Result<(), String>>,
-    ) {
-        let result = match self.state.handles_by_event_loop_id.get(&event_loop_id).copied() {
-            Some(handle) => self.stop_event_loop_handle(handle),
-            None => Ok(()),
-        };
-        let _ = reply.send(result);
     }
 
     /// the automation-only script-evaluation bridge into the owning event loop.
@@ -1955,13 +2017,24 @@ impl UserAgentWorker {
         }
     }
 
-    /// broadcasting embedder viewport changes to every owned content event loop.
-    fn handle_broadcast_viewport(&mut self, snapshot: (u32, u32, f32, ColorScheme)) {
-        let command = viewport_command(snapshot);
-        for entry in self.state.event_loops.values() {
-            let _ = entry
-                .command_sender
-                .send(EventLoopCommand::FireAndForget { command: command.clone() });
+    /// applying the default viewport to the active traversable and its descendants.
+    fn handle_set_default_viewport(&mut self, snapshot: (u32, u32, f32, ColorScheme)) {
+        let active_top_level_traversable_id = self
+            .state
+            .traversable_set
+            .members
+            .iter()
+            .find_map(|(traversable_id, traversable)| {
+                (traversable.parent_traversable_id.is_none() && traversable.is_active)
+                    .then_some(*traversable_id)
+            });
+        let Some(traversable_id) = active_top_level_traversable_id else {
+            return;
+        };
+
+        self.handle_set_traversable_viewport(traversable_id, snapshot, 0.0, 0.0);
+        for descendant_traversable_id in descendant_traversable_ids(&self.state, traversable_id) {
+            self.handle_set_traversable_viewport(descendant_traversable_id, snapshot, 0.0, 0.0);
         }
     }
 
@@ -1988,64 +2061,52 @@ impl UserAgentWorker {
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
     fn handle_dispatch_event_for(&mut self, traversable_id: u64, event: String) {
-        let _ = match self.state.traversable_handles.get(&traversable_id).copied() {
-            Some(handle) => match self.state.active_documents_by_traversable.get(&traversable_id) {
-                Some(document_id) => match self.state.event_loops.get(&handle) {
-                    Some(entry) => {
-                        let command = ContentCommand::DispatchEvent {
-                            events: vec![DispatchEventEntry {
-                                document_id: *document_id,
-                                event,
-                            }],
-                        };
-                        match entry
-                            .command_sender
-                            .send(EventLoopCommand::FireAndForget { command })
-                        {
-                            Ok(()) => Ok(true),
-                            Err(error) => Err(format!(
-                                "failed to send dispatch event to event loop {handle}: {error}"
-                            )),
-                        }
-                    }
-                    None => Ok(false),
-                },
-                None => Ok(false),
-            },
-            None => Ok(false),
+        let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
+            return;
         };
+        let Some(document_id) = self.state.active_documents_by_traversable.get(&traversable_id)
+        else {
+            return;
+        };
+        let Some(entry) = self.state.event_loops.get(&handle) else {
+            return;
+        };
+
+        let command = ContentCommand::DispatchEvent {
+            events: vec![DispatchEventEntry {
+                document_id: *document_id,
+                event,
+            }],
+        };
+        let _ = entry
+            .command_sender
+            .send(EventLoopCommand::FireAndForget { command });
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
     fn handle_rendering_opportunity_for(&mut self, traversable_id: u64) {
-        let _ = match self.state.traversable_handles.get(&traversable_id).copied() {
-            Some(handle) => match self.state.active_documents_by_traversable.get(&traversable_id) {
-                Some(document_id) => match self.state.event_loops.get(&handle) {
-                    Some(entry) => {
-                        log_render_state_debug(format!(
-                            "queue rendering opportunity traversable={} document={} handle={}",
-                            traversable_id, document_id, handle,
-                        ));
-                        let command = ContentCommand::UpdateTheRendering {
-                            traversable_id,
-                            document_id: *document_id,
-                        };
-                        match entry
-                            .command_sender
-                            .send(EventLoopCommand::FireAndForget { command })
-                        {
-                            Ok(()) => Ok(true),
-                            Err(error) => Err(format!(
-                                "failed to queue rendering update for event loop {handle}: {error}"
-                            )),
-                        }
-                    }
-                    None => Ok(false),
-                },
-                None => Ok(false),
-            },
-            None => Ok(false),
+        let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
+            return;
         };
+        let Some(document_id) = self.state.active_documents_by_traversable.get(&traversable_id)
+        else {
+            return;
+        };
+        let Some(entry) = self.state.event_loops.get(&handle) else {
+            return;
+        };
+
+        log_render_state_debug(format!(
+            "send rendering opportunity traversable={} document={} handle={}",
+            traversable_id, document_id, handle,
+        ));
+        let command = ContentCommand::UpdateTheRendering {
+            traversable_id,
+            document_id: *document_id,
+        };
+        let _ = entry
+            .command_sender
+            .send(EventLoopCommand::FireAndForget { command });
     }
 
     /// resuming an event-loop-local document fetch after the fetch worker succeeds.
@@ -2291,6 +2352,7 @@ impl UserAgentWorker {
         self.state.handles_by_event_loop_id.clear();
         self.state.browsing_context_group_set.members.clear();
         self.state.traversable_set.members.clear();
+        self.state.navigables.clear();
         self.state.top_level_browsing_context_group_ids.clear();
         self.state.traversable_handles.clear();
         self.state.traversable_target_names.clear();

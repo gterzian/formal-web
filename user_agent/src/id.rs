@@ -20,8 +20,6 @@ pub struct UserAgentIds {
     pub next_agent_cluster_id: u64,
     /// <https://tc39.es/ecma262/#sec-agents>
     pub next_agent_id: u64,
-    /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation>
-    pub next_navigation_id: u64,
     /// identifier for pending
     /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
     /// continuations.
@@ -39,7 +37,6 @@ impl Default for UserAgentIds {
             next_document_id: 1,
             next_agent_cluster_id: 0,
             next_agent_id: 0,
-            next_navigation_id: 1,
             next_before_unload_check_id: 1,
         }
     }
@@ -108,13 +105,6 @@ impl UserAgentIds {
         let agent_id = self.next_agent_id;
         self.next_agent_id += 1;
         agent_id
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation>.
-    pub fn allocate_navigation_id(&mut self) -> u64 {
-        let navigation_id = self.next_navigation_id;
-        self.next_navigation_id += 1;
-        navigation_id
     }
 
     /// queued `beforeunload` continuations under

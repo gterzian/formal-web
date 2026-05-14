@@ -31,3 +31,5 @@ When `user_agent` code implements or continues a standards algorithm, follow the
 For spec-facing worker methods and continuations, give each helper its own anchor-only doc comment for the algorithm it continues, keep `Step n:` comments as verbatim standard prose, and move reduced-model or runtime-bridge explanation into separate `Notes:` comments.
 
 Avoid introducing synchronous user-agent command bridges that block on content replies unless the corresponding standard algorithm has an explicit wait point; prefer queueing work and resuming through existing continuation events.
+
+Name user-agent command variants and worker methods after the standard algorithm or continuation they trigger (for example `Navigate`, `CompleteBeforeUnload`, and `FinalizeCrossDocumentNavigation`) instead of transport-oriented `Queue*` names, and keep the `navigate` entrypoint typed in terms of a navigable id that resolves to a traversable when the target is traversable-backed.

@@ -6,7 +6,8 @@ use boa_gc::{Finalize, Trace};
 use html5ever::{local_name, ns};
 use ipc_messages::content::{
     ContentNavigableId, Event as ContentEvent, FrameId, IframeTraversableRemoval,
-    NavigateRequest, UserNavigationInvolvement, iframe_target_name,
+    NavigateRequest, NavigationId, UserNavigationInvolvement,
+    iframe_target_name,
 };
 use url::Url;
 
@@ -255,6 +256,7 @@ fn request_iframe_navigation(
     runtime
         .event_sender
         .send(ContentEvent::NavigationRequested(NavigateRequest {
+            navigation_id: Some(NavigationId::new()),
             source_navigable_id: parent_traversable_id,
             destination_url: destination_url.to_string(),
             target: iframe_target_name(

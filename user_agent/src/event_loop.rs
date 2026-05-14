@@ -435,36 +435,36 @@ impl EventLoopWorker {
                 // Navigation start leaves the content event loop and reenters the user-agent
                 // navigation algorithm immediately; it does not wait for a `CommandCompleted` wakeup.
                 log_navigation_debug(format!(
-                    "queue navigation request from {} to {}",
+                    "forward navigation request from {} to {}",
                     request.source_navigable_id, request.destination_url
                 ));
                 self.user_agent_command_sender
-                    .send(UserAgentCommand::QueueNavigation { request })
-                    .map_err(|error| format!("failed to queue navigation request: {error}"))?;
+                    .send(UserAgentCommand::Navigate { request })
+                    .map_err(|error| format!("failed to send navigation request: {error}"))?;
             }
             ContentEvent::BeforeUnloadCompleted(result) => {
                 // Resume HTML's `checking if unloading is canceled` continuation in
                 // `UserAgentWorker`.
                 log_navigation_debug(format!(
-                    "queue beforeunload completion check={} document={} canceled={}",
+                    "forward beforeunload completion check={} document={} canceled={}",
                     result.check_id, result.document_id, result.canceled
                 ));
                 self.user_agent_command_sender
-                    .send(UserAgentCommand::QueueCompleteBeforeUnload { result })
+                    .send(UserAgentCommand::CompleteBeforeUnload { result })
                     .map_err(|error| {
-                        format!("failed to queue beforeunload completion: {error}")
+                        format!("failed to send beforeunload completion: {error}")
                     })?;
             }
             ContentEvent::FinalizeNavigation(finalized) => {
                 // Resume HTML's `finalize a cross-document navigation` continuation in
                 // `UserAgentWorker`.
                 log_navigation_debug(format!(
-                    "queue finalize navigation document={} url={}",
+                    "forward finalize navigation document={} url={}",
                     finalized.document_id, finalized.url
                 ));
                 self.user_agent_command_sender
-                    .send(UserAgentCommand::QueueFinalizeNavigation { finalized })
-                    .map_err(|error| format!("failed to queue finalize navigation: {error}"))?;
+                    .send(UserAgentCommand::FinalizeCrossDocumentNavigation { finalized })
+                    .map_err(|error| format!("failed to send finalize navigation: {error}"))?;
             }
             ContentEvent::IframeTraversableRemoved(removal) => {
                 // Keep child-navigable target-name bookkeeping in the user-agent so event-loop
@@ -477,7 +477,9 @@ impl EventLoopWorker {
                         content_frame_id: removal.content_frame_id,
                         reply: reply_sender,
                     })
-                    .map_err(|error| format!("failed to queue iframe traversable removal: {error}"))?;
+                    .map_err(|error| {
+                        format!("failed to send iframe traversable removal: {error}")
+                    })?;
                 reply_receiver.recv().map_err(|error| {
                     format!("iframe traversable removal reply channel closed: {error}")
                 })??;
