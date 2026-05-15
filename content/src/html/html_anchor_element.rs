@@ -175,6 +175,9 @@ impl HTMLAnchorElement {
     }
 
     /// <https://html.spec.whatwg.org/#following-hyperlinks-2>
+    /// Note: This helper computes the destination URL for hyperlink following. The caller keeps
+    /// the surrounding activation state, runs the content-local target-selection prefix, and then
+    /// raises `NavigationRequested` so the user agent continues `navigate` and later finalization.
     pub(crate) fn follow_hyperlink(
         &self,
         document_creation_url: &Url,
@@ -191,6 +194,8 @@ impl HTMLAnchorElement {
         }
 
         // Step 14: "Navigate targetNavigable to url."
+        // Note: `activation_behavior` continues this step by raising `NavigationRequested` with
+        // the resolved URL plus explicit target-selection state.
         Some(url.to_string())
     }
 

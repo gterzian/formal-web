@@ -42,4 +42,6 @@ When content resolves the local `_self` / `_parent` / `_top` prefix of `the-rule
 
 For `create-a-new-child-navigable`, let content perform its local iframe/container steps first, continue the user-agent-owned stable child-navigable allocation asynchronously, and notify content with a continuation command instead of replying over a blocking request channel.
 
+When response-driven navigation initializes a new document, keep same-site top-level navigations on the current browsing context and event loop, but explicitly run the browsing-context selection step for cross-site top-level responses instead of silently reusing the active top-level context.
+
 Name user-agent command variants and worker methods after the standard algorithm or continuation they trigger (for example `Navigate`, `CompleteBeforeUnload`, and `FinalizeCrossDocumentNavigation`) instead of transport-oriented `Queue*` names, and keep the `navigate` entrypoint typed in terms of a navigable id that resolves to a traversable when the target is traversable-backed.

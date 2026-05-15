@@ -239,6 +239,12 @@ pub struct TargetSnapshotParams {
     pub iframe_element_referrer_policy: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct BrowsingContextNavigationSelection {
+    browsing_context_id: u64,
+    swapped_group: bool,
+}
+
 /// <https://fetch.spec.whatwg.org/#concept-request>
 #[derive(Clone, Debug)]
 pub struct NavigationRequest {
@@ -423,6 +429,8 @@ pub struct PendingNavigationFinalization {
     pub navigation_id: NavigationId,
     pub traversable_id: u64,
     pub previous_document_id: Option<u64>,
+    /// browsing context selected for the new document before commit.
+    pub browsing_context_id: Option<u64>,
     /// <https://html.spec.whatwg.org/multipage/#session-history-entry>
     pub history_entry: SessionHistoryEntry,
     /// <https://html.spec.whatwg.org/multipage/#history-handling-behavior>
@@ -516,6 +524,22 @@ impl UserAgentState {
             && let Some(traversable) = navigable.traversable.as_mut()
         {
             traversable.active_document_id = Some(document_id);
+        }
+    }
+
+    /// caching the active browsing context selected for one traversable-backed navigable.
+    fn set_traversable_active_browsing_context(
+        &mut self,
+        traversable_id: u64,
+        browsing_context_id: Option<u64>,
+    ) {
+        if let Some(traversable) = self.traversable_set.members.get_mut(&traversable_id) {
+            traversable.active_browsing_context_id = browsing_context_id;
+        }
+        if let Some(navigable) = self.navigables.get_mut(&traversable_id)
+            && let Some(traversable) = navigable.traversable.as_mut()
+        {
+            traversable.active_browsing_context_id = browsing_context_id;
         }
     }
 
@@ -1647,6 +1671,105 @@ impl UserAgentWorker {
         }
     }
 
+    /// <https://html.spec.whatwg.org/multipage/browsers.html#obtain-browsing-context-navigation>
+    /// Note: The current model uses the active document URL plus a same-site check as the
+    /// observable approximation for swap-group decisions before response-driven document creation.
+    fn obtain_browsing_context_to_use_for_navigation_response(
+        &mut self,
+        traversable_id: u64,
+        destination_url: &str,
+    ) -> Result<BrowsingContextNavigationSelection, String> {
+        let traversable = self
+            .state
+            .traversable_set
+            .members
+            .get(&traversable_id)
+            .cloned()
+            .ok_or_else(|| format!("missing traversable {traversable_id}"))?;
+        let browsing_context_id = traversable.active_browsing_context_id.ok_or_else(|| {
+            format!("traversable {traversable_id} has no active browsing context")
+        })?;
+
+        if traversable.parent_traversable_id.is_some() {
+            return Ok(BrowsingContextNavigationSelection {
+                browsing_context_id,
+                swapped_group: false,
+            });
+        }
+
+        let source_document_url = traversable
+            .active_document_id
+            .and_then(|document_id| self.state.documents.get(&document_id))
+            .map(|document| document.url.clone());
+        let swap_group = match source_document_url {
+            Some(source_document_url) => is_cross_origin_navigation(&source_document_url, destination_url)?,
+            None => false,
+        };
+        if !swap_group {
+            return Ok(BrowsingContextNavigationSelection {
+                browsing_context_id,
+                swapped_group: false,
+            });
+        }
+
+        let new_group_id = self.state.browsing_context_group_set.next_group_id();
+        let new_browsing_context_id = self.state.ids.allocate_browsing_context_id();
+        self.state.browsing_context_group_set.members.insert(
+            new_group_id,
+            BrowsingContextGroup {
+                id: new_group_id,
+                browsing_context_set: HashMap::from([(
+                    new_browsing_context_id,
+                    BrowsingContext {
+                        id: new_browsing_context_id,
+                    },
+                )]),
+                agent_cluster_map: HashMap::new(),
+                historical_agent_cluster_key_map: HashMap::new(),
+                cross_origin_isolation_mode: CrossOriginIsolationMode::None,
+            },
+        );
+        self.state
+            .top_level_browsing_context_group_ids
+            .insert(new_browsing_context_id, new_group_id);
+        Ok(BrowsingContextNavigationSelection {
+            browsing_context_id: new_browsing_context_id,
+            swapped_group: true,
+        })
+    }
+
+    fn discard_provisional_browsing_context(
+        &mut self,
+        traversable_id: u64,
+        browsing_context_id: Option<u64>,
+    ) {
+        let Some(browsing_context_id) = browsing_context_id else {
+            return;
+        };
+        let is_top_level = self
+            .state
+            .traversable_set
+            .members
+            .get(&traversable_id)
+            .is_some_and(|traversable| traversable.parent_traversable_id.is_none());
+        let is_active = self
+            .state
+            .traversable_set
+            .members
+            .get(&traversable_id)
+            .and_then(|traversable| traversable.active_browsing_context_id)
+            == Some(browsing_context_id);
+        if !is_top_level || is_active {
+            return;
+        }
+        self.state
+            .top_level_browsing_context_group_ids
+            .remove(&browsing_context_id);
+        self.state
+            .browsing_context_group_set
+            .remove_browsing_context(browsing_context_id);
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn create_navigation_params_by_fetching(
         &mut self,
@@ -1966,6 +2089,9 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-a-fresh-top-level-traversable>
+    /// Note: This helper creates the initial traversable/document shell immediately and then
+    /// continues through the normal user-agent `navigate` / fetch / finalization path for the
+    /// supplied startup URL.
     fn create_a_fresh_top_level_traversable(&mut self, destination_url: String) {
         let result = (|| {
             // Step 1: Let traversable be the result of creating a new top-level traversable given
@@ -2029,7 +2155,7 @@ impl UserAgentWorker {
         &mut self,
         traversable_id: u64,
         final_url: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Option<u64>, String> {
         // Step 1: "Let document be the new Document object."
         // Note: The user agent decides the browsing-context and event-loop placement for the new
         // document here. `handle_navigation_fetch_completed` then allocates the corresponding
@@ -2038,37 +2164,42 @@ impl UserAgentWorker {
         // Step 2: "Let targetNavigable be document's navigable."
         // Note: The caller passes the target traversable id explicitly.
 
+        let browsing_context_selection =
+            self.obtain_browsing_context_to_use_for_navigation_response(traversable_id, final_url)?;
         let parent_traversable_id = self
             .state
             .traversable_set
             .members
             .get(&traversable_id)
             .and_then(|t| t.parent_traversable_id);
-        let Some(parent_id) = parent_traversable_id else {
+
+        let needs_new_event_loop = if let Some(parent_id) = parent_traversable_id {
             // Step 3: "If targetNavigable's parent is null, then return."
-            return Ok(());
+            // Note: Child navigables continue with the parent-document site check below.
+
+            // Step 4: "Let parentDocument be targetNavigable's parent's active document."
+            let parent_document_url = self
+                .state
+                .active_documents_by_traversable
+                .get(&parent_id)
+                .and_then(|doc_id| self.state.documents.get(doc_id))
+                .map(|doc| doc.url.clone())
+                .ok_or_else(|| format!("missing parent document for traversable {parent_id}"))?;
+            if parent_document_url == "about:blank" {
+                return Err(format!(
+                    "unexpected initial about:blank parent while initialising child traversable {traversable_id}"
+                ));
+            }
+
+            // Step 5: "If parentDocument and document are same-site, then keep targetNavigable in
+            // the parent's agent/event-loop boundary."
+            is_cross_origin_navigation(&parent_document_url, final_url)?
+        } else {
+            browsing_context_selection.swapped_group
         };
 
-        // Step 4: "Let parentDocument be targetNavigable's parent's active document."
-        let parent_document_url = self
-            .state
-            .active_documents_by_traversable
-            .get(&parent_id)
-            .and_then(|doc_id| self.state.documents.get(doc_id))
-            .map(|doc| doc.url.clone());
-
-        let parent_document_url = parent_document_url
-            .ok_or_else(|| format!("missing parent document for traversable {parent_id}"))?;
-        if parent_document_url == "about:blank" {
-            return Err(format!(
-                "unexpected initial about:blank parent while initialising child traversable {traversable_id}"
-            ));
-        }
-
-        // Step 5: "If parentDocument and document are same-site, then keep targetNavigable in
-        // the parent's agent/event-loop boundary."
-        if !is_cross_origin_navigation(&parent_document_url, final_url)? {
-            return Ok(());
+        if !needs_new_event_loop {
+            return Ok(Some(browsing_context_selection.browsing_context_id));
         }
 
         // Step 6: "Otherwise, select a new agent cluster and event loop for document."
@@ -2104,7 +2235,7 @@ impl UserAgentWorker {
             nav_traversable.event_loop_id = agent.event_loop_id;
             nav_traversable.handle = new_handle;
         }
-        Ok(())
+        Ok(Some(browsing_context_selection.browsing_context_id))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
@@ -2183,8 +2314,19 @@ impl UserAgentWorker {
         // Ignore stale finalization signals when a newer navigation already replaced this
         // continuation or the loaded document committed a different final URL.
         if pending.history_entry.url != finalized.url || !navigation_is_current {
+            self.discard_provisional_browsing_context(
+                pending.traversable_id,
+                pending.browsing_context_id,
+            );
             return Ok(());
         }
+
+        let previous_browsing_context_id = self
+            .state
+            .traversable_set
+            .members
+            .get(&pending.traversable_id)
+            .and_then(|traversable| traversable.active_browsing_context_id);
 
         // Step 2: Set navigable's is delaying `load` events to false.
         // The content event loop owns the actual `load`-event delay flag; reaching this
@@ -2193,6 +2335,10 @@ impl UserAgentWorker {
         // navigable target name to the empty string.
         // `SessionHistoryEntry` currently stores only the committed step, document, and URL,
         // so the model does not retain a separate per-entry target-name field for this branch yet.
+        self.state.set_traversable_active_browsing_context(
+            pending.traversable_id,
+            pending.browsing_context_id,
+        );
         self.state
             .set_traversable_active_document(pending.traversable_id, finalized.document_id);
         // Step 5: Let entryToReplace be navigable's active session history entry if historyHandling
@@ -2237,6 +2383,27 @@ impl UserAgentWorker {
                     );
                 }
                 self.state.documents.remove(&previous_document_id);
+            }
+        }
+
+        if let Some(new_browsing_context_id) = pending.browsing_context_id {
+            let is_top_level = self
+                .state
+                .traversable_set
+                .members
+                .get(&pending.traversable_id)
+                .is_some_and(|traversable| traversable.parent_traversable_id.is_none());
+            if is_top_level {
+                if let Some(previous_browsing_context_id) = previous_browsing_context_id
+                    && previous_browsing_context_id != new_browsing_context_id
+                {
+                    self.state
+                        .top_level_browsing_context_group_ids
+                        .remove(&previous_browsing_context_id);
+                    self.state
+                        .browsing_context_group_set
+                        .remove_browsing_context(previous_browsing_context_id);
+                }
             }
         }
 
@@ -2451,17 +2618,23 @@ impl UserAgentWorker {
         let final_url = response.final_url.clone();
 
         // <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>
-        // Select the event loop for the new document, creating a new process for cross-origin
-        // child navigables.
-        if let Err(error) = self.initialise_the_document_object(pending.traversable_id, &final_url) {
-            self.state
-                .set_traversable_ongoing_navigation(pending.traversable_id, None);
-            let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationFailed {
-                webview_id: WebviewId(pending.traversable_id),
-                message: error,
-            });
-            return;
-        }
+        // Select the browsing context and event loop for the new document, creating a new
+        // process for cross-origin child navigables and swap-group top-level navigations.
+        let browsing_context_id = match self.initialise_the_document_object(
+            pending.traversable_id,
+            &final_url,
+        ) {
+            Ok(browsing_context_id) => browsing_context_id,
+            Err(error) => {
+                self.state
+                    .set_traversable_ongoing_navigation(pending.traversable_id, None);
+                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationFailed {
+                    webview_id: WebviewId(pending.traversable_id),
+                    message: error,
+                });
+                return;
+            }
+        };
 
         // After initialise_the_document_object, the traversable may have a new event loop.
         let command_sender = match self.command_sender_for_traversable(pending.traversable_id) {
@@ -2491,20 +2664,20 @@ impl UserAgentWorker {
             content_type: response.content_type.clone(),
             body: String::from_utf8_lossy(&response.body).into_owned(),
         };
-        let (traversable_browsing_context_id, traversable_event_loop_id, parent_traversable_id) =
-            self.state
-                .traversable_set
-                .members
-                .get(&pending.traversable_id)
-                .map(|t| (t.active_browsing_context_id, t.event_loop_id, t.parent_traversable_id))
-                .unwrap_or((None, 0, None));
+        let (traversable_event_loop_id, parent_traversable_id) = self
+            .state
+            .traversable_set
+            .members
+            .get(&pending.traversable_id)
+            .map(|t| (t.event_loop_id, t.parent_traversable_id))
+            .unwrap_or((0, None));
         let top_level_traversable_id = self
             .state
             .top_level_traversable_id(pending.traversable_id)
             .unwrap_or(pending.traversable_id);
         let document_state = DocumentState {
             traversable_id: pending.traversable_id,
-            browsing_context_id: traversable_browsing_context_id,
+            browsing_context_id,
             event_loop_id: traversable_event_loop_id,
             url: final_url.clone(),
             is_initial_about_blank: false,
@@ -2527,6 +2700,7 @@ impl UserAgentWorker {
                     navigation_id: pending.navigation_id,
                     traversable_id: pending.traversable_id,
                     previous_document_id: pending.previous_document_id,
+                    browsing_context_id,
                     history_entry: SessionHistoryEntry {
                         step: 0,
                         document_id,
@@ -2538,6 +2712,10 @@ impl UserAgentWorker {
             }
             Err(error) => {
                 self.state.documents.remove(&document_id);
+                self.discard_provisional_browsing_context(
+                    pending.traversable_id,
+                    browsing_context_id,
+                );
                 self.state
                     .set_traversable_ongoing_navigation(pending.traversable_id, None);
                 let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationFailed {

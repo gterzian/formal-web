@@ -239,7 +239,8 @@ fn attach_cross_origin_iframe(
 
 /// <https://html.spec.whatwg.org/multipage/#navigate-an-iframe-or-frame>
 /// Note: The iframe's content navigable is created during `create a new child navigable`; this
-/// helper reuses that stable navigable id for later navigations.
+/// helper reuses that stable navigable id, sends the explicit navigable choice back into the
+/// user-agent `navigate` entrypoint, and lets the fetch/finalization suffix continue there.
 fn navigate_an_iframe_or_frame(
     runtime: &ContentRuntime,
     navigable_id: u64,
