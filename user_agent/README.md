@@ -24,6 +24,8 @@ When creating an iframe child traversable placeholder, emit the embedder registr
 
 When retiring an iframe traversable, remove that traversable from shared event-loop ownership first and stop the event loop only when it no longer owns any traversables; stopping a shared parent/child event loop from within iframe-removal continuations can deadlock navigation teardown.
 
+When removing a child traversable, delete that child browsing context from the browsing-context group without dropping the top-level browsing-context-group index for the parent traversable; that top-level mapping stays owned by the actual top-level browsing context.
+
 Keep the spec-facing browser-global concepts in `UserAgentState` itself: the browsing-context-group set, the top-level traversable set, allocator state, and the pending navigation/fetch continuations. Treat helper hash maps in that file as model-local indices derived from those concepts rather than as replacements for them.
 
 Keep pending navigation state as explicit spec-facing request, snapshot, history-entry, and history-handling records so finalization can follow HTML's `push` versus `replace` session-history steps without flattening those concepts into ad hoc fields.

@@ -114,6 +114,32 @@ pub struct NavigateRequest {
     pub noopener: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChooseNavigableResponse {
+    pub navigable_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChooseNavigableRequest {
+    pub source_navigable_id: u64,
+    pub target_name: String,
+    pub noopener: bool,
+    pub reply_sender: IpcSender<Result<ChooseNavigableResponse, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateChildNavigableResponse {
+    pub navigable_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateChildNavigableRequest {
+    pub parent_traversable_id: u64,
+    pub content_navigable_id: ContentNavigableId,
+    pub content_frame_id: FrameId,
+    pub reply_sender: IpcSender<Result<CreateChildNavigableResponse, String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeforeUnloadResult {
     pub document_id: u64,
@@ -632,6 +658,8 @@ pub enum Event {
     DocumentFetchRequested(FetchRequest),
     WindowTimerRequested(WindowTimerRequest),
     WindowTimerCleared(WindowTimerClearRequest),
+    ChooseNavigable(ChooseNavigableRequest),
+    CreateChildNavigable(CreateChildNavigableRequest),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),

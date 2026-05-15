@@ -18,6 +18,7 @@ pub(crate) use html_dom_tree::{
 };
 pub use html_element::HTMLElement;
 pub use html_iframe_element::HTMLIFrameElement;
+pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traversable;
 pub(crate) use html_iframe_element::run_iframe_load_event_steps_for_traversable;
 pub(crate) use html_parser::PendingParserScript;
 pub use html_parser::{JsHtmlParserProvider, execute_parser_scripts, parse_html_into_document};

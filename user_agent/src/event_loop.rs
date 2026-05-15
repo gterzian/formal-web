@@ -4,7 +4,8 @@ use embedder::{self, FormalWebUserEvent, UserEventDispatcher};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
-    Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
+    Bootstrap, ChooseNavigableRequest, ClipboardReadRequest, ClipboardWriteRequest,
+    CreateChildNavigableRequest,
     ColorScheme as MessageColorScheme, Command as ContentCommand, Event as ContentEvent,
     TraversableViewport, ViewportSnapshot,
 };
@@ -198,6 +199,7 @@ impl EventLoopWorker {
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
     fn new(
         event_loop_id: usize,
+        process_label: String,
         user_agent_command_sender: Sender<UserAgentCommand>,
         fetch_command_sender: Sender<FetchCommand>,
         timer_command_sender: Sender<TimerCommand>,
@@ -210,10 +212,16 @@ impl EventLoopWorker {
         let executable_path = std::env::current_exe()
             .map_err(|error| format!("failed to resolve current executable: {error}"))?;
 
+        let sanitized_label = process_label
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, ':' | '-' | '_' | '.') { ch } else { '_' })
+            .collect::<String>();
+
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
-        child_process.arg0("formal-web:content");
+        child_process.arg0(format!("formal-web:content:{sanitized_label}"));
         child_process.arg("--content-token").arg(&token);
+        child_process.arg("--content-label").arg(&process_label);
 
         let child = child_process
             .spawn()
@@ -431,6 +439,46 @@ impl EventLoopWorker {
                     })
                     .map_err(|error| format!("failed to clear window timer: {error}"))?;
             }
+            ContentEvent::ChooseNavigable(ChooseNavigableRequest {
+                source_navigable_id,
+                target_name,
+                noopener,
+                reply_sender,
+            }) => {
+                let (reply, recv) = bounded(1);
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::ChooseNavigable {
+                        source_navigable_id,
+                        target_name,
+                        noopener,
+                        reply,
+                    })
+                    .map_err(|error| format!("failed to send choose-navigable request: {error}"))?;
+                let result = recv.recv().map_err(|error| {
+                    format!("choose-navigable reply channel closed: {error}")
+                })?;
+                let _ = reply_sender.send(result);
+            }
+            ContentEvent::CreateChildNavigable(CreateChildNavigableRequest {
+                parent_traversable_id,
+                content_navigable_id,
+                content_frame_id,
+                reply_sender,
+            }) => {
+                let (reply, recv) = bounded(1);
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::CreateChildNavigable {
+                        parent_traversable_id,
+                        content_navigable_id,
+                        content_frame_id,
+                        reply,
+                    })
+                    .map_err(|error| format!("failed to send create-child-navigable request: {error}"))?;
+                let result = recv.recv().map_err(|error| {
+                    format!("create-child-navigable reply channel closed: {error}")
+                })?;
+                let _ = reply_sender.send(result);
+            }
             ContentEvent::NavigationRequested(request) => {
                 // Navigation start leaves the content event loop and reenters the user-agent
                 // navigation algorithm immediately; it does not wait for a `CommandCompleted` wakeup.
@@ -641,6 +689,7 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, Str
 /// <https://html.spec.whatwg.org/multipage/#event-loop>
 pub fn spawn_event_loop_entry(
     event_loop_id: usize,
+    process_label: String,
     user_agent_command_sender: Sender<UserAgentCommand>,
     fetch_command_sender: Sender<FetchCommand>,
     timer_command_sender: Sender<TimerCommand>,
@@ -649,6 +698,7 @@ pub fn spawn_event_loop_entry(
     let (command_sender, command_receiver) = unbounded();
     let mut worker = EventLoopWorker::new(
         event_loop_id,
+        process_label,
         user_agent_command_sender,
         fetch_command_sender,
         timer_command_sender,

@@ -3,9 +3,10 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
-use ipc_channel::ipc::IpcSender;
+use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::{
-    Event as ContentEvent, NavigateRequest, NavigationId, UserNavigationInvolvement,
+    ChooseNavigableRequest, Event as ContentEvent, NavigateRequest, NavigationId,
+    UserNavigationInvolvement,
 };
 use url::Url;
 
@@ -31,6 +32,41 @@ impl HTMLAnchorElement {
 
     pub(crate) fn has_download_attribute(&self) -> bool {
         self.html_element.element.has_attribute("download")
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
+    /// Note: This helper starts the algorithm in content and delegates the shared navigable
+    /// registry lookup and top-level traversable creation steps to the user-agent.
+    fn choose_navigable(
+        source_navigable_id: u64,
+        target_name: &str,
+        noopener: bool,
+        event_sender: &IpcSender<ContentEvent>,
+    ) -> JsResult<u64> {
+        // Note: The spec's local step structure is owned by this content-side entrypoint, while
+        // the shared navigable registry and traversable creation live in the user-agent.
+        let (reply_sender, reply_receiver) =
+            ipc::channel().map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
+
+        event_sender
+            .send(ContentEvent::ChooseNavigable(ChooseNavigableRequest {
+                source_navigable_id,
+                target_name: target_name.to_owned(),
+                noopener,
+                reply_sender,
+            }))
+            .map_err(|error| {
+                JsNativeError::typ()
+                    .with_message(format!("failed to send choose-navigable request: {error}"))
+            })?;
+
+        Ok(
+            reply_receiver
+                .recv()
+                .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?
+                .map(|response| response.navigable_id)
+                .map_err(|error| JsNativeError::typ().with_message(error))?,
+        )
     }
 
     /// <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
@@ -70,9 +106,18 @@ impl HTMLAnchorElement {
         else {
             return Ok(());
         };
+
+        // Note: This continues #the-rules-for-choosing-a-navigable before the resulting
+        // navigation request is sent back to the user-agent's #navigate entrypoint.
+        let chosen_navigable_id = Self::choose_navigable(
+            source_navigable_id,
+            &self.target(),
+            self.noopener(),
+            event_sender,
+        );
         let request = NavigateRequest {
             navigation_id: Some(NavigationId::new()),
-            source_navigable_id,
+            source_navigable_id: chosen_navigable_id?,
             destination_url,
             target: self.target(),
             user_involvement,

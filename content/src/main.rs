@@ -11,6 +11,7 @@ pub mod webidl;
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
+    attach_same_origin_child_document_for_traversable,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
@@ -162,6 +163,7 @@ enum DeferredScriptState {
 
 #[derive(Clone)]
 pub(crate) struct NavigableContainerState {
+    navigable_id: u64,
     content_navigable_id: ContentNavigableId,
     content_frame_id: FrameId,
     content_frame_token: u64,
@@ -844,6 +846,7 @@ impl ContentRuntime {
                 viewport_offset_y: viewport_state.as_ref().map(|viewport| viewport.offset_y).unwrap_or(0.0),
             },
         );
+        attach_same_origin_child_document_for_traversable(self, traversable_id)?;
         run_dom_post_connection_steps_for_document(self, document_id)?;
 
         let deferred_fetches = self
