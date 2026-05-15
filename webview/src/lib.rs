@@ -133,6 +133,7 @@ impl WebviewProvider {
             Some(webview_id) => self.user_agent.start_navigation(NavigateRequest {
                 navigation_id: None,
                 source_navigable_id: webview_id.0,
+                chosen_navigable_id: None,
                 destination_url: url.to_owned(),
                 target: String::new(),
                 user_involvement: UserNavigationInvolvement::BrowserUi,

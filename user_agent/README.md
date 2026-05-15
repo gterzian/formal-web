@@ -38,4 +38,8 @@ For spec-facing worker methods and continuations, give each helper its own ancho
 
 Avoid introducing synchronous user-agent command bridges that block on content replies unless the corresponding standard algorithm has an explicit wait point; prefer queueing work and resuming through existing continuation events.
 
+When content resolves the local `_self` / `_parent` / `_top` prefix of `the-rules-for-choosing-a-navigable`, keep the remaining user-agent work as an explicit continuation helper for shared target-name lookup and new-top-level creation, and reject unresolved synthetic iframe target names there instead of letting them fall through into top-level traversable creation.
+
+For `create-a-new-child-navigable`, let content perform its local iframe/container steps first, continue the user-agent-owned stable child-navigable allocation asynchronously, and notify content with a continuation command instead of replying over a blocking request channel.
+
 Name user-agent command variants and worker methods after the standard algorithm or continuation they trigger (for example `Navigate`, `CompleteBeforeUnload`, and `FinalizeCrossDocumentNavigation`) instead of transport-oriented `Queue*` names, and keep the `navigate` entrypoint typed in terms of a navigable id that resolves to a traversable when the target is traversable-backed.

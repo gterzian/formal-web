@@ -107,6 +107,8 @@ fn localize_ui_event_for_document(
 pub(crate) fn dispatch_ui_event(
     document_id: u64,
     source_navigable_id: u64,
+    parent_navigable_id: Option<u64>,
+    top_level_navigable_id: u64,
     document: Rc<RefCell<BaseDocument>>,
     settings: &mut EnvironmentSettingsObject,
     event_sender: &IpcSender<ContentEvent>,
@@ -138,6 +140,8 @@ pub(crate) fn dispatch_ui_event(
     let handler = BlitzJSEventHandler::new(
         document_id,
         source_navigable_id,
+        parent_navigable_id,
+        top_level_navigable_id,
         Rc::clone(&document),
         settings,
         event_sender,
@@ -159,6 +163,8 @@ pub(crate) fn dispatch_ui_event(
 struct BlitzJSEventHandler<'a> {
     document_id: u64,
     source_navigable_id: u64,
+    parent_navigable_id: Option<u64>,
+    top_level_navigable_id: u64,
     _document: Rc<RefCell<BaseDocument>>,
     settings: &'a mut EnvironmentSettingsObject,
     event_sender: &'a IpcSender<ContentEvent>,
@@ -168,6 +174,8 @@ impl<'a> BlitzJSEventHandler<'a> {
     fn new(
         document_id: u64,
         source_navigable_id: u64,
+        parent_navigable_id: Option<u64>,
+        top_level_navigable_id: u64,
         document: Rc<RefCell<BaseDocument>>,
         settings: &'a mut EnvironmentSettingsObject,
         event_sender: &'a IpcSender<ContentEvent>,
@@ -175,6 +183,8 @@ impl<'a> BlitzJSEventHandler<'a> {
         Self {
             document_id,
             source_navigable_id,
+            parent_navigable_id,
+            top_level_navigable_id,
             _document: document,
             settings,
             event_sender,
@@ -220,6 +230,8 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
         if let Some(anchor) = target.downcast_ref::<HTMLAnchorElement>() {
             anchor.activation_behavior(
                 self.source_navigable_id,
+                self.parent_navigable_id,
+                self.top_level_navigable_id,
                 &self.settings.creation_url,
                 event,
                 self.event_sender,

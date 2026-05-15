@@ -3,14 +3,59 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
-use ipc_channel::ipc::{self, IpcSender};
+use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    ChooseNavigableRequest, Event as ContentEvent, NavigateRequest, NavigationId,
-    UserNavigationInvolvement,
+    Event as ContentEvent, NavigateRequest, NavigationId, UserNavigationInvolvement,
 };
 use url::Url;
 
 use crate::html::{HTMLElement, HyperlinkElementUtils};
+
+/// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
+/// Note: This helper runs the content-local prefix of the algorithm so content can resolve
+/// `_self`, `_parent`, and `_top` without a blocking round-trip. The user agent later continues
+/// the remaining target-name and new-top-level branches from the explicit request fields.
+fn choose_navigable_for_hyperlink_activation(
+    source_navigable_id: u64,
+    parent_navigable_id: Option<u64>,
+    top_level_navigable_id: u64,
+    target_name: &str,
+    noopener: bool,
+) -> Option<u64> {
+    // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
+    let normalized_target_name = if target_name.eq_ignore_ascii_case("_self") {
+        String::new()
+    } else {
+        target_name.to_owned()
+    };
+
+    // Step 8: "If chosen is null, then a new top-level traversable is being requested."
+    // Note: Content leaves this branch unresolved so the user agent can continue the navigation
+    // entrypoint asynchronously when a new top-level traversable is required.
+    if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
+        return None;
+    }
+
+    // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
+    if normalized_target_name.is_empty() {
+        return Some(source_navigable_id);
+    }
+
+    // Step 5: "Otherwise, if name is an ASCII case-insensitive match for \"_parent\", set chosen to currentNavigable's parent, if any, and currentNavigable otherwise."
+    if normalized_target_name.eq_ignore_ascii_case("_parent") {
+        return Some(parent_navigable_id.unwrap_or(source_navigable_id));
+    }
+
+    // Step 6: "Otherwise, if name is an ASCII case-insensitive match for \"_top\", set chosen to currentNavigable's traversable navigable."
+    if normalized_target_name.eq_ignore_ascii_case("_top") {
+        return Some(top_level_navigable_id);
+    }
+
+    // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for \"_blank\" and noopener is false, then set chosen to the result of finding a navigable by target name given name and currentNavigable."
+    // Note: Content does not own the full cross-process target-name registry, so unresolved names
+    // continue in the user agent.
+    None
+}
 
 /// <https://html.spec.whatwg.org/#htmlanchorelement>
 #[derive(Trace, Finalize, JsData)]
@@ -34,45 +79,12 @@ impl HTMLAnchorElement {
         self.html_element.element.has_attribute("download")
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
-    /// Note: This helper starts the algorithm in content and delegates the shared navigable
-    /// registry lookup and top-level traversable creation steps to the user-agent.
-    fn choose_navigable(
-        source_navigable_id: u64,
-        target_name: &str,
-        noopener: bool,
-        event_sender: &IpcSender<ContentEvent>,
-    ) -> JsResult<u64> {
-        // Note: The spec's local step structure is owned by this content-side entrypoint, while
-        // the shared navigable registry and traversable creation live in the user-agent.
-        let (reply_sender, reply_receiver) =
-            ipc::channel().map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
-
-        event_sender
-            .send(ContentEvent::ChooseNavigable(ChooseNavigableRequest {
-                source_navigable_id,
-                target_name: target_name.to_owned(),
-                noopener,
-                reply_sender,
-            }))
-            .map_err(|error| {
-                JsNativeError::typ()
-                    .with_message(format!("failed to send choose-navigable request: {error}"))
-            })?;
-
-        Ok(
-            reply_receiver
-                .recv()
-                .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?
-                .map(|response| response.navigable_id)
-                .map_err(|error| JsNativeError::typ().with_message(error))?,
-        )
-    }
-
     /// <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
     pub(crate) fn activation_behavior(
         &self,
         source_navigable_id: u64,
+        parent_navigable_id: Option<u64>,
+        top_level_navigable_id: u64,
         document_creation_url: &Url,
         _event: &JsObject,
         event_sender: &IpcSender<ContentEvent>,
@@ -107,21 +119,27 @@ impl HTMLAnchorElement {
             return Ok(());
         };
 
-        // Note: This continues #the-rules-for-choosing-a-navigable before the resulting
-        // navigation request is sent back to the user-agent's #navigate entrypoint.
-        let chosen_navigable_id = Self::choose_navigable(
+        let target = self.target();
+        let noopener = self.noopener();
+        let chosen_navigable_id = choose_navigable_for_hyperlink_activation(
             source_navigable_id,
-            &self.target(),
-            self.noopener(),
-            event_sender,
+            parent_navigable_id,
+            top_level_navigable_id,
+            &target,
+            noopener,
         );
+
+        // Note: Content sends the locally resolved target selection, when available, so the
+        // user agent can continue `navigate` from the remaining target-name and top-level-creation
+        // branches instead of repeating these local steps or blocking on a reply path.
         let request = NavigateRequest {
             navigation_id: Some(NavigationId::new()),
-            source_navigable_id: chosen_navigable_id?,
+            source_navigable_id,
+            chosen_navigable_id,
             destination_url,
-            target: self.target(),
+            target,
             user_involvement,
-            noopener: self.noopener(),
+            noopener,
         };
         event_sender
             .send(ContentEvent::NavigationRequested(request))

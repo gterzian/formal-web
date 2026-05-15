@@ -8,10 +8,9 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use embedder::{FinalizeNavigation, FormalWebUserEvent, UserEventDispatcher};
 use ipc_messages::{
     content::{
-        BeforeUnloadResult, Command as ContentCommand, DispatchEventEntry,
-        ChooseNavigableResponse, ContentNavigableId, CreateChildNavigableResponse,
-        DocumentFetchId, FetchRequest as ContentFetchRequest,
-        FetchResponse as ContentFetchResponse,
+        BeforeUnloadResult, ChildNavigableCreated, Command as ContentCommand,
+        ContentNavigableId, DispatchEventEntry, DocumentFetchId,
+        FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
         FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse,
         NavigateRequest, NavigationFetchId, NavigationId, UserNavigationInvolvement, WebviewId,
         WindowTimerKey, iframe_target_name, parse_iframe_target_name,
@@ -770,17 +769,10 @@ pub enum UserAgentCommand {
         timer_key: WindowTimerKey,
         nesting_level: u32,
     },
-    ChooseNavigable {
-        source_navigable_id: u64,
-        target_name: String,
-        noopener: bool,
-        reply: Sender<Result<ChooseNavigableResponse, String>>,
-    },
     CreateChildNavigable {
         parent_traversable_id: u64,
         content_navigable_id: ContentNavigableId,
         content_frame_id: FrameId,
-        reply: Sender<Result<CreateChildNavigableResponse, String>>,
     },
     IframeTraversableRemoved {
         parent_traversable_id: u64,
@@ -1233,31 +1225,16 @@ impl UserAgentWorker {
                         nesting_level,
                     );
                 }
-                UserAgentCommand::ChooseNavigable {
-                    source_navigable_id,
-                    target_name,
-                    noopener,
-                    reply,
-                } => {
-                    let result = self
-                        .choose_navigable(source_navigable_id, &target_name, noopener)
-                        .map(|navigable_id| ChooseNavigableResponse { navigable_id });
-                    let _ = reply.send(result);
-                }
                 UserAgentCommand::CreateChildNavigable {
                     parent_traversable_id,
                     content_navigable_id,
                     content_frame_id,
-                    reply,
                 } => {
-                    let result = self
-                        .create_new_child_navigable(
-                            parent_traversable_id,
-                            content_navigable_id,
-                            content_frame_id,
-                        )
-                        .map(|navigable_id| CreateChildNavigableResponse { navigable_id });
-                    let _ = reply.send(result);
+                    self.handle_create_child_navigable(
+                        parent_traversable_id,
+                        content_navigable_id,
+                        content_frame_id,
+                    );
                 }
                 UserAgentCommand::IframeTraversableRemoved {
                     parent_traversable_id,
@@ -1354,18 +1331,15 @@ impl UserAgentWorker {
 
     /// <https://html.spec.whatwg.org/multipage/#creating-a-new-top-level-traversable>
     fn create_new_top_level_traversable(&mut self, target_name: String) -> Result<u64, String> {
-        let traversable_id = self.state.ids.allocate_traversable_id();
-        let iframe_parent_traversable_id = parse_iframe_target_name(&target_name)
-            .map(|(parent_traversable_id, _content_navigable_id, _content_frame_id)| parent_traversable_id)
-            .filter(|parent_traversable_id| {
-                self.state
-                    .traversable_set
-                    .members
-                    .contains_key(parent_traversable_id)
-            });
+        if parse_iframe_target_name(&target_name).is_some() {
+            return Err(format!(
+                "synthetic iframe target {target_name:?} must be materialized by create-a-new-child-navigable"
+            ));
+        }
 
-        let frame_id = parse_iframe_target_name(&target_name)
-            .map(|(_, _, content_frame_id)| content_frame_id);
+        let traversable_id = self.state.ids.allocate_traversable_id();
+        let iframe_parent_traversable_id = None;
+        let frame_id = None;
 
         // Step 1: Let document be null.
         // Note: The null placeholder stays implicit; the Rust model materializes the initial
@@ -1402,6 +1376,8 @@ impl UserAgentWorker {
                 traversable_id,
                 document_id,
                 frame_id: None,
+                parent_traversable_id: None,
+                top_level_traversable_id: traversable_id,
             },
         )?;
 
@@ -1636,6 +1612,41 @@ impl UserAgentWorker {
         Ok(traversable_id)
     }
 
+    /// <https://html.spec.whatwg.org/#create-a-new-child-navigable>
+    /// Note: Content runs the local iframe/container work first and then asks the user agent to
+    /// continue the suffix that allocates the stable child navigable and session-history state.
+    fn handle_create_child_navigable(
+        &mut self,
+        parent_traversable_id: u64,
+        content_navigable_id: ContentNavigableId,
+        content_frame_id: FrameId,
+    ) {
+        let result: Result<(), String> = (|| {
+            let navigable_id = self.create_new_child_navigable(
+                parent_traversable_id,
+                content_navigable_id,
+                content_frame_id,
+            )?;
+            let command_sender = self.command_sender_for_traversable(parent_traversable_id)?;
+            command_sender
+                .send(EventLoopCommand::FireAndForget {
+                    command: ContentCommand::ChildNavigableCreated(ChildNavigableCreated {
+                        parent_traversable_id,
+                        content_navigable_id,
+                        content_frame_id,
+                        navigable_id,
+                    }),
+                })
+                .map_err(|error| {
+                    format!("failed to send child-navigable-created continuation: {error}")
+                })?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("failed to create child navigable: {error}");
+        }
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn create_navigation_params_by_fetching(
         &mut self,
@@ -1832,9 +1843,11 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
-    /// Note: Content starts this algorithm and delegates to this helper for shared target-name
-    /// lookup and top-level traversable creation against the user-agent's navigable registry.
-    fn choose_navigable(
+    /// Note: This helper continues the algorithm after content has already had a chance to run
+    /// the local `_self` / `_parent` / `_top` steps. The remaining work here is the shared
+    /// target-name lookup and new-top-level branch, plus defensive handling for callers that did
+    /// not provide a preselected navigable id.
+    fn continue_choosing_navigable_after_content_selection(
         &mut self,
         source_navigable_id: u64,
         target_name: &str,
@@ -1844,12 +1857,16 @@ impl UserAgentWorker {
         // string before the direct step checks below.
         let normalized_target_name = normalize_navigation_target_name(target_name);
 
-        // Step 8: "If chosen is null, then a new top-level traversable is being requested."
-        if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
-            return self.create_new_top_level_traversable(String::new());
+        // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
+        // Note: Content-driven callers are expected to resolve this branch locally. This fallback
+        // keeps browser-UI or legacy callers correct when they enter `navigate` without a
+        // preselected navigable id.
+        if normalized_target_name.is_empty() {
+            return Ok(source_navigable_id);
         }
 
         // Step 5: "Otherwise, if name is an ASCII case-insensitive match for \"_parent\", set chosen to currentNavigable's parent, if any, and currentNavigable otherwise."
+        // Note: Content-driven callers are expected to resolve this branch locally.
         if normalized_target_name.eq_ignore_ascii_case("_parent") {
             return Ok(
                 self.state
@@ -1861,6 +1878,7 @@ impl UserAgentWorker {
         }
 
         // Step 6: "Otherwise, if name is an ASCII case-insensitive match for \"_top\", set chosen to currentNavigable's traversable navigable."
+        // Note: Content-driven callers are expected to resolve this branch locally.
         if normalized_target_name.eq_ignore_ascii_case("_top") {
             let source_traversable_id = self.traversable_id_for_navigable(source_navigable_id)?;
             let top_level_traversable_id = self
@@ -1870,9 +1888,9 @@ impl UserAgentWorker {
             return Ok(top_level_traversable_id);
         }
 
-        // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
-        if normalized_target_name.is_empty() {
-            return Ok(source_navigable_id);
+        // Step 8: "If chosen is null, then a new top-level traversable is being requested."
+        if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
+            return self.create_new_top_level_traversable(String::new());
         }
 
         // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for \"_blank\" and noopener is false, then set chosen to the result of finding a navigable by target name given name and currentNavigable."
@@ -1880,6 +1898,12 @@ impl UserAgentWorker {
             find_navigable_by_target_name(&self.state, &normalized_target_name)
         {
             return Ok(chosen_navigable_id);
+        }
+
+        if parse_iframe_target_name(&normalized_target_name).is_some() {
+            return Err(format!(
+                "synthetic iframe target {normalized_target_name:?} was not materialized before navigate continued in the user agent"
+            ));
         }
 
         // Step 8: "If chosen is null, then a new top-level traversable is being requested."
@@ -1963,7 +1987,14 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#navigate>
     fn handle_navigate(&mut self, request: NavigateRequest) {
         let result: Result<(), String> = (|| {
-            let navigable_id = request.source_navigable_id;
+            let navigable_id = match request.chosen_navigable_id {
+                Some(chosen_navigable_id) => chosen_navigable_id,
+                None => self.continue_choosing_navigable_after_content_selection(
+                    request.source_navigable_id,
+                    &request.target,
+                    request.noopener,
+                )?,
+            };
             let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
             let navigation_id = request.navigation_id.unwrap_or_else(NavigationId::new);
             self.navigate(
@@ -2000,8 +2031,9 @@ impl UserAgentWorker {
         final_url: &str,
     ) -> Result<(), String> {
         // Step 1: "Let document be the new Document object."
-        // Note: `DocumentState` is the user-agent-side record for the document created by this
-        // algorithm; the content event loop later materializes the runtime document for it.
+        // Note: The user agent decides the browsing-context and event-loop placement for the new
+        // document here. `handle_navigation_fetch_completed` then allocates the corresponding
+        // `DocumentState` before the content event loop materializes the DOM-facing document.
 
         // Step 2: "Let targetNavigable be document's navigable."
         // Note: The caller passes the target traversable id explicitly.
@@ -2459,6 +2491,25 @@ impl UserAgentWorker {
             content_type: response.content_type.clone(),
             body: String::from_utf8_lossy(&response.body).into_owned(),
         };
+        let (traversable_browsing_context_id, traversable_event_loop_id, parent_traversable_id) =
+            self.state
+                .traversable_set
+                .members
+                .get(&pending.traversable_id)
+                .map(|t| (t.active_browsing_context_id, t.event_loop_id, t.parent_traversable_id))
+                .unwrap_or((None, 0, None));
+        let top_level_traversable_id = self
+            .state
+            .top_level_traversable_id(pending.traversable_id)
+            .unwrap_or(pending.traversable_id);
+        let document_state = DocumentState {
+            traversable_id: pending.traversable_id,
+            browsing_context_id: traversable_browsing_context_id,
+            event_loop_id: traversable_event_loop_id,
+            url: final_url.clone(),
+            is_initial_about_blank: false,
+        };
+        self.state.documents.insert(document_id, document_state.clone());
         match self.send_event_loop_command(
             &command_sender,
             ContentCommand::CreateLoadedDocument {
@@ -2466,26 +2517,11 @@ impl UserAgentWorker {
                 document_id,
                 frame_id,
                 response: loaded_response,
+                parent_traversable_id,
+                top_level_traversable_id,
             },
         ) {
             Ok(_) => {
-                let (traversable_browsing_context_id, traversable_event_loop_id) = self
-                    .state
-                    .traversable_set
-                    .members
-                    .get(&pending.traversable_id)
-                    .map(|t| (t.active_browsing_context_id, t.event_loop_id))
-                    .unwrap_or((None, 0));
-                self.state.documents.insert(
-                    document_id,
-                    DocumentState {
-                        traversable_id: pending.traversable_id,
-                        browsing_context_id: traversable_browsing_context_id,
-                        event_loop_id: traversable_event_loop_id,
-                        url: final_url.clone(),
-                        is_initial_about_blank: false,
-                    },
-                );
                 self.state.insert_pending_navigation_finalization(PendingNavigationFinalization {
                     document_id,
                     navigation_id: pending.navigation_id,
@@ -2501,6 +2537,7 @@ impl UserAgentWorker {
                 });
             }
             Err(error) => {
+                self.state.documents.remove(&document_id);
                 self.state
                     .set_traversable_ongoing_navigation(pending.traversable_id, None);
                 let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationFailed {

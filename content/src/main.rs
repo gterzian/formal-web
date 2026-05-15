@@ -11,7 +11,7 @@ pub mod webidl;
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
-    attach_same_origin_child_document_for_traversable,
+    attach_same_origin_child_document_for_traversable, complete_child_navigable_creation,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
@@ -24,8 +24,8 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
-    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
-    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
+    ChildNavigableCreated, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
+    DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
     SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
@@ -163,12 +163,13 @@ enum DeferredScriptState {
 
 #[derive(Clone)]
 pub(crate) struct NavigableContainerState {
-    navigable_id: u64,
+    navigable_id: Option<u64>,
     content_navigable_id: ContentNavigableId,
     content_frame_id: FrameId,
     content_frame_token: u64,
     current_key: String,
     cross_origin: bool,
+    child_creation_requested: bool,
 }
 
 struct PendingDocumentLoad {
@@ -371,6 +372,8 @@ impl NetProvider for ContentNetProvider {
 
 struct ContentDocument {
     traversable_id: u64,
+    parent_traversable_id: Option<u64>,
+    top_level_traversable_id: u64,
     frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
@@ -733,6 +736,8 @@ impl ContentRuntime {
         traversable_id: u64,
         document_id: u64,
         frame_id: Option<FrameId>,
+        parent_traversable_id: Option<u64>,
+        top_level_traversable_id: u64,
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
@@ -766,6 +771,8 @@ impl ContentRuntime {
             document_id,
             ContentDocument {
                 traversable_id,
+                parent_traversable_id,
+                top_level_traversable_id,
                 frame_id,
                 document,
                 settings,
@@ -795,6 +802,8 @@ impl ContentRuntime {
         document_id: u64,
         frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
+        parent_traversable_id: Option<u64>,
+        top_level_traversable_id: u64,
     ) -> Result<(), String> {
         let LoadedDocumentResponse {
             final_url,
@@ -833,6 +842,8 @@ impl ContentRuntime {
             document_id,
             ContentDocument {
                 traversable_id,
+                parent_traversable_id,
+                top_level_traversable_id,
                 frame_id,
                 document: Rc::clone(&document),
                 settings,
@@ -944,6 +955,8 @@ impl ContentRuntime {
             dispatch_ui_event(
                 document_id,
                 document.traversable_id,
+                document.parent_traversable_id,
+                document.top_level_traversable_id,
                 Rc::clone(&document.document),
                 &mut document.settings,
                 &self.event_sender,
@@ -1252,8 +1265,16 @@ impl ContentRuntime {
                 traversable_id,
                 document_id,
                 frame_id,
+                parent_traversable_id,
+                top_level_traversable_id,
             } => {
-                self.create_empty_document(traversable_id, document_id, frame_id)?;
+                self.create_empty_document(
+                    traversable_id,
+                    document_id,
+                    frame_id,
+                    parent_traversable_id,
+                    top_level_traversable_id,
+                )?;
                 Ok(true)
             }
             CreateLoadedDocument {
@@ -1261,8 +1282,21 @@ impl ContentRuntime {
                 document_id,
                 frame_id,
                 response,
+                parent_traversable_id,
+                top_level_traversable_id,
             } => {
-                self.create_loaded_document(traversable_id, document_id, frame_id, response)?;
+                self.create_loaded_document(
+                    traversable_id,
+                    document_id,
+                    frame_id,
+                    response,
+                    parent_traversable_id,
+                    top_level_traversable_id,
+                )?;
+                Ok(true)
+            }
+            ChildNavigableCreated(created) => {
+                complete_child_navigable_creation(self, created)?;
                 Ok(true)
             }
             DestroyDocument { document_id } => {

@@ -4,8 +4,7 @@ use embedder::{self, FormalWebUserEvent, UserEventDispatcher};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
-    Bootstrap, ChooseNavigableRequest, ClipboardReadRequest, ClipboardWriteRequest,
-    CreateChildNavigableRequest,
+    Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, CreateChildNavigableRequest,
     ColorScheme as MessageColorScheme, Command as ContentCommand, Event as ContentEvent,
     TraversableViewport, ViewportSnapshot,
 };
@@ -122,6 +121,7 @@ fn traversable_id_from_command(command: &ContentCommand) -> Option<u64> {
             traversable_id,
             document_id: _,
             frame_id: _,
+            ..
         }
         | ContentCommand::CreateLoadedDocument {
             traversable_id,
@@ -439,45 +439,18 @@ impl EventLoopWorker {
                     })
                     .map_err(|error| format!("failed to clear window timer: {error}"))?;
             }
-            ContentEvent::ChooseNavigable(ChooseNavigableRequest {
-                source_navigable_id,
-                target_name,
-                noopener,
-                reply_sender,
-            }) => {
-                let (reply, recv) = bounded(1);
-                self.user_agent_command_sender
-                    .send(UserAgentCommand::ChooseNavigable {
-                        source_navigable_id,
-                        target_name,
-                        noopener,
-                        reply,
-                    })
-                    .map_err(|error| format!("failed to send choose-navigable request: {error}"))?;
-                let result = recv.recv().map_err(|error| {
-                    format!("choose-navigable reply channel closed: {error}")
-                })?;
-                let _ = reply_sender.send(result);
-            }
             ContentEvent::CreateChildNavigable(CreateChildNavigableRequest {
                 parent_traversable_id,
                 content_navigable_id,
                 content_frame_id,
-                reply_sender,
             }) => {
-                let (reply, recv) = bounded(1);
                 self.user_agent_command_sender
                     .send(UserAgentCommand::CreateChildNavigable {
                         parent_traversable_id,
                         content_navigable_id,
                         content_frame_id,
-                        reply,
                     })
                     .map_err(|error| format!("failed to send create-child-navigable request: {error}"))?;
-                let result = recv.recv().map_err(|error| {
-                    format!("create-child-navigable reply channel closed: {error}")
-                })?;
-                let _ = reply_sender.send(result);
             }
             ContentEvent::NavigationRequested(request) => {
                 // Navigation start leaves the content event loop and reenters the user-agent

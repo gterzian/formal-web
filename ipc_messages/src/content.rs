@@ -108,28 +108,12 @@ pub struct NavigateRequest {
     #[serde(default)]
     pub navigation_id: Option<NavigationId>,
     pub source_navigable_id: u64,
+    #[serde(default)]
+    pub chosen_navigable_id: Option<u64>,
     pub destination_url: String,
     pub target: String,
     pub user_involvement: UserNavigationInvolvement,
     pub noopener: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChooseNavigableResponse {
-    pub navigable_id: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChooseNavigableRequest {
-    pub source_navigable_id: u64,
-    pub target_name: String,
-    pub noopener: bool,
-    pub reply_sender: IpcSender<Result<ChooseNavigableResponse, String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateChildNavigableResponse {
-    pub navigable_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,7 +121,14 @@ pub struct CreateChildNavigableRequest {
     pub parent_traversable_id: u64,
     pub content_navigable_id: ContentNavigableId,
     pub content_frame_id: FrameId,
-    pub reply_sender: IpcSender<Result<CreateChildNavigableResponse, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildNavigableCreated {
+    pub parent_traversable_id: u64,
+    pub content_navigable_id: ContentNavigableId,
+    pub content_frame_id: FrameId,
+    pub navigable_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -613,13 +604,22 @@ pub enum Command {
         traversable_id: u64,
         document_id: u64,
         frame_id: Option<FrameId>,
+        /// <https://html.spec.whatwg.org/multipage/#navigable>'s parent navigable id, if any.
+        parent_traversable_id: Option<u64>,
+        /// The root of this navigable's traversable navigable chain.
+        top_level_traversable_id: u64,
     },
     CreateLoadedDocument {
         traversable_id: u64,
         document_id: u64,
         frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
+        /// <https://html.spec.whatwg.org/multipage/#navigable>'s parent navigable id, if any.
+        parent_traversable_id: Option<u64>,
+        /// The root of this navigable's traversable navigable chain.
+        top_level_traversable_id: u64,
     },
+    ChildNavigableCreated(ChildNavigableCreated),
     DestroyDocument { document_id: u64 },
     EvaluateScript {
         traversable_id: u64,
@@ -658,7 +658,6 @@ pub enum Event {
     DocumentFetchRequested(FetchRequest),
     WindowTimerRequested(WindowTimerRequest),
     WindowTimerCleared(WindowTimerClearRequest),
-    ChooseNavigable(ChooseNavigableRequest),
     CreateChildNavigable(CreateChildNavigableRequest),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
@@ -675,9 +674,9 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::{
-        Command, DocumentFetchId, FetchResponse, FontTransportReceiver, FontTransportSender,
-        FrameId, LoadedDocumentResponse, PaintFrame, PaintTransportSummary,
-        PlaceholderFrameMapping, SceneSummary, WebviewId,
+        ChildNavigableCreated, Command, DocumentFetchId, FetchResponse, FontTransportReceiver,
+        FontTransportSender, FrameId, LoadedDocumentResponse, PaintFrame,
+        PaintTransportSummary, PlaceholderFrameMapping, SceneSummary, WebviewId,
     };
     use anyrender::{
         Glyph, PaintScene, Scene,
@@ -877,6 +876,8 @@ mod tests {
                 content_type: String::from("text/html; charset=utf-8"),
                 body: String::from("<p>ok</p>"),
             },
+            parent_traversable_id: Some(2),
+            top_level_traversable_id: 1,
         })
         .expect("create-loaded-document should serialize");
         let decoded: Command =
@@ -888,10 +889,14 @@ mod tests {
                 document_id,
                 frame_id,
                 response,
+                parent_traversable_id,
+                top_level_traversable_id,
             } => {
                 assert_eq!(traversable_id, 3);
                 assert_eq!(document_id, 7);
                 assert_eq!(frame_id, None);
+                assert_eq!(parent_traversable_id, Some(2));
+                assert_eq!(top_level_traversable_id, 1);
                 assert_eq!(
                     response,
                     LoadedDocumentResponse {
@@ -903,6 +908,31 @@ mod tests {
                 );
             }
             other => panic!("expected CreateLoadedDocument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn child_navigable_created_command_round_trips_ids() {
+        let encoded = postcard::to_allocvec(&Command::ChildNavigableCreated(
+            ChildNavigableCreated {
+                parent_traversable_id: 11,
+                content_navigable_id: super::ContentNavigableId::from_u128(12),
+                content_frame_id: FrameId::from_u128(13),
+                navigable_id: 14,
+            },
+        ))
+        .expect("child-navigable-created should serialize");
+        let decoded: Command =
+            postcard::from_bytes(&encoded).expect("child-navigable-created should deserialize");
+
+        match decoded {
+            Command::ChildNavigableCreated(created) => {
+                assert_eq!(created.parent_traversable_id, 11);
+                assert_eq!(created.content_navigable_id, super::ContentNavigableId::from_u128(12));
+                assert_eq!(created.content_frame_id, FrameId::from_u128(13));
+                assert_eq!(created.navigable_id, 14);
+            }
+            other => panic!("expected ChildNavigableCreated, got {other:?}"),
         }
     }
 
