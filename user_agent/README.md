@@ -20,6 +20,10 @@ When a cross-document navigation runs `beforeunload`, fan it out across the trav
 
 Keep traversable target-name bookkeeping in this crate so iframe-host cleanup can stop the correct event loop without pushing that state into the embedder or content side.
 
+When creating an iframe child traversable placeholder, emit the embedder registration signal for that traversable target name so the webview compositor can map child paints back into the parent iframe host instead of treating the child traversable as an unrelated root webview.
+
+When retiring an iframe traversable, remove that traversable from shared event-loop ownership first and stop the event loop only when it no longer owns any traversables; stopping a shared parent/child event loop from within iframe-removal continuations can deadlock navigation teardown.
+
 Keep the spec-facing browser-global concepts in `UserAgentState` itself: the browsing-context-group set, the top-level traversable set, allocator state, and the pending navigation/fetch continuations. Treat helper hash maps in that file as model-local indices derived from those concepts rather than as replacements for them.
 
 Keep pending navigation state as explicit spec-facing request, snapshot, history-entry, and history-handling records so finalization can follow HTML's `push` versus `replace` session-history steps without flattening those concepts into ad hoc fields.

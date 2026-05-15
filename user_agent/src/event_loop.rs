@@ -212,7 +212,7 @@ impl EventLoopWorker {
 
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
-        child_process.arg0(format!("formal-web-content-{event_loop_id}"));
+        child_process.arg0("formal-web:content");
         child_process.arg("--content-token").arg(&token);
 
         let child = child_process
