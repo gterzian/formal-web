@@ -41,8 +41,15 @@ uuid_id!(DocumentFetchId);
 uuid_id!(NavigationFetchId);
 uuid_id!(WindowTimerKey);
 uuid_id!(ContentNavigableId);
+uuid_id!(NavigableId);
 uuid_id!(FrameId);
 uuid_id!(NavigationId);
+
+impl From<ContentNavigableId> for NavigableId {
+    fn from(value: ContentNavigableId) -> Self {
+        Self(value.0)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ColorScheme {
@@ -107,9 +114,9 @@ pub enum UserNavigationInvolvement {
 pub struct NavigateRequest {
     #[serde(default)]
     pub navigation_id: Option<NavigationId>,
-    pub source_navigable_id: u64,
+    pub source_navigable_id: NavigableId,
     #[serde(default)]
-    pub chosen_navigable_id: Option<u64>,
+    pub chosen_navigable_id: Option<NavigableId>,
     pub destination_url: String,
     pub target: String,
     pub user_involvement: UserNavigationInvolvement,
@@ -121,14 +128,6 @@ pub struct CreateChildNavigableRequest {
     pub parent_traversable_id: u64,
     pub content_navigable_id: ContentNavigableId,
     pub content_frame_id: FrameId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChildNavigableCreated {
-    pub parent_traversable_id: u64,
-    pub content_navigable_id: ContentNavigableId,
-    pub content_frame_id: FrameId,
-    pub navigable_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -619,7 +618,6 @@ pub enum Command {
         /// The root of this navigable's traversable navigable chain.
         top_level_traversable_id: u64,
     },
-    ChildNavigableCreated(ChildNavigableCreated),
     DestroyDocument { document_id: u64 },
     EvaluateScript {
         traversable_id: u64,
@@ -674,9 +672,9 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChildNavigableCreated, Command, DocumentFetchId, FetchResponse, FontTransportReceiver,
-        FontTransportSender, FrameId, LoadedDocumentResponse, PaintFrame,
-        PaintTransportSummary, PlaceholderFrameMapping, SceneSummary, WebviewId,
+        Command, DocumentFetchId, FetchResponse, FontTransportReceiver, FontTransportSender,
+        FrameId, LoadedDocumentResponse, PaintFrame, PaintTransportSummary,
+        PlaceholderFrameMapping, SceneSummary, WebviewId,
     };
     use anyrender::{
         Glyph, PaintScene, Scene,
@@ -908,31 +906,6 @@ mod tests {
                 );
             }
             other => panic!("expected CreateLoadedDocument, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn child_navigable_created_command_round_trips_ids() {
-        let encoded = postcard::to_allocvec(&Command::ChildNavigableCreated(
-            ChildNavigableCreated {
-                parent_traversable_id: 11,
-                content_navigable_id: super::ContentNavigableId::from_u128(12),
-                content_frame_id: FrameId::from_u128(13),
-                navigable_id: 14,
-            },
-        ))
-        .expect("child-navigable-created should serialize");
-        let decoded: Command =
-            postcard::from_bytes(&encoded).expect("child-navigable-created should deserialize");
-
-        match decoded {
-            Command::ChildNavigableCreated(created) => {
-                assert_eq!(created.parent_traversable_id, 11);
-                assert_eq!(created.content_navigable_id, super::ContentNavigableId::from_u128(12));
-                assert_eq!(created.content_frame_id, FrameId::from_u128(13));
-                assert_eq!(created.navigable_id, 14);
-            }
-            other => panic!("expected ChildNavigableCreated, got {other:?}"),
         }
     }
 

@@ -5,7 +5,7 @@ use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    Event as ContentEvent, NavigateRequest, NavigationId, UserNavigationInvolvement,
+    Event as ContentEvent, NavigableId, NavigateRequest, NavigationId, UserNavigationInvolvement,
 };
 use url::Url;
 
@@ -16,12 +16,12 @@ use crate::html::{HTMLElement, HyperlinkElementUtils};
 /// `_self`, `_parent`, and `_top` without a blocking round-trip. The user agent later continues
 /// the remaining target-name and new-top-level branches from the explicit request fields.
 fn choose_navigable_for_hyperlink_activation(
-    source_navigable_id: u64,
-    parent_navigable_id: Option<u64>,
-    top_level_navigable_id: u64,
+    source_navigable_id: NavigableId,
+    parent_navigable_id: Option<NavigableId>,
+    top_level_navigable_id: NavigableId,
     target_name: &str,
     noopener: bool,
-) -> Option<u64> {
+) -> Option<NavigableId> {
     // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
     let normalized_target_name = if target_name.eq_ignore_ascii_case("_self") {
         String::new()
@@ -82,9 +82,9 @@ impl HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
     pub(crate) fn activation_behavior(
         &self,
-        source_navigable_id: u64,
-        parent_navigable_id: Option<u64>,
-        top_level_navigable_id: u64,
+        source_navigable_id: NavigableId,
+        parent_navigable_id: Option<NavigableId>,
+        top_level_navigable_id: NavigableId,
         document_creation_url: &Url,
         _event: &JsObject,
         event_sender: &IpcSender<ContentEvent>,

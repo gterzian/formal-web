@@ -205,7 +205,7 @@ struct PendingAutomationNavigation {
 #[derive(Clone, Copy)]
 struct ChildNavigableHostTarget {
     parent_traversable_id: WebviewId,
-    content_navigable_id: ipc_messages::content::FrameId,
+    content_frame_id: ipc_messages::content::FrameId,
 }
 
 #[derive(Default)]
@@ -304,7 +304,7 @@ fn parse_child_navigable_host_target(target_name: &str) -> Option<ChildNavigable
 
     Some(ChildNavigableHostTarget {
         parent_traversable_id: WebviewId(parent_traversable_id),
-        content_navigable_id: content_frame_id,
+        content_frame_id,
     })
 }
 
@@ -1633,7 +1633,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         provider.register_child_navigable_host(
                             webview_id,
                             child_navigable_host.parent_traversable_id,
-                            child_navigable_host.content_navigable_id,
+                            child_navigable_host.content_frame_id,
                         );
                     }
                 } else {

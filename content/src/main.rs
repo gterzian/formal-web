@@ -11,7 +11,7 @@ pub mod webidl;
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
-    attach_same_origin_child_document_for_traversable, complete_child_navigable_creation,
+    attach_same_origin_child_document_for_traversable,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
@@ -24,16 +24,16 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
-    ChildNavigableCreated, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
-    DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
-    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
+    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer, SetTraversableViewport,
+    SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
     ContentNavigableId, DocumentFetchId, Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FontTransportSender, FrameId, LoadedDocumentResponse, PaintFrame,
+    FontTransportSender, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
     PlaceholderFrameMapping, RecordedScene, ScriptEvaluationResult, TraversableViewport,
     ViewportSnapshot, WebviewId, WindowTimerKey,
 };
@@ -163,13 +163,11 @@ enum DeferredScriptState {
 
 #[derive(Clone)]
 pub(crate) struct NavigableContainerState {
-    navigable_id: Option<u64>,
-    content_navigable_id: ContentNavigableId,
-    content_frame_id: FrameId,
-    content_frame_token: u64,
-    current_key: String,
-    cross_origin: bool,
-    child_creation_requested: bool,
+    pub(crate) content_navigable_id: ContentNavigableId,
+    pub(crate) content_frame_id: FrameId,
+    pub(crate) content_frame_token: u64,
+    pub(crate) current_key: String,
+    pub(crate) cross_origin: bool,
 }
 
 struct PendingDocumentLoad {
@@ -954,9 +952,9 @@ impl ContentRuntime {
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
-                document.traversable_id,
-                document.parent_traversable_id,
-                document.top_level_traversable_id,
+                NavigableId::from_u128(document.traversable_id as u128),
+                document.parent_traversable_id.map(|id| NavigableId::from_u128(id as u128)),
+                NavigableId::from_u128(document.top_level_traversable_id as u128),
                 Rc::clone(&document.document),
                 &mut document.settings,
                 &self.event_sender,
@@ -1293,10 +1291,6 @@ impl ContentRuntime {
                     parent_traversable_id,
                     top_level_traversable_id,
                 )?;
-                Ok(true)
-            }
-            ChildNavigableCreated(created) => {
-                complete_child_navigable_creation(self, created)?;
                 Ok(true)
             }
             DestroyDocument { document_id } => {

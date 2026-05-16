@@ -6,7 +6,7 @@ use blitz_traits::events::UiEvent;
 use blitz_traits::shell::ColorScheme;
 use compositor::{Compositor, VisibleFrameViewport};
 use ipc_messages::content::{
-    FontTransportReceiver, FrameId, NavigateRequest, PaintFrame,
+    FontTransportReceiver, FrameId, NavigableId, NavigateRequest, PaintFrame,
     UserNavigationInvolvement, WebviewId,
 };
 use std::env;
@@ -34,7 +34,7 @@ impl Default for WebviewState {
 #[derive(Clone, Copy)]
 struct ChildNavigableHost {
     parent_traversable_id: WebviewId,
-    content_navigable_id: FrameId,
+    content_frame_id: FrameId,
 }
 
 #[derive(Clone, PartialEq)]
@@ -130,15 +130,18 @@ impl WebviewProvider {
 
     pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
         match webview_id {
-            Some(webview_id) => self.user_agent.start_navigation(NavigateRequest {
-                navigation_id: None,
-                source_navigable_id: webview_id.0,
-                chosen_navigable_id: None,
-                destination_url: url.to_owned(),
-                target: String::new(),
-                user_involvement: UserNavigationInvolvement::BrowserUi,
-                noopener: false,
-            }),
+            Some(webview_id) => {
+                let navigable_id = NavigableId::from_u128(webview_id.0 as u128);
+                self.user_agent.start_navigation(NavigateRequest {
+                    navigation_id: None,
+                    source_navigable_id: navigable_id,
+                    chosen_navigable_id: None,
+                    destination_url: url.to_owned(),
+                    target: String::new(),
+                    user_involvement: UserNavigationInvolvement::BrowserUi,
+                    noopener: false,
+                })
+            },
             None => self.user_agent.start_top_level_traversable(url.to_owned()),
         }
     }
@@ -192,17 +195,17 @@ impl WebviewProvider {
         &mut self,
         child_host_webview_id: WebviewId,
         parent_traversable_id: WebviewId,
-        content_navigable_id: FrameId,
+        content_frame_id: FrameId,
     ) {
         self.child_navigable_hosts_by_webview.insert(
             child_host_webview_id,
             ChildNavigableHost {
                 parent_traversable_id,
-                content_navigable_id,
+                content_frame_id,
             },
         );
         self.child_host_webviews_by_content_navigable
-            .insert(content_navigable_id, child_host_webview_id);
+            .insert(content_frame_id, child_host_webview_id);
     }
 
     pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
@@ -211,7 +214,7 @@ impl WebviewProvider {
             self.child_navigable_hosts_by_webview.get(&frame.traversable_id)
         {
             frame.traversable_id = child_navigable_host.parent_traversable_id;
-            frame.frame_id = child_navigable_host.content_navigable_id;
+            frame.frame_id = child_navigable_host.content_frame_id;
         }
         let traversable_id = frame.traversable_id;
         let frame_id = frame.frame_id;
@@ -250,7 +253,7 @@ impl WebviewProvider {
                 .or_default();
             state
                 .compositor
-                .note_child_navigation_finalized(child_navigable_host.content_navigable_id);
+                .note_child_navigation_finalized(child_navigable_host.content_frame_id);
             return;
         }
 

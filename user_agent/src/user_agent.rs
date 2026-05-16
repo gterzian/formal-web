@@ -8,11 +8,11 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use embedder::{FinalizeNavigation, FormalWebUserEvent, UserEventDispatcher};
 use ipc_messages::{
     content::{
-        BeforeUnloadResult, ChildNavigableCreated, Command as ContentCommand,
-        ContentNavigableId, DispatchEventEntry, DocumentFetchId,
+        BeforeUnloadResult, Command as ContentCommand, ContentNavigableId,
+        DispatchEventEntry, DocumentFetchId,
         FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
         FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse,
-        NavigateRequest, NavigationFetchId, NavigationId, UserNavigationInvolvement, WebviewId,
+        NavigableId, NavigateRequest, NavigationFetchId, NavigationId, UserNavigationInvolvement, WebviewId,
         WindowTimerKey, iframe_target_name, parse_iframe_target_name,
     },
 };
@@ -324,6 +324,8 @@ pub struct UserAgentState {
     pub traversable_set: TraversableSet,
     /// <https://html.spec.whatwg.org/multipage/#navigable>
     pub navigables: HashMap<u64, Navigable>,
+    /// Lookup from IPC-facing navigable UUIDs to user-agent internal traversable ids.
+    pub internal_navigable_ids_by_public_id: HashMap<NavigableId, u64>,
     /// <https://html.spec.whatwg.org/multipage/#tlbc-group>
     pub top_level_browsing_context_group_ids: HashMap<u64, u64>,
     /// map from Rust worker handles to the owned event-loop workers.
@@ -447,6 +449,7 @@ impl Default for UserAgentState {
             browsing_context_group_set: BrowsingContextGroupSet::default(),
             traversable_set: TraversableSet::default(),
             navigables: HashMap::new(),
+            internal_navigable_ids_by_public_id: HashMap::new(),
             top_level_browsing_context_group_ids: HashMap::new(),
             event_loops: HashMap::new(),
             handles_by_event_loop_id: HashMap::new(),
@@ -714,6 +717,8 @@ impl UserAgentState {
 
         self.traversable_set.members.remove(&traversable_id);
         self.navigables.remove(&traversable_id);
+        self.internal_navigable_ids_by_public_id
+            .retain(|_, candidate_traversable_id| *candidate_traversable_id != traversable_id);
         self.traversable_handles.remove(&traversable_id);
         self.traversable_target_names.remove(&traversable_id);
         self.active_documents_by_traversable.remove(&traversable_id);
@@ -1484,6 +1489,9 @@ impl UserAgentWorker {
                 traversable: Some(traversable),
             },
         );
+        self.state
+            .internal_navigable_ids_by_public_id
+            .insert(NavigableId::from_u128(traversable_id as u128), traversable_id);
         if target_name_keeps_browser_ui_focus(&target_name) {
             self.state.set_active_top_level_traversable(traversable_id);
         }
@@ -1527,6 +1535,9 @@ impl UserAgentWorker {
             content_frame_id,
         );
         if let Some(navigable_id) = find_navigable_by_target_name(&self.state, &target_name) {
+            self.state
+                .internal_navigable_ids_by_public_id
+                .insert(content_navigable_id.into(), navigable_id);
             return Ok(navigable_id);
         }
 
@@ -1621,6 +1632,9 @@ impl UserAgentWorker {
             },
         );
         self.state
+            .internal_navigable_ids_by_public_id
+            .insert(content_navigable_id.into(), traversable_id);
+        self.state
             .event_loops
             .get_mut(&parent_handle)
             .ok_or_else(|| format!("missing parent event loop handle {parent_handle}"))?
@@ -1645,27 +1659,11 @@ impl UserAgentWorker {
         content_navigable_id: ContentNavigableId,
         content_frame_id: FrameId,
     ) {
-        let result: Result<(), String> = (|| {
-            let navigable_id = self.create_new_child_navigable(
-                parent_traversable_id,
-                content_navigable_id,
-                content_frame_id,
-            )?;
-            let command_sender = self.command_sender_for_traversable(parent_traversable_id)?;
-            command_sender
-                .send(EventLoopCommand::FireAndForget {
-                    command: ContentCommand::ChildNavigableCreated(ChildNavigableCreated {
-                        parent_traversable_id,
-                        content_navigable_id,
-                        content_frame_id,
-                        navigable_id,
-                    }),
-                })
-                .map_err(|error| {
-                    format!("failed to send child-navigable-created continuation: {error}")
-                })?;
-            Ok(())
-        })();
+        let result = self.create_new_child_navigable(
+            parent_traversable_id,
+            content_navigable_id,
+            content_frame_id,
+        );
         if let Err(error) = result {
             eprintln!("failed to create child navigable: {error}");
         }
@@ -1972,10 +1970,12 @@ impl UserAgentWorker {
     /// not provide a preselected navigable id.
     fn continue_choosing_navigable_after_content_selection(
         &mut self,
-        source_navigable_id: u64,
+        source_navigable_id: NavigableId,
         target_name: &str,
         noopener: bool,
-    ) -> Result<u64, String> {
+    ) -> Result<NavigableId, String> {
+        let source_navigable_id_u64 = self.resolve_internal_navigable_id(source_navigable_id)?;
+        
         // Note: `normalize_navigation_target_name` folds the `_self` special case into the empty
         // string before the direct step checks below.
         let normalized_target_name = normalize_navigation_target_name(target_name);
@@ -1991,36 +1991,36 @@ impl UserAgentWorker {
         // Step 5: "Otherwise, if name is an ASCII case-insensitive match for \"_parent\", set chosen to currentNavigable's parent, if any, and currentNavigable otherwise."
         // Note: Content-driven callers are expected to resolve this branch locally.
         if normalized_target_name.eq_ignore_ascii_case("_parent") {
-            return Ok(
-                self.state
-                    .navigables
-                    .get(&source_navigable_id)
-                    .and_then(|navigable| navigable.parent_navigable_id)
-                    .unwrap_or(source_navigable_id),
-            );
+            let result = self.state
+                .navigables
+                .get(&source_navigable_id_u64)
+                .and_then(|navigable| navigable.parent_navigable_id)
+                .unwrap_or(source_navigable_id_u64);
+            return Ok(NavigableId::from_u128(result as u128));
         }
 
         // Step 6: "Otherwise, if name is an ASCII case-insensitive match for \"_top\", set chosen to currentNavigable's traversable navigable."
         // Note: Content-driven callers are expected to resolve this branch locally.
         if normalized_target_name.eq_ignore_ascii_case("_top") {
-            let source_traversable_id = self.traversable_id_for_navigable(source_navigable_id)?;
+            let source_traversable_id = self.traversable_id_for_navigable(source_navigable_id_u64)?;
             let top_level_traversable_id = self
                 .state
                 .top_level_traversable_id(source_traversable_id)
                 .unwrap_or(source_traversable_id);
-            return Ok(top_level_traversable_id);
+            return Ok(NavigableId::from_u128(top_level_traversable_id as u128));
         }
 
         // Step 8: "If chosen is null, then a new top-level traversable is being requested."
         if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
-            return self.create_new_top_level_traversable(String::new());
+            let new_traversable_id = self.create_new_top_level_traversable(String::new())?;
+            return Ok(NavigableId::from_u128(new_traversable_id as u128));
         }
 
         // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for \"_blank\" and noopener is false, then set chosen to the result of finding a navigable by target name given name and currentNavigable."
         if let Some(chosen_navigable_id) =
             find_navigable_by_target_name(&self.state, &normalized_target_name)
         {
-            return Ok(chosen_navigable_id);
+            return Ok(NavigableId::from_u128(chosen_navigable_id as u128));
         }
 
         if parse_iframe_target_name(&normalized_target_name).is_some() {
@@ -2030,7 +2030,8 @@ impl UserAgentWorker {
         }
 
         // Step 8: "If chosen is null, then a new top-level traversable is being requested."
-        self.create_new_top_level_traversable(normalized_target_name)
+        let new_traversable_id = self.create_new_top_level_traversable(normalized_target_name)?;
+        Ok(NavigableId::from_u128(new_traversable_id as u128))
     }
 
     fn traversable_id_for_navigable(&self, navigable_id: u64) -> Result<u64, String> {
@@ -2039,6 +2040,28 @@ impl UserAgentWorker {
             .get(&navigable_id)
             .and_then(|navigable| navigable.traversable.as_ref().map(|traversable| traversable.id))
             .ok_or_else(|| format!("navigable {navigable_id} is not a traversable navigable"))
+    }
+
+    fn resolve_internal_navigable_id(&self, public_id: NavigableId) -> Result<u64, String> {
+        if let Some(internal_id) = self
+            .state
+            .internal_navigable_ids_by_public_id
+            .get(&public_id)
+            .copied()
+        {
+            return Ok(internal_id);
+        }
+
+        let fallback = public_id.0.as_u128();
+        if fallback > u64::MAX as u128 {
+            return Err(format!("unknown navigable id: {public_id}"));
+        }
+        let internal_id = fallback as u64;
+        if self.state.navigables.contains_key(&internal_id) {
+            return Ok(internal_id);
+        }
+
+        Err(format!("unknown navigable id: {public_id}"))
     }
 
     /// removing an event-loop worker and every derived index owned by it.
@@ -2121,10 +2144,11 @@ impl UserAgentWorker {
                     request.noopener,
                 )?,
             };
-            let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
+            let navigable_id_u64 = self.resolve_internal_navigable_id(navigable_id)?;
+            let traversable_id = self.traversable_id_for_navigable(navigable_id_u64)?;
             let navigation_id = request.navigation_id.unwrap_or_else(NavigationId::new);
             self.navigate(
-                navigable_id,
+                navigable_id_u64,
                 request.destination_url.clone(),
                 request.user_involvement.clone(),
                 navigation_id,
