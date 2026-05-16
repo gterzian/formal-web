@@ -1769,6 +1769,7 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
+    /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn create_navigation_params_by_fetching(
         &mut self,
         navigation_id: NavigationId,
@@ -1785,7 +1786,11 @@ impl UserAgentWorker {
             .active_documents_by_traversable
             .get(&traversable_id)
             .copied();
-        // Step 3: Let request be a new request.
+        // Step 2: "Let documentResource be entry's document state's resource."
+        // TODO: Navigation params do not yet carry a document resource; POST navigations and
+        // reload-pending are not yet supported.
+
+        // Step 3: "Let request be a new request..."
         let request = NavigationRequest::for_destination_url(destination_url, &user_involvement);
         // `PendingNavigationFetch` keeps the request plus the source/target snapshot params
         // that the response-side continuation needs to resume the algorithm after the fetch returns.
@@ -1821,6 +1826,11 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate>
+    /// Note: Steps 1–18 that require access to the source document or the navigable's active
+    /// window (sandboxing, fragment navigation, historyHandling auto-resolution,
+    /// targetSnapshotParams, and the Navigation API fire-navigate event) are executed in the
+    /// content process before sending the `NavigateRequest` IPC. This function continues from
+    /// step 19.
     fn navigate(
         &mut self,
         navigable_id: u64,
@@ -1829,6 +1839,8 @@ impl UserAgentWorker {
         navigation_id: NavigationId,
     ) -> Result<(), String> {
         let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
+        // Note: The inclusive-descendant navigable set needed for step 23a is pre-computed here
+        // before setting the ongoing navigation so that it reflects the current tree state.
         let beforeunload_navigable_ids = std::iter::once(navigable_id)
             .chain(descendant_navigable_ids(&self.state, navigable_id))
             .collect::<Vec<_>>();
@@ -1844,9 +1856,11 @@ impl UserAgentWorker {
             })
             .collect::<Vec<_>>();
 
-        // Step 16: In parallel, run these steps:
+        // Step 19: "Set the ongoing navigation for navigable to navigationId."
         self.state
             .set_traversable_ongoing_navigation(traversable_id, Some(navigation_id));
+
+        // Step 23: "In parallel, run these steps:"
 
         if !beforeunload_navigable_ids.is_empty() {
             self.check_if_unloading_is_canceled(
@@ -1875,8 +1889,8 @@ impl UserAgentWorker {
         user_involvement: UserNavigationInvolvement,
         navigables_that_need_before_unload: Vec<u64>,
     ) -> Result<(), String> {
-        // Step 1: Let documentsToFireBeforeunload be the active document of each item in
-        // navigablesThatNeedBeforeUnload.
+        // Step 1: "Let documentsToFireBeforeunload be the active document of each item in
+        // navigablesThatNeedBeforeUnload."
         let documents_to_fire_beforeunload = navigables_that_need_before_unload
             .iter()
             .filter_map(|candidate_navigable_id| {
@@ -1887,8 +1901,14 @@ impl UserAgentWorker {
             })
             .collect::<Vec<_>>();
 
-        // A document can currently be reachable through multiple candidate navigables during
-        // transitional state updates. Dispatch beforeunload once per unique document id.
+        // Step 2: "Let unloadPromptShown be false."
+        // Step 3: "Let finalStatus be 'continue'."
+        // Note: These transient locals are replaced by a `PendingBeforeUnloadNavigation` entry
+        // that accumulates per-document results asynchronously as each content event loop
+        // reports its before-unload outcome.
+
+        // Note: A document can currently be reachable through multiple candidate navigables
+        // during transitional state updates. Dispatch beforeunload once per unique document id.
         let mut beforeunload_targets = HashMap::new();
         for candidate_navigable_id in &navigables_that_need_before_unload {
             let Ok(candidate_traversable_id) = self.traversable_id_for_navigable(*candidate_navigable_id)
@@ -1939,12 +1959,18 @@ impl UserAgentWorker {
         Ok(())
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
+    /// <https://html.spec.whatwg.org/multipage/#navigate>
+    /// Note: This function is the async continuation of step 23a–b of the navigate algorithm.
+    /// It is invoked once all before-unload responses for the navigable's inclusive descendants
+    /// have been collected, and either proceeds to step 23q (create navigation params by
+    /// fetching) or abandons the navigation if it was canceled or superseded.
     fn continue_navigation_after_before_unload(
         &mut self,
         pending: PendingBeforeUnloadNavigation,
     ) -> Result<(), String> {
         let traversable_id = self.traversable_id_for_navigable(pending.navigable_id)?;
+        // Step 23b: "If unloadPromptCanceled is not 'continue', or navigable's ongoing
+        // navigation is no longer navigationId: ... abort these steps."
         let navigation_is_current = self
             .state
             .traversable_set
@@ -1955,6 +1981,9 @@ impl UserAgentWorker {
         if !navigation_is_current {
             return Ok(());
         }
+
+        // Step 23q: "Otherwise: Let navigationParams be the result of creating navigation
+        // params by fetching..."
         self.create_navigation_params_by_fetching(
             pending.navigation_id,
             traversable_id,
@@ -2175,19 +2204,21 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>
+    /// Note: Only the user-agent-owned steps of this algorithm are executed here: determining
+    /// the browsing context to use (via
+    /// <https://html.spec.whatwg.org/multipage/#obtain-browsing-context-navigation>) and, for
+    /// cross-origin child navigables, selecting a new agent cluster and event loop (step 7).
+    /// Document object construction itself runs in the content process.
     fn initialise_the_document_object(
         &mut self,
         traversable_id: u64,
         final_url: &str,
     ) -> Result<Option<u64>, String> {
-        // Step 1: "Let document be the new Document object."
-        // Note: The user agent decides the browsing-context and event-loop placement for the new
-        // document here. `handle_navigation_fetch_completed` then allocates the corresponding
-        // `DocumentState` before the content event loop materializes the DOM-facing document.
-
-        // Step 2: "Let targetNavigable be document's navigable."
-        // Note: The caller passes the target traversable id explicitly.
-
+        // Step 1: "Let browsingContext be the result of obtaining a browsing context to use for
+        // a navigation response given navigationParams."
+        // Note: `obtain_browsing_context_to_use_for_navigation_response` implements the
+        // `#obtain-browsing-context-navigation` algorithm; its `swapped_group` field captures
+        // whether a browsing-context-group switch is needed for top-level traversables.
         let browsing_context_selection =
             self.obtain_browsing_context_to_use_for_navigation_response(traversable_id, final_url)?;
         let parent_traversable_id = self
@@ -2198,10 +2229,10 @@ impl UserAgentWorker {
             .and_then(|t| t.parent_traversable_id);
 
         let needs_new_event_loop = if let Some(parent_id) = parent_traversable_id {
-            // Step 3: "If targetNavigable's parent is null, then return."
-            // Note: Child navigables continue with the parent-document site check below.
+            // Note: Child navigables check whether the parent document and the new document are
+            // cross-origin. If they are, step 7 ("Otherwise") of the algorithm requires a new
+            // agent, realized here as a new content process / event loop.
 
-            // Step 4: "Let parentDocument be targetNavigable's parent's active document."
             let parent_document_url = self
                 .state
                 .active_documents_by_traversable
@@ -2215,8 +2246,10 @@ impl UserAgentWorker {
                 ));
             }
 
-            // Step 5: "If parentDocument and document are same-site, then keep targetNavigable in
-            // the parent's agent/event-loop boundary."
+            // Step 7: "Otherwise:" — the active document is not initial about:blank or is not
+            // same-origin-domain with the navigation origin, so a new agent is required.
+            // Note: The cross-origin check here approximates the same-origin-domain condition
+            // used in step 6 of the spec.
             is_cross_origin_navigation(&parent_document_url, final_url)?
         } else {
             browsing_context_selection.swapped_group
@@ -2226,7 +2259,9 @@ impl UserAgentWorker {
             return Ok(Some(browsing_context_selection.browsing_context_id));
         }
 
-        // Step 6: "Otherwise, select a new agent cluster and event loop for document."
+        // Step 7 (continued): A new agent/event loop is required. In this architecture that means
+        // spawning a new content process and reassigning the traversable to its event loop before
+        // `CreateLoadedDocument` is dispatched.
         // Note: The model materializes this by creating a new agent and reassigning the
         // traversable to that new event loop before dispatching CreateLoadedDocument.
         let old_handle = self
@@ -2320,7 +2355,19 @@ impl UserAgentWorker {
         &mut self,
         finalized: ContentFinalizeNavigation,
     ) -> Result<(), String> {
-        // Step 3: If historyEntry's document is null, then return.
+        // Step 1: "Assert: this is running on navigable's traversable navigable's session
+        // history traversal queue."
+        // Note: The user-agent thread serializes all IPC events; there is no separate
+        // session-history traversal queue in this architecture.
+
+        // Step 2: "Set navigable's is delaying load events to false."
+        // Note: The content event loop owns the actual load-event delay flag. The
+        // `ContentFinalizeNavigation` IPC arriving here is the commit signal that content
+        // has finished loading the document and fired the `load` event.
+
+        // Step 3: "If historyEntry's document is null, then return."
+        // Note: A null pending finalization record corresponds to a null historyEntry document
+        // (the navigation was canceled or the document was never successfully loaded).
         let Some(pending) = self
             .state
             .take_pending_navigation_finalization_by_document_id(finalized.document_id)
@@ -2335,8 +2382,8 @@ impl UserAgentWorker {
             .get(&pending.traversable_id)
             .and_then(|traversable| traversable.ongoing_navigation_id)
             == Some(pending.navigation_id);
-        // Ignore stale finalization signals when a newer navigation already replaced this
-        // continuation or the loaded document committed a different final URL.
+        // Note: Stale finalization signals are dropped when a newer navigation has already
+        // replaced this continuation or the loaded document committed a different final URL.
         if pending.history_entry.url != finalized.url || !navigation_is_current {
             self.discard_provisional_browsing_context(
                 pending.traversable_id,
@@ -2352,28 +2399,40 @@ impl UserAgentWorker {
             .get(&pending.traversable_id)
             .and_then(|traversable| traversable.active_browsing_context_id);
 
-        // Step 2: Set navigable's is delaying `load` events to false.
-        // The content event loop owns the actual `load`-event delay flag; reaching this
-        // commit point means the user-agent-side continuation is ready to replace the active document.
-        // Step 4: If all of the following are true: ... then set historyEntry's document state's
-        // navigable target name to the empty string.
-        // `SessionHistoryEntry` currently stores only the committed step, document, and URL,
-        // so the model does not retain a separate per-entry target-name field for this branch yet.
+        // Step 4: "If all of the following are true: navigable's parent is null; historyEntry's
+        // document's browsing context is not an auxiliary browsing context whose opener browsing
+        // context is non-null; and historyEntry's document's origin is not navigable's active
+        // document's origin, then set historyEntry's document state's navigable target name to
+        // the empty string."
+        // TODO: `SessionHistoryEntry` does not yet carry a per-entry navigable target name
+        // field; this branch is not executed.
+
         self.state.set_traversable_active_browsing_context(
             pending.traversable_id,
             pending.browsing_context_id,
         );
         self.state
             .set_traversable_active_document(pending.traversable_id, finalized.document_id);
-        // Step 5: Let entryToReplace be navigable's active session history entry if historyHandling
-        // is "replace", otherwise null.
-        // Note: `commit_session_history_entry` derives the replace-versus-push behavior internally
-        // instead of storing `entryToReplace` as a separate local.
-        // Steps 7-9: Compute targetStep and targetEntries.
-        // Note: The same helper computes the step update and target entry list while committing the
-        // session history mutation.
-        // Step 10: Apply the push/replace history step targetStep to traversable given
-        // historyHandling and userInvolvement.
+
+        // Step 5: "Let entryToReplace be navigable's active session history entry if
+        // historyHandling is 'replace', otherwise null."
+        // Note: `commit_session_history_entry` derives the replace-versus-push behavior
+        // internally from `history_handling` rather than storing a separate `entryToReplace`.
+
+        // Step 6: "Let traversable be navigable's traversable navigable."
+        // Note: `pending.traversable_id` is the traversable navigable's identifier.
+
+        // Step 7: "Let targetStep be null."
+
+        // Step 8: "Let targetEntries be the result of getting session history entries for
+        // navigable."
+
+        // Step 9: "If entryToReplace is null: [push case]. Otherwise: [replace case]."
+        // Note: `commit_session_history_entry` computes the push/replace step and mutates
+        // the target entries list accordingly.
+
+        // Step 10: "Apply the push/replace history step targetStep to traversable given
+        // historyHandling and userInvolvement."
         self.state.commit_session_history_entry(
             pending.traversable_id,
             pending.history_entry.clone(),
@@ -2637,13 +2696,21 @@ impl UserAgentWorker {
         if !navigation_is_current {
             return;
         }
-        // <https://html.spec.whatwg.org/multipage/#loading-a-document>
-        // <https://html.spec.whatwg.org/multipage/#navigate-html>
+        // Step 5.1: "If navigable's ongoing navigation no longer equals navigationId, then run
+        // completionSteps and abort these steps."
+        // Note: The navigation-is-current check above covers this guard.
+
+        // Step 5.6: "Otherwise, load the document..."
+        // Note: For a successful HTML response the load path goes through
+        // <https://html.spec.whatwg.org/multipage/#navigate-html> and then
+        // <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>.
+        // In this architecture the user-agent selects the browsing context and event loop
+        // placement first, then delegates document construction to the content process.
         let final_url = response.final_url.clone();
 
-        // <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>
-        // Select the browsing context and event loop for the new document, creating a new
-        // process for cross-origin child navigables and swap-group top-level navigations.
+        // Note: `initialise_the_document_object` selects the browsing context and event loop for
+        // the new document, creating a new process for cross-origin child navigables and
+        // swap-group top-level navigations.
         let browsing_context_id = match self.initialise_the_document_object(
             pending.traversable_id,
             &final_url,
@@ -2660,7 +2727,9 @@ impl UserAgentWorker {
             }
         };
 
-        // After initialise_the_document_object, the traversable may have a new event loop.
+        // Note: After `initialise_the_document_object` the traversable may have been moved to a
+        // new event loop; re-fetch the command sender so the `CreateLoadedDocument` command is
+        // delivered to the correct content process.
         let command_sender = match self.command_sender_for_traversable(pending.traversable_id) {
             Ok(command_sender) => command_sender,
             Err(error) => {
@@ -2674,8 +2743,8 @@ impl UserAgentWorker {
             }
         };
         let document_id = self.state.ids.allocate_document_id();
-        // For child navigables, pass the compositor frame_id so the new content process
-        // can identify which iframe slot it renders into.
+        // Note: For child navigables the compositor frame_id is forwarded so the content process
+        // can identify which iframe slot this document renders into.
         let frame_id = self
             .state
             .traversable_set

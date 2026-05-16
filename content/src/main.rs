@@ -635,6 +635,13 @@ impl ContentRuntime {
         token
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#navigate-html>
+    /// Note: This function implements the content-process portion of the `#navigate-html`
+    /// algorithm: it waits until all critical subresources and deferred scripts are ready, then
+    /// executes those scripts, fires the `load` event, and sends `ContentEvent::FinalizeNavigation`
+    /// to the user agent to trigger `finalize_cross_document_navigation` (step 14 of the
+    /// algorithm). It may be invoked multiple times per document — each call re-checks readiness
+    /// and returns early until all blocking work is complete.
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
         let (ready_to_finish, traversable_id, resources_ready, scripts_ready) = {
             let content_document = self
