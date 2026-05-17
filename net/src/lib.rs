@@ -77,7 +77,7 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
     })
 }
 
-fn run_net_process(token: String) -> Result<(), String> {
+pub fn run_net_process(token: String) -> Result<(), String> {
     let (request_sender, request_receiver) =
         ipc::channel::<Request>().map_err(|error| error.to_string())?;
     let (response_sender, response_receiver) =
@@ -111,10 +111,7 @@ fn run_net_process(token: String) -> Result<(), String> {
     Ok(())
 }
 
-pub fn maybe_run_net_process() -> Option<Result<(), String>> {
-    match net_token_from_args() {
-        Ok(Some(token)) => Some(run_net_process(token)),
-        Ok(None) => None,
-        Err(error) => Some(Err(error)),
-    }
+pub fn run_net_process_from_args() -> Result<(), String> {
+    let token = net_token_from_args()?.ok_or_else(|| String::from("missing --net-token argument"))?;
+    run_net_process(token)
 }

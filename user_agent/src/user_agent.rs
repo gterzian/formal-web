@@ -16,6 +16,7 @@ use ipc_messages::{
         WindowTimerKey, iframe_target_name, parse_iframe_target_name,
     },
 };
+use std::path::PathBuf;
 use std::collections::{HashMap, HashSet};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -28,6 +29,27 @@ use crate::event_loop::{
 };
 use crate::fetch::{FetchCommand, run_fetch_thread};
 use crate::timer::{TimerCommand, run_timer_thread};
+
+pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
+    let current_executable = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let executable_directory = current_executable
+        .parent()
+        .ok_or_else(|| String::from("failed to resolve executable directory"))?;
+    let sidecar_executable = executable_directory.join(format!(
+        "{binary_name}{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+
+    if sidecar_executable.is_file() {
+        Ok(sidecar_executable)
+    } else {
+        Err(format!(
+            "failed to locate sidecar executable {binary_name} at {}",
+            sidecar_executable.display()
+        ))
+    }
+}
 
 /// <https://html.spec.whatwg.org/multipage/#cross-origin-isolation-mode>
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::fetch::FetchCommand;
 use crate::timer::{TimerCommand, TimerCompletion};
-use crate::UserAgentCommand;
+use crate::{UserAgentCommand, sidecar_executable_path};
 
 /// graceful shutdown of the content process owned by one HTML event loop.
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
@@ -209,8 +209,7 @@ impl EventLoopWorker {
         let (server, token) = IpcOneShotServer::<Bootstrap>::new()
             .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
 
-        let executable_path = std::env::current_exe()
-            .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+        let executable_path = sidecar_executable_path("formal-web-content")?;
 
         let sanitized_label = process_label
             .chars()
@@ -219,7 +218,7 @@ impl EventLoopWorker {
 
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
-        child_process.arg0(format!("formal-web:content:{sanitized_label}"));
+        child_process.arg0(format!("formal-web-content:{sanitized_label}"));
         child_process.arg("--content-token").arg(&token);
         child_process.arg("--content-label").arg(&process_label);
 
