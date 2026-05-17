@@ -238,7 +238,7 @@ fn attach_cross_origin_iframe(
 fn navigate_an_iframe_or_frame(
     runtime: &ContentRuntime,
     content_navigable_id: NavigableId,
-    parent_traversable_id: u64,
+    parent_traversable_id: NavigableId,
     content_frame_id: FrameId,
     destination_url: &Url,
 ) -> Result<(), String> {
@@ -294,7 +294,7 @@ fn remove_iframe_subdocument(runtime: &mut ContentRuntime, parent_document_id: u
 
 pub(crate) fn retire_iframe_traversable(
     runtime: &ContentRuntime,
-    parent_traversable_id: u64,
+    parent_traversable_id: NavigableId,
     container_state: &NavigableContainerState,
 ) -> Result<(), String> {
     if !container_state.cross_origin {
@@ -400,8 +400,7 @@ fn create_a_new_child_navigable(
     // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
 
     // Step 11: "Let traversable be parentNavigable's traversable navigable."
-    let parent_traversable_id = u64::try_from(parent_navigable.0.as_u128())
-        .map_err(|_| format!("create-a-new-child-navigable: non-u64 parent navigable id {parent_navigable}"))?;
+    let parent_traversable_id = parent_navigable;
 
     // Step 12: "Append the following session history traversal steps to traversable."
     // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
@@ -447,7 +446,7 @@ fn navigable_container_for_child_navigable(
 /// Blitz sub-document painting for iframe embedding.
 pub(crate) fn attach_same_origin_child_document_for_traversable(
     runtime: &mut ContentRuntime,
-    traversable_id: u64,
+    traversable_id: NavigableId,
 ) -> Result<(), String> {
     let Some(document_id) = runtime
         .active_documents_by_traversable
@@ -541,7 +540,7 @@ fn run_iframe_load_event_steps(
 
 pub(crate) fn run_iframe_load_event_steps_for_traversable(
     runtime: &mut ContentRuntime,
-    traversable_id: u64,
+    traversable_id: NavigableId,
 ) -> Result<(), String> {
     let Some(document_id) = runtime
         .active_documents_by_traversable
@@ -587,7 +586,7 @@ fn run_iframe_post_connection_steps(
     let parent_navigable_id = runtime
         .documents
         .get(&parent_document_id)
-        .map(|content_document| NavigableId::from_u128(content_document.traversable_id as u128))
+        .map(|content_document| content_document.traversable_id)
         .ok_or_else(|| format!("missing parent document {parent_document_id}"))?;
     create_a_new_child_navigable(
         runtime,

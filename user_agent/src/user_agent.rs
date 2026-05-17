@@ -162,9 +162,9 @@ impl BrowsingContextGroupSet {
 #[derive(Clone, Debug)]
 pub struct Traversable {
     /// Identifier for <https://html.spec.whatwg.org/multipage/#traversable-navigable>
-    pub id: u64,
+    pub id: NavigableId,
     /// <https://html.spec.whatwg.org/multipage/#nav-parent>
-    pub parent_traversable_id: Option<u64>,
+    pub parent_traversable_id: Option<NavigableId>,
     /// Browser-UI flag selecting the active traversable.
     pub is_active: bool,
     /// <https://html.spec.whatwg.org/multipage/#document-state-nav-target-name>
@@ -193,9 +193,9 @@ pub struct Traversable {
 #[derive(Clone, Debug)]
 pub struct Navigable {
     /// Identifier for <https://html.spec.whatwg.org/multipage/#navigable-id>.
-    pub id: u64,
+    pub id: NavigableId,
     /// <https://html.spec.whatwg.org/multipage/#nav-parent>
-    pub parent_navigable_id: Option<u64>,
+    pub parent_navigable_id: Option<NavigableId>,
     /// Active document exposed by this navigable.
     pub active_document_id: Option<u64>,
     /// Present when this navigable also controls current/active session-history selection.
@@ -326,7 +326,7 @@ impl NavigationRequest {
 #[derive(Clone, Debug, Default)]
 pub struct TraversableSet {
     /// <https://html.spec.whatwg.org/multipage/#top-level-traversable-set>
-    pub members: HashMap<u64, Traversable>,
+    pub members: HashMap<NavigableId, Traversable>,
 }
 
 impl TraversableSet {
@@ -345,9 +345,7 @@ pub struct UserAgentState {
     /// <https://html.spec.whatwg.org/multipage/#top-level-traversable-set>
     pub traversable_set: TraversableSet,
     /// <https://html.spec.whatwg.org/multipage/#navigable>
-    pub navigables: HashMap<u64, Navigable>,
-    /// Lookup from IPC-facing navigable UUIDs to user-agent internal traversable ids.
-    pub internal_navigable_ids_by_public_id: HashMap<NavigableId, u64>,
+    pub navigables: HashMap<NavigableId, Navigable>,
     /// <https://html.spec.whatwg.org/multipage/#tlbc-group>
     pub top_level_browsing_context_group_ids: HashMap<u64, u64>,
     /// map from Rust worker handles to the owned event-loop workers.
@@ -356,13 +354,13 @@ pub struct UserAgentState {
     /// the owning Rust handle.
     pub handles_by_event_loop_id: HashMap<usize, usize>,
     /// reverse index from top-level traversable ids to the owning Rust handle.
-    pub traversable_handles: HashMap<u64, usize>,
+    pub traversable_handles: HashMap<NavigableId, usize>,
     /// cache of each traversable's active target name derived from
     /// `traversable_set`.
-    pub traversable_target_names: HashMap<u64, String>,
+    pub traversable_target_names: HashMap<NavigableId, String>,
     /// cache of each traversable's active document derived from
     /// `traversable_set`.
-    pub active_documents_by_traversable: HashMap<u64, u64>,
+    pub active_documents_by_traversable: HashMap<NavigableId, u64>,
     /// cache of active and pending documents keyed by
     /// <https://dom.spec.whatwg.org/#concept-document> identifiers.
     pub documents: HashMap<u64, DocumentState>,
@@ -386,7 +384,7 @@ pub struct UserAgentState {
 pub struct DocumentState {
     /// reference back to the top-level traversable that currently presents the
     /// document.
-    pub traversable_id: u64,
+    pub traversable_id: NavigableId,
     /// reference to the active browsing context for the document.
     pub browsing_context_id: Option<u64>,
     /// owner event loop for the document's content implementation.
@@ -406,7 +404,7 @@ pub struct PendingBeforeUnloadNavigation {
     /// identifier corresponding to
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     pub navigation_id: NavigationId,
-    pub navigable_id: u64,
+    pub navigable_id: NavigableId,
     pub destination_url: String,
     pub user_involvement: ipc_messages::content::UserNavigationInvolvement,
     /// Documents still expected to report their beforeunload result for this navigation.
@@ -423,7 +421,7 @@ pub struct PendingNavigationFetch {
     /// identifier corresponding to
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     pub navigation_id: NavigationId,
-    pub traversable_id: u64,
+    pub traversable_id: NavigableId,
     pub previous_document_id: Option<u64>,
     /// <https://fetch.spec.whatwg.org/#concept-request>
     pub request: NavigationRequest,
@@ -451,7 +449,7 @@ pub struct PendingNavigationFinalization {
     /// identifier corresponding to
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     pub navigation_id: NavigationId,
-    pub traversable_id: u64,
+    pub traversable_id: NavigableId,
     pub previous_document_id: Option<u64>,
     /// browsing context selected for the new document before commit.
     pub browsing_context_id: Option<u64>,
@@ -471,7 +469,6 @@ impl Default for UserAgentState {
             browsing_context_group_set: BrowsingContextGroupSet::default(),
             traversable_set: TraversableSet::default(),
             navigables: HashMap::new(),
-            internal_navigable_ids_by_public_id: HashMap::new(),
             top_level_browsing_context_group_ids: HashMap::new(),
             event_loops: HashMap::new(),
             handles_by_event_loop_id: HashMap::new(),
@@ -490,7 +487,7 @@ impl Default for UserAgentState {
 
 impl UserAgentState {
     /// <https://html.spec.whatwg.org/multipage/#top-level-traversable>
-    fn top_level_traversable_id(&self, traversable_id: u64) -> Option<u64> {
+    fn top_level_traversable_id(&self, traversable_id: NavigableId) -> Option<NavigableId> {
         let mut current_id = traversable_id;
         loop {
             let traversable = self.traversable_set.members.get(&current_id)?;
@@ -520,7 +517,7 @@ impl UserAgentState {
 
     /// selecting the embedder-visible active
     /// <https://html.spec.whatwg.org/multipage/#top-level-traversable>.
-    fn set_active_top_level_traversable(&mut self, traversable_id: u64) {
+    fn set_active_top_level_traversable(&mut self, traversable_id: NavigableId) {
         let top_level_id = self.top_level_traversable_id(traversable_id);
         for (candidate_id, traversable) in &mut self.traversable_set.members {
             if traversable.parent_traversable_id.is_some() {
@@ -536,7 +533,7 @@ impl UserAgentState {
     }
 
     /// caching the active document of one top-level traversable.
-    fn set_traversable_active_document(&mut self, traversable_id: u64, document_id: u64) {
+    fn set_traversable_active_document(&mut self, traversable_id: NavigableId, document_id: u64) {
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
         if let Some(navigable) = self.navigables.get_mut(&traversable_id) {
@@ -555,7 +552,7 @@ impl UserAgentState {
     /// caching the active browsing context selected for one traversable-backed navigable.
     fn set_traversable_active_browsing_context(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         browsing_context_id: Option<u64>,
     ) {
         if let Some(traversable) = self.traversable_set.members.get_mut(&traversable_id) {
@@ -572,7 +569,7 @@ impl UserAgentState {
     /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation> marker.
     fn set_traversable_ongoing_navigation(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         navigation_id: Option<NavigationId>,
     ) {
         if let Some(traversable) = self.traversable_set.members.get_mut(&traversable_id) {
@@ -588,7 +585,7 @@ impl UserAgentState {
     /// <https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation>
     fn commit_session_history_entry(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         history_entry: SessionHistoryEntry,
         history_handling: HistoryHandlingBehavior,
     ) {
@@ -672,7 +669,7 @@ impl UserAgentState {
     }
 
     /// dropping all pending fetch continuations owned by one traversable.
-    fn remove_pending_navigation_fetches_for_traversable(&mut self, traversable_id: u64) {
+    fn remove_pending_navigation_fetches_for_traversable(&mut self, traversable_id: NavigableId) {
         let navigation_ids = self
             .pending_navigation_fetches
             .iter()
@@ -708,7 +705,7 @@ impl UserAgentState {
     /// dropping all pending finalization continuations owned by one traversable.
     fn remove_pending_navigation_finalizations_for_traversable(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
     ) -> Vec<u64> {
         let document_ids = self
             .pending_navigation_finalizations
@@ -726,7 +723,7 @@ impl UserAgentState {
     }
 
     /// removing one traversable and its derived indices from the user-agent state.
-    fn remove_traversable(&mut self, traversable_id: u64) {
+    fn remove_traversable(&mut self, traversable_id: NavigableId) {
         let Some(traversable) = self.traversable_set.members.get(&traversable_id).cloned() else {
             return;
         };
@@ -739,8 +736,6 @@ impl UserAgentState {
 
         self.traversable_set.members.remove(&traversable_id);
         self.navigables.remove(&traversable_id);
-        self.internal_navigable_ids_by_public_id
-            .retain(|_, candidate_traversable_id| *candidate_traversable_id != traversable_id);
         self.traversable_handles.remove(&traversable_id);
         self.traversable_target_names.remove(&traversable_id);
         self.active_documents_by_traversable.remove(&traversable_id);
@@ -772,7 +767,7 @@ pub enum UserAgentCommand {
         finalized: ContentFinalizeNavigation,
     },
     EvaluateScript {
-        traversable_id: u64,
+        traversable_id: NavigableId,
         source: String,
         timeout: Duration,
         reply: Sender<Result<serde_json::Value, String>>,
@@ -781,17 +776,17 @@ pub enum UserAgentCommand {
         snapshot: (u32, u32, f32, ColorScheme),
     },
     SetTraversableViewport {
-        traversable_id: u64,
+        traversable_id: NavigableId,
         snapshot: (u32, u32, f32, ColorScheme),
         offset_x: f32,
         offset_y: f32,
     },
     DispatchEventFor {
-        traversable_id: u64,
+        traversable_id: NavigableId,
         event: String,
     },
     RenderingOpportunityFor {
-        traversable_id: u64,
+        traversable_id: NavigableId,
     },
     DocumentFetchCompleted {
         event_loop_id: usize,
@@ -821,13 +816,13 @@ pub enum UserAgentCommand {
         nesting_level: u32,
     },
     CreateChildNavigable {
-        parent_traversable_id: u64,
+        parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
         target_name: Option<String>,
     },
     IframeTraversableRemoved {
-        parent_traversable_id: u64,
+        parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
         reply: Sender<Result<(), String>>,
@@ -891,7 +886,7 @@ impl UserAgent {
     /// the webview automation hook that delegates to `UserAgentApi`.
     pub fn evaluate_script(
         &self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         source: String,
         timeout: Duration,
     ) -> Result<serde_json::Value, String> {
@@ -927,7 +922,7 @@ impl webview::UserAgentApi for UserAgent {
 
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
-    fn dispatch_event_for(&self, traversable_id: u64, event: String) -> Result<(), String> {
+    fn dispatch_event_for(&self, traversable_id: NavigableId, event: String) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::DispatchEventFor {
                 traversable_id,
@@ -937,7 +932,7 @@ impl webview::UserAgentApi for UserAgent {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
-    fn note_rendering_opportunity(&self, traversable_id: u64) -> Result<(), String> {
+    fn note_rendering_opportunity(&self, traversable_id: NavigableId) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::RenderingOpportunityFor { traversable_id })
             .map_err(|error| format!("failed to send rendering-opportunity request: {error}"))
@@ -959,7 +954,7 @@ impl webview::UserAgentApi for UserAgent {
     /// updating the viewport of one traversable's content implementation.
     fn set_traversable_viewport(
         &self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         snapshot: (u32, u32, f32, ColorScheme),
         offset_x: f32,
         offset_y: f32,
@@ -977,7 +972,7 @@ impl webview::UserAgentApi for UserAgent {
     /// the automation-only script-evaluation bridge into content.
     fn evaluate_script(
         &self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         source: String,
         timeout: Duration,
     ) -> Result<serde_json::Value, String> {
@@ -1069,7 +1064,7 @@ fn content_process_label_from_url(url: &str) -> String {
         .unwrap_or_else(|| String::from("about:blank"))
 }
 
-fn descendant_traversable_ids(state: &UserAgentState, traversable_id: u64) -> Vec<u64> {
+fn descendant_traversable_ids(state: &UserAgentState, traversable_id: NavigableId) -> Vec<NavigableId> {
     let mut descendants = Vec::new();
     let mut stack = vec![traversable_id];
     let mut visited = HashSet::from([traversable_id]);
@@ -1090,7 +1085,7 @@ fn descendant_traversable_ids(state: &UserAgentState, traversable_id: u64) -> Ve
     descendants
 }
 
-fn descendant_navigable_ids(state: &UserAgentState, navigable_id: u64) -> Vec<u64> {
+fn descendant_navigable_ids(state: &UserAgentState, navigable_id: NavigableId) -> Vec<NavigableId> {
     let mut descendants = Vec::new();
     let mut stack = vec![navigable_id];
     let mut visited = HashSet::from([navigable_id]);
@@ -1112,7 +1107,7 @@ fn descendant_navigable_ids(state: &UserAgentState, navigable_id: u64) -> Vec<u6
 }
 
 /// <https://html.spec.whatwg.org/multipage/#find-a-navigable-by-target-name>
-fn find_navigable_by_target_name(state: &UserAgentState, target_name: &str) -> Option<u64> {
+fn find_navigable_by_target_name(state: &UserAgentState, target_name: &str) -> Option<NavigableId> {
     state.navigables.iter().find_map(|(navigable_id, navigable)| {
         navigable
             .traversable
@@ -1315,7 +1310,7 @@ impl UserAgentWorker {
         &self,
         command_sender: &Sender<EventLoopCommand>,
         command: ContentCommand,
-    ) -> Result<Option<u64>, String> {
+    ) -> Result<Option<NavigableId>, String> {
         let (reply_sender, reply_receiver) = bounded(1);
         command_sender
             .send(EventLoopCommand::SendCommand {
@@ -1331,7 +1326,7 @@ impl UserAgentWorker {
     /// resolving the event-loop command channel that owns one traversable.
     fn command_sender_for_traversable(
         &self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
     ) -> Result<Sender<EventLoopCommand>, String> {
         let handle = self
             .state
@@ -1380,21 +1375,16 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#creating-a-new-top-level-traversable>
-    fn create_new_top_level_traversable(&mut self, target_name: String) -> Result<u64, String> {
+    fn create_new_top_level_traversable(&mut self, target_name: String) -> Result<NavigableId, String> {
         if parse_iframe_target_name(&target_name).is_some() {
             return Err(format!(
                 "synthetic iframe target {target_name:?} must be materialized by create-a-new-child-navigable"
             ));
         }
 
-        let traversable_id = self.state.ids.allocate_traversable_id();
+        let traversable_id = NavigableId::new();
         let iframe_parent_traversable_id = None;
         let frame_id = None;
-
-        // Step 1: Let document be null.
-        // Note: The null placeholder stays implicit; the Rust model materializes the initial
-        // about:blank document directly in the browsing-context setup below.
-        self.state.ids.observe_traversable_id(traversable_id);
 
         // Step 2: With a null opener, create a new top-level browsing context and document.
         let browsing_context_group_id = self.state.browsing_context_group_set.next_group_id();
@@ -1510,9 +1500,6 @@ impl UserAgentWorker {
                 traversable: Some(traversable),
             },
         );
-        self.state
-            .internal_navigable_ids_by_public_id
-            .insert(NavigableId::from_u128(traversable_id as u128), traversable_id);
         if target_name_keeps_browser_ui_focus(&target_name) {
             self.state.set_active_top_level_traversable(traversable_id);
         }
@@ -1546,11 +1533,11 @@ impl UserAgentWorker {
     /// causes `initialise_the_document_object` to move it.
     fn create_new_child_navigable(
         &mut self,
-        parent_traversable_id: u64,
+        parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
         target_name: Option<String>,
-    ) -> Result<u64, String> {
+    ) -> Result<NavigableId, String> {
         let _requested_target_name = target_name;
         // TODO: Store requested iframe `name` attribute on document state once child-target
         // lookup uses document-state target names.
@@ -1560,9 +1547,6 @@ impl UserAgentWorker {
             content_frame_id,
         );
         if let Some(navigable_id) = find_navigable_by_target_name(&self.state, &target_name) {
-            self.state
-                .internal_navigable_ids_by_public_id
-                .insert(content_navigable_id, navigable_id);
             return Ok(navigable_id);
         }
 
@@ -1587,7 +1571,7 @@ impl UserAgentWorker {
             .top_level_browsing_context_id(parent_browsing_context_id)
             .unwrap_or(parent_browsing_context_id);
         let browsing_context_id = self.state.ids.allocate_browsing_context_id();
-        let traversable_id = self.state.ids.allocate_traversable_id();
+        let traversable_id = content_navigable_id;
         let document_id = self.state.ids.allocate_document_id();
 
         let group_id = self
@@ -1657,9 +1641,6 @@ impl UserAgentWorker {
             },
         );
         self.state
-            .internal_navigable_ids_by_public_id
-            .insert(content_navigable_id, traversable_id);
-        self.state
             .event_loops
             .get_mut(&parent_handle)
             .ok_or_else(|| format!("missing parent event loop handle {parent_handle}"))?
@@ -1680,7 +1661,7 @@ impl UserAgentWorker {
     /// continue the suffix that allocates the stable child navigable and session-history state.
     fn handle_create_child_navigable(
         &mut self,
-        parent_traversable_id: u64,
+        parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
         target_name: Option<String>,
@@ -1701,7 +1682,7 @@ impl UserAgentWorker {
     /// observable approximation for swap-group decisions before response-driven document creation.
     fn obtain_browsing_context_to_use_for_navigation_response(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         destination_url: &str,
     ) -> Result<BrowsingContextNavigationSelection, String> {
         let traversable = self
@@ -1765,7 +1746,7 @@ impl UserAgentWorker {
 
     fn discard_provisional_browsing_context(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         browsing_context_id: Option<u64>,
     ) {
         let Some(browsing_context_id) = browsing_context_id else {
@@ -1800,7 +1781,7 @@ impl UserAgentWorker {
     fn create_navigation_params_by_fetching(
         &mut self,
         navigation_id: NavigationId,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
     ) -> Result<(), String> {
@@ -1860,7 +1841,7 @@ impl UserAgentWorker {
     /// step 19.
     fn navigate(
         &mut self,
-        navigable_id: u64,
+        navigable_id: NavigableId,
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
         navigation_id: NavigationId,
@@ -1911,10 +1892,10 @@ impl UserAgentWorker {
     fn check_if_unloading_is_canceled(
         &mut self,
         navigation_id: NavigationId,
-        navigable_id: u64,
+        navigable_id: NavigableId,
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
-        navigables_that_need_before_unload: Vec<u64>,
+        navigables_that_need_before_unload: Vec<NavigableId>,
     ) -> Result<(), String> {
         // Step 1: "Let documentsToFireBeforeunload be the active document of each item in
         // navigablesThatNeedBeforeUnload."
@@ -2030,8 +2011,6 @@ impl UserAgentWorker {
         target_name: &str,
         noopener: bool,
     ) -> Result<NavigableId, String> {
-        let source_navigable_id_u64 = self.resolve_internal_navigable_id(source_navigable_id)?;
-        
         // Note: `normalize_navigation_target_name` folds the `_self` special case into the empty
         // string before the direct step checks below.
         let normalized_target_name = normalize_navigation_target_name(target_name);
@@ -2049,34 +2028,34 @@ impl UserAgentWorker {
         if normalized_target_name.eq_ignore_ascii_case("_parent") {
             let result = self.state
                 .navigables
-                .get(&source_navigable_id_u64)
+                .get(&source_navigable_id)
                 .and_then(|navigable| navigable.parent_navigable_id)
-                .unwrap_or(source_navigable_id_u64);
-            return Ok(NavigableId::from_u128(result as u128));
+                .unwrap_or(source_navigable_id);
+            return Ok(result);
         }
 
         // Step 6: "Otherwise, if name is an ASCII case-insensitive match for \"_top\", set chosen to currentNavigable's traversable navigable."
         // Note: Content-driven callers are expected to resolve this branch locally.
         if normalized_target_name.eq_ignore_ascii_case("_top") {
-            let source_traversable_id = self.traversable_id_for_navigable(source_navigable_id_u64)?;
+            let source_traversable_id = self.traversable_id_for_navigable(source_navigable_id)?;
             let top_level_traversable_id = self
                 .state
                 .top_level_traversable_id(source_traversable_id)
                 .unwrap_or(source_traversable_id);
-            return Ok(NavigableId::from_u128(top_level_traversable_id as u128));
+            return Ok(top_level_traversable_id);
         }
 
         // Step 8: "If chosen is null, then a new top-level traversable is being requested."
         if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
             let new_traversable_id = self.create_new_top_level_traversable(String::new())?;
-            return Ok(NavigableId::from_u128(new_traversable_id as u128));
+            return Ok(new_traversable_id);
         }
 
         // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for \"_blank\" and noopener is false, then set chosen to the result of finding a navigable by target name given name and currentNavigable."
         if let Some(chosen_navigable_id) =
             find_navigable_by_target_name(&self.state, &normalized_target_name)
         {
-            return Ok(NavigableId::from_u128(chosen_navigable_id as u128));
+            return Ok(chosen_navigable_id);
         }
 
         if parse_iframe_target_name(&normalized_target_name).is_some() {
@@ -2087,37 +2066,15 @@ impl UserAgentWorker {
 
         // Step 8: "If chosen is null, then a new top-level traversable is being requested."
         let new_traversable_id = self.create_new_top_level_traversable(normalized_target_name)?;
-        Ok(NavigableId::from_u128(new_traversable_id as u128))
+        Ok(new_traversable_id)
     }
 
-    fn traversable_id_for_navigable(&self, navigable_id: u64) -> Result<u64, String> {
+    fn traversable_id_for_navigable(&self, navigable_id: NavigableId) -> Result<NavigableId, String> {
         self.state
             .navigables
             .get(&navigable_id)
             .and_then(|navigable| navigable.traversable.as_ref().map(|traversable| traversable.id))
             .ok_or_else(|| format!("navigable {navigable_id} is not a traversable navigable"))
-    }
-
-    fn resolve_internal_navigable_id(&self, public_id: NavigableId) -> Result<u64, String> {
-        if let Some(internal_id) = self
-            .state
-            .internal_navigable_ids_by_public_id
-            .get(&public_id)
-            .copied()
-        {
-            return Ok(internal_id);
-        }
-
-        let fallback = public_id.0.as_u128();
-        if fallback > u64::MAX as u128 {
-            return Err(format!("unknown navigable id: {public_id}"));
-        }
-        let internal_id = fallback as u64;
-        if self.state.navigables.contains_key(&internal_id) {
-            return Ok(internal_id);
-        }
-
-        Err(format!("unknown navigable id: {public_id}"))
     }
 
     /// removing an event-loop worker and every derived index owned by it.
@@ -2200,11 +2157,10 @@ impl UserAgentWorker {
                     request.noopener,
                 )?,
             };
-            let navigable_id_u64 = self.resolve_internal_navigable_id(navigable_id)?;
-            let traversable_id = self.traversable_id_for_navigable(navigable_id_u64)?;
+            let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
             let navigation_id = request.navigation_id.unwrap_or_else(NavigationId::new);
             self.navigate(
-                navigable_id_u64,
+                navigable_id,
                 request.destination_url.clone(),
                 request.user_involvement.clone(),
                 navigation_id,
@@ -2238,7 +2194,7 @@ impl UserAgentWorker {
     /// Document object construction itself runs in the content process.
     fn initialise_the_document_object(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         final_url: &str,
     ) -> Result<Option<u64>, String> {
         // Step 1: "Let browsingContext be the result of obtaining a browsing context to use for
@@ -2554,7 +2510,7 @@ impl UserAgentWorker {
     /// the automation-only script-evaluation bridge into the owning event loop.
     fn handle_evaluate_script(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         source: String,
         timeout: Duration,
         reply: Sender<Result<serde_json::Value, String>>,
@@ -2618,7 +2574,7 @@ impl UserAgentWorker {
     /// sending a per-traversable viewport update to the owning event loop.
     fn handle_set_traversable_viewport(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         snapshot: (u32, u32, f32, ColorScheme),
         offset_x: f32,
         offset_y: f32,
@@ -2637,7 +2593,7 @@ impl UserAgentWorker {
 
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
-    fn handle_dispatch_event_for(&mut self, traversable_id: u64, event: String) {
+    fn handle_dispatch_event_for(&mut self, traversable_id: NavigableId, event: String) {
         let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
             return;
         };
@@ -2661,7 +2617,7 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
-    fn handle_rendering_opportunity_for(&mut self, traversable_id: u64) {
+    fn handle_rendering_opportunity_for(&mut self, traversable_id: NavigableId) {
         let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
             return;
         };
@@ -2927,7 +2883,7 @@ impl UserAgentWorker {
     /// traversable that represented that iframe in the user-agent registry.
     fn handle_iframe_traversable_removed(
         &mut self,
-        parent_traversable_id: u64,
+        parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
         reply: Sender<Result<(), String>>,

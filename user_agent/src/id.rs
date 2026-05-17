@@ -10,8 +10,6 @@ pub struct UserAgentIds {
     pub next_handle: usize,
     /// <https://html.spec.whatwg.org/multipage/#event-loop>
     pub next_event_loop_id: usize,
-    /// identifier for the Rust-owned top-level traversable/webview surface.
-    pub next_traversable_id: u64,
     /// identifier for <https://html.spec.whatwg.org/multipage/#browsing-context>
     pub next_browsing_context_id: u64,
     /// <https://dom.spec.whatwg.org/#concept-document>
@@ -32,7 +30,6 @@ impl Default for UserAgentIds {
         Self {
             next_handle: 1,
             next_event_loop_id: 1,
-            next_traversable_id: 1,
             next_browsing_context_id: 1,
             next_document_id: 1,
             next_agent_cluster_id: 0,
@@ -60,18 +57,6 @@ impl UserAgentIds {
     /// observing an externally supplied event-loop id before allocating the next one.
     pub fn observe_event_loop_id(&mut self, event_loop_id: usize) {
         self.next_event_loop_id = self.next_event_loop_id.max(event_loop_id + 1);
-    }
-
-    /// <https://html.spec.whatwg.org/multipage/#top-level-traversable>.
-    pub fn allocate_traversable_id(&mut self) -> u64 {
-        let traversable_id = self.next_traversable_id;
-        self.next_traversable_id += 1;
-        traversable_id
-    }
-
-    /// observing a traversable id created by another component.
-    pub fn observe_traversable_id(&mut self, traversable_id: u64) {
-        self.next_traversable_id = self.next_traversable_id.max(traversable_id + 1);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#browsing-context>.

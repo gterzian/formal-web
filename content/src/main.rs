@@ -369,9 +369,9 @@ impl NetProvider for ContentNetProvider {
 }
 
 struct ContentDocument {
-    traversable_id: u64,
-    parent_traversable_id: Option<u64>,
-    top_level_traversable_id: u64,
+    traversable_id: NavigableId,
+    parent_traversable_id: Option<NavigableId>,
+    top_level_traversable_id: NavigableId,
     frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
@@ -393,9 +393,9 @@ pub(crate) struct ContentRuntime {
     event_sender: IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     default_viewport: Option<ViewportSnapshot>,
-    traversable_viewports: HashMap<u64, DocumentViewportState>,
+    traversable_viewports: HashMap<NavigableId, DocumentViewportState>,
     documents: HashMap<u64, ContentDocument>,
-    active_documents_by_traversable: HashMap<u64, u64>,
+    active_documents_by_traversable: HashMap<NavigableId, u64>,
     next_placeholder_frame_token: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
@@ -418,7 +418,7 @@ impl ContentRuntime {
         }
     }
 
-    fn document_viewport_state(&self, traversable_id: u64) -> Option<DocumentViewportState> {
+    fn document_viewport_state(&self, traversable_id: NavigableId) -> Option<DocumentViewportState> {
         self.traversable_viewports
             .get(&traversable_id)
             .cloned()
@@ -433,7 +433,7 @@ impl ContentRuntime {
 
     fn document_config(
         &self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         document_id: u64,
         base_url: Option<String>,
     ) -> DocumentConfig {
@@ -738,11 +738,11 @@ impl ContentRuntime {
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the user-agent/content command path emits `CreateEmptyDocument`.
     fn create_empty_document(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         document_id: u64,
         frame_id: Option<FrameId>,
-        parent_traversable_id: Option<u64>,
-        top_level_traversable_id: u64,
+        parent_traversable_id: Option<NavigableId>,
+        top_level_traversable_id: NavigableId,
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
@@ -803,12 +803,12 @@ impl ContentRuntime {
     /// Note: This continues the HTML document loading algorithm through the end-of-document load steps and into `completely finish loading`.
     fn create_loaded_document(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         document_id: u64,
         frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
-        parent_traversable_id: Option<u64>,
-        top_level_traversable_id: u64,
+        parent_traversable_id: Option<NavigableId>,
+        top_level_traversable_id: NavigableId,
     ) -> Result<(), String> {
         let LoadedDocumentResponse {
             final_url,
@@ -898,7 +898,7 @@ impl ContentRuntime {
 
     fn evaluate_script(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         source: String,
     ) -> Result<serde_json::Value, String> {
         let document_id = *self
@@ -959,9 +959,9 @@ impl ContentRuntime {
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
-                NavigableId::from_u128(document.traversable_id as u128),
-                document.parent_traversable_id.map(|id| NavigableId::from_u128(id as u128)),
-                NavigableId::from_u128(document.top_level_traversable_id as u128),
+                document.traversable_id,
+                document.parent_traversable_id,
+                document.top_level_traversable_id,
                 Rc::clone(&document.document),
                 &mut document.settings,
                 &self.event_sender,
@@ -992,7 +992,7 @@ impl ContentRuntime {
             .map_err(|error| format!("failed to send beforeunload completion: {error}"))
     }
 
-    fn update_the_rendering(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
+    fn update_the_rendering(&mut self, traversable_id: NavigableId, document_id: u64) -> Result<(), String> {
         let Some(document) = self.documents.get_mut(&document_id) else {
             return Ok(());
         };
@@ -1008,7 +1008,7 @@ impl ContentRuntime {
     /// Note: The Rust user-agent and event-loop workers queue this rendering task, and the content runtime continues the noted rendering opportunity once critical fetches finish.
     fn continue_updating_the_rendering(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         document_id: u64,
     ) -> Result<(), String> {
         let event_sender = self.event_sender.clone();

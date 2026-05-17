@@ -11,7 +11,7 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
-use ipc_messages::content::{BeforeUnloadResult, PaintFrame, WebviewId};
+use ipc_messages::content::{BeforeUnloadResult, NavigableId, PaintFrame, WebviewId};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use serde_json::Value;
@@ -162,7 +162,7 @@ pub struct AutomationSnapshot {
     pub webview_id: Option<WebviewId>,
     pub current_url: Option<String>,
     pub displayed_url: String,
-    pub navigable_id: Option<u64>,
+    pub navigable_id: Option<NavigableId>,
     pub has_top_level_traversable: bool,
 }
 
@@ -213,7 +213,7 @@ struct BrowserState {
     history: Vec<String>,
     history_index: Option<usize>,
     pending_navigation: Option<PendingNavigation>,
-    current_navigable_id: Option<u64>,
+    current_navigable_id: Option<NavigableId>,
 }
 
 impl BrowserState {
@@ -269,7 +269,7 @@ impl BrowserState {
         }
     }
 
-    fn set_current_navigable_id(&mut self, navigable_id: Option<u64>) {
+    fn set_current_navigable_id(&mut self, navigable_id: Option<NavigableId>) {
         self.current_navigable_id = navigable_id;
     }
 }
