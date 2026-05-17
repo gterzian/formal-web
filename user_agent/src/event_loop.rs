@@ -443,12 +443,14 @@ impl EventLoopWorker {
                 parent_traversable_id,
                 content_navigable_id,
                 content_frame_id,
+                target_name,
             }) => {
                 self.user_agent_command_sender
                     .send(UserAgentCommand::CreateChildNavigable {
                         parent_traversable_id,
                         content_navigable_id,
                         content_frame_id,
+                        target_name,
                     })
                     .map_err(|error| format!("failed to send create-child-navigable request: {error}"))?;
             }

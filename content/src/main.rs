@@ -31,7 +31,7 @@ use ipc_messages::content::Command::{
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    ContentNavigableId, DocumentFetchId, Event as ContentEvent,
+    DocumentFetchId, Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FontTransportSender, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
     PlaceholderFrameMapping, RecordedScene, ScriptEvaluationResult, TraversableViewport,
@@ -163,7 +163,7 @@ enum DeferredScriptState {
 
 #[derive(Clone)]
 pub(crate) struct NavigableContainerState {
-    pub(crate) content_navigable_id: ContentNavigableId,
+    pub(crate) content_navigable: Option<NavigableId>,
     pub(crate) content_frame_id: FrameId,
     pub(crate) content_frame_token: u64,
     pub(crate) current_key: String,
@@ -621,8 +621,8 @@ impl ContentRuntime {
         self.request_remote_fetch(handler_id, Request::get(resolved_url))
     }
 
-    fn allocate_child_navigable_id(&self) -> Result<ContentNavigableId, String> {
-        Ok(ContentNavigableId::new())
+    fn allocate_navigable_id(&self) -> Result<NavigableId, String> {
+        Ok(NavigableId::new())
     }
 
     fn allocate_child_frame_id(&self) -> FrameId {

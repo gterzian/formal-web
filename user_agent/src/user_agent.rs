@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use embedder::{FinalizeNavigation, FormalWebUserEvent, UserEventDispatcher};
 use ipc_messages::{
     content::{
-        BeforeUnloadResult, Command as ContentCommand, ContentNavigableId,
+        BeforeUnloadResult, Command as ContentCommand,
         DispatchEventEntry, DocumentFetchId,
         FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
         FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse,
@@ -800,12 +800,13 @@ pub enum UserAgentCommand {
     },
     CreateChildNavigable {
         parent_traversable_id: u64,
-        content_navigable_id: ContentNavigableId,
+        content_navigable_id: NavigableId,
         content_frame_id: FrameId,
+        target_name: Option<String>,
     },
     IframeTraversableRemoved {
         parent_traversable_id: u64,
-        content_navigable_id: ContentNavigableId,
+        content_navigable_id: NavigableId,
         content_frame_id: FrameId,
         reply: Sender<Result<(), String>>,
     },
@@ -1258,11 +1259,13 @@ impl UserAgentWorker {
                     parent_traversable_id,
                     content_navigable_id,
                     content_frame_id,
+                    target_name,
                 } => {
                     self.handle_create_child_navigable(
                         parent_traversable_id,
                         content_navigable_id,
                         content_frame_id,
+                        target_name,
                     );
                 }
                 UserAgentCommand::IframeTraversableRemoved {
@@ -1526,9 +1529,13 @@ impl UserAgentWorker {
     fn create_new_child_navigable(
         &mut self,
         parent_traversable_id: u64,
-        content_navigable_id: ContentNavigableId,
+        content_navigable_id: NavigableId,
         content_frame_id: FrameId,
+        target_name: Option<String>,
     ) -> Result<u64, String> {
+        let _requested_target_name = target_name;
+        // TODO: Store requested iframe `name` attribute on document state once child-target
+        // lookup uses document-state target names.
         let target_name = iframe_target_name(
             parent_traversable_id,
             content_navigable_id,
@@ -1537,7 +1544,7 @@ impl UserAgentWorker {
         if let Some(navigable_id) = find_navigable_by_target_name(&self.state, &target_name) {
             self.state
                 .internal_navigable_ids_by_public_id
-                .insert(content_navigable_id.into(), navigable_id);
+                .insert(content_navigable_id, navigable_id);
             return Ok(navigable_id);
         }
 
@@ -1633,7 +1640,7 @@ impl UserAgentWorker {
         );
         self.state
             .internal_navigable_ids_by_public_id
-            .insert(content_navigable_id.into(), traversable_id);
+            .insert(content_navigable_id, traversable_id);
         self.state
             .event_loops
             .get_mut(&parent_handle)
@@ -1656,13 +1663,15 @@ impl UserAgentWorker {
     fn handle_create_child_navigable(
         &mut self,
         parent_traversable_id: u64,
-        content_navigable_id: ContentNavigableId,
+        content_navigable_id: NavigableId,
         content_frame_id: FrameId,
+        target_name: Option<String>,
     ) {
         let result = self.create_new_child_navigable(
             parent_traversable_id,
             content_navigable_id,
             content_frame_id,
+            target_name,
         );
         if let Err(error) = result {
             eprintln!("failed to create child navigable: {error}");
@@ -2877,7 +2886,7 @@ impl UserAgentWorker {
     fn handle_iframe_traversable_removed(
         &mut self,
         parent_traversable_id: u64,
-        content_navigable_id: ContentNavigableId,
+        content_navigable_id: NavigableId,
         content_frame_id: FrameId,
         reply: Sender<Result<(), String>>,
     ) {

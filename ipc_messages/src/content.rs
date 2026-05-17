@@ -40,16 +40,9 @@ macro_rules! uuid_id {
 uuid_id!(DocumentFetchId);
 uuid_id!(NavigationFetchId);
 uuid_id!(WindowTimerKey);
-uuid_id!(ContentNavigableId);
 uuid_id!(NavigableId);
 uuid_id!(FrameId);
 uuid_id!(NavigationId);
-
-impl From<ContentNavigableId> for NavigableId {
-    fn from(value: ContentNavigableId) -> Self {
-        Self(value.0)
-    }
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ColorScheme {
@@ -126,8 +119,10 @@ pub struct NavigateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateChildNavigableRequest {
     pub parent_traversable_id: u64,
-    pub content_navigable_id: ContentNavigableId,
+    pub content_navigable_id: NavigableId,
     pub content_frame_id: FrameId,
+    #[serde(default)]
+    pub target_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,7 +141,7 @@ pub struct FinalizeNavigation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IframeTraversableRemoval {
     pub parent_traversable_id: u64,
-    pub content_navigable_id: ContentNavigableId,
+    pub content_navigable_id: NavigableId,
     pub content_frame_id: FrameId,
 }
 
@@ -155,7 +150,7 @@ pub struct WebviewId(pub u64);
 
 pub fn iframe_target_name(
     parent_traversable_id: u64,
-    content_navigable_id: ContentNavigableId,
+    content_navigable_id: NavigableId,
     content_frame_id: FrameId,
 ) -> String {
     format!("_iframe|{parent_traversable_id}|{content_navigable_id}|{content_frame_id}")
@@ -163,11 +158,11 @@ pub fn iframe_target_name(
 
 pub fn parse_iframe_target_name(
     target_name: &str,
-) -> Option<(u64, ContentNavigableId, FrameId)> {
+) -> Option<(u64, NavigableId, FrameId)> {
     let payload = target_name.strip_prefix("_iframe|")?;
     let mut parts = payload.split('|');
     let parent_traversable_id = parts.next()?.parse::<u64>().ok()?;
-    let content_navigable_id = ContentNavigableId::parse_str(parts.next()?).ok()?;
+    let content_navigable_id = NavigableId::parse_str(parts.next()?).ok()?;
     let content_frame_id = FrameId::parse_str(parts.next()?).ok()?;
     if parts.next().is_some() {
         return None;
