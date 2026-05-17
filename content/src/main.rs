@@ -29,9 +29,9 @@ use ipc_messages::content::Command::{
     SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
-    Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
+    BeforeUnloadCheckId, Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    DocumentFetchId, Event as ContentEvent,
+    DocumentFetchId, DocumentId, Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FontTransportSender, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
     PlaceholderFrameMapping, RecordedScene, ScriptEvaluationResult, TraversableViewport,
@@ -49,7 +49,7 @@ use url::Url;
 
 pub(crate) const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
 
-static LOGGED_INPUT_LAYOUT_DOCUMENTS: LazyLock<Mutex<HashSet<u64>>> =
+static LOGGED_INPUT_LAYOUT_DOCUMENTS: LazyLock<Mutex<HashSet<DocumentId>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 fn normalized_content_type_essence(content_type: &str) -> String {
@@ -93,12 +93,12 @@ fn new_font_namespace() -> u64 {
 
 enum PendingNetworkHandler {
     Resource {
-        document_id: u64,
+        document_id: DocumentId,
         request_url: String,
         handler: Box<dyn NetHandler>,
     },
     DeferredScript {
-        document_id: u64,
+        document_id: DocumentId,
         script_index: usize,
     },
 }
@@ -214,7 +214,7 @@ fn log_render_state_debug(message: impl AsRef<str>) {
     }
 }
 
-fn maybe_log_input_layout_debug(document_id: u64, document: &BaseDocument) {
+fn maybe_log_input_layout_debug(document_id: DocumentId, document: &BaseDocument) {
     if !input_debug_enabled() {
         return;
     }
@@ -264,7 +264,7 @@ fn maybe_log_input_layout_debug(document_id: u64, document: &BaseDocument) {
     }
 }
 
-fn log_paint_debug(document_id: u64, document: &BaseDocument, scene: &RecordedScene) {
+fn log_paint_debug(document_id: DocumentId, document: &BaseDocument, scene: &RecordedScene) {
     maybe_log_input_layout_debug(document_id, document);
 
     if !render_debug_enabled() {
@@ -323,7 +323,7 @@ fn log_paint_debug(document_id: u64, document: &BaseDocument, scene: &RecordedSc
 struct ContentNetProvider {
     event_sender: IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
-    content_document_id: u64,
+    content_document_id: DocumentId,
 }
 
 impl NetProvider for ContentNetProvider {
@@ -369,9 +369,9 @@ impl NetProvider for ContentNetProvider {
 }
 
 struct ContentDocument {
-    traversable_id: u64,
-    parent_traversable_id: Option<u64>,
-    top_level_traversable_id: u64,
+    traversable_id: NavigableId,
+    parent_traversable_id: Option<NavigableId>,
+    top_level_traversable_id: NavigableId,
     frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
@@ -393,9 +393,9 @@ pub(crate) struct ContentRuntime {
     event_sender: IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     default_viewport: Option<ViewportSnapshot>,
-    traversable_viewports: HashMap<u64, DocumentViewportState>,
-    documents: HashMap<u64, ContentDocument>,
-    active_documents_by_traversable: HashMap<u64, u64>,
+    traversable_viewports: HashMap<NavigableId, DocumentViewportState>,
+    documents: HashMap<DocumentId, ContentDocument>,
+    active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
     next_placeholder_frame_token: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
@@ -418,7 +418,7 @@ impl ContentRuntime {
         }
     }
 
-    fn document_viewport_state(&self, traversable_id: u64) -> Option<DocumentViewportState> {
+    fn document_viewport_state(&self, traversable_id: NavigableId) -> Option<DocumentViewportState> {
         self.traversable_viewports
             .get(&traversable_id)
             .cloned()
@@ -433,8 +433,8 @@ impl ContentRuntime {
 
     fn document_config(
         &self,
-        traversable_id: u64,
-        document_id: u64,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
         base_url: Option<String>,
     ) -> DocumentConfig {
         DocumentConfig {
@@ -546,7 +546,7 @@ impl ContentRuntime {
         }
     }
 
-    fn mark_deferred_script_failed(&mut self, document_id: u64, script_index: usize) {
+    fn mark_deferred_script_failed(&mut self, document_id: DocumentId, script_index: usize) {
         let Some(content_document) = self.documents.get_mut(&document_id) else {
             return;
         };
@@ -568,7 +568,7 @@ impl ContentRuntime {
 
     fn complete_deferred_script_fetch(
         &mut self,
-        document_id: u64,
+        document_id: DocumentId,
         script_index: usize,
         body: Vec<u8>,
     ) {
@@ -590,7 +590,7 @@ impl ContentRuntime {
 
     fn start_deferred_script_fetch(
         &mut self,
-        document_id: u64,
+        document_id: DocumentId,
         script_index: usize,
         src: &str,
     ) -> Result<(), String> {
@@ -642,7 +642,7 @@ impl ContentRuntime {
     /// to the user agent to trigger `finalize_cross_document_navigation` (step 14 of the
     /// algorithm). It may be invoked multiple times per document — each call re-checks readiness
     /// and returns early until all blocking work is complete.
-    fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
+    fn continue_document_load(&mut self, document_id: DocumentId) -> Result<(), String> {
         let (ready_to_finish, traversable_id, resources_ready, scripts_ready) = {
             let content_document = self
                 .documents
@@ -738,11 +738,11 @@ impl ContentRuntime {
     /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the user-agent/content command path emits `CreateEmptyDocument`.
     fn create_empty_document(
         &mut self,
-        traversable_id: u64,
-        document_id: u64,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
         frame_id: Option<FrameId>,
-        parent_traversable_id: Option<u64>,
-        top_level_traversable_id: u64,
+        parent_traversable_id: Option<NavigableId>,
+        top_level_traversable_id: NavigableId,
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
@@ -803,12 +803,12 @@ impl ContentRuntime {
     /// Note: This continues the HTML document loading algorithm through the end-of-document load steps and into `completely finish loading`.
     fn create_loaded_document(
         &mut self,
-        traversable_id: u64,
-        document_id: u64,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
         frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
-        parent_traversable_id: Option<u64>,
-        top_level_traversable_id: u64,
+        parent_traversable_id: Option<NavigableId>,
+        top_level_traversable_id: NavigableId,
     ) -> Result<(), String> {
         let LoadedDocumentResponse {
             final_url,
@@ -898,7 +898,7 @@ impl ContentRuntime {
 
     fn evaluate_script(
         &mut self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         source: String,
     ) -> Result<serde_json::Value, String> {
         let document_id = *self
@@ -912,7 +912,7 @@ impl ContentRuntime {
         document.settings.evaluate_script_to_json(&source)
     }
 
-    fn destroy_document(&mut self, document_id: u64) -> Result<(), String> {
+    fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
         run_dom_removing_steps_for_document(self, document_id)?;
         if let Some(content_document) = self.documents.remove(&document_id) {
             if self
@@ -959,9 +959,9 @@ impl ContentRuntime {
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
-                NavigableId::from_u128(document.traversable_id as u128),
-                document.parent_traversable_id.map(|id| NavigableId::from_u128(id as u128)),
-                NavigableId::from_u128(document.top_level_traversable_id as u128),
+                document.traversable_id,
+                document.parent_traversable_id,
+                document.top_level_traversable_id,
                 Rc::clone(&document.document),
                 &mut document.settings,
                 &self.event_sender,
@@ -974,7 +974,11 @@ impl ContentRuntime {
         Ok(())
     }
 
-    fn run_before_unload(&mut self, document_id: u64, check_id: u64) -> Result<(), String> {
+    fn run_before_unload(
+        &mut self,
+        document_id: DocumentId,
+        check_id: BeforeUnloadCheckId,
+    ) -> Result<(), String> {
         let canceled = if let Some(document) = self.documents.get_mut(&document_id) {
             !dispatch_window_event(&mut document.settings, "beforeunload", true)
                 .map_err(|error| error.to_string())?
@@ -992,7 +996,11 @@ impl ContentRuntime {
             .map_err(|error| format!("failed to send beforeunload completion: {error}"))
     }
 
-    fn update_the_rendering(&mut self, traversable_id: u64, document_id: u64) -> Result<(), String> {
+    fn update_the_rendering(
+        &mut self,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
+    ) -> Result<(), String> {
         let Some(document) = self.documents.get_mut(&document_id) else {
             return Ok(());
         };
@@ -1008,8 +1016,8 @@ impl ContentRuntime {
     /// Note: The Rust user-agent and event-loop workers queue this rendering task, and the content runtime continues the noted rendering opportunity once critical fetches finish.
     fn continue_updating_the_rendering(
         &mut self,
-        traversable_id: u64,
-        document_id: u64,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
     ) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
         let paint_frame = {
@@ -1231,7 +1239,7 @@ impl ContentRuntime {
 
     fn run_window_timer(
         &mut self,
-        document_id: u64,
+        document_id: DocumentId,
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,

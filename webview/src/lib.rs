@@ -17,7 +17,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct WebviewState {
     pub compositor: Compositor,
-    pub current_navigable_id: Option<u64>,
+    pub current_navigable_id: Option<NavigableId>,
     focused_frame_id: Option<FrameId>,
 }
 
@@ -55,22 +55,22 @@ pub trait EmbedderApi {
 pub trait UserAgentApi {
     fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String>;
     fn start_navigation(&self, request: NavigateRequest) -> Result<(), String>;
-    fn dispatch_event_for(&self, traversable_id: u64, event: String) -> Result<(), String>;
-    fn note_rendering_opportunity(&self, traversable_id: u64) -> Result<(), String>;
+    fn dispatch_event_for(&self, traversable_id: NavigableId, event: String) -> Result<(), String>;
+    fn note_rendering_opportunity(&self, traversable_id: NavigableId) -> Result<(), String>;
     fn set_default_viewport(
         &self,
         snapshot: Option<(u32, u32, f32, ColorScheme)>,
     ) -> Result<(), String>;
     fn set_traversable_viewport(
         &self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         snapshot: (u32, u32, f32, ColorScheme),
         offset_x: f32,
         offset_y: f32,
     ) -> Result<(), String>;
     fn evaluate_script(
         &self,
-        traversable_id: u64,
+        traversable_id: NavigableId,
         source: String,
         timeout: Duration,
     ) -> Result<serde_json::Value, String>;
@@ -131,7 +131,7 @@ impl WebviewProvider {
     pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
         match webview_id {
             Some(webview_id) => {
-                let navigable_id = NavigableId::from_u128(webview_id.0 as u128);
+                let navigable_id = webview_id.0;
                 self.user_agent.start_navigation(NavigateRequest {
                     navigation_id: None,
                     source_navigable_id: navigable_id,
@@ -278,7 +278,7 @@ impl WebviewProvider {
         scene
     }
 
-    pub fn current_navigable_id(&self, webview_id: WebviewId) -> Option<u64> {
+    pub fn current_navigable_id(&self, webview_id: WebviewId) -> Option<NavigableId> {
         self.webviews
             .get(&webview_id)
             .and_then(|state| state.current_navigable_id)

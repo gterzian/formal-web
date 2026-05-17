@@ -9,7 +9,8 @@ use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    Event as ContentEvent, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
+    DocumentId, Event as ContentEvent, WindowTimerClearRequest, WindowTimerKey,
+    WindowTimerRequest,
 };
 
 fn timer_debug_enabled() -> bool {
@@ -92,7 +93,7 @@ pub struct WindowTimer {
 
 #[derive(Clone)]
 struct TimerHost {
-    document_id: u64,
+    document_id: DocumentId,
     event_sender: IpcSender<ContentEvent>,
 }
 
@@ -187,7 +188,7 @@ impl GlobalScope {
 
     pub(crate) fn install_timer_host(
         &self,
-        document_id: u64,
+        document_id: DocumentId,
         event_sender: IpcSender<ContentEvent>,
     ) {
         self.timer_host.borrow_mut().replace(TimerHost {

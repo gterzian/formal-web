@@ -3,6 +3,14 @@ name = "net"
 version = "0.1.0"
 edition = "2024"
 publish = false
+autobins = false
+
+[lib]
+path = "src/main.rs"
+
+[[bin]]
+name = "formal-web-net"
+path = "src/bin/net_process.rs"
 
 [dependencies]
 ipc-channel = "0.21"

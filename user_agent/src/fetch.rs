@@ -2,7 +2,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded, select};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
-    DocumentFetchId, FetchRequest as ContentFetchRequest, NavigationFetchId,
+    DocumentFetchId, EventLoopId, FetchRequest as ContentFetchRequest, NavigationFetchId,
 };
 use ipc_messages::network::{
     Bootstrap as NetworkBootstrap, Request as NetworkRequest, Response as NetworkResponse,
@@ -22,7 +22,7 @@ const FETCH_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
 /// Commands that the user-agent thread can send into the dedicated fetch worker.
 pub enum FetchCommand {
     StartDocumentFetch {
-        event_loop_id: usize,
+        event_loop_id: EventLoopId,
         request: ContentFetchRequest,
     },
     StartNavigationFetch {
@@ -37,7 +37,7 @@ pub enum FetchCommand {
 /// a pending document fetch that must resume one event loop.
 pub struct PendingDocumentFetch {
     /// Event loop that should receive the fetch completion/failure.
-    pub event_loop_id: usize,
+    pub event_loop_id: EventLoopId,
     /// Content-side handler id for the document fetch request.
     pub handler_id: DocumentFetchId,
 }

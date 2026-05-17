@@ -40,6 +40,13 @@ macro_rules! uuid_id {
 uuid_id!(DocumentFetchId);
 uuid_id!(NavigationFetchId);
 uuid_id!(WindowTimerKey);
+uuid_id!(EventLoopId);
+uuid_id!(BrowsingContextId);
+uuid_id!(BrowsingContextGroupId);
+uuid_id!(DocumentId);
+uuid_id!(AgentClusterId);
+uuid_id!(AgentId);
+uuid_id!(BeforeUnloadCheckId);
 uuid_id!(NavigableId);
 uuid_id!(FrameId);
 uuid_id!(NavigationId);
@@ -60,7 +67,7 @@ pub struct ViewportSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraversableViewport {
-    pub traversable_id: u64,
+    pub traversable_id: NavigableId,
     pub viewport: ViewportSnapshot,
     pub offset_x: f32,
     pub offset_y: f32,
@@ -118,7 +125,7 @@ pub struct NavigateRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateChildNavigableRequest {
-    pub parent_traversable_id: u64,
+    pub parent_traversable_id: NavigableId,
     pub content_navigable_id: NavigableId,
     pub content_frame_id: FrameId,
     #[serde(default)]
@@ -127,29 +134,29 @@ pub struct CreateChildNavigableRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeforeUnloadResult {
-    pub document_id: u64,
-    pub check_id: u64,
+    pub document_id: DocumentId,
+    pub check_id: BeforeUnloadCheckId,
     pub canceled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizeNavigation {
-    pub document_id: u64,
+    pub document_id: DocumentId,
     pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IframeTraversableRemoval {
-    pub parent_traversable_id: u64,
+    pub parent_traversable_id: NavigableId,
     pub content_navigable_id: NavigableId,
     pub content_frame_id: FrameId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct WebviewId(pub u64);
+pub struct WebviewId(pub NavigableId);
 
 pub fn iframe_target_name(
-    parent_traversable_id: u64,
+    parent_traversable_id: NavigableId,
     content_navigable_id: NavigableId,
     content_frame_id: FrameId,
 ) -> String {
@@ -158,10 +165,10 @@ pub fn iframe_target_name(
 
 pub fn parse_iframe_target_name(
     target_name: &str,
-) -> Option<(u64, NavigableId, FrameId)> {
+) -> Option<(NavigableId, NavigableId, FrameId)> {
     let payload = target_name.strip_prefix("_iframe|")?;
     let mut parts = payload.split('|');
-    let parent_traversable_id = parts.next()?.parse::<u64>().ok()?;
+    let parent_traversable_id = NavigableId::parse_str(parts.next()?).ok()?;
     let content_navigable_id = NavigableId::parse_str(parts.next()?).ok()?;
     let content_frame_id = FrameId::parse_str(parts.next()?).ok()?;
     if parts.next().is_some() {
@@ -196,13 +203,13 @@ pub struct ClipboardWriteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchEventEntry {
-    pub document_id: u64,
+    pub document_id: DocumentId,
     pub event: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowTimerRequest {
-    pub document_id: u64,
+    pub document_id: DocumentId,
     pub timer_id: u32,
     pub timer_key: WindowTimerKey,
     pub timeout_ms: u32,
@@ -211,7 +218,7 @@ pub struct WindowTimerRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowTimerClearRequest {
-    pub document_id: u64,
+    pub document_id: DocumentId,
     pub timer_key: WindowTimerKey,
 }
 
@@ -595,27 +602,27 @@ pub enum Command {
     SetViewport(ViewportSnapshot),
     SetTraversableViewport(TraversableViewport),
     CreateEmptyDocument {
-        traversable_id: u64,
-        document_id: u64,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
         frame_id: Option<FrameId>,
         /// <https://html.spec.whatwg.org/multipage/#navigable>'s parent navigable id, if any.
-        parent_traversable_id: Option<u64>,
+        parent_traversable_id: Option<NavigableId>,
         /// The root of this navigable's traversable navigable chain.
-        top_level_traversable_id: u64,
+        top_level_traversable_id: NavigableId,
     },
     CreateLoadedDocument {
-        traversable_id: u64,
-        document_id: u64,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
         frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
         /// <https://html.spec.whatwg.org/multipage/#navigable>'s parent navigable id, if any.
-        parent_traversable_id: Option<u64>,
+        parent_traversable_id: Option<NavigableId>,
         /// The root of this navigable's traversable navigable chain.
-        top_level_traversable_id: u64,
+        top_level_traversable_id: NavigableId,
     },
-    DestroyDocument { document_id: u64 },
+    DestroyDocument { document_id: DocumentId },
     EvaluateScript {
-        traversable_id: u64,
+        traversable_id: NavigableId,
         request_id: u64,
         source: String,
     },
@@ -623,15 +630,15 @@ pub enum Command {
         events: Vec<DispatchEventEntry>,
     },
     RunBeforeUnload {
-        document_id: u64,
-        check_id: u64,
+        document_id: DocumentId,
+        check_id: BeforeUnloadCheckId,
     },
     UpdateTheRendering {
-        traversable_id: u64,
-        document_id: u64,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
     },
     RunWindowTimer {
-        document_id: u64,
+        document_id: DocumentId,
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,
@@ -668,7 +675,7 @@ pub enum Event {
 mod tests {
     use super::{
         Command, DocumentFetchId, FetchResponse, FontTransportReceiver, FontTransportSender,
-        FrameId, LoadedDocumentResponse, PaintFrame, PaintTransportSummary,
+        FrameId, LoadedDocumentResponse, NavigableId, PaintFrame, PaintTransportSummary,
         PlaceholderFrameMapping, SceneSummary, WebviewId,
     };
     use anyrender::{
@@ -784,7 +791,7 @@ mod tests {
         let prepared = sender.prepare_scene(23, scene);
         let expected_recorded = prepared.scene.clone();
         let paint_frame = PaintFrame::new(
-            WebviewId(7),
+            WebviewId(NavigableId::from_u128(7)),
             FrameId::from_u128(7),
             320,
             240,
@@ -808,7 +815,7 @@ mod tests {
         let mut receiver = FontTransportReceiver::default();
 
         let first_frame = PaintFrame::new(
-            WebviewId(7),
+            WebviewId(NavigableId::from_u128(7)),
             FrameId::from_u128(7),
             320,
             240,
@@ -833,7 +840,7 @@ mod tests {
         assert_single_glyph_run_font(&first_scene, &[1, 2, 3, 4], 7);
 
         let second_frame = PaintFrame::new(
-            WebviewId(7),
+            WebviewId(NavigableId::from_u128(7)),
             FrameId::from_u128(7),
             320,
             240,
@@ -860,7 +867,7 @@ mod tests {
     #[test]
     fn create_loaded_document_command_round_trips_response_metadata() {
         let encoded = postcard::to_allocvec(&Command::CreateLoadedDocument {
-            traversable_id: 3,
+            traversable_id: NavigableId::from_u128(3),
             document_id: 7,
             frame_id: None,
             response: LoadedDocumentResponse {
@@ -869,8 +876,8 @@ mod tests {
                 content_type: String::from("text/html; charset=utf-8"),
                 body: String::from("<p>ok</p>"),
             },
-            parent_traversable_id: Some(2),
-            top_level_traversable_id: 1,
+            parent_traversable_id: Some(NavigableId::from_u128(2)),
+            top_level_traversable_id: NavigableId::from_u128(1),
         })
         .expect("create-loaded-document should serialize");
         let decoded: Command =
@@ -885,11 +892,11 @@ mod tests {
                 parent_traversable_id,
                 top_level_traversable_id,
             } => {
-                assert_eq!(traversable_id, 3);
+                assert_eq!(traversable_id, NavigableId::from_u128(3));
                 assert_eq!(document_id, 7);
                 assert_eq!(frame_id, None);
-                assert_eq!(parent_traversable_id, Some(2));
-                assert_eq!(top_level_traversable_id, 1);
+                assert_eq!(parent_traversable_id, Some(NavigableId::from_u128(2)));
+                assert_eq!(top_level_traversable_id, NavigableId::from_u128(1));
                 assert_eq!(
                     response,
                     LoadedDocumentResponse {

@@ -3,12 +3,14 @@
 The browser user-agent lives in this crate.
 
 Keep ownership and cross-thread coordination here, split by responsibility:
-- `user_agent.rs` owns the top-level user-agent state, handles, and command loop.
+- `user_agent.rs` owns the top-level user-agent state, event-loop ownership indices, and command loop.
 - `event_loop.rs` owns content event-loop threads, content sidecar processes, and task routing.
 - `timer.rs` owns the timer worker.
 - `fetch.rs` owns the fetch worker and the net sidecar process boundary.
 
 Model long-running workers as stateful structs with `run(&mut self)` so thread-local state stays on the owning component instead of being spread across helper functions.
+
+Key event-loop ownership directly by `EventLoopId` and keep traversable-to-owner indices in terms of those UUID ids; avoid process-local integer handle allocators for cross-worker routing.
 
 Implement each `UserAgentCommand` branch as a dedicated `handle_*` method on `UserAgentWorker`, and keep spec-facing algorithms such as `create_agent`, `create_new_top_level_traversable`, `create_navigation_params_by_fetching`, and `finalize_cross_document_navigation` as named worker methods instead of free helper functions.
 
@@ -47,3 +49,5 @@ When response-driven navigation initializes a new document, keep same-site top-l
 Keep the initial top-level about:blank shell on the event loop that created it until the first navigation commits; the startup artifact should not force a new content process merely because the destination is cross-site.
 
 Name user-agent command variants and worker methods after the standard algorithm or continuation they trigger (for example `Navigate`, `CompleteBeforeUnload`, and `FinalizeCrossDocumentNavigation`) instead of transport-oriented `Queue*` names, and keep the `navigate` entrypoint typed in terms of a navigable id that resolves to a traversable when the target is traversable-backed.
+
+Model navigables and traversables as a single `Navigable` struct in `UserAgentState::navigables`. A traversable navigable is one where `event_loop_id` is `Some`; top-level traversables additionally have `parent_navigable_id: None`. Remove any parallel `TraversableSet` or `Traversable` storage; single-source updates eliminate the redundant dual-write pattern in every state setter.

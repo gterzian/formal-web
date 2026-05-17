@@ -6,7 +6,7 @@ use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, CreateChildNavigableRequest,
     ColorScheme as MessageColorScheme, Command as ContentCommand, Event as ContentEvent,
-    TraversableViewport, ViewportSnapshot,
+    EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(unix)]
@@ -31,10 +31,10 @@ pub enum EventLoopCommand {
     FireAndForget { command: ContentCommand },
     SendCommand {
         command: ContentCommand,
-        reply: Sender<Result<Option<u64>, String>>,
+        reply: Sender<Result<Option<NavigableId>, String>>,
     },
     EvaluateScript {
-        traversable_id: u64,
+        traversable_id: NavigableId,
         request_id: u64,
         source: String,
         reply: Sender<Result<serde_json::Value, String>>,
@@ -47,10 +47,10 @@ pub enum EventLoopCommand {
 /// Implementation detail: thread handle plus routing state for one
 /// <https://html.spec.whatwg.org/multipage/#event-loop>.
 pub struct EventLoopEntry {
-    pub event_loop_id: usize,
+    pub event_loop_id: EventLoopId,
     pub command_sender: Sender<EventLoopCommand>,
     pub join_handle: JoinHandle<()>,
-    pub traversable_ids: HashSet<u64>,
+    pub traversable_ids: HashSet<NavigableId>,
 }
 
 /// navigation debug output related to HTML navigation continuations.
@@ -95,7 +95,7 @@ pub fn viewport_command(snapshot: (u32, u32, f32, ColorScheme)) -> ContentComman
 
 /// per-traversable viewport state delivered to content.
 pub fn traversable_viewport_command(
-    traversable_id: u64,
+    traversable_id: NavigableId,
     snapshot: (u32, u32, f32, ColorScheme),
     offset_x: f32,
     offset_y: f32,
@@ -115,7 +115,7 @@ pub fn traversable_viewport_command(
 }
 
 /// commands that create a traversable on the content side.
-fn traversable_id_from_command(command: &ContentCommand) -> Option<u64> {
+fn traversable_id_from_command(command: &ContentCommand) -> Option<NavigableId> {
     match command {
         ContentCommand::CreateEmptyDocument {
             traversable_id,
@@ -135,7 +135,7 @@ fn traversable_id_from_command(command: &ContentCommand) -> Option<u64> {
 /// the queued task-bearing commands in one HTML event loop.
 struct PendingTaskCommand {
     command: ContentCommand,
-    reply: Option<Sender<Result<Option<u64>, String>>>,
+    reply: Option<Sender<Result<Option<NavigableId>, String>>>,
 }
 
 /// Stateful owner of one HTML event loop thread and its dedicated content process.
@@ -145,7 +145,7 @@ struct PendingTaskCommand {
 /// instead of splitting the state across a separate bridge helper.
 struct EventLoopWorker {
     /// <https://html.spec.whatwg.org/multipage/#event-loop>
-    event_loop_id: usize,
+    event_loop_id: EventLoopId,
     /// IPC sender for commands routed into the dedicated content process.
     command_sender: IpcSender<ContentCommand>,
     /// IPC receiver for content-originated events, including fetch requests, timers, and
@@ -198,7 +198,7 @@ impl EventLoopWorker {
     /// bootstrapping the content process owned by one
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
     fn new(
-        event_loop_id: usize,
+        event_loop_id: EventLoopId,
         process_label: String,
         user_agent_command_sender: Sender<UserAgentCommand>,
         fetch_command_sender: Sender<FetchCommand>,
@@ -266,7 +266,7 @@ impl EventLoopWorker {
     }
 
     /// sending one command across the content IPC boundary.
-    fn send_command_inner(&self, command: &ContentCommand) -> Result<Option<u64>, String> {
+    fn send_command_inner(&self, command: &ContentCommand) -> Result<Option<NavigableId>, String> {
         self.command_sender
             .send(command.clone())
             .map_err(|error| format!("failed to send content IPC message: {error}"))?;
@@ -278,7 +278,7 @@ impl EventLoopWorker {
     fn send_immediate_command(
         &mut self,
         command: ContentCommand,
-        reply: Option<Sender<Result<Option<u64>, String>>>,
+        reply: Option<Sender<Result<Option<NavigableId>, String>>>,
     ) {
         // Commands that do not emit `CommandCompleted` stay out-of-band relative to the
         // task queue.
@@ -312,7 +312,7 @@ impl EventLoopWorker {
     fn route_content_command(
         &mut self,
         command: ContentCommand,
-        reply: Option<Sender<Result<Option<u64>, String>>>,
+        reply: Option<Sender<Result<Option<NavigableId>, String>>>,
     ) {
         // The HTML event loop runs one task-bearing step at a time and resumes only after the
         // content side acknowledges completion. Viewport updates stay out-of-band because they do
@@ -586,6 +586,10 @@ impl EventLoopWorker {
             select! {
                 recv(command_receiver) -> command => {
                     let Ok(command) = command else {
+                        eprintln!(
+                            "event loop command channel closed for event loop {}; sending shutdown to content",
+                            self.event_loop_id
+                        );
                         let _ = self.send_command_inner(&ContentCommand::Shutdown);
                         break;
                     };
@@ -609,6 +613,23 @@ impl EventLoopWorker {
                             break;
                         }
                         Err(error) => {
+                            let child_status = if let Some(child) = self.child.as_mut() {
+                                let deadline = Instant::now() + Duration::from_millis(500);
+                                let mut status = child.try_wait().ok().flatten();
+                                while status.is_none() && Instant::now() < deadline {
+                                    std::thread::sleep(Duration::from_millis(25));
+                                    status = child.try_wait().ok().flatten();
+                                }
+                                status
+                                    .map(|status| status.to_string())
+                                    .unwrap_or_else(|| String::from("still running"))
+                            } else {
+                                String::from("missing child handle")
+                            };
+                            eprintln!(
+                                "content event route closed for event loop {}: {error}; child status: {child_status}",
+                                self.event_loop_id
+                            );
                             if let Some(reply) = self.stop_reply.take() {
                                 let _ = reply.send(Err(format!("content event route closed: {error}")));
                             }
@@ -662,7 +683,7 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, Str
 
 /// <https://html.spec.whatwg.org/multipage/#event-loop>
 pub fn spawn_event_loop_entry(
-    event_loop_id: usize,
+    event_loop_id: EventLoopId,
     process_label: String,
     user_agent_command_sender: Sender<UserAgentCommand>,
     fetch_command_sender: Sender<FetchCommand>,

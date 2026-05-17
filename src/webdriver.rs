@@ -283,7 +283,7 @@ fn dispatch_session_request(
 fn status_payload() -> Value {
     let ready = embedder::automation_is_ready()
         && embedder::automation_snapshot(Duration::from_millis(250))
-            .map(|snapshot| snapshot.webview_id.is_some() && snapshot.current_url.is_some())
+            .map(|snapshot| snapshot.has_top_level_traversable && snapshot.webview_id.is_some())
             .unwrap_or(false);
     json!({
         "ready": ready,
