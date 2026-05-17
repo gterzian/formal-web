@@ -40,6 +40,13 @@ macro_rules! uuid_id {
 uuid_id!(DocumentFetchId);
 uuid_id!(NavigationFetchId);
 uuid_id!(WindowTimerKey);
+uuid_id!(EventLoopId);
+uuid_id!(BrowsingContextId);
+uuid_id!(BrowsingContextGroupId);
+uuid_id!(DocumentId);
+uuid_id!(AgentClusterId);
+uuid_id!(AgentId);
+uuid_id!(BeforeUnloadCheckId);
 uuid_id!(NavigableId);
 uuid_id!(FrameId);
 uuid_id!(NavigationId);
@@ -127,14 +134,14 @@ pub struct CreateChildNavigableRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeforeUnloadResult {
-    pub document_id: u64,
-    pub check_id: u64,
+    pub document_id: DocumentId,
+    pub check_id: BeforeUnloadCheckId,
     pub canceled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizeNavigation {
-    pub document_id: u64,
+    pub document_id: DocumentId,
     pub url: String,
 }
 
@@ -196,13 +203,13 @@ pub struct ClipboardWriteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchEventEntry {
-    pub document_id: u64,
+    pub document_id: DocumentId,
     pub event: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowTimerRequest {
-    pub document_id: u64,
+    pub document_id: DocumentId,
     pub timer_id: u32,
     pub timer_key: WindowTimerKey,
     pub timeout_ms: u32,
@@ -211,7 +218,7 @@ pub struct WindowTimerRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowTimerClearRequest {
-    pub document_id: u64,
+    pub document_id: DocumentId,
     pub timer_key: WindowTimerKey,
 }
 
@@ -596,7 +603,7 @@ pub enum Command {
     SetTraversableViewport(TraversableViewport),
     CreateEmptyDocument {
         traversable_id: NavigableId,
-        document_id: u64,
+        document_id: DocumentId,
         frame_id: Option<FrameId>,
         /// <https://html.spec.whatwg.org/multipage/#navigable>'s parent navigable id, if any.
         parent_traversable_id: Option<NavigableId>,
@@ -605,7 +612,7 @@ pub enum Command {
     },
     CreateLoadedDocument {
         traversable_id: NavigableId,
-        document_id: u64,
+        document_id: DocumentId,
         frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
         /// <https://html.spec.whatwg.org/multipage/#navigable>'s parent navigable id, if any.
@@ -613,7 +620,7 @@ pub enum Command {
         /// The root of this navigable's traversable navigable chain.
         top_level_traversable_id: NavigableId,
     },
-    DestroyDocument { document_id: u64 },
+    DestroyDocument { document_id: DocumentId },
     EvaluateScript {
         traversable_id: NavigableId,
         request_id: u64,
@@ -623,15 +630,15 @@ pub enum Command {
         events: Vec<DispatchEventEntry>,
     },
     RunBeforeUnload {
-        document_id: u64,
-        check_id: u64,
+        document_id: DocumentId,
+        check_id: BeforeUnloadCheckId,
     },
     UpdateTheRendering {
         traversable_id: NavigableId,
-        document_id: u64,
+        document_id: DocumentId,
     },
     RunWindowTimer {
-        document_id: u64,
+        document_id: DocumentId,
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,

@@ -6,7 +6,7 @@ use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, CreateChildNavigableRequest,
     ColorScheme as MessageColorScheme, Command as ContentCommand, Event as ContentEvent,
-    NavigableId, TraversableViewport, ViewportSnapshot,
+    EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(unix)]
@@ -47,7 +47,7 @@ pub enum EventLoopCommand {
 /// Implementation detail: thread handle plus routing state for one
 /// <https://html.spec.whatwg.org/multipage/#event-loop>.
 pub struct EventLoopEntry {
-    pub event_loop_id: usize,
+    pub event_loop_id: EventLoopId,
     pub command_sender: Sender<EventLoopCommand>,
     pub join_handle: JoinHandle<()>,
     pub traversable_ids: HashSet<NavigableId>,
@@ -145,7 +145,7 @@ struct PendingTaskCommand {
 /// instead of splitting the state across a separate bridge helper.
 struct EventLoopWorker {
     /// <https://html.spec.whatwg.org/multipage/#event-loop>
-    event_loop_id: usize,
+    event_loop_id: EventLoopId,
     /// IPC sender for commands routed into the dedicated content process.
     command_sender: IpcSender<ContentCommand>,
     /// IPC receiver for content-originated events, including fetch requests, timers, and
@@ -198,7 +198,7 @@ impl EventLoopWorker {
     /// bootstrapping the content process owned by one
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
     fn new(
-        event_loop_id: usize,
+        event_loop_id: EventLoopId,
         process_label: String,
         user_agent_command_sender: Sender<UserAgentCommand>,
         fetch_command_sender: Sender<FetchCommand>,
@@ -586,6 +586,10 @@ impl EventLoopWorker {
             select! {
                 recv(command_receiver) -> command => {
                     let Ok(command) = command else {
+                        eprintln!(
+                            "event loop command channel closed for event loop {}; sending shutdown to content",
+                            self.event_loop_id
+                        );
                         let _ = self.send_command_inner(&ContentCommand::Shutdown);
                         break;
                     };
@@ -609,6 +613,23 @@ impl EventLoopWorker {
                             break;
                         }
                         Err(error) => {
+                            let child_status = if let Some(child) = self.child.as_mut() {
+                                let deadline = Instant::now() + Duration::from_millis(500);
+                                let mut status = child.try_wait().ok().flatten();
+                                while status.is_none() && Instant::now() < deadline {
+                                    std::thread::sleep(Duration::from_millis(25));
+                                    status = child.try_wait().ok().flatten();
+                                }
+                                status
+                                    .map(|status| status.to_string())
+                                    .unwrap_or_else(|| String::from("still running"))
+                            } else {
+                                String::from("missing child handle")
+                            };
+                            eprintln!(
+                                "content event route closed for event loop {}: {error}; child status: {child_status}",
+                                self.event_loop_id
+                            );
                             if let Some(reply) = self.stop_reply.take() {
                                 let _ = reply.send(Err(format!("content event route closed: {error}")));
                             }
@@ -662,7 +683,7 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, Str
 
 /// <https://html.spec.whatwg.org/multipage/#event-loop>
 pub fn spawn_event_loop_entry(
-    event_loop_id: usize,
+    event_loop_id: EventLoopId,
     process_label: String,
     user_agent_command_sender: Sender<UserAgentCommand>,
     fetch_command_sender: Sender<FetchCommand>,

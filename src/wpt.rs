@@ -1983,9 +1983,6 @@ fn runner_executable_path(build_profile: RunnerBuildProfile) -> Result<PathBuf, 
 
 fn ensure_runner_executable(build_profile: RunnerBuildProfile) -> Result<PathBuf, String> {
     let executable = runner_executable_path(build_profile)?;
-    if executable.exists() {
-        return Ok(executable);
-    }
 
     build_runner_executable(build_profile)?;
     if executable.exists() {
@@ -2005,11 +2002,11 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     if let Some(flag) = build_profile.cargo_profile_flag() {
         command.arg(flag);
     }
-    command.arg("--bin").arg("formal-web");
+    command.arg("--bins");
     command.current_dir(repo_root());
     let status = command.status().map_err(|error| {
         format!(
-            "failed to start cargo build for {} WPT runner: {error}",
+            "failed to start cargo build for {} WPT runner binaries: {error}",
             build_profile.as_str()
         )
     })?;
@@ -2017,7 +2014,7 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
         Ok(())
     } else {
         Err(format!(
-            "cargo build for {} WPT runner exited with status {status}",
+            "cargo build for {} WPT runner binaries exited with status {status}",
             build_profile.as_str()
         ))
     }

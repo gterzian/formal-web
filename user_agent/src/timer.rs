@@ -1,5 +1,5 @@
 use crossbeam_channel::{Receiver, Sender, select};
-use ipc_messages::content::{DocumentFetchId, WindowTimerKey};
+use ipc_messages::content::{DocumentFetchId, DocumentId, EventLoopId, WindowTimerKey};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -25,12 +25,12 @@ pub enum TimerCommand {
 #[derive(Clone)]
 pub enum TimerCompletion {
     DocumentFetchTimeout {
-        event_loop_id: usize,
+        event_loop_id: EventLoopId,
         handler_id: DocumentFetchId,
     },
     WindowTimerTask {
-        event_loop_id: usize,
-        document_id: u64,
+        event_loop_id: EventLoopId,
+        document_id: DocumentId,
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,

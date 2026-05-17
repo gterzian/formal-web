@@ -5,6 +5,9 @@ use clap::{Parser, Subcommand};
 use std::process;
 use webview::UserAgentApi;
 
+const FORMAL_WEB_BUILD_ID: &str = env!("FORMAL_WEB_BUILD_ID");
+const FORMAL_WEB_EXPECTED_BUILD_ID_ENV: &str = "FORMAL_WEB_EXPECTED_BUILD_ID";
+
 #[derive(Parser, Debug)]
 #[command(name = "formal-web")]
 #[command(about = "Rust entry point for the formal-web runtime and local WPT tooling")]
@@ -28,6 +31,10 @@ pub(crate) struct AppRunOptions {
 }
 
 pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
+    unsafe {
+        std::env::set_var(FORMAL_WEB_EXPECTED_BUILD_ID_ENV, FORMAL_WEB_BUILD_ID);
+    }
+
     embedder::set_event_loop_options(embedder::EventLoopOptions {
         headless: options.headless,
         startup_url: options.startup_url,

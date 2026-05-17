@@ -37,7 +37,7 @@ use crate::streams::{
 };
 use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::Event as ContentEvent;
+use ipc_messages::content::{DocumentId, Event as ContentEvent};
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -233,7 +233,7 @@ impl EnvironmentSettingsObject {
 
     pub(crate) fn install_timer_host(
         &self,
-        document_id: u64,
+        document_id: DocumentId,
         event_sender: IpcSender<ContentEvent>,
     ) -> Result<(), String> {
         crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {

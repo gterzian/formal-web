@@ -8,16 +8,17 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use embedder::{FinalizeNavigation, FormalWebUserEvent, UserEventDispatcher};
 use ipc_messages::{
     content::{
-        BeforeUnloadResult, Command as ContentCommand,
-        DispatchEventEntry, DocumentFetchId,
+        AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult,
+        BrowsingContextGroupId, BrowsingContextId, Command as ContentCommand,
+        DispatchEventEntry, DocumentFetchId, DocumentId, EventLoopId,
         FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
         FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse,
         NavigableId, NavigateRequest, NavigationFetchId, NavigationId, UserNavigationInvolvement, WebviewId,
         WindowTimerKey, iframe_target_name, parse_iframe_target_name,
     },
 };
-use std::path::PathBuf;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use url::Url;
@@ -75,18 +76,18 @@ pub enum AgentClusterKey {
 pub struct Agent {
     /// identifier standing in for the signifier created by
     /// <https://html.spec.whatwg.org/multipage/#create-an-agent>
-    pub id: u64,
+    pub id: AgentId,
     /// <https://tc39.es/ecma262/#sec-agents>
     pub can_block: bool,
     /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>
-    pub event_loop_id: usize,
+    pub event_loop_id: EventLoopId,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation>
 #[derive(Clone, Debug)]
 pub struct AgentCluster {
     /// identifier for <https://html.spec.whatwg.org/multipage/#agent-cluster>
-    pub id: u64,
+    pub id: AgentClusterId,
     /// <https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation>
     pub cross_origin_isolation_mode: CrossOriginIsolationMode,
     /// <https://html.spec.whatwg.org/multipage/#is-origin-keyed>
@@ -101,16 +102,16 @@ pub struct AgentCluster {
 #[derive(Clone, Debug)]
 pub struct BrowsingContext {
     /// Identifier for <https://html.spec.whatwg.org/multipage/#browsing-context>
-    pub id: u64,
+    pub id: BrowsingContextId,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#browsing-context-group>
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct BrowsingContextGroup {
     /// identifier for <https://html.spec.whatwg.org/multipage/#browsing-context-group>
-    pub id: u64,
+    pub id: BrowsingContextGroupId,
     /// <https://html.spec.whatwg.org/multipage/#browsing-context-set>
-    pub browsing_context_set: HashMap<u64, BrowsingContext>,
+    pub browsing_context_set: HashMap<BrowsingContextId, BrowsingContext>,
     /// <https://html.spec.whatwg.org/multipage/#agent-cluster-map>
     pub agent_cluster_map: HashMap<AgentClusterKey, AgentCluster>,
     /// <https://html.spec.whatwg.org/multipage/#historical-agent-cluster-key-map>
@@ -123,18 +124,18 @@ pub struct BrowsingContextGroup {
 #[derive(Clone, Debug, Default)]
 pub struct BrowsingContextGroupSet {
     /// <https://html.spec.whatwg.org/multipage/#browsing-context-group-set>
-    pub members: HashMap<u64, BrowsingContextGroup>,
+    pub members: HashMap<BrowsingContextGroupId, BrowsingContextGroup>,
 }
 
 impl BrowsingContextGroupSet {
     /// allocating the next browser-global browsing-context-group id.
-    fn next_group_id(&self) -> u64 {
-        self.members.keys().copied().max().map_or(0, |group_id| group_id + 1)
+    fn next_group_id(&self) -> BrowsingContextGroupId {
+        BrowsingContextGroupId::new()
     }
 
     /// removing one <https://html.spec.whatwg.org/multipage/#browsing-context>
     /// from the user agent's browsing-context-group set.
-    fn remove_browsing_context(&mut self, browsing_context_id: u64) {
+    fn remove_browsing_context(&mut self, browsing_context_id: BrowsingContextId) {
         let matching_group_id = self.members.iter().find_map(|(group_id, group)| {
             group.browsing_context_set
                 .contains_key(&browsing_context_id)
@@ -169,16 +170,16 @@ pub struct Navigable {
     /// <https://html.spec.whatwg.org/multipage/#nav-parent>
     pub parent_navigable_id: Option<NavigableId>,
     /// Active document exposed by this navigable.
-    pub active_document_id: Option<u64>,
+    pub active_document_id: Option<DocumentId>,
     // --- Traversable-specific fields (only populated when `event_loop_id` is `Some`) ---
     /// Browser-UI flag selecting the active traversable.
     pub is_active: bool,
     /// <https://html.spec.whatwg.org/multipage/#document-state-nav-target-name>
     pub target_name: String,
     /// <https://html.spec.whatwg.org/multipage/#nav-bc>
-    pub active_browsing_context_id: Option<u64>,
+    pub active_browsing_context_id: Option<BrowsingContextId>,
     /// Owning event loop; `Some` when this is a traversable navigable.
-    pub event_loop_id: Option<usize>,
+    pub event_loop_id: Option<EventLoopId>,
     /// Owning handle; `Some` when this is a traversable navigable.
     pub handle: Option<usize>,
     /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation>
@@ -199,7 +200,7 @@ pub struct SessionHistoryEntry {
     /// <https://html.spec.whatwg.org/multipage/#she-step>
     pub step: usize,
     /// reference to <https://dom.spec.whatwg.org/#concept-document>
-    pub document_id: u64,
+    pub document_id: DocumentId,
     /// <https://html.spec.whatwg.org/multipage/#session-history-entry-url>
     pub url: String,
 }
@@ -254,7 +255,7 @@ pub struct TargetSnapshotParams {
 
 #[derive(Clone, Copy, Debug)]
 struct BrowsingContextNavigationSelection {
-    browsing_context_id: u64,
+    browsing_context_id: BrowsingContextId,
     swapped_group: bool,
 }
 
@@ -326,12 +327,12 @@ pub struct UserAgentState {
     /// <https://html.spec.whatwg.org/multipage/#navigable>
     pub navigables: HashMap<NavigableId, Navigable>,
     /// <https://html.spec.whatwg.org/multipage/#tlbc-group>
-    pub top_level_browsing_context_group_ids: HashMap<u64, u64>,
+    pub top_level_browsing_context_group_ids: HashMap<BrowsingContextId, BrowsingContextGroupId>,
     /// map from Rust worker handles to the owned event-loop workers.
     pub event_loops: HashMap<usize, EventLoopEntry>,
     /// reverse index from <https://html.spec.whatwg.org/multipage/#event-loop> ids to
     /// the owning Rust handle.
-    pub handles_by_event_loop_id: HashMap<usize, usize>,
+    pub handles_by_event_loop_id: HashMap<EventLoopId, usize>,
     /// reverse index from top-level traversable ids to the owning Rust handle.
     pub traversable_handles: HashMap<NavigableId, usize>,
     /// cache of each traversable's active target name derived from
@@ -339,12 +340,12 @@ pub struct UserAgentState {
     pub traversable_target_names: HashMap<NavigableId, String>,
     /// cache of each traversable's active document derived from
     /// `traversable_set`.
-    pub active_documents_by_traversable: HashMap<NavigableId, u64>,
+    pub active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
     /// cache of active and pending documents keyed by
     /// <https://dom.spec.whatwg.org/#concept-document> identifiers.
-    pub documents: HashMap<u64, DocumentState>,
+    pub documents: HashMap<DocumentId, DocumentState>,
     /// queue of navigations paused while content runs `beforeunload`.
-    pub pending_before_unload_navigations: HashMap<u64, PendingBeforeUnloadNavigation>,
+    pub pending_before_unload_navigations: HashMap<BeforeUnloadCheckId, PendingBeforeUnloadNavigation>,
     /// queue of fetch-backed navigations suspended at the response wait point.
     pub pending_navigation_fetches: HashMap<NavigationId, PendingNavigationFetch>,
     /// reverse index from <https://fetch.spec.whatwg.org/#fetch-controller> ids to
@@ -352,10 +353,10 @@ pub struct UserAgentState {
     pub pending_navigation_fetch_ids_by_fetch_id: HashMap<NavigationFetchId, NavigationId>,
     /// queue of documents waiting for
     /// <https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation>
-    pub pending_navigation_finalizations: HashMap<u64, PendingNavigationFinalization>,
+    pub pending_navigation_finalizations: HashMap<DocumentId, PendingNavigationFinalization>,
     /// reverse index from <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     /// to pending finalization document ids.
-    pub pending_navigation_finalization_ids_by_navigation_id: HashMap<NavigationId, u64>,
+    pub pending_navigation_finalization_ids_by_navigation_id: HashMap<NavigationId, DocumentId>,
 }
 
 /// cache of the active document state held by the user agent.
@@ -365,9 +366,9 @@ pub struct DocumentState {
     /// document.
     pub traversable_id: NavigableId,
     /// reference to the active browsing context for the document.
-    pub browsing_context_id: Option<u64>,
+    pub browsing_context_id: Option<BrowsingContextId>,
     /// owner event loop for the document's content implementation.
-    pub event_loop_id: usize,
+    pub event_loop_id: EventLoopId,
     /// Active document URL.
     pub url: String,
     /// flag for the initial about:blank special case.
@@ -379,7 +380,7 @@ pub struct DocumentState {
 #[derive(Clone)]
 pub struct PendingBeforeUnloadNavigation {
     /// identifier for the active beforeunload check.
-    pub check_id: u64,
+    pub check_id: BeforeUnloadCheckId,
     /// identifier corresponding to
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     pub navigation_id: NavigationId,
@@ -387,7 +388,7 @@ pub struct PendingBeforeUnloadNavigation {
     pub destination_url: String,
     pub user_involvement: ipc_messages::content::UserNavigationInvolvement,
     /// Documents still expected to report their beforeunload result for this navigation.
-    pub pending_document_ids: HashSet<u64>,
+    pub pending_document_ids: HashSet<DocumentId>,
     /// Whether any descendant beforeunload handler canceled the navigation.
     pub canceled: bool,
 }
@@ -401,7 +402,7 @@ pub struct PendingNavigationFetch {
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     pub navigation_id: NavigationId,
     pub traversable_id: NavigableId,
-    pub previous_document_id: Option<u64>,
+    pub previous_document_id: Option<DocumentId>,
     /// <https://fetch.spec.whatwg.org/#concept-request>
     pub request: NavigationRequest,
     /// <https://html.spec.whatwg.org/multipage/#source-snapshot-params>
@@ -424,14 +425,14 @@ pub struct PendingNavigationFetch {
 #[derive(Clone)]
 pub struct PendingNavigationFinalization {
     /// identifier for the loaded document that will emit the finalization signal.
-    pub document_id: u64,
+    pub document_id: DocumentId,
     /// identifier corresponding to
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     pub navigation_id: NavigationId,
     pub traversable_id: NavigableId,
-    pub previous_document_id: Option<u64>,
+    pub previous_document_id: Option<DocumentId>,
     /// browsing context selected for the new document before commit.
-    pub browsing_context_id: Option<u64>,
+    pub browsing_context_id: Option<BrowsingContextId>,
     /// <https://html.spec.whatwg.org/multipage/#session-history-entry>
     pub history_entry: SessionHistoryEntry,
     /// <https://html.spec.whatwg.org/multipage/#history-handling-behavior>
@@ -465,7 +466,7 @@ impl Default for UserAgentState {
 
 impl UserAgentState {
     /// <https://html.spec.whatwg.org/multipage/#nav-document>
-    fn nav_document_id(&self, navigable_id: NavigableId) -> Option<u64> {
+    fn nav_document_id(&self, navigable_id: NavigableId) -> Option<DocumentId> {
         self.navigables
             .get(&navigable_id)
             .and_then(|navigable| navigable.active_document_id)
@@ -485,7 +486,7 @@ impl UserAgentState {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#bc-tlbc>
-    fn top_level_browsing_context_id(&self, browsing_context_id: u64) -> Option<u64> {
+    fn top_level_browsing_context_id(&self, browsing_context_id: BrowsingContextId) -> Option<BrowsingContextId> {
         let traversable_id = self
             .documents
             .values()
@@ -512,7 +513,7 @@ impl UserAgentState {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#nav-document>
-    fn set_navigable_active_document(&mut self, navigable_id: NavigableId, document_id: u64) {
+    fn set_navigable_active_document(&mut self, navigable_id: NavigableId, document_id: DocumentId) {
         self.active_documents_by_traversable
             .insert(navigable_id, document_id);
         if let Some(navigable) = self.navigables.get_mut(&navigable_id) {
@@ -524,7 +525,7 @@ impl UserAgentState {
     fn set_navigable_active_browsing_context(
         &mut self,
         navigable_id: NavigableId,
-        browsing_context_id: Option<u64>,
+        browsing_context_id: Option<BrowsingContextId>,
     ) {
         if let Some(navigable) = self.navigables.get_mut(&navigable_id) {
             navigable.active_browsing_context_id = browsing_context_id;
@@ -638,7 +639,7 @@ impl UserAgentState {
     /// removing a pending finalization continuation by document id.
     fn take_pending_navigation_finalization_by_document_id(
         &mut self,
-        document_id: u64,
+        document_id: DocumentId,
     ) -> Option<PendingNavigationFinalization> {
         let pending = self.pending_navigation_finalizations.remove(&document_id)?;
         self.pending_navigation_finalization_ids_by_navigation_id
@@ -650,7 +651,7 @@ impl UserAgentState {
     fn remove_pending_navigation_finalizations_for_traversable(
         &mut self,
         traversable_id: NavigableId,
-    ) -> Vec<u64> {
+    ) -> Vec<DocumentId> {
         let document_ids = self
             .pending_navigation_finalizations
             .iter()
@@ -732,12 +733,12 @@ pub enum UserAgentCommand {
         traversable_id: NavigableId,
     },
     DocumentFetchCompleted {
-        event_loop_id: usize,
+        event_loop_id: EventLoopId,
         handler_id: DocumentFetchId,
         response: ContentFetchResponse,
     },
     DocumentFetchFailed {
-        event_loop_id: usize,
+        event_loop_id: EventLoopId,
         handler_id: DocumentFetchId,
     },
     NavigationFetchCompleted {
@@ -748,12 +749,12 @@ pub enum UserAgentCommand {
         fetch_id: NavigationFetchId,
     },
     DocumentFetchTimeout {
-        event_loop_id: usize,
+        event_loop_id: EventLoopId,
         handler_id: DocumentFetchId,
     },
     WindowTimerTask {
-        event_loop_id: usize,
-        document_id: u64,
+        event_loop_id: EventLoopId,
+        document_id: DocumentId,
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,
@@ -1287,12 +1288,12 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#create-an-agent>
     fn create_agent(&mut self, can_block: bool, process_label: String) -> Result<Agent, String> {
         // Step 1: Let signifier be a new unique internal value.
-        let agent_id = self.state.ids.allocate_agent_id();
+        let agent_id = AgentId::new();
         // Step 2: Let candidateExecution be a new candidate execution.
         // The Rust model does not surface a separate candidate-execution object because the
         // dedicated event-loop thread owns the scheduling state that HTML leaves implementation-defined.
         // Step 4: Set agent's event loop to a new event loop.
-        let event_loop_id = self.state.ids.allocate_event_loop_id();
+        let event_loop_id = EventLoopId::new();
         let handle = self.state.ids.allocate_handle();
         let entry = spawn_event_loop_entry(
             event_loop_id,
@@ -1331,10 +1332,10 @@ impl UserAgentWorker {
 
         // Step 2: With a null opener, create a new top-level browsing context and document.
         let browsing_context_group_id = self.state.browsing_context_group_set.next_group_id();
-        let browsing_context_id = self.state.ids.allocate_browsing_context_id();
-        let agent_cluster_id = self.state.ids.allocate_agent_cluster_id();
+        let browsing_context_id = BrowsingContextId::new();
+        let agent_cluster_id = AgentClusterId::new();
         let agent = self.create_agent(false, String::from("about:blank"))?;
-        let document_id = self.state.ids.allocate_document_id();
+        let document_id = DocumentId::new();
         let handle = self
             .state
             .handles_by_event_loop_id
@@ -1506,9 +1507,9 @@ impl UserAgentWorker {
             .state
             .top_level_browsing_context_id(parent_browsing_context_id)
             .unwrap_or(parent_browsing_context_id);
-        let browsing_context_id = self.state.ids.allocate_browsing_context_id();
+        let browsing_context_id = BrowsingContextId::new();
         let traversable_id = content_navigable_id;
-        let document_id = self.state.ids.allocate_document_id();
+        let document_id = DocumentId::new();
 
         let group_id = self
             .state
@@ -1647,7 +1648,7 @@ impl UserAgentWorker {
         }
 
         let new_group_id = self.state.browsing_context_group_set.next_group_id();
-        let new_browsing_context_id = self.state.ids.allocate_browsing_context_id();
+        let new_browsing_context_id = BrowsingContextId::new();
         self.state.browsing_context_group_set.members.insert(
             new_group_id,
             BrowsingContextGroup {
@@ -1675,7 +1676,7 @@ impl UserAgentWorker {
     fn discard_provisional_browsing_context(
         &mut self,
         traversable_id: NavigableId,
-        browsing_context_id: Option<u64>,
+        browsing_context_id: Option<BrowsingContextId>,
     ) {
         let Some(browsing_context_id) = browsing_context_id else {
             return;
@@ -1714,7 +1715,7 @@ impl UserAgentWorker {
         // Step 1: Assert: this is running in parallel.
         // Note: The user-agent thread performs the navigation-fetch setup inline on the
         // user-agent thread; the actual network request runs in parallel in the fetch worker.
-        let fetch_id = self.state.ids.allocate_fetch_id();
+        let fetch_id = NavigationFetchId::new();
         let previous_document_id = self
             .state
             .active_documents_by_traversable
@@ -1853,7 +1854,7 @@ impl UserAgentWorker {
                 .or_insert(candidate_traversable_id);
         }
 
-        let check_id = self.state.ids.allocate_before_unload_check_id();
+        let check_id = BeforeUnloadCheckId::new();
         self.state.pending_before_unload_navigations.insert(
             check_id,
             PendingBeforeUnloadNavigation {
@@ -2038,6 +2039,7 @@ impl UserAgentWorker {
 
     /// stopping one owned event-loop worker by its Rust handle.
     fn stop_event_loop_handle(&mut self, handle: usize) -> Result<(), String> {
+        eprintln!("stop_event_loop_handle: handle={handle}");
         match self.remove_event_loop_entry(handle) {
             Some(entry) => stop_event_loop_entry(entry),
             None => Ok(()),
@@ -2115,7 +2117,7 @@ impl UserAgentWorker {
         &mut self,
         traversable_id: NavigableId,
         final_url: &str,
-    ) -> Result<Option<u64>, String> {
+    ) -> Result<Option<BrowsingContextId>, String> {
         // Step 1: "Let browsingContext be the result of obtaining a browsing context to use for
         // a navigation response given navigationParams."
         // Note: `obtain_browsing_context_to_use_for_navigation_response` implements the
@@ -2552,7 +2554,7 @@ impl UserAgentWorker {
     /// resuming an event-loop-local document fetch after the fetch worker succeeds.
     fn handle_document_fetch_completed(
         &mut self,
-        event_loop_id: usize,
+        event_loop_id: EventLoopId,
         handler_id: DocumentFetchId,
         response: ContentFetchResponse,
     ) {
@@ -2575,7 +2577,7 @@ impl UserAgentWorker {
     }
 
     /// failing an event-loop-local document fetch after the fetch worker fails.
-    fn handle_document_fetch_failed(&mut self, event_loop_id: usize, handler_id: DocumentFetchId) {
+    fn handle_document_fetch_failed(&mut self, event_loop_id: EventLoopId, handler_id: DocumentFetchId) {
         let _ = self
             .timer_command_sender
             .send(TimerCommand::Clear { timer_key: handler_id.0 });
@@ -2655,7 +2657,7 @@ impl UserAgentWorker {
                 return;
             }
         };
-        let document_id = self.state.ids.allocate_document_id();
+        let document_id = DocumentId::new();
         // Note: For child navigables the compositor frame_id is forwarded so the content process
         // can identify which iframe slot this document renders into.
         let frame_id = self
@@ -2673,8 +2675,8 @@ impl UserAgentWorker {
             .state
             .navigables
             .get(&pending.traversable_id)
-            .map(|n| (n.event_loop_id.unwrap_or(0), n.parent_navigable_id))
-            .unwrap_or((0, None));
+            .map(|n| (n.event_loop_id.unwrap_or_else(EventLoopId::new), n.parent_navigable_id))
+            .unwrap_or((EventLoopId::new(), None));
         let top_level_traversable_id = self
             .state
             .top_level_traversable_id(pending.traversable_id)
@@ -2744,7 +2746,7 @@ impl UserAgentWorker {
     }
 
     /// the document-fetch watchdog fired by the timer worker.
-    fn handle_document_fetch_timeout(&mut self, event_loop_id: usize, handler_id: DocumentFetchId) {
+    fn handle_document_fetch_timeout(&mut self, event_loop_id: EventLoopId, handler_id: DocumentFetchId) {
         let Some(handle) = self.state.handles_by_event_loop_id.get(&event_loop_id).copied() else {
             return;
         };
@@ -2760,8 +2762,8 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#timers>
     fn handle_window_timer_task(
         &mut self,
-        event_loop_id: usize,
-        document_id: u64,
+        event_loop_id: EventLoopId,
+        document_id: DocumentId,
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,

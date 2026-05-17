@@ -1,5 +1,5 @@
 use ipc_messages::content::{
-    CreateChildNavigableRequest,
+    CreateChildNavigableRequest, DocumentId,
     Event as ContentEvent, FrameId, IframeTraversableRemoval, NavigableId, NavigateRequest, NavigationId,
     UserNavigationInvolvement, iframe_target_name,
 };
@@ -173,7 +173,7 @@ fn connected_iframe_node_ids(document: &BaseDocument) -> Vec<usize> {
 
 fn attach_iframe_subdocument_from_html(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
     iframe_node_id: usize,
     base_url: String,
     html: String,
@@ -213,7 +213,7 @@ fn attach_iframe_subdocument_from_html(
 /// child webview composition can target the correct iframe box.
 fn attach_cross_origin_iframe(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
     iframe_node_id: usize,
     frame_token: u64,
 ) -> Result<(), String> {
@@ -265,7 +265,7 @@ fn navigate_an_iframe_or_frame(
 
 fn attach_iframe_about_blank(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
     attach_iframe_subdocument_from_html(
@@ -277,7 +277,11 @@ fn attach_iframe_about_blank(
     )
 }
 
-fn remove_iframe_subdocument(runtime: &mut ContentRuntime, parent_document_id: u64, iframe_node_id: usize) {
+fn remove_iframe_subdocument(
+    runtime: &mut ContentRuntime,
+    parent_document_id: DocumentId,
+    iframe_node_id: usize,
+) {
     let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
         return;
     };
@@ -322,7 +326,7 @@ pub(crate) fn retire_iframe_traversable(
 fn create_a_new_child_navigable(
     runtime: &mut ContentRuntime,
     parent_navigable_id: NavigableId,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
     // Early return if this iframe already has a content navigable.
@@ -424,7 +428,7 @@ fn create_a_new_child_navigable(
 fn navigable_container_for_child_navigable(
     runtime: &ContentRuntime,
     content_frame_id: FrameId,
-) -> Option<(u64, usize)> {
+) -> Option<(DocumentId, usize)> {
     runtime
         .documents
         .iter()
@@ -491,7 +495,7 @@ pub(crate) fn attach_same_origin_child_document_for_traversable(
 /// <https://html.spec.whatwg.org/#iframe-load-event-steps>
 fn run_iframe_load_event_steps(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
     let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
@@ -565,7 +569,7 @@ pub(crate) fn run_iframe_load_event_steps_for_traversable(
 /// <https://html.spec.whatwg.org/#the-iframe-element:html-element-post-connection-steps>
 fn run_iframe_post_connection_steps(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
     // Step 1: "If insertedNode has a sandbox attribute, then parse the sandboxing
@@ -603,7 +607,7 @@ fn run_iframe_post_connection_steps(
 
 pub(crate) fn run_iframe_post_connection_steps_for_document(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
 ) -> Result<(), String> {
     let iframe_node_ids = {
         let Some(content_document) = runtime.documents.get(&parent_document_id) else {
@@ -627,7 +631,7 @@ pub(crate) fn run_iframe_post_connection_steps_for_document(
 /// full destroy-a-child-navigable algorithm upon receiving the IframeTraversableRemoved message.
 fn run_iframe_removing_steps(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
     let Some((parent_traversable_id, iframe_state)) = runtime
@@ -656,7 +660,7 @@ fn run_iframe_removing_steps(
 
 pub(crate) fn run_iframe_removing_steps_for_document(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
 ) -> Result<(), String> {
     let iframe_node_ids = {
         let Some(content_document) = runtime.documents.get(&parent_document_id) else {
@@ -676,7 +680,7 @@ pub(crate) fn run_iframe_removing_steps_for_document(
 /// <https://html.spec.whatwg.org/#process-the-iframe-attributes>
 fn process_iframe_attributes(
     runtime: &mut ContentRuntime,
-    parent_document_id: u64,
+    parent_document_id: DocumentId,
     iframe_node_id: usize,
     initial_insertion: bool,
 ) -> Result<(), String> {
