@@ -2002,11 +2002,23 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     if let Some(flag) = build_profile.cargo_profile_flag() {
         command.arg(flag);
     }
-    command.arg("--bins");
+    command
+        .arg("-p")
+        .arg("formal-web")
+        .arg("--bin")
+        .arg("formal-web")
+        .arg("-p")
+        .arg("content")
+        .arg("--bin")
+        .arg("formal-web-content")
+        .arg("-p")
+        .arg("net")
+        .arg("--bin")
+        .arg("formal-web-net");
     command.current_dir(repo_root());
     let status = command.status().map_err(|error| {
         format!(
-            "failed to start cargo build for {} WPT runner binaries: {error}",
+            "failed to start cargo build for {} WPT runner and sidecar binaries: {error}",
             build_profile.as_str()
         )
     })?;
@@ -2014,7 +2026,7 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
         Ok(())
     } else {
         Err(format!(
-            "cargo build for {} WPT runner binaries exited with status {status}",
+            "cargo build for {} WPT runner and sidecar binaries exited with status {status}",
             build_profile.as_str()
         ))
     }

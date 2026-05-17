@@ -8,6 +8,10 @@ autobins = false
 [lib]
 path = "src/main.rs"
 
+[[bin]]
+name = "formal-web-content"
+path = "src/bin/content_process.rs"
+
 [dependencies]
 anyrender = { version = "0.8", features = ["serde"] }
 boa_engine = { path = "../vendor/boa/core/engine", default-features = false }
