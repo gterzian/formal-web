@@ -44,4 +44,6 @@ For `create-a-new-child-navigable`, let content perform its local iframe/contain
 
 When response-driven navigation initializes a new document, keep same-site top-level navigations on the current browsing context and event loop, but explicitly run the browsing-context selection step for cross-site top-level responses instead of silently reusing the active top-level context.
 
+Keep the initial top-level about:blank shell on the event loop that created it until the first navigation commits; the startup artifact should not force a new content process merely because the destination is cross-site.
+
 Name user-agent command variants and worker methods after the standard algorithm or continuation they trigger (for example `Navigate`, `CompleteBeforeUnload`, and `FinalizeCrossDocumentNavigation`) instead of transport-oriented `Queue*` names, and keep the `navigate` entrypoint typed in terms of a navigable id that resolves to a traversable when the target is traversable-backed.

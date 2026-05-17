@@ -1043,11 +1043,7 @@ fn is_cross_origin_navigation(parent_url: &str, destination_url: &str) -> Result
 fn content_process_label_from_url(url: &str) -> String {
     Url::parse(url)
         .ok()
-        .and_then(|parsed| {
-            parsed
-                .host_str()
-                .map(|host| format!("{}://{}", parsed.scheme(), host))
-        })
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
         .unwrap_or_else(|| String::from("about:blank"))
 }
 
@@ -2261,6 +2257,17 @@ impl UserAgentWorker {
             // used in step 6 of the spec.
             is_cross_origin_navigation(&parent_document_url, final_url)?
         } else {
+            let is_initial_about_blank = self
+                .state
+                .active_documents_by_traversable
+                .get(&traversable_id)
+                .and_then(|document_id| self.state.documents.get(document_id))
+                .is_some_and(|document| {
+                    document.is_initial_about_blank && document.url == "about:blank"
+                });
+            if is_initial_about_blank {
+                return Ok(Some(browsing_context_selection.browsing_context_id));
+            }
             browsing_context_selection.swapped_group
         };
 
@@ -2284,9 +2291,19 @@ impl UserAgentWorker {
             .handles_by_event_loop_id
             .get(&agent.event_loop_id)
             .ok_or_else(|| String::from("missing handle for new agent event loop"))?;
+        let mut old_handle_to_stop = None;
         if let Some(old_h) = old_handle {
             if let Some(old_entry) = self.state.event_loops.get_mut(&old_h) {
                 old_entry.traversable_ids.remove(&traversable_id);
+            }
+            if old_h != new_handle
+                && self
+                    .state
+                    .event_loops
+                    .get(&old_h)
+                    .is_some_and(|entry| entry.traversable_ids.is_empty())
+            {
+                old_handle_to_stop = Some(old_h);
             }
         }
         if let Some(new_entry) = self.state.event_loops.get_mut(&new_handle) {
@@ -2302,6 +2319,9 @@ impl UserAgentWorker {
         {
             nav_traversable.event_loop_id = agent.event_loop_id;
             nav_traversable.handle = new_handle;
+        }
+        if let Some(old_h) = old_handle_to_stop {
+            self.stop_event_loop_handle(old_h)?;
         }
         Ok(Some(browsing_context_selection.browsing_context_id))
     }
