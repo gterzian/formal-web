@@ -68,9 +68,9 @@ Composable Rust modules plus protocol-level TLA+ verification is a tractable pat
 rustup run 1.92.0 cargo run --release
 ```
 
-`cargo check` builds the Rust crates that make up the embedder, user agent, content sidecar mode, and net sidecar mode.
+`cargo check` builds the Rust crates that make up the embedder, user agent, content sidecar process, and net sidecar process.
 
-`cargo run --release` starts the embedder, the user-agent thread, and the hidden content/net sidecar modes that the main executable respawns on demand, then loads `artifacts/StartupExample.html`.
+`cargo run --release` starts the embedder and user-agent thread, then launches the dedicated `formal-web-content` and `formal-web-net` sidecar executables on demand, then loads `artifacts/StartupExample.html`.
 
 ```bash
 rustup run 1.92.0 cargo run -- test-wpt formal/load-event-fires.html

@@ -1386,7 +1386,7 @@ fn content_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-fn run_content_process(token: String) -> Result<(), String> {
+pub fn run_content_process(token: String) -> Result<(), String> {
     let (command_sender, command_receiver) =
         ipc::channel::<Command>().map_err(|error| error.to_string())?;
     let (event_sender, event_receiver) =
@@ -1440,10 +1440,8 @@ fn run_content_process(token: String) -> Result<(), String> {
     Ok(())
 }
 
-pub fn maybe_run_content_process() -> Option<Result<(), String>> {
-    match content_token_from_args() {
-        Ok(Some(token)) => Some(run_content_process(token)),
-        Ok(None) => None,
-        Err(error) => Some(Err(error)),
-    }
+pub fn run_content_process_from_args() -> Result<(), String> {
+    let token = content_token_from_args()?
+        .ok_or_else(|| String::from("missing --content-token argument"))?;
+    run_content_process(token)
 }

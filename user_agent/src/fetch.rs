@@ -14,7 +14,7 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::UserAgentCommand;
+use crate::{UserAgentCommand, sidecar_executable_path};
 
 /// graceful shutdown of the network sidecar owned by the fetch worker.
 const FETCH_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
@@ -118,12 +118,11 @@ pub fn start_network_bridge(
     let (server, token) = IpcOneShotServer::<NetworkBootstrap>::new()
         .map_err(|error| format!("failed to create network IPC one-shot server: {error}"))?;
 
-    let executable_path = std::env::current_exe()
-        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let executable_path = sidecar_executable_path("formal-web-net")?;
 
     let mut child_process = Command::new(&executable_path);
     #[cfg(unix)]
-    child_process.arg0("formal-web:net");
+    child_process.arg0("formal-web-net");
     child_process.arg("--net-token").arg(&token);
 
     let child = child_process
