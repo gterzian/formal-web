@@ -3,12 +3,14 @@
 The browser user-agent lives in this crate.
 
 Keep ownership and cross-thread coordination here, split by responsibility:
-- `user_agent.rs` owns the top-level user-agent state, handles, and command loop.
+- `user_agent.rs` owns the top-level user-agent state, event-loop ownership indices, and command loop.
 - `event_loop.rs` owns content event-loop threads, content sidecar processes, and task routing.
 - `timer.rs` owns the timer worker.
 - `fetch.rs` owns the fetch worker and the net sidecar process boundary.
 
 Model long-running workers as stateful structs with `run(&mut self)` so thread-local state stays on the owning component instead of being spread across helper functions.
+
+Key event-loop ownership directly by `EventLoopId` and keep traversable-to-owner indices in terms of those UUID ids; avoid process-local integer handle allocators for cross-worker routing.
 
 Implement each `UserAgentCommand` branch as a dedicated `handle_*` method on `UserAgentWorker`, and keep spec-facing algorithms such as `create_agent`, `create_new_top_level_traversable`, `create_navigation_params_by_fetching`, and `finalize_cross_document_navigation` as named worker methods instead of free helper functions.
 

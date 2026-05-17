@@ -1,6 +1,5 @@
 mod event_loop;
 mod fetch;
-mod id;
 mod timer;
 
 use blitz_traits::shell::ColorScheme;
@@ -23,7 +22,6 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use url::Url;
 
-use crate::id::UserAgentIds;
 use crate::event_loop::{
     EventLoopCommand, EventLoopEntry, spawn_event_loop_entry, stop_event_loop_entry,
     traversable_viewport_command,
@@ -181,7 +179,7 @@ pub struct Navigable {
     /// Owning event loop; `Some` when this is a traversable navigable.
     pub event_loop_id: Option<EventLoopId>,
     /// Owning handle; `Some` when this is a traversable navigable.
-    pub handle: Option<usize>,
+    pub handle: Option<EventLoopId>,
     /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation>
     pub ongoing_navigation_id: Option<NavigationId>,
     /// Marker for deferred update-the-rendering work while navigation is still ongoing.
@@ -316,25 +314,20 @@ impl NavigationRequest {
 
 /// Top-level state for the Rust user-agent thread.
 ///
-/// This mirrors the role of `FormalWeb.UserAgent`: allocator state, spec-facing global sets,
+/// This mirrors the role of `FormalWeb.UserAgent`: spec-facing global sets,
 /// worker ownership, and the pending navigation/fetch continuations that connect the embedder,
 /// content, fetch, and timer threads.
 pub struct UserAgentState {
-    /// Allocator block mirroring the counters in `FormalWeb.UserAgent`.
-    pub ids: UserAgentIds,
     /// <https://html.spec.whatwg.org/multipage/#browsing-context-group-set>
     pub browsing_context_group_set: BrowsingContextGroupSet,
     /// <https://html.spec.whatwg.org/multipage/#navigable>
     pub navigables: HashMap<NavigableId, Navigable>,
     /// <https://html.spec.whatwg.org/multipage/#tlbc-group>
     pub top_level_browsing_context_group_ids: HashMap<BrowsingContextId, BrowsingContextGroupId>,
-    /// map from Rust worker handles to the owned event-loop workers.
-    pub event_loops: HashMap<usize, EventLoopEntry>,
-    /// reverse index from <https://html.spec.whatwg.org/multipage/#event-loop> ids to
-    /// the owning Rust handle.
-    pub handles_by_event_loop_id: HashMap<EventLoopId, usize>,
-    /// reverse index from top-level traversable ids to the owning Rust handle.
-    pub traversable_handles: HashMap<NavigableId, usize>,
+    /// map from event-loop ids to the owned event-loop workers.
+    pub event_loops: HashMap<EventLoopId, EventLoopEntry>,
+    /// reverse index from top-level traversable ids to the owning event-loop id.
+    pub traversable_handles: HashMap<NavigableId, EventLoopId>,
     /// cache of each traversable's active target name derived from
     /// `traversable_set`.
     pub traversable_target_names: HashMap<NavigableId, String>,
@@ -445,12 +438,10 @@ impl Default for UserAgentState {
     /// seeding the browser-global state owned by the user-agent thread.
     fn default() -> Self {
         Self {
-            ids: UserAgentIds::default(),
             browsing_context_group_set: BrowsingContextGroupSet::default(),
             navigables: HashMap::new(),
             top_level_browsing_context_group_ids: HashMap::new(),
             event_loops: HashMap::new(),
-            handles_by_event_loop_id: HashMap::new(),
             traversable_handles: HashMap::new(),
             traversable_target_names: HashMap::new(),
             active_documents_by_traversable: HashMap::new(),
@@ -1272,7 +1263,7 @@ impl UserAgentWorker {
         &self,
         traversable_id: NavigableId,
     ) -> Result<Sender<EventLoopCommand>, String> {
-        let handle = self
+        let event_loop_id = self
             .state
             .traversable_handles
             .get(&traversable_id)
@@ -1280,9 +1271,9 @@ impl UserAgentWorker {
             .ok_or_else(|| format!("unknown traversable id: {traversable_id}"))?;
         self.state
             .event_loops
-            .get(&handle)
+            .get(&event_loop_id)
             .map(|entry| entry.command_sender.clone())
-            .ok_or_else(|| format!("missing event loop for handle {handle}"))
+            .ok_or_else(|| format!("missing event loop for id {event_loop_id}"))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-an-agent>
@@ -1294,7 +1285,6 @@ impl UserAgentWorker {
         // dedicated event-loop thread owns the scheduling state that HTML leaves implementation-defined.
         // Step 4: Set agent's event loop to a new event loop.
         let event_loop_id = EventLoopId::new();
-        let handle = self.state.ids.allocate_handle();
         let entry = spawn_event_loop_entry(
             event_loop_id,
             process_label,
@@ -1303,8 +1293,7 @@ impl UserAgentWorker {
             self.timer_command_sender.clone(),
             self.user_event_dispatcher.clone(),
         )?;
-        self.state.handles_by_event_loop_id.insert(event_loop_id, handle);
-        self.state.event_loops.insert(handle, entry);
+        self.state.event_loops.insert(event_loop_id, entry);
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
         // signifier, [[CandidateExecution]] is candidateExecution, and [[IsLockFree1]],
         // [[IsLockFree2]], and [[LittleEndian]] are set at the implementation's discretion.
@@ -1336,18 +1325,12 @@ impl UserAgentWorker {
         let agent_cluster_id = AgentClusterId::new();
         let agent = self.create_agent(false, String::from("about:blank"))?;
         let document_id = DocumentId::new();
-        let handle = self
-            .state
-            .handles_by_event_loop_id
-            .get(&agent.event_loop_id)
-            .copied()
-            .ok_or_else(|| format!("missing event loop handle for agent {}", agent.id))?;
         let command_sender = self
             .state
             .event_loops
-            .get(&handle)
+            .get(&agent.event_loop_id)
             .map(|entry| entry.command_sender.clone())
-            .ok_or_else(|| format!("missing event loop entry for handle {handle}"))?;
+            .ok_or_else(|| format!("missing event loop entry for id {}", agent.event_loop_id))?;
 
         // Step 4: Let documentState be a new document state, with
         // The Rust model splits document-state fields across `Traversable`,
@@ -1367,11 +1350,13 @@ impl UserAgentWorker {
 
         self.state
             .event_loops
-            .get_mut(&handle)
+            .get_mut(&agent.event_loop_id)
             .expect("event loop entry disappeared during top-level creation")
             .traversable_ids
             .insert(traversable_id);
-        self.state.traversable_handles.insert(traversable_id, handle);
+        self.state
+            .traversable_handles
+            .insert(traversable_id, agent.event_loop_id);
         self.state
             .traversable_target_names
             .insert(traversable_id, target_name.clone());
@@ -1423,7 +1408,7 @@ impl UserAgentWorker {
                 target_name: target_name.clone(),
                 active_browsing_context_id: Some(browsing_context_id),
                 event_loop_id: Some(agent.event_loop_id),
-                handle: Some(handle),
+                handle: Some(agent.event_loop_id),
                 ongoing_navigation_id: None,
                 has_deferred_update_the_rendering: false,
                 frame_id,
@@ -1485,12 +1470,6 @@ impl UserAgentWorker {
             return Ok(navigable_id);
         }
 
-        let parent_handle = self
-            .state
-            .traversable_handles
-            .get(&parent_navigable_id)
-            .copied()
-            .ok_or_else(|| format!("unknown parent navigable id: {parent_navigable_id}"))?;
         let parent_navigable = self
             .state
             .navigables
@@ -1529,7 +1508,9 @@ impl UserAgentWorker {
             .browsing_context_set
             .insert(browsing_context_id, BrowsingContext { id: browsing_context_id });
 
-        self.state.traversable_handles.insert(traversable_id, parent_handle);
+        self.state
+            .traversable_handles
+            .insert(traversable_id, parent_event_loop_id);
         self.state
             .traversable_target_names
             .insert(traversable_id, target_name.clone());
@@ -1556,7 +1537,7 @@ impl UserAgentWorker {
                 target_name: target_name.clone(),
                 active_browsing_context_id: Some(browsing_context_id),
                 event_loop_id: Some(parent_event_loop_id),
-                handle: Some(parent_handle),
+                handle: Some(parent_event_loop_id),
                 ongoing_navigation_id: None,
                 has_deferred_update_the_rendering: false,
                 frame_id: Some(content_frame_id),
@@ -1570,8 +1551,8 @@ impl UserAgentWorker {
         );
         self.state
             .event_loops
-            .get_mut(&parent_handle)
-            .ok_or_else(|| format!("missing parent event loop handle {parent_handle}"))?
+            .get_mut(&parent_event_loop_id)
+            .ok_or_else(|| format!("missing parent event loop {parent_event_loop_id}"))?
             .traversable_ids
             .insert(traversable_id);
 
@@ -2000,9 +1981,8 @@ impl UserAgentWorker {
     }
 
     /// removing an event-loop worker and every derived index owned by it.
-    fn remove_event_loop_entry(&mut self, handle: usize) -> Option<EventLoopEntry> {
-        let entry = self.state.event_loops.remove(&handle)?;
-        self.state.handles_by_event_loop_id.remove(&entry.event_loop_id);
+    fn remove_event_loop_entry(&mut self, event_loop_id: EventLoopId) -> Option<EventLoopEntry> {
+        let entry = self.state.event_loops.remove(&event_loop_id)?;
         let removed_traversable_ids = entry.traversable_ids.iter().copied().collect::<Vec<_>>();
         for traversable_id in &removed_traversable_ids {
             self.state.remove_traversable(*traversable_id);
@@ -2038,9 +2018,8 @@ impl UserAgentWorker {
     }
 
     /// stopping one owned event-loop worker by its Rust handle.
-    fn stop_event_loop_handle(&mut self, handle: usize) -> Result<(), String> {
-        eprintln!("stop_event_loop_handle: handle={handle}");
-        match self.remove_event_loop_entry(handle) {
+    fn stop_event_loop_handle(&mut self, event_loop_id: EventLoopId) -> Result<(), String> {
+        match self.remove_event_loop_entry(event_loop_id) {
             Some(entry) => stop_event_loop_entry(entry),
             None => Ok(()),
         }
@@ -2178,42 +2157,40 @@ impl UserAgentWorker {
         // `CreateLoadedDocument` is dispatched.
         // Note: The model materializes this by creating a new agent and reassigning the
         // traversable to that new event loop before dispatching CreateLoadedDocument.
-        let old_handle = self
+        let old_event_loop_id = self
             .state
             .traversable_handles
             .get(&traversable_id)
             .copied();
         let agent = self.create_agent(false, content_process_label_from_url(final_url))?;
-        let new_handle = *self
-            .state
-            .handles_by_event_loop_id
-            .get(&agent.event_loop_id)
-            .ok_or_else(|| String::from("missing handle for new agent event loop"))?;
-        let mut old_handle_to_stop = None;
-        if let Some(old_h) = old_handle {
-            if let Some(old_entry) = self.state.event_loops.get_mut(&old_h) {
+        let new_event_loop_id = agent.event_loop_id;
+        let mut old_event_loop_to_stop = None;
+        if let Some(old_event_loop_id) = old_event_loop_id {
+            if let Some(old_entry) = self.state.event_loops.get_mut(&old_event_loop_id) {
                 old_entry.traversable_ids.remove(&traversable_id);
             }
-            if old_h != new_handle
+            if old_event_loop_id != new_event_loop_id
                 && self
                     .state
                     .event_loops
-                    .get(&old_h)
+                    .get(&old_event_loop_id)
                     .is_some_and(|entry| entry.traversable_ids.is_empty())
             {
-                old_handle_to_stop = Some(old_h);
+                old_event_loop_to_stop = Some(old_event_loop_id);
             }
         }
-        if let Some(new_entry) = self.state.event_loops.get_mut(&new_handle) {
+        if let Some(new_entry) = self.state.event_loops.get_mut(&new_event_loop_id) {
             new_entry.traversable_ids.insert(traversable_id);
         }
-        self.state.traversable_handles.insert(traversable_id, new_handle);
+        self.state
+            .traversable_handles
+            .insert(traversable_id, new_event_loop_id);
         if let Some(navigable) = self.state.navigables.get_mut(&traversable_id) {
             navigable.event_loop_id = Some(agent.event_loop_id);
-            navigable.handle = Some(new_handle);
+            navigable.handle = Some(new_event_loop_id);
         }
-        if let Some(old_h) = old_handle_to_stop {
-            self.stop_event_loop_handle(old_h)?;
+        if let Some(old_event_loop_id) = old_event_loop_to_stop {
+            self.stop_event_loop_handle(old_event_loop_id)?;
         }
         Ok(Some(browsing_context_selection.browsing_context_id))
     }
@@ -2428,7 +2405,7 @@ impl UserAgentWorker {
         let error_reply = reply.clone();
         let send_result =
             match self.state.traversable_handles.get(&traversable_id).copied() {
-                Some(handle) => match self.state.event_loops.get(&handle) {
+                Some(event_loop_id) => match self.state.event_loops.get(&event_loop_id) {
                     Some(entry) => {
                         let request_id = self.next_script_request_id;
                         self.next_script_request_id = self.next_script_request_id.wrapping_add(1);
@@ -2441,7 +2418,7 @@ impl UserAgentWorker {
                             })
                             .map_err(|error| {
                                 format!(
-                                    "failed to send script evaluation to event loop {handle}: {error}"
+                                    "failed to send script evaluation to event loop {event_loop_id}: {error}"
                                 )
                             })
                     }
@@ -2539,7 +2516,7 @@ impl UserAgentWorker {
         };
 
         log_render_state_debug(format!(
-            "send rendering opportunity traversable={} document={} handle={}",
+            "send rendering opportunity traversable={} document={} event_loop={}",
             traversable_id, document_id, handle,
         ));
         let command = ContentCommand::UpdateTheRendering {
@@ -2561,10 +2538,7 @@ impl UserAgentWorker {
         let _ = self
             .timer_command_sender
             .send(TimerCommand::Clear { timer_key: handler_id.0 });
-        let Some(handle) = self.state.handles_by_event_loop_id.get(&event_loop_id).copied() else {
-            return;
-        };
-        let Some(entry) = self.state.event_loops.get(&handle) else {
+        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
             return;
         };
         let command = ContentCommand::CompleteDocumentFetch {
@@ -2581,10 +2555,7 @@ impl UserAgentWorker {
         let _ = self
             .timer_command_sender
             .send(TimerCommand::Clear { timer_key: handler_id.0 });
-        let Some(handle) = self.state.handles_by_event_loop_id.get(&event_loop_id).copied() else {
-            return;
-        };
-        let Some(entry) = self.state.event_loops.get(&handle) else {
+        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
             return;
         };
         let command = ContentCommand::FailDocumentFetch { handler_id };
@@ -2747,10 +2718,7 @@ impl UserAgentWorker {
 
     /// the document-fetch watchdog fired by the timer worker.
     fn handle_document_fetch_timeout(&mut self, event_loop_id: EventLoopId, handler_id: DocumentFetchId) {
-        let Some(handle) = self.state.handles_by_event_loop_id.get(&event_loop_id).copied() else {
-            return;
-        };
-        let Some(entry) = self.state.event_loops.get(&handle) else {
+        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
             return;
         };
         let command = ContentCommand::FailDocumentFetch { handler_id };
@@ -2768,10 +2736,7 @@ impl UserAgentWorker {
         timer_key: WindowTimerKey,
         nesting_level: u32,
     ) {
-        let Some(handle) = self.state.handles_by_event_loop_id.get(&event_loop_id).copied() else {
-            return;
-        };
-        let Some(entry) = self.state.event_loops.get(&handle) else {
+        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
             return;
         };
         let command = ContentCommand::RunWindowTimer {
@@ -2808,13 +2773,13 @@ impl UserAgentWorker {
             })
             .collect::<Vec<_>>();
 
-        let mut handles_to_maybe_stop = HashSet::new();
+        let mut event_loops_to_maybe_stop = HashSet::new();
         let mut removed_document_ids = HashSet::new();
 
         for traversable_id in &traversable_ids {
-            if let Some(handle) = self.state.traversable_handles.get(traversable_id).copied() {
-                handles_to_maybe_stop.insert(handle);
-                if let Some(entry) = self.state.event_loops.get_mut(&handle) {
+            if let Some(event_loop_id) = self.state.traversable_handles.get(traversable_id).copied() {
+                event_loops_to_maybe_stop.insert(event_loop_id);
+                if let Some(entry) = self.state.event_loops.get_mut(&event_loop_id) {
                     entry.traversable_ids.remove(traversable_id);
                 }
             }
@@ -2859,16 +2824,16 @@ impl UserAgentWorker {
         }
 
         let mut result = Ok(());
-        for handle in handles_to_maybe_stop {
+        for event_loop_id in event_loops_to_maybe_stop {
             let should_stop = self
                 .state
                 .event_loops
-                .get(&handle)
+                .get(&event_loop_id)
                 .is_some_and(|entry| entry.traversable_ids.is_empty());
             if !should_stop {
                 continue;
             }
-            if let Err(error) = self.stop_event_loop_handle(handle) {
+            if let Err(error) = self.stop_event_loop_handle(event_loop_id) {
                 result = Err(error);
                 break;
             }
@@ -2885,7 +2850,6 @@ impl UserAgentWorker {
             .drain()
             .map(|(_, entry)| entry)
             .collect::<Vec<_>>();
-        self.state.handles_by_event_loop_id.clear();
         self.state.browsing_context_group_set.members.clear();
         self.state.navigables.clear();
         self.state.top_level_browsing_context_group_ids.clear();
