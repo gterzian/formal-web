@@ -20,6 +20,12 @@ When a cross-document navigation runs `beforeunload`, fan it out across the trav
 
 Keep traversable target-name bookkeeping in this crate so iframe-host cleanup can stop the correct event loop without pushing that state into the embedder or content side.
 
+When creating an iframe child traversable placeholder, emit the embedder registration signal for that traversable target name so the webview compositor can map child paints back into the parent iframe host instead of treating the child traversable as an unrelated root webview.
+
+When retiring an iframe traversable, remove that traversable from shared event-loop ownership first and stop the event loop only when it no longer owns any traversables; stopping a shared parent/child event loop from within iframe-removal continuations can deadlock navigation teardown.
+
+When removing a child traversable, delete that child browsing context from the browsing-context group without dropping the top-level browsing-context-group index for the parent traversable; that top-level mapping stays owned by the actual top-level browsing context.
+
 Keep the spec-facing browser-global concepts in `UserAgentState` itself: the browsing-context-group set, the top-level traversable set, allocator state, and the pending navigation/fetch continuations. Treat helper hash maps in that file as model-local indices derived from those concepts rather than as replacements for them.
 
 Keep pending navigation state as explicit spec-facing request, snapshot, history-entry, and history-handling records so finalization can follow HTML's `push` versus `replace` session-history steps without flattening those concepts into ad hoc fields.
@@ -31,5 +37,13 @@ When `user_agent` code implements or continues a standards algorithm, follow the
 For spec-facing worker methods and continuations, give each helper its own anchor-only doc comment for the algorithm it continues, keep `Step n:` comments as verbatim standard prose, and move reduced-model or runtime-bridge explanation into separate `Notes:` comments.
 
 Avoid introducing synchronous user-agent command bridges that block on content replies unless the corresponding standard algorithm has an explicit wait point; prefer queueing work and resuming through existing continuation events.
+
+When content resolves the local `_self` / `_parent` / `_top` prefix of `the-rules-for-choosing-a-navigable`, keep the remaining user-agent work as an explicit continuation helper for shared target-name lookup and new-top-level creation, and reject unresolved synthetic iframe target names there instead of letting them fall through into top-level traversable creation.
+
+For `create-a-new-child-navigable`, let content perform its local iframe/container steps first, continue the user-agent-owned stable child-navigable allocation asynchronously, and notify content with a continuation command instead of replying over a blocking request channel.
+
+When response-driven navigation initializes a new document, keep same-site top-level navigations on the current browsing context and event loop, but explicitly run the browsing-context selection step for cross-site top-level responses instead of silently reusing the active top-level context.
+
+Keep the initial top-level about:blank shell on the event loop that created it until the first navigation commits; the startup artifact should not force a new content process merely because the destination is cross-site.
 
 Name user-agent command variants and worker methods after the standard algorithm or continuation they trigger (for example `Navigate`, `CompleteBeforeUnload`, and `FinalizeCrossDocumentNavigation`) instead of transport-oriented `Queue*` names, and keep the `navigate` entrypoint typed in terms of a navigable id that resolves to a traversable when the target is traversable-backed.

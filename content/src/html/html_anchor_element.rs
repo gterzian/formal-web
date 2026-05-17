@@ -5,11 +5,57 @@ use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    Event as ContentEvent, NavigateRequest, NavigationId, UserNavigationInvolvement,
+    Event as ContentEvent, NavigableId, NavigateRequest, NavigationId, UserNavigationInvolvement,
 };
 use url::Url;
 
 use crate::html::{HTMLElement, HyperlinkElementUtils};
+
+/// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
+/// Note: This helper runs the content-local prefix of the algorithm so content can resolve
+/// `_self`, `_parent`, and `_top` without a blocking round-trip. The user agent later continues
+/// the remaining target-name and new-top-level branches from the explicit request fields.
+fn choose_navigable_for_hyperlink_activation(
+    source_navigable_id: NavigableId,
+    parent_navigable_id: Option<NavigableId>,
+    top_level_navigable_id: NavigableId,
+    target_name: &str,
+    noopener: bool,
+) -> Option<NavigableId> {
+    // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
+    let normalized_target_name = if target_name.eq_ignore_ascii_case("_self") {
+        String::new()
+    } else {
+        target_name.to_owned()
+    };
+
+    // Step 8: "If chosen is null, then a new top-level traversable is being requested."
+    // Note: Content leaves this branch unresolved so the user agent can continue the navigation
+    // entrypoint asynchronously when a new top-level traversable is required.
+    if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
+        return None;
+    }
+
+    // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
+    if normalized_target_name.is_empty() {
+        return Some(source_navigable_id);
+    }
+
+    // Step 5: "Otherwise, if name is an ASCII case-insensitive match for \"_parent\", set chosen to currentNavigable's parent, if any, and currentNavigable otherwise."
+    if normalized_target_name.eq_ignore_ascii_case("_parent") {
+        return Some(parent_navigable_id.unwrap_or(source_navigable_id));
+    }
+
+    // Step 6: "Otherwise, if name is an ASCII case-insensitive match for \"_top\", set chosen to currentNavigable's traversable navigable."
+    if normalized_target_name.eq_ignore_ascii_case("_top") {
+        return Some(top_level_navigable_id);
+    }
+
+    // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for \"_blank\" and noopener is false, then set chosen to the result of finding a navigable by target name given name and currentNavigable."
+    // Note: Content does not own the full cross-process target-name registry, so unresolved names
+    // continue in the user agent.
+    None
+}
 
 /// <https://html.spec.whatwg.org/#htmlanchorelement>
 #[derive(Trace, Finalize, JsData)]
@@ -36,7 +82,9 @@ impl HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
     pub(crate) fn activation_behavior(
         &self,
-        source_navigable_id: u64,
+        source_navigable_id: NavigableId,
+        parent_navigable_id: Option<NavigableId>,
+        top_level_navigable_id: NavigableId,
         document_creation_url: &Url,
         _event: &JsObject,
         event_sender: &IpcSender<ContentEvent>,
@@ -70,13 +118,28 @@ impl HTMLAnchorElement {
         else {
             return Ok(());
         };
+
+        let target = self.target();
+        let noopener = self.noopener();
+        let chosen_navigable_id = choose_navigable_for_hyperlink_activation(
+            source_navigable_id,
+            parent_navigable_id,
+            top_level_navigable_id,
+            &target,
+            noopener,
+        );
+
+        // Note: Content sends the locally resolved target selection, when available, so the
+        // user agent can continue `navigate` from the remaining target-name and top-level-creation
+        // branches instead of repeating these local steps or blocking on a reply path.
         let request = NavigateRequest {
             navigation_id: Some(NavigationId::new()),
             source_navigable_id,
+            chosen_navigable_id,
             destination_url,
-            target: self.target(),
+            target,
             user_involvement,
-            noopener: self.noopener(),
+            noopener,
         };
         event_sender
             .send(ContentEvent::NavigationRequested(request))
@@ -112,6 +175,9 @@ impl HTMLAnchorElement {
     }
 
     /// <https://html.spec.whatwg.org/#following-hyperlinks-2>
+    /// Note: This helper computes the destination URL for hyperlink following. The caller keeps
+    /// the surrounding activation state, runs the content-local target-selection prefix, and then
+    /// raises `NavigationRequested` so the user agent continues `navigate` and later finalization.
     pub(crate) fn follow_hyperlink(
         &self,
         document_creation_url: &Url,
@@ -128,6 +194,8 @@ impl HTMLAnchorElement {
         }
 
         // Step 14: "Navigate targetNavigable to url."
+        // Note: `activation_behavior` continues this step by raising `NavigationRequested` with
+        // the resolved URL plus explicit target-selection state.
         Some(url.to_string())
     }
 

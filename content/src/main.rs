@@ -11,6 +11,7 @@ pub mod webidl;
 use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
+    attach_same_origin_child_document_for_traversable,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
@@ -24,15 +25,15 @@ use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
     CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
-    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
-    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer, SetTraversableViewport,
+    SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    ContentNavigableId, DocumentFetchId, Event as ContentEvent,
+    DocumentFetchId, Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FontTransportSender, FrameId, LoadedDocumentResponse, PaintFrame,
+    FontTransportSender, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
     PlaceholderFrameMapping, RecordedScene, ScriptEvaluationResult, TraversableViewport,
     ViewportSnapshot, WebviewId, WindowTimerKey,
 };
@@ -162,11 +163,11 @@ enum DeferredScriptState {
 
 #[derive(Clone)]
 pub(crate) struct NavigableContainerState {
-    content_navigable_id: ContentNavigableId,
-    content_frame_id: FrameId,
-    content_frame_token: u64,
-    current_key: String,
-    cross_origin: bool,
+    pub(crate) content_navigable: Option<NavigableId>,
+    pub(crate) content_frame_id: FrameId,
+    pub(crate) content_frame_token: u64,
+    pub(crate) current_key: String,
+    pub(crate) cross_origin: bool,
 }
 
 struct PendingDocumentLoad {
@@ -369,6 +370,8 @@ impl NetProvider for ContentNetProvider {
 
 struct ContentDocument {
     traversable_id: u64,
+    parent_traversable_id: Option<u64>,
+    top_level_traversable_id: u64,
     frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
@@ -618,8 +621,8 @@ impl ContentRuntime {
         self.request_remote_fetch(handler_id, Request::get(resolved_url))
     }
 
-    fn allocate_child_navigable_id(&self) -> Result<ContentNavigableId, String> {
-        Ok(ContentNavigableId::new())
+    fn allocate_navigable_id(&self) -> Result<NavigableId, String> {
+        Ok(NavigableId::new())
     }
 
     fn allocate_child_frame_id(&self) -> FrameId {
@@ -632,6 +635,13 @@ impl ContentRuntime {
         token
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#navigate-html>
+    /// Note: This function implements the content-process portion of the `#navigate-html`
+    /// algorithm: it waits until all critical subresources and deferred scripts are ready, then
+    /// executes those scripts, fires the `load` event, and sends `ContentEvent::FinalizeNavigation`
+    /// to the user agent to trigger `finalize_cross_document_navigation` (step 14 of the
+    /// algorithm). It may be invoked multiple times per document — each call re-checks readiness
+    /// and returns early until all blocking work is complete.
     fn continue_document_load(&mut self, document_id: u64) -> Result<(), String> {
         let (ready_to_finish, traversable_id, resources_ready, scripts_ready) = {
             let content_document = self
@@ -731,6 +741,8 @@ impl ContentRuntime {
         traversable_id: u64,
         document_id: u64,
         frame_id: Option<FrameId>,
+        parent_traversable_id: Option<u64>,
+        top_level_traversable_id: u64,
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
@@ -764,6 +776,8 @@ impl ContentRuntime {
             document_id,
             ContentDocument {
                 traversable_id,
+                parent_traversable_id,
+                top_level_traversable_id,
                 frame_id,
                 document,
                 settings,
@@ -793,6 +807,8 @@ impl ContentRuntime {
         document_id: u64,
         frame_id: Option<FrameId>,
         response: LoadedDocumentResponse,
+        parent_traversable_id: Option<u64>,
+        top_level_traversable_id: u64,
     ) -> Result<(), String> {
         let LoadedDocumentResponse {
             final_url,
@@ -831,6 +847,8 @@ impl ContentRuntime {
             document_id,
             ContentDocument {
                 traversable_id,
+                parent_traversable_id,
+                top_level_traversable_id,
                 frame_id,
                 document: Rc::clone(&document),
                 settings,
@@ -844,6 +862,7 @@ impl ContentRuntime {
                 viewport_offset_y: viewport_state.as_ref().map(|viewport| viewport.offset_y).unwrap_or(0.0),
             },
         );
+        attach_same_origin_child_document_for_traversable(self, traversable_id)?;
         run_dom_post_connection_steps_for_document(self, document_id)?;
 
         let deferred_fetches = self
@@ -940,7 +959,9 @@ impl ContentRuntime {
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
-                document.traversable_id,
+                NavigableId::from_u128(document.traversable_id as u128),
+                document.parent_traversable_id.map(|id| NavigableId::from_u128(id as u128)),
+                NavigableId::from_u128(document.top_level_traversable_id as u128),
                 Rc::clone(&document.document),
                 &mut document.settings,
                 &self.event_sender,
@@ -1249,8 +1270,16 @@ impl ContentRuntime {
                 traversable_id,
                 document_id,
                 frame_id,
+                parent_traversable_id,
+                top_level_traversable_id,
             } => {
-                self.create_empty_document(traversable_id, document_id, frame_id)?;
+                self.create_empty_document(
+                    traversable_id,
+                    document_id,
+                    frame_id,
+                    parent_traversable_id,
+                    top_level_traversable_id,
+                )?;
                 Ok(true)
             }
             CreateLoadedDocument {
@@ -1258,8 +1287,17 @@ impl ContentRuntime {
                 document_id,
                 frame_id,
                 response,
+                parent_traversable_id,
+                top_level_traversable_id,
             } => {
-                self.create_loaded_document(traversable_id, document_id, frame_id, response)?;
+                self.create_loaded_document(
+                    traversable_id,
+                    document_id,
+                    frame_id,
+                    response,
+                    parent_traversable_id,
+                    top_level_traversable_id,
+                )?;
                 Ok(true)
             }
             DestroyDocument { document_id } => {

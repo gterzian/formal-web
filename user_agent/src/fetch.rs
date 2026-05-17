@@ -123,7 +123,7 @@ pub fn start_network_bridge(
 
     let mut child_process = Command::new(&executable_path);
     #[cfg(unix)]
-    child_process.arg0("formal-web-net");
+    child_process.arg0("formal-web:net");
     child_process.arg("--net-token").arg(&token);
 
     let child = child_process

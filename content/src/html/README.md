@@ -3,3 +3,4 @@
 - Keep iframe element bindings and runtime algorithms together in `content/src/html/html_iframe_element.rs` as free functions that receive `ContentRuntime` references instead of `impl ContentRuntime` blocks.
 - When deriving ids such as traversable ids or source navigable ids, never silently fall back to sentinel ids like `0`; prefer explicit error returns or `debug_assert!` plus a safe early return.
 - Trigger parser-discovered iframe work from document-load parsing completion instead of root-runtime snapshot staging.
+- For iframe algorithms, keep helper names aligned with the corresponding HTML algorithm anchors (for example `create-a-new-child-navigable` and `shared-attribute-processing-steps-for-iframe-and-frame-elements`), model a container's content navigable as an optional `NavigableId`, and keep code flow ordered like the spec branches (srcdoc branch first with early return, then URL/about:blank processing).

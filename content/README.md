@@ -94,9 +94,14 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 
 - If `update the rendering` is noted while a document still has pending critical resources, keep that rendering opportunity pending and resume it from the corresponding fetch completion instead of painting a stale frame.
 
+- Hyperlink activation should raise `NavigationRequested` with the source navigable plus `target` and `noopener`, and must not block on a dedicated `choose navigable` IPC round-trip before the user-agent continues `navigate`.
+- Hyperlink activation should run the content-local `_self` / `_parent` / `_top` prefix of `the-rules-for-choosing-a-navigable`, send the chosen navigable id when that prefix resolves locally, and leave shared target-name lookup plus new-top-level creation to an explicit user-agent continuation.
+
 - Keep same-origin iframe documents on Blitz's `SubDocument` path, but mark cross-origin iframe elements with a stable iframe navigable id so Blitz paint can emit a typed placeholder command for embedder-side composition.
 - Track each iframe element as the navigable container for its child content navigable on the content side; the embedder-side placeholder and child-webview host should reuse that same child navigable id instead of inventing a second frame identifier.
+- Keep iframe post-connection steps synchronous in content (`create a new child navigable` then `process the iframe attributes`), send the user-agent child-creation continuation as fire-and-forget IPC, and use the same UUID navigable id across content and user-agent without lossy UUID-to-u64 conversion.
 - Do not route iframe document navigations through `PendingNetworkHandler` or a Rust-local fetch path; the content runtime should raise a navigation request and let the user-agent fetch-backed navigation path own the fetch and resulting `CreateLoadedDocument` dispatch.
+- Run the local DOM/container steps of `create-a-new-child-navigable` in content, then continue directly into `process-the-iframe-attributes` in the same task; user-agent-only child-navigable/session-history work runs from the previously sent create-child message.
 
 - When a JavaScript-visible Web IDL attribute or algorithm is implemented for a DOM type, keep the spec-linked method on the corresponding `content/src/dom` type and have `content/src/boa/bindings` delegate to that method instead of embedding the algorithm in the binding layer.
 
