@@ -1,5 +1,6 @@
 use crate::AppRunOptions;
 use clap::Args;
+use ipc_channel::ipc::IpcSender;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{ErrorKind, Read, Write};
@@ -10,6 +11,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use tla_trace::LogEntry;
 
 const HTTP_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const AUTOMATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -96,7 +98,7 @@ struct ErrorValue {
     stacktrace: String,
 }
 
-pub fn run(args: WebDriverArgs) -> Result<(), String> {
+pub fn run(args: WebDriverArgs, monitor_tx: Option<IpcSender<LogEntry>>) -> Result<(), String> {
     let server = WebDriverServer::start(args.port, args.exit_on_session_delete)?;
     let result = crate::run_app_with_options(AppRunOptions {
         headless: args.headless,
@@ -104,6 +106,7 @@ pub fn run(args: WebDriverArgs) -> Result<(), String> {
             .startup_url
             .or_else(|| Some(String::from("about:blank"))),
         window_title: Some(format!("formal-web WebDriver :{}", args.port)),
+        monitor_tx,
     });
     drop(server);
     result

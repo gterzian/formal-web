@@ -73,6 +73,12 @@ rustup run 1.92.0 cargo run --release
 `cargo run --release` starts the embedder and user-agent thread, then launches the dedicated `formal-web-content` and `formal-web-net` sidecar executables on demand, then loads `artifacts/StartupExample.html`.
 
 ```bash
+rustup run 1.92.0 cargo run --release -- --tla
+```
+
+`cargo run --release -- --tla` enables the TLA+ trace monitor, routes trace entries from the main process, worker threads, and sidecars into `tla-traces/*.ndjson`, and recreates `tla-traces/` at startup for a fresh run.
+
+```bash
 rustup run 1.92.0 cargo run -- test-wpt formal/load-event-fires.html
 ```
 
@@ -86,6 +92,12 @@ The runner writes generated `wpt serve` config and injection files under `scratc
 
 Without a path it uses both `tests/wpt/include.ini` and `tests/formal/include.ini`. With `--list` it prints the selected tests without launching the embedder. Explicit paths can point at the upstream WPT tree or at the local suite through the `formal/` prefix.
 
+```bash
+rustup run 1.92.0 cargo run --manifest-path tools/tla-validate/Cargo.toml -- --json
+```
+
+`tla-validate` is a standalone package under `tools/tla-validate/`. It scans `tla_specs/` for known specs, checks `tla-traces/*.ndjson` for matching traces, runs TLC for each available trace spec, and can emit JSON diagnostics for failed validations.
+
 ## Verification direction
 
-The TLA+ specifications live under `tla_specs/`. The next verification step is a trace-based workflow that compares Rust runtime behavior against those protocol models.
+The TLA+ specifications live under `tla_specs/`. The trace monitor writes NDJSON traces under `tla-traces/`, and `tools/tla-validate/` compares those traces against companion trace specs by invoking TLC with the recorded trace path.

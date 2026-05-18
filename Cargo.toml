@@ -15,6 +15,7 @@ clap = { version = "4.5", features = ["derive"] }
 content = { path = "content" }
 embedder = { path = "embedder" }
 net = { path = "net" }
+tla_trace = { path = "crates/tla-trace", package = "tla-trace" }
 user_agent = { path = "user_agent" }
 webview = { path = "webview" }
 ipc-channel = "0.21"

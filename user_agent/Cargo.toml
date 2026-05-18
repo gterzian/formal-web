@@ -12,6 +12,7 @@ ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 serde_json = "1"
 psl = "2"
+tla_trace = { path = "../crates/tla-trace", package = "tla-trace" }
 url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 webview = { path = "../webview" }

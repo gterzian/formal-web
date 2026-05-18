@@ -45,6 +45,7 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
+use tla_trace::{LogEntry, receive_monitor_sender};
 use url::Url;
 
 pub(crate) const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
@@ -1394,7 +1395,23 @@ fn content_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-pub fn run_content_process(token: String) -> Result<(), String> {
+fn tla_log_server_from_args() -> Result<Option<String>, String> {
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--tla-log-server" {
+            return args
+                .next()
+                .map(Some)
+                .ok_or_else(|| String::from("missing TLA log server value"));
+        }
+    }
+    Ok(None)
+}
+
+pub fn run_content_process(
+    token: String,
+    _monitor_tx: Option<IpcSender<LogEntry>>,
+) -> Result<(), String> {
     let (command_sender, command_receiver) =
         ipc::channel::<Command>().map_err(|error| error.to_string())?;
     let (event_sender, event_receiver) =
@@ -1451,5 +1468,6 @@ pub fn run_content_process(token: String) -> Result<(), String> {
 pub fn run_content_process_from_args() -> Result<(), String> {
     let token = content_token_from_args()?
         .ok_or_else(|| String::from("missing --content-token argument"))?;
-    run_content_process(token)
+    let monitor_tx = receive_monitor_sender(tla_log_server_from_args()?.as_deref())?;
+    run_content_process(token, monitor_tx)
 }

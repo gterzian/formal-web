@@ -788,6 +788,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stylo",
+ "tla-trace",
  "url",
  "xml5ever",
 ]
@@ -1441,6 +1442,7 @@ dependencies = [
  "net",
  "serde",
  "serde_json",
+ "tla-trace",
  "url",
  "user_agent",
  "webview",
@@ -2615,6 +2617,7 @@ dependencies = [
  "ipc_messages",
  "mime_guess",
  "reqwest",
+ "tla-trace",
  "url",
 ]
 
@@ -4591,6 +4594,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
+name = "tla-trace"
+version = "0.1.0"
+dependencies = [
+ "ipc-channel",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "to_shmem"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4855,6 +4867,7 @@ dependencies = [
  "ipc_messages",
  "psl",
  "serde_json",
+ "tla-trace",
  "url",
  "uuid",
  "webview",

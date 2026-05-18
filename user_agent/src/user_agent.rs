@@ -5,6 +5,7 @@ mod timer;
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use embedder::{FinalizeNavigation, FormalWebUserEvent, UserEventDispatcher};
+use ipc_channel::ipc::IpcSender;
 use ipc_messages::{
     content::{
         AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult,
@@ -20,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use tla_trace::LogEntry;
 use url::Url;
 
 use crate::event_loop::{
@@ -776,12 +778,16 @@ pub struct UserAgent {
 
 impl UserAgent {
     /// spawning the dedicated user-agent thread owned by the webview layer.
-    pub fn start(user_event_dispatcher: UserEventDispatcher) -> Result<Self, String> {
+    pub fn start(
+        user_event_dispatcher: UserEventDispatcher,
+        monitor_tx: Option<IpcSender<LogEntry>>,
+    ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
         let mut worker = UserAgentWorker::new(
             command_sender.clone(),
             command_receiver,
             user_event_dispatcher,
+            monitor_tx,
         );
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
@@ -1074,6 +1080,8 @@ struct UserAgentWorker {
     /// Async dispatcher used to notify the embedder event loop about navigation and traversable
     /// updates without routing through a global sender.
     user_event_dispatcher: UserEventDispatcher,
+    /// Sender cloned into child workers and sidecars when TLA tracing is enabled.
+    monitor_tx: Option<IpcSender<LogEntry>>,
     /// request ids for script-evaluation round-trips across the user-agent and
     /// content event-loop boundary.
     next_script_request_id: u64,
@@ -1085,18 +1093,33 @@ impl UserAgentWorker {
         user_agent_command_sender: Sender<UserAgentCommand>,
         command_receiver: Receiver<UserAgentCommand>,
         user_event_dispatcher: UserEventDispatcher,
+        monitor_tx: Option<IpcSender<LogEntry>>,
     ) -> Self {
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
         let fetch_user_agent_command_sender = user_agent_command_sender.clone();
+        let fetch_monitor_tx = monitor_tx.clone();
         let fetch_join_handle = thread::Builder::new()
             .name(String::from("formal-web:fetch"))
-            .spawn(move || run_fetch_thread(fetch_command_receiver, fetch_user_agent_command_sender))
+            .spawn(move || {
+                run_fetch_thread(
+                    fetch_command_receiver,
+                    fetch_user_agent_command_sender,
+                    fetch_monitor_tx,
+                )
+            })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-fetch thread: {error}"));
         let (timer_command_sender, timer_command_receiver) = unbounded();
         let timer_user_agent_command_sender = user_agent_command_sender.clone();
+        let timer_monitor_tx = monitor_tx.clone();
         let timer_join_handle = thread::Builder::new()
             .name(String::from("formal-web:timer"))
-            .spawn(move || run_timer_thread(timer_command_receiver, timer_user_agent_command_sender))
+            .spawn(move || {
+                run_timer_thread(
+                    timer_command_receiver,
+                    timer_user_agent_command_sender,
+                    timer_monitor_tx,
+                )
+            })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
         Self {
@@ -1108,6 +1131,7 @@ impl UserAgentWorker {
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
             user_event_dispatcher,
+            monitor_tx,
             next_script_request_id: 1,
         }
     }
@@ -1292,6 +1316,7 @@ impl UserAgentWorker {
             self.fetch_command_sender.clone(),
             self.timer_command_sender.clone(),
             self.user_event_dispatcher.clone(),
+            self.monitor_tx.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is

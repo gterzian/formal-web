@@ -28,6 +28,7 @@ keyboard-types = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 style = { version = "0.17.0", package = "stylo" }
+tla_trace = { path = "../crates/tla-trace", package = "tla-trace" }
 url = "2"
 xml5ever = "0.39.0"
 
