@@ -1,11 +1,41 @@
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{
+    Context, JsError, JsNativeError, JsResult, JsString, JsValue,
+    object::{JsObject, builtins::JsFunction},
+};
+use boa_gc::{Finalize, Trace};
 
+/// <https://webidl.spec.whatwg.org/#idl-callback-function>
+// Note: The content runtime reuses this carrier for both callback function and callback interface type values because both Web IDL representations carry a JavaScript object reference plus callback context.
+// Note: The callback context remains implicit in the current single-realm content runtime until callback-realm bookkeeping is modeled explicitly.
+#[derive(Clone, Trace, Finalize)]
+pub(crate) struct Callback {
+    object: JsObject,
+}
+
+impl Callback {
+    pub(crate) fn from_object(object: JsObject) -> Self {
+        Self { object }
+    }
+
+    pub(crate) fn equals(&self, other: &Self) -> bool {
+        JsObject::equals(&self.object, &other.object)
+    }
+
+    /// <https://webidl.spec.whatwg.org/#callback-function-to-js>
+    // Note: The callback interface type conversion back to JavaScript yields the same referenced object in the current runtime, so this helper serves both representations.
+    pub(crate) fn to_js_value(&self) -> JsValue {
+        JsValue::from(self.object.clone())
+    }
+}
+
+// Note: This internal trait abstracts the ECMAScript operations used by the Web IDL callback algorithms in this module.
+// Note: It remains necessary because those algorithms are reused both from the shared context-backed host below and from richer hosts such as DOM event-dispatch adapters that carry additional spec-owned state.
 pub(crate) trait EcmascriptHost {
     fn context(&mut self) -> &mut Context;
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue>;
 
-    fn is_callable(&self, object: &JsObject) -> bool;
+    fn is_callable(&self, value: &JsValue) -> bool;
 
     fn call(
         &mut self,
@@ -17,7 +47,61 @@ pub(crate) trait EcmascriptHost {
     #[allow(dead_code)]
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()>;
 
-    fn report_exception(&mut self, error: JsError, callback: &JsObject);
+    fn report_exception(&mut self, error: JsError, callback: &Callback);
+}
+
+/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
+// Note: This context-backed host provides the ECMAScript `Get`, `Call`, and exception-reporting hooks shared by `call a user object's operation` and `invoke a callback function`.
+// Note: Callers keep the surrounding DOM, HTML, or Streams algorithm locally and choose the uncaught-exception label when they construct this host.
+pub(crate) struct ContextCallbackHost<'a> {
+    context: &'a mut Context,
+    exception_context: &'static str,
+}
+
+impl<'a> ContextCallbackHost<'a> {
+    pub(crate) fn new(context: &'a mut Context, exception_context: &'static str) -> Self {
+        Self {
+            context,
+            exception_context,
+        }
+    }
+}
+
+impl EcmascriptHost for ContextCallbackHost<'_> {
+    fn context(&mut self) -> &mut Context {
+        self.context
+    }
+
+    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
+        object.get(JsString::from(property), self.context)
+    }
+
+    fn is_callable(&self, value: &JsValue) -> bool {
+        match value.as_object() {
+            Some(object) => object.is_callable(),
+            None => false,
+        }
+    }
+
+    fn call(
+        &mut self,
+        callable: &JsObject,
+        this_arg: &JsValue,
+        args: &[JsValue],
+    ) -> JsResult<JsValue> {
+        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("callback is not callable"))
+        })?;
+        function.call(this_arg, args, self.context)
+    }
+
+    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
+        self.context.run_jobs()
+    }
+
+    fn report_exception(&mut self, error: JsError, _callback: &Callback) {
+        eprintln!("uncaught {} error: {error}", self.exception_context);
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -26,42 +110,64 @@ pub(crate) enum ExceptionBehavior {
     Rethrow,
 }
 
-pub(crate) fn callback_interface_value(value: &JsValue) -> JsResult<Option<JsObject>> {
+/// <https://webidl.spec.whatwg.org/#js-to-callback-interface>
+pub(crate) fn callback_interface_type_value(value: &JsValue) -> JsResult<Callback> {
+    // Step 1: "If V is not an Object, then throw a TypeError."
+    let object = value.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message(
+            "callback interface value is not an object",
+        ))
+    })?;
+
+    // Step 2: "Return the IDL callback interface type value that represents a reference to V, with the incumbent settings object as the callback context."
+    // Note: The shared `Callback` carrier stores the referenced JavaScript object and relies on the current single-realm runtime for the callback-context portion of the value.
+    Ok(Callback::from_object(object.clone()))
+}
+
+/// <https://webidl.spec.whatwg.org/#js-to-callback-function>
+pub(crate) fn callback_function_value(value: &JsValue) -> JsResult<Callback> {
+    // Step 1: "If the result of calling IsCallable(V) is false and the conversion to an IDL value is not being performed due to V being assigned to an attribute whose type is a nullable callback function that is annotated with [LegacyTreatNonObjectAsNull], then throw a TypeError."
+    // Note: No current content call sites use [LegacyTreatNonObjectAsNull].
+    let object = match value.as_object() {
+        Some(object) if object.is_callable() => object.clone(),
+        _ => {
+            return Err(JsNativeError::typ()
+                .with_message("callback function value is not callable")
+                .into())
+        }
+    };
+
+    // Step 2: "Return the IDL callback function type value that represents a reference to the same object that V represents, with the incumbent settings object as the callback context."
+    // Note: The shared `Callback` carrier stores the referenced JavaScript object and relies on the current single-realm runtime for the callback-context portion of the value.
+    Ok(Callback::from_object(object.clone()))
+}
+
+/// <https://webidl.spec.whatwg.org/#js-to-nullable>
+pub(crate) fn nullable_value<T>(
+    value: &JsValue,
+    convert_inner: impl FnOnce(&JsValue) -> JsResult<T>,
+) -> JsResult<Option<T>> {
+    // Note: The current content runtime uses this helper for nullable callback interface and nullable callback function conversions, so the Rust carrier models the `null` result as `None` and delegates all non-null inputs to the inner conversion.
+
+    // Step 1: "If V is not an Object, and the conversion to an IDL value is being performed due to V being assigned to an attribute whose type is a nullable callback function that is annotated with [LegacyTreatNonObjectAsNull], then return the IDL nullable type T? value null."
+    // Note: No current content call sites use [LegacyTreatNonObjectAsNull].
+
+    // Step 2: "Otherwise, if V is undefined, and T includes undefined, return the unique undefined value."
+    // Note: No current content call sites use inner types that include undefined.
+
+    // Step 3: "Otherwise, if V is null or undefined, then return the IDL nullable type T? value null."
     if value.is_null() || value.is_undefined() {
         return Ok(None);
     }
 
-    value
-        .as_object()
-        .ok_or_else(|| {
-            JsError::from(
-                JsNativeError::typ().with_message("event listener callback is not an object"),
-            )
-        })
-        .map(|object| Some(object.clone()))
-}
-
-/// <https://webidl.spec.whatwg.org/#js-to-callback-function>
-pub(crate) fn callback_function_value(value: &JsValue) -> JsResult<JsObject> {
-    let object = value.as_object().ok_or_else(|| {
-        JsError::from(
-            JsNativeError::typ().with_message("animation frame callback is not an object"),
-        )
-    })?;
-
-    if !object.is_callable() {
-        return Err(JsNativeError::typ()
-            .with_message("animation frame callback is not callable")
-            .into());
-    }
-
-    Ok(object.clone())
+    // Step 4: "Otherwise, return the result of converting V using the rules for the inner IDL type T."
+    convert_inner(value).map(Some)
 }
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 pub(crate) fn call_user_objects_operation(
     host: &mut impl EcmascriptHost,
-    value: &JsObject,
+    value: &Callback,
     op_name: &str,
     args: &[JsValue],
     this_arg: Option<&JsValue>,
@@ -72,7 +178,7 @@ pub(crate) fn call_user_objects_operation(
     let mut effective_this_arg = this_arg.cloned().unwrap_or_else(JsValue::undefined);
 
     // Step 3: "Let O be the JavaScript object corresponding to value."
-    let object = value.clone();
+    let object = value.object.clone();
 
     // Step 4: "Let realm be O's associated realm."
     // Step 5: "Let relevant settings be realm's settings object."
@@ -82,10 +188,11 @@ pub(crate) fn call_user_objects_operation(
     // Note: The content runtime does not yet model callback realms or HTML callback/script preparation stacks explicitly.
 
     // Step 9: "Let X be O."
+    let object_value = JsValue::from(object.clone());
     let mut callable = object.clone();
 
     // Step 10: "If IsCallable(O) is false, then:"
-    if !host.is_callable(&object) {
+    if !host.is_callable(&object_value) {
         // Step 10.1: "Let getResult be Completion(Get(O, opName))."
         let operation = host.get(&object, op_name)?;
 
@@ -93,25 +200,27 @@ pub(crate) fn call_user_objects_operation(
         // Note: `?` returns the abrupt completion directly in this Rust implementation.
 
         // Step 10.3: "Set X to getResult.[[Value]]."
-        let operation = operation.as_object().ok_or_else(|| {
-            JsError::from(JsNativeError::typ().with_message(format!(
-                "event listener callback does not define `{op_name}`"
-            )))
-        })?;
-
         // Step 10.4: "If IsCallable(X) is false, then set completion to a TypeError and jump to the step labeled return."
         if !host.is_callable(&operation) {
             return Err(JsNativeError::typ()
-                .with_message(format!(
-                    "event listener callback `{op_name}` is not callable"
-                ))
+                .with_message(format!("callback operation `{op_name}` is not callable"))
                 .into());
         }
 
-        callable = operation.clone();
+        let operation = operation.as_object().ok_or_else(|| {
+            debug_assert!(
+                false,
+                "IsCallable returned true for a non-object callback operation"
+            );
+            JsError::from(JsNativeError::typ().with_message(format!(
+                "callback operation `{op_name}` is not callable"
+            )))
+        })?;
+
+        callable = operation;
 
         // Step 10.5: "Set thisArg to O (overriding the provided value)."
-        effective_this_arg = JsValue::from(object);
+        effective_this_arg = object_value;
     }
 
     // Step 11: "Let jsArgs be the result of converting args to a JavaScript arguments list."
@@ -126,7 +235,7 @@ pub(crate) fn call_user_objects_operation(
     // Note: `?` returns the abrupt completion directly in this Rust implementation.
 
     // Step 14: "Set completion to the result of converting callResult.[[Value]] to an IDL value of the same type as the operation's return type."
-    // Note: Event listener callbacks are treated as returning ECMAScript values directly because the runtime does not model typed callback return conversions yet.
+    // Note: This helper currently returns the raw ECMAScript completion value; the current DOM listener caller ignores that value, which matches `handleEvent`'s `undefined` return type.
 
     // Return.1: "Clean up after running a callback with stored settings."
     // Return.2: "Clean up after running script with relevant settings."
@@ -139,7 +248,7 @@ pub(crate) fn call_user_objects_operation(
 /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
 pub(crate) fn invoke_callback_function(
     host: &mut impl EcmascriptHost,
-    callable: &JsObject,
+    callable: &Callback,
     args: &[JsValue],
     exception_behavior: ExceptionBehavior,
     this_arg: Option<&JsValue>,
@@ -150,12 +259,13 @@ pub(crate) fn invoke_callback_function(
     let effective_this_arg = this_arg.cloned().unwrap_or_else(JsValue::undefined);
 
     // Step 3: "Let F be the JavaScript object corresponding to callable."
-    let function = callable.clone();
+    let function = callable.object.clone();
+    let function_value = JsValue::from(function.clone());
 
     // Step 4: "If IsCallable(F) is false:"
-    if !host.is_callable(&function) {
+    if !host.is_callable(&function_value) {
         // Step 4.1: "Return the result of converting undefined to the callback function's return type."
-        // Note: The content runtime converts callback results directly as ECMAScript values and currently uses this helper only for `undefined`-returning callbacks.
+        // Note: The current content runtime returns the raw ECMAScript `undefined` value here; current callers either expect `undefined`/`any` directly or immediately perform the surrounding algorithm's return-value conversion.
         return Ok(JsValue::undefined());
     }
 
@@ -174,7 +284,7 @@ pub(crate) fn invoke_callback_function(
 
     // Step 12: "If callResult is an abrupt completion, set completion to callResult and jump to the step labeled return."
     // Step 13: "Set completion to the result of converting callResult.[[Value]] to an IDL value of the same type as callable's return type."
-    // Note: The content runtime converts callback results directly as ECMAScript values and currently uses this helper only for `undefined`-returning callbacks.
+    // Note: This helper currently returns the raw ECMAScript completion value; surrounding DOM, HTML, and Streams algorithms perform any required promise wrapping or numeric conversion immediately after this call.
     match call_result {
         Ok(value) => Ok(value),
         Err(error) => {
@@ -188,7 +298,7 @@ pub(crate) fn invoke_callback_function(
             }
 
             // Return.6.2: "Report an exception completion.[[Value]] for realm's global object."
-            host.report_exception(error, &function);
+            host.report_exception(error, callable);
 
             // Return.6.3: "Return the unique undefined IDL value."
             Ok(JsValue::undefined())

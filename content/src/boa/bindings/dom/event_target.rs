@@ -2,11 +2,11 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::{JsObject, builtins::JsFunction},
+    object::JsObject,
 };
 
 use crate::boa::platform_objects::{
@@ -14,7 +14,10 @@ use crate::boa::platform_objects::{
 };
 use crate::boa::with_event_target_mut;
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
-use crate::webidl::{EcmascriptHost, callback_interface_value};
+use crate::webidl::{
+    Callback, ContextCallbackHost, EcmascriptHost, callback_interface_type_value,
+    nullable_value,
+};
 
 #[derive(Clone)]
 pub(crate) struct AddEventListenerOptions {
@@ -71,7 +74,7 @@ fn add_event_listener(
         .to_string(context)?
         .to_std_string_escaped();
     let options = flatten_more(args.get_or_undefined(2), context)?;
-    let callback = callback_interface_value(args.get_or_undefined(1))?;
+    let callback = nullable_value(args.get_or_undefined(1), callback_interface_type_value)?;
     let receiver = JsValue::from(event_target.clone());
 
     with_event_target_mut(&receiver, |target| {
@@ -99,7 +102,7 @@ fn remove_event_listener(
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    let Some(callback) = callback_interface_value(args.get_or_undefined(1))? else {
+    let Some(callback) = nullable_value(args.get_or_undefined(1), callback_interface_type_value)? else {
         return Ok(JsValue::undefined());
     };
     let capture = flatten(args.get_or_undefined(2), context)?;
@@ -131,27 +134,31 @@ fn dispatch_event_with_context(
     dispatch(&mut host, target, event, false)
 }
 
+/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+// Note: This helper keeps the DOM-specific event object and target resolution for `dispatch`, while delegating generic ECMAScript callback operations to the shared Web IDL `ContextCallbackHost`.
 pub(crate) struct ContextEventDispatchHost<'a> {
-    context: &'a mut Context,
+    callback_host: ContextCallbackHost<'a>,
 }
 
 impl<'a> ContextEventDispatchHost<'a> {
     pub(crate) fn new(context: &'a mut Context) -> Self {
-        Self { context }
+        Self {
+            callback_host: ContextCallbackHost::new(context, "event listener"),
+        }
     }
 }
 
 impl EcmascriptHost for ContextEventDispatchHost<'_> {
     fn context(&mut self) -> &mut Context {
-        self.context
+        self.callback_host.context()
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        object.get(JsString::from(property), self.context)
+        self.callback_host.get(object, property)
     }
 
-    fn is_callable(&self, object: &JsObject) -> bool {
-        object.is_callable()
+    fn is_callable(&self, value: &JsValue) -> bool {
+        self.callback_host.is_callable(value)
     }
 
     fn call(
@@ -160,36 +167,33 @@ impl EcmascriptHost for ContextEventDispatchHost<'_> {
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> JsResult<JsValue> {
-        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
-            JsError::from(JsNativeError::typ().with_message("callback is not callable"))
-        })?;
-        function.call(this_arg, args, self.context)
+        self.callback_host.call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        self.context.run_jobs()
+        self.callback_host.perform_a_microtask_checkpoint()
     }
 
-    fn report_exception(&mut self, error: JsError, _callback: &JsObject) {
-        eprintln!("uncaught event listener error: {error}");
+    fn report_exception(&mut self, error: JsError, _callback: &Callback) {
+        self.callback_host.report_exception(error, _callback)
     }
 }
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        Event::from_data(event, self.context)
+        Event::from_data(event, self.callback_host.context())
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
-        document_object(self.context)
+        document_object(self.callback_host.context())
     }
 
     fn global_object(&mut self) -> JsObject {
-        self.context.global_object()
+        self.callback_host.context().global_object()
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        resolve_element_object(node_id, self.context)
+        resolve_element_object(node_id, self.callback_host.context())
     }
 
     fn resolve_existing_node_object(
@@ -197,7 +201,7 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> JsResult<JsObject> {
-        object_for_existing_node(document, node_id, self.context)
+        object_for_existing_node(document, node_id, self.callback_host.context())
     }
 
     fn current_time_millis(&self) -> f64 {

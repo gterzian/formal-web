@@ -34,6 +34,16 @@ impl DOMException {
     }
 
     /// <https://webidl.spec.whatwg.org/#dfn-error-names-table>
+    pub(crate) fn not_found_error() -> Self {
+        Self::new(String::new(), String::from("NotFoundError"))
+    }
+
+    /// <https://webidl.spec.whatwg.org/#dfn-error-names-table>
+    pub(crate) fn not_supported_error() -> Self {
+        Self::new(String::new(), String::from("NotSupportedError"))
+    }
+
+    /// <https://webidl.spec.whatwg.org/#dfn-error-names-table>
     pub(crate) fn syntax_error() -> Self {
         Self::new(String::new(), String::from("SyntaxError"))
     }
@@ -53,6 +63,7 @@ impl DOMException {
         match self.name.as_str() {
             "HierarchyRequestError" => 3,
             "InvalidCharacterError" => 5,
+            "NotFoundError" => 8,
             "NotSupportedError" => 9,
             "SyntaxError" => 12,
             "AbortError" => 20,

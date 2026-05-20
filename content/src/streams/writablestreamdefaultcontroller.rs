@@ -5,7 +5,7 @@ use boa_engine::{
     Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
     class::Class,
     native_function::NativeFunction,
-    object::{JsObject, builtins::{JsFunction, JsPromise}},
+    object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -13,7 +13,10 @@ use crate::{
     boa::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
     dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
     streams::SizeAlgorithm,
-    webidl::{EcmascriptHost, promise_from_value, rejected_promise, resolved_promise},
+    webidl::{
+        Callback, ContextCallbackHost, EcmascriptHost, promise_from_value,
+        rejected_promise, resolved_promise,
+    },
 };
 
 use super::{SourceMethod, WritableStream, WritableStreamController, WritableStreamState};
@@ -524,27 +527,32 @@ impl WritableStreamDefaultController {
         Ok(value)
     }
 }
+
+/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+// Note: This helper keeps the DOM event-dispatch pieces needed for `AbortSignal` dispatch inside Streams, while delegating generic ECMAScript callback operations to the shared Web IDL `ContextCallbackHost`.
 struct ContextEventDispatchHost<'a> {
-    context: &'a mut Context,
+    callback_host: ContextCallbackHost<'a>,
 }
 
 impl<'a> ContextEventDispatchHost<'a> {
     fn new(context: &'a mut Context) -> Self {
-        Self { context }
+        Self {
+            callback_host: ContextCallbackHost::new(context, "abort listener"),
+        }
     }
 }
 
 impl EcmascriptHost for ContextEventDispatchHost<'_> {
     fn context(&mut self) -> &mut Context {
-        self.context
+        self.callback_host.context()
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        object.get(JsString::from(property), self.context)
+        self.callback_host.get(object, property)
     }
 
-    fn is_callable(&self, object: &JsObject) -> bool {
-        object.is_callable()
+    fn is_callable(&self, value: &JsValue) -> bool {
+        self.callback_host.is_callable(value)
     }
 
     fn call(
@@ -553,36 +561,33 @@ impl EcmascriptHost for ContextEventDispatchHost<'_> {
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> JsResult<JsValue> {
-        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
-            JsError::from(JsNativeError::typ().with_message("callback is not callable"))
-        })?;
-        function.call(this_arg, args, self.context)
+        self.callback_host.call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        self.context.run_jobs()
+        self.callback_host.perform_a_microtask_checkpoint()
     }
 
-    fn report_exception(&mut self, error: JsError, _callback: &JsObject) {
-        eprintln!("uncaught abort listener error: {error}");
+    fn report_exception(&mut self, error: JsError, callback: &Callback) {
+        self.callback_host.report_exception(error, callback)
     }
 }
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        Event::from_data(event, self.context)
+        Event::from_data(event, self.callback_host.context())
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
-        document_object(self.context)
+        document_object(self.callback_host.context())
     }
 
     fn global_object(&mut self) -> JsObject {
-        self.context.global_object()
+        self.callback_host.context().global_object()
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        resolve_element_object(node_id, self.context)
+        resolve_element_object(node_id, self.callback_host.context())
     }
 
     fn resolve_existing_node_object(
@@ -590,7 +595,7 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> JsResult<JsObject> {
-        object_for_existing_node(document, node_id, self.context)
+        object_for_existing_node(document, node_id, self.callback_host.context())
     }
 
     fn current_time_millis(&self) -> f64 {
@@ -740,7 +745,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         if let Some(start) = get_callable_method(&underlying_sink, "start", context)? {
             start_algorithm = StartAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
-                start,
+                crate::webidl::Callback::from_object(start),
             ));
         }
 
@@ -748,7 +753,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         if let Some(write) = get_callable_method(&underlying_sink, "write", context)? {
             write_algorithm = WriteAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
-                write,
+                crate::webidl::Callback::from_object(write),
             ));
         }
 
@@ -756,7 +761,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         if let Some(close) = get_callable_method(&underlying_sink, "close", context)? {
             close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
-                close,
+                crate::webidl::Callback::from_object(close),
             ));
         }
 
@@ -764,7 +769,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         if let Some(abort) = get_callable_method(&underlying_sink, "abort", context)? {
             abort_algorithm = AbortAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink,
-                abort,
+                crate::webidl::Callback::from_object(abort),
             ));
         }
     }

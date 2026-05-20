@@ -17,7 +17,8 @@ pub use readablebytestreamcontroller::{ReadableByteStreamController, ReadableStr
 pub use readablestreambyobreader::ReadableStreamBYOBReader;
 pub use readablestreamdefaultcontroller::ReadableStreamDefaultController;
 pub use readablestreamdefaultreader::ReadableStreamDefaultReader;
-pub use strategy::{ByteLengthQueuingStrategy, CountQueuingStrategy, SizeAlgorithm};
+pub use strategy::{ByteLengthQueuingStrategy, CountQueuingStrategy};
+pub(crate) use strategy::SizeAlgorithm;
 pub use writablestream::WritableStream;
 pub use writablestreamdefaultcontroller::WritableStreamDefaultController;
 pub use writablestreamdefaultwriter::WritableStreamDefaultWriter;

@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::{
     ContentRuntime, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
-    html::HTMLElement,
+    html::HTMLElement, webidl::Callback,
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
@@ -21,12 +21,20 @@ use crate::{
 pub struct HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
+
+    /// <https://html.spec.whatwg.org/#handler-onload>
+    onload: Option<Callback>,
+
+    /// <https://html.spec.whatwg.org/#handler-onerror>
+    onerror: Option<Callback>,
 }
 
 impl HTMLIFrameElement {
     pub fn new(document: Rc<RefCell<BaseDocument>>, node_id: usize) -> Self {
         Self {
             html_element: HTMLElement::new(document, node_id),
+            onload: None,
+            onerror: None,
         }
     }
 
@@ -103,6 +111,26 @@ impl HTMLIFrameElement {
     pub(crate) fn set_height(&self, height: &str) {
         // Step 1: "Set this's height content attribute to the given value."
         self.html_element.element.set_attribute("height", height);
+    }
+
+    /// <https://html.spec.whatwg.org/#handler-onload>
+    pub(crate) fn onload_value(&self) -> Option<Callback> {
+        self.onload.clone()
+    }
+
+    /// <https://html.spec.whatwg.org/#handler-onload>
+    pub(crate) fn replace_onload(&mut self, callback: Option<Callback>) -> Option<Callback> {
+        std::mem::replace(&mut self.onload, callback)
+    }
+
+    /// <https://html.spec.whatwg.org/#handler-onerror>
+    pub(crate) fn onerror_value(&self) -> Option<Callback> {
+        self.onerror.clone()
+    }
+
+    /// <https://html.spec.whatwg.org/#handler-onerror>
+    pub(crate) fn replace_onerror(&mut self, callback: Option<Callback>) -> Option<Callback> {
+        std::mem::replace(&mut self.onerror, callback)
     }
 }
 

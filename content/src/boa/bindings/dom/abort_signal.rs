@@ -3,7 +3,6 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::JsObject,
     property::Attribute,
 };
 
@@ -13,6 +12,7 @@ use crate::dom::{
     signal_abort,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
+use crate::webidl::{callback_function_value, nullable_value};
 
 use super::event_target::{ContextEventDispatchHost, register_event_target_methods};
 
@@ -186,7 +186,7 @@ fn get_onabort(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsVal
     with_abort_signal_ref(&signal, |signal| {
         signal
             .onabort_value()
-            .map(JsValue::from)
+            .map(|callback| callback.to_js_value())
             .unwrap_or_else(JsValue::null)
     })
 }
@@ -195,7 +195,7 @@ fn set_onabort(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<Js
     let signal_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("AbortSignal receiver is not an object")
     })?;
-    let callback = event_handler_value(args.get_or_undefined(0))?;
+    let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
     let previous = with_abort_signal_mut(this, |signal| signal.replace_onabort(callback.clone()))?;
 
     if let Some(previous) = previous {
@@ -219,23 +219,6 @@ fn set_onabort(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<Js
     }
 
     Ok(JsValue::undefined())
-}
-
-fn event_handler_value(value: &JsValue) -> JsResult<Option<JsObject>> {
-    if value.is_null() || value.is_undefined() {
-        return Ok(None);
-    }
-
-    let object = value
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("event handler is not an object"))?;
-    if !object.is_callable() {
-        return Err(JsNativeError::typ()
-            .with_message("event handler is not callable")
-            .into());
-    }
-
-    Ok(Some(object.clone()))
 }
 
 fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Vec<AbortSignal>> {

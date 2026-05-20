@@ -4,7 +4,15 @@ use blitz_dom::{BaseDocument, NodeData};
 use boa_engine::JsData;
 use boa_gc::{Finalize, Trace};
 
-use super::event::EventTarget;
+use super::{DOMException, event::EventTarget};
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum NodeKind {
+    Document,
+    Element,
+    Text,
+    Comment,
+}
 
 /// <https://dom.spec.whatwg.org/#interface-node>
 #[derive(Trace, Finalize, JsData)]
@@ -198,27 +206,19 @@ impl Node {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-appendchild>
-    pub(crate) fn append_child(&self, child: &Node) -> Result<(), String> {
-        if self.node_id == 0 {
-            return Err(String::from(
-                "appendChild cannot append to a detached Document wrapper",
-            ));
-        }
+    pub(crate) fn append_child(&self, child: &Node) -> Result<usize, DOMException> {
+        // Step 1: "Return the result of appending node to this."
+        Self::append(child, self)
+    }
 
-        if child.node_id == 0 {
-            return Err(String::from("appendChild cannot append a Document node"));
-        }
-
-        if !Rc::ptr_eq(&self.document, &child.document) {
-            return Err(String::from(
-                "appendChild requires nodes from the same document",
-            ));
-        }
-
-        let mut document = self.document.borrow_mut();
-        let mut mutator = document.mutate();
-        mutator.append_children(self.node_id, &[child.node_id]);
-        Ok(())
+    /// <https://dom.spec.whatwg.org/#dom-node-insertbefore>
+    pub(crate) fn insert_before(
+        &self,
+        child: &Node,
+        reference_child: Option<&Node>,
+    ) -> Result<usize, DOMException> {
+        // Step 1: "Return the result of pre-inserting node into this before child."
+        Self::pre_insert(child, self, reference_child)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-removechild>
@@ -319,6 +319,231 @@ impl Node {
         }
 
         // Step 4: "Do nothing."
+    }
+
+    /// <https://dom.spec.whatwg.org/#concept-node-append>
+    fn append(node: &Node, parent: &Node) -> Result<usize, DOMException> {
+        // Step 1: "Pre-insert node into parent before null."
+        Self::pre_insert(node, parent, None)
+    }
+
+    /// <https://dom.spec.whatwg.org/#concept-node-ensure-pre-insertion-validity>
+    fn ensure_pre_insertion_validity(
+        node: &Node,
+        parent: &Node,
+        child: Option<&Node>,
+    ) -> Result<(), DOMException> {
+        // Step 1: "If parent is not a Document, DocumentFragment, or Element node, then throw a \"HierarchyRequestError\" DOMException."
+        if !Self::is_document_or_element_node(parent) {
+            return Err(DOMException::hierarchy_request_error());
+        }
+
+        // Step 2: "If node is a host-including inclusive ancestor of parent, then throw a \"HierarchyRequestError\" DOMException."
+        // Note: The current DOM carrier does not yet model shadow trees, so "host-including inclusive ancestor" reduces to the inclusive ancestor relation in the light tree.
+        if Self::is_inclusive_ancestor(node, parent) {
+            return Err(DOMException::hierarchy_request_error());
+        }
+
+        // Step 3: "If child is non-null and its parent is not parent, then throw a \"NotFoundError\" DOMException."
+        if let Some(child) = child {
+            let child_parent = child.parent_node();
+            if child_parent != Some(parent.node_id) || !Rc::ptr_eq(&child.document, &parent.document)
+            {
+                return Err(DOMException::not_found_error());
+            }
+        }
+
+        // Step 4: "If node is not a DocumentFragment, DocumentType, Element, or CharacterData node, then throw a \"HierarchyRequestError\" DOMException."
+        if !Self::is_pre_insertable_node(node) {
+            return Err(DOMException::hierarchy_request_error());
+        }
+
+        // Step 5: "If either node is a Text node and parent is a document, or node is a doctype and parent is not a document, then throw a \"HierarchyRequestError\" DOMException."
+        if Self::is_text_node(node) && Self::is_document_node(parent) {
+            return Err(DOMException::hierarchy_request_error());
+        }
+
+        // Step 5: "If either node is a Text node and parent is a document, or node is a doctype and parent is not a document, then throw a \"HierarchyRequestError\" DOMException."
+        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentType nodes, so the doctype branch is unreachable here.
+
+        // Step 6: "If parent is a document, and any of the statements below, switched on the interface node implements, are true, then throw a \"HierarchyRequestError\" DOMException."
+        if !Self::is_document_node(parent) {
+            return Ok(());
+        }
+
+        // Step 6.1: "If node has more than one element child or has a Text node child."
+        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment nodes, so this branch is unreachable here.
+
+        // Step 6.2: "Otherwise, if node has one element child and either parent has an element child, child is a doctype, or child is non-null and a doctype is following child."
+        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment or DocumentType nodes, so this branch is unreachable here.
+
+        // Step 6.3: "parent has an element child, child is a doctype, or child is non-null and a doctype is following child."
+        if Self::node_kind(node) == Some(NodeKind::Element) && Self::document_has_element_child(parent)
+        {
+            return Err(DOMException::hierarchy_request_error());
+        }
+
+        // Step 6.3: "parent has an element child, child is a doctype, or child is non-null and a doctype is following child."
+        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentType nodes, so the doctype branches are unreachable here.
+
+        // Step 6.4: "parent has a doctype child, child is non-null and an element is preceding child, or child is null and parent has an element child."
+        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentType nodes, so this branch is unreachable here.
+
+        Ok(())
+    }
+
+    /// <https://dom.spec.whatwg.org/#concept-node-pre-insert>
+    fn pre_insert(node: &Node, parent: &Node, child: Option<&Node>) -> Result<usize, DOMException> {
+        // Step 1: "Ensure pre-insert validity of node into parent before child."
+        Self::ensure_pre_insertion_validity(node, parent, child)?;
+
+        // Step 2: "Let referenceChild be child."
+        let mut reference_child_node_id = child.map(|child| child.node_id);
+
+        // Step 3: "If referenceChild is node, then set referenceChild to node's next sibling."
+        if reference_child_node_id == Some(node.node_id) {
+            reference_child_node_id = node.next_sibling();
+        }
+
+        // Step 4: "Insert node into parent before referenceChild."
+        Self::insert(node, parent, reference_child_node_id)?;
+
+        // Step 5: "Return node."
+        Ok(node.node_id)
+    }
+
+    /// <https://dom.spec.whatwg.org/#concept-node-insert>
+    /// Note: This helper continues the single-node, same-document tree rewrite path of the insert algorithm.
+    fn insert(
+        node: &Node,
+        parent: &Node,
+        reference_child_node_id: Option<usize>,
+    ) -> Result<(), DOMException> {
+        // Step 1: "Let nodes be node's children, if node is a DocumentFragment node; otherwise « node »."
+        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment nodes, so this helper always inserts « node ».
+
+        // Step 2: "Let count be nodes's size."
+        // Note: The current JavaScript-visible DOM carrier inserts one node at a time here, so count is always 1.
+
+        // Step 3: "If count is 0, then return."
+        // Note: The current JavaScript-visible DOM carrier never reaches this helper with an empty insertion set.
+
+        // Step 4: "If node is a DocumentFragment node:"
+        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment nodes, so these substeps are unreachable here.
+
+        // Step 5: "If child is non-null:"
+        // Note: The current runtime does not yet model live ranges.
+
+        // Step 6: "Let previousSibling be child's previous sibling or parent's last child if child is null."
+        // Note: Blitz's mutator derives the insertion position from `reference_child_node_id`, so this helper does not materialize `previousSibling`.
+
+        // Step 7: "For each node in nodes, in tree order:"
+        if !Rc::ptr_eq(&node.document, &parent.document) {
+            // Step 7.1: "Adopt node into parent's node document."
+            // TODO: Implement https://dom.spec.whatwg.org/#concept-node-adopt across distinct `BaseDocument` instances.
+            return Err(DOMException::not_supported_error());
+        }
+
+        let mut document = parent.document.borrow_mut();
+        let mut mutator = document.mutate();
+        match reference_child_node_id {
+            Some(reference_child_node_id) => {
+                // Step 7.3: "Otherwise, insert node into parent's children before child's index."
+                mutator.insert_nodes_before(reference_child_node_id, &[node.node_id]);
+            }
+            None => {
+                // Step 7.2: "If child is null, then append node to parent's children."
+                mutator.append_children(parent.node_id, &[node.node_id]);
+            }
+        }
+
+        // Step 7.4: "If parent is a shadow host whose shadow root's slot assignment is \"named\" and node is a slottable, then assign a slot for node."
+        // Note: The current DOM carrier does not yet model shadow trees or slot assignment.
+
+        // Step 7.5: "If parent's root is a shadow root, and parent is a slot whose assigned nodes is the empty list, then run signal a slot change for parent."
+        // Note: The current DOM carrier does not yet model shadow trees or slot assignment.
+
+        // Step 7.6: "Run assign slottables for a tree with node's root."
+        // Note: The current DOM carrier does not yet model shadow trees or slot assignment.
+
+        // Step 7.7: "For each shadow-including inclusive descendant inclusiveDescendant of node, in shadow-including tree order:"
+        // Note: HTML insertion steps, connected callbacks, and other post-connection work continue in higher-level runtime code paths rather than this low-level tree mutator adapter.
+
+        // Step 8: "If suppressObservers is unset, then queue a tree mutation record for parent with nodes, « », previousSibling, and child."
+        // Note: The current DOM carrier does not yet model mutation observers.
+
+        // Step 9: "Run the children changed steps for parent."
+        // Note: The current runtime resumes higher-level children-changed consequences outside this low-level tree mutator adapter.
+
+        // Step 10: "If isConnected is true, then:"
+        // Note: The current runtime continues post-connection work outside this low-level tree mutator adapter.
+
+        Ok(())
+    }
+
+    fn node_kind(node: &Node) -> Option<NodeKind> {
+        let document = node.document.borrow();
+        let node = document.get_node(node.node_id)?;
+
+        Some(match &node.data {
+            NodeData::Document => NodeKind::Document,
+            NodeData::Element(_) | NodeData::AnonymousBlock(_) => NodeKind::Element,
+            NodeData::Text(_) => NodeKind::Text,
+            NodeData::Comment => NodeKind::Comment,
+        })
+    }
+
+    fn is_document_node(node: &Node) -> bool {
+        Self::node_kind(node) == Some(NodeKind::Document)
+    }
+
+    fn is_document_or_element_node(node: &Node) -> bool {
+        matches!(
+            Self::node_kind(node),
+            Some(NodeKind::Document) | Some(NodeKind::Element)
+        )
+    }
+
+    fn is_text_node(node: &Node) -> bool {
+        Self::node_kind(node) == Some(NodeKind::Text)
+    }
+
+    fn is_pre_insertable_node(node: &Node) -> bool {
+        matches!(
+            Self::node_kind(node),
+            Some(NodeKind::Element) | Some(NodeKind::Text) | Some(NodeKind::Comment)
+        )
+    }
+
+    fn is_inclusive_ancestor(node: &Node, parent: &Node) -> bool {
+        if !Rc::ptr_eq(&node.document, &parent.document) {
+            return false;
+        }
+
+        let document = node.document.borrow();
+        let mut current = Some(parent.node_id);
+        while let Some(current_node_id) = current {
+            if current_node_id == node.node_id {
+                return true;
+            }
+
+            current = document.get_node(current_node_id).and_then(|current| current.parent);
+        }
+
+        false
+    }
+
+    fn document_has_element_child(parent: &Node) -> bool {
+        let document = parent.document.borrow();
+        let Some(parent_node) = document.get_node(parent.node_id) else {
+            return false;
+        };
+
+        parent_node.children.iter().copied().any(|child_node_id| {
+            document.get_node(child_node_id).is_some_and(|child| {
+                matches!(&child.data, NodeData::Element(_) | NodeData::AnonymousBlock(_))
+            })
+        })
     }
 }
 

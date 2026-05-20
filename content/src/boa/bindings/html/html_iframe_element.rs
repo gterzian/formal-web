@@ -6,7 +6,9 @@ use boa_engine::{
     property::Attribute,
 };
 
+use crate::boa::with_event_target_mut;
 use crate::html::HTMLIFrameElement;
+use crate::webidl::{callback_function_value, nullable_value};
 
 use crate::boa::bindings::dom::{
     register_element_methods, register_event_target_methods, register_node_methods,
@@ -49,9 +51,34 @@ fn with_html_iframe_element_ref<R>(
     Ok(f(&html_iframe_element))
 }
 
+fn with_html_iframe_element_mut<R>(
+    this: &JsValue,
+    f: impl FnOnce(&mut HTMLIFrameElement) -> R,
+) -> JsResult<R> {
+    let object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
+    })?;
+    let mut html_iframe_element = object.downcast_mut::<HTMLIFrameElement>().ok_or_else(|| {
+        JsNativeError::typ().with_message("receiver is not an HTMLIFrameElement")
+    })?;
+    Ok(f(&mut html_iframe_element))
+}
+
 fn register_html_iframe_element_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
     let realm = class.context().realm().clone();
     class
+        .accessor(
+            js_string!("onload"),
+            Some(NativeFunction::from_fn_ptr(get_onload).to_js_function(&realm)),
+            Some(NativeFunction::from_fn_ptr(set_onload).to_js_function(&realm)),
+            Attribute::all(),
+        )
+        .accessor(
+            js_string!("onerror"),
+            Some(NativeFunction::from_fn_ptr(get_onerror).to_js_function(&realm)),
+            Some(NativeFunction::from_fn_ptr(set_onerror).to_js_function(&realm)),
+            Attribute::all(),
+        )
         .accessor(
             js_string!("src"),
             Some(NativeFunction::from_fn_ptr(get_src).to_js_function(&realm)),
@@ -101,6 +128,84 @@ fn get_src(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> 
     with_html_iframe_element_ref(this, |iframe| {
         JsValue::from(JsString::from(iframe.src()))
     })
+}
+
+fn get_onload(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    with_html_iframe_element_ref(this, |iframe| {
+        iframe
+            .onload_value()
+            .map(|callback| callback.to_js_value())
+            .unwrap_or_else(JsValue::null)
+    })
+}
+
+fn set_onload(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    let iframe_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
+    })?;
+    let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
+    let previous = with_html_iframe_element_mut(this, |iframe| iframe.replace_onload(callback.clone()))?;
+
+    if let Some(previous) = previous {
+        with_event_target_mut(this, |target| {
+            target.remove_event_listener_entry("load", &previous, false);
+        })?;
+    }
+
+    if let Some(callback) = callback {
+        with_event_target_mut(this, |target| {
+            target.add_event_listener(
+                &iframe_object,
+                String::from("load"),
+                Some(callback),
+                false,
+                false,
+                Some(false),
+                None,
+            )
+        })??;
+    }
+
+    Ok(JsValue::undefined())
+}
+
+fn get_onerror(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    with_html_iframe_element_ref(this, |iframe| {
+        iframe
+            .onerror_value()
+            .map(|callback| callback.to_js_value())
+            .unwrap_or_else(JsValue::null)
+    })
+}
+
+fn set_onerror(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    let iframe_object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
+    })?;
+    let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
+    let previous = with_html_iframe_element_mut(this, |iframe| iframe.replace_onerror(callback.clone()))?;
+
+    if let Some(previous) = previous {
+        with_event_target_mut(this, |target| {
+            target.remove_event_listener_entry("error", &previous, false);
+        })?;
+    }
+
+    if let Some(callback) = callback {
+        with_event_target_mut(this, |target| {
+            target.add_event_listener(
+                &iframe_object,
+                String::from("error"),
+                Some(callback),
+                false,
+                false,
+                Some(false),
+                None,
+            )
+        })??;
+    }
+
+    Ok(JsValue::undefined())
 }
 
 fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

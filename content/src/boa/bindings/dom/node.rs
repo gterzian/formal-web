@@ -14,7 +14,7 @@ use crate::boa::platform_objects::{
     collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
     object_for_existing_node,
 };
-use crate::dom::{Document, Element, Node};
+use crate::dom::{DOMException, Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
 
 use super::event_target::register_event_target_methods;
@@ -206,6 +206,11 @@ pub(crate) fn register_node_methods(class: &mut ClassBuilder<'_>) -> JsResult<()
             NativeFunction::from_fn_ptr(append_child),
         )
         .method(
+            js_string!("insertBefore"),
+            2,
+            NativeFunction::from_fn_ptr(insert_before),
+        )
+        .method(
             js_string!("removeChild"),
             1,
             NativeFunction::from_fn_ptr(remove_child),
@@ -375,10 +380,21 @@ fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     Ok(JsValue::undefined())
 }
 
-fn append_child(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let child = appendable_node(args.get_or_undefined(0))?;
     with_node_ref(this, |node| node.append_child(&child))?
-        .map_err(|error| JsNativeError::typ().with_message(error))?;
+        .map_err(|error| dom_exception_error(error, context))?;
+    Ok(args.get_or_undefined(0).clone())
+}
+
+fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let child = appendable_node(args.get_or_undefined(0))?;
+    let reference_child = match args.get_or_undefined(1) {
+        value if value.is_null() || value.is_undefined() => None,
+        value => Some(appendable_node(value)?),
+    };
+    with_node_ref(this, |node| node.insert_before(&child, reference_child.as_ref()))?
+        .map_err(|error| dom_exception_error(error, context))?;
     Ok(args.get_or_undefined(0).clone())
 }
 
@@ -434,4 +450,11 @@ fn appendable_node(value: &JsValue) -> JsResult<Node> {
     Err(JsNativeError::typ()
         .with_message("appendChild requires a Node")
         .into())
+}
+
+fn dom_exception_error(exception: DOMException, context: &mut Context) -> JsError {
+    JsError::from_opaque(JsValue::from(
+        DOMException::from_data(exception, context)
+            .expect("DOMException construction should not fail"),
+    ))
 }

@@ -7,8 +7,9 @@ use boa_engine::{
     property::Attribute,
 };
 
+use crate::boa::with_event_target_mut;
 use crate::html::{Window, WindowOrWorkerGlobalScope};
-use crate::webidl::callback_function_value;
+use crate::webidl::{callback_function_value, nullable_value};
 
 use crate::boa::bindings::dom::register_event_target_methods;
 
@@ -34,6 +35,12 @@ impl Class for Window {
 pub(crate) fn register_window_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
     let realm = class.context().realm().clone();
     class
+        .accessor(
+            js_string!("onload"),
+            Some(NativeFunction::from_fn_ptr(get_onload).to_js_function(&realm)),
+            Some(NativeFunction::from_fn_ptr(set_onload).to_js_function(&realm)),
+            Attribute::all(),
+        )
         .accessor(
             js_string!("parent"),
             Some(NativeFunction::from_fn_ptr(get_parent).to_js_function(&realm)),
@@ -90,6 +97,45 @@ fn request_animation_frame_method(
     Ok(JsValue::from(
         window.global_scope.request_animation_frame(callback),
     ))
+}
+
+fn get_onload(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let window_object = current_window_object(this, context);
+    let window = downcast_window(&window_object)?;
+    Ok(window
+        .onload_value()
+        .map(|callback| callback.to_js_value())
+        .unwrap_or_else(JsValue::null))
+}
+
+fn set_onload(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let window_object = current_window_object(this, context);
+    let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
+    let previous = with_window_mut(&window_object, |window| window.replace_onload(callback.clone()))?;
+
+    if let Some(previous) = previous {
+        let receiver = JsValue::from(window_object.clone());
+        with_event_target_mut(&receiver, |target| {
+            target.remove_event_listener_entry("load", &previous, false);
+        })?;
+    }
+
+    if let Some(callback) = callback {
+        let receiver = JsValue::from(window_object.clone());
+        with_event_target_mut(&receiver, |target| {
+            target.add_event_listener(
+                &window_object,
+                String::from("load"),
+                Some(callback),
+                false,
+                false,
+                Some(false),
+                None,
+            )
+        })??;
+    }
+
+    Ok(JsValue::undefined())
 }
 
 fn get_parent(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -180,4 +226,16 @@ fn downcast_window(object: &JsObject) -> JsResult<boa_gc::GcRef<'_, Window>> {
             .with_message("receiver is not a Window")
             .into()
     })
+}
+
+fn with_window_mut<R>(
+    object: &JsObject,
+    f: impl FnOnce(&mut Window) -> R,
+) -> JsResult<R> {
+    let Some(mut window) = object.downcast_mut::<Window>() else {
+        return Err(JsNativeError::typ()
+            .with_message("receiver is not a Window")
+            .into());
+    };
+    Ok(f(&mut window))
 }

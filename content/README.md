@@ -110,6 +110,10 @@ Follow these exact conventions so code <-> spec mapping is clear and reviewable.
 - For HTML mixins such as `HyperlinkElementUtils`, keep the carrier-side algorithms on a shared trait and register the shared Web IDL surface from a binding helper instead of duplicating mixin methods on each concrete element binding.
 
 - When one spec section invokes a concept algorithm defined elsewhere, link the shared trait/helper to the concept anchor and link the concrete element implementation to the invoking section's reference anchor (for example `api-for-a-and-area-elements:*` for anchor-specific uses of hyperlink URL algorithms).
+- For DOM mutation entry points such as `Node.insertBefore()` and `Node.appendChild()`, keep the IDL method as a thin carrier method that calls the named concept helpers from the DOM Standard, such as `append`, `pre-insert`, and `ensure pre-insertion validity`, instead of collapsing those steps into ad hoc tree-mutation code.
+- Compose nullable Web IDL conversions in `content/src/webidl` by running the shared `#js-to-nullable` helper with the inner conversion algorithm, such as `#js-to-callback-interface` or `#js-to-callback-function`, instead of inventing bespoke combined helpers for specific nullable callback shapes.
+- When DOM, HTML, or Streams carriers need to store or forward callback values, keep them in a dedicated `Callback` carrier from `content/src/webidl` instead of storing raw `JsObject` callback references outside bindings.
+- Keep generic Web IDL callback hosts in `content/src/webidl`; subsystem modules such as DOM bindings or Streams should keep only their spec-owned dispatch or algorithm state locally and delegate shared callback `Get`/`Call` glue to that Web IDL layer.
 
 - When a content runtime type models an HTML execution concept, document it against the corresponding HTML concept anchor such as `#environment`, `#environment-settings-object`, or `#global-object` instead of folding that state into the nearest exposed interface name.
 

@@ -1,5 +1,9 @@
-use boa_engine::{Context, JsData, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
+
+use crate::webidl::{
+    Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function,
+};
 
 /// <https://streams.spec.whatwg.org/#blqs-class>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -43,9 +47,9 @@ impl CountQueuingStrategy {
 
 /// <https://streams.spec.whatwg.org/#size-algorithm>
 #[derive(Clone, Trace, Finalize)]
-pub enum SizeAlgorithm {
+pub(crate) enum SizeAlgorithm {
     ReturnOne,
-    Callback { callback: JsObject },
+    Callback { callback: Callback },
 }
 
 impl SizeAlgorithm {
@@ -54,15 +58,16 @@ impl SizeAlgorithm {
         match self {
             Self::ReturnOne => Ok(1.0),
             Self::Callback { callback } => {
-                let callback =
-                    boa_engine::object::builtins::JsFunction::from_object(callback.clone())
-                        .ok_or_else(|| {
-                            JsError::from(
-                                JsNativeError::typ().with_message("size algorithm is not callable"),
-                            )
-                        })?;
-
-                let value = callback.call(&JsValue::undefined(), &[chunk.clone()], context)?;
+                let value = {
+                    let mut host = ContextCallbackHost::new(context, "size algorithm");
+                    invoke_callback_function(
+                        &mut host,
+                        callback,
+                        &[chunk.clone()],
+                        ExceptionBehavior::Rethrow,
+                        None,
+                    )?
+                };
                 to_non_negative_number(&value, context)
             }
         }
@@ -140,7 +145,7 @@ pub(crate) fn extract_size_algorithm(
 
     // Step 5: "Return an algorithm that performs ? Call(size, strategy, « chunk »)."
     Ok(SizeAlgorithm::Callback {
-        callback: size.clone(),
+        callback: Callback::from_object(size.clone()),
     })
 }
 
