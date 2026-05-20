@@ -30,6 +30,7 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 - When compositing fixed embedder chrome above scrollable content, append the content scene first and the chrome scene last so scrolled content cannot overpaint fixed controls.
 - Build dedicated `formal-web-content` and `formal-web-net` executables from the owning `content` and `net` packages, and launch those sidecars directly from the user agent instead of respawning the main `formal-web` executable with role flags.
 - When a runner or tool launches sibling sidecars from `target/{debug,release}`, build the `formal-web`, `content`, and `net` packages for that profile so the spawned executables stay in sync.
+- Keep sidecar compilation on the top-level build path before browser startup, and when `build.rs` invokes nested Cargo builds use a separate target directory to avoid Cargo build-directory lock recursion.
 - Model cross-component browser identities such as documents, browsing contexts, browsing-context groups, agents, agent clusters, event loops, and beforeunload checks as UUID newtypes in `ipc_messages`, allocate them at the use site, and reserve raw integer counters for process-local handles or transport sequencing only.
 - Treat vendored third-party code and WPT resources as read-only unless the task explicitly calls for vendor changes; debug compatibility issues from local code or scratchpad artifacts instead.
 - Web standards should be available locally under `web_standards`, so before fetching a web standard over the internet, check that folder first. 
