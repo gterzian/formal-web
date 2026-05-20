@@ -34,6 +34,7 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 - Treat vendored third-party code and WPT resources as read-only unless the task explicitly calls for vendor changes; debug compatibility issues from local code or scratchpad artifacts instead.
 - Web standards should be available locally under `web_standards`, so before fetching a web standard over the internet, check that folder first. 
 - Keep TLC outside the repository; verification uses the local TLA+ Toolbox jar at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar` instead of a vendored `tla2tools.jar`.
+- Treat build errors introduced or uncovered during a task as part of the task, and leave the project with a clean successful build before finishing.
 
 At the end of a task, always confirm `cargo run --release` builds the project successfully, always run the wpt tests without a path, always run `./verification/verify-navigation.sh`, and then exit the terminal.
 

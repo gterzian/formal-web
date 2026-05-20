@@ -28,6 +28,16 @@ impl DOMException {
         Self::new(String::new(), String::from("TimeoutError"))
     }
 
+    /// <https://webidl.spec.whatwg.org/#dfn-error-names-table>
+    pub(crate) fn hierarchy_request_error() -> Self {
+        Self::new(String::new(), String::from("HierarchyRequestError"))
+    }
+
+    /// <https://webidl.spec.whatwg.org/#dfn-error-names-table>
+    pub(crate) fn syntax_error() -> Self {
+        Self::new(String::new(), String::from("SyntaxError"))
+    }
+
     /// <https://webidl.spec.whatwg.org/#dom-domexception-message>
     pub(crate) fn message_value(&self) -> &str {
         &self.message
@@ -41,6 +51,10 @@ impl DOMException {
     /// <https://webidl.spec.whatwg.org/#dom-domexception-code>
     pub(crate) fn code_value(&self) -> u16 {
         match self.name.as_str() {
+            "HierarchyRequestError" => 3,
+            "InvalidCharacterError" => 5,
+            "NotSupportedError" => 9,
+            "SyntaxError" => 12,
             "AbortError" => 20,
             "TimeoutError" => 23,
             _ => 0,

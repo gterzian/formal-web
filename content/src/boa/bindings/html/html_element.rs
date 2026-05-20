@@ -3,6 +3,7 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
+    object::ObjectInitializer,
     property::Attribute,
 };
 
@@ -69,6 +70,12 @@ pub(crate) fn register_html_element_methods(class: &mut ClassBuilder<'_>) -> JsR
             Some(NativeFunction::from_fn_ptr(get_hidden).to_js_function(&realm)),
             Some(NativeFunction::from_fn_ptr(set_hidden).to_js_function(&realm)),
             Attribute::all(),
+        )
+        .accessor(
+            js_string!("style"),
+            Some(NativeFunction::from_fn_ptr(get_style).to_js_function(&realm)),
+            None,
+            Attribute::all(),
         );
     Ok(())
 }
@@ -126,4 +133,8 @@ fn set_hidden(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsV
     let hidden = args.get_or_undefined(0).to_boolean();
     with_html_element_ref(this, |html_element| html_element.set_hidden(hidden))?;
     Ok(JsValue::undefined())
+}
+
+fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    with_html_element_ref(this, |_| ObjectInitializer::new(context).build().into())
 }

@@ -75,9 +75,20 @@ pub(crate) fn register_document_methods(class: &mut ClassBuilder<'_>) -> JsResul
             1,
             NativeFunction::from_fn_ptr(create_text_node),
         )
+        .method(
+            js_string!("createComment"),
+            1,
+            NativeFunction::from_fn_ptr(create_comment),
+        )
         .accessor(
             js_string!("body"),
             Some(NativeFunction::from_fn_ptr(get_body).to_js_function(&realm)),
+            None,
+            Attribute::all(),
+        )
+        .accessor(
+            js_string!("documentElement"),
+            Some(NativeFunction::from_fn_ptr(get_document_element).to_js_function(&realm)),
             None,
             Attribute::all(),
         )
@@ -208,10 +219,31 @@ fn create_text_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     Ok(resolve_or_create_text_node_object(document, node_id, context)?.into())
 }
 
+fn create_comment(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let data = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let (document, node_id) = with_document(this, |document| {
+        (
+            Rc::clone(&document.node.document),
+            document.create_comment(&data),
+        )
+    })?;
+    Ok(resolve_or_create_text_node_object(document, node_id, context)?.into())
+}
+
 fn get_body(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let node_id = with_document(this, Document::body)?
         .map_err(|error| JsNativeError::syntax().with_message(error))?;
     match node_id {
+        Some(node_id) => Ok(resolve_element_object(node_id, context)?.into()),
+        None => Ok(JsValue::null()),
+    }
+}
+
+fn get_document_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    match with_document(this, Document::document_element)? {
         Some(node_id) => Ok(resolve_element_object(node_id, context)?.into()),
         None => Ok(JsValue::null()),
     }

@@ -18,6 +18,8 @@
 
 - Use the checked-in standards under `/web_standards` for DOM, HTML, and UI Events anchors and verbatim `Step N:` comments. Never quote specs from memory: only use the local sources.
 
+- For DOM getters and methods whose spec definition is a single-sentence statement rather than a numbered algorithm, quote that sentence verbatim in a plain comment above the implementation instead of inventing a `Step N:` label. Add a `Note:` only when the code has a non-obvious divergence or representation-specific wrinkle that actually needs explanation.
+
 - "Missing Feature:" comments identify major missing features in the code. Only address those if given a clear implementation plan.
 
 - "TODO:" comments identify minor missing fixes or features. Those can be addressed in batches when asked to do so.

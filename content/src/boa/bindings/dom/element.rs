@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
@@ -8,7 +8,7 @@ use boa_engine::{
 };
 
 use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
-use crate::dom::Element;
+use crate::dom::{DOMException, Element};
 use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
 
 use super::{event_target::register_event_target_methods, node::register_node_methods};
@@ -75,9 +75,24 @@ pub(crate) fn register_element_methods(class: &mut ClassBuilder<'_>) -> JsResult
             NativeFunction::from_fn_ptr(set_attribute),
         )
         .method(
+            js_string!("setAttributeNS"),
+            3,
+            NativeFunction::from_fn_ptr(set_attribute_ns),
+        )
+        .method(
             js_string!("getAttribute"),
             1,
             NativeFunction::from_fn_ptr(get_attribute),
+        )
+        .method(
+            js_string!("hasAttribute"),
+            1,
+            NativeFunction::from_fn_ptr(has_attribute),
+        )
+        .method(
+            js_string!("removeAttribute"),
+            1,
+            NativeFunction::from_fn_ptr(remove_attribute),
         );
     Ok(())
 }
@@ -179,7 +194,12 @@ fn insert_adjacent_text(
         .to_string(context)?
         .to_std_string_escaped();
     with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?
-        .map_err(|error| JsNativeError::syntax().with_message(error))?;
+        .map_err(|error| {
+            JsError::from_opaque(JsValue::from(
+                DOMException::from_data(error, context)
+                    .expect("DOMException construction should not fail"),
+            ))
+        })?;
     Ok(JsValue::undefined())
 }
 
@@ -196,6 +216,14 @@ fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     )
 }
 
+fn has_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let name = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    Ok(JsValue::from(with_element_ref(this, |element| element.has_attribute(&name))?))
+}
+
 fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let name = args
         .get_or_undefined(0)
@@ -207,6 +235,42 @@ fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         .to_std_string_escaped();
     with_element_ref(this, |element| {
         element.set_attribute(&name, &value);
+    })?;
+    Ok(JsValue::undefined())
+}
+
+fn set_attribute_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let namespace = if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined()
+    {
+        None
+    } else {
+        Some(
+            args.get_or_undefined(0)
+                .to_string(context)?
+                .to_std_string_escaped(),
+        )
+    };
+    let qualified_name = args
+        .get_or_undefined(1)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let value = args
+        .get_or_undefined(2)
+        .to_string(context)?
+        .to_std_string_escaped();
+    with_element_ref(this, |element| {
+        element.set_attribute_ns(namespace.as_deref(), &qualified_name, &value);
+    })?;
+    Ok(JsValue::undefined())
+}
+
+fn remove_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let name = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    with_element_ref(this, |element| {
+        element.remove_attribute(&name);
     })?;
     Ok(JsValue::undefined())
 }

@@ -30,8 +30,20 @@ impl Node {
         }
     }
 
+    /// <https://dom.spec.whatwg.org/#dom-node-childnodes>
+    pub(crate) fn child_node_ids(&self) -> Vec<usize> {
+        // Step 1: "Return a NodeList rooted at this matching only children."
+        // Note: The binding layer currently materializes the returned children as an array-backed list object.
+        let document = self.document.borrow();
+        document
+            .get_node(self.node_id)
+            .map(|node| node.children.clone())
+            .unwrap_or_default()
+    }
+
     /// <https://dom.spec.whatwg.org/#dom-node-firstchild>
     pub(crate) fn first_child(&self) -> Option<usize> {
+        // "Return this’s first child."
         let document = self.document.borrow();
         document
             .get_node(self.node_id)
@@ -40,6 +52,7 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#dom-node-lastchild>
     pub(crate) fn last_child(&self) -> Option<usize> {
+        // "Return this’s last child."
         let document = self.document.borrow();
         document
             .get_node(self.node_id)
@@ -48,8 +61,140 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#dom-node-parentnode>
     pub(crate) fn parent_node(&self) -> Option<usize> {
+        // "Return this’s parent."
         let document = self.document.borrow();
         document.get_node(self.node_id).and_then(|node| node.parent)
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-previoussibling>
+    pub(crate) fn previous_sibling(&self) -> Option<usize> {
+        // "Return this’s previous sibling."
+        let document = self.document.borrow();
+        let node = document.get_node(self.node_id)?;
+        let parent_id = node.parent?;
+        let parent = document.get_node(parent_id)?;
+        let index = parent.children.iter().position(|child_id| *child_id == self.node_id)?;
+        index.checked_sub(1).and_then(|index| parent.children.get(index).copied())
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-nextsibling>
+    pub(crate) fn next_sibling(&self) -> Option<usize> {
+        // "Return this’s next sibling."
+        let document = self.document.borrow();
+        let node = document.get_node(self.node_id)?;
+        let parent_id = node.parent?;
+        let parent = document.get_node(parent_id)?;
+        let index = parent.children.iter().position(|child_id| *child_id == self.node_id)?;
+        parent.children.get(index + 1).copied()
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-nodetype>
+    pub(crate) fn node_type(&self) -> u16 {
+        let document = self.document.borrow();
+        let Some(node) = document.get_node(self.node_id) else {
+            return 0;
+        };
+
+        match node.data {
+            NodeData::Document => 9,
+            NodeData::Element(_) | NodeData::AnonymousBlock(_) => 1,
+            NodeData::Text(_) => 3,
+            NodeData::Comment => 8,
+        }
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-nodename>
+    pub(crate) fn node_name(&self) -> String {
+        let document = self.document.borrow();
+        let Some(node) = document.get_node(self.node_id) else {
+            return String::new();
+        };
+
+        match &node.data {
+            NodeData::Document => String::from("#document"),
+            NodeData::Element(element) | NodeData::AnonymousBlock(element) => {
+                if element.name.ns == html5ever::ns!(html) {
+                    element.name.local.to_string().to_ascii_uppercase()
+                } else {
+                    element.name.local.to_string()
+                }
+            }
+            NodeData::Text(_) => String::from("#text"),
+            NodeData::Comment => String::from("#comment"),
+        }
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-ownerdocument>
+    pub(crate) fn owner_document_node_id(&self) -> Option<usize> {
+        // Step 1: "Return null, if this is a document; otherwise this's node document."
+        (self.node_id != 0).then_some(0)
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-haschildnodes>
+    pub(crate) fn has_child_nodes(&self) -> bool {
+        // Step 1: "Return true if this has children; otherwise false."
+        !self.child_node_ids().is_empty()
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-nodevalue>
+    pub(crate) fn node_value(&self) -> Option<String> {
+        let document = self.document.borrow();
+        let Some(node) = document.get_node(self.node_id) else {
+            return None;
+        };
+
+        match &node.data {
+            NodeData::Text(text) => Some(text.content.clone()),
+            NodeData::Comment => Some(String::new()),
+            _ => None,
+        }
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-node-nodevalue>
+    pub(crate) fn set_node_value(&self, value: Option<&str>) {
+        // Step 1: "If the given value is null, act as if it was the empty string instead."
+        let normalized_value = value.unwrap_or("");
+
+        let node_data = {
+            let document = self.document.borrow();
+            let Some(node) = document.get_node(self.node_id) else {
+                return;
+            };
+            node.data.clone()
+        };
+
+        match node_data {
+            // Step 2: "Replace data of this with 0, this's length, and the given value."
+            NodeData::Text(_) => self.set_text_content(Some(normalized_value)),
+            // Step 3: "Do nothing."
+            NodeData::Comment | NodeData::Document | NodeData::Element(_) | NodeData::AnonymousBlock(_) => {}
+        }
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-childnode-remove>
+    pub(crate) fn remove(&self) {
+        let parent_node_id = {
+            let document = self.document.borrow();
+            let Some(node) = document.get_node(self.node_id) else {
+                return;
+            };
+            // Step 1: "If this's parent is null, then return."
+            let Some(parent_node_id) = node.parent else {
+                return;
+            };
+            parent_node_id
+        };
+
+        // Step 2: "Remove this."
+        let mut document = self.document.borrow_mut();
+        debug_assert_eq!(
+            document
+                .get_node(self.node_id)
+                .and_then(|node| node.parent),
+            Some(parent_node_id)
+        );
+        let mut mutator = document.mutate();
+        mutator.remove_node(self.node_id);
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-appendchild>

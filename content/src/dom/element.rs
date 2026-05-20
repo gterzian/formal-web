@@ -3,13 +3,27 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::JsData;
 use boa_gc::{Finalize, Trace};
-use html5ever::{LocalName, QualName, ns};
+use html5ever::{LocalName, Prefix, QualName, ns};
 use style::dom_apis::{
     MayUseInvalidation, QueryAll, QueryFirst, QuerySelectorAllResult,
     query_selector as style_query_selector,
 };
 
-use super::Node;
+use super::{DOMException, Node};
+
+fn attribute_qualified_name(name: &QualName) -> String {
+    match name.prefix.as_ref() {
+        Some(prefix) => format!("{prefix}:{}", name.local),
+        None => name.local.to_string(),
+    }
+}
+
+fn split_qualified_name(qualified_name: &str) -> (Option<Prefix>, LocalName) {
+    match qualified_name.split_once(':') {
+        Some((prefix, local_name)) => (Some(Prefix::from(prefix)), LocalName::from(local_name)),
+        None => (None, LocalName::from(qualified_name)),
+    }
+}
 
 /// <https://dom.spec.whatwg.org/#interface-element>
 #[derive(Trace, Finalize, JsData)]
@@ -22,6 +36,22 @@ impl Element {
     pub fn new(document: Rc<RefCell<BaseDocument>>, node_id: usize) -> Self {
         Self {
             node: Node::new(document, node_id),
+        }
+    }
+
+    fn uses_ascii_lowercase_attribute_names(&self) -> bool {
+        let document = self.node.document.borrow();
+        document
+            .get_node(self.node.node_id)
+            .and_then(|node| node.element_data())
+            .is_some_and(|element| element.name.ns == ns!(html))
+    }
+
+    fn normalized_attribute_qualified_name(&self, qualified_name: &str) -> String {
+        if self.uses_ascii_lowercase_attribute_names() {
+            qualified_name.to_ascii_lowercase()
+        } else {
+            qualified_name.to_owned()
         }
     }
 
@@ -107,7 +137,7 @@ impl Element {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-element-insertadjacenttext>
-    pub(crate) fn insert_adjacent_text(&self, where_: &str, data: &str) -> Result<(), String> {
+    pub(crate) fn insert_adjacent_text(&self, where_: &str, data: &str) -> Result<(), DOMException> {
         let (parent_id, first_child_id) = {
             let document = self.node.document.borrow();
             let Some(node) = document.get_node(self.node.node_id) else {
@@ -124,6 +154,9 @@ impl Element {
         // Step 2: "Run insert adjacent, given this, where, and text."
         match where_ {
             "beforebegin" => {
+                if parent_id == Some(0) {
+                    return Err(DOMException::hierarchy_request_error());
+                }
                 if parent_id.is_some() {
                     mutator.insert_nodes_before(self.node.node_id, &[text_node_id]);
                 }
@@ -139,14 +172,15 @@ impl Element {
                 mutator.append_children(self.node.node_id, &[text_node_id]);
             }
             "afterend" => {
+                if parent_id == Some(0) {
+                    return Err(DOMException::hierarchy_request_error());
+                }
                 if parent_id.is_some() {
                     mutator.insert_nodes_after(self.node.node_id, &[text_node_id]);
                 }
             }
             _ => {
-                return Err(format!(
-                    "insertAdjacentText position must be one of beforebegin, afterbegin, beforeend, or afterend; got `{where_}`"
-                ));
+                return Err(DOMException::syntax_error());
             }
         }
 
@@ -155,34 +189,101 @@ impl Element {
 
     /// <https://dom.spec.whatwg.org/#dom-element-getattribute>
     pub(crate) fn get_attribute(&self, qualified_name: &str) -> Option<String> {
+        let normalized_name = self.normalized_attribute_qualified_name(qualified_name);
         let document = self.node.document.borrow();
         document
             .get_node(self.node.node_id)
-            .and_then(|node| node.attr(LocalName::from(qualified_name)))
-            .map(ToOwned::to_owned)
+            .and_then(|node| node.element_data())
+            .and_then(|element| {
+                element
+                    .attrs
+                    .iter()
+                    .find(|attribute| attribute_qualified_name(&attribute.name) == normalized_name)
+                    .map(|attribute| attribute.value.clone())
+            })
     }
 
+    /// <https://dom.spec.whatwg.org/#dom-element-hasattribute>
     pub(crate) fn has_attribute(&self, qualified_name: &str) -> bool {
-        self.get_attribute(qualified_name).is_some()
+        // Step 1: "If this is in the HTML namespace and its node document is an HTML document, then set qualifiedName to qualifiedName in ASCII lowercase."
+        let normalized_name = self.normalized_attribute_qualified_name(qualified_name);
+
+        let document = self.node.document.borrow();
+        // Step 2: "Return true if this has an attribute whose qualified name is qualifiedName; otherwise false."
+        document
+            .get_node(self.node.node_id)
+            .and_then(|node| node.element_data())
+            .is_some_and(|element| {
+                element
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute_qualified_name(&attribute.name) == normalized_name)
+            })
     }
 
     /// <https://dom.spec.whatwg.org/#dom-element-setattribute>
     pub(crate) fn set_attribute(&self, qualified_name: &str, value: &str) {
+        let normalized_name = self.normalized_attribute_qualified_name(qualified_name);
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         mutator.set_attribute(
             self.node.node_id,
-            QualName::new(None, ns!(html), LocalName::from(qualified_name)),
+            QualName {
+                prefix: None,
+                ns: "".into(),
+                local: LocalName::from(normalized_name.as_str()),
+            },
             value,
         );
     }
 
-    pub(crate) fn remove_attribute(&self, qualified_name: &str) {
+    /// <https://dom.spec.whatwg.org/#dom-element-setattributens>
+    pub(crate) fn set_attribute_ns(
+        &self,
+        namespace: Option<&str>,
+        qualified_name: &str,
+        value: &str,
+    ) {
+        // Step 1: "Let (namespace, prefix, localName) be the result of validating and extracting namespace and qualifiedName given \"attribute\"."
+        // Note: The current runtime accepts the already-stringified qualified name shape used by the targeted WPTs and does not yet implement the full validation-and-extraction error surface.
+        let (prefix, local_name) = split_qualified_name(qualified_name);
+
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
-        mutator.clear_attribute(
+        // Step 3: "Set an attribute value for this using localName, verifiedValue, prefix, and namespace."
+        mutator.set_attribute(
             self.node.node_id,
-            QualName::new(None, ns!(html), LocalName::from(qualified_name)),
+            QualName {
+                prefix,
+                ns: namespace.unwrap_or_default().into(),
+                local: local_name,
+            },
+            value,
         );
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-element-removeattribute>
+    pub(crate) fn remove_attribute(&self, qualified_name: &str) {
+        let normalized_name = self.normalized_attribute_qualified_name(qualified_name);
+        let name = {
+            let document = self.node.document.borrow();
+            document
+                .get_node(self.node.node_id)
+                .and_then(|node| node.element_data())
+                .and_then(|element| {
+                    element
+                        .attrs
+                        .iter()
+                        .find(|attribute| attribute_qualified_name(&attribute.name) == normalized_name)
+                        .map(|attribute| attribute.name.clone())
+                })
+        };
+        let Some(name) = name else {
+            return;
+        };
+
+        let mut document = self.node.document.borrow_mut();
+        let mut mutator = document.mutate();
+        mutator.clear_attribute(self.node.node_id, name);
     }
 }
