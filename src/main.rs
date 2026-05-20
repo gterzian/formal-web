@@ -34,7 +34,6 @@ pub(crate) struct AppRunOptions {
 }
 
 pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
-    println!("Starting formal-web runtime with options");
     embedder::set_event_loop_options(embedder::EventLoopOptions {
         headless: options.headless,
         startup_url: options.startup_url,
