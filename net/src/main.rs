@@ -7,8 +7,8 @@ use reqwest::header::CONTENT_TYPE;
 use std::env;
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
-use tla_trace::{LogEntry, receive_monitor_sender};
 use url::Url;
+use verification::TraceSender;
 
 fn net_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
@@ -18,19 +18,6 @@ fn net_token_from_args() -> Result<Option<String>, String> {
                 .next()
                 .map(Some)
                 .ok_or_else(|| String::from("missing net token value"));
-        }
-    }
-    Ok(None)
-}
-
-fn tla_log_server_from_args() -> Result<Option<String>, String> {
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--tla-log-server" {
-            return args
-                .next()
-                .map(Some)
-                .ok_or_else(|| String::from("missing TLA log server value"));
         }
     }
     Ok(None)
@@ -91,7 +78,7 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
     })
 }
 
-pub fn run_net_process(token: String, _monitor_tx: Option<IpcSender<LogEntry>>) -> Result<(), String> {
+pub fn run_net_process(token: String) -> Result<(), String> {
     let (request_sender, request_receiver) =
         ipc::channel::<Request>().map_err(|error| error.to_string())?;
     let (response_sender, response_receiver) =
@@ -104,6 +91,8 @@ pub fn run_net_process(token: String, _monitor_tx: Option<IpcSender<LogEntry>>) 
         })
         .map_err(|error| error.to_string())?;
 
+    let mut _trace_sender: Option<TraceSender> = None;
+
     let client = Client::builder()
         .resolve("localhost", SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .build()
@@ -111,6 +100,9 @@ pub fn run_net_process(token: String, _monitor_tx: Option<IpcSender<LogEntry>>) 
 
     loop {
         match request_receiver.recv() {
+            Ok(Request::SetTraceSender(trace_sender)) => {
+                _trace_sender = trace_sender;
+            }
             Ok(Request::Fetch {
                 request_id,
                 request,
@@ -130,6 +122,5 @@ pub fn run_net_process(token: String, _monitor_tx: Option<IpcSender<LogEntry>>) 
 
 pub fn run_net_process_from_args() -> Result<(), String> {
     let token = net_token_from_args()?.ok_or_else(|| String::from("missing --net-token argument"))?;
-    let monitor_tx = receive_monitor_sender(tla_log_server_from_args()?.as_deref())?;
-    run_net_process(token, monitor_tx)
+    run_net_process(token)
 }

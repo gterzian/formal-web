@@ -1,13 +1,12 @@
-use ipc_channel::ipc::IpcSender;
 use std::mem;
 
-use crate::{LogEntry, VarUpdate};
+use crate::{LogEntry, TraceSender, VarUpdate};
 
 #[derive(Debug, Clone)]
 pub struct TLATracer {
     spec: String,
     producer: String,
-    sender: Option<IpcSender<LogEntry>>,
+    sender: Option<TraceSender>,
     pending_updates: Vec<VarUpdate>,
 }
 
@@ -15,7 +14,7 @@ impl TLATracer {
     pub fn new(
         spec: impl Into<String>,
         producer: impl Into<String>,
-        sender: Option<IpcSender<LogEntry>>,
+        sender: Option<TraceSender>,
     ) -> Self {
         Self {
             spec: spec.into(),
@@ -27,6 +26,10 @@ impl TLATracer {
 
     pub fn is_enabled(&self) -> bool {
         self.sender.is_some()
+    }
+
+    pub fn set_sender(&mut self, sender: Option<TraceSender>) {
+        self.sender = sender;
     }
 
     pub fn notify_change<P, A, PS, AS>(
@@ -53,7 +56,13 @@ impl TLATracer {
         });
     }
 
-    pub fn log_with_location(&mut self, event: impl Into<String>, args: Vec<String>, file: &str, line: u32) {
+    pub fn log_with_location(
+        &mut self,
+        event: impl Into<String>,
+        args: Vec<String>,
+        file: &str,
+        line: u32,
+    ) {
         self.flush(Some(event.into()), args, file, line);
     }
 
@@ -77,7 +86,41 @@ impl TLATracer {
         };
 
         if let Err(error) = sender.send(entry) {
-            eprintln!("tla trace send failed: {error}");
+            eprintln!("verification trace send failed: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ipc_channel::ipc;
+
+    use super::TLATracer;
+
+    #[test]
+    fn disabled_tracer_drops_updates_and_events() {
+        let mut tracer = TLATracer::new("Navigation", "test", None);
+
+        tracer.notify_change("navigations", ["root"], "set", ["started"]);
+        crate::tla_log!(tracer, "CreateNavigation", "nk-1", "nav-1");
+
+        assert!(tracer.pending_updates.is_empty());
+        assert!(!tracer.is_enabled());
+    }
+
+    #[test]
+    fn enabled_tracer_sends_logged_entry() {
+        let (sender, receiver) = ipc::channel().expect("failed to create verification test channel");
+        let mut tracer = TLATracer::new("Navigation", "test", Some(sender));
+
+        tracer.notify_change("navigations", ["root"], "set", ["started"]);
+        crate::tla_log!(tracer, "CreateNavigation", "nk-1", "nav-1");
+
+        let entry = receiver.recv().expect("expected one trace entry");
+        assert_eq!(entry.spec, "Navigation");
+        assert_eq!(entry.producer, "test");
+        assert_eq!(entry.event.as_deref(), Some("CreateNavigation"));
+        assert_eq!(entry.event_args, vec![String::from("nk-1"), String::from("nav-1")]);
+        assert_eq!(entry.updates.len(), 1);
     }
 }

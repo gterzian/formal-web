@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fmt;
 use uuid::Uuid;
+use verification::TraceSender;
 
 macro_rules! uuid_id {
     ($name:ident) => {
@@ -186,6 +187,13 @@ pub fn parse_iframe_target_name(
 pub struct ScriptEvaluationResult {
     pub request_id: u64,
     pub value_json: String,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElementClickResult {
+    pub request_id: u64,
     #[serde(default)]
     pub error: Option<String>,
 }
@@ -599,6 +607,7 @@ impl PaintFrame {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
+    SetTraceSender(Option<TraceSender>),
     SetViewport(ViewportSnapshot),
     SetTraversableViewport(TraversableViewport),
     CreateEmptyDocument {
@@ -626,12 +635,18 @@ pub enum Command {
         request_id: u64,
         source: String,
     },
+    ClickElement {
+        traversable_id: NavigableId,
+        request_id: u64,
+        selector: String,
+    },
     DispatchEvent {
         events: Vec<DispatchEventEntry>,
     },
     RunBeforeUnload {
         document_id: DocumentId,
         check_id: BeforeUnloadCheckId,
+        navigation_id: NavigationId,
     },
     UpdateTheRendering {
         traversable_id: NavigableId,
@@ -664,6 +679,7 @@ pub enum Event {
     FinalizeNavigation(FinalizeNavigation),
     IframeTraversableRemoved(IframeTraversableRemoval),
     ScriptEvaluated(ScriptEvaluationResult),
+    ElementClicked(ElementClickResult),
     ClipboardReadRequested(ClipboardReadRequest),
     ClipboardWriteRequested(ClipboardWriteRequest),
     CommandCompleted,

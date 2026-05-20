@@ -9,3 +9,4 @@
 - Request a window redraw for visible content input and when a new paint frame arrives, then let winit coalesce those redraw requests; the embedder should present whatever paint frame it has from `RedrawRequested` rather than maintaining its own paint scheduler.
 - Hide the native window as soon as close is accepted, before runtime teardown continues, so visible shutdown latency is not coupled to user-agent, fetch, timer, or content-process cleanup.
 - Browser automation should target the current top-level traversable or webview id, not a transient document id; browser-UI replacement navigation can retire the old document before the next WebDriver script step runs.
+- When browser automation needs to activate a page element, resolve the selector in content and dispatch a trusted click there instead of guessing viewport coordinates in the embedder.

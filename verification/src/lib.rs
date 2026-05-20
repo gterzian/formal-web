@@ -1,12 +1,14 @@
-mod bootstrap;
 mod monitor;
+mod session;
 mod tracer;
 mod types;
+mod validate;
 
-pub use bootstrap::{receive_monitor_sender, spawn_monitor_sender_bridge};
-pub use monitor::Monitor;
+pub use monitor::TraceMonitor;
+pub use session::VerificationRun;
 pub use tracer::TLATracer;
-pub use types::{LogEntry, VarUpdate};
+pub use types::{LogEntry, TraceSender, VarUpdate};
+pub use validate::{ValidationOptions, run_validation_from_iter, validate_and_print};
 
 #[macro_export]
 macro_rules! tla_log {

@@ -13,7 +13,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
-use tla_trace::{LogEntry, spawn_monitor_sender_bridge};
+use verification::TraceSender;
 
 use crate::{UserAgentCommand, sidecar_executable_path};
 
@@ -115,20 +115,10 @@ fn finish_shutdown(mut child: Option<Child>) {
 /// bootstrapping the dedicated network sidecar process used by
 /// fetch-backed navigation and document fetch continuations.
 pub fn start_network_bridge(
-    monitor_tx: Option<IpcSender<LogEntry>>,
+    trace_sender: Option<TraceSender>,
 ) -> Result<(IpcSender<NetworkRequest>, Receiver<Result<NetworkResponse, String>>, Child), String> {
     let (server, token) = IpcOneShotServer::<NetworkBootstrap>::new()
         .map_err(|error| format!("failed to create network IPC one-shot server: {error}"))?;
-
-    let log_server = if let Some(monitor_tx) = monitor_tx {
-        let (log_server, log_token) =
-            IpcOneShotServer::<IpcSender<Option<IpcSender<LogEntry>>>>::new().map_err(
-                |error| format!("failed to create network TLA log bootstrap: {error}"),
-            )?;
-        Some((monitor_tx, log_server, log_token))
-    } else {
-        None
-    };
 
     let executable_path = sidecar_executable_path("formal-web-net")?;
 
@@ -136,25 +126,18 @@ pub fn start_network_bridge(
     #[cfg(unix)]
     child_process.arg0("formal-web-net");
     child_process.arg("--net-token").arg(&token);
-    if let Some((_monitor_tx, _log_server, log_token)) = log_server.as_ref() {
-        child_process.arg("--tla-log-server").arg(log_token);
-    }
 
     let child = child_process
         .spawn()
         .map_err(|error| format!("failed to start network process: {error}"))?;
-
-    if let Some((monitor_tx, log_server, _log_token)) = log_server {
-        spawn_monitor_sender_bridge(
-            log_server,
-            Some(monitor_tx),
-            String::from("formal-web:net-tla"),
-            String::from("network sidecar"),
-        )?;
-    }
     let (_receiver, bootstrap) = server
         .accept()
         .map_err(|error| format!("failed to accept network bootstrap: {error}"))?;
+
+    bootstrap
+        .request_sender
+        .send(NetworkRequest::SetTraceSender(trace_sender))
+        .map_err(|error| format!("failed to send trace sender to network process: {error}"))?;
 
     let (event_sender, event_receiver) = unbounded();
     ROUTER.add_typed_route(
@@ -174,10 +157,10 @@ impl FetchWorker {
     fn new(
         command_receiver: Receiver<FetchCommand>,
         user_agent_command_sender: Sender<UserAgentCommand>,
-        monitor_tx: Option<IpcSender<LogEntry>>,
+        trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (network_request_sender, network_event_receiver, child) =
-            start_network_bridge(monitor_tx)?;
+            start_network_bridge(trace_sender)?;
         Ok(Self {
             command_receiver,
             user_agent_command_sender,
@@ -390,9 +373,9 @@ impl FetchWorker {
 pub fn run_fetch_thread(
     command_receiver: Receiver<FetchCommand>,
     user_agent_command_sender: Sender<UserAgentCommand>,
-    monitor_tx: Option<IpcSender<LogEntry>>,
+    trace_sender: Option<TraceSender>,
 ) {
-    let mut worker = match FetchWorker::new(command_receiver, user_agent_command_sender, monitor_tx) {
+    let mut worker = match FetchWorker::new(command_receiver, user_agent_command_sender, trace_sender) {
         Ok(worker) => worker,
         Err(error) => {
             eprintln!("fetch thread startup failed: {error}");

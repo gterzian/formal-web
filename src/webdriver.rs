@@ -1,6 +1,5 @@
 use crate::AppRunOptions;
 use clap::Args;
-use ipc_channel::ipc::IpcSender;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{ErrorKind, Read, Write};
@@ -11,7 +10,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use tla_trace::LogEntry;
+use verification::TraceSender;
 
 const HTTP_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const AUTOMATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -72,6 +71,11 @@ struct ClickRequest {
 }
 
 #[derive(Deserialize)]
+struct ClickElementRequest {
+    selector: String,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ScrollRequest {
     x: f32,
@@ -98,7 +102,7 @@ struct ErrorValue {
     stacktrace: String,
 }
 
-pub fn run(args: WebDriverArgs, monitor_tx: Option<IpcSender<LogEntry>>) -> Result<(), String> {
+pub fn run(args: WebDriverArgs, trace_sender: Option<TraceSender>) -> Result<(), String> {
     let server = WebDriverServer::start(args.port, args.exit_on_session_delete)?;
     let result = crate::run_app_with_options(AppRunOptions {
         headless: args.headless,
@@ -106,7 +110,7 @@ pub fn run(args: WebDriverArgs, monitor_tx: Option<IpcSender<LogEntry>>) -> Resu
             .startup_url
             .or_else(|| Some(String::from("about:blank"))),
         window_title: Some(format!("formal-web WebDriver :{}", args.port)),
-        monitor_tx,
+        trace_sender,
     });
     drop(server);
     result
@@ -253,6 +257,13 @@ fn dispatch_session_request(
                 .map_err(WebDriverError::timeout)?;
             Ok(Value::Null)
         }
+        ("POST", ["formal-web", "element", "click"]) => {
+            let request: ClickElementRequest =
+                serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
+            embedder::automation_click_element(&request.selector, AUTOMATION_TIMEOUT)
+                .map_err(element_click_error)?;
+            Ok(Value::Null)
+        }
         ("POST", ["formal-web", "scroll"]) => {
             let request: ScrollRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
@@ -373,6 +384,16 @@ fn execute_script_value(script: &str, args: &[Value]) -> Result<Value, WebDriver
     let wrapped = wrap_execute_script(script, args).map_err(WebDriverError::invalid_argument)?;
     embedder::automation_evaluate_script(wrapped, SCRIPT_TIMEOUT)
         .map_err(WebDriverError::javascript)
+}
+
+fn element_click_error(error: String) -> WebDriverError {
+    if error.starts_with("invalid selector ") {
+        return WebDriverError::http(400, "Bad Request", "invalid selector", error);
+    }
+    if error.starts_with("no element matched selector ") {
+        return WebDriverError::http(404, "Not Found", "no such element", error);
+    }
+    WebDriverError::unsupported(error)
 }
 
 fn wrap_execute_script(script: &str, args: &[Value]) -> Result<String, serde_json::Error> {

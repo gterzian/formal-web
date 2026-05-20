@@ -1,4 +1,7 @@
+use ipc_channel::ipc::IpcSender;
 use serde::{Deserialize, Serialize};
+
+pub type TraceSender = IpcSender<LogEntry>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VarUpdate {

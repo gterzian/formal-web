@@ -1,14 +1,15 @@
 [package]
-name = "tla-validate"
+name = "verification"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [[bin]]
 name = "tla-validate"
-path = "src/main.rs"
+path = "src/bin/tla_validate.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+ipc-channel = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

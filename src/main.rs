@@ -2,27 +2,17 @@ mod webdriver;
 mod wpt;
 
 use clap::{Parser, Subcommand};
-use ipc_channel::ipc::{self, IpcSender};
-use std::fs;
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
-use std::process;
-use std::thread::JoinHandle;
-use tla_trace::{LogEntry, Monitor, receive_monitor_sender};
+use std::ffi::OsString;
+use std::process::ExitCode;
+use verification::{TraceSender, VerificationRun, run_validation_from_iter};
 use webview::UserAgentApi;
 
 #[derive(Parser, Debug)]
 #[command(name = "formal-web")]
 #[command(about = "Rust entry point for the formal-web runtime and local WPT tooling")]
 struct Cli {
-    #[arg(long, global = true, default_value_t = false)]
-    tla: bool,
-
-    #[arg(long, global = true, value_name = "DIR", default_value = "tla-traces")]
-    tla_dir: PathBuf,
-
-    #[arg(long, global = true, hide = true, value_name = "TOKEN")]
-    tla_log_server: Option<String>,
+    #[arg(long, alias = "tla", global = true, default_value_t = false)]
+    verify: bool,
 
     #[command(subcommand)]
     command: Option<CommandKind>,
@@ -40,63 +30,7 @@ pub(crate) struct AppRunOptions {
     pub headless: bool,
     pub startup_url: Option<String>,
     pub window_title: Option<String>,
-    pub monitor_tx: Option<IpcSender<LogEntry>>,
-}
-
-struct TracingRuntime {
-    sender: IpcSender<LogEntry>,
-    join_handle: JoinHandle<Result<(), String>>,
-}
-
-impl TracingRuntime {
-    fn start(output_dir: PathBuf) -> Result<Self, String> {
-        prepare_trace_output_dir(&output_dir)?;
-        let (sender, receiver) =
-            ipc::channel::<LogEntry>().map_err(|error| format!("failed to create TLA trace channel: {error}"))?;
-        let join_handle = std::thread::Builder::new()
-            .name(String::from("formal-web:monitor"))
-            .spawn(move || Monitor::new(output_dir, receiver).run())
-            .map_err(|error| format!("failed to spawn TLA monitor thread: {error}"))?;
-        Ok(Self {
-            sender,
-            join_handle,
-        })
-    }
-
-    fn sender_clone(&self) -> IpcSender<LogEntry> {
-        self.sender.clone()
-    }
-
-    fn shutdown(self) -> Result<(), String> {
-        let Self {
-            sender,
-            join_handle,
-        } = self;
-        drop(sender);
-        join_handle
-            .join()
-            .map_err(|_| String::from("TLA monitor thread panicked"))?
-    }
-}
-
-fn prepare_trace_output_dir(path: &Path) -> Result<(), String> {
-    match fs::remove_dir_all(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(format!(
-                "failed to clear TLA trace directory {}: {error}",
-                path.display()
-            ));
-        }
-    }
-
-    fs::create_dir_all(path).map_err(|error| {
-        format!(
-            "failed to create TLA trace directory {}: {error}",
-            path.display()
-        )
-    })
+    pub trace_sender: Option<TraceSender>,
 }
 
 pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
@@ -107,7 +41,7 @@ pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String>
     });
 
     let event_loop_result = embedder::run_event_loop(|dispatcher| {
-        user_agent::UserAgent::start(dispatcher, options.monitor_tx.clone())
+        user_agent::UserAgent::start(dispatcher, options.trace_sender.clone())
             .map(|user_agent| Box::new(user_agent) as Box<dyn UserAgentApi>)
     });
     embedder::clear_event_loop_options();
@@ -115,52 +49,77 @@ pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String>
     event_loop_result
 }
 
-fn main() {
-    let cli = Cli::parse();
-
-    if cli.tla && cli.tla_log_server.is_some() {
-        eprintln!("formal-web: --tla and --tla-log-server cannot be used together");
-        process::exit(1);
+fn delegated_tla_validate_command() -> Option<ExitCode> {
+    let args = std::env::args_os().collect::<Vec<_>>();
+    if args.get(1).is_none_or(|arg| arg != "validate-tla") {
+        return None;
     }
 
-    let tracing = if cli.tla_log_server.is_some() {
-        None
-    } else if cli.tla {
-        match TracingRuntime::start(cli.tla_dir.clone()) {
-            Ok(tracing) => Some(tracing),
+    let forwarded_args = std::iter::once(OsString::from("tla-validate"))
+        .chain(args.into_iter().skip(2))
+        .collect::<Vec<_>>();
+    Some(match run_validation_from_iter(forwarded_args) {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            eprintln!("formal-web: {error}");
+            ExitCode::from(1)
+        }
+    })
+}
+
+fn combine_results(primary: Result<(), String>, final_step: Result<(), String>) -> Result<(), String> {
+    match (primary, final_step) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(final_error)) => Err(format!("{error}; {final_error}")),
+    }
+}
+
+fn main() -> ExitCode {
+    if let Some(exit_code) = delegated_tla_validate_command() {
+        return exit_code;
+    }
+
+    let cli = Cli::parse();
+
+    if let Some(CommandKind::TestWpt(args)) = cli.command {
+        if let Err(error) = wpt::run(args, cli.verify) {
+            eprintln!("formal-web: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let verification_run = if cli.verify {
+        match VerificationRun::start() {
+            Ok(run) => Some(run),
             Err(error) => {
                 eprintln!("formal-web: {error}");
-                process::exit(1);
+                return ExitCode::from(1);
             }
         }
     } else {
         None
     };
 
-    let monitor_tx = if let Some(server_name) = cli.tla_log_server.as_deref() {
-        match receive_monitor_sender(Some(server_name)) {
-            Ok(monitor_tx) => monitor_tx,
-            Err(error) => {
-                eprintln!("formal-web: {error}");
-                process::exit(1);
-            }
-        }
-    } else {
-        tracing.as_ref().map(TracingRuntime::sender_clone)
-    };
+    let trace_sender = verification_run.as_ref().map(VerificationRun::sender_clone);
     let result = match cli.command {
         None => run_app_with_options(AppRunOptions {
-            monitor_tx: monitor_tx.clone(),
+            trace_sender: trace_sender.clone(),
             ..AppRunOptions::default()
         }),
-        Some(CommandKind::TestWpt(args)) => wpt::run(args, monitor_tx.clone()),
-        Some(CommandKind::WebDriver(args)) => webdriver::run(args, monitor_tx.clone()),
+        Some(CommandKind::WebDriver(args)) => webdriver::run(args, trace_sender.clone()),
+        Some(CommandKind::TestWpt(_)) => unreachable!(),
     };
-    let monitor_result = tracing.map(TracingRuntime::shutdown).unwrap_or(Ok(()));
-    let result = result.and(monitor_result);
+    drop(trace_sender);
+    let verification_result = verification_run.map(VerificationRun::finish).unwrap_or(Ok(()));
+    let result = combine_results(result, verification_result);
 
     if let Err(error) = result {
         eprintln!("formal-web: {error}");
-        process::exit(1);
-    };
+        return ExitCode::from(1);
+    }
+
+    ExitCode::SUCCESS
 }
