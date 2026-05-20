@@ -74,6 +74,7 @@ pub trait UserAgentApi {
         source: String,
         timeout: Duration,
     ) -> Result<serde_json::Value, String>;
+    fn click_element(&self, traversable_id: NavigableId, selector: String) -> Result<(), String>;
 }
 
 fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
@@ -189,6 +190,10 @@ impl WebviewProvider {
     ) -> Result<serde_json::Value, String> {
         self.user_agent
             .evaluate_script(traversable_id.0, source, timeout)
+    }
+
+    pub fn click_element(&self, traversable_id: WebviewId, selector: String) -> Result<(), String> {
+        self.user_agent.click_element(traversable_id.0, selector)
     }
 
     pub fn register_child_navigable_host(

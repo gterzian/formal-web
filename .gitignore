@@ -1,6 +1,7 @@
 /.lake
 /states/
 /tla_specs/states/
+/verification/tla_specs/states/
 *.out
 *.tlc
 /web_standards/

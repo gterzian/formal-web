@@ -10,7 +10,7 @@ use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::EcmascriptHost;
 
-use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch_with_chain};
+use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
 fn input_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
@@ -157,6 +157,51 @@ pub(crate) fn dispatch_ui_event(
             debug_scroll_state(&document),
         );
     }
+    Ok(())
+}
+
+pub(crate) fn dispatch_trusted_click_event(
+    document_id: DocumentId,
+    source_navigable_id: NavigableId,
+    parent_navigable_id: Option<NavigableId>,
+    top_level_navigable_id: NavigableId,
+    document: Rc<RefCell<BaseDocument>>,
+    settings: &mut EnvironmentSettingsObject,
+    event_sender: &IpcSender<ContentEvent>,
+    target_node_id: usize,
+) -> Result<(), String> {
+    let mut handler = BlitzJSEventHandler::new(
+        document_id,
+        source_navigable_id,
+        parent_navigable_id,
+        top_level_navigable_id,
+        document,
+        settings,
+        event_sender,
+    );
+    let target = handler
+        .resolve_element_object(target_node_id)
+        .map_err(|error| format!("failed to resolve click target element: {error}"))?;
+    let event = handler
+        .create_event_object(Event::new(
+            String::from("click"),
+            true,
+            true,
+            true,
+            true,
+            handler.current_time_millis(),
+        ))
+        .map_err(|error| format!("failed to construct trusted click event: {error}"))?;
+    dispatch(&mut handler, &target, &event, false)
+        .map_err(|error| format!("failed to dispatch trusted click event: {error}"))?;
+    handler
+        .settings
+        .perform_a_microtask_checkpoint()
+        .map_err(|error| {
+            format!(
+                "failed to run a microtask checkpoint after trusted click dispatch: {error}"
+            )
+        })?;
     Ok(())
 }
 

@@ -13,6 +13,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
+use verification::TraceSender;
 
 use crate::{UserAgentCommand, sidecar_executable_path};
 
@@ -114,6 +115,7 @@ fn finish_shutdown(mut child: Option<Child>) {
 /// bootstrapping the dedicated network sidecar process used by
 /// fetch-backed navigation and document fetch continuations.
 pub fn start_network_bridge(
+    trace_sender: Option<TraceSender>,
 ) -> Result<(IpcSender<NetworkRequest>, Receiver<Result<NetworkResponse, String>>, Child), String> {
     let (server, token) = IpcOneShotServer::<NetworkBootstrap>::new()
         .map_err(|error| format!("failed to create network IPC one-shot server: {error}"))?;
@@ -131,6 +133,11 @@ pub fn start_network_bridge(
     let (_receiver, bootstrap) = server
         .accept()
         .map_err(|error| format!("failed to accept network bootstrap: {error}"))?;
+
+    bootstrap
+        .request_sender
+        .send(NetworkRequest::SetTraceSender(trace_sender))
+        .map_err(|error| format!("failed to send trace sender to network process: {error}"))?;
 
     let (event_sender, event_receiver) = unbounded();
     ROUTER.add_typed_route(
@@ -150,8 +157,10 @@ impl FetchWorker {
     fn new(
         command_receiver: Receiver<FetchCommand>,
         user_agent_command_sender: Sender<UserAgentCommand>,
+        trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
-        let (network_request_sender, network_event_receiver, child) = start_network_bridge()?;
+        let (network_request_sender, network_event_receiver, child) =
+            start_network_bridge(trace_sender)?;
         Ok(Self {
             command_receiver,
             user_agent_command_sender,
@@ -364,8 +373,9 @@ impl FetchWorker {
 pub fn run_fetch_thread(
     command_receiver: Receiver<FetchCommand>,
     user_agent_command_sender: Sender<UserAgentCommand>,
+    trace_sender: Option<TraceSender>,
 ) {
-    let mut worker = match FetchWorker::new(command_receiver, user_agent_command_sender) {
+    let mut worker = match FetchWorker::new(command_receiver, user_agent_command_sender, trace_sender) {
         Ok(worker) => worker,
         Err(error) => {
             eprintln!("fetch thread startup failed: {error}");

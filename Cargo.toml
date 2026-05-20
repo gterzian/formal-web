@@ -16,6 +16,7 @@ content = { path = "content" }
 embedder = { path = "embedder" }
 net = { path = "net" }
 user_agent = { path = "user_agent" }
+verification = { path = "verification" }
 webview = { path = "webview" }
 ipc-channel = "0.21"
 ipc_messages = { path = "ipc_messages" }

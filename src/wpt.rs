@@ -376,7 +376,7 @@ struct SharedTestRunner {
     current_url: String,
 }
 
-pub fn run(args: TestWptArgs) -> Result<(), String> {
+pub fn run(args: TestWptArgs, verify: bool) -> Result<(), String> {
     maybe_reexec_test_wpt_runner(&args)?;
 
     let repo_root = repo_root();
@@ -463,6 +463,7 @@ pub fn run(args: TestWptArgs) -> Result<(), String> {
             timeout,
             !args.headed,
             browser_build,
+            verify,
             &mut shared_runner,
             &mut shared_runner_error,
         );
@@ -829,6 +830,7 @@ impl BrowserProcess {
         port: u16,
         startup_url: Option<&str>,
         headless: bool,
+        verify: bool,
     ) -> Result<Self, String> {
         let mut command = Command::new(executable);
         command.arg("webdriver").arg("--port").arg(port.to_string());
@@ -837,6 +839,9 @@ impl BrowserProcess {
         }
         if let Some(startup_url) = startup_url {
             command.arg("--startup-url").arg(startup_url);
+        }
+        if verify {
+            command.arg("--verify");
         }
         let mut child = command
             .stdout(Stdio::inherit())
@@ -917,12 +922,14 @@ impl SharedTestRunner {
         server: &WptServeProcess,
         headless: bool,
         build_profile: RunnerBuildProfile,
+        verify: bool,
     ) -> Result<Self, String> {
         let base_url = server.base_url();
         let startup_url = format!("{base_url}/common/blank.html");
         let executable = ensure_runner_executable(build_profile)?;
         let port = pick_unused_port()?;
-        let browser = BrowserProcess::start(&executable, port, Some(&startup_url), headless)?;
+        let browser =
+            BrowserProcess::start(&executable, port, Some(&startup_url), headless, verify)?;
         let session = WebDriverSession::create(browser.port)?;
         Ok(Self {
             browser,
@@ -983,6 +990,7 @@ fn run_with_shared_runner(
     timeout: Duration,
     headless: bool,
     build_profile: RunnerBuildProfile,
+    verify: bool,
     shared_runner: &mut Option<SharedTestRunner>,
     shared_runner_error: &mut Option<String>,
 ) -> ObservedTestResult {
@@ -992,6 +1000,7 @@ fn run_with_shared_runner(
         timeout,
         headless,
         build_profile,
+        verify,
         shared_runner,
         shared_runner_error,
     );
@@ -1010,6 +1019,7 @@ fn run_with_shared_runner(
         timeout,
         headless,
         build_profile,
+        verify,
         shared_runner,
         shared_runner_error,
     )
@@ -1021,6 +1031,7 @@ fn run_once_with_shared_runner(
     timeout: Duration,
     headless: bool,
     build_profile: RunnerBuildProfile,
+    verify: bool,
     shared_runner: &mut Option<SharedTestRunner>,
     shared_runner_error: &mut Option<String>,
 ) -> ObservedTestResult {
@@ -1029,7 +1040,7 @@ fn run_once_with_shared_runner(
     }
 
     if shared_runner.is_none() {
-        match SharedTestRunner::start(server, headless, build_profile) {
+        match SharedTestRunner::start(server, headless, build_profile, verify) {
             Ok(runner) => {
                 *shared_runner = Some(runner);
             }

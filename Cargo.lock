@@ -789,6 +789,7 @@ dependencies = [
  "serde_json",
  "stylo",
  "url",
+ "verification",
  "xml5ever",
 ]
 
@@ -1443,6 +1444,7 @@ dependencies = [
  "serde_json",
  "url",
  "user_agent",
+ "verification",
  "webview",
 ]
 
@@ -2189,6 +2191,7 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+ "verification",
 ]
 
 [[package]]
@@ -2616,6 +2619,7 @@ dependencies = [
  "mime_guess",
  "reqwest",
  "url",
+ "verification",
 ]
 
 [[package]]
@@ -4857,6 +4861,7 @@ dependencies = [
  "serde_json",
  "url",
  "uuid",
+ "verification",
  "webview",
 ]
 
@@ -4972,6 +4977,16 @@ dependencies = [
  "naga",
  "thiserror 2.0.18",
  "vello_encoding",
+]
+
+[[package]]
+name = "verification"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ipc-channel",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

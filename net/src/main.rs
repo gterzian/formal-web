@@ -8,6 +8,7 @@ use std::env;
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use url::Url;
+use verification::TraceSender;
 
 fn net_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
@@ -90,6 +91,8 @@ pub fn run_net_process(token: String) -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?;
 
+    let mut _trace_sender: Option<TraceSender> = None;
+
     let client = Client::builder()
         .resolve("localhost", SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .build()
@@ -97,6 +100,9 @@ pub fn run_net_process(token: String) -> Result<(), String> {
 
     loop {
         match request_receiver.recv() {
+            Ok(Request::SetTraceSender(trace_sender)) => {
+                _trace_sender = trace_sender;
+            }
             Ok(Request::Fetch {
                 request_id,
                 request,

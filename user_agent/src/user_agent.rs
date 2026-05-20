@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use url::Url;
+use verification::{TLATracer, TraceSender};
 
 use crate::event_loop::{
     EventLoopCommand, EventLoopEntry, spawn_event_loop_entry, stop_event_loop_entry,
@@ -701,6 +702,11 @@ pub enum UserAgentCommand {
     FinalizeCrossDocumentNavigation {
         finalized: ContentFinalizeNavigation,
     },
+    ClickElement {
+        traversable_id: NavigableId,
+        selector: String,
+        reply: Sender<Result<(), String>>,
+    },
     EvaluateScript {
         traversable_id: NavigableId,
         source: String,
@@ -776,12 +782,16 @@ pub struct UserAgent {
 
 impl UserAgent {
     /// spawning the dedicated user-agent thread owned by the webview layer.
-    pub fn start(user_event_dispatcher: UserEventDispatcher) -> Result<Self, String> {
+    pub fn start(
+        user_event_dispatcher: UserEventDispatcher,
+        trace_sender: Option<TraceSender>,
+    ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
         let mut worker = UserAgentWorker::new(
             command_sender.clone(),
             command_receiver,
             user_event_dispatcher,
+            trace_sender,
         );
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
@@ -902,6 +912,21 @@ impl webview::UserAgentApi for UserAgent {
                 offset_y,
             })
             .map_err(|error| format!("failed to set traversable viewport: {error}"))
+    }
+
+    /// the automation-only selector-click bridge into content.
+    fn click_element(&self, traversable_id: NavigableId, selector: String) -> Result<(), String> {
+        let (reply_sender, reply_receiver) = bounded(1);
+        self.command_sender
+            .send(UserAgentCommand::ClickElement {
+                traversable_id,
+                selector,
+                reply: reply_sender,
+            })
+            .map_err(|error| format!("failed to send selector click request: {error}"))?;
+        reply_receiver
+            .recv()
+            .map_err(|error| format!("selector click reply channel closed: {error}"))?
     }
 
     /// the automation-only script-evaluation bridge into content.
@@ -1074,9 +1099,13 @@ struct UserAgentWorker {
     /// Async dispatcher used to notify the embedder event loop about navigation and traversable
     /// updates without routing through a global sender.
     user_event_dispatcher: UserEventDispatcher,
-    /// request ids for script-evaluation round-trips across the user-agent and
+    /// Trace logger for the Navigation TLA+ spec.
+    navigation_tracer: TLATracer,
+    /// Sender cloned into child workers and sidecars when TLA tracing is enabled.
+    trace_sender: Option<TraceSender>,
+    /// request ids for automation round-trips across the user-agent and
     /// content event-loop boundary.
-    next_script_request_id: u64,
+    next_automation_request_id: u64,
 }
 
 impl UserAgentWorker {
@@ -1085,18 +1114,33 @@ impl UserAgentWorker {
         user_agent_command_sender: Sender<UserAgentCommand>,
         command_receiver: Receiver<UserAgentCommand>,
         user_event_dispatcher: UserEventDispatcher,
+        trace_sender: Option<TraceSender>,
     ) -> Self {
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
         let fetch_user_agent_command_sender = user_agent_command_sender.clone();
+        let fetch_trace_sender = trace_sender.clone();
         let fetch_join_handle = thread::Builder::new()
             .name(String::from("formal-web:fetch"))
-            .spawn(move || run_fetch_thread(fetch_command_receiver, fetch_user_agent_command_sender))
+            .spawn(move || {
+                run_fetch_thread(
+                    fetch_command_receiver,
+                    fetch_user_agent_command_sender,
+                    fetch_trace_sender,
+                )
+            })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-fetch thread: {error}"));
         let (timer_command_sender, timer_command_receiver) = unbounded();
         let timer_user_agent_command_sender = user_agent_command_sender.clone();
+        let timer_trace_sender = trace_sender.clone();
         let timer_join_handle = thread::Builder::new()
             .name(String::from("formal-web:timer"))
-            .spawn(move || run_timer_thread(timer_command_receiver, timer_user_agent_command_sender))
+            .spawn(move || {
+                run_timer_thread(
+                    timer_command_receiver,
+                    timer_user_agent_command_sender,
+                    timer_trace_sender,
+                )
+            })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
         Self {
@@ -1108,7 +1152,13 @@ impl UserAgentWorker {
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
             user_event_dispatcher,
-            next_script_request_id: 1,
+            navigation_tracer: TLATracer::new(
+                "Navigation",
+                "formal-web:user-agent",
+                trace_sender.clone(),
+            ),
+            trace_sender,
+            next_automation_request_id: 1,
         }
     }
 
@@ -1127,6 +1177,13 @@ impl UserAgentWorker {
                 }
                 UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
                     self.handle_finalize_cross_document_navigation(finalized);
+                }
+                UserAgentCommand::ClickElement {
+                    traversable_id,
+                    selector,
+                    reply,
+                } => {
+                    self.handle_click_element(traversable_id, selector, reply);
                 }
                 UserAgentCommand::EvaluateScript {
                     traversable_id,
@@ -1292,6 +1349,7 @@ impl UserAgentWorker {
             self.fetch_command_sender.clone(),
             self.timer_command_sender.clone(),
             self.user_event_dispatcher.clone(),
+            self.trace_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
@@ -1420,6 +1478,7 @@ impl UserAgentWorker {
                 }],
             },
         );
+        verification::tla_log!(self.navigation_tracer, "CreateNavigable", traversable_id);
         if target_name_keeps_browser_ui_focus(&target_name) {
             self.state.set_active_top_level_traversable(traversable_id);
         }
@@ -1548,6 +1607,12 @@ impl UserAgentWorker {
                     url: String::from("about:blank"),
                 }],
             },
+        );
+        verification::tla_log!(
+            self.navigation_tracer,
+            "CreateChildNavigable",
+            traversable_id,
+            parent_navigable_id
         );
         self.state
             .event_loops
@@ -1755,12 +1820,18 @@ impl UserAgentWorker {
         navigation_id: NavigationId,
     ) -> Result<(), String> {
         let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
+        verification::tla_log!(
+            self.navigation_tracer,
+            "CreateNavigation",
+            navigation_id,
+            navigable_id
+        );
         // Note: The inclusive-descendant navigable set needed for step 23a is pre-computed here
         // before setting the ongoing navigation so that it reflects the current tree state.
-        let beforeunload_navigable_ids = std::iter::once(navigable_id)
+        let affected_navigable_ids = std::iter::once(navigable_id)
             .chain(descendant_navigable_ids(&self.state, navigable_id))
             .collect::<Vec<_>>();
-        let beforeunload_navigable_ids = beforeunload_navigable_ids
+        let beforeunload_navigable_ids = affected_navigable_ids
             .into_iter()
             .filter(|candidate_navigable_id| {
                 self.state
@@ -1769,10 +1840,29 @@ impl UserAgentWorker {
                     .is_some_and(|document| !document.is_initial_about_blank)
             })
             .collect::<Vec<_>>();
+        let beforeunload_navigable_id_set = beforeunload_navigable_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let auto_approved_navigable_ids = std::iter::once(navigable_id)
+            .chain(descendant_navigable_ids(&self.state, navigable_id))
+            .filter(|candidate_navigable_id| !beforeunload_navigable_id_set.contains(candidate_navigable_id))
+            .collect::<Vec<_>>();
 
         // Step 19: "Set the ongoing navigation for navigable to navigationId."
         self.state
             .set_navigable_ongoing_navigation(traversable_id, Some(navigation_id));
+        verification::tla_log!(self.navigation_tracer, "StartNavigating", navigation_id);
+
+        for auto_approved_navigable_id in auto_approved_navigable_ids {
+            verification::tla_log!(
+                self.navigation_tracer,
+                "RunBeforeUnload",
+                auto_approved_navigable_id,
+                navigation_id,
+                "Approved"
+            );
+        }
 
         // Step 23: "In parallel, run these steps:"
 
@@ -1856,6 +1946,7 @@ impl UserAgentWorker {
                 ContentCommand::RunBeforeUnload {
                     document_id,
                     check_id,
+                    navigation_id,
                 },
             ) {
                 self.state.pending_before_unload_navigations.remove(&check_id);
@@ -2200,22 +2291,36 @@ impl UserAgentWorker {
         &mut self,
         result: BeforeUnloadResult,
     ) -> Result<(), String> {
+        let mut completed_navigation_id = None;
+        let mut waiting_for_more_results = false;
         if let Some(pending) = self.state.pending_before_unload_navigations.get_mut(&result.check_id) {
             if !pending.pending_document_ids.remove(&result.document_id) {
                 return Ok(());
             }
             pending.canceled |= result.canceled;
+            completed_navigation_id = Some(pending.navigation_id);
             if !pending.pending_document_ids.is_empty() {
-                return Ok(());
+                waiting_for_more_results = true;
             }
         }
 
-        if let Some(pending) = self
-            .state
-            .pending_before_unload_navigations
-            .remove(&result.check_id)
+        if waiting_for_more_results {
+            return Ok(());
+        }
+
+        if completed_navigation_id.is_none() {
+            return Ok(());
+        }
+
+        if let Some(pending) = self.state.pending_before_unload_navigations.remove(&result.check_id)
         {
-            if pending.canceled || result.canceled {
+            if pending.canceled {
+                verification::tla_log!(
+                    self.navigation_tracer,
+                    "ContinueNavigation",
+                    pending.navigation_id,
+                    "aborted"
+                );
                 let traversable_id = self.traversable_id_for_navigable(pending.navigable_id)?;
                 let navigation_is_current = self
                     .state
@@ -2333,6 +2438,12 @@ impl UserAgentWorker {
             pending.history_entry.clone(),
             pending.history_handling,
         );
+        verification::tla_log!(
+            self.navigation_tracer,
+            "ContinueNavigation",
+            pending.navigation_id,
+            "finalized"
+        );
         self.state
             .set_navigable_ongoing_navigation(pending.traversable_id, None);
         if let Some(document) = self.state.documents.get_mut(&finalized.document_id) {
@@ -2407,8 +2518,9 @@ impl UserAgentWorker {
             match self.state.traversable_handles.get(&traversable_id).copied() {
                 Some(event_loop_id) => match self.state.event_loops.get(&event_loop_id) {
                     Some(entry) => {
-                        let request_id = self.next_script_request_id;
-                        self.next_script_request_id = self.next_script_request_id.wrapping_add(1);
+                        let request_id = self.next_automation_request_id;
+                        self.next_automation_request_id =
+                            self.next_automation_request_id.wrapping_add(1);
                         entry.command_sender
                             .send(EventLoopCommand::EvaluateScript {
                                 traversable_id,
@@ -2432,6 +2544,45 @@ impl UserAgentWorker {
             };
 
         let _ = timeout;
+        if let Err(error) = send_result {
+            let _ = error_reply.send(Err(error));
+        }
+    }
+
+    /// the automation-only selector-click bridge into the owning event loop.
+    fn handle_click_element(
+        &mut self,
+        traversable_id: NavigableId,
+        selector: String,
+        reply: Sender<Result<(), String>>,
+    ) {
+        let error_reply = reply.clone();
+        let send_result = match self.state.traversable_handles.get(&traversable_id).copied() {
+            Some(event_loop_id) => match self.state.event_loops.get(&event_loop_id) {
+                Some(entry) => {
+                    let request_id = self.next_automation_request_id;
+                    self.next_automation_request_id =
+                        self.next_automation_request_id.wrapping_add(1);
+                    entry.command_sender
+                        .send(EventLoopCommand::ClickElement {
+                            traversable_id,
+                            request_id,
+                            selector,
+                            reply,
+                        })
+                        .map_err(|error| {
+                            format!(
+                                "failed to send selector click to event loop {event_loop_id}: {error}"
+                            )
+                        })
+                }
+                None => Err(format!(
+                    "no content event loop found for traversable {traversable_id}"
+                )),
+            },
+            None => Err(format!("no content process owns traversable {traversable_id}")),
+        };
+
         if let Err(error) = send_result {
             let _ = error_reply.send(Err(error));
         }

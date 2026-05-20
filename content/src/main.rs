@@ -8,7 +8,9 @@ pub mod html;
 pub mod streams;
 pub mod webidl;
 
-use crate::dom::{dispatch_ui_event, dispatch_window_event, fire_event};
+use crate::dom::{
+    dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
+};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
     attach_same_origin_child_document_for_traversable,
@@ -24,18 +26,18 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
-    CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument, DestroyDocument,
-    DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer, SetTraversableViewport,
-    SetViewport, Shutdown, UpdateTheRendering,
+    ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
+    DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
+    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
-    ColorScheme as MessageColorScheme, Command, DispatchEventEntry,
-    DocumentFetchId, DocumentId, Event as ContentEvent,
+    ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId,
+    DocumentId, ElementClickResult, Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FontTransportSender, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
-    PlaceholderFrameMapping, RecordedScene, ScriptEvaluationResult, TraversableViewport,
-    ViewportSnapshot, WebviewId, WindowTimerKey,
+    FontTransportSender, FrameId, LoadedDocumentResponse, NavigableId, NavigationId,
+    PaintFrame, PlaceholderFrameMapping, RecordedScene, ScriptEvaluationResult,
+    TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
 };
 use std::{
     cell::RefCell,
@@ -46,6 +48,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use url::Url;
+use verification::{TLATracer, TraceSender};
 
 pub(crate) const EMPTY_HTML_DOCUMENT: &str = "<html><head></head><body></body></html>";
 
@@ -399,6 +402,7 @@ pub(crate) struct ContentRuntime {
     next_placeholder_frame_token: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
+    navigation_tracer: TLATracer,
 }
 
 impl ContentRuntime {
@@ -415,7 +419,12 @@ impl ContentRuntime {
             next_placeholder_frame_token: 1,
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
+            navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
         }
+    }
+
+    fn set_trace_sender(&mut self, trace_sender: Option<TraceSender>) {
+        self.navigation_tracer.set_sender(trace_sender);
     }
 
     fn document_viewport_state(&self, traversable_id: NavigableId) -> Option<DocumentViewportState> {
@@ -912,6 +921,39 @@ impl ContentRuntime {
         document.settings.evaluate_script_to_json(&source)
     }
 
+    fn click_element(
+        &mut self,
+        traversable_id: NavigableId,
+        selector: String,
+    ) -> Result<(), String> {
+        let document_id = *self
+            .active_documents_by_traversable
+            .get(&traversable_id)
+            .ok_or_else(|| format!("unknown traversable id: {traversable_id}"))?;
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        let target_node_id = {
+            let document_guard = document.document.borrow();
+            document_guard
+                .query_selector(&selector)
+                .map_err(|error| format!("invalid selector `{selector}`: {error:?}"))?
+        }
+        .ok_or_else(|| format!("no element matched selector `{selector}`"))?;
+
+        dispatch_trusted_click_event(
+            document_id,
+            document.traversable_id,
+            document.parent_traversable_id,
+            document.top_level_traversable_id,
+            Rc::clone(&document.document),
+            &mut document.settings,
+            &self.event_sender,
+            target_node_id,
+        )
+    }
+
     fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
         run_dom_removing_steps_for_document(self, document_id)?;
         if let Some(content_document) = self.documents.remove(&document_id) {
@@ -978,13 +1020,26 @@ impl ContentRuntime {
         &mut self,
         document_id: DocumentId,
         check_id: BeforeUnloadCheckId,
+        navigation_id: NavigationId,
     ) -> Result<(), String> {
-        let canceled = if let Some(document) = self.documents.get_mut(&document_id) {
-            !dispatch_window_event(&mut document.settings, "beforeunload", true)
-                .map_err(|error| error.to_string())?
+        let (navigable_id, canceled) = if let Some(document) = self.documents.get_mut(&document_id) {
+            let navigable_id = document.traversable_id;
+            let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
+                .map_err(|error| error.to_string())?;
+            (Some(navigable_id), canceled)
         } else {
-            false
+            (None, false)
         };
+        if let Some(navigable_id) = navigable_id {
+            let outcome = if canceled { "Aborted" } else { "Approved" };
+            verification::tla_log!(
+                self.navigation_tracer,
+                "RunBeforeUnload",
+                navigable_id,
+                navigation_id,
+                outcome
+            );
+        }
         self.event_sender
             .send(ContentEvent::BeforeUnloadCompleted(
                 ipc_messages::content::BeforeUnloadResult {
@@ -1266,6 +1321,10 @@ impl ContentRuntime {
     /// Note: The Rust event-loop worker emits these runtime effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         match command {
+            Command::SetTraceSender(trace_sender) => {
+                self.set_trace_sender(trace_sender);
+                Ok(true)
+            }
             SetViewport(viewport) => {
                 self.set_viewport(viewport);
                 Ok(true)
@@ -1335,6 +1394,20 @@ impl ContentRuntime {
                     .map_err(|error| format!("failed to send script evaluation result: {error}"))?;
                 Ok(true)
             }
+            ClickElement {
+                traversable_id,
+                request_id,
+                selector,
+            } => {
+                let error = self.click_element(traversable_id, selector).err();
+                self.event_sender
+                    .send(ContentEvent::ElementClicked(ElementClickResult {
+                        request_id,
+                        error,
+                    }))
+                    .map_err(|error| format!("failed to send element click result: {error}"))?;
+                Ok(true)
+            }
             DispatchEvent { events } => {
                 self.dispatch_events(events)?;
                 Ok(true)
@@ -1342,8 +1415,9 @@ impl ContentRuntime {
             Command::RunBeforeUnload {
                 document_id,
                 check_id,
+                navigation_id,
             } => {
-                self.run_before_unload(document_id, check_id)?;
+                self.run_before_unload(document_id, check_id, navigation_id)?;
                 Ok(true)
             }
             UpdateTheRendering {

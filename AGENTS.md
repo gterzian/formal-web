@@ -33,9 +33,14 @@ Principle: add lessons to the *lowest* README that makes sense. Do **not** dupli
 - Model cross-component browser identities such as documents, browsing contexts, browsing-context groups, agents, agent clusters, event loops, and beforeunload checks as UUID newtypes in `ipc_messages`, allocate them at the use site, and reserve raw integer counters for process-local handles or transport sequencing only.
 - Treat vendored third-party code and WPT resources as read-only unless the task explicitly calls for vendor changes; debug compatibility issues from local code or scratchpad artifacts instead.
 - Web standards should be available locally under `web_standards`, so before fetching a web standard over the internet, check that folder first. 
+- Keep TLC outside the repository; verification uses the local TLA+ Toolbox jar at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar` instead of a vendored `tla2tools.jar`.
 
-At the end of a task, always comfirm `cargo run --release` builds the project successfully, and then exit the terminal. Also always run the wpt tests without a path.
+At the end of a task, always confirm `cargo run --release` builds the project successfully, always run the wpt tests without a path, always run `./verification/verify-navigation.sh`, and then exit the terminal.
 
-Plans, TODOS, and temporary logs, belong in `scratchpad`. Things that are not needed after a task should be removed from that folder at the end of a task.
+Basic validation for each task should exercise the headless StartupExample navigation flow through WebDriver by loading `artifacts/StartupExample.html`, clicking `a.article-link`, and polling until the current URL reaches `artifacts/navigated.html`. The `./verification/verify-navigation.sh` script performs that flow with verification enabled.
+
+For tasks that change navigation tracing or the `Navigation` TLA model, also exercise a navigation via WebDriver, preferably headless, with verification enabled so shutdown validation runs against the recorded trace. Use `cargo run -- validate-tla --logs ...` only for focused diagnosis against preserved logs, and keep that validation flow separate from WPT runs.
+
+Plans, TODOS, and temporary task logs belong in `scratchpad`. Verification session logs and TLC working traces belong under the system temp directory and should be removed after validation finishes.
 
 At the end of each task, output as part of your closing comment a good possible commit message for the work done.

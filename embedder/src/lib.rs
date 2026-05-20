@@ -179,6 +179,10 @@ pub enum AutomationCommand {
         y: f32,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    ClickElement {
+        selector: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
     Scroll {
         x: f32,
         y: f32,
@@ -404,6 +408,23 @@ pub fn automation_click(x: f32, y: f32, timeout: std::time::Duration) -> Result<
     receiver.recv_timeout(timeout).map_err(|error| {
         format!(
             "timed out after {} ms waiting for automation click delivery: {error}",
+            timeout.as_millis()
+        )
+    })?
+}
+
+pub fn automation_click_element(
+    selector: &str,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let (reply, receiver) = mpsc::channel();
+    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::ClickElement {
+        selector: selector.to_owned(),
+        reply,
+    }))?;
+    receiver.recv_timeout(timeout).map_err(|error| {
+        format!(
+            "timed out after {} ms waiting for selector click delivery: {error}",
             timeout.as_millis()
         )
     })?
@@ -1179,6 +1200,9 @@ impl FormalWebApp {
             AutomationCommand::Click { x, y, reply } => {
                 let _ = reply.send(self.dispatch_automation_click(x, y));
             }
+            AutomationCommand::ClickElement { selector, reply } => {
+                let _ = reply.send(self.dispatch_automation_click_element(selector));
+            }
             AutomationCommand::Scroll {
                 x,
                 y,
@@ -1261,6 +1285,19 @@ impl FormalWebApp {
         self.send_content_ui_event(UiEvent::PointerUp(up_event), false)?;
 
         Ok(())
+    }
+
+    fn dispatch_automation_click_element(&self, selector: String) -> Result<(), String> {
+        match self.provider.as_ref().zip(self.current_webview_id) {
+            Some((provider, webview_id)) => {
+                provider.click_element(webview_id, selector)?;
+                provider.note_rendering_opportunity(webview_id, "automation_element_click");
+                Ok(())
+            }
+            None => Err(String::from(
+                "no active top-level traversable is available for element click",
+            )),
+        }
     }
 
     fn dispatch_automation_scroll(

@@ -5,8 +5,8 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, CreateChildNavigableRequest,
-    ColorScheme as MessageColorScheme, Command as ContentCommand, Event as ContentEvent,
-    EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
+    ColorScheme as MessageColorScheme, Command as ContentCommand, ElementClickResult,
+    Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(unix)]
@@ -14,6 +14,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as ProcessCommand};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use verification::TraceSender;
 
 use crate::fetch::FetchCommand;
 use crate::timer::{TimerCommand, TimerCompletion};
@@ -38,6 +39,12 @@ pub enum EventLoopCommand {
         request_id: u64,
         source: String,
         reply: Sender<Result<serde_json::Value, String>>,
+    },
+    ClickElement {
+        traversable_id: NavigableId,
+        request_id: u64,
+        selector: String,
+        reply: Sender<Result<(), String>>,
     },
     Stop {
         reply: Sender<Result<(), String>>,
@@ -161,6 +168,8 @@ struct EventLoopWorker {
     timer_command_sender: Sender<TimerCommand>,
     /// Pending script evaluation replies keyed by request ids.
     script_waiters: HashMap<u64, Sender<Result<serde_json::Value, String>>>,
+    /// Pending selector-click replies keyed by request ids.
+    click_waiters: HashMap<u64, Sender<Result<(), String>>>,
     /// Receiver for commands from the user-agent thread into this event-loop/content pair.
     command_receiver: Receiver<EventLoopCommand>,
     /// Async dispatcher used to notify the embedder event loop about paint and navigation-facing
@@ -205,6 +214,7 @@ impl EventLoopWorker {
         timer_command_sender: Sender<TimerCommand>,
         user_event_dispatcher: UserEventDispatcher,
         command_receiver: Receiver<EventLoopCommand>,
+        trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (server, token) = IpcOneShotServer::<Bootstrap>::new()
             .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
@@ -248,12 +258,15 @@ impl EventLoopWorker {
             fetch_command_sender,
             timer_command_sender,
             script_waiters: HashMap::new(),
+            click_waiters: HashMap::new(),
             command_receiver,
             user_event_dispatcher,
             stop_reply: None,
             awaiting_task_completion: false,
             pending_task_commands: VecDeque::new(),
         };
+
+        worker.send_command_inner(&ContentCommand::SetTraceSender(trace_sender))?;
 
         if let Some(snapshot) = embedder::window_viewport_snapshot() {
             // Initial viewport state is host configuration, not an HTML task, so it seeds the
@@ -352,6 +365,24 @@ impl EventLoopWorker {
                 };
                 if let Err(error) = self.send_command_inner(&command)
                     && let Some(reply) = self.script_waiters.remove(&request_id)
+                {
+                    let _ = reply.send(Err(error));
+                }
+            }
+            EventLoopCommand::ClickElement {
+                traversable_id,
+                request_id,
+                selector,
+                reply,
+            } => {
+                self.click_waiters.insert(request_id, reply);
+                let command = ContentCommand::ClickElement {
+                    traversable_id,
+                    request_id,
+                    selector,
+                };
+                if let Err(error) = self.send_command_inner(&command)
+                    && let Some(reply) = self.click_waiters.remove(&request_id)
                 {
                     let _ = reply.send(Err(error));
                 }
@@ -525,6 +556,11 @@ impl EventLoopWorker {
                     let _ = waiter.send(send_result);
                 }
             }
+            ContentEvent::ElementClicked(ElementClickResult { request_id, error }) => {
+                if let Some(waiter) = self.click_waiters.remove(&request_id) {
+                    let _ = waiter.send(error.map_or(Ok(()), Err));
+                }
+            }
             ContentEvent::ClipboardReadRequested(ClipboardReadRequest { reply_sender }) => {
                 let response = embedder::clipboard_get_text(CONTENT_CLIPBOARD_TIMEOUT);
                 let _ = reply_sender.send(response);
@@ -689,6 +725,7 @@ pub fn spawn_event_loop_entry(
     fetch_command_sender: Sender<FetchCommand>,
     timer_command_sender: Sender<TimerCommand>,
     user_event_dispatcher: UserEventDispatcher,
+    trace_sender: Option<TraceSender>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();
     let mut worker = EventLoopWorker::new(
@@ -699,6 +736,7 @@ pub fn spawn_event_loop_entry(
         timer_command_sender,
         user_event_dispatcher,
         command_receiver,
+        trace_sender,
     )?;
     let join_handle = thread::Builder::new()
         .name(format!("formal-web-event-loop-{event_loop_id}"))
