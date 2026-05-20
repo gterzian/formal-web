@@ -66,6 +66,17 @@ impl Document {
             })
     }
 
+    /// <https://dom.spec.whatwg.org/#dom-document-documentelement>
+    pub(crate) fn document_element(&self) -> Option<usize> {
+        let document = self.node.document.borrow();
+        let root = document.get_node(self.node.node_id)?;
+        root.children.iter().copied().find(|child_id| {
+            document
+                .get_node(*child_id)
+                .is_some_and(|child| child.element_data().is_some())
+        })
+    }
+
     /// <https://dom.spec.whatwg.org/#dom-document-createelement>
     pub(crate) fn create_element(&self, local_name: &str) -> usize {
         let mut document = self.node.document.borrow_mut();
@@ -104,6 +115,15 @@ impl Document {
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         mutator.create_text_node(data)
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-document-createcomment>
+    pub(crate) fn create_comment(&self, _data: &str) -> usize {
+        // Step 1: "Return a new Comment node whose data is data and node document is this."
+        // Note: Blitz exposes comment nodes without comment-text storage, so the current runtime preserves the node identity and tree behavior but not the comment payload yet.
+        let mut document = self.node.document.borrow_mut();
+        let mut mutator = document.mutate();
+        mutator.create_comment_node()
     }
 
     /// <https://html.spec.whatwg.org/#dom-document-body>
