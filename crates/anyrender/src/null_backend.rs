@@ -1,6 +1,6 @@
 //! A dummy implementation of the AnyRender traits while simply ignores all commands
 
-use crate::{ImageRenderer, PaintScene, WindowHandle, WindowRenderer};
+use crate::{ImageRenderer, PaintScene, RenderContext, WindowHandle, WindowRenderer};
 use std::sync::Arc;
 
 #[derive(Copy, Clone, Default)]
@@ -14,14 +14,26 @@ impl NullWindowRenderer {
     }
 }
 
+impl RenderContext for NullWindowRenderer {}
 impl WindowRenderer for NullWindowRenderer {
     type ScenePainter<'a>
         = NullScenePainter
     where
         Self: 'a;
 
-    fn resume(&mut self, _window: Arc<dyn WindowHandle>, _width: u32, _height: u32) {
+    fn resume<F: FnOnce() + 'static>(
+        &mut self,
+        _window: Arc<dyn WindowHandle>,
+        _width: u32,
+        _height: u32,
+        on_ready: F,
+    ) {
         self.is_active = true;
+        on_ready();
+    }
+
+    fn complete_resume(&mut self) -> bool {
+        true
     }
 
     fn suspend(&mut self) {
@@ -46,6 +58,7 @@ impl NullImageRenderer {
     }
 }
 
+impl RenderContext for NullImageRenderer {}
 impl ImageRenderer for NullImageRenderer {
     type ScenePainter<'a>
         = NullScenePainter
@@ -79,6 +92,7 @@ impl NullScenePainter {
     }
 }
 
+impl RenderContext for NullScenePainter {}
 impl PaintScene for NullScenePainter {
     fn reset(&mut self) {}
 
@@ -121,6 +135,7 @@ impl PaintScene for NullScenePainter {
         _font_size: f32,
         _hint: bool,
         _normalized_coords: &'a [crate::NormalizedCoord],
+        _embolden: kurbo::Vec2,
         _style: impl Into<peniko::StyleRef<'a>>,
         _brush: impl Into<crate::PaintRef<'a>>,
         _brush_alpha: f32,

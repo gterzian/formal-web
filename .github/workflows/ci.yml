@@ -88,6 +88,8 @@ jobs:
           key: "wasm32-unknown-unknown"
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy -p anyrender --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo clippy -p anyrender_vello --target wasm32-unknown-unknown -- -D warnings
       - run: cargo clippy -p anyrender_vello_hybrid --target wasm32-unknown-unknown --features webgl -- -D warnings
 
   # just cargo check for now
@@ -145,6 +147,7 @@ jobs:
           key: "${{ matrix.platform.target }}"
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-bin: ${{ matrix.os != 'macos-latest' }} # works around https://github.com/Swatinem/rust-cache/issues/341
 
       - name: Install development libraries on ubuntu
         if: ${{ matrix.platform.os == 'ubuntu-latest' }}
