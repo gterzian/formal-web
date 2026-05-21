@@ -2,7 +2,7 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use anyrender::{ImageRenderer, WindowHandle, WindowRenderer};
+use anyrender::{ImageRenderer, RenderContext, WindowHandle, WindowRenderer};
 use debug_timer::debug_timer;
 use pixels::{Pixels, SurfaceTexture, wgpu::Color};
 use std::sync::Arc;
@@ -42,6 +42,18 @@ impl<Renderer: ImageRenderer> PixelsWindowRenderer<Renderer> {
     }
 }
 
+impl<Renderer: ImageRenderer> RenderContext for PixelsWindowRenderer<Renderer> {
+    fn try_register_custom_resource(
+        &mut self,
+        resource: Box<dyn std::any::Any>,
+    ) -> Result<anyrender::ResourceId, anyrender::RegisterResourceError> {
+        self.renderer.try_register_custom_resource(resource)
+    }
+
+    fn unregister_resource(&mut self, resource_id: anyrender::ResourceId) {
+        self.renderer.unregister_resource(resource_id);
+    }
+}
 impl<Renderer: ImageRenderer> WindowRenderer for PixelsWindowRenderer<Renderer> {
     type ScenePainter<'a>
         = <Renderer as ImageRenderer>::ScenePainter<'a>
@@ -52,7 +64,13 @@ impl<Renderer: ImageRenderer> WindowRenderer for PixelsWindowRenderer<Renderer> 
         matches!(self.render_state, RenderState::Active(_))
     }
 
-    fn resume(&mut self, window_handle: Arc<dyn WindowHandle>, width: u32, height: u32) {
+    fn resume<F: FnOnce() + 'static>(
+        &mut self,
+        window_handle: Arc<dyn WindowHandle>,
+        width: u32,
+        height: u32,
+        on_ready: F,
+    ) {
         let surface = SurfaceTexture::new(width, height, window_handle.clone());
         let mut pixels = Pixels::new(width, height, surface).unwrap();
         pixels.enable_vsync(true);
@@ -66,6 +84,11 @@ impl<Renderer: ImageRenderer> WindowRenderer for PixelsWindowRenderer<Renderer> 
         self.window_handle = Some(window_handle);
 
         self.set_size(width, height);
+        on_ready();
+    }
+
+    fn complete_resume(&mut self) -> bool {
+        true
     }
 
     fn suspend(&mut self) {

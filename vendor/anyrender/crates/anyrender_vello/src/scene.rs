@@ -1,47 +1,61 @@
-use anyrender::{CustomPaint, NormalizedCoord, Paint, PaintRef, PaintScene};
+use anyrender::{NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext, ResourceId};
 use kurbo::{Affine, Rect, Shape, Stroke};
-use peniko::{BlendMode, BrushRef, Color, Fill, FontData, ImageBrush, StyleRef};
+use peniko::{BlendMode, BrushRef, Color, Fill, FontData, ImageBrush, ImageData, StyleRef};
 use rustc_hash::FxHashMap;
 use vello::Renderer as VelloRenderer;
-
-use crate::{CustomPaintSource, custom_paint_source::CustomPaintCtx};
+use wgpu::Texture;
+use wgpu_context::DeviceHandle;
 
 pub struct VelloScenePainter<'r, 's> {
     pub(crate) renderer: Option<&'r mut VelloRenderer>,
-    pub(crate) custom_paint_sources: Option<&'r mut FxHashMap<u64, Box<dyn CustomPaintSource>>>,
+    pub(crate) device_handle: Option<&'r DeviceHandle>,
+    pub(crate) texture_handles: Option<&'r mut FxHashMap<ResourceId, ImageData>>,
     pub(crate) inner: &'s mut vello::Scene,
+}
+
+impl RenderContext for VelloScenePainter<'_, '_> {
+    fn try_register_custom_resource(
+        &mut self,
+        resource: Box<dyn std::any::Any>,
+    ) -> Result<ResourceId, anyrender::RegisterResourceError> {
+        if let Some(renderer) = &mut self.renderer
+            && let Some(texture_handles) = &mut self.texture_handles
+        {
+            if let Ok(texture) = resource.downcast::<Texture>() {
+                let id = ResourceId::new();
+                texture_handles.insert(id, renderer.register_texture(*texture));
+                Ok(id)
+            } else {
+                Err(anyrender::RegisterResourceErrorKind::UnsupportedResourceKind.into())
+            }
+        } else {
+            Err(anyrender::RegisterResourceErrorKind::Unimplemented.into())
+        }
+    }
+
+    fn unregister_resource(&mut self, resource_id: ResourceId) {
+        if let Some(renderer) = &mut self.renderer
+            && let Some(texture_handles) = &mut self.texture_handles
+            && let Some(handle) = texture_handles.remove(&resource_id)
+        {
+            renderer.unregister_texture(handle);
+        }
+    }
+
+    fn renderer_specific_context(&self) -> Option<Box<dyn std::any::Any>> {
+        self.device_handle
+            .map(|device_handle| Box::new(device_handle.clone()) as _)
+    }
 }
 
 impl VelloScenePainter<'_, '_> {
     pub fn new<'s>(scene: &'s mut vello::Scene) -> VelloScenePainter<'static, 's> {
         VelloScenePainter {
             renderer: None,
-            custom_paint_sources: None,
+            device_handle: None,
+            texture_handles: None,
             inner: scene,
         }
-    }
-
-    fn render_custom_source(&mut self, custom_paint: CustomPaint) -> Option<peniko::ImageBrush> {
-        let (Some(renderer), Some(custom_paint_sources)) =
-            (&mut self.renderer, &mut self.custom_paint_sources)
-        else {
-            return None;
-        };
-
-        let CustomPaint {
-            source_id,
-            width,
-            height,
-            scale,
-        } = custom_paint;
-
-        // Render custom paint source
-        let source = custom_paint_sources.get_mut(&source_id)?;
-        let ctx = CustomPaintCtx::new(renderer);
-        let texture_handle = source.render(ctx, width, height, scale)?;
-
-        // Return dummy image
-        Some(ImageBrush::new(texture_handle.0))
     }
 }
 
@@ -92,22 +106,26 @@ impl PaintScene for VelloScenePainter<'_, '_> {
         shape: &impl Shape,
     ) {
         let paint: PaintRef<'_> = paint.into();
-
-        let dummy_image: peniko::ImageBrush;
         let brush_ref: BrushRef<'_> = match paint {
             Paint::Solid(color) => BrushRef::Solid(color),
             Paint::Gradient(gradient) => BrushRef::Gradient(gradient),
             Paint::Image(image) => BrushRef::Image(image),
-            Paint::Custom(custom_paint) => {
-                let Some(custom_paint) = custom_paint.downcast_ref::<CustomPaint>() else {
-                    return;
-                };
-                let Some(image) = self.render_custom_source(*custom_paint) else {
-                    return;
-                };
-                dummy_image = image;
-                BrushRef::Image(dummy_image.as_ref())
+            Paint::Resource(brush) => {
+                let resource_id = brush.image;
+                if let Some(texture_handle) = self
+                    .texture_handles
+                    .as_ref()
+                    .and_then(|texture_handles| texture_handles.get(&resource_id))
+                {
+                    peniko::Brush::Image(ImageBrush {
+                        image: texture_handle,
+                        sampler: brush.sampler,
+                    })
+                } else {
+                    BrushRef::Solid(Color::TRANSPARENT)
+                }
             }
+            Paint::Custom(_) => BrushRef::Solid(Color::TRANSPARENT),
         };
 
         self.inner
@@ -120,6 +138,7 @@ impl PaintScene for VelloScenePainter<'_, '_> {
         font_size: f32,
         hint: bool,
         normalized_coords: &'a [NormalizedCoord],
+        embolden: kurbo::Vec2,
         style: impl Into<StyleRef<'a>>,
         paint: impl Into<PaintRef<'a>>,
         brush_alpha: f32,
@@ -132,6 +151,9 @@ impl PaintScene for VelloScenePainter<'_, '_> {
             .font_size(font_size)
             .hint(hint)
             .normalized_coords(normalized_coords)
+            .font_embolden(vello::FontEmbolden::new(kurbo::Diagonal2::new(
+                embolden.x, embolden.y,
+            )))
             .brush(paint.into())
             .brush_alpha(brush_alpha)
             .transform(transform)

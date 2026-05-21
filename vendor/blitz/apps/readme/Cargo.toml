@@ -1,13 +1,16 @@
 [package]
-name = "readme"
-version = "0.1.0"
+name = "rdme"
+version = "0.1.1"
 edition = "2024"
+description = "Markdown renderering app"
 license.workspace = true
 rust-version.workspace = true
-publish = false
+homepage.workspace = true
+repository.workspace = true
+publish = true
 
 [features]
-default = ["gpu", "comrak", "floats", "tracing"]
+default = ["hybrid", "comrak", "floats", "incremental"]
 
 # Renderers
 gpu = ["dep:anyrender_vello"]

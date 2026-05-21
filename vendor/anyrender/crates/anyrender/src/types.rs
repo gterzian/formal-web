@@ -6,6 +6,8 @@ use std::{any::Any, sync::Arc};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::ResourceId;
+
 pub type NormalizedCoord = i16;
 
 /// A positioned glyph.
@@ -17,15 +19,6 @@ pub struct Glyph {
     pub y: f32,
 }
 
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct CustomPaint {
-    pub source_id: u64,
-    pub width: u32,
-    pub height: u32,
-    pub scale: f64,
-}
-
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Paint<I = ImageBrush, G = Gradient, C = Arc<dyn Any + Send + Sync>> {
@@ -35,8 +28,24 @@ pub enum Paint<I = ImageBrush, G = Gradient, C = Arc<dyn Any + Send + Sync>> {
     Gradient(G),
     /// Image brush.
     Image(I),
+    /// Custom paint (referenced by ID)
+    Resource(ImageBrush<ResourceId>),
     /// Custom paint (type erased as each backend will have their own)
+    #[cfg_attr(feature = "serde", serde(skip))]
     Custom(C),
+}
+
+impl<I: PartialEq, G: PartialEq> PartialEq for Paint<I, G, Arc<dyn Any + Send + Sync>> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Solid(l0), Self::Solid(r0)) => l0 == r0,
+            (Self::Gradient(l0), Self::Gradient(r0)) => l0 == r0,
+            (Self::Image(l0), Self::Image(r0)) => l0 == r0,
+            (Self::Resource(l0), Self::Resource(r0)) => l0 == r0,
+            (Self::Custom(l0), Self::Custom(r0)) => Arc::ptr_eq(l0, r0),
+            _ => false,
+        }
+    }
 }
 
 pub type PaintRef<'a> = Paint<ImageBrushRef<'a>, &'a Gradient, &'a (dyn Any + Send + Sync)>;
@@ -47,8 +56,7 @@ impl Paint {
             Paint::Solid(color) => Paint::Solid(*color),
             Paint::Gradient(gradient) => Paint::Gradient(gradient),
             Paint::Image(image) => Paint::Image(image.as_ref()),
-
-            // Custom paints are translated into "invisible" where they are not supported
+            Paint::Resource(id) => Paint::Resource(*id),
             Paint::Custom(custom) => Paint::Custom(custom.as_ref()),
         }
     }
@@ -68,6 +76,7 @@ impl<'a> From<PaintRef<'a>> for BrushRef<'a> {
             Paint::Image(image) => Brush::Image(image),
 
             // Custom paints are translated into "invisible" where they are not supported
+            Paint::Resource(_) => Brush::Solid(Color::TRANSPARENT),
             Paint::Custom(_) => Brush::Solid(Color::TRANSPARENT),
         }
     }

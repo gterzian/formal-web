@@ -4,10 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SIDECAR_TARGET_DIR_NAME: &str = "sidecar-prebuild";
-const SIDECAR_BINARIES: [(&str, &str); 2] = [
-    ("content", "formal-web-content"),
-    ("net", "formal-web-net"),
-];
+const SIDECAR_BINARIES: [(&str, &str); 2] =
+    [("content", "formal-web-content"), ("net", "formal-web-net")];
 
 fn main() {
     for path in [
@@ -61,9 +59,7 @@ fn prebuild_sidecars() -> Result<(), String> {
     command.current_dir(&manifest_dir);
 
     let status = command.status().map_err(|error| {
-        format!(
-            "failed to start cargo build for sidecar binaries in {profile} profile: {error}"
-        )
+        format!("failed to start cargo build for sidecar binaries in {profile} profile: {error}")
     })?;
     if !status.success() {
         return Err(format!(

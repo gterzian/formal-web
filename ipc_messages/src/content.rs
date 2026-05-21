@@ -3,7 +3,7 @@ use anyrender::{
     recording::{GlyphRunCommand, RenderCommand},
 };
 use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
-use peniko::{Brush, FontData};
+use peniko::FontData;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fmt;
@@ -383,6 +383,7 @@ impl SerializableRenderCommand {
                     font_size: command.font_size,
                     hint: command.hint,
                     normalized_coords: command.normalized_coords,
+                    embolden: command.embolden,
                     style: command.style,
                     brush: command.brush,
                     brush_alpha: command.brush_alpha,
@@ -409,6 +410,7 @@ impl SerializableRenderCommand {
                     font_size: command.font_size,
                     hint: command.hint,
                     normalized_coords: command.normalized_coords,
+                    embolden: command.embolden,
                     style: command.style,
                     brush: command.brush,
                     brush_alpha: command.brush_alpha,
@@ -488,10 +490,12 @@ impl RecordedScene {
                 RenderCommand::GlyphRun(command) => {
                     summary.glyph_runs += 1;
                     summary.glyphs += command.glyphs.len();
+                    use anyrender::Paint;
                     match &command.brush {
-                        Brush::Solid(_) => summary.solid_glyph_brush_runs += 1,
-                        Brush::Gradient(_) => summary.gradient_glyph_brush_runs += 1,
-                        Brush::Image(_) => summary.image_glyph_brush_runs += 1,
+                        Paint::Solid(_) => summary.solid_glyph_brush_runs += 1,
+                        Paint::Gradient(_) => summary.gradient_glyph_brush_runs += 1,
+                        Paint::Image(_) => summary.image_glyph_brush_runs += 1,
+                        Paint::Resource(_) | Paint::Custom(_) => {}
                     }
                 }
                 RenderCommand::BoxShadow(_) => summary.box_shadow_commands += 1,

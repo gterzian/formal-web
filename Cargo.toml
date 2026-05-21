@@ -28,3 +28,8 @@ url = "2"
 [patch.crates-io]
 anyrender = { path = "vendor/anyrender/crates/anyrender" }
 anyrender_vello = { path = "vendor/anyrender/crates/anyrender_vello" }
+anyrender_serialize = { path = "vendor/anyrender/crates/anyrender_serialize" }
+anyrender_vello_cpu = { path = "vendor/anyrender/crates/anyrender_vello_cpu" }
+anyrender_vello_hybrid = { path = "vendor/anyrender/crates/anyrender_vello_hybrid" }
+anyrender_svg = { path = "vendor/anyrender/crates/anyrender_svg" }
+wgpu_context = { path = "vendor/anyrender/crates/wgpu_context" }

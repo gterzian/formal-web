@@ -5,13 +5,14 @@ use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
 use peniko::Fill;
 use style::values::computed::TextDecorationLine;
 
-use crate::SELECTION_COLOR;
+use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
 
 pub(crate) fn stroke_text<'a>(
     scene: &mut impl PaintScene,
     lines: impl Iterator<Item = Line<'a, TextBrush>>,
     doc: &BaseDocument,
     transform: Affine,
+    scale: f64,
 ) {
     for line in lines {
         for item in line.items() {
@@ -46,11 +47,19 @@ pub(crate) fn stroke_text<'a>(
                 let has_strikethrough =
                     text_decoration_line.contains(TextDecorationLine::LINE_THROUGH);
 
+                let embolden = if FONT_EMBOLDEN_ENABLED {
+                    let fs = font_size as f64 / scale;
+                    kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
+                } else {
+                    kurbo::Vec2::default()
+                };
+
                 scene.draw_glyphs(
                     font,
                     font_size,
-                    true, // hint
+                    !FONT_EMBOLDEN_ENABLED, // hint
                     run.normalized_coords(),
+                    embolden,
                     Fill::NonZero,
                     &anyrender::Paint::from(text_color),
                     1.0, // alpha

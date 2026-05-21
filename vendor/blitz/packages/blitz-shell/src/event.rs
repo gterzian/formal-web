@@ -14,6 +14,13 @@ pub enum BlitzShellEvent {
         window_id: WindowId,
     },
 
+    /// The renderer for this window has finished its async initialization. The
+    /// embedder should call `View::complete_resume` to transition the view into
+    /// an active state.
+    ResumeReady {
+        window_id: WindowId,
+    },
+
     RequestRedraw {
         doc_id: usize,
     },
@@ -37,6 +44,14 @@ pub enum BlitzShellEvent {
         contents: String,
         retain_scroll_position: bool,
         is_md: bool,
+    },
+
+    /// Delivered after the WASM resize-debounce window expires. Route to
+    /// `View::apply_pending_resize_if_settled`, which applies the pending
+    /// size iff motion has actually settled.
+    #[cfg(target_arch = "wasm32")]
+    ResizeSettleCheck {
+        window_id: WindowId,
     },
 }
 impl BlitzShellEvent {

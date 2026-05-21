@@ -67,7 +67,10 @@ fn delegated_tla_validate_command() -> Option<ExitCode> {
     })
 }
 
-fn combine_results(primary: Result<(), String>, final_step: Result<(), String>) -> Result<(), String> {
+fn combine_results(
+    primary: Result<(), String>,
+    final_step: Result<(), String>,
+) -> Result<(), String> {
     match (primary, final_step) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -113,7 +116,9 @@ fn main() -> ExitCode {
         Some(CommandKind::TestWpt(_)) => unreachable!(),
     };
     drop(trace_sender);
-    let verification_result = verification_run.map(VerificationRun::finish).unwrap_or(Ok(()));
+    let verification_result = verification_run
+        .map(VerificationRun::finish)
+        .unwrap_or(Ok(()));
     let result = combine_results(result, verification_result);
 
     if let Err(error) = result {
