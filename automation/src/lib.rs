@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use clap::Args;
 use ipc_messages::content::{NavigableId, WebviewId};
 use serde::{Deserialize, Serialize};
@@ -26,9 +27,23 @@ pub struct AutomationSnapshot {
     pub has_top_level_traversable: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct AutomationVisibleFrameViewport {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub enum AutomationCommand {
     Snapshot {
         reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
+    },
+    VisibleFrameViewports {
+        reply: mpsc::Sender<Result<Vec<AutomationVisibleFrameViewport>, String>>,
+    },
+    Screenshot {
+        reply: mpsc::Sender<Result<Vec<u8>, String>>,
     },
     Navigate {
         url: String,
@@ -59,6 +74,10 @@ pub enum AutomationCommand {
 
 pub trait AutomationHost {
     fn automation_snapshot(&mut self) -> AutomationSnapshot;
+    fn automation_visible_frame_viewports(
+        &mut self,
+    ) -> Result<Vec<AutomationVisibleFrameViewport>, String>;
+    fn automation_screenshot(&mut self) -> Result<Vec<u8>, String>;
     fn begin_automation_navigation(&mut self, url: String) -> Result<(), String>;
     fn automation_click(&mut self, x: f32, y: f32) -> Result<(), String>;
     fn automation_click_element(&mut self, selector: String) -> Result<(), String>;
@@ -90,6 +109,12 @@ impl AutomationController {
         match command {
             AutomationCommand::Snapshot { reply } => {
                 let _ = reply.send(Ok(host.automation_snapshot()));
+            }
+            AutomationCommand::VisibleFrameViewports { reply } => {
+                let _ = reply.send(host.automation_visible_frame_viewports());
+            }
+            AutomationCommand::Screenshot { reply } => {
+                let _ = reply.send(host.automation_screenshot());
             }
             AutomationCommand::Navigate { url, reply } => {
                 if self.pending_navigation.is_some() {
@@ -207,6 +232,31 @@ impl AutomationRuntime {
         receiver.recv_timeout(timeout).map_err(|error| {
             format!(
                 "timed out after {} ms waiting for navigation to complete: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn screenshot(&self, timeout: Duration) -> Result<Vec<u8>, String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::Screenshot { reply })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for automation screenshot: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn visible_frame_viewports(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<AutomationVisibleFrameViewport>, String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::VisibleFrameViewports { reply })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for visible frame viewports: {error}",
                 timeout.as_millis()
             )
         })?
@@ -491,6 +541,17 @@ fn dispatch_session_request(
             }
             Ok(Value::Null)
         }
+        ("GET", ["formal-web", "frame-viewports"]) => Ok(json!(state
+            .runtime
+            .visible_frame_viewports(AUTOMATION_TIMEOUT)
+            .map_err(WebDriverError::timeout)?)),
+        ("GET", ["screenshot"]) => {
+            let png = state
+                .runtime
+                .screenshot(AUTOMATION_TIMEOUT)
+                .map_err(WebDriverError::timeout)?;
+            Ok(json!(base64::engine::general_purpose::STANDARD.encode(png)))
+        }
         ("GET", ["url"]) => {
             let snapshot = current_snapshot(state)?;
             Ok(json!(snapshot.current_url.unwrap_or_default()))
@@ -670,7 +731,7 @@ fn element_click_error(error: String) -> WebDriverError {
 fn wrap_execute_script(script: &str, args: &[Value]) -> Result<String, serde_json::Error> {
     let args_json = serde_json::to_string(args)?;
     Ok(format!(
-        "(() => {{\nconst __formalWebArgs = {args_json};\nconst __formalWebKey = \"__formalWebExecuteScript\";\nwindow[__formalWebKey] = function() {{\n{script}\n}};\ntry {{\nreturn window[__formalWebKey](...__formalWebArgs);\n}} finally {{\ndelete window[__formalWebKey];\n}}\n}})()"
+        "(() => {{\nconst __formalWebArgs = {args_json};\nconst __formalWebKey = \"__formalWebExecuteScript\";\nwindow[__formalWebKey] = function() {{\n{script}\n}};\ntry {{\nreturn Function.prototype.apply.call(window[__formalWebKey], window, __formalWebArgs);\n}} finally {{\ndelete window[__formalWebKey];\n}}\n}})()"
     ))
 }
 
@@ -860,7 +921,9 @@ mod tests {
             wrap_execute_script("return arguments[0] + arguments[1];", &[json!(1), json!(2)])
                 .expect("script wrapping should succeed");
         assert!(wrapped.contains("__formalWebArgs = [1,2]"));
-        assert!(wrapped.contains("return window[__formalWebKey](...__formalWebArgs);"));
+        assert!(wrapped.contains(
+            "return Function.prototype.apply.call(window[__formalWebKey], window, __formalWebArgs);"
+        ));
         assert!(wrapped.contains("delete window[__formalWebKey];"));
     }
 }

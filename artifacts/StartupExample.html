@@ -324,6 +324,16 @@
         color: #e63b2e;
       }
 
+      .cross-origin-frame {
+        display: block;
+        width: 100%;
+        height: 22rem;
+        border: 1px solid rgba(22, 55, 40, 0.16);
+        border-radius: 1rem;
+        background: rgba(255, 255, 255, 0.72);
+        box-shadow: 0 12px 28px rgba(22, 55, 40, 0.08);
+      }
+
       @media (max-width: 860px) {
         main {
           min-height: auto;
@@ -382,6 +392,11 @@
         <p class="hint">Move the pointer across the page to exercise hover styling, then use the wheel or trackpad if the window is shorter than the page.</p>
       </section>
       <section class="control-panel">
+        <iframe
+          class="cross-origin-frame"
+          title="Cross-origin verification frame"
+          src="https://gterzian.github.io/lsp_agent/"
+        ></iframe>
         <div class="intro-card">
           <h1>FormalWeb Fetch Bootstrap</h1>
           <p>
@@ -425,7 +440,6 @@
             Toggle Signal Accent
           </button>
         </div>
-        <iframe src="https://gterzian.github.io/lsp_agent/"></iframe>
         <div class="signal-card" id="signal-card" data-active="false">
           <div class="signal-chip" aria-hidden="true"></div>
           <span class="signal-title">JS Interaction Probe</span>

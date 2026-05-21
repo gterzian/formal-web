@@ -230,6 +230,16 @@ impl AutomationHost for HeadlessEmbedderApp {
         )
     }
 
+    fn automation_visible_frame_viewports(
+        &mut self,
+    ) -> Result<Vec<AutomationVisibleFrameViewport>, String> {
+        automation_visible_frame_viewports(&mut self.provider, self.current_webview_id)
+    }
+
+    fn automation_screenshot(&mut self) -> Result<Vec<u8>, String> {
+        automation_screenshot_png(&mut self.provider, self.current_webview_id)
+    }
+
     fn begin_automation_navigation(&mut self, url: String) -> Result<(), String> {
         self.begin_navigation(PendingNavigation { url })
     }

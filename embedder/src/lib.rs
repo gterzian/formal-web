@@ -6,9 +6,11 @@ use crate::chrome::{ChromeAction, ChromeUi, ChromeViewState};
 use crate::headless::HeadlessEmbedderApp;
 use automation::{
     AutomationCommand, AutomationController, AutomationHost, AutomationSnapshot,
+    AutomationVisibleFrameViewport,
 };
-use anyrender::{PaintScene, WindowRenderer};
+use anyrender::{PaintScene, WindowRenderer, render_to_buffer};
 use anyrender_vello::VelloWindowRenderer;
+use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
     BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, PointerCoords,
@@ -18,7 +20,8 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
 use ipc_messages::content::{NavigableId, PaintFrame, WebviewId};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
-use kurbo::Affine;
+use kurbo::{Affine, Rect};
+use peniko::{Color, Fill};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
@@ -414,6 +417,83 @@ pub fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
         .expect("window viewport snapshot mutex poisoned")
         .as_ref()
         .copied()
+}
+
+fn automation_screenshot_png(
+    provider: &mut Option<WebviewProvider>,
+    current_webview_id: Option<WebviewId>,
+) -> Result<Vec<u8>, String> {
+    let Some((width, height, _, _)) = window_viewport_snapshot() else {
+        return Err(String::from("content viewport is not initialized"));
+    };
+    if width == 0 || height == 0 {
+        return Err(String::from("content viewport is zero-sized"));
+    }
+
+    let Some(provider) = provider.as_mut() else {
+        return Err(String::from("webview provider is not initialized"));
+    };
+    let Some(webview_id) = current_webview_id else {
+        return Err(String::from("no current webview is active"));
+    };
+    let Some(scene) = provider.current_scene(webview_id) else {
+        return Err(String::from("no committed scene is available for screenshot"));
+    };
+
+    let rgba = render_to_buffer::<VelloCpuImageRenderer, _>(
+        move |painter| {
+            painter.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::WHITE,
+                None,
+                &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+            );
+            painter.append_scene(scene, Affine::IDENTITY);
+        },
+        width,
+        height,
+    );
+
+    encode_png_rgba(&rgba, width, height)
+}
+
+fn automation_visible_frame_viewports(
+    provider: &mut Option<WebviewProvider>,
+    current_webview_id: Option<WebviewId>,
+) -> Result<Vec<AutomationVisibleFrameViewport>, String> {
+    let Some(provider) = provider.as_mut() else {
+        return Err(String::from("webview provider is not initialized"));
+    };
+    let Some(webview_id) = current_webview_id else {
+        return Err(String::from("no current webview is active"));
+    };
+
+    Ok(provider
+        .visible_frame_viewports(webview_id)
+        .into_iter()
+        .map(|viewport| AutomationVisibleFrameViewport {
+            offset_x: viewport.offset_x,
+            offset_y: viewport.offset_y,
+            width: viewport.width,
+            height: viewport.height,
+        })
+        .collect())
+}
+
+fn encode_png_rgba(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut png_data = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png_data, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|error| format!("failed to encode screenshot header: {error}"))?;
+    writer
+        .write_image_data(rgba)
+        .map_err(|error| format!("failed to encode screenshot pixels: {error}"))?;
+    drop(writer);
+    Ok(png_data)
 }
 
 fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
@@ -1174,6 +1254,16 @@ impl AutomationHost for HeadedEmbedderApp {
             self.current_webview_id,
             self.has_top_level_traversable,
         )
+    }
+
+    fn automation_visible_frame_viewports(
+        &mut self,
+    ) -> Result<Vec<AutomationVisibleFrameViewport>, String> {
+        automation_visible_frame_viewports(&mut self.provider, self.current_webview_id)
+    }
+
+    fn automation_screenshot(&mut self) -> Result<Vec<u8>, String> {
+        automation_screenshot_png(&mut self.provider, self.current_webview_id)
     }
 
     fn begin_automation_navigation(&mut self, url: String) -> Result<(), String> {
