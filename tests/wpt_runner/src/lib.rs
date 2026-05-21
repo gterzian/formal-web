@@ -1064,6 +1064,10 @@ fn run_once_with_shared_runner(
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .expect("wpt_runner crate should live under tests/")
 }
 
 fn normalize_rel_path(path: &str) -> String {

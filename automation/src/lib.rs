@@ -1,22 +1,285 @@
-use crate::AppRunOptions;
 use clap::Args;
+use ipc_messages::content::{NavigableId, WebviewId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, mpsc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use verification::TraceSender;
 
 const HTTP_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const AUTOMATION_TIMEOUT: Duration = Duration::from_secs(30);
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationSnapshot {
+    pub webview_id: Option<WebviewId>,
+    pub current_url: Option<String>,
+    pub displayed_url: String,
+    pub navigable_id: Option<NavigableId>,
+    pub has_top_level_traversable: bool,
+}
+
+pub enum AutomationCommand {
+    Snapshot {
+        reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
+    },
+    Navigate {
+        url: String,
+        reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
+    },
+    Click {
+        x: f32,
+        y: f32,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    ClickElement {
+        selector: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Scroll {
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    EvaluateScript {
+        source: String,
+        timeout: Duration,
+        reply: mpsc::Sender<Result<Value, String>>,
+    },
+}
+
+pub trait AutomationHost {
+    fn automation_snapshot(&mut self) -> AutomationSnapshot;
+    fn begin_automation_navigation(&mut self, url: String) -> Result<(), String>;
+    fn automation_click(&mut self, x: f32, y: f32) -> Result<(), String>;
+    fn automation_click_element(&mut self, selector: String) -> Result<(), String>;
+    fn automation_scroll(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> Result<(), String>;
+    fn automation_evaluate_script(
+        &mut self,
+        source: String,
+        timeout: Duration,
+    ) -> Result<Value, String>;
+}
+
+#[derive(Default)]
+pub struct AutomationController {
+    pending_navigation: Option<PendingAutomationNavigation>,
+}
+
+struct PendingAutomationNavigation {
+    reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
+}
+
+impl AutomationController {
+    pub fn handle_command<H: AutomationHost>(&mut self, host: &mut H, command: AutomationCommand) {
+        match command {
+            AutomationCommand::Snapshot { reply } => {
+                let _ = reply.send(Ok(host.automation_snapshot()));
+            }
+            AutomationCommand::Navigate { url, reply } => {
+                if self.pending_navigation.is_some() {
+                    let _ = reply.send(Err(String::from(
+                        "an automation navigation is already pending",
+                    )));
+                    return;
+                }
+
+                match host.begin_automation_navigation(url) {
+                    Ok(()) => {
+                        self.pending_navigation = Some(PendingAutomationNavigation { reply });
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
+            AutomationCommand::Click { x, y, reply } => {
+                let _ = reply.send(host.automation_click(x, y));
+            }
+            AutomationCommand::ClickElement { selector, reply } => {
+                let _ = reply.send(host.automation_click_element(selector));
+            }
+            AutomationCommand::Scroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+                reply,
+            } => {
+                let _ = reply.send(host.automation_scroll(x, y, delta_x, delta_y));
+            }
+            AutomationCommand::EvaluateScript {
+                source,
+                timeout,
+                reply,
+            } => {
+                let _ = reply.send(host.automation_evaluate_script(source, timeout));
+            }
+        }
+    }
+
+    pub fn note_navigation_committed<H: AutomationHost>(&mut self, host: &mut H) {
+        self.complete_pending_navigation_if_ready(host);
+    }
+
+    pub fn note_rendering_update<H: AutomationHost>(&mut self, host: &mut H) {
+        self.complete_pending_navigation_if_ready(host);
+    }
+
+    pub fn abort_pending_navigation(&mut self, message: String) {
+        if let Some(pending_navigation) = self.pending_navigation.take() {
+            let _ = pending_navigation.reply.send(Err(message));
+        }
+    }
+
+    fn complete_pending_navigation_if_ready<H: AutomationHost>(&mut self, host: &mut H) {
+        let snapshot = host.automation_snapshot();
+        if snapshot.navigable_id.is_none() {
+            return;
+        }
+        if let Some(pending_navigation) = self.pending_navigation.take() {
+            let _ = pending_navigation.reply.send(Ok(snapshot));
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AutomationRuntime {
+    send_command: Arc<dyn Fn(AutomationCommand) -> Result<(), String> + Send + Sync>,
+    request_exit: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    is_ready: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl AutomationRuntime {
+    pub fn new<SendCommand, RequestExit, IsReady>(
+        send_command: SendCommand,
+        request_exit: RequestExit,
+        is_ready: IsReady,
+    ) -> Self
+    where
+        SendCommand: Fn(AutomationCommand) -> Result<(), String> + Send + Sync + 'static,
+        RequestExit: Fn() -> Result<(), String> + Send + Sync + 'static,
+        IsReady: Fn() -> bool + Send + Sync + 'static,
+    {
+        Self {
+            send_command: Arc::new(send_command),
+            request_exit: Arc::new(request_exit),
+            is_ready: Arc::new(is_ready),
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        (self.is_ready)()
+    }
+
+    pub fn snapshot(&self, timeout: Duration) -> Result<AutomationSnapshot, String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::Snapshot { reply })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for automation snapshot: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn navigate(&self, url: &str, timeout: Duration) -> Result<AutomationSnapshot, String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::Navigate {
+            url: url.to_owned(),
+            reply,
+        })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for navigation to complete: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn click(&self, x: f32, y: f32, timeout: Duration) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::Click { x, y, reply })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for automation click delivery: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn click_element(&self, selector: &str, timeout: Duration) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::ClickElement {
+            selector: selector.to_owned(),
+            reply,
+        })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for selector click delivery: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn scroll(
+        &self,
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::Scroll {
+            x,
+            y,
+            delta_x,
+            delta_y,
+            reply,
+        })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for automation scroll delivery: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn evaluate_script(&self, source: String, timeout: Duration) -> Result<Value, String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::EvaluateScript {
+            source,
+            timeout,
+            reply,
+        })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting for script evaluation: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
+    pub fn request_exit(&self) -> Result<(), String> {
+        (self.request_exit)()
+    }
+}
 
 #[derive(Args, Debug)]
 pub struct WebDriverArgs {
@@ -40,16 +303,15 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-#[derive(Debug)]
-struct WebDriverServer {
+pub struct WebDriverServer {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
-#[derive(Debug)]
 struct WebDriverState {
     session_id: Mutex<Option<String>>,
     exit_on_session_delete: bool,
+    runtime: AutomationRuntime,
 }
 
 #[derive(Deserialize)]
@@ -102,22 +364,12 @@ struct ErrorValue {
     stacktrace: String,
 }
 
-pub fn run(args: WebDriverArgs, trace_sender: Option<TraceSender>) -> Result<(), String> {
-    let server = WebDriverServer::start(args.port, args.exit_on_session_delete)?;
-    let result = crate::run_app_with_options(AppRunOptions {
-        headless: args.headless,
-        startup_url: args
-            .startup_url
-            .or_else(|| Some(String::from("about:blank"))),
-        window_title: Some(format!("formal-web WebDriver :{}", args.port)),
-        trace_sender,
-    });
-    drop(server);
-    result
-}
-
 impl WebDriverServer {
-    fn start(port: u16, exit_on_session_delete: bool) -> Result<Self, String> {
+    pub fn start(
+        port: u16,
+        exit_on_session_delete: bool,
+        runtime: AutomationRuntime,
+    ) -> Result<Self, String> {
         let listener = TcpListener::bind(("127.0.0.1", port))
             .map_err(|error| format!("failed to bind WebDriver server on port {port}: {error}"))?;
         listener
@@ -129,6 +381,7 @@ impl WebDriverServer {
         let state = Arc::new(WebDriverState {
             session_id: Mutex::new(None),
             exit_on_session_delete,
+            runtime,
         });
         let thread_state = Arc::clone(&state);
         let thread = thread::Builder::new()
@@ -206,7 +459,7 @@ fn dispatch_request_inner(
         .collect::<Vec<_>>();
 
     match (request.method.as_str(), segments.as_slice()) {
-        ("GET", ["status"]) => Ok(status_payload()),
+        ("GET", ["status"]) => Ok(status_payload(&state.runtime)),
         ("POST", ["session"]) => create_session(state),
         (method, ["session", session_id, rest @ ..]) => {
             ensure_session(state, session_id)?;
@@ -234,53 +487,61 @@ fn dispatch_session_request(
         ("DELETE", []) => {
             clear_session(state)?;
             if state.exit_on_session_delete {
-                embedder::request_exit().map_err(WebDriverError::unsupported)?;
+                state.runtime.request_exit().map_err(WebDriverError::unsupported)?;
             }
             Ok(Value::Null)
         }
         ("GET", ["url"]) => {
-            let snapshot = current_snapshot()?;
+            let snapshot = current_snapshot(state)?;
             Ok(json!(snapshot.current_url.unwrap_or_default()))
         }
-        ("GET", ["title"]) => execute_script_value("return document.title;", &[]),
+        ("GET", ["title"]) => execute_script_value(state, "return document.title;", &[]),
         ("POST", ["url"]) => {
             let request: NavigateRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
-            embedder::automation_navigate(&request.url, AUTOMATION_TIMEOUT)
+            state
+                .runtime
+                .navigate(&request.url, AUTOMATION_TIMEOUT)
                 .map_err(WebDriverError::timeout)?;
             Ok(Value::Null)
         }
         ("POST", ["formal-web", "click"]) => {
             let request: ClickRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
-            embedder::automation_click(request.x, request.y, AUTOMATION_TIMEOUT)
+            state
+                .runtime
+                .click(request.x, request.y, AUTOMATION_TIMEOUT)
                 .map_err(WebDriverError::timeout)?;
             Ok(Value::Null)
         }
         ("POST", ["formal-web", "element", "click"]) => {
             let request: ClickElementRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
-            embedder::automation_click_element(&request.selector, AUTOMATION_TIMEOUT)
+            state
+                .runtime
+                .click_element(&request.selector, AUTOMATION_TIMEOUT)
                 .map_err(element_click_error)?;
             Ok(Value::Null)
         }
         ("POST", ["formal-web", "scroll"]) => {
             let request: ScrollRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
-            embedder::automation_scroll(
-                request.x,
-                request.y,
-                request.delta_x,
-                request.delta_y,
-                AUTOMATION_TIMEOUT,
-            )
-            .map_err(WebDriverError::timeout)?;
+            state
+                .runtime
+                .scroll(
+                    request.x,
+                    request.y,
+                    request.delta_x,
+                    request.delta_y,
+                    AUTOMATION_TIMEOUT,
+                )
+                .map_err(WebDriverError::timeout)?;
             Ok(Value::Null)
         }
         ("POST", ["execute", "sync"]) => {
             let request: ExecuteScriptRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
-            execute_script_value(&request.script, &request.args)
+            execute_script_value(state, &request.script, &request.args)
         }
         _ => Err(WebDriverError::http(
             404,
@@ -294,9 +555,10 @@ fn dispatch_session_request(
     }
 }
 
-fn status_payload() -> Value {
-    let ready = embedder::automation_is_ready()
-        && embedder::automation_snapshot(Duration::from_millis(250))
+fn status_payload(runtime: &AutomationRuntime) -> Value {
+    let ready = runtime.is_ready()
+        && runtime
+            .snapshot(Duration::from_millis(250))
             .map(|snapshot| snapshot.has_top_level_traversable && snapshot.webview_id.is_some())
             .unwrap_or(false);
     json!({
@@ -306,7 +568,7 @@ fn status_payload() -> Value {
 }
 
 fn create_session(state: &WebDriverState) -> Result<Value, WebDriverError> {
-    if !embedder::automation_is_ready() {
+    if !state.runtime.is_ready() {
         return Err(WebDriverError::http(
             503,
             "Service Unavailable",
@@ -376,13 +638,22 @@ fn clear_session(state: &WebDriverState) -> Result<(), WebDriverError> {
     Ok(())
 }
 
-fn current_snapshot() -> Result<embedder::AutomationSnapshot, WebDriverError> {
-    embedder::automation_snapshot(Duration::from_secs(1)).map_err(WebDriverError::unsupported)
+fn current_snapshot(state: &WebDriverState) -> Result<AutomationSnapshot, WebDriverError> {
+    state
+        .runtime
+        .snapshot(Duration::from_secs(1))
+        .map_err(WebDriverError::unsupported)
 }
 
-fn execute_script_value(script: &str, args: &[Value]) -> Result<Value, WebDriverError> {
+fn execute_script_value(
+    state: &WebDriverState,
+    script: &str,
+    args: &[Value],
+) -> Result<Value, WebDriverError> {
     let wrapped = wrap_execute_script(script, args).map_err(WebDriverError::invalid_argument)?;
-    embedder::automation_evaluate_script(wrapped, SCRIPT_TIMEOUT)
+    state
+        .runtime
+        .evaluate_script(wrapped, SCRIPT_TIMEOUT)
         .map_err(WebDriverError::javascript)
 }
 

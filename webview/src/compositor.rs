@@ -113,7 +113,7 @@ impl Compositor {
             return;
         }
 
-        let mut stale_frame_ids = Vec::new();
+        let mut stale_frame_ids = HashSet::new();
         let mut stack = HashSet::from([frame_id]);
         self.collect_scene_descendant_frames(frame_id, &mut stale_frame_ids, &mut stack);
         for stale_frame_id in stale_frame_ids {
@@ -469,13 +469,12 @@ impl Compositor {
     fn collect_scene_descendant_frames(
         &self,
         frame_id: FrameId,
-        frames: &mut Vec<FrameId>,
+        frames: &mut HashSet<FrameId>,
         stack: &mut HashSet<FrameId>,
     ) {
-        if frames.contains(&frame_id) {
+        if !frames.insert(frame_id) {
             return;
         }
-        frames.push(frame_id);
 
         let Some(frame) = self.committed_frames.get(&frame_id) else {
             return;
@@ -529,6 +528,8 @@ impl Compositor {
             frame_id,
             local_x: point.x as f32,
             local_y: point.y as f32,
+            // Child placeholders should remain targetable before the child process commits its
+            // first frame, so an unresolved child frame still reports as a child-frame hit.
             is_child_frame: frame.is_none_or(|frame| frame.parent_frame_id.is_some()),
             has_child_frames: frame.is_some_and(|frame| !frame.child_frames.is_empty()),
         })

@@ -4,7 +4,9 @@ mod timer;
 
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-use embedder::{FinalizeNavigation, FormalWebUserEvent, UserEventDispatcher};
+use embedder::{
+    FormalWebUserEvent, NavigationCompleted, NavigationCompletion, UserEventDispatcher,
+};
 use ipc_messages::{
     content::{
         AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult,
@@ -1024,49 +1026,64 @@ fn content_process_label_from_url(url: &str) -> String {
         .unwrap_or_else(|| String::from("about:blank"))
 }
 
-fn descendant_traversable_ids(state: &UserAgentState, traversable_id: NavigableId) -> Vec<NavigableId> {
+fn child_navigable_ids_by_parent(
+    state: &UserAgentState,
+) -> HashMap<NavigableId, Vec<NavigableId>> {
+    let mut children_by_parent = HashMap::new();
+    for (candidate_id, navigable) in &state.navigables {
+        let Some(parent_id) = navigable.parent_navigable_id else {
+            continue;
+        };
+        children_by_parent
+            .entry(parent_id)
+            .or_insert_with(Vec::new)
+            .push(*candidate_id);
+    }
+    children_by_parent
+}
+
+fn descendant_navigable_ids_matching(
+    state: &UserAgentState,
+    root_navigable_id: NavigableId,
+    children_by_parent: &HashMap<NavigableId, Vec<NavigableId>>,
+    include_child: impl Fn(&Navigable) -> bool,
+) -> Vec<NavigableId> {
     let mut descendants = Vec::new();
-    let mut stack = vec![traversable_id];
-    let mut visited = HashSet::from([traversable_id]);
+    let mut stack = vec![root_navigable_id];
+    let mut visited = HashSet::from([root_navigable_id]);
 
     while let Some(parent_id) = stack.pop() {
-        for (candidate_id, navigable) in &state.navigables {
-            let Some(candidate_parent_id) = navigable.parent_navigable_id else {
+        let Some(child_ids) = children_by_parent.get(&parent_id) else {
+            continue;
+        };
+        for child_id in child_ids {
+            let Some(navigable) = state.navigables.get(child_id) else {
                 continue;
             };
-            if navigable.event_loop_id.is_none()
-                || candidate_parent_id != parent_id
-                || !visited.insert(*candidate_id)
-            {
+            if !include_child(navigable) || !visited.insert(*child_id) {
                 continue;
             }
-            descendants.push(*candidate_id);
-            stack.push(*candidate_id);
+            descendants.push(*child_id);
+            stack.push(*child_id);
         }
     }
 
     descendants
 }
 
+fn descendant_traversable_ids(state: &UserAgentState, traversable_id: NavigableId) -> Vec<NavigableId> {
+    let children_by_parent = child_navigable_ids_by_parent(state);
+    descendant_navigable_ids_matching(
+        state,
+        traversable_id,
+        &children_by_parent,
+        |navigable| navigable.event_loop_id.is_some(),
+    )
+}
+
 fn descendant_navigable_ids(state: &UserAgentState, navigable_id: NavigableId) -> Vec<NavigableId> {
-    let mut descendants = Vec::new();
-    let mut stack = vec![navigable_id];
-    let mut visited = HashSet::from([navigable_id]);
-
-    while let Some(parent_id) = stack.pop() {
-        for (candidate_id, navigable) in &state.navigables {
-            let Some(candidate_parent_id) = navigable.parent_navigable_id else {
-                continue;
-            };
-            if candidate_parent_id != parent_id || !visited.insert(*candidate_id) {
-                continue;
-            }
-            descendants.push(*candidate_id);
-            stack.push(*candidate_id);
-        }
-    }
-
-    descendants
+    let children_by_parent = child_navigable_ids_by_parent(state);
+    descendant_navigable_ids_matching(state, navigable_id, &children_by_parent, |_| true)
 }
 
 /// <https://html.spec.whatwg.org/multipage/#find-a-navigable-by-target-name>
@@ -1828,11 +1845,13 @@ impl UserAgentWorker {
         );
         // Note: The inclusive-descendant navigable set needed for step 23a is pre-computed here
         // before setting the ongoing navigation so that it reflects the current tree state.
+        let descendant_navigable_ids = descendant_navigable_ids(&self.state, navigable_id);
         let affected_navigable_ids = std::iter::once(navigable_id)
-            .chain(descendant_navigable_ids(&self.state, navigable_id))
+            .chain(descendant_navigable_ids.iter().copied())
             .collect::<Vec<_>>();
         let beforeunload_navigable_ids = affected_navigable_ids
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|candidate_navigable_id| {
                 self.state
                     .nav_document_id(*candidate_navigable_id)
@@ -1844,8 +1863,8 @@ impl UserAgentWorker {
             .iter()
             .copied()
             .collect::<HashSet<_>>();
-        let auto_approved_navigable_ids = std::iter::once(navigable_id)
-            .chain(descendant_navigable_ids(&self.state, navigable_id))
+        let auto_approved_navigable_ids = affected_navigable_ids
+            .into_iter()
             .filter(|candidate_navigable_id| !beforeunload_navigable_id_set.contains(candidate_navigable_id))
             .collect::<Vec<_>>();
 
@@ -2332,11 +2351,14 @@ impl UserAgentWorker {
                     self.state
                         .set_navigable_ongoing_navigation(traversable_id, None);
                 }
-                self.user_event_dispatcher
-                    .send(FormalWebUserEvent::BeforeUnloadCompleted(BeforeUnloadResult {
-                        canceled: true,
-                        ..result
-                    }))
+                self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+                    NavigationCompleted {
+                        webview_id: WebviewId(pending.navigable_id),
+                        status: NavigationCompletion::Aborted {
+                            message: String::from("navigation was canceled by beforeunload"),
+                        },
+                    },
+                ))
             } else {
                 self.continue_navigation_after_before_unload(pending)
             }
@@ -2452,9 +2474,11 @@ impl UserAgentWorker {
         }
         self.handle_rendering_opportunity_for(pending.traversable_id);
         let notify_result = self.user_event_dispatcher.send(
-            FormalWebUserEvent::FinalizeNavigation(FinalizeNavigation {
+            FormalWebUserEvent::NavigationCompleted(NavigationCompleted {
                 webview_id: WebviewId(pending.traversable_id),
-                url: finalized.url.clone(),
+                status: NavigationCompletion::Committed {
+                    url: finalized.url.clone(),
+                },
             }),
         );
 
@@ -2590,6 +2614,8 @@ impl UserAgentWorker {
 
     /// applying the default viewport to the active traversable and its descendants.
     fn handle_set_default_viewport(&mut self, snapshot: (u32, u32, f32, ColorScheme)) {
+        // This follows the embedder's active top-level selection only; inactive top-level
+        // traversables keep their last published viewport until they become active again.
         let active_top_level_traversable_id = self
             .state
             .navigables
@@ -2756,10 +2782,12 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationFailed {
-                    webview_id: WebviewId(pending.traversable_id),
-                    message: error,
-                });
+                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+                    NavigationCompleted {
+                        webview_id: WebviewId(pending.traversable_id),
+                        status: NavigationCompletion::Aborted { message: error },
+                    },
+                ));
                 return;
             }
         };
@@ -2772,10 +2800,12 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationFailed {
-                    webview_id: WebviewId(pending.traversable_id),
-                    message: error,
-                });
+                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+                    NavigationCompleted {
+                        webview_id: WebviewId(pending.traversable_id),
+                        status: NavigationCompletion::Aborted { message: error },
+                    },
+                ));
                 return;
             }
         };
@@ -2846,10 +2876,12 @@ impl UserAgentWorker {
                 );
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationFailed {
-                    webview_id: WebviewId(pending.traversable_id),
-                    message: error,
-                });
+                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+                    NavigationCompleted {
+                        webview_id: WebviewId(pending.traversable_id),
+                        status: NavigationCompletion::Aborted { message: error },
+                    },
+                ));
             }
         }
     }
@@ -2861,10 +2893,14 @@ impl UserAgentWorker {
         };
         self.state
             .set_navigable_ongoing_navigation(pending.traversable_id, None);
-        let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationFailed {
-            webview_id: WebviewId(pending.traversable_id),
-            message: format!("navigation fetch failed for {}", pending.request.url),
-        });
+        let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+            NavigationCompleted {
+                webview_id: WebviewId(pending.traversable_id),
+                status: NavigationCompletion::Aborted {
+                    message: format!("navigation fetch failed for {}", pending.request.url),
+                },
+            },
+        ));
     }
 
     /// the document-fetch watchdog fired by the timer worker.

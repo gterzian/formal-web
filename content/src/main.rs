@@ -379,6 +379,7 @@ struct ContentDocument {
     frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
+    // Latched while an update-the-rendering attempt is queued or waiting on critical resources.
     pending_update_the_rendering: bool,
     pending_document_load: Option<PendingDocumentLoad>,
     navigable_container_states: HashMap<usize, NavigableContainerState>,
@@ -1057,12 +1058,21 @@ impl ContentRuntime {
         traversable_id: NavigableId,
         document_id: DocumentId,
     ) -> Result<(), String> {
+        self.request_render_update(traversable_id, document_id, "command")
+    }
+
+    fn request_render_update(
+        &mut self,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
+        reason: &str,
+    ) -> Result<(), String> {
         let Some(document) = self.documents.get_mut(&document_id) else {
             return Ok(());
         };
         log_render_state_debug(format!(
-            "queue update-the-rendering traversable={} document={}",
-            traversable_id, document_id,
+            "queue update-the-rendering traversable={} document={} reason={}",
+            traversable_id, document_id, reason,
         ));
         document.pending_update_the_rendering = true;
         self.continue_updating_the_rendering(traversable_id, document_id)
@@ -1082,6 +1092,14 @@ impl ContentRuntime {
                 .get_mut(&document_id)
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
+            if !document.pending_update_the_rendering {
+                log_render_state_debug(format!(
+                    "skip paint no pending render traversable={} document={}",
+                    traversable_id, document_id,
+                ));
+                return Ok(());
+            }
+
             document.document.borrow_mut().handle_messages();
 
             if document.document.borrow().has_pending_critical_resources() {
@@ -1091,6 +1109,8 @@ impl ContentRuntime {
                 ));
                 return Ok(());
             }
+
+            document.pending_update_the_rendering = false;
 
             let frame_timestamp_ms = document.settings.current_time_millis();
 
@@ -1154,8 +1174,6 @@ impl ContentRuntime {
                 )?;
                 paint_frame
             };
-
-            document.pending_update_the_rendering = false;
             paint_frame
         };
 
@@ -1201,7 +1219,7 @@ impl ContentRuntime {
                     handler_id, traversable_id, document_id, response_status, response_type, response_url,
                 ));
                 self.continue_document_load(document_id)?;
-                self.continue_updating_the_rendering(traversable_id, document_id)?;
+                self.request_render_update(traversable_id, document_id, "resource_fetch_complete")?;
                 Ok(())
             }
             PendingNetworkHandler::DeferredScript {
@@ -1233,7 +1251,11 @@ impl ContentRuntime {
                     response_url,
                 ));
                 self.continue_document_load(document_id)?;
-                self.continue_updating_the_rendering(traversable_id, document_id)?;
+                self.request_render_update(
+                    traversable_id,
+                    document_id,
+                    "deferred_script_fetch_complete",
+                )?;
                 Ok(())
             }
         }
@@ -1269,7 +1291,7 @@ impl ContentRuntime {
                     handler_id, traversable_id, document_id,
                 ));
                 self.continue_document_load(document_id)?;
-                self.continue_updating_the_rendering(traversable_id, document_id)?;
+                self.request_render_update(traversable_id, document_id, "resource_fetch_failed")?;
                 Ok(())
             }
             PendingNetworkHandler::DeferredScript {
@@ -1287,7 +1309,11 @@ impl ContentRuntime {
                     handler_id, traversable_id, document_id, script_index,
                 ));
                 self.continue_document_load(document_id)?;
-                self.continue_updating_the_rendering(traversable_id, document_id)?;
+                self.request_render_update(
+                    traversable_id,
+                    document_id,
+                    "deferred_script_fetch_failed",
+                )?;
                 Ok(())
             }
         }

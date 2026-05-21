@@ -1,6 +1,3 @@
-mod webdriver;
-mod wpt;
-
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -20,9 +17,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum CommandKind {
-    TestWpt(wpt::TestWptArgs),
+    TestWpt(wpt_runner::TestWptArgs),
     #[command(name = "webdriver")]
-    WebDriver(webdriver::WebDriverArgs),
+    WebDriver(automation::WebDriverArgs),
 }
 
 #[derive(Clone, Default)]
@@ -35,18 +32,53 @@ pub(crate) struct AppRunOptions {
 
 pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
     embedder::set_event_loop_options(embedder::EventLoopOptions {
-        headless: options.headless,
         startup_url: options.startup_url,
         window_title: options.window_title,
     });
 
-    let event_loop_result = embedder::run_event_loop(|dispatcher| {
-        user_agent::UserAgent::start(dispatcher, options.trace_sender.clone())
-            .map(|user_agent| Box::new(user_agent) as Box<dyn UserAgentApi>)
-    });
+    let event_loop_result = if options.headless {
+        embedder::run_headless_event_loop(|dispatcher| {
+            user_agent::UserAgent::start(dispatcher, options.trace_sender.clone())
+                .map(|user_agent| Box::new(user_agent) as Box<dyn UserAgentApi>)
+        })
+    } else {
+        embedder::run_headed_event_loop(|dispatcher| {
+            user_agent::UserAgent::start(dispatcher, options.trace_sender.clone())
+                .map(|user_agent| Box::new(user_agent) as Box<dyn UserAgentApi>)
+        })
+    };
     embedder::clear_event_loop_options();
 
     event_loop_result
+}
+
+fn automation_runtime() -> automation::AutomationRuntime {
+    automation::AutomationRuntime::new(
+        |command| embedder::send_user_event(embedder::FormalWebUserEvent::Automation(command)),
+        || embedder::send_user_event(embedder::FormalWebUserEvent::Exit),
+        embedder::event_loop_is_ready,
+    )
+}
+
+fn run_webdriver(
+    args: automation::WebDriverArgs,
+    trace_sender: Option<TraceSender>,
+) -> Result<(), String> {
+    let server = automation::WebDriverServer::start(
+        args.port,
+        args.exit_on_session_delete,
+        automation_runtime(),
+    )?;
+    let result = run_app_with_options(AppRunOptions {
+        headless: args.headless,
+        startup_url: args
+            .startup_url
+            .or_else(|| Some(String::from("about:blank"))),
+        window_title: Some(format!("formal-web WebDriver :{}", args.port)),
+        trace_sender,
+    });
+    drop(server);
+    result
 }
 
 fn delegated_tla_validate_command() -> Option<ExitCode> {
@@ -87,7 +119,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     if let Some(CommandKind::TestWpt(args)) = cli.command {
-        if let Err(error) = wpt::run(args, cli.verify) {
+        if let Err(error) = wpt_runner::run(args, cli.verify) {
             eprintln!("formal-web: {error}");
             return ExitCode::from(1);
         }
@@ -112,7 +144,7 @@ fn main() -> ExitCode {
             trace_sender: trace_sender.clone(),
             ..AppRunOptions::default()
         }),
-        Some(CommandKind::WebDriver(args)) => webdriver::run(args, trace_sender.clone()),
+        Some(CommandKind::WebDriver(args)) => run_webdriver(args, trace_sender.clone()),
         Some(CommandKind::TestWpt(_)) => unreachable!(),
     };
     drop(trace_sender);
