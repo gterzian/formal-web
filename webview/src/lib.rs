@@ -4,7 +4,7 @@ pub mod ui_event;
 use anyrender::Scene as RenderScene;
 use blitz_traits::events::UiEvent;
 use blitz_traits::shell::ColorScheme;
-use compositor::{Compositor, VisibleFrameViewport};
+use compositor::Compositor;
 use ipc_messages::content::{
     FontTransportReceiver, FrameId, NavigableId, NavigateRequest, PaintFrame,
     UserNavigationInvolvement, WebviewId,
@@ -13,6 +13,8 @@ use std::env;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+
+pub use compositor::VisibleFrameViewport;
 
 #[derive(Clone)]
 pub struct WebviewState {
@@ -281,6 +283,17 @@ impl WebviewProvider {
         };
         self.publish_visible_child_viewports(viewports);
         scene
+    }
+
+    pub fn visible_frame_viewports(&mut self, webview_id: WebviewId) -> Vec<VisibleFrameViewport> {
+        let viewports = {
+            let Some(state) = self.webviews.get_mut(&webview_id) else {
+                return Vec::new();
+            };
+            state.compositor.visible_frame_viewports(&self.font_receiver)
+        };
+        self.publish_visible_child_viewports(viewports.clone());
+        viewports
     }
 
     pub fn current_navigable_id(&self, webview_id: WebviewId) -> Option<NavigableId> {
