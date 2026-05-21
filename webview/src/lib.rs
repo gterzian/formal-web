@@ -245,6 +245,7 @@ impl WebviewProvider {
     }
 
     pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
+        let source_webview_id = frame.traversable_id;
         println!(
             "webview: received paint frame for traversable {} frame {} ({}x{})",
             frame.traversable_id.0, frame.frame_id.0, frame.viewport_width, frame.viewport_height
@@ -288,6 +289,22 @@ impl WebviewProvider {
         // receives the correct viewport before the next user input-driven composition pass.
         let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
         self.publish_visible_child_viewports(viewports);
+
+        if let Some(expected) = self.published_child_viewports.get(&source_webview_id)
+            && (expected.width != viewport_width || expected.height != viewport_height)
+        {
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][webview] child_viewport_mismatch child_webview={} painted=({},{}) expected=({},{})",
+                    source_webview_id.0,
+                    viewport_width,
+                    viewport_height,
+                    expected.width,
+                    expected.height,
+                );
+            }
+            self.note_rendering_opportunity(source_webview_id, "child_viewport_mismatch");
+        }
 
         self.embedder.request_redraw(traversable_id);
         Ok(())

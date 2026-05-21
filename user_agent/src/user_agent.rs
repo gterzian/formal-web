@@ -331,6 +331,9 @@ pub struct UserAgentState {
     pub event_loops: HashMap<EventLoopId, EventLoopEntry>,
     /// reverse index from top-level traversable ids to the owning event-loop id.
     pub traversable_handles: HashMap<NavigableId, EventLoopId>,
+    /// last published viewport per traversable; replayed when ownership moves to a new
+    /// content event loop (for example cross-origin child navigations).
+    pub traversable_viewports: HashMap<NavigableId, ((u32, u32, f32, ColorScheme), f32, f32)>,
     /// cache of each traversable's active target name derived from
     /// `traversable_set`.
     pub traversable_target_names: HashMap<NavigableId, String>,
@@ -446,6 +449,7 @@ impl Default for UserAgentState {
             top_level_browsing_context_group_ids: HashMap::new(),
             event_loops: HashMap::new(),
             traversable_handles: HashMap::new(),
+            traversable_viewports: HashMap::new(),
             traversable_target_names: HashMap::new(),
             active_documents_by_traversable: HashMap::new(),
             documents: HashMap::new(),
@@ -675,6 +679,7 @@ impl UserAgentState {
 
         self.navigables.remove(&traversable_id);
         self.traversable_handles.remove(&traversable_id);
+        self.traversable_viewports.remove(&traversable_id);
         self.traversable_target_names.remove(&traversable_id);
         self.active_documents_by_traversable.remove(&traversable_id);
 
@@ -2293,6 +2298,16 @@ impl UserAgentWorker {
             navigable.event_loop_id = Some(agent.event_loop_id);
             navigable.handle = Some(new_event_loop_id);
         }
+        if let Some((snapshot, offset_x, offset_y)) = self
+            .state
+            .traversable_viewports
+            .get(&traversable_id)
+            .copied()
+        {
+            // Keep cross-origin child documents from booting with fallback viewport state
+            // after event-loop migration.
+            self.handle_set_traversable_viewport(traversable_id, snapshot, offset_x, offset_y);
+        }
         if let Some(old_event_loop_id) = old_event_loop_to_stop {
             self.stop_event_loop_handle(old_event_loop_id)?;
         }
@@ -2638,6 +2653,10 @@ impl UserAgentWorker {
         offset_x: f32,
         offset_y: f32,
     ) {
+        self.state
+            .traversable_viewports
+            .insert(traversable_id, (snapshot, offset_x, offset_y));
+
         let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
             return;
         };
