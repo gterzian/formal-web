@@ -1638,7 +1638,8 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 };
                 match provider.on_paint_frame(snapshot) {
                     Ok(()) => {
-                    self.complete_pending_automation_navigation_if_ready();
+                        self.complete_pending_automation_navigation_if_ready();
+                        self.request_window_redraw();
                     }
                     Err(error) => {
                         eprintln!("paint error: {error}");

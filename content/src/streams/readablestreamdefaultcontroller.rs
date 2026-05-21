@@ -793,5 +793,8 @@ pub(crate) fn extract_source_method(
         JsNativeError::typ().with_message(format!("underlying source {name} must be callable"))
     })?;
 
-    Ok(Some(SourceMethod::new(source_object.clone(), callback)))
+    Ok(Some(SourceMethod::new(
+        source_object.clone(),
+        crate::webidl::Callback::from_object(callback),
+    )))
 }

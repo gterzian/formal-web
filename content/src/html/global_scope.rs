@@ -13,6 +13,8 @@ use ipc_messages::content::{
     WindowTimerRequest,
 };
 
+use crate::webidl::Callback;
+
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
 }
@@ -48,7 +50,7 @@ pub struct AnimationFrameCallback {
     pub handle: u32,
 
     /// <https://webidl.spec.whatwg.org/#idl-callback-function>
-    pub callback: JsObject,
+    pub callback: Callback,
 }
 
 /// <https://html.spec.whatwg.org/#timers>
@@ -56,7 +58,7 @@ pub struct AnimationFrameCallback {
 pub enum TimerHandler {
     Function {
         /// <https://webidl.spec.whatwg.org/#idl-callback-function>
-        callback: JsObject,
+        callback: Callback,
     },
     String {
         /// <https://html.spec.whatwg.org/#timerhandler>
@@ -231,7 +233,7 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#dom-animationframeprovider-requestanimationframe>
-    pub(crate) fn request_animation_frame(&self, callback: JsObject) -> u32 {
+    pub(crate) fn request_animation_frame(&self, callback: Callback) -> u32 {
         let callbacks = self.animation_frame_callbacks.borrow();
         let mut handle = self.animation_frame_callback_identifier.get();
 
@@ -463,7 +465,7 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
-    pub(crate) fn take_animation_frame_callbacks(&self) -> Vec<JsObject> {
+    pub(crate) fn take_animation_frame_callbacks(&self) -> Vec<Callback> {
         let callback_handles: Vec<u32> = self
             .animation_frame_callbacks
             .borrow()

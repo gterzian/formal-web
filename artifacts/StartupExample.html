@@ -458,8 +458,8 @@
         signalActive = !signalActive;
         const active = String(signalActive);
         accentToggleButton.setAttribute("aria-pressed", active);
-        accentToggleButton.dataset.active = active;
-        signalCard.dataset.active = active;
+        accentToggleButton.setAttribute("data-active", active);
+        signalCard.setAttribute("data-active", active);
         signalState.textContent = signalActive ? "Signal armed" : "Signal idle";
       });
 

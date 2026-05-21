@@ -1,6 +1,7 @@
 use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue};
 
 use crate::html::{GlobalScope, TimerHandler, Window};
+use crate::webidl::Callback;
 
 /// <https://html.spec.whatwg.org/#windoworworkerglobalscope>
 pub(crate) trait WindowOrWorkerGlobalScope {
@@ -125,7 +126,7 @@ fn timer_handler(value: &JsValue, context: &mut Context) -> JsResult<TimerHandle
     if let Some(object) = value.as_object() {
         if object.is_callable() {
             return Ok(TimerHandler::Function {
-                callback: object.clone(),
+                callback: Callback::from_object(object.clone()),
             });
         }
     }

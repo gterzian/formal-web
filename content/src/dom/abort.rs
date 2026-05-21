@@ -7,7 +7,7 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::boa::with_event_target_mut;
 use crate::streams::PipeToState;
-use crate::webidl::EcmascriptHost;
+use crate::webidl::{Callback, EcmascriptHost};
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 
@@ -94,7 +94,9 @@ struct AbortSignalState {
 
     source_signals: Vec<AbortSignal>,
     dependent_signals: Vec<AbortSignal>,
-    onabort: Option<JsObject>,
+
+    /// <https://dom.spec.whatwg.org/#dom-abortsignal-onabort>
+    onabort: Option<Callback>,
 }
 
 impl AbortSignalState {
@@ -168,12 +170,12 @@ impl AbortSignal {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-abortsignal-onabort>
-    pub(crate) fn onabort_value(&self) -> Option<JsObject> {
+    pub(crate) fn onabort_value(&self) -> Option<Callback> {
         self.shared.borrow().onabort.clone()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-abortsignal-onabort>
-    pub(crate) fn replace_onabort(&self, callback: Option<JsObject>) -> Option<JsObject> {
+    pub(crate) fn replace_onabort(&self, callback: Option<Callback>) -> Option<Callback> {
         let mut state = self.shared.borrow_mut();
         mem::replace(&mut state.onabort, callback)
     }

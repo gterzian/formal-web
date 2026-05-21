@@ -1,19 +1,19 @@
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue,
+    Context, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
     object::{
         JsObject, ObjectInitializer,
-        builtins::{JsFunction, JsPromise},
+        builtins::JsPromise,
     },
     property::Attribute,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::webidl::{
-    EcmascriptHost, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
-    rejected_promise,
+    Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function,
+    mark_promise_as_handled, rejected_promise,
 };
 
 use super::readablestream::{
@@ -37,19 +37,18 @@ pub(crate) enum ReadableStreamState {
     Closed,
     Errored,
 }
-/// `SetUpReadableStreamDefaultControllerFromUnderlyingSource` passes into Web IDL callback
-/// invocation.
+/// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller-from-underlying-source>
+// Note: This carrier stores an underlying source method together with its callback `this` value so the surrounding Streams algorithms can later invoke it through Web IDL callback invocation.
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct SourceMethod {
     this_value: JsObject,
 
-    /// <https://webidl.spec.whatwg.org/#dfn-callback-function>
-    callback: JsObject,
+    /// <https://webidl.spec.whatwg.org/#idl-callback-function>
+    callback: Callback,
 }
 
 impl SourceMethod {
-    /// Web IDL invocation.
-    pub(crate) fn new(this_value: JsObject, callback: JsObject) -> Self {
+    pub(crate) fn new(this_value: JsObject, callback: Callback) -> Self {
         Self {
             this_value,
             callback,
@@ -58,7 +57,7 @@ impl SourceMethod {
 
     /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
     pub(crate) fn call(&self, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-        let mut host = ContextCallbackHost::new(context);
+        let mut host = ContextCallbackHost::new(context, "stream callback");
         let this_value = JsValue::from(self.this_value.clone());
         invoke_callback_function(
             &mut host,
@@ -69,51 +68,7 @@ impl SourceMethod {
         )
     }
 }
-/// readable-stream algorithms.
-struct ContextCallbackHost<'a> {
-    context: &'a mut Context,
-}
-
-impl<'a> ContextCallbackHost<'a> {
-    fn new(context: &'a mut Context) -> Self {
-        Self { context }
-    }
-}
-
-impl EcmascriptHost for ContextCallbackHost<'_> {
-    fn context(&mut self) -> &mut Context {
-        self.context
-    }
-
-    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        object.get(js_string!(property), self.context)
-    }
-
-    fn is_callable(&self, object: &JsObject) -> bool {
-        object.is_callable()
-    }
-
-    fn call(
-        &mut self,
-        callable: &JsObject,
-        this_arg: &JsValue,
-        args: &[JsValue],
-    ) -> JsResult<JsValue> {
-        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
-            JsError::from(JsNativeError::typ().with_message("callback is not callable"))
-        })?;
-        function.call(this_arg, args, self.context)
-    }
-
-    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        self.context.run_jobs()
-    }
-
-    fn report_exception(&mut self, error: JsError, _callback: &JsObject) {
-        eprintln!("uncaught stream callback error: {error}");
-    }
-}
-/// produces a chunk, closes, or errors.
+// A read request either produces a chunk, closes, or errors.
 #[derive(Clone, Trace, Finalize)]
 pub(crate) enum ReadRequest {
     DefaultReaderRead {

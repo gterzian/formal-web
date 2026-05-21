@@ -97,6 +97,12 @@ pub(crate) fn register_document_methods(class: &mut ClassBuilder<'_>) -> JsResul
             Some(NativeFunction::from_fn_ptr(get_title).to_js_function(&realm)),
             Some(NativeFunction::from_fn_ptr(set_title).to_js_function(&realm)),
             Attribute::all(),
+        )
+        .accessor(
+            js_string!("dir"),
+            Some(NativeFunction::from_fn_ptr(get_dir).to_js_function(&realm)),
+            Some(NativeFunction::from_fn_ptr(set_dir).to_js_function(&realm)),
+            Attribute::all(),
         );
     Ok(())
 }
@@ -272,6 +278,21 @@ fn set_title(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResul
     })?;
     invalidate_cached_node_ids(context, &dropped_node_ids)?;
     with_document(this, |document| document.set_title(&title))?;
+    Ok(JsValue::undefined())
+}
+
+fn get_dir(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    with_document(this, |document| {
+        JsValue::from(JsString::from(document.dir().as_str()))
+    })
+}
+
+fn set_dir(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let dir = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    with_document(this, |document| document.set_dir(&dir))?;
     Ok(JsValue::undefined())
 }
 

@@ -7,7 +7,7 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::html::HTMLElement;
+use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
 
 use crate::boa::bindings::dom::{
     register_element_methods, register_event_target_methods, register_node_methods,
@@ -38,10 +38,22 @@ fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -
     let object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("HTMLElement receiver is not an object")
     })?;
-    let html_element = object
-        .downcast_ref::<HTMLElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLElement"))?;
-    Ok(f(&html_element))
+
+    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
+        return Ok(f(&html_element));
+    }
+
+    if let Some(anchor) = object.downcast_ref::<HTMLAnchorElement>() {
+        return Ok(f(&anchor.html_element));
+    }
+
+    if let Some(iframe) = object.downcast_ref::<HTMLIFrameElement>() {
+        return Ok(f(&iframe.html_element));
+    }
+
+    Err(JsNativeError::typ()
+        .with_message("receiver is not an HTMLElement")
+        .into())
 }
 
 pub(crate) fn register_html_element_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {

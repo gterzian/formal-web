@@ -2,6 +2,8 @@ use blitz_traits::events::{DomEvent, EventState};
 use boa_engine::{JsData, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
 
+use crate::webidl::Callback;
+
 use super::{AbortAlgorithm, AbortSignal};
 
 pub const NONE: u16 = 0;
@@ -11,7 +13,7 @@ pub const BUBBLING_PHASE: u16 = 3;
 
 /// <https://dom.spec.whatwg.org/#concept-event-listener>
 #[derive(Clone, Trace, Finalize, JsData)]
-pub struct EventListener {
+pub(crate) struct EventListener {
     #[unsafe_ignore_trace]
     pub id: u64,
 
@@ -20,7 +22,7 @@ pub struct EventListener {
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-callback>
-    pub callback: Option<JsObject>,
+    pub callback: Option<Callback>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-capture>
     #[unsafe_ignore_trace]
@@ -46,7 +48,7 @@ pub struct EventListener {
 #[derive(Default, Trace, Finalize, JsData)]
 pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
-    pub event_listener_list: Vec<EventListener>,
+    pub(crate) event_listener_list: Vec<EventListener>,
 
     #[unsafe_ignore_trace]
     next_listener_id: u64,
@@ -58,7 +60,7 @@ impl EventTarget {
         &mut self,
         event_target: &JsObject,
         type_: String,
-        callback: Option<JsObject>,
+        callback: Option<Callback>,
         capture: bool,
         once: bool,
         passive: Option<bool>,
@@ -82,7 +84,7 @@ impl EventTarget {
                 && listener
                     .callback
                     .as_ref()
-                    .is_some_and(|existing| JsObject::equals(existing, &callback))
+                    .is_some_and(|existing| existing.equals(&callback))
         });
 
         if !duplicate {
@@ -113,7 +115,7 @@ impl EventTarget {
     pub(crate) fn remove_event_listener_entry(
         &mut self,
         type_: &str,
-        callback: &JsObject,
+        callback: &Callback,
         capture: bool,
     ) {
         for listener in &mut self.event_listener_list {
@@ -122,7 +124,7 @@ impl EventTarget {
                 && listener
                     .callback
                     .as_ref()
-                    .is_some_and(|existing| JsObject::equals(existing, callback))
+                    .is_some_and(|existing| existing.equals(callback))
             {
                 listener.removed = true;
             }

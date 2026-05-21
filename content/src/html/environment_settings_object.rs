@@ -2,12 +2,12 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsString, JsValue, Source,
+    Context, JsError, JsNativeError, JsResult, JsValue, Source,
     class::Class,
     context::{ContextBuilder, HostHooks, intrinsics::Intrinsics},
     job::SimpleJobExecutor,
     js_string,
-    object::{JsObject, builtins::JsFunction},
+    object::JsObject,
     property::Attribute,
 };
 use boa_runtime::extensions::{RuntimeExtension, StructuredCloneExtension};
@@ -35,7 +35,10 @@ use crate::streams::{
     WritableStreamDefaultController, WritableStreamDefaultWriter,
     TransformStream, TransformStreamDefaultController,
 };
-use crate::webidl::{EcmascriptHost, ExceptionBehavior, invoke_callback_function};
+use crate::webidl::{
+    Callback, ContextCallbackHost, EcmascriptHost, ExceptionBehavior,
+    invoke_callback_function,
+};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent};
 
@@ -96,10 +99,10 @@ impl HostHooks for WindowHostHooks {
     fn create_global_object(&self, intrinsics: &Intrinsics) -> JsObject {
         JsObject::from_proto_and_data(
             intrinsics.constructors().object().prototype(),
-            Window {
-                event_target: EventTarget::default(),
-                global_scope: GlobalScope::new(GlobalScopeKind::Window, Rc::clone(&self.document)),
-            },
+            Window::new(GlobalScope::new(
+                GlobalScopeKind::Window,
+                Rc::clone(&self.document),
+            )),
         )
     }
 }
@@ -284,8 +287,9 @@ impl EnvironmentSettingsObject {
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
+            let mut host = ContextCallbackHost::new(&mut self.context, "animation frame callback");
             invoke_callback_function(
-                self,
+                &mut host,
                 &callback,
                 &[JsValue::from(now)],
                 ExceptionBehavior::Report,
@@ -340,14 +344,14 @@ impl EnvironmentSettingsObject {
                     timer_id, timer_key
                 ));
                 let global = JsValue::from(self.context.global_object());
-                let callback_result = (|| {
-                    let function = JsFunction::from_object(callback.clone()).ok_or_else(|| {
-                        JsError::from(
-                            JsNativeError::typ().with_message("timer callback is not callable"),
-                        )
-                    })?;
-                    function.call(&global, &timer.arguments, &mut self.context)
-                })();
+                let mut host = ContextCallbackHost::new(&mut self.context, "timer callback");
+                let callback_result = invoke_callback_function(
+                    &mut host,
+                    callback,
+                    &timer.arguments,
+                    ExceptionBehavior::Report,
+                    Some(&global),
+                );
                 if let Err(error) = callback_result {
                     eprintln!("content error: {error}");
                 }
@@ -426,11 +430,14 @@ impl EcmascriptHost for EnvironmentSettingsObject {
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        object.get(JsString::from(property), &mut self.context)
+        ContextCallbackHost::new(&mut self.context, "event listener").get(object, property)
     }
 
-    fn is_callable(&self, object: &JsObject) -> bool {
-        object.is_callable()
+    fn is_callable(&self, value: &JsValue) -> bool {
+        match value.as_object() {
+            Some(object) => object.is_callable(),
+            None => false,
+        }
     }
 
     fn call(
@@ -439,18 +446,18 @@ impl EcmascriptHost for EnvironmentSettingsObject {
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> JsResult<JsValue> {
-        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
-            JsError::from(JsNativeError::typ().with_message("callback is not callable"))
-        })?;
-        function.call(this_arg, args, &mut self.context)
+        ContextCallbackHost::new(&mut self.context, "event listener")
+            .call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        self.context.run_jobs()
+        ContextCallbackHost::new(&mut self.context, "event listener")
+            .perform_a_microtask_checkpoint()
     }
 
-    fn report_exception(&mut self, error: JsError, _callback: &JsObject) {
-        eprintln!("uncaught event listener error: {error}");
+    fn report_exception(&mut self, error: JsError, callback: &Callback) {
+        ContextCallbackHost::new(&mut self.context, "event listener")
+            .report_exception(error, callback)
     }
 }
 

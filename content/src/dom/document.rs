@@ -6,7 +6,20 @@ use boa_gc::{Finalize, Trace};
 use html5ever::{LocalName, QualName, ns};
 use url::Url;
 
-use super::Node;
+use super::{Element, Node};
+use crate::infra::strip_and_collapse_ascii_whitespace;
+
+fn canonical_document_dir(value: &str) -> &str {
+    if value.eq_ignore_ascii_case("ltr") {
+        "ltr"
+    } else if value.eq_ignore_ascii_case("rtl") {
+        "rtl"
+    } else if value.eq_ignore_ascii_case("auto") {
+        "auto"
+    } else {
+        ""
+    }
+}
 
 /// <https://dom.spec.whatwg.org/#interface-document>
 #[derive(Trace, Finalize, JsData)]
@@ -137,12 +150,22 @@ impl Document {
 
     /// <https://html.spec.whatwg.org/#document.title>
     pub(crate) fn title(&self) -> String {
-        self.node
+        // Step 1: "If the document element is an SVG svg element, then let value be the child text content of the first SVG title element that is a child of the document element."
+        // Note: The current WPT coverage here exercises HTML documents, so this getter currently follows the HTML branch below.
+
+        // Step 2: "Otherwise, let value be the child text content of the title element, or the empty string if the title element is null."
+        let value = self.node
             .document
             .borrow()
             .find_title_node()
             .map(|node| node.text_content())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        // Step 3: "Strip and collapse ASCII whitespace in value."
+        let value = strip_and_collapse_ascii_whitespace(&value);
+
+        // Step 4: "Return value."
+        value
     }
 
     /// <https://html.spec.whatwg.org/#document.title>
@@ -155,6 +178,23 @@ impl Document {
             .map(|node| node.id);
         if let Some(title_node_id) = title_node_id {
             Node::new(Rc::clone(&self.node.document), title_node_id).set_text_content(Some(title));
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-dir>
+    pub(crate) fn dir(&self) -> String {
+        self.document_element()
+            .and_then(|node_id| {
+                Element::new(Rc::clone(&self.node.document), node_id).get_attribute("dir")
+            })
+            .map(|value| canonical_document_dir(&value).to_string())
+            .unwrap_or_default()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-dir>
+    pub(crate) fn set_dir(&self, dir: &str) {
+        if let Some(node_id) = self.document_element() {
+            Element::new(Rc::clone(&self.node.document), node_id).set_attribute("dir", dir);
         }
     }
 }

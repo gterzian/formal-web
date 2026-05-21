@@ -67,7 +67,9 @@ pub(crate) fn invalidate_cached_node_ids(context: &Context, node_ids: &[usize]) 
     })
 }
 
-pub(crate) fn take_animation_frame_callbacks(context: &Context) -> JsResult<Vec<JsObject>> {
+pub(crate) fn take_animation_frame_callbacks(
+    context: &Context,
+) -> JsResult<Vec<crate::webidl::Callback>> {
     with_global_scope(context, |global_scope| {
         Ok(global_scope.take_animation_frame_callbacks())
     })

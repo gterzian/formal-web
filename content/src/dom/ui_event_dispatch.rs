@@ -3,12 +3,12 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
 use blitz_traits::events::{DomEvent, EventState, UiEvent};
 use boa_engine::class::Class;
-use boa_engine::{Context, JsResult, object::JsObject};
+use boa_engine::{Context, JsResult, JsValue, object::JsObject};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
-use crate::webidl::EcmascriptHost;
+use crate::webidl::{Callback, ContextCallbackHost, EcmascriptHost};
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -292,11 +292,14 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<boa_engine::JsValue> {
-        self.settings.get(object, property)
+        ContextCallbackHost::new(&mut self.settings.context, "event listener").get(object, property)
     }
 
-    fn is_callable(&self, object: &JsObject) -> bool {
-        self.settings.is_callable(object)
+    fn is_callable(&self, value: &JsValue) -> bool {
+        match value.as_object() {
+            Some(object) => object.is_callable(),
+            None => false,
+        }
     }
 
     fn call(
@@ -305,15 +308,18 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
         this_arg: &boa_engine::JsValue,
         args: &[boa_engine::JsValue],
     ) -> JsResult<boa_engine::JsValue> {
-        self.settings.call(callable, this_arg, args)
+        ContextCallbackHost::new(&mut self.settings.context, "event listener")
+            .call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        <EnvironmentSettingsObject as EcmascriptHost>::perform_a_microtask_checkpoint(self.settings)
+        ContextCallbackHost::new(&mut self.settings.context, "event listener")
+            .perform_a_microtask_checkpoint()
     }
 
-    fn report_exception(&mut self, error: boa_engine::JsError, callback: &JsObject) {
-        self.settings.report_exception(error, callback)
+    fn report_exception(&mut self, error: boa_engine::JsError, callback: &Callback) {
+        ContextCallbackHost::new(&mut self.settings.context, "event listener")
+            .report_exception(error, callback)
     }
 }
 

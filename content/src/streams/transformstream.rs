@@ -268,7 +268,8 @@ fn initialize_transform_stream(
     let stream_for_write = stream.clone();
     let write_algorithm = WriteAlgorithm::JavaScript(SourceMethod::new(
         context.global_object(),
-        NativeFunction::from_copy_closure_with_captures(
+        crate::webidl::Callback::from_object(
+            NativeFunction::from_copy_closure_with_captures(
             |_, args, stream: &TransformStream, context| {
                 // Step 2.1: "Return ! TransformStreamDefaultSinkWriteAlgorithm(stream, chunk)."
                 let chunk = args.get_or_undefined(0).clone();
@@ -279,13 +280,15 @@ fn initialize_transform_stream(
         )
         .to_js_function(context.realm())
         .into(),
+        ),
     ));
 
     // Step 3: "Let abortAlgorithm be the following steps, taking a reason argument:"
     let stream_for_abort = stream.clone();
     let abort_algorithm = AbortAlgorithm::JavaScript(SourceMethod::new(
         context.global_object(),
-        NativeFunction::from_copy_closure_with_captures(
+        crate::webidl::Callback::from_object(
+            NativeFunction::from_copy_closure_with_captures(
             |_, args, stream: &TransformStream, context| {
                 // Step 3.1: "Return ! TransformStreamDefaultSinkAbortAlgorithm(stream, reason)."
                 let reason = args.get_or_undefined(0).clone();
@@ -296,13 +299,15 @@ fn initialize_transform_stream(
         )
         .to_js_function(context.realm())
         .into(),
+        ),
     ));
 
     // Step 4: "Let closeAlgorithm be the following steps:"
     let stream_for_close = stream.clone();
     let close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(
         context.global_object(),
-        NativeFunction::from_copy_closure_with_captures(
+        crate::webidl::Callback::from_object(
+            NativeFunction::from_copy_closure_with_captures(
             |_, _, stream: &TransformStream, context| {
                 // Step 4.1: "Return ! TransformStreamDefaultSinkCloseAlgorithm(stream)."
                 let promise = transform_stream_default_sink_close_algorithm(stream.clone(), context)?;
@@ -312,6 +317,7 @@ fn initialize_transform_stream(
         )
         .to_js_function(context.realm())
         .into(),
+        ),
     ));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."
@@ -498,7 +504,7 @@ fn set_up_transform_stream_default_controller_from_transformer(
         if let Some(transform) = get_callable_method(transformer_obj, "transform", context)? {
             transform_algorithm = TransformAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
-                transform,
+                crate::webidl::Callback::from_object(transform),
             ));
         }
 
@@ -506,7 +512,7 @@ fn set_up_transform_stream_default_controller_from_transformer(
         if let Some(flush) = get_callable_method(transformer_obj, "flush", context)? {
             flush_algorithm = FlushAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
-                flush,
+                crate::webidl::Callback::from_object(flush),
             ));
         }
 
@@ -514,7 +520,7 @@ fn set_up_transform_stream_default_controller_from_transformer(
         if let Some(cancel) = get_callable_method(transformer_obj, "cancel", context)? {
             cancel_algorithm = TransformCancelAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
-                cancel,
+                crate::webidl::Callback::from_object(cancel),
             ));
         }
     }
@@ -1201,7 +1207,10 @@ pub(crate) fn construct_transform_stream(
     if let Some(ref transformer_obj) = transformer_object {
         if let Some(start) = get_callable_method(transformer_obj, "start", context)? {
             let controller_value = JsValue::from(controller.controller_object()?);
-            let source_method = SourceMethod::new(transformer_obj.clone(), start);
+            let source_method = SourceMethod::new(
+                transformer_obj.clone(),
+                crate::webidl::Callback::from_object(start),
+            );
             let result = source_method.call(&[controller_value], context)?;
             start_resolvers
                 .resolve
