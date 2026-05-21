@@ -6,4 +6,4 @@ The `webview` crate owns per-webview compositor state: committed paint frames, s
 - Hit testing and event routing operate on the same composed-frame geometry used for painting, including child-frame transforms and visibility.
 - Root webviews track the focused composed frame so non-positional input routes to the correct content traversable.
 - `EmbedderApi` keeps redraw signaling and similar host integration abstract.
-- Navigation, viewport updates, and window-specific messaging stay in the embedder crate, which wraps `WebviewProvider` with the owned user-agent handle and platform state.
+- Navigation requests, viewport updates, and window-specific messaging still enter through the embedder event loop, while `WebviewProvider` keeps the owned user-agent handle encapsulated behind its compositor-facing API.

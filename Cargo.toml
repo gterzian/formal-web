@@ -11,6 +11,7 @@ name = "formal-web"
 path = "src/main.rs"
 
 [dependencies]
+automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
 content = { path = "content" }
 embedder = { path = "embedder" }
@@ -18,6 +19,7 @@ net = { path = "net" }
 user_agent = { path = "user_agent" }
 verification = { path = "verification" }
 webview = { path = "webview" }
+wpt_runner = { path = "tests/wpt_runner" }
 ipc-channel = "0.21"
 ipc_messages = { path = "ipc_messages" }
 libc = "0.2"

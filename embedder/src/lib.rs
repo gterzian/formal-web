@@ -1,7 +1,12 @@
 mod chrome;
+mod headless;
 pub use webview::ui_event;
 
 use crate::chrome::{ChromeAction, ChromeUi, ChromeViewState};
+use crate::headless::HeadlessEmbedderApp;
+use automation::{
+    AutomationCommand, AutomationController, AutomationHost, AutomationSnapshot,
+};
 use anyrender::{PaintScene, WindowRenderer};
 use anyrender_vello::VelloWindowRenderer;
 use blitz_traits::events::{
@@ -11,7 +16,7 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
-use ipc_messages::content::{BeforeUnloadResult, NavigableId, PaintFrame, WebviewId};
+use ipc_messages::content::{NavigableId, PaintFrame, WebviewId};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use serde_json::Value;
@@ -35,15 +40,20 @@ use winit::window::{Cursor, Window, WindowAttributes, WindowId};
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
 #[derive(Clone, Default)]
 pub struct EventLoopOptions {
-    pub headless: bool,
     pub startup_url: Option<String>,
     pub window_title: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FinalizeNavigation {
+pub enum NavigationCompletion {
+    Committed { url: String },
+    Aborted { message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NavigationCompleted {
     pub webview_id: WebviewId,
-    pub url: String,
+    pub status: NavigationCompletion,
 }
 
 #[derive(Clone)]
@@ -63,7 +73,7 @@ impl UserEventDispatcher {
     }
 }
 
-struct WinitEmbedderApi {
+struct EventLoopEmbedderApi {
     dispatcher: UserEventDispatcher,
 }
 
@@ -124,7 +134,7 @@ impl ShellProvider for WinitShellProvider {
     }
 }
 
-impl EmbedderApi for WinitEmbedderApi {
+impl EmbedderApi for EventLoopEmbedderApi {
     fn request_redraw(&self, webview_id: WebviewId) {
         let _ = self
             .dispatcher
@@ -142,9 +152,7 @@ pub enum FormalWebUserEvent {
     Paint(PaintFrame),
     RequestRedraw(WebviewId),
     NavigationRequested { webview_id: WebviewId, destination_url: String },
-    NavigationFailed { webview_id: WebviewId, message: String },
-    BeforeUnloadCompleted(BeforeUnloadResult),
-    FinalizeNavigation(FinalizeNavigation),
+    NavigationCompleted(NavigationCompleted),
     NewTopLevelTraversable(WebviewId, String),
     Automation(AutomationCommand),
     ClipboardRead {
@@ -158,52 +166,8 @@ pub enum FormalWebUserEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AutomationSnapshot {
-    pub webview_id: Option<WebviewId>,
-    pub current_url: Option<String>,
-    pub displayed_url: String,
-    pub navigable_id: Option<NavigableId>,
-    pub has_top_level_traversable: bool,
-}
-
-pub enum AutomationCommand {
-    Snapshot {
-        reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
-    },
-    Navigate {
-        url: String,
-        reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
-    },
-    Click {
-        x: f32,
-        y: f32,
-        reply: mpsc::Sender<Result<(), String>>,
-    },
-    ClickElement {
-        selector: String,
-        reply: mpsc::Sender<Result<(), String>>,
-    },
-    Scroll {
-        x: f32,
-        y: f32,
-        delta_x: f32,
-        delta_y: f32,
-        reply: mpsc::Sender<Result<(), String>>,
-    },
-    EvaluateScript {
-        source: String,
-        timeout: Duration,
-        reply: mpsc::Sender<Result<Value, String>>,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingNavigation {
     url: String,
-}
-
-struct PendingAutomationNavigation {
-    reply: mpsc::Sender<Result<AutomationSnapshot, String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -278,13 +242,13 @@ impl BrowserState {
     }
 }
 
-struct FormalWebApp {
+struct HeadedEmbedderApp {
     window: Option<Arc<Window>>,
     renderer: VelloWindowRenderer,
     chrome: Option<ChromeUi>,
     browser: BrowserState,
+    automation: AutomationController,
     provider: Option<WebviewProvider>,
-    user_agent: Option<Box<dyn UserAgentApi>>,
     current_webview_id: Option<WebviewId>,
     has_top_level_traversable: bool,
     window_occluded: bool,
@@ -292,7 +256,6 @@ struct FormalWebApp {
     keyboard_modifiers: Modifiers,
     buttons: MouseEventButtons,
     pointer_pos: PhysicalPosition<f64>,
-    pending_automation_navigation: Option<PendingAutomationNavigation>,
 }
 
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
@@ -364,117 +327,18 @@ pub fn clipboard_set_text(text: String, timeout: Duration) -> Result<(), String>
     })?
 }
 
-pub fn automation_is_ready() -> bool {
+pub fn event_loop_is_ready() -> bool {
     with_event_loop_proxy(|proxy| proxy.is_some())
 }
 
-pub fn automation_snapshot(timeout: std::time::Duration) -> Result<AutomationSnapshot, String> {
-    let (reply, receiver) = mpsc::channel();
-    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::Snapshot {
-        reply,
-    }))?;
-    receiver.recv_timeout(timeout).map_err(|error| {
-        format!(
-            "timed out after {} ms waiting for automation snapshot: {error}",
-            timeout.as_millis()
-        )
-    })?
-}
-
-pub fn automation_navigate(
-    url: &str,
-    timeout: std::time::Duration,
-) -> Result<AutomationSnapshot, String> {
-    let (reply, receiver) = mpsc::channel();
-    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::Navigate {
-        url: url.to_owned(),
-        reply,
-    }))?;
-    receiver.recv_timeout(timeout).map_err(|error| {
-        format!(
-            "timed out after {} ms waiting for navigation to complete: {error}",
-            timeout.as_millis()
-        )
-    })?
-}
-
-pub fn automation_click(x: f32, y: f32, timeout: std::time::Duration) -> Result<(), String> {
-    let (reply, receiver) = mpsc::channel();
-    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::Click {
-        x,
-        y,
-        reply,
-    }))?;
-    receiver.recv_timeout(timeout).map_err(|error| {
-        format!(
-            "timed out after {} ms waiting for automation click delivery: {error}",
-            timeout.as_millis()
-        )
-    })?
-}
-
-pub fn automation_click_element(
-    selector: &str,
-    timeout: std::time::Duration,
-) -> Result<(), String> {
-    let (reply, receiver) = mpsc::channel();
-    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::ClickElement {
-        selector: selector.to_owned(),
-        reply,
-    }))?;
-    receiver.recv_timeout(timeout).map_err(|error| {
-        format!(
-            "timed out after {} ms waiting for selector click delivery: {error}",
-            timeout.as_millis()
-        )
-    })?
-}
-
-pub fn automation_scroll(
-    x: f32,
-    y: f32,
-    delta_x: f32,
-    delta_y: f32,
-    timeout: std::time::Duration,
-) -> Result<(), String> {
-    let (reply, receiver) = mpsc::channel();
-    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::Scroll {
-        x,
-        y,
-        delta_x,
-        delta_y,
-        reply,
-    }))?;
-    receiver.recv_timeout(timeout).map_err(|error| {
-        format!(
-            "timed out after {} ms waiting for automation scroll delivery: {error}",
-            timeout.as_millis()
-        )
-    })?
-}
-
-pub fn automation_evaluate_script(source: String, timeout: Duration) -> Result<Value, String> {
-    let (reply, receiver) = mpsc::channel();
-    send_user_event(FormalWebUserEvent::Automation(AutomationCommand::EvaluateScript {
-        source,
-        timeout,
-        reply,
-    }))?;
-    receiver.recv_timeout(timeout).map_err(|error| {
-        format!(
-            "timed out after {} ms waiting for script evaluation: {error}",
-            timeout.as_millis()
-        )
-    })?
-}
-
-pub fn request_exit() -> Result<(), String> {
-    send_user_event(FormalWebUserEvent::Exit)
-}
-
-pub fn run_event_loop<F>(create_user_agent: F) -> Result<(), String>
+fn run_embedder_event_loop<F, A, MakeApp>(
+    create_user_agent: F,
+    make_app: MakeApp,
+) -> Result<(), String>
 where
     F: FnOnce(UserEventDispatcher) -> Result<Box<dyn UserAgentApi>, String>,
+    A: ApplicationHandler<FormalWebUserEvent>,
+    MakeApp: FnOnce(WebviewProvider) -> A,
 {
     let event_loop = EventLoop::<FormalWebUserEvent>::with_user_event()
         .build()
@@ -487,12 +351,21 @@ where
         *guard = Some(dispatcher.proxy.clone());
     }
 
-    let user_agent = create_user_agent(dispatcher.clone())?;
-
-    let mut app = FormalWebApp {
-        user_agent: Some(user_agent),
-        ..FormalWebApp::default()
+    let user_agent = match create_user_agent(dispatcher.clone()) {
+        Ok(user_agent) => user_agent,
+        Err(error) => {
+            let mut guard = EVENT_LOOP_PROXY
+                .lock()
+                .expect("event loop proxy mutex poisoned");
+            guard.take();
+            update_window_viewport_snapshot(None);
+            return Err(error);
+        }
     };
+    let embedder: Box<dyn EmbedderApi> = Box::new(EventLoopEmbedderApi { dispatcher });
+    let provider = WebviewProvider::new(embedder, user_agent);
+
+    let mut app = make_app(provider);
     let run_result = event_loop
         .run_app(&mut app)
         .map_err(|error| format!("winit event loop failed: {error}"));
@@ -503,8 +376,36 @@ where
             .expect("event loop proxy mutex poisoned");
         guard.take();
     }
+    update_window_viewport_snapshot(None);
 
     run_result
+}
+
+pub fn run_headed_event_loop<F>(create_user_agent: F) -> Result<(), String>
+where
+    F: FnOnce(UserEventDispatcher) -> Result<Box<dyn UserAgentApi>, String>,
+{
+    run_embedder_event_loop(create_user_agent, |provider| HeadedEmbedderApp {
+        provider: Some(provider),
+        ..HeadedEmbedderApp::default()
+    })
+}
+
+pub fn run_headless_event_loop<F>(create_user_agent: F) -> Result<(), String>
+where
+    F: FnOnce(UserEventDispatcher) -> Result<Box<dyn UserAgentApi>, String>,
+{
+    run_embedder_event_loop(create_user_agent, |provider| HeadlessEmbedderApp {
+        provider: Some(provider),
+        ..HeadlessEmbedderApp::default()
+    })
+}
+
+pub fn run_event_loop<F>(create_user_agent: F) -> Result<(), String>
+where
+    F: FnOnce(UserEventDispatcher) -> Result<Box<dyn UserAgentApi>, String>,
+{
+    run_headed_event_loop(create_user_agent)
 }
 
 pub fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
@@ -741,15 +642,15 @@ fn winit_key_event_to_blitz(event: &WinitKeyEvent, mods: WinitModifiersState) ->
     }
 }
 
-impl Default for FormalWebApp {
+impl Default for HeadedEmbedderApp {
     fn default() -> Self {
         Self {
             window: None,
             renderer: VelloWindowRenderer::new(),
             chrome: None,
             browser: BrowserState::default(),
+            automation: AutomationController::default(),
             provider: None,
-            user_agent: None,
             current_webview_id: None,
             has_top_level_traversable: false,
             window_occluded: false,
@@ -757,12 +658,11 @@ impl Default for FormalWebApp {
             keyboard_modifiers: Modifiers::default(),
             buttons: MouseEventButtons::None,
             pointer_pos: PhysicalPosition::default(),
-            pending_automation_navigation: None,
         }
     }
 }
 
-impl FormalWebApp {
+impl HeadedEmbedderApp {
     fn has_visible_viewport(&self) -> bool {
         let Some(window) = self.window.as_ref() else {
             return false;
@@ -919,9 +819,7 @@ impl FormalWebApp {
         let title = options
             .window_title
             .unwrap_or_else(|| String::from("formal-web"));
-        let attributes: WindowAttributes = Window::default_attributes()
-            .with_title(title)
-            .with_visible(!options.headless);
+        let attributes: WindowAttributes = Window::default_attributes().with_title(title);
         event_loop
             .create_window(attributes)
             .map(Arc::new)
@@ -1103,30 +1001,6 @@ impl FormalWebApp {
         }
     }
 
-    fn handle_before_unload_completed(&mut self, result: BeforeUnloadResult) {
-        if result.canceled {
-            if let Some(pending_navigation) = self.pending_automation_navigation.take() {
-                let _ = pending_navigation.reply.send(Err(String::from(
-                    "navigation was canceled by beforeunload",
-                )));
-            }
-            self.browser.cancel_pending_navigation();
-            self.sync_chrome_state();
-            self.request_window_redraw();
-        }
-    }
-
-    fn handle_navigation_failed(&mut self, webview_id: WebviewId, message: String) {
-        if self.current_webview_id == Some(webview_id) {
-            if let Some(pending_navigation) = self.pending_automation_navigation.take() {
-                let _ = pending_navigation.reply.send(Err(message));
-            }
-            self.browser.cancel_pending_navigation();
-            self.sync_chrome_state();
-            self.request_window_redraw();
-        }
-    }
-
     fn sync_browser_navigable_id_from_provider(&mut self) {
         let navigable_id = self
             .provider
@@ -1136,100 +1010,46 @@ impl FormalWebApp {
         self.browser.set_current_navigable_id(navigable_id);
     }
 
-    fn complete_pending_automation_navigation_if_ready(&mut self) {
-        self.sync_browser_navigable_id_from_provider();
-        if self.browser.current_navigable_id.is_none() {
-            return;
-        }
-        if let Some(pending_navigation) = self.pending_automation_navigation.take() {
-            let _ = pending_navigation
-                .reply
-                .send(Ok(self.browser.automation_snapshot(
-                    self.current_webview_id,
-                    self.has_top_level_traversable,
-                )));
-        }
+    fn with_automation_controller<R>(
+        &mut self,
+        f: impl FnOnce(&mut AutomationController, &mut Self) -> R,
+    ) -> R {
+        let mut automation = std::mem::take(&mut self.automation);
+        let result = f(&mut automation, self);
+        self.automation = automation;
+        result
     }
 
-    fn handle_finalize_navigation(&mut self, finalized: FinalizeNavigation) {
-        let is_current = self.current_webview_id == Some(finalized.webview_id);
+    fn handle_navigation_completed(&mut self, completed: NavigationCompleted) {
+        let is_current = self.current_webview_id == Some(completed.webview_id);
 
-        if is_current {
-            if let Some(pending_navigation) = self.browser.pending_navigation.as_ref() {
-                if pending_navigation.url != finalized.url.as_str() {
-                    return;
+        match &completed.status {
+            NavigationCompletion::Committed { url } => {
+                if is_current {
+                    self.browser.commit_navigation(url.clone());
+                    self.sync_chrome_state();
+                    self.request_window_redraw();
+                    self.with_automation_controller(|automation, app| {
+                        automation.note_navigation_committed(app)
+                    });
+                }
+
+                if let Some(provider) = self.provider.as_mut() {
+                    provider.on_navigation_committed(completed.webview_id);
                 }
             }
-            self.browser.commit_navigation(finalized.url.clone());
-            self.sync_chrome_state();
-            self.request_window_redraw();
-            self.complete_pending_automation_navigation_if_ready();
-        }
-
-        if let Some(provider) = self.provider.as_mut() {
-            provider.on_finalize_navigation(finalized.webview_id, &finalized.url);
+            NavigationCompletion::Aborted { message } => {
+                if is_current {
+                    self.with_automation_controller(|automation, _app| {
+                        automation.abort_pending_navigation(message.clone())
+                    });
+                    self.browser.cancel_pending_navigation();
+                    self.sync_chrome_state();
+                }
+            }
         }
 
         self.request_window_redraw();
-    }
-
-    fn handle_automation_command(&mut self, command: AutomationCommand) {
-        match command {
-            AutomationCommand::Snapshot { reply } => {
-                self.sync_browser_navigable_id_from_provider();
-                let _ = reply.send(Ok(self.browser.automation_snapshot(
-                    self.current_webview_id,
-                    self.has_top_level_traversable,
-                )));
-            }
-            AutomationCommand::Navigate { url, reply } => {
-                if self.pending_automation_navigation.is_some() {
-                    let _ = reply.send(Err(String::from("an automation navigation is already pending")));
-                    return;
-                }
-
-                match self.begin_navigation(PendingNavigation { url }) {
-                    Ok(()) => {
-                        self.pending_automation_navigation = Some(PendingAutomationNavigation {
-                            reply,
-                        });
-                    }
-                    Err(error) => {
-                        let _ = reply.send(Err(error));
-                    }
-                }
-            }
-            AutomationCommand::Click { x, y, reply } => {
-                let _ = reply.send(self.dispatch_automation_click(x, y));
-            }
-            AutomationCommand::ClickElement { selector, reply } => {
-                let _ = reply.send(self.dispatch_automation_click_element(selector));
-            }
-            AutomationCommand::Scroll {
-                x,
-                y,
-                delta_x,
-                delta_y,
-                reply,
-            } => {
-                let _ = reply.send(self.dispatch_automation_scroll(x, y, delta_x, delta_y));
-            }
-            AutomationCommand::EvaluateScript {
-                source,
-                timeout,
-                reply,
-            } => {
-                let result = match self.provider.as_ref().zip(self.current_webview_id) {
-                    Some((provider, webview_id)) => {
-                        provider.evaluate_script(webview_id, source, timeout)
-                    }
-                    None => Err(String::from(
-                        "no active top-level traversable is available for script execution",
-                    )),
-                };
-                let _ = reply.send(result);
-            }
-        }
     }
 
     fn dispatch_automation_click(&mut self, x: f32, y: f32) -> Result<(), String> {
@@ -1274,7 +1094,7 @@ impl FormalWebApp {
         };
         self.send_content_ui_event(UiEvent::PointerDown(down_event), false)?;
 
-        self.buttons ^= MouseEventButton::Main.into();
+        self.buttons.remove(MouseEventButton::Main.into());
         let up_event = BlitzPointerEvent {
             id: BlitzPointerId::Mouse,
             is_primary: true,
@@ -1347,7 +1167,52 @@ impl FormalWebApp {
     }
 }
 
-impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
+impl AutomationHost for HeadedEmbedderApp {
+    fn automation_snapshot(&mut self) -> AutomationSnapshot {
+        self.sync_browser_navigable_id_from_provider();
+        self.browser.automation_snapshot(
+            self.current_webview_id,
+            self.has_top_level_traversable,
+        )
+    }
+
+    fn begin_automation_navigation(&mut self, url: String) -> Result<(), String> {
+        self.begin_navigation(PendingNavigation { url })
+    }
+
+    fn automation_click(&mut self, x: f32, y: f32) -> Result<(), String> {
+        self.dispatch_automation_click(x, y)
+    }
+
+    fn automation_click_element(&mut self, selector: String) -> Result<(), String> {
+        self.dispatch_automation_click_element(selector)
+    }
+
+    fn automation_scroll(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> Result<(), String> {
+        self.dispatch_automation_scroll(x, y, delta_x, delta_y)
+    }
+
+    fn automation_evaluate_script(
+        &mut self,
+        source: String,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        match self.provider.as_ref().zip(self.current_webview_id) {
+            Some((provider, webview_id)) => provider.evaluate_script(webview_id, source, timeout),
+            None => Err(String::from(
+                "no active top-level traversable is available for script execution",
+            )),
+        }
+    }
+}
+
+impl ApplicationHandler<FormalWebUserEvent> for HeadedEmbedderApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             match Self::create_window(event_loop) {
@@ -1363,18 +1228,6 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                         }
                     };
                     self.chrome = Some(chrome);
-                    let Some(dispatcher) = with_event_loop_proxy(Clone::clone)
-                        .map(UserEventDispatcher::new)
-                    else {
-                        event_loop.exit();
-                        return;
-                    };
-                    let Some(user_agent) = self.user_agent.take() else {
-                        event_loop.exit();
-                        return;
-                    };
-                    let embedder: Box<dyn EmbedderApi> = Box::new(WinitEmbedderApi { dispatcher });
-                    self.provider = Some(WebviewProvider::new(embedder, user_agent));
                     self.window = Some(window.clone());
                     self.sync_chrome_state();
                     self.update_content_viewport_snapshot(&window);
@@ -1439,11 +1292,11 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 if let Some(window) = self.window.as_ref() {
                     window.set_visible(false);
                 }
-                if let Some(pending_navigation) = self.pending_automation_navigation.take() {
-                    let _ = pending_navigation.reply.send(Err(String::from(
+                self.with_automation_controller(|automation, _app| {
+                    automation.abort_pending_navigation(String::from(
                         "window closed before navigation completed",
-                    )));
-                }
+                    ))
+                });
                 self.renderer.suspend();
                 self.animation_timer = None;
                 self.chrome = None;
@@ -1518,7 +1371,7 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 };
                 match state {
                     ElementState::Pressed => self.buttons |= mapped_button.into(),
-                    ElementState::Released => self.buttons ^= mapped_button.into(),
+                    ElementState::Released => self.buttons.remove(mapped_button.into()),
                 }
                 if self.pointer_position_in_chrome(self.pointer_pos) {
                     let event = BlitzPointerEvent {
@@ -1640,7 +1493,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 };
                 match provider.on_paint_frame(snapshot) {
                     Ok(()) => {
-                        self.complete_pending_automation_navigation_if_ready();
+                        self.with_automation_controller(|automation, app| {
+                            automation.note_rendering_update(app)
+                        });
                         self.request_window_redraw();
                     }
                     Err(error) => {
@@ -1656,14 +1511,8 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
             FormalWebUserEvent::NavigationRequested { webview_id, destination_url } => {
                 self.handle_navigation_requested(webview_id, destination_url);
             }
-            FormalWebUserEvent::NavigationFailed { webview_id, message } => {
-                self.handle_navigation_failed(webview_id, message);
-            }
-            FormalWebUserEvent::BeforeUnloadCompleted(result) => {
-                self.handle_before_unload_completed(result);
-            }
-            FormalWebUserEvent::FinalizeNavigation(finalized) => {
-                self.handle_finalize_navigation(finalized);
+            FormalWebUserEvent::NavigationCompleted(completed) => {
+                self.handle_navigation_completed(completed);
             }
             FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name) => {
                 if let Some(child_navigable_host) =
@@ -1686,7 +1535,9 @@ impl ApplicationHandler<FormalWebUserEvent> for FormalWebApp {
                 }
             }
             FormalWebUserEvent::Automation(command) => {
-                self.handle_automation_command(command);
+                self.with_automation_controller(|automation, app| {
+                    automation.handle_command(app, command)
+                });
             }
             FormalWebUserEvent::ClipboardRead { reply } => {
                 let _ = reply.send(read_clipboard_text());

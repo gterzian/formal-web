@@ -1,11 +1,12 @@
 # Documentation Chain
 
 Read repository documentation from general to specific:
-1. `AGENTS.md`
-2. `<component>/README.md`
-3. `<component>/<subdir>/README.md`
+1. `AGENTS.md` (top-level)
+3. `<subdir>/{<nested-sub-dir/}README.md`
 
-Update the lowest-level file that owns the rule or pattern, and avoid repeating the same guidance in multiple places.
+The above should form a chain of readmes, based on the directories where you are working for the task at hand. Essentially, when you are reading or writing to a file, you must take into account all readmes in the path to that file.
+
+You can also update this documentation chain based on lessons learned from user feedback: update the lowest-level file that owns the rule or pattern, and avoid repeating the same guidance in multiple places.
 
 # Documentation Style
 
@@ -23,4 +24,7 @@ Update the lowest-level file that owns the rule or pattern, and avoid repeating 
 - Track navigation completion with explicit content-to-embedder commit signaling instead of inferring it from paint delivery.
 - Keep verification artifacts in temporary directories, and use the local TLA+ Toolbox jar at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar`.
 - Put plans and temporary task notes under `scratchpad/`.
-- Finish tasks with a clean release run, the default WPT run, and `./verification/verify-navigation.sh`.
+
+At the end of each task, you MUST
+- Finish tasks with the default WPT run, and `./verification/verify-navigation.sh`.
+- treat unexpected results in the above as something that needs to be fixed as part of the current task.

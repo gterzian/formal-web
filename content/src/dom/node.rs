@@ -105,6 +105,8 @@ impl Node {
 
         match node.data {
             NodeData::Document => 9,
+            // Blitz can synthesize anonymous block boxes during layout, but the JS-visible DOM
+            // still treats them as element nodes so tree APIs do not expose a Blitz-only kind.
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => 1,
             NodeData::Text(_) => 3,
             NodeData::Comment => 8,
@@ -121,6 +123,8 @@ impl Node {
         match &node.data {
             NodeData::Document => String::from("#document"),
             NodeData::Element(element) | NodeData::AnonymousBlock(element) => {
+                // Anonymous blocks inherit their backing element name rather than surfacing a
+                // compositor/layout-specific pseudo-name through the DOM.
                 if element.name.ns == html5ever::ns!(html) {
                     element.name.local.to_string().to_ascii_uppercase()
                 } else {

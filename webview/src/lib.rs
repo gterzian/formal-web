@@ -249,7 +249,7 @@ impl WebviewProvider {
         Ok(())
     }
 
-    pub fn on_finalize_navigation(&mut self, webview_id: WebviewId, _url: &str) {
+    pub fn on_navigation_committed(&mut self, webview_id: WebviewId) {
         if let Some(child_navigable_host) = self.child_navigable_hosts_by_webview.get(&webview_id)
         {
             let state = self
