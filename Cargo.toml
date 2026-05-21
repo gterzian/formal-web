@@ -18,31 +18,33 @@ members = [
     "apps/bump",
     "wpt/runner",
     "examples/counter",
+    "examples/seven_guis",
     "examples/todomvc",
     "examples/wgpu_texture",
+    "examples/wasm_hello",
 ]
 exclude = ["sites"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.4"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/dioxuslabs/blitz"
 repository = "https://github.com/dioxuslabs/blitz"
 categories = ["gui"]
 edition = "2024"
-rust-version = "1.92.0"
+rust-version = "1.89.0"
 
 [workspace.dependencies]
 # Blitz dependencies(in-repo)
-blitz = { version = "=0.3.0-alpha.2", path = "./packages/blitz" }
-blitz-dom = { version = "=0.3.0-alpha.2", path = "./packages/blitz-dom", default-features = false }
-blitz-html = { version = "=0.3.0-alpha.2", path = "./packages/blitz-html", default-features = false }
-blitz-net = { version = "=0.3.0-alpha.2", path = "./packages/blitz-net", default-features = false }
-blitz-paint = { version = "=0.3.0-alpha.2", path = "./packages/blitz-paint", default-features = false }
-blitz-shell = { version = "=0.3.0-alpha.2", path = "./packages/blitz-shell", default-features = false }
-blitz-traits = { version = "=0.3.0-alpha.2", path = "./packages/blitz-traits", default-features = false }
-stylo_taffy = { version = "=0.3.0-alpha.2", path = "./packages/stylo_taffy", default-features = false }
+blitz = { version = "=0.3.0-alpha.4", path = "./packages/blitz" }
+blitz-dom = { version = "=0.3.0-alpha.4", path = "./packages/blitz-dom", default-features = false }
+blitz-html = { version = "=0.3.0-alpha.4", path = "./packages/blitz-html", default-features = false }
+blitz-net = { version = "=0.3.0-alpha.4", path = "./packages/blitz-net", default-features = false }
+blitz-paint = { version = "=0.3.0-alpha.4", path = "./packages/blitz-paint", default-features = false }
+blitz-shell = { version = "=0.3.0-alpha.4", path = "./packages/blitz-shell", default-features = false }
+blitz-traits = { version = "=0.3.0-alpha.4", path = "./packages/blitz-traits", default-features = false }
+stylo_taffy = { version = "=0.3.0-alpha.4", path = "./packages/stylo_taffy", default-features = false }
 dioxus-native = { version = "0.7.0", path = "./packages/dioxus-native", default-features = false }
 dioxus-native-dom = { version = "0.7.0", path = "./packages/dioxus-native-dom", default-features = false }
 debug_timer = { version = "0.1.2", path = "./packages/debug_timer" }
@@ -89,7 +91,7 @@ dioxus-cli-config = { version = "0.7.3" }
 dioxus-core-macro = { version = "0.7.3" }
 
 # Taffy + Parley + Fontations
-taffy = { version = "0.10.1", default-features = false, features = [
+taffy = { version = "=0.11.0-experimental-cache-fix.3", default-features = false, features = [
     "std",
     "flexbox",
     "grid",
@@ -99,26 +101,26 @@ taffy = { version = "0.10.1", default-features = false, features = [
     "detailed_layout_info",
 ] }
 parley = { version = "0.9", default-features = false, features = ["std"] }
-skrifa = { version = "0.40", default-features = false, features = [
+skrifa = { version = "0.42", default-features = false, features = [
     "std",
 ] } # Should match parley and vello versions
 
 # AnyRender
-anyrender = { version = "0.8" }
-anyrender_serialize = { version = "0.1" }
-anyrender_vello = { version = "0.8" }
-anyrender_vello_cpu = { version = "0.10" }
-anyrender_vello_hybrid = { version = "0.3" }
-anyrender_skia = { version = "0.5" }
-anyrender_svg = { version = "0.9" }
-wgpu_context = { version = "0.4" }
+anyrender = { version = "0.10.0" }
+anyrender_serialize = { version = "0.3.0" }
+anyrender_skia = { version = "0.8.0" }
+anyrender_vello = { version = "0.10.1" }
+anyrender_vello_cpu = { version = "0.12.1" }
+anyrender_vello_hybrid = { version = "0.5.1" }
+anyrender_svg = { version = "0.11.0" }
+wgpu_context = { version = "0.6.0" }
 
 # Linebender + Fontations + WGPU + SVG
 color = "0.3"
 linebender_resource_handle = "0.1"
 peniko = "0.6.0"
-kurbo = "0.13"
-wgpu = "28"
+kurbo = "0.13.1"
+wgpu = "29"
 usvg = "0.46"
 
 # Windowing & Input
@@ -153,7 +155,12 @@ webbrowser = "1.0"
 directories = "6.0.0"
 
 # WASM
+wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+tracing-wasm = "0.2.1"
+web-sys = "0.3.98"
+web-time = "1"
+console_error_panic_hook = "0.1"
 
 # Other dependencies
 rustc-hash = "2.1.2"
@@ -238,7 +245,7 @@ blitz-net = { workspace = true }
 blitz = { workspace = true, features = ["net"] }
 dioxus = { workspace = true }
 dioxus-native = { workspace = true, features = [
-    "vello",
+    "vello-hybrid",
     "floats",
     "svg",
     "prelude",
@@ -249,6 +256,7 @@ tokio = { workspace = true, features = ["macros"] }
 image = { workspace = true }
 png = { workspace = true }
 peniko = { workspace = true }
+color = { workspace = true }
 env_logger = "0.11"
 tracing-subscriber = "0.3"
 

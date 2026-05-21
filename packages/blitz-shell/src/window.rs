@@ -4,7 +4,7 @@ use crate::convert_events::{
     pointer_source_to_blitz_details, theme_to_color_scheme, winit_ime_to_blitz,
     winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers,
 };
-use crate::event::{BlitzShellProxy, create_waker};
+use crate::event::{BlitzShellEvent, BlitzShellProxy, create_waker};
 use anyrender::WindowRenderer;
 use blitz_dom::Document;
 use blitz_paint::paint_scene;
@@ -19,7 +19,7 @@ use winit::keyboard::PhysicalKey;
 use std::any::Any;
 use std::sync::Arc;
 use std::task::Waker;
-use std::time::Instant;
+use web_time::Instant;
 use winit::event::{ButtonSource, ElementState, MouseButton};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Theme, WindowAttributes, WindowId};
@@ -41,7 +41,7 @@ fn get_safe_area_insets(window: &dyn Window) -> PhysicalInsets<u32> {
 
 pub struct WindowConfig<Rend: WindowRenderer> {
     doc: Box<dyn Document>,
-    attributes: WindowAttributes,
+    pub(crate) attributes: WindowAttributes,
     renderer: Rend,
 }
 
@@ -82,6 +82,16 @@ pub struct View<Rend: WindowRenderer> {
     pub is_visible: bool,
     pub safe_area_insets: PhysicalInsets<u32>,
 
+    #[cfg(target_arch = "wasm32")]
+    pending_resize: Option<winit::dpi::PhysicalSize<u32>>,
+    #[cfg(target_arch = "wasm32")]
+    last_resize_at: Option<web_time::Instant>,
+    /// True iff a setTimeout has been scheduled and not yet observed by
+    /// `apply_pending_resize_if_settled`. Prevents the timer storm that would
+    /// otherwise allocate a fresh `Closure` per resize event during a drag.
+    #[cfg(target_arch = "wasm32")]
+    resize_timer_scheduled: bool,
+
     #[cfg(feature = "accessibility")]
     /// Accessibility adapter for `accesskit`.
     pub accessibility: AccessibilityState,
@@ -103,6 +113,10 @@ impl<Rend: WindowRenderer> View<Rend> {
         // We create window as invisble and then later make window visible
         // after AccessKit has initialised to avoid AccessKit panics
         let is_visible = config.attributes.visible;
+        // Capture the requested surface size before consuming `attributes`, so we can
+        // seed the viewport on platforms (winit-web) that report `surface_size() == 0×0`
+        // until a layout pass fires.
+        let requested_surface_size = config.attributes.surface_size;
         let attrs = config.attributes.with_visible(false);
 
         let winit_window: Arc<dyn Window> = Arc::from(event_loop.create_window(attrs).unwrap());
@@ -115,8 +129,28 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         // Create viewport
         // TODO: account for the "safe area"
-        let size = winit_window.surface_size();
         let scale = winit_window.scale_factor() as f32;
+        let mut size = winit_window.surface_size();
+        if (size.width == 0 || size.height == 0)
+            && let Some(requested) = requested_surface_size
+        {
+            size = requested.to_physical(scale as f64);
+        }
+        // On wasm, when the embedder didn't call `with_surface_size`, winit-web's
+        // initial `surface_size()` is 0×0 — its ResizeObserver hasn't fired yet.
+        // Resuming the renderer at 0×0 trips a wgpu swapchain-size-0 error, so
+        // seed from the canvas element's CSS layout box (host-stylesheet result).
+        #[cfg(target_arch = "wasm32")]
+        if size.width == 0 || size.height == 0 {
+            use winit::platform::web::WindowExtWeb;
+            if let Some(canvas) = winit_window.canvas() {
+                let css_w = canvas.offset_width().max(0) as u32;
+                let css_h = canvas.offset_height().max(0) as u32;
+                if css_w > 0 && css_h > 0 {
+                    size = winit::dpi::LogicalSize::new(css_w, css_h).to_physical(scale as f64);
+                }
+            }
+        }
         let safe_area_insets = get_safe_area_insets(&*winit_window);
         let theme = winit_window.theme().unwrap_or(Theme::Light);
         let color_scheme = theme_to_color_scheme(theme);
@@ -151,6 +185,12 @@ impl<Rend: WindowRenderer> View<Rend> {
             theme_override: None,
             buttons: MouseEventButtons::None,
             safe_area_insets,
+            #[cfg(target_arch = "wasm32")]
+            pending_resize: None,
+            #[cfg(target_arch = "wasm32")]
+            last_resize_at: None,
+            #[cfg(target_arch = "wasm32")]
+            resize_timer_scheduled: false,
             pointer_pos: Default::default(),
             is_visible: winit_window.is_visible().unwrap_or(true),
             #[cfg(feature = "accessibility")]
@@ -215,37 +255,75 @@ impl<Rend: WindowRenderer> View<Rend> {
 }
 
 impl<Rend: WindowRenderer> View<Rend> {
+    /// Start resuming the renderer. Dispatches [`BlitzShellEvent::ResumeReady`]
+    /// when initialization completes — synchronously on native, asynchronously
+    /// on wasm32. The embedder must call [`complete_resume`](Self::complete_resume)
+    /// in response.
     pub fn resume(&mut self) {
         let window_id = self.window_id();
         let animation_time = self.current_animation_time();
 
-        let mut inner = self.doc.inner_mut();
-
-        // Resolve dom
-        inner.resolve(animation_time);
-
-        // Resume renderer
-        let (width, height) = inner.viewport().window_size;
-        let scale = inner.viewport().scale_f64();
-        self.renderer
-            .resume(Arc::new(self.window.clone()), width, height);
-        if !self.renderer.is_active() {
-            panic!("Renderer failed to resume");
+        let (width, height) = {
+            let mut inner = self.doc.inner_mut();
+            inner.resolve(animation_time);
+            inner.viewport().window_size
         };
 
-        // Render
+        let proxy = self.proxy.clone();
+        self.renderer
+            .resume(Arc::new(self.window.clone()), width, height, move || {
+                proxy.send_event(BlitzShellEvent::ResumeReady { window_id });
+            });
+    }
+
+    /// Finalize a previously-started resume. Should be called in response to a
+    /// [`BlitzShellEvent::ResumeReady`] event. Paints the first frame and
+    /// installs the doc poll waker. Returns `true` if the renderer is now active.
+    pub fn complete_resume(&mut self) -> bool {
+        if !self.renderer.complete_resume() {
+            return false;
+        }
+
+        let window_id = self.window_id();
+
+        // Resync the renderer to the current viewport. Resize/scale events that
+        // arrived while the renderer was Pending were no-ops on the renderer
+        // (its `set_size` only matches Active), so the surface created during
+        // resume could be at a stale size by the time we get here.
+        let animation_time = self.current_animation_time();
+        let mut inner = self.doc.inner_mut();
+        inner.resolve(animation_time);
+        let (width, height) = inner.viewport().window_size;
+        let scale = inner.viewport().scale_f64();
         let insets = self.safe_area_insets.to_logical(scale);
+
+        #[cfg(feature = "custom-widget")]
+        inner.can_create_surfaces(&self.renderer as _);
+
+        self.renderer.set_size(width, height);
+
         self.renderer.render(|scene| {
-            paint_scene(scene, &inner, scale, width, height, insets.left, insets.top)
+            paint_scene(
+                scene,
+                &mut inner,
+                scale,
+                width,
+                height,
+                insets.left,
+                insets.top,
+            )
         });
 
-        // Set waker
         self.waker = Some(create_waker(&self.proxy, window_id));
+        true
     }
 
     pub fn suspend(&mut self) {
         self.waker = None;
         self.renderer.suspend();
+
+        #[cfg(feature = "custom-widget")]
+        self.doc.inner_mut().destroy_surfaces();
     }
 
     pub fn poll(&mut self) -> bool {
@@ -285,6 +363,12 @@ impl<Rend: WindowRenderer> View<Rend> {
         let mut inner = self.doc.inner_mut();
         inner.resolve(animation_time);
 
+        // Unregister resources (e.g. textures) from dropped custom widget nodes
+        #[cfg(feature = "custom-widget")]
+        for id in inner.take_pending_resource_deallocations() {
+            self.renderer.unregister_resource(id);
+        }
+
         let (width, height) = inner.viewport().window_size;
         let scale = inner.viewport().scale_f64();
         let is_animating = inner.is_animating();
@@ -293,7 +377,15 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         if !is_blocked && is_visible {
             self.renderer.render(|scene| {
-                paint_scene(scene, &inner, scale, width, height, insets.left, insets.top)
+                paint_scene(
+                    scene,
+                    &mut inner,
+                    scale,
+                    width,
+                    height,
+                    insets.left,
+                    insets.top,
+                )
             });
         }
 
@@ -355,6 +447,57 @@ impl<Rend: WindowRenderer> View<Rend> {
         self.accessibility.update_tree(&inner);
     }
 
+    #[cfg(target_arch = "wasm32")]
+    const RESIZE_DEBOUNCE_MS: u32 = 100;
+
+    #[cfg(target_arch = "wasm32")]
+    fn schedule_resize_settle_check(&mut self, delay_ms: u32) {
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen::closure::Closure;
+
+        let proxy = self.proxy.clone();
+        let window_id = self.window_id();
+        let cb = Closure::once_into_js(move || {
+            proxy.send_event(BlitzShellEvent::ResizeSettleCheck { window_id });
+        });
+        if let Some(win) = web_sys::window() {
+            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.unchecked_ref(),
+                delay_ms as i32,
+            );
+            self.resize_timer_scheduled = true;
+        }
+    }
+
+    /// Applies the pending resize iff motion has been quiet for the debounce
+    /// window; otherwise re-arms the timer for the remaining time. Called
+    /// when a previously scheduled timer fires.
+    #[cfg(target_arch = "wasm32")]
+    pub fn apply_pending_resize_if_settled(&mut self) {
+        self.resize_timer_scheduled = false;
+        let Some(last) = self.last_resize_at else {
+            return;
+        };
+        let debounce = std::time::Duration::from_millis(Self::RESIZE_DEBOUNCE_MS as u64);
+        let elapsed = web_time::Instant::now().saturating_duration_since(last);
+        if elapsed < debounce {
+            // Motion ongoing — wait out the rest of the window before re-checking.
+            let remaining_ms = (debounce - elapsed).as_millis() as u32;
+            self.schedule_resize_settle_check(remaining_ms);
+            return;
+        }
+        let Some(size) = self.pending_resize.take() else {
+            return;
+        };
+        self.last_resize_at = None;
+
+        let insets = self.safe_area_insets;
+        let width = size.width.saturating_sub(insets.left + insets.right);
+        let height = size.height.saturating_sub(insets.top + insets.bottom);
+        self.with_viewport(|v| v.window_size = (width, height));
+        self.request_redraw();
+    }
+
     #[cfg(target_os = "macos")]
     pub fn handle_apple_standard_keybinding(&mut self, command: &str) {
         use blitz_traits::SmolStr;
@@ -386,11 +529,25 @@ impl<Rend: WindowRenderer> View<Rend> {
             },
             WindowEvent::SurfaceResized(physical_size) => {
                 self.safe_area_insets = get_safe_area_insets(&*self.window);
-                let insets = self.safe_area_insets;
-                let width = physical_size.width - insets.left - insets.right;
-                let height = physical_size.height - insets.top - insets.bottom;
-                self.with_viewport(|v| v.window_size = (width, height));
-                self.request_redraw();
+                // On WASM, defer the apply: wgpu's surface.configure clears the canvas,
+                // so running it every frame flickers during a drag. The browser stretches
+                // the stale backing store until the debounce timer settles.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.pending_resize = Some(physical_size);
+                    self.last_resize_at = Some(web_time::Instant::now());
+                    if !self.resize_timer_scheduled {
+                        self.schedule_resize_settle_check(Self::RESIZE_DEBOUNCE_MS);
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let insets = self.safe_area_insets;
+                    let width = physical_size.width - insets.left - insets.right;
+                    let height = physical_size.height - insets.top - insets.bottom;
+                    self.with_viewport(|v| v.window_size = (width, height));
+                    self.request_redraw();
+                }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.with_viewport(|v| v.set_hidpi_scale(scale_factor as f32));

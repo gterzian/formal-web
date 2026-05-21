@@ -199,6 +199,7 @@ pub fn Toolbar(
             html_parser_provider: Some(Arc::new(HtmlProvider)),
             font_ctx: Some(tab.loader_rc().font_ctx.clone()),
             media_type: None,
+            ..Default::default()
         };
         let mut document = HtmlDocument::from_html(view_source_html, config).into_inner();
         if let Some(parent_id) = document.get_element_by_id("source") {
@@ -225,7 +226,7 @@ pub fn Toolbar(
                     .and_then(|node| node.element_data_mut())
                     .and_then(|el| el.sub_doc_data_mut())
                 {
-                    crate::capture::capture_screenshot(&sub_doc.inner(), &path);
+                    crate::capture::capture_screenshot(&mut sub_doc.inner_mut(), &path);
                 }
             }
         }
@@ -248,7 +249,7 @@ pub fn Toolbar(
                     .and_then(|node| node.element_data_mut())
                     .and_then(|el| el.sub_doc_data_mut())
                 {
-                    crate::capture::capture_anyrender_scene(&sub_doc.inner(), &path);
+                    crate::capture::capture_anyrender_scene(&mut sub_doc.inner_mut(), &path);
                 }
             }
         }
@@ -289,16 +290,6 @@ pub fn Toolbar(
     );
     #[cfg(not(feature = "capture"))]
     let capture_item = rsx!();
-
-    #[cfg(feature = "vello")]
-    let fps_toggle_item = rsx!(
-        div { class: "menu-item", onclick: move |_| {
-            menu_open.set(false);
-            show_fps.toggle();
-        }, "Toggle FPS" }
-    );
-    #[cfg(not(feature = "vello"))]
-    let fps_toggle_item = rsx!();
 
     #[cfg(feature = "cache")]
     let clear_cache_item = {
@@ -436,7 +427,10 @@ pub fn Toolbar(
                         {screenshot_item}
                         {capture_item}
                         div { class: "menu-item", onclick: move |_| devtools_action(()), "Toggle DevTools" }
-                        {fps_toggle_item}
+                        div { class: "menu-item", onclick: move |_| {
+                            menu_open.set(false);
+                            show_fps.toggle();
+                        }, "Toggle FPS" }
                         {clear_cache_item}
                     }
                 }
