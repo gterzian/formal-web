@@ -28,8 +28,6 @@ pub enum RenderCommand<Font = FontData, Brush = Paint> {
     GlyphRun(GlyphRunCommand<Font, Brush>),
     /// Draw a rounded rectangle blurred with a gaussian filter.
     BoxShadow(BoxShadowCommand),
-    /// Marks a region where a separately produced scene may be composited.
-    Placeholder(PlaceholderCommand),
 }
 
 impl RenderCommand {
@@ -43,7 +41,6 @@ impl RenderCommand {
             RenderCommand::Fill(cmd) => cmd.transform = transform * cmd.transform,
             RenderCommand::GlyphRun(cmd) => cmd.transform = transform * cmd.transform,
             RenderCommand::BoxShadow(cmd) => cmd.transform = transform * cmd.transform,
-            RenderCommand::Placeholder(cmd) => cmd.transform = transform * cmd.transform,
         };
 
         self
@@ -125,23 +122,6 @@ pub struct BoxShadowCommand {
     pub brush: Color,
     pub radius: f64,
     pub std_dev: f64,
-}
-
-/// Identifies the out-of-band scene content that should be composited into a placeholder region.
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum PlaceholderKind {
-    CrossOriginIframe { frame_id: u64 },
-}
-
-/// Marks a region where a separately produced scene may be composited.
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct PlaceholderCommand {
-    pub kind: PlaceholderKind,
-    pub transform: Affine,
-    #[cfg_attr(feature = "serde", serde(with = "svg_path"))]
-    pub clip: BezPath,
 }
 
 /// A recording of a Scene or Scene Fragment stored as plain data types that can be stored
@@ -307,16 +287,6 @@ impl PaintScene for Scene {
             std_dev,
         };
         self.commands.push(RenderCommand::BoxShadow(box_shadow));
-    }
-
-    fn placeholder(&mut self, kind: PlaceholderKind, transform: Affine, clip: &impl Shape) {
-        let clip = clip.into_path(self.tolerance);
-        let placeholder = PlaceholderCommand {
-            kind,
-            transform,
-            clip,
-        };
-        self.commands.push(RenderCommand::Placeholder(placeholder));
     }
 
     fn append_scene(&mut self, scene: Scene, scene_transform: Affine) {

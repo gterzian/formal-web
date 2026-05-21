@@ -170,7 +170,18 @@ impl WebviewProvider {
         snapshot: Option<(u32, u32, f32, ColorScheme)>,
     ) -> Result<(), String> {
         self.viewport_snapshot = snapshot;
-        self.user_agent.set_default_viewport(snapshot)
+        let result = self.user_agent.set_default_viewport(snapshot);
+
+        // Refresh child traversable viewport publications as soon as viewport metadata is
+        // available (or changes). Without this, iframe content can keep a fallback viewport
+        // until the next input-driven composition pass.
+        let mut visible_viewports = Vec::new();
+        for state in self.webviews.values_mut() {
+            visible_viewports.extend(state.compositor.visible_frame_viewports(&self.font_receiver));
+        }
+        self.publish_visible_child_viewports(visible_viewports);
+
+        result
     }
 
     pub fn set_traversable_viewport(
@@ -213,9 +224,26 @@ impl WebviewProvider {
         );
         self.child_host_webviews_by_content_navigable
             .insert(content_frame_id, child_host_webview_id);
+
+        // A parent frame can already have a composed iframe placeholder before the child
+        // traversable registration arrives. Publish immediately so the child gets the
+        // correct viewport on first paint instead of waiting for later input-driven redraws.
+        if let Some(state) = self.webviews.get_mut(&parent_traversable_id) {
+            let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
+            self.publish_visible_child_viewports(viewports);
+        }
+
+        // The parent may not have a composed frame tree yet when the child host registers.
+        // Force a parent rendering opportunity so embed-site geometry becomes available and
+        // child viewport publication does not wait for a later root scroll/input event.
+        self.note_rendering_opportunity(parent_traversable_id, "child_host_registered");
     }
 
     pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
+        println!(
+            "webview: received paint frame for traversable {} frame {} ({}x{})",
+            frame.traversable_id.0, frame.frame_id.0, frame.viewport_width, frame.viewport_height
+        );
         let is_root_candidate = !self.child_navigable_hosts_by_webview.contains_key(&frame.traversable_id);
         if let Some(child_navigable_host) =
             self.child_navigable_hosts_by_webview.get(&frame.traversable_id)
@@ -227,11 +255,7 @@ impl WebviewProvider {
         let frame_id = frame.frame_id;
         let viewport_width = frame.viewport_width;
         let viewport_height = frame.viewport_height;
-        let placeholder_token_to_frame_id: HashMap<u64, _> = frame
-            .placeholder_frame_mappings
-            .iter()
-            .map(|m| (m.token, m.frame_id))
-            .collect();
+        let composition = frame.composition.clone();
         let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver)?;
 
         let state = self.webviews.entry(traversable_id).or_default();
@@ -239,13 +263,18 @@ impl WebviewProvider {
             frame_id,
             viewport_width,
             viewport_height,
-            placeholder_token_to_frame_id,
+            composition,
             recorded_scene,
             is_root_candidate,
         );
         if state.compositor.committed_root_frame_id() == Some(frame_id) {
             state.current_navigable_id = Some(traversable_id.0);
         }
+
+        // Publish child viewport bounds immediately after any paint update so iframe content
+        // receives the correct viewport before the next user input-driven composition pass.
+        let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
+        self.publish_visible_child_viewports(viewports);
 
         self.embedder.request_redraw(traversable_id);
         Ok(())
@@ -254,13 +283,21 @@ impl WebviewProvider {
     pub fn on_navigation_committed(&mut self, webview_id: WebviewId) {
         if let Some(child_navigable_host) = self.child_navigable_hosts_by_webview.get(&webview_id)
         {
+            let parent_traversable_id = child_navigable_host.parent_traversable_id;
+            let content_frame_id = child_navigable_host.content_frame_id;
             let state = self
                 .webviews
-                .entry(child_navigable_host.parent_traversable_id)
+                .entry(parent_traversable_id)
                 .or_default();
             state
                 .compositor
-                .note_child_navigation_finalized(child_navigable_host.content_frame_id);
+                .note_child_navigation_finalized(content_frame_id);
+
+            // Child navigation commit can invalidate parent composition state. Request
+            // immediate parent rendering so updated child geometry and scale are visible
+            // without waiting for a manual root-page interaction.
+            self.note_rendering_opportunity(parent_traversable_id, "child_navigation_committed");
+            self.embedder.request_redraw(parent_traversable_id);
             return;
         }
 
@@ -445,6 +482,17 @@ impl WebviewProvider {
                 published_viewport.offset_y,
             );
             self.note_rendering_opportunity(child_webview_id, "visible_child_viewport");
+
+            // Also refresh the parent traversable. Embed-site clip/transform data is produced
+            // by the parent frame paint, so parent composition must not wait for a later
+            // root-page scroll/input event to pick up child viewport/layout changes.
+            if let Some(child_host) = self.child_navigable_hosts_by_webview.get(&child_webview_id)
+            {
+                self.note_rendering_opportunity(
+                    child_host.parent_traversable_id,
+                    "visible_child_viewport_parent",
+                );
+            }
         }
         self.published_child_viewports = next_published_child_viewports;
     }

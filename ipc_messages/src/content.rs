@@ -230,10 +230,31 @@ pub struct WindowTimerClearRequest {
     pub timer_key: WindowTimerKey,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EmbedSiteId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EmbedBackgroundPolicy {
+    Transparent,
+    OpaqueWhite,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlaceholderFrameMapping {
-    pub token: u64,
-    pub frame_id: FrameId,
+pub struct FrameEmbedSite {
+    pub embed_site_id: EmbedSiteId,
+    pub child_frame_id: FrameId,
+    pub z_index: i32,
+    pub paint_order: u32,
+    pub background_policy: EmbedBackgroundPolicy,
+    pub transform: [f64; 6],
+    pub clip_bounds: [f64; 4],
+    pub clip_svg_path: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FrameCompositionMetadata {
+    pub embed_sites: Vec<FrameEmbedSite>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -393,7 +414,6 @@ impl SerializableRenderCommand {
                 }))
             }
             RenderCommand::BoxShadow(command) => Self(RenderCommand::BoxShadow(command)),
-            RenderCommand::Placeholder(command) => Self(RenderCommand::Placeholder(command)),
         }
     }
 
@@ -420,7 +440,6 @@ impl SerializableRenderCommand {
                 })
             }
             RenderCommand::BoxShadow(command) => RenderCommand::BoxShadow(command),
-            RenderCommand::Placeholder(command) => RenderCommand::Placeholder(command),
         }
     }
 }
@@ -444,7 +463,6 @@ pub struct SceneSummary {
     pub push_clip_layer_commands: usize,
     pub pop_layer_commands: usize,
     pub box_shadow_commands: usize,
-    pub placeholder_commands: usize,
     pub solid_glyph_brush_runs: usize,
     pub gradient_glyph_brush_runs: usize,
     pub image_glyph_brush_runs: usize,
@@ -453,7 +471,7 @@ pub struct SceneSummary {
 impl SceneSummary {
     pub fn describe(&self) -> String {
         format!(
-            "commands={} glyph_runs={} glyphs={} font_refs={} fills={} strokes={} push_layers={} push_clip_layers={} pops={} box_shadows={} placeholders={} glyph_brushes(solid={}, gradient={}, image={})",
+            "commands={} glyph_runs={} glyphs={} font_refs={} fills={} strokes={} push_layers={} push_clip_layers={} pops={} box_shadows={} glyph_brushes(solid={}, gradient={}, image={})",
             self.commands,
             self.glyph_runs,
             self.glyphs,
@@ -464,7 +482,6 @@ impl SceneSummary {
             self.push_clip_layer_commands,
             self.pop_layer_commands,
             self.box_shadow_commands,
-            self.placeholder_commands,
             self.solid_glyph_brush_runs,
             self.gradient_glyph_brush_runs,
             self.image_glyph_brush_runs,
@@ -499,7 +516,6 @@ impl RecordedScene {
                     }
                 }
                 RenderCommand::BoxShadow(_) => summary.box_shadow_commands += 1,
-                RenderCommand::Placeholder(_) => summary.placeholder_commands += 1,
             }
         }
 
@@ -551,7 +567,7 @@ pub struct PaintFrame {
     pub frame_id: FrameId,
     pub viewport_width: u32,
     pub viewport_height: u32,
-    pub placeholder_frame_mappings: Vec<PlaceholderFrameMapping>,
+    pub composition: FrameCompositionMetadata,
     font_registrations: Vec<RegisteredFont>,
     scene_bytes: IpcSharedMemory,
 }
@@ -569,7 +585,7 @@ impl PaintFrame {
         frame_id: FrameId,
         viewport_width: u32,
         viewport_height: u32,
-        placeholder_frame_mappings: Vec<PlaceholderFrameMapping>,
+        composition: FrameCompositionMetadata,
         scene: PreparedScene,
     ) -> Result<Self, String> {
         let PreparedScene {
@@ -581,7 +597,7 @@ impl PaintFrame {
             frame_id,
             viewport_width,
             viewport_height,
-            placeholder_frame_mappings,
+            composition,
             font_registrations: registered_fonts,
             scene_bytes: serialize_scene_to_shared_memory(&scene)?,
         })
@@ -695,8 +711,8 @@ pub enum Event {
 mod tests {
     use super::{
         Command, DocumentFetchId, FetchResponse, FontTransportReceiver, FontTransportSender,
-        FrameId, LoadedDocumentResponse, NavigableId, PaintFrame, PaintTransportSummary,
-        PlaceholderFrameMapping, SceneSummary, WebviewId,
+        FrameCompositionMetadata, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame, PaintTransportSummary,
+        SceneSummary, WebviewId,
     };
     use anyrender::{
         Glyph, PaintScene, Scene,
@@ -815,7 +831,7 @@ mod tests {
             FrameId::from_u128(7),
             320,
             240,
-            Vec::<PlaceholderFrameMapping>::new(),
+            FrameCompositionMetadata::default(),
             prepared,
         )
         .expect("paint frame should serialize into shared memory");
@@ -839,7 +855,7 @@ mod tests {
             FrameId::from_u128(7),
             320,
             240,
-            Vec::<PlaceholderFrameMapping>::new(),
+            FrameCompositionMetadata::default(),
             sender.prepare_scene(29, scene_with_glyph(&font, 7, 12.0, 18.0)),
         )
         .expect("first frame should serialize");
@@ -864,7 +880,7 @@ mod tests {
             FrameId::from_u128(7),
             320,
             240,
-            Vec::<PlaceholderFrameMapping>::new(),
+            FrameCompositionMetadata::default(),
             sender.prepare_scene(29, scene_with_glyph(&font, 8, 28.0, 18.0)),
         )
         .expect("second frame should serialize");

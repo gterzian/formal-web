@@ -1071,16 +1071,6 @@ fn descendant_navigable_ids_matching(
     descendants
 }
 
-fn descendant_traversable_ids(state: &UserAgentState, traversable_id: NavigableId) -> Vec<NavigableId> {
-    let children_by_parent = child_navigable_ids_by_parent(state);
-    descendant_navigable_ids_matching(
-        state,
-        traversable_id,
-        &children_by_parent,
-        |navigable| navigable.event_loop_id.is_some(),
-    )
-}
-
 fn descendant_navigable_ids(state: &UserAgentState, navigable_id: NavigableId) -> Vec<NavigableId> {
     let children_by_parent = child_navigable_ids_by_parent(state);
     descendant_navigable_ids_matching(state, navigable_id, &children_by_parent, |_| true)
@@ -2616,6 +2606,11 @@ impl UserAgentWorker {
     fn handle_set_default_viewport(&mut self, snapshot: (u32, u32, f32, ColorScheme)) {
         // This follows the embedder's active top-level selection only; inactive top-level
         // traversables keep their last published viewport until they become active again.
+        //
+        // Child traversables are updated from compositor-derived iframe geometry via
+        // SetTraversableViewport. Reapplying the default viewport to descendants here can
+        // transiently reset iframe offsets to (0,0), which leaves child hit testing and
+        // scale wrong until a later parent composition pass republishes child viewports.
         let active_top_level_traversable_id = self
             .state
             .navigables
@@ -2629,9 +2624,6 @@ impl UserAgentWorker {
         };
 
         self.handle_set_traversable_viewport(traversable_id, snapshot, 0.0, 0.0);
-        for descendant_traversable_id in descendant_traversable_ids(&self.state, traversable_id) {
-            self.handle_set_traversable_viewport(descendant_traversable_id, snapshot, 0.0, 0.0);
-        }
     }
 
     /// sending a per-traversable viewport update to the owning event loop.

@@ -378,10 +378,6 @@ impl DocumentMutator<'_> {
         self.doc.set_sub_document(node_id, sub_document)
     }
 
-    pub fn set_cross_origin_iframe(&mut self, node_id: usize, frame_id: u64) {
-        self.doc.set_cross_origin_iframe(node_id, frame_id)
-    }
-
     pub fn remove_sub_document(&mut self, node_id: usize) {
         self.doc.remove_sub_document(node_id)
     }
@@ -396,10 +392,6 @@ impl DocumentMutator<'_> {
         self.doc.remove_custom_widget(node_id)
     }
     
-    pub fn remove_cross_origin_iframe(&mut self, node_id: usize) {
-        self.doc.remove_cross_origin_iframe(node_id)
-    }
-
     /// Remove the node from it's parent but don't drop it
     pub fn remove_node(&mut self, node_id: usize) {
         let node = &mut self.doc.nodes[node_id];
@@ -715,7 +707,6 @@ impl<'doc> DocumentMutator<'doc> {
                     self.eager_op_queue
                         .push(SpecialOp::UnloadCustomWidget(node_id));
                 }
-                SpecialElementData::CrossOriginIframe(_) => {}
                 SpecialElementData::Stylesheet(_) => self
                     .eager_op_queue
                     .push(SpecialOp::UnloadStylesheet(node_id)),

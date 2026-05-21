@@ -11,7 +11,7 @@ use crate::kurbo_css::NonUniformRoundedRectRadii;
 use crate::layers::LayerManager;
 use crate::sizing::compute_object_fit;
 use crate::{CustomWidgetSceneMap, SELECTION_COLOR};
-use anyrender::{PaintScene, PlaceholderKind, Scene};
+use anyrender::{PaintScene, Scene};
 use blitz_dom::node::{
     ListItemLayout, ListItemLayoutPosition, Marker, NodeData, RasterImageData, SpecialElementData,
     TextInputData, TextNodeData,
@@ -331,7 +331,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         #[cfg(feature = "custom-widget")]
                         cx.draw_custom_widget(scene);
                         cx.draw_sub_document(scene);
-                        cx.draw_cross_origin_iframe(scene);
                         cx.draw_input(scene);
                         cx.draw_text_input_text(scene, content_position);
                         cx.draw_inline_layout(scene, content_position);
@@ -780,26 +779,6 @@ impl ElementCx<'_, '_> {
                 BlitzDomPainter::new(&sub_doc, scale, width, height, initial_x, initial_y, self.custom_widget_scenes,);
             painter.paint_scene(scene);
         }
-    }
-
-    fn draw_cross_origin_iframe(&self, scene: &mut impl PaintScene) {
-        let Some(frame_id) = self.element.cross_origin_iframe_data() else {
-            return;
-        };
-
-        let width = self.frame.content_box.width();
-        let height = self.frame.content_box.height();
-        let x = self.frame.content_box.origin().x;
-        let y = self.frame.content_box.origin().y;
-        let transform = self.transform.then_translate(Vec2 { x, y });
-
-        self.fill_embedded_document_background(scene);
-
-        scene.placeholder(
-            PlaceholderKind::CrossOriginIframe { frame_id },
-            transform,
-            &Rect::from_origin_size((0.0, 0.0), (width, height)),
-        );
     }
 
     fn stroke_devtools(&self, scene: &mut impl PaintScene) {
