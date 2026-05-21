@@ -33,36 +33,41 @@ screenshot *ARGS:
   cargo run --release --example screenshot {{ARGS}}
 
 open *ARGS:
-  cargo run --release --package readme --features log_frame_times,log_phase_times {{ARGS}}
+  cargo run --release --package rdme --features log_frame_times,log_phase_times {{ARGS}}
 
 dev *ARGS:
-  cargo run --package readme --features log_frame_times,log_phase_times {{ARGS}}
+  cargo run --package rdme --features log_frame_times,log_phase_times {{ARGS}}
 
 incr *ARGS:
-  cargo run --release --package readme --features incremental,comrak,floats,log_frame_times,log_phase_times {{ARGS}}
+  cargo run --release --package rdme --features incremental,comrak,floats,log_frame_times,log_phase_times {{ARGS}}
 
 cpu *ARGS:
-  cargo run --release --package readme --no-default-features --features cpu,comrak,incremental,floats,log_frame_times,log_phase_times {{ARGS}}
+  cargo run --release --package rdme --no-default-features --features cpu,comrak,incremental,floats,log_frame_times,log_phase_times {{ARGS}}
 
 hybrid *ARGS:
-  cargo run --release --package readme --no-default-features --features hybrid,comrak,incremental,floats,log_frame_times,log_phase_times {{ARGS}}
+  cargo run --release --package rdme --no-default-features --features hybrid,comrak,incremental,floats,log_frame_times,log_phase_times {{ARGS}}
 
 skia *ARGS:
-  cargo run --release --package readme --no-default-features --features skia,comrak,incremental,floats,log_frame_times,log_phase_times {{ARGS}}
+  cargo run --release --package rdme --no-default-features --features skia,comrak,incremental,floats,log_frame_times,log_phase_times {{ARGS}}
 
 skia-pixels *ARGS:
-  cargo run --release --package readme --no-default-features --features skia-pixels,comrak,floats,incremental,log_frame_times,log_phase_times {{ARGS}}
+  cargo run --release --package rdme --no-default-features --features skia-pixels,comrak,floats,incremental,log_frame_times,log_phase_times {{ARGS}}
 
 skia-softbuffer *ARGS:
-  cargo run --release --package readme --no-default-features --features skia-softbuffer,comrak,floats,incremental,log_frame_times,log_phase_times {{ARGS}}
+  cargo run --release --package rdme --no-default-features --features skia-softbuffer,comrak,floats,incremental,log_frame_times,log_phase_times {{ARGS}}
+
+## 7GUIs
+
+seven_guis *ARGS:
+  cargo run --release --package seven_guis --bin seven_guis_native {{ARGS}}
 
 ## TodoMVC commands
 
 todomvc *ARGS:
-  cargo run --release --package todomvc {{ARGS}}
+  cargo run --release --package todomvc --bin todomvc_native {{ARGS}}
 
 todoskia *ARGS:
-  cargo run --release --package todomvc {{ARGS}} --no-default-features --features skia
+  cargo run --release --package todomvc --bin todomvc_native {{ARGS}} --no-default-features --features skia
 
 todoandroid *ARGS:
   export CARGO_APK_RELEASE_KEYSTORE="$HOME/.android/debug.keystore"
@@ -73,6 +78,14 @@ counterandroid *ARGS:
   export CARGO_APK_RELEASE_KEYSTORE="$HOME/.android/debug.keystore"
   export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="android"
   cargo apk run --lib --no-default-features --features skia -p counter
+
+## WASM
+
+wasm-build APP *ARGS:
+  cd examples/{{APP}} && trunk build --release --public-url ./ {{ARGS}}
+
+wasm-serve APP *ARGS:
+  cd examples/{{APP}} && trunk serve --release --public-url ./ {{ARGS}}
 
 ## Ops
 

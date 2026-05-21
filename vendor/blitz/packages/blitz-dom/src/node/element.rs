@@ -22,6 +22,9 @@ use super::{Attribute, Attributes};
 use crate::Document;
 use crate::layout::table::TableContext;
 
+#[cfg(feature = "custom-widget")]
+use super::custom_widget::CustomWidgetData;
+
 macro_rules! local_names {
     ($($name:tt),+) => {
         [$(local_name!($name),)+]
@@ -85,7 +88,11 @@ pub enum SpecialElementType {
 /// Heterogeneous data that depends on the element's type.
 #[derive(Default)]
 pub enum SpecialElementData {
+    /// A sub-document such an \<iframe\> or \<web-view\> element
     SubDocument(Box<dyn Document>),
+    /// A custom widget
+    #[cfg(feature = "custom-widget")]
+    CustomWidget(CustomWidgetData),
     CrossOriginIframe(u64),
     /// A stylesheet
     Stylesheet(DocumentStyleSheet),
@@ -111,6 +118,8 @@ impl Clone for SpecialElementData {
     fn clone(&self) -> Self {
         match self {
             Self::SubDocument(_) => Self::None, // TODO
+            #[cfg(feature = "custom-widget")]
+            Self::CustomWidget(_) => Self::None, // TODO
             Self::CrossOriginIframe(data) => Self::CrossOriginIframe(*data),
             Self::Stylesheet(data) => Self::Stylesheet(data.clone()),
             Self::Image(data) => Self::Image(data.clone()),
@@ -252,6 +261,22 @@ impl ElementData {
     pub fn text_input_data_mut(&mut self) -> Option<&mut TextInputData> {
         match &mut self.special_data {
             SpecialElementData::TextInput(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "custom-widget")]
+    pub fn custom_widget_data(&self) -> Option<&CustomWidgetData> {
+        match &self.special_data {
+            SpecialElementData::CustomWidget(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "custom-widget")]
+    pub fn custom_widget_data_mut(&mut self) -> Option<&mut CustomWidgetData> {
+        match &mut self.special_data {
+            SpecialElementData::CustomWidget(data) => Some(data),
             _ => None,
         }
     }
@@ -428,6 +453,22 @@ impl ElementData {
         self.special_data = SpecialElementData::None;
     }
 
+    #[cfg(feature = "custom-widget")]
+    pub fn set_custom_widget(&mut self, widget: Box<dyn crate::Widget>) {
+        use crate::node::custom_widget::CustomWidgetData;
+        self.special_data = SpecialElementData::CustomWidget(CustomWidgetData::new(widget));
+    }
+
+    #[cfg(feature = "custom-widget")]
+    pub fn remove_custom_widget(&mut self) -> Vec<anyrender::ResourceId> {
+        let resource_ids = self
+            .custom_widget_data_mut()
+            .map(|widget_data| widget_data.take_resource_ids())
+            .unwrap_or_default();
+        self.special_data = SpecialElementData::None;
+        resource_ids
+    }
+    
     pub fn remove_cross_origin_iframe(&mut self) {
         if matches!(self.special_data, SpecialElementData::CrossOriginIframe(_)) {
             self.special_data = SpecialElementData::None;
@@ -556,6 +597,8 @@ impl std::fmt::Debug for SpecialElementData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SpecialElementData::SubDocument(_) => f.write_str("NodeSpecificData::SubDocument"),
+            #[cfg(feature = "custom-widget")]
+            SpecialElementData::CustomWidget(_) => f.write_str("NodeSpecificData::CustomWidget"),
             SpecialElementData::CrossOriginIframe(_) => {
                 f.write_str("NodeSpecificData::CrossOriginIframe")
             }

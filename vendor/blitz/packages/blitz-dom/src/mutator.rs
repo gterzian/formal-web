@@ -10,7 +10,6 @@ use crate::util::ImageType;
 use crate::{
     Attribute, BaseDocument, Document, ElementData, Node, NodeData, QualName, local_name, qual_name,
 };
-use blitz_traits::net::Request;
 use blitz_traits::shell::Viewport;
 use style::Atom;
 use style::invalidation::element::restyle_hints::RestyleHint;
@@ -37,6 +36,8 @@ enum SpecialOp {
     LoadCustomPaintSource(usize),
     ProcessButtonInput(usize),
     UnloadSubDocument(usize),
+    #[cfg(feature = "custom-widget")]
+    UnloadCustomWidget(usize),
 }
 
 pub struct DocumentMutator<'doc> {
@@ -241,6 +242,15 @@ impl DocumentMutator<'_> {
             return;
         };
 
+        // If element is a CustomWidget, then Ccall attribute_changed on it
+        #[cfg(feature = "custom-widget")]
+        if let SpecialElementData::CustomWidget(widget_data) = &mut element.special_data {
+            let old_value = element.attrs.get(&name).as_ref().map(|attr| &*attr.value);
+            widget_data
+                .widget
+                .attribute_changed(&name.local, old_value, Some(value));
+        }
+
         element.attrs.set(name.clone(), value);
 
         let tag = &element.name.local;
@@ -314,6 +324,15 @@ impl DocumentMutator<'_> {
             return;
         }
 
+        // If element is a CustomWidget, then call attribute_changed on it
+        #[cfg(feature = "custom-widget")]
+        if let SpecialElementData::CustomWidget(widget_data) = &mut element.special_data {
+            let old_value = removed_attr.as_ref().map(|attr| &*attr.value);
+            widget_data
+                .widget
+                .attribute_changed(&name.local, old_value, None);
+        }
+
         if name.local == local_name!("id") {
             element.id = None;
         }
@@ -367,6 +386,16 @@ impl DocumentMutator<'_> {
         self.doc.remove_sub_document(node_id)
     }
 
+    #[cfg(feature = "custom-widget")]
+    pub fn set_custom_widget(&mut self, node_id: usize, widget: Box<dyn crate::Widget>) {
+        self.doc.set_custom_widget(node_id, widget)
+    }
+
+    #[cfg(feature = "custom-widget")]
+    pub fn remove_custom_widget(&mut self, node_id: usize) {
+        self.doc.remove_custom_widget(node_id)
+    }
+    
     pub fn remove_cross_origin_iframe(&mut self, node_id: usize) {
         self.doc.remove_cross_origin_iframe(node_id)
     }
@@ -582,6 +611,8 @@ impl<'doc> DocumentMutator<'doc> {
                 SpecialOp::LoadCustomPaintSource(node_id) => self.load_custom_paint_src(node_id),
                 SpecialOp::ProcessButtonInput(node_id) => self.process_button_input(node_id),
                 SpecialOp::UnloadSubDocument(node_id) => self.remove_sub_document(node_id),
+                #[cfg(feature = "custom-widget")]
+                SpecialOp::UnloadCustomWidget(node_id) => self.remove_custom_widget(node_id),
             }
         }
 
@@ -679,6 +710,11 @@ impl<'doc> DocumentMutator<'doc> {
                     self.eager_op_queue
                         .push(SpecialOp::UnloadSubDocument(node_id));
                 }
+                #[cfg(feature = "custom-widget")]
+                SpecialElementData::CustomWidget(_) => {
+                    self.eager_op_queue
+                        .push(SpecialOp::UnloadCustomWidget(node_id));
+                }
                 SpecialElementData::CrossOriginIframe(_) => {}
                 SpecialElementData::Stylesheet(_) => self
                     .eager_op_queue
@@ -754,6 +790,7 @@ impl<'doc> DocumentMutator<'doc> {
                 source_url: url.clone(),
                 guard: self.doc.guard.clone(),
                 net_provider: self.doc.net_provider.clone(),
+                abort_signal: self.doc.abort_signal.clone(),
             },
         );
 
@@ -763,9 +800,11 @@ impl<'doc> DocumentMutator<'doc> {
                 .insert(handler.request_id());
         }
 
-        self.doc
-            .net_provider
-            .fetch(self.doc.id(), Request::get(url), Box::new(handler));
+        self.doc.net_provider.fetch(
+            self.doc.id(),
+            self.doc.build_request(url),
+            Box::new(handler),
+        );
     }
 
     fn unload_stylesheet(&mut self, node_id: usize) {
@@ -822,7 +861,7 @@ impl<'doc> DocumentMutator<'doc> {
 
                 self.doc.net_provider.fetch(
                     self.doc.id(),
-                    Request::get(src),
+                    self.doc.build_request(src),
                     ResourceHandler::boxed(
                         self.doc.tx.clone(),
                         self.doc.id(),

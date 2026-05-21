@@ -14,12 +14,13 @@ use crate::url::DocumentUrl;
 use crate::util::ImageType;
 use crate::{
     DEFAULT_CSS, DocumentConfig, DocumentMutator, DummyHtmlParserProvider, ElementData,
-    EventDriver, HtmlParserProvider, Node, NodeData, NoopEventHandler, TextNodeData,
+    EventDriver, HtmlParserProvider, Node, NodeData, NoopEventHandler, StyleThreading,
+    TextNodeData,
 };
 use blitz_traits::devtools::DevtoolSettings;
 use blitz_traits::events::{BlitzScrollEvent, DomEvent, DomEventData, HitResult, UiEvent};
 use blitz_traits::navigation::{DummyNavigationProvider, NavigationProvider};
-use blitz_traits::net::{DummyNetProvider, NetProvider, Request};
+use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, DummyShellProvider, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
 use linebender_resource_handle::Blob;
@@ -37,7 +38,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard};
 use std::task::Context as TaskContext;
-use std::time::Instant;
 use style::Atom;
 use style::animation::DocumentAnimationSet;
 use style::attr::{AttrIdentifier, AttrValue};
@@ -60,6 +60,7 @@ use style::{
     stylist::Stylist,
 };
 use url::Url;
+use web_time::Instant;
 
 #[cfg(feature = "parallel-construct")]
 use thread_local::ThreadLocal;
@@ -190,6 +191,8 @@ pub struct BaseDocument {
     pub(crate) viewport_scroll: crate::Point<f64>,
     /// CSS media type used to evaluate `@media` rules.
     pub(crate) media_type: MediaType,
+    /// Strategy for Stylo's style traversal during `resolve`.
+    pub(crate) style_threading: StyleThreading,
 
     // Events
     pub(crate) tx: Sender<DocumentEvent>,
@@ -268,6 +271,13 @@ pub struct BaseDocument {
     /// Set of changed nodes for updating the accessibility tree
     pub(crate) deferred_construction_nodes: Vec<ConstructionTask>,
 
+    /// Nodes that contain custom widgets
+    #[cfg(feature = "custom-widget")]
+    pub(crate) custom_widget_nodes: HashSet<usize>,
+    /// Rendering resources allocated by custom widgets that should be deallocated during the next render
+    #[cfg(feature = "custom-widget")]
+    pub(crate) pending_resource_deallocations: Vec<anyrender::ResourceId>,
+
     /// Cache of loaded images, keyed by URL. Allows reusing images across multiple
     /// elements without re-fetching from the network.
     pub(crate) image_cache: HashMap<String, ImageData>,
@@ -290,6 +300,10 @@ pub struct BaseDocument {
     pub shell_provider: Arc<dyn ShellProvider>,
     /// HTML parser provider. Used to parse HTML for setInnerHTML
     pub html_parser_provider: Arc<dyn HtmlParserProvider>,
+    /// Carried on every sub-resource `Request` this document issues; aborting
+    /// it cancels all in-flight fetches tied to this document. Set via
+    /// [`DocumentConfig::abort_signal`].
+    pub(crate) abort_signal: Option<AbortSignal>,
 }
 
 pub(crate) fn make_device(
@@ -336,7 +350,10 @@ impl BaseDocument {
                     source_cache: SourceCache::new_shared(),
                     collection: Collection::new(CollectionOptions {
                         shared: false,
-                        system_fonts: true,
+                        system_fonts: cfg!(all(
+                            feature = "system_fonts",
+                            not(target_arch = "wasm32")
+                        )),
                     }),
                 };
                 font_ctx
@@ -394,6 +411,7 @@ impl BaseDocument {
             nodes_to_id,
             viewport,
             media_type,
+            style_threading: config.style_threading,
             devtool_settings: DevtoolSettings::default(),
             viewport_scroll: crate::Point::ZERO,
             url: base_url,
@@ -413,6 +431,12 @@ impl BaseDocument {
             subdoc_is_animating: false,
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
+
+            #[cfg(feature = "custom-widget")]
+            custom_widget_nodes: HashSet::new(),
+            #[cfg(feature = "custom-widget")]
+            pending_resource_deallocations: Vec::new(),
+
             changed_nodes: HashSet::new(),
             deferred_construction_nodes: Vec::new(),
             image_cache: HashMap::new(),
@@ -423,6 +447,7 @@ impl BaseDocument {
             navigation_provider,
             shell_provider,
             html_parser_provider,
+            abort_signal: config.abort_signal,
             last_mousedown_time: None,
             mousedown_position: taffy::Point::ZERO,
             click_count: 0,
@@ -496,6 +521,12 @@ impl BaseDocument {
 
     pub fn id(&self) -> usize {
         self.id
+    }
+
+    /// Wrapper around [`crate::net::stamped_request`]. Use the free function
+    /// when `&self` would conflict with a held `&mut` borrow on a field.
+    pub(crate) fn build_request(&self, url: url::Url) -> Request {
+        crate::net::stamped_request(url, self.abort_signal.as_ref())
     }
 
     pub fn favicon_url(&self) -> Option<String> {
@@ -632,6 +663,10 @@ impl BaseDocument {
         }
     }
 
+    pub fn sub_document_node_ids(&self) -> Vec<usize> {
+        self.sub_document_nodes.iter().copied().collect()
+    }
+
     pub fn set_sub_document(&mut self, node_id: usize, sub_document: Box<dyn Document>) {
         self.nodes[node_id]
             .element_data_mut()
@@ -656,6 +691,36 @@ impl BaseDocument {
         self.sub_document_nodes.remove(&node_id);
     }
 
+    #[cfg(feature = "custom-widget")]
+    pub fn custom_widget_node_ids(&self) -> Vec<usize> {
+        self.custom_widget_nodes.iter().copied().collect()
+    }
+
+    #[cfg(feature = "custom-widget")]
+    pub fn take_pending_resource_deallocations(&mut self) -> Vec<anyrender::ResourceId> {
+        std::mem::take(&mut self.pending_resource_deallocations)
+    }
+
+    #[cfg(feature = "custom-widget")]
+    pub fn set_custom_widget(&mut self, node_id: usize, widget: Box<dyn crate::Widget>) {
+        self.nodes[node_id]
+            .element_data_mut()
+            .unwrap()
+            .set_custom_widget(widget);
+        self.custom_widget_nodes.insert(node_id);
+    }
+
+    #[cfg(feature = "custom-widget")]
+    pub fn remove_custom_widget(&mut self, node_id: usize) {
+        let resources_to_deallocate = self.nodes[node_id]
+            .element_data_mut()
+            .unwrap()
+            .remove_custom_widget();
+        self.pending_resource_deallocations
+            .extend_from_slice(&resources_to_deallocate);
+        self.custom_widget_nodes.remove(&node_id);
+    }
+    
     pub fn remove_cross_origin_iframe(&mut self, node_id: usize) {
         self.nodes[node_id]
             .element_data_mut()
@@ -799,7 +864,7 @@ impl BaseDocument {
                         let resolved_href = self.resolve_url(href);
                         self.net_provider.fetch(
                             self.id(),
-                            Request::get(resolved_href.clone()),
+                            self.build_request(resolved_href.clone()),
                             ResourceHandler::boxed(
                                 self.tx.clone(),
                                 self.id,
@@ -809,6 +874,7 @@ impl BaseDocument {
                                     source_url: resolved_href,
                                     guard: self.guard.clone(),
                                     net_provider: self.net_provider.clone(),
+                                    abort_signal: self.abort_signal.clone(),
                                 },
                             ),
                         );
@@ -849,6 +915,7 @@ impl BaseDocument {
                 doc_id: self.id,
                 net_provider: self.net_provider.clone(),
                 shell_provider: self.shell_provider.clone(),
+                abort_signal: self.abort_signal.clone(),
             }),
             None,
             QuirksMode::NoQuirks,
@@ -880,6 +947,7 @@ impl BaseDocument {
             &self.net_provider,
             &self.shell_provider,
             &self.guard.read(),
+            self.abort_signal.as_ref(),
         );
 
         // Store data on element
@@ -932,9 +1000,28 @@ impl BaseDocument {
     pub fn load_resource(&mut self, res: ResourceLoadResponse) {
         self.pending_critical_resources.remove(&res.request_id);
 
-        let Ok(resource) = res.result else {
-            // TODO: handle error
-            return;
+        let resource = match res.result {
+            Ok(resource) => resource,
+            Err(err) => {
+                if let Some(url) = res.resolved_url.as_ref() {
+                    let waiting_nodes = self.pending_images.remove(url).unwrap_or_default();
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!(
+                        url = url.as_str(),
+                        waiting_nodes = waiting_nodes.len(),
+                        error = err.as_str(),
+                        "Resource load failed"
+                    );
+                    #[cfg(not(feature = "tracing"))]
+                    let _ = (waiting_nodes, err);
+                } else {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!(error = err.as_str(), "Resource load failed (no url)");
+                    #[cfg(not(feature = "tracing"))]
+                    let _ = err;
+                }
+                return;
+            }
         };
 
         match resource {
@@ -1037,15 +1124,27 @@ impl BaseDocument {
                     }
                 }
             }
-            Resource::Font(bytes) => {
+            Resource::Font(bytes, overrides) => {
                 let font = Blob::new(Arc::new(bytes));
 
-                // TODO: Implement FontInfoOveride
+                // Build a `FontInfoOverride` from the `@font-face` descriptors
+                // captured during stylesheet parsing. Without this, parley
+                // reads the family name from the TTF's own metadata, which
+                // means CSS `font-family: 'Avenir Book'` won't match a font
+                // file that internally identifies as `Avenir 45 Book`.
+                let weight_override = overrides.weight.map(parley::fontique::FontWeight::new);
+                let info_override = parley::fontique::FontInfoOverride {
+                    family_name: overrides.family_name.as_deref(),
+                    weight: weight_override,
+                    style: overrides.style,
+                    ..Default::default()
+                };
+
                 // TODO: Investigate eliminating double-box
                 let mut global_font_ctx = self.font_ctx.lock().unwrap();
                 global_font_ctx
                     .collection
-                    .register_fonts(font.clone(), None);
+                    .register_fonts(font.clone(), Some(info_override));
 
                 #[cfg(feature = "parallel-construct")]
                 {
@@ -1054,7 +1153,9 @@ impl BaseDocument {
                             .thread_font_contexts
                             .get_or(|| RefCell::new(Box::new(global_font_ctx.clone())))
                             .borrow_mut();
-                        font_ctx.collection.register_fonts(font.clone(), None);
+                        font_ctx
+                            .collection
+                            .register_fonts(font.clone(), Some(info_override));
                     });
                 }
                 drop(global_font_ctx);
@@ -1356,9 +1457,15 @@ impl BaseDocument {
     }
 
     pub fn is_animating(&self) -> bool {
+        #[cfg(feature = "custom-widget")]
+        let has_custom_widgets = !self.custom_widget_nodes.is_empty();
+        #[cfg(not(feature = "custom-widget"))]
+        let has_custom_widgets = false;
+
         self.has_canvas
             | self.has_active_animations
             | self.subdoc_is_animating
+            | has_custom_widgets
             | (self.scroll_animation != ScrollAnimationState::None)
     }
 
@@ -1919,5 +2026,78 @@ impl AsRef<BaseDocument> for BaseDocument {
 impl AsMut<BaseDocument> for BaseDocument {
     fn as_mut(&mut self) -> &mut BaseDocument {
         self
+    }
+}
+
+#[cfg(test)]
+mod font_face_override_tests {
+    use super::*;
+    use crate::net::{FontFaceOverrides, Resource, ResourceLoadResponse};
+
+    /// Regression-pin for the `@font-face` descriptor-honouring fix.
+    ///
+    /// The bug was that `Resource::Font` carried only the raw font bytes,
+    /// so `load_resource` registered fonts with `info_override = None` and
+    /// parley fell back to the TTF's internal `name` table. After the fix,
+    /// `Resource::Font` carries `FontFaceOverrides` and `load_resource`
+    /// builds a `FontInfoOverride` from them — meaning a CSS-declared
+    /// `font-family` alias wins over the file's own metadata.
+    ///
+    /// We drive `load_resource` directly with a fabricated response rather
+    /// than go through HTML parsing → `fetch_font_face`, because the
+    /// downstream HTML parser lives in `blitz-html` (would be a circular
+    /// crate dependency). The mapping from `@font-face` descriptors into
+    /// `FontFaceOverrides` is covered by the unit tests in `net.rs`; this
+    /// test pins the load-side of the pipeline.
+    #[test]
+    fn font_face_overrides_alias_family_name() {
+        const ALIAS: &str = "AliasedFamily";
+
+        let mut document = BaseDocument::new(DocumentConfig::default());
+
+        // Sanity: the alias name is not registered before we feed the font.
+        {
+            let mut ctx = document.font_ctx.lock().unwrap();
+            assert!(
+                ctx.collection.family_id(ALIAS).is_none(),
+                "alias must not exist before registration",
+            );
+        }
+
+        // Drive `load_resource` with a `Resource::Font` whose overrides
+        // assert the CSS-side family name. We use the bullet font as a
+        // valid font payload — its internal `name` table is irrelevant to
+        // the assertion; what matters is whether the override wins.
+        let response = ResourceLoadResponse {
+            request_id: 0,
+            node_id: None,
+            resolved_url: Some(String::from("test://aliased-family")),
+            result: Ok(Resource::Font(
+                blitz_traits::net::Bytes::from_static(crate::BULLET_FONT),
+                FontFaceOverrides {
+                    family_name: Some(String::from(ALIAS)),
+                    weight: Some(800.0),
+                    style: Some(parley::fontique::FontStyle::Italic),
+                },
+            )),
+        };
+        document.load_resource(response);
+
+        // The override must have taken effect: parley's `Collection` now
+        // resolves the CSS-declared alias to a registered family.
+        let mut ctx = document.font_ctx.lock().unwrap();
+        let family_id = ctx
+            .collection
+            .family_id(ALIAS)
+            .expect("CSS-declared family name should be registered as a family alias");
+        let resolved_name = ctx
+            .collection
+            .family_name(family_id)
+            .expect("family id should resolve back to a name");
+        assert_eq!(
+            resolved_name, ALIAS,
+            "registered family should report the CSS-declared name, \
+             not the font file's internal `name` table entry",
+        );
     }
 }

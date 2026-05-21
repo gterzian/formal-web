@@ -1,33 +1,44 @@
-use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
-use blitz_dom::{qual_name, DocumentConfig};
+use blitz_dom::DocumentConfig;
 use blitz_html::HtmlDocument;
 use blitz_shell::{create_default_event_loop, BlitzApplication, BlitzShellProxy, WindowConfig};
 
-use crate::{limits, DemoPaintSource, FEATURES, STYLES};
+use crate::{limits, DemoWidget, FEATURES, STYLES};
 
-pub fn launch_html() {
-    // Create renderer
-    let mut renderer = VelloWindowRenderer::with_options(VelloRendererOptions {
+#[cfg(feature = "vello")]
+/// Create renderer
+fn create_renderer() -> anyrender_vello::VelloWindowRenderer {
+    use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
+    VelloWindowRenderer::with_options(VelloRendererOptions {
         features: Some(FEATURES),
         limits: Some(limits()),
         ..VelloRendererOptions::default()
-    });
+    })
+}
 
+#[cfg(feature = "vello-hybrid")]
+/// Create renderer
+fn create_renderer() -> anyrender_vello_hybrid::VelloHybridWindowRenderer {
+    use anyrender_vello_hybrid::{VelloHybridRendererOptions, VelloHybridWindowRenderer};
+    VelloHybridWindowRenderer::with_options(VelloHybridRendererOptions {
+        features: Some(FEATURES),
+        limits: Some(limits()),
+        ..VelloHybridRendererOptions::default()
+    })
+}
+
+pub fn launch_html() {
     // Create custom paint source and register it with the renderer
-    let demo_paint_source = Box::new(DemoPaintSource::new());
-    let paint_source_id = renderer.register_custom_paint_source(demo_paint_source);
+    let demo_widget = Box::new(DemoWidget::new());
+
+    let renderer = create_renderer();
 
     // Parse the HTML into a Blitz document
     let html = HTML.replace("{{STYLES_PLACEHOLDER}}", STYLES);
     let mut doc = HtmlDocument::from_html(&html, DocumentConfig::default());
 
-    // Set the "src" attribute on the `<canvas>` element to the paint source's id
-    // (`<canvas src=".." />` is proprietary blitz extension to HTML)
+    // Set a custom widget on a `<object>` element
     let canvas_node_id = doc.query_selector("#demo-canvas").unwrap().unwrap();
-    let src_attr = qual_name!("src");
-    let src_str = paint_source_id.to_string();
-    doc.mutate()
-        .set_attribute(canvas_node_id, src_attr, &src_str);
+    doc.mutate().set_custom_widget(canvas_node_id, demo_widget);
 
     // Create the Winit application and window
     let event_loop = create_default_event_loop();
@@ -60,7 +71,7 @@ static HTML: &str = r#"
             </div>
             <header><h1>Blitz WGPU Demo</h1></header>
             <div id="canvas-container">
-                <canvas id="demo-canvas" />
+                <object id="demo-canvas" />
             </div>
         </main>
     </body>
