@@ -1,27 +1,10 @@
-`content/src/dom` stores the native data carried by JavaScript-visible DOM objects.
+# content/src/dom
 
-- `BaseDocument` remains the authoritative DOM tree. The Rust carrier structs in this directory keep references, cached event-listener state, and algorithm entry points for JavaScript-visible behavior.
+`content/src/dom` stores the native carriers for JavaScript-visible DOM objects and the DOM Standard algorithms that operate on them.
 
-- HTML global-object carriers such as `GlobalScope` and `Window` live in `content/src/html`; DOM dispatch and event-target code in this directory can depend on those HTML-owned carriers when the DOM Standard talks about Window objects.
-
-- `Document` and `Element` compose `Node` so shared node algorithms live on `Node`, while document-specific and element-specific Web IDL behavior lives on their respective carrier types.
-
-- ParentNode mixin algorithms such as `querySelector()` and `querySelectorAll()` belong on both `Document` and `Element`; detached element subtrees still need selector queries during pure-JS DOM construction.
-
-- When a Web IDL attribute or algorithm naturally belongs to one of these DOM types, implement it here with spec-linked methods and keep `content/src/boa/bindings` as a thin conversion layer.
-
-- Blitz UI-event integration that turns native `UiEvent` values into DOM dispatch belongs in `content/src/dom`, not in `content/src/boa`.
-
-- Activation-triggering native events should flow through `content/src/dom/dispatch.rs`. Compute the activation target during DOM dispatch and invoke HTML-defined activation behavior from that algorithm; do not special-case anchor navigation in the UI-event bridge.
-
-- Keep `activationTarget` selection in `dispatch.rs` aligned with the DOM dispatch algorithm's target-first assignment and bubbling-parent fallback, rather than treating it as a post-dispatch HTML lookup.
-
-- Use the checked-in standards under `/web_standards` for DOM, HTML, and UI Events anchors and verbatim `Step N:` comments. Never quote specs from memory: only use the local sources.
-
-- For DOM getters and methods whose spec definition is a single-sentence statement rather than a numbered algorithm, quote that sentence verbatim in a plain comment above the implementation instead of inventing a `Step N:` label. Add a `Note:` only when the code has a non-obvious divergence or representation-specific wrinkle that actually needs explanation.
-
-- "Missing Feature:" comments identify major missing features in the code. Only address those if given a clear implementation plan.
-
-- "TODO:" comments identify minor missing fixes or features. Those can be addressed in batches when asked to do so.
-
-- Spec is found under the top-level `/web_standards/DOM.html`
+- `BaseDocument` remains the authoritative DOM tree and document state.
+- `Document` and `Element` compose `Node`, so shared tree algorithms live on `Node` while type-specific Web IDL behavior stays on the owning carrier.
+- HTML-owned global-object carriers such as `GlobalScope` and `Window` live in `content/src/html`, and DOM dispatch code here depends on them when the DOM Standard talks about window-backed targets.
+- `content/src/boa/bindings` should delegate DOM algorithms here instead of embedding DOM logic in the binding layer.
+- Native UI-event to DOM-dispatch bridging belongs here, with activation-target selection kept in `dispatch.rs`.
+- Use the checked-in standards under `web_standards/`, and for single-sentence spec definitions quote the defining sentence instead of inventing `Step N:` comments.

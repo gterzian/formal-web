@@ -1,21 +1,10 @@
-`content/src/webidl` stores the Web IDL algorithms that sit between DOM-facing logic and the ECMAScript operations used by the current runtime.
+# content/src/webidl
 
-- Callback-interface conversions and `call a user object's operation` belong here.
+`content/src/webidl` stores the shared Web IDL algorithms that sit between DOM, HTML, and Streams code and the ECMAScript operations used by the current runtime.
 
-- This layer should depend on abstract `Get` / `IsCallable` / `Call` hooks instead of reaching into engine-specific context APIs directly.
-
-- Keep `IsCallable` checks aligned with the current Web IDL algorithm step by applying them to the ECMAScript value produced by that step before narrowing to a callable object for `Call`, and keep helper diagnostics generic to callback/interface algorithms rather than to one caller such as event listeners.
-
-- Keep shared context-backed adapters for those hooks here; DOM, HTML, and Streams code should delegate to them instead of reimplementing that callback-operation glue locally.
-
-- Keep Promise creation and rejection-reason conversion helpers here, and structure them against Web IDL "Creating and manipulating Promises" algorithms:
-	- https://webidl.spec.whatwg.org/#js-promise-manipulation
-	- https://webidl.spec.whatwg.org/#a-promise-resolved-with
-	- https://webidl.spec.whatwg.org/#a-promise-rejected-with
-	- https://webidl.spec.whatwg.org/#js-to-promise
-
-- DOM event dispatch should call into this layer for listener callback invocation instead of calling engine functions directly.
-
-- Spec is found under the top-level `/web_standards/WebIDL.html`
-
-- Do not add unit-tests; use wpt tests, and add your own under tests/formal when necessary.
+- Callback-interface conversion, `call a user object's operation`, and promise helpers belong here.
+- This layer should depend on abstract `Get`, `IsCallable`, and `Call` hooks instead of reaching into engine-specific context APIs directly.
+- Keep the context-backed adapters for those hooks here so DOM, HTML, and Streams code can delegate instead of reimplementing callback glue locally.
+- Promise helpers here should follow the Web IDL promise algorithms, including `#js-promise-manipulation`, `#a-promise-resolved-with`, `#a-promise-rejected-with`, and `#js-to-promise`.
+- DOM event dispatch and other callback sites should call into this layer instead of calling Boa directly.
+- The spec source is `web_standards/WebIDL.html`.

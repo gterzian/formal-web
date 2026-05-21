@@ -1,22 +1,9 @@
-Mirror the WPT test tree here with Servo-style `.ini` expectation files.
+# tests/wpt/meta
 
-Example for `vendor/wpt/dom/example.html`:
+Mirror the upstream WPT tree here with Servo-style `.ini` expectation files.
 
-```ini
-[example.html]
-  expected: FAIL
-
-  [subtest name]
-    expected: FAIL
-```
-
-The current runner reads:
-
-- `__dir__.ini` root-level `disabled:` or `skip: true` to disable a mirrored directory subtree.
-- `<test>.ini` root-level `disabled:` on the matching top-level test section.
-- `<test>.ini` root-level `expected:` on the matching top-level test section.
-- `<test>.ini` directly nested subtest `expected:` entries.
-
-Supported expectation values are `PASS`, `FAIL`, `TIMEOUT`, `ERROR`, `NOTRUN`, `PRECONDITION_FAILED`, `CRASH`, and `SKIP`.
-
-Use `disabled:` for tests whose whole-harness result is not `PASS`, and include a short note naming the missing implementation or blocking bug. Reserve root-level `expected:` and subtest expectations for mixed-result tests where the page still runs and some subtests need explicit tracking.
+- `__dir__.ini` can disable a mirrored directory subtree with root-level `disabled:` or `skip: true`.
+- `<test>.ini` can set root-level `disabled:` or `expected:` on the matching top-level test section, plus directly nested subtest `expected:` entries.
+- Supported expectation values are `PASS`, `FAIL`, `TIMEOUT`, `ERROR`, `NOTRUN`, `PRECONDITION_FAILED`, `CRASH`, and `SKIP`.
+- Prefer `disabled:` for whole-test failures, with a short reason naming the missing feature or blocking bug.
+- Use `expected:` only when the page still runs and mixed top-level or subtest outcomes need explicit tracking.
