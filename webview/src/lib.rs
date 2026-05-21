@@ -237,6 +237,11 @@ impl WebviewProvider {
         // Force a parent rendering opportunity so embed-site geometry becomes available and
         // child viewport publication does not wait for a later root scroll/input event.
         self.note_rendering_opportunity(parent_traversable_id, "child_host_registered");
+        // Child frames can paint before host registration. Force a fresh child rendering
+        // opportunity after registration so the next child paint is routed through the
+        // parent-mapped content frame immediately, instead of waiting for later input.
+        self.note_rendering_opportunity(child_host_webview_id, "child_host_registered");
+        self.embedder.request_redraw(parent_traversable_id);
     }
 
     pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
@@ -256,6 +261,14 @@ impl WebviewProvider {
         let viewport_width = frame.viewport_width;
         let viewport_height = frame.viewport_height;
         let composition = frame.composition.clone();
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][webview] on_paint_frame traversable={} frame={} embeds={}",
+                traversable_id.0,
+                frame_id.0,
+                composition.embed_sites.len()
+            );
+        }
         let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver)?;
 
         let state = self.webviews.entry(traversable_id).or_default();
@@ -285,6 +298,14 @@ impl WebviewProvider {
         {
             let parent_traversable_id = child_navigable_host.parent_traversable_id;
             let content_frame_id = child_navigable_host.content_frame_id;
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][webview] navigation_committed child_webview={} parent_webview={} content_frame={}",
+                    webview_id.0,
+                    parent_traversable_id.0,
+                    content_frame_id.0,
+                );
+            }
             let state = self
                 .webviews
                 .entry(parent_traversable_id)
@@ -293,12 +314,24 @@ impl WebviewProvider {
                 .compositor
                 .note_child_navigation_finalized(content_frame_id);
 
+            // Child frame caches are pruned on child navigation commit; request an immediate
+            // child rendering opportunity so the refreshed child frame is available without
+            // waiting for a later parent interaction to fan out rendering opportunities.
+            self.note_rendering_opportunity(webview_id, "child_navigation_committed");
+
             // Child navigation commit can invalidate parent composition state. Request
             // immediate parent rendering so updated child geometry and scale are visible
             // without waiting for a manual root-page interaction.
             self.note_rendering_opportunity(parent_traversable_id, "child_navigation_committed");
             self.embedder.request_redraw(parent_traversable_id);
             return;
+        }
+
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][webview] navigation_committed top_level_webview={}",
+                webview_id.0
+            );
         }
 
         let state = self.webviews.entry(webview_id).or_default();
@@ -466,6 +499,20 @@ impl WebviewProvider {
                 != Some(&published_viewport);
             next_published_child_viewports.insert(child_webview_id, published_viewport.clone());
 
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][webview] publish_child_viewport child_webview={} frame={} changed={} size=({},{}) offset=({:.1},{:.1}) scale={:.2}",
+                    child_webview_id.0,
+                    viewport.frame_id.0,
+                    viewport_changed,
+                    published_viewport.width,
+                    published_viewport.height,
+                    published_viewport.offset_x,
+                    published_viewport.offset_y,
+                    published_viewport.scale,
+                );
+            }
+
             if !viewport_changed {
                 continue;
             }
@@ -492,6 +539,11 @@ impl WebviewProvider {
                     child_host.parent_traversable_id,
                     "visible_child_viewport_parent",
                 );
+                // Keep parent composition in lockstep with child viewport publication.
+                // Without this immediate redraw request, the parent can keep showing a stale
+                // child transform until a later parent interaction (for example, root scroll).
+                self.embedder
+                    .request_redraw(child_host.parent_traversable_id);
             }
         }
         self.published_child_viewports = next_published_child_viewports;

@@ -18,6 +18,10 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
+fn webdriver_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutomationSnapshot {
     pub webview_id: Option<WebviewId>,
@@ -508,6 +512,15 @@ fn dispatch_request_inner(
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
 
+    if webdriver_debug_enabled() {
+        eprintln!(
+            "[input-debug][webdriver] request method={} target={} body_bytes={}",
+            request.method,
+            request.target,
+            request.body.len()
+        );
+    }
+
     match (request.method.as_str(), segments.as_slice()) {
         ("GET", ["status"]) => Ok(status_payload(&state.runtime)),
         ("POST", ["session"]) => create_session(state),
@@ -533,6 +546,15 @@ fn dispatch_session_request(
     body: &[u8],
     state: &WebDriverState,
 ) -> Result<Value, WebDriverError> {
+    if webdriver_debug_enabled() {
+        eprintln!(
+            "[input-debug][webdriver] session method={} route=/{} body_bytes={}",
+            method,
+            rest.join("/"),
+            body.len()
+        );
+    }
+
     match (method, rest) {
         ("DELETE", []) => {
             clear_session(state)?;
@@ -569,6 +591,12 @@ fn dispatch_session_request(
         ("POST", ["formal-web", "click"]) => {
             let request: ClickRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
+            if webdriver_debug_enabled() {
+                eprintln!(
+                    "[input-debug][webdriver] click x={:.1} y={:.1}",
+                    request.x, request.y
+                );
+            }
             state
                 .runtime
                 .click(request.x, request.y, AUTOMATION_TIMEOUT)
@@ -587,6 +615,12 @@ fn dispatch_session_request(
         ("POST", ["formal-web", "scroll"]) => {
             let request: ScrollRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
+            if webdriver_debug_enabled() {
+                eprintln!(
+                    "[input-debug][webdriver] scroll x={:.1} y={:.1} delta=({:.1},{:.1})",
+                    request.x, request.y, request.delta_x, request.delta_y
+                );
+            }
             state
                 .runtime
                 .scroll(

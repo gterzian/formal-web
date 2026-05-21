@@ -3,6 +3,29 @@ use super::*;
 const HEADLESS_VIEWPORT_WIDTH: u32 = 800;
 const HEADLESS_VIEWPORT_HEIGHT: u32 = 600;
 
+fn input_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+}
+
+fn ui_event_summary(event: &UiEvent) -> String {
+    match event {
+        UiEvent::PointerMove(event)
+        | UiEvent::PointerDown(event)
+        | UiEvent::PointerUp(event) => format!(
+            "pointer client=({:.1},{:.1})",
+            event.coords.client_x, event.coords.client_y
+        ),
+        UiEvent::Wheel(event) => format!(
+            "wheel client=({:.1},{:.1}) delta={:?}",
+            event.coords.client_x, event.coords.client_y, event.delta
+        ),
+        UiEvent::KeyDown(_) => String::from("key-down"),
+        UiEvent::KeyUp(_) => String::from("key-up"),
+        UiEvent::Ime(_) => String::from("ime"),
+        UiEvent::AppleStandardKeybinding(_) => String::from("apple-keybinding"),
+    }
+}
+
 fn headless_viewport_snapshot() -> (u32, u32, f32, ColorScheme) {
     (
         HEADLESS_VIEWPORT_WIDTH,
@@ -139,10 +162,23 @@ impl HeadlessEmbedderApp {
             return Err(String::from("no current webview is active"));
         };
 
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][embedder-headless] send_ui_event webview={} {}",
+                webview_id.0,
+                ui_event_summary(&event)
+            );
+        }
+
         provider.send_ui_event(webview_id, event)
     }
 
     fn dispatch_automation_click(&mut self, x: f32, y: f32) -> Result<(), String> {
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][embedder-headless] automation_click at=({x:.1},{y:.1})"
+            );
+        }
         let modifiers = KeyboardModifiers::default();
         let move_event = BlitzPointerEvent {
             id: BlitzPointerId::Mouse,
@@ -200,6 +236,11 @@ impl HeadlessEmbedderApp {
         delta_x: f32,
         delta_y: f32,
     ) -> Result<(), String> {
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][embedder-headless] automation_scroll at=({x:.1},{y:.1}) delta=({delta_x:.1},{delta_y:.1})"
+            );
+        }
         let modifiers = KeyboardModifiers::default();
         let move_event = BlitzPointerEvent {
             id: BlitzPointerId::Mouse,

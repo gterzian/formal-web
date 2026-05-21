@@ -960,6 +960,10 @@ fn log_render_state_debug(message: impl AsRef<str>) {
     }
 }
 
+fn input_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+}
+
 /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
 fn normalize_navigation_target_name(target_name: &str) -> String {
     if target_name.eq_ignore_ascii_case("_self") {
@@ -2660,6 +2664,16 @@ impl UserAgentWorker {
             return;
         };
 
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][user-agent] dispatch_event traversable={} event_loop={} document={} bytes={}",
+                traversable_id,
+                handle,
+                document_id,
+                event.len(),
+            );
+        }
+
         let command = ContentCommand::DispatchEvent {
             events: vec![DispatchEventEntry {
                 document_id: *document_id,
@@ -2683,6 +2697,15 @@ impl UserAgentWorker {
         let Some(entry) = self.state.event_loops.get(&handle) else {
             return;
         };
+
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][user-agent] rendering_opportunity traversable={} event_loop={} document={}",
+                traversable_id,
+                handle,
+                document_id,
+            );
+        }
 
         log_render_state_debug(format!(
             "send rendering opportunity traversable={} document={} event_loop={}",
