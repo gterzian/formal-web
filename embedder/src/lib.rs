@@ -899,7 +899,8 @@ impl FormalWebApp {
             self.renderer.set_size(size.width, size.height);
         } else {
             let window_handle: Arc<dyn anyrender::WindowHandle> = window.clone();
-            self.renderer.resume(window_handle, size.width, size.height);
+            self.renderer.resume(window_handle, size.width, size.height, || {});
+            self.renderer.complete_resume();
         }
     }
 
@@ -954,7 +955,8 @@ impl FormalWebApp {
             self.renderer.set_size(size.width, size.height);
         } else {
             let window_handle: Arc<dyn anyrender::WindowHandle> = window.clone();
-            self.renderer.resume(window_handle, size.width, size.height);
+            self.renderer.resume(window_handle, size.width, size.height, || {});
+            self.renderer.complete_resume();
         }
 
         self.renderer.render(|scene| {

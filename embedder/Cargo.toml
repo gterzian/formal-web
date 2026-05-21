@@ -5,8 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-anyrender = { version = "0.8", features = ["serde"] }
-anyrender_vello = "0.8.0"
+anyrender = { version = "0.10", features = ["serde"] }
+anyrender_vello = "0.10.1"
 arboard = { version = "3.6.1", default-features = false }
 blitz-dom = { path = "../vendor/blitz/packages/blitz-dom", default-features = false, features = ["system_fonts", "svg"] }
 blitz-html = { path = "../vendor/blitz/packages/blitz-html", default-features = false }

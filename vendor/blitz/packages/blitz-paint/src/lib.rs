@@ -40,7 +40,7 @@ type CustomWidgetSceneMap = HashMap<(usize, usize), Scene>;
 /// transform them to a vector format (e.g. SVG/PDF) or serialize them in raw form for later use.
 pub fn paint_scene(
     scene: &mut impl PaintScene,
-    doc: &mut BaseDocument,
+    doc: &BaseDocument,
     scale: f64,
     width: u32,
     height: u32,
@@ -54,7 +54,7 @@ pub fn paint_scene(
     #[allow(unused_mut)]
     let mut custom_widget_scenes: CustomWidgetSceneMap = HashMap::new();
     #[cfg(feature = "custom-widget")]
-    build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, scale);
+    build_custom_widget_scenes(&mut custom_widget_scenes, &mut doc.clone(), scene, scale);
 
     let generator = BlitzDomPainter::new(
         doc,

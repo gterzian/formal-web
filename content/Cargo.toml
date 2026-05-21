@@ -13,7 +13,7 @@ name = "formal-web-content"
 path = "src/bin/content_process.rs"
 
 [dependencies]
-anyrender = { version = "0.8", features = ["serde"] }
+anyrender = { version = "0.10", features = ["serde"] }
 boa_engine = { path = "../vendor/boa/core/engine", default-features = false }
 boa_gc = { path = "../vendor/boa/core/gc" }
 boa_runtime = { path = "../vendor/boa/core/runtime", default-features = false }
