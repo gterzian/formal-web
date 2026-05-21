@@ -1,6 +1,6 @@
-use crate::{Glyph, NormalizedCoord, Paint, PaintRef, PaintScene};
+use crate::{Glyph, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext};
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
-use peniko::{BlendMode, Brush, Color, Fill, FontData, ImageBrush, ImageData, Style, StyleRef};
+use peniko::{BlendMode, Color, Fill, FontData, Style, StyleRef};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ const DEFAULT_TOLERANCE: f64 = 0.1;
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum RenderCommand<Font = FontData, Image = ImageData> {
+pub enum RenderCommand<Font = FontData, Brush = Paint> {
     /// Pushes a new layer clipped by the specified shape and composed with previous layers using the specified blend mode.
     /// Every drawing command after this call will be clipped by the shape until the layer is popped.
     /// However, the transforms are not saved or modified by the layer stack.
@@ -21,11 +21,11 @@ pub enum RenderCommand<Font = FontData, Image = ImageData> {
     /// Pops the current layer.
     PopLayer,
     /// Strokes a shape using the specified style and brush.
-    Stroke(StrokeCommand<Image>),
+    Stroke(StrokeCommand<Brush>),
     /// Fills a shape using the specified style and brush.
-    Fill(FillCommand<Image>),
+    Fill(FillCommand<Brush>),
     /// Draws a run of glyphs
-    GlyphRun(GlyphRunCommand<Font, Image>),
+    GlyphRun(GlyphRunCommand<Font, Brush>),
     /// Draw a rounded rectangle blurred with a gaussian filter.
     BoxShadow(BoxShadowCommand),
     /// Marks a region where a separately produced scene may be composited.
@@ -77,10 +77,10 @@ pub struct ClipCommand {
 /// Strokes a shape using the specified style and brush.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct StrokeCommand<Image = ImageData> {
+pub struct StrokeCommand<Brush = Paint> {
     pub style: Stroke,
     pub transform: Affine,
-    pub brush: Brush<ImageBrush<Image>>, // TODO: review ownership to avoid cloning. Should brushes be a "resource"?
+    pub brush: Brush, // TODO: review ownership to avoid cloning. Should brushes be a "resource"?
     pub brush_transform: Option<Affine>,
     #[cfg_attr(feature = "serde", serde(with = "svg_path"))]
     pub shape: BezPath, // TODO: more shape options
@@ -89,10 +89,10 @@ pub struct StrokeCommand<Image = ImageData> {
 /// Fills a shape using the specified style and brush.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct FillCommand<Image = ImageData> {
+pub struct FillCommand<Brush = Paint> {
     pub fill: Fill,
     pub transform: Affine,
-    pub brush: Brush<ImageBrush<Image>>, // TODO: review ownership to avoid cloning. Should brushes be a "resource"?
+    pub brush: Brush, // TODO: review ownership to avoid cloning. Should brushes be a "resource"?
     pub brush_transform: Option<Affine>,
     #[cfg_attr(feature = "serde", serde(with = "svg_path"))]
     pub shape: BezPath, // TODO: more shape options
@@ -101,13 +101,15 @@ pub struct FillCommand<Image = ImageData> {
 /// Draws a run of glyphs
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct GlyphRunCommand<Font = FontData, Image = ImageData> {
+pub struct GlyphRunCommand<Font = FontData, Brush = Paint> {
     pub font_data: Font,
     pub font_size: f32,
     pub hint: bool,
     pub normalized_coords: Vec<NormalizedCoord>,
+    #[cfg_attr(feature = "serde", serde(default = "Default::default"))]
+    pub embolden: kurbo::Vec2,
     pub style: Style,
-    pub brush: Brush<ImageBrush<Image>>,
+    pub brush: Brush,
     pub brush_alpha: f32,
     pub transform: Affine,
     pub glyph_transform: Option<Affine>,
@@ -172,17 +174,19 @@ impl Scene {
         }
     }
 
-    fn convert_paintref(&mut self, paint_ref: PaintRef<'_>) -> Brush {
+    fn convert_paint(&mut self, paint_ref: PaintRef<'_>) -> Paint {
         match paint_ref {
-            Paint::Solid(color) => Brush::Solid(color),
-            Paint::Gradient(gradient) => Brush::Gradient(gradient.clone()),
-            Paint::Image(image) => Brush::Image(image.to_owned()),
+            Paint::Solid(color) => Paint::Solid(color),
+            Paint::Gradient(gradient) => Paint::Gradient(gradient.clone()),
+            Paint::Image(image) => Paint::Image(image.to_owned()),
             // TODO: handle this somehow
-            Paint::Custom(_) => Brush::Solid(Color::TRANSPARENT),
+            Paint::Resource(id) => Paint::Resource(id),
+            Paint::Custom(_) => Paint::Solid(Color::TRANSPARENT),
         }
     }
 }
 
+impl RenderContext for Scene {}
 impl PaintScene for Scene {
     fn reset(&mut self) {
         self.commands.clear()
@@ -225,7 +229,7 @@ impl PaintScene for Scene {
         shape: &impl Shape,
     ) {
         let shape = shape.into_path(self.tolerance);
-        let brush = self.convert_paintref(paint_ref.into());
+        let brush = self.convert_paint(paint_ref.into());
         let stroke = StrokeCommand {
             style: style.clone(),
             transform,
@@ -245,7 +249,7 @@ impl PaintScene for Scene {
         shape: &impl Shape,
     ) {
         let shape = shape.into_path(self.tolerance);
-        let brush = self.convert_paintref(paint.into());
+        let brush = self.convert_paint(paint.into());
         let fill = FillCommand {
             fill: style,
             transform,
@@ -262,6 +266,7 @@ impl PaintScene for Scene {
         font_size: f32,
         hint: bool,
         normalized_coords: &'a [NormalizedCoord],
+        embolden: kurbo::Vec2,
         style: impl Into<StyleRef<'a>>,
         paint_ref: impl Into<PaintRef<'a>>,
         brush_alpha: f32,
@@ -269,12 +274,13 @@ impl PaintScene for Scene {
         glyph_transform: Option<Affine>,
         glyphs: impl Iterator<Item = Glyph>,
     ) {
-        let brush = self.convert_paintref(paint_ref.into());
+        let brush = self.convert_paint(paint_ref.into());
         let glyph_run = GlyphRunCommand {
             font_data: font.clone(),
             font_size,
             hint,
             normalized_coords: normalized_coords.to_vec(),
+            embolden,
             style: style.into().to_owned(),
             brush,
             brush_alpha,

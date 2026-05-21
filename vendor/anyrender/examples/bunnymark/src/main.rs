@@ -148,7 +148,13 @@ impl App {
         self.scale_factor = window.scale_factor();
 
         let physical_size = window.inner_size();
-        renderer.resume(window.clone(), physical_size.width, physical_size.height);
+        renderer.resume(
+            window.clone(),
+            physical_size.width,
+            physical_size.height,
+            || {},
+        );
+        let _ = renderer.complete_resume();
         self.render_state = RenderState::Active {
             window,
             renderer: f(renderer),
@@ -272,10 +278,8 @@ impl ApplicationHandler for App {
                 }
                 window.request_redraw();
             }
-            WindowEvent::MouseInput { state, .. } => {
-                if state.is_pressed() {
-                    self.bunny_manager.add_bunnies(100);
-                }
+            WindowEvent::MouseInput { state, .. } if state.is_pressed() => {
+                self.bunny_manager.add_bunnies(100);
             }
             WindowEvent::KeyboardInput {
                 event:

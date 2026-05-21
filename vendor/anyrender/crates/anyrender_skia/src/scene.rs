@@ -1,4 +1,5 @@
-use anyrender::PaintScene;
+use anyrender::{PaintScene, RenderContext};
+use peniko::color::AlphaColor;
 use skia_safe::{
     BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId,
     MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, PathEffect, Point, RRect, Rect, Shader,
@@ -129,7 +130,14 @@ impl SkiaScenePainter<'_> {
 
                 self.cache.paint.set_shader(image_shader);
             }
-            anyrender::Paint::Custom(_) => unreachable!(), // ToDo: figure out what to do with this
+
+            // Render unsupported custom paints as transparent
+            anyrender::Paint::Resource(_) | anyrender::Paint::Custom(_) => {
+                self.cache.paint.set_color4f(
+                    sk_peniko::color4f_from_alpha_color(AlphaColor::TRANSPARENT),
+                    &ColorSpace::new_srgb(),
+                );
+            }
         }
     }
 
@@ -378,6 +386,7 @@ impl SkiaScenePainter<'_> {
     }
 }
 
+impl RenderContext for SkiaScenePainter<'_> {}
 impl PaintScene for SkiaScenePainter<'_> {
     fn reset(&mut self) {
         self.inner.clear(Color::WHITE);
@@ -456,6 +465,7 @@ impl PaintScene for SkiaScenePainter<'_> {
         font_size: f32,
         hint: bool,
         normalized_coords: &'a [anyrender::NormalizedCoord],
+        _embolden: kurbo::Vec2,
         style: impl Into<peniko::StyleRef<'a>>,
         brush: impl Into<anyrender::PaintRef<'a>>,
         brush_alpha: f32,

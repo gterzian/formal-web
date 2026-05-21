@@ -2,7 +2,7 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use anyrender::{ImageRenderer, WindowHandle, WindowRenderer};
+use anyrender::{ImageRenderer, RenderContext, WindowHandle, WindowRenderer};
 use debug_timer::debug_timer;
 use softbuffer::{Context, Surface};
 use std::{num::NonZero, sync::Arc};
@@ -44,6 +44,18 @@ impl<Renderer: ImageRenderer> SoftbufferWindowRenderer<Renderer> {
     }
 }
 
+impl<Renderer: ImageRenderer> RenderContext for SoftbufferWindowRenderer<Renderer> {
+    fn try_register_custom_resource(
+        &mut self,
+        resource: Box<dyn std::any::Any>,
+    ) -> Result<anyrender::ResourceId, anyrender::RegisterResourceError> {
+        self.renderer.try_register_custom_resource(resource)
+    }
+
+    fn unregister_resource(&mut self, resource_id: anyrender::ResourceId) {
+        self.renderer.unregister_resource(resource_id);
+    }
+}
 impl<Renderer: ImageRenderer> WindowRenderer for SoftbufferWindowRenderer<Renderer> {
     type ScenePainter<'a>
         = Renderer::ScenePainter<'a>
@@ -54,7 +66,13 @@ impl<Renderer: ImageRenderer> WindowRenderer for SoftbufferWindowRenderer<Render
         matches!(self.render_state, RenderState::Active(_))
     }
 
-    fn resume(&mut self, window_handle: Arc<dyn WindowHandle>, width: u32, height: u32) {
+    fn resume<F: FnOnce() + 'static>(
+        &mut self,
+        window_handle: Arc<dyn WindowHandle>,
+        width: u32,
+        height: u32,
+        on_ready: F,
+    ) {
         let context = Context::new(window_handle.clone()).unwrap();
         let surface = Surface::new(&context, window_handle.clone()).unwrap();
         self.render_state = RenderState::Active(ActiveRenderState {
@@ -64,6 +82,11 @@ impl<Renderer: ImageRenderer> WindowRenderer for SoftbufferWindowRenderer<Render
         self.window_handle = Some(window_handle);
 
         self.set_size(width, height);
+        on_ready();
+    }
+
+    fn complete_resume(&mut self) -> bool {
+        true
     }
 
     fn suspend(&mut self) {

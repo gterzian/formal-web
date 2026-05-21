@@ -1,7 +1,8 @@
 //! WebGL-compatible [`PaintScene`] implementation for [`vello_hybrid::Scene`].
 
-use anyrender::{Glyph, NormalizedCoord, Paint, PaintRef, PaintScene};
-use kurbo::{Affine, Rect, Shape, Stroke};
+use anyrender::{Glyph, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext};
+use glifo::FontEmbolden;
+use kurbo::{Affine, Diagonal2, Rect, Shape, Stroke};
 use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
 use vello_common::paint::PaintType;
 
@@ -13,15 +14,21 @@ const DEFAULT_TOLERANCE: f64 = 0.1;
 
 pub struct WebGlImageManager<'a> {
     pub(crate) renderer: &'a mut vello_hybrid::WebGlRenderer,
+    pub(crate) resources: &'a mut vello_hybrid::Resources,
     pub(crate) cache: &'a mut FxHashMap<u64, ImageId>,
 }
 
 impl<'a> WebGlImageManager<'a> {
     pub fn new(
         renderer: &'a mut vello_hybrid::WebGlRenderer,
+        resources: &'a mut vello_hybrid::Resources,
         cache: &'a mut FxHashMap<u64, ImageId>,
     ) -> Self {
-        Self { renderer, cache }
+        Self {
+            renderer,
+            resources,
+            cache,
+        }
     }
 
     pub(crate) fn upload_image(&mut self, image: &peniko::ImageData) -> ImageId {
@@ -35,7 +42,7 @@ impl<'a> WebGlImageManager<'a> {
             unreachable!();
         };
 
-        let atlas_id = self.renderer.upload_image(&pixmap);
+        let atlas_id = self.renderer.upload_image(self.resources, &pixmap);
         self.cache.insert(peniko_id, atlas_id);
         atlas_id
     }
@@ -68,6 +75,9 @@ impl WebGlScenePainter<'_> {
             Paint::Solid(alpha_color) => PaintType::Solid(alpha_color),
             Paint::Gradient(gradient) => PaintType::Gradient(gradient.clone()),
             Paint::Image(image_brush) => self.convert_image_paint(image_brush),
+
+            // TODO: custom paint
+            Paint::Resource(_) => PaintType::Solid(peniko::color::palette::css::TRANSPARENT),
             Paint::Custom(_) => PaintType::Solid(peniko::color::palette::css::TRANSPARENT),
         }
     }
@@ -78,13 +88,14 @@ impl WebGlScenePainter<'_> {
             image: ImageSource::OpaqueId {
                 id: image_id,
                 // TODO: optimize opaque case
-                may_have_opacities: true,
+                may_have_transparency: true,
             },
             sampler: image_brush.sampler,
         })
     }
 }
 
+impl RenderContext for WebGlScenePainter<'_> {}
 impl PaintScene for WebGlScenePainter<'_> {
     fn reset(&mut self) {
         self.scene.reset();
@@ -164,58 +175,63 @@ impl PaintScene for WebGlScenePainter<'_> {
         font_size: f32,
         hint: bool,
         normalized_coords: &'a [NormalizedCoord],
+        embolden: kurbo::Vec2,
         style: impl Into<StyleRef<'a>>,
         paint: impl Into<PaintRef<'a>>,
         _brush_alpha: f32,
         transform: Affine,
         glyph_transform: Option<Affine>,
-        glyphs: impl Iterator<Item = Glyph>,
+        glyphs: impl Iterator<Item = Glyph> + Clone,
     ) {
         let paint = self.convert_paint(paint.into());
         self.scene.set_paint(paint);
         self.scene.set_transform(transform);
-
-        fn into_vello_glyph(g: Glyph) -> vello_common::glyph::Glyph {
-            vello_common::glyph::Glyph {
-                id: g.id,
-                x: g.x,
-                y: g.y,
-            }
-        }
 
         let style: StyleRef<'a> = style.into();
         match style {
             StyleRef::Fill(fill) => {
                 self.scene.set_fill_rule(fill);
                 self.scene
-                    .glyph_run(font)
+                    .glyph_run(self.image_manager.resources, font)
                     .font_size(font_size)
                     .hint(hint)
                     .normalized_coords(normalized_coords)
+                    .font_embolden(FontEmbolden::new(Diagonal2::new(embolden.x, embolden.y)))
                     .glyph_transform(glyph_transform.unwrap_or_default())
-                    .fill_glyphs(glyphs.map(into_vello_glyph));
+                    .fill_glyphs(glyphs.map(|g| glifo::Glyph {
+                        id: g.id,
+                        x: g.x,
+                        y: g.y,
+                    }));
             }
             StyleRef::Stroke(stroke) => {
                 self.scene.set_stroke(stroke.clone());
                 self.scene
-                    .glyph_run(font)
+                    .glyph_run(self.image_manager.resources, font)
                     .font_size(font_size)
                     .hint(hint)
                     .normalized_coords(normalized_coords)
                     .glyph_transform(glyph_transform.unwrap_or_default())
-                    .stroke_glyphs(glyphs.map(into_vello_glyph));
+                    .stroke_glyphs(glyphs.map(|g| glifo::Glyph {
+                        id: g.id,
+                        x: g.x,
+                        y: g.y,
+                    }));
             }
         }
     }
 
     fn draw_box_shadow(
         &mut self,
-        _transform: Affine,
-        _rect: Rect,
-        _color: Color,
-        _radius: f64,
-        _std_dev: f64,
+        transform: Affine,
+        rect: Rect,
+        color: Color,
+        radius: f64,
+        std_dev: f64,
     ) {
-        // Not yet supported in vello_hybrid WebGL.
+        self.scene.set_transform(transform);
+        self.scene.set_paint(PaintType::Solid(color));
+        self.scene
+            .fill_blurred_rounded_rect(&rect, radius as f32, std_dev as f32);
     }
 }
