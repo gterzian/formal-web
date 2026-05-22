@@ -28,3 +28,4 @@ You can also update this documentation chain based on lessons learned from user 
 At the end of each task, you MUST
 - Finish tasks with the default WPT run, and `./verification/verify-navigation.sh`.
 - treat unexpected results in the above as something that needs to be fixed as part of the current task.
+- Suggest a commit message for the completed task to the user, if the task involved changes tracked by git.

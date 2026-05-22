@@ -12,6 +12,10 @@ fn input_debug_enabled() -> bool {
     env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
 }
 
+fn resource_backed_child_frames_enabled() -> bool {
+    env::var_os("FORMAL_WEB_RESOURCE_BACKED_CHILD_FRAMES").is_some()
+}
+
 #[derive(Clone, Debug)]
 struct ResolvedViewport {
     width: f64,
@@ -229,7 +233,9 @@ impl Compositor {
         stack: &mut HashSet<FrameId>,
         frame_local_to_root: Affine,
     ) -> Option<RenderScene> {
-        println!("composing frame {}", frame_id.0);
+        if input_debug_enabled() {
+            eprintln!("[input-debug][compositor] composing frame {}", frame_id.0);
+        }
         let parent_viewport = self
             .committed_frames
             .get(&frame_id)?
@@ -280,12 +286,16 @@ impl Compositor {
                     composed_scene.fill(Fill::NonZero, transform, Color::WHITE, None, &clip);
                 }
                 composed_scene.push_clip_layer(transform, &clip);
-                composed_scene.append_scene(child_scene, child_transform);
+                if !resource_backed_child_frames_enabled() {
+                    composed_scene.append_scene(child_scene, child_transform);
+                }
                 composed_scene.pop_layer();
-                println!(
-                    "composed embed site {} with child frame {}",
-                    embed_site.embed_site_id.0, child_frame_id.0
-                );
+                if input_debug_enabled() {
+                    eprintln!(
+                        "[input-debug][compositor] composed embed site {} with child frame {}",
+                        embed_site.embed_site_id.0, child_frame_id.0
+                    );
+                }
             }
 
             stack.remove(&child_frame_id);

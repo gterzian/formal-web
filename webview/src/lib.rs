@@ -225,7 +225,7 @@ impl WebviewProvider {
         self.child_host_webviews_by_content_navigable
             .insert(content_frame_id, child_host_webview_id);
 
-        // A parent frame can already have a composed iframe placeholder before the child
+        // A parent frame can already have composed iframe embed-site geometry before the child
         // traversable registration arrives. Publish immediately so the child gets the
         // correct viewport on first paint instead of waiting for later input-driven redraws.
         if let Some(state) = self.webviews.get_mut(&parent_traversable_id) {
@@ -246,10 +246,6 @@ impl WebviewProvider {
 
     pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
         let source_webview_id = frame.traversable_id;
-        println!(
-            "webview: received paint frame for traversable {} frame {} ({}x{})",
-            frame.traversable_id.0, frame.frame_id.0, frame.viewport_width, frame.viewport_height
-        );
         let is_root_candidate = !self.child_navigable_hosts_by_webview.contains_key(&frame.traversable_id);
         if let Some(child_navigable_host) =
             self.child_navigable_hosts_by_webview.get(&frame.traversable_id)
@@ -583,7 +579,7 @@ impl WebviewProvider {
         }
     }
 
-    fn webview_id_for_frame(&self, root_webview_id: WebviewId, frame_id: FrameId) -> WebviewId {
+    pub fn webview_id_for_frame(&self, root_webview_id: WebviewId, frame_id: FrameId) -> WebviewId {
         self.child_host_webviews_by_content_navigable
             .get(&frame_id)
             .copied()

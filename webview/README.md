@@ -1,8 +1,8 @@
 # webview crate
 
-The `webview` crate owns per-webview compositor state: committed paint frames, scene composition, iframe placeholder composition, hit testing, and redraw signaling through `EmbedderApi`.
+The `webview` crate owns per-webview compositor state: committed paint frames, embed-site composition, hit testing, and redraw signaling through `EmbedderApi`.
 
-- `WebviewProvider` tracks webviews by stable `WebviewId`, stores committed root and child frames, and composes child placeholders into the visible scene.
+- `WebviewProvider` tracks webviews by stable `WebviewId`, stores committed root and child frames, and composes child embed sites into the visible scene.
 - Hit testing and event routing operate on the same composed-frame geometry used for painting, including child-frame transforms and visibility.
 - Root webviews track the focused composed frame so non-positional input routes to the correct content traversable.
 - `EmbedderApi` keeps redraw signaling and similar host integration abstract.
