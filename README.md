@@ -1,6 +1,6 @@
 # formal-web
 
-formal-web is a Rust browser prototype with an embedder process for window chrome, a user-agent crate that owns navigation, event-loop, timer, and fetch coordination, a dedicated content sidecar for DOM, HTML, and JavaScript runtime work, a dedicated net sidecar for fetch execution, and an optional verification layer that checks recorded runtime traces against the TLA+ specs under `verification/tla_specs/`.
+formal-web is a Rust web-engine prototype in alpha status, with an embedding API, and an optional verification layer that checks recorded runtime traces against the TLA+ specs.
 
 ## Commands
 
