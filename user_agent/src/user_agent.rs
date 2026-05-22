@@ -331,6 +331,9 @@ pub struct UserAgentState {
     pub event_loops: HashMap<EventLoopId, EventLoopEntry>,
     /// reverse index from top-level traversable ids to the owning event-loop id.
     pub traversable_handles: HashMap<NavigableId, EventLoopId>,
+    /// last published viewport per traversable; replayed when ownership moves to a new
+    /// content event loop (for example cross-origin child navigations).
+    pub traversable_viewports: HashMap<NavigableId, ((u32, u32, f32, ColorScheme), f32, f32)>,
     /// cache of each traversable's active target name derived from
     /// `traversable_set`.
     pub traversable_target_names: HashMap<NavigableId, String>,
@@ -446,6 +449,7 @@ impl Default for UserAgentState {
             top_level_browsing_context_group_ids: HashMap::new(),
             event_loops: HashMap::new(),
             traversable_handles: HashMap::new(),
+            traversable_viewports: HashMap::new(),
             traversable_target_names: HashMap::new(),
             active_documents_by_traversable: HashMap::new(),
             documents: HashMap::new(),
@@ -675,6 +679,7 @@ impl UserAgentState {
 
         self.navigables.remove(&traversable_id);
         self.traversable_handles.remove(&traversable_id);
+        self.traversable_viewports.remove(&traversable_id);
         self.traversable_target_names.remove(&traversable_id);
         self.active_documents_by_traversable.remove(&traversable_id);
 
@@ -960,6 +965,10 @@ fn log_render_state_debug(message: impl AsRef<str>) {
     }
 }
 
+fn input_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+}
+
 /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
 fn normalize_navigation_target_name(target_name: &str) -> String {
     if target_name.eq_ignore_ascii_case("_self") {
@@ -1069,16 +1078,6 @@ fn descendant_navigable_ids_matching(
     }
 
     descendants
-}
-
-fn descendant_traversable_ids(state: &UserAgentState, traversable_id: NavigableId) -> Vec<NavigableId> {
-    let children_by_parent = child_navigable_ids_by_parent(state);
-    descendant_navigable_ids_matching(
-        state,
-        traversable_id,
-        &children_by_parent,
-        |navigable| navigable.event_loop_id.is_some(),
-    )
 }
 
 fn descendant_navigable_ids(state: &UserAgentState, navigable_id: NavigableId) -> Vec<NavigableId> {
@@ -2299,6 +2298,16 @@ impl UserAgentWorker {
             navigable.event_loop_id = Some(agent.event_loop_id);
             navigable.handle = Some(new_event_loop_id);
         }
+        if let Some((snapshot, offset_x, offset_y)) = self
+            .state
+            .traversable_viewports
+            .get(&traversable_id)
+            .copied()
+        {
+            // Keep cross-origin child documents from booting with fallback viewport state
+            // after event-loop migration.
+            self.handle_set_traversable_viewport(traversable_id, snapshot, offset_x, offset_y);
+        }
         if let Some(old_event_loop_id) = old_event_loop_to_stop {
             self.stop_event_loop_handle(old_event_loop_id)?;
         }
@@ -2616,6 +2625,11 @@ impl UserAgentWorker {
     fn handle_set_default_viewport(&mut self, snapshot: (u32, u32, f32, ColorScheme)) {
         // This follows the embedder's active top-level selection only; inactive top-level
         // traversables keep their last published viewport until they become active again.
+        //
+        // Child traversables are updated from compositor-derived iframe geometry via
+        // SetTraversableViewport. Reapplying the default viewport to descendants here can
+        // transiently reset iframe offsets to (0,0), which leaves child hit testing and
+        // scale wrong until a later parent composition pass republishes child viewports.
         let active_top_level_traversable_id = self
             .state
             .navigables
@@ -2629,9 +2643,6 @@ impl UserAgentWorker {
         };
 
         self.handle_set_traversable_viewport(traversable_id, snapshot, 0.0, 0.0);
-        for descendant_traversable_id in descendant_traversable_ids(&self.state, traversable_id) {
-            self.handle_set_traversable_viewport(descendant_traversable_id, snapshot, 0.0, 0.0);
-        }
     }
 
     /// sending a per-traversable viewport update to the owning event loop.
@@ -2642,6 +2653,10 @@ impl UserAgentWorker {
         offset_x: f32,
         offset_y: f32,
     ) {
+        self.state
+            .traversable_viewports
+            .insert(traversable_id, (snapshot, offset_x, offset_y));
+
         let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
             return;
         };
@@ -2668,6 +2683,16 @@ impl UserAgentWorker {
             return;
         };
 
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][user-agent] dispatch_event traversable={} event_loop={} document={} bytes={}",
+                traversable_id,
+                handle,
+                document_id,
+                event.len(),
+            );
+        }
+
         let command = ContentCommand::DispatchEvent {
             events: vec![DispatchEventEntry {
                 document_id: *document_id,
@@ -2691,6 +2716,15 @@ impl UserAgentWorker {
         let Some(entry) = self.state.event_loops.get(&handle) else {
             return;
         };
+
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][user-agent] rendering_opportunity traversable={} event_loop={} document={}",
+                traversable_id,
+                handle,
+                document_id,
+            );
+        }
 
         log_render_state_debug(format!(
             "send rendering opportunity traversable={} document={} event_loop={}",

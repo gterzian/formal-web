@@ -34,10 +34,11 @@ use ipc_messages::content::Command::{
 use ipc_messages::content::{
     BeforeUnloadCheckId, Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId,
-    DocumentId, ElementClickResult, Event as ContentEvent,
+    DocumentId, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent,
+    FrameCompositionMetadata, FrameEmbedSite, ElementClickResult,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FontTransportSender, FrameId, LoadedDocumentResponse, NavigableId, NavigationId,
-    PaintFrame, PlaceholderFrameMapping, RecordedScene, ScriptEvaluationResult,
+    PaintFrame, RecordedScene, ScriptEvaluationResult,
     TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
 };
 use std::{
@@ -169,7 +170,6 @@ enum DeferredScriptState {
 pub(crate) struct NavigableContainerState {
     pub(crate) content_navigable: Option<NavigableId>,
     pub(crate) content_frame_id: FrameId,
-    pub(crate) content_frame_token: u64,
     pub(crate) current_key: String,
     pub(crate) cross_origin: bool,
 }
@@ -401,7 +401,6 @@ pub(crate) struct ContentRuntime {
     traversable_viewports: HashMap<NavigableId, DocumentViewportState>,
     documents: HashMap<DocumentId, ContentDocument>,
     active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
-    next_placeholder_frame_token: u64,
     font_namespace: u64,
     font_sender: FontTransportSender,
     navigation_tracer: TLATracer,
@@ -418,7 +417,6 @@ impl ContentRuntime {
             traversable_viewports: HashMap::new(),
             documents: HashMap::new(),
             active_documents_by_traversable: HashMap::new(),
-            next_placeholder_frame_token: 1,
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
@@ -470,7 +468,7 @@ impl ContentRuntime {
         self.default_viewport = Some(viewport);
     }
 
-    fn set_traversable_viewport(&mut self, viewport: TraversableViewport) {
+    fn set_traversable_viewport(&mut self, viewport: TraversableViewport) -> Result<(), String> {
         let traversable_id = viewport.traversable_id;
         let viewport_state = DocumentViewportState {
             snapshot: viewport.viewport,
@@ -500,10 +498,10 @@ impl ContentRuntime {
             .get(&traversable_id)
             .copied()
         else {
-            return;
+            return Ok(());
         };
         let Some(document) = self.documents.get_mut(&document_id) else {
-            return;
+            return Ok(());
         };
 
         document
@@ -512,6 +510,10 @@ impl ContentRuntime {
             .set_viewport(viewport_of_snapshot(&viewport_state.snapshot));
         document.viewport_offset_x = viewport_state.offset_x;
         document.viewport_offset_y = viewport_state.offset_y;
+
+        // Repaint immediately so embed-site geometry (including iframe clip/transform)
+        // reflects the new viewport instead of waiting for a later scroll/input tick.
+        self.request_render_update(traversable_id, document_id, "traversable_viewport")
     }
 
     fn register_pending_handler(
@@ -638,12 +640,6 @@ impl ContentRuntime {
 
     fn allocate_child_frame_id(&self) -> FrameId {
         FrameId::new()
-    }
-
-    fn allocate_placeholder_frame_token(&mut self) -> u64 {
-        let token = self.next_placeholder_frame_token;
-        self.next_placeholder_frame_token = self.next_placeholder_frame_token.wrapping_add(1);
-        token
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate-html>
@@ -1133,19 +1129,15 @@ impl ContentRuntime {
             }
 
             let paint_frame = {
-                let placeholder_frame_mappings = document
-                    .navigable_container_states
-                    .values()
-                    .filter(|container_state| container_state.cross_origin)
-                    .map(|container_state| PlaceholderFrameMapping {
-                        token: container_state.content_frame_token,
-                        frame_id: container_state.content_frame_id,
-                    })
-                    .collect::<Vec<_>>();
                 let document_guard = document.document.borrow();
                 let viewport = document_guard.viewport().clone();
                 let (width, height) = viewport.window_size;
                 let mut scene = RenderScene::new();
+                let composition = Self::build_frame_composition_metadata(
+                    &document_guard,
+                    &document.navigable_container_states,
+                    viewport.scale_f64(),
+                );
 
                 // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
                 // Note: This implementation collapses the HTML rendering task to a single active document and records the painted scene for the embedder.
@@ -1169,17 +1161,79 @@ impl ContentRuntime {
                     document.frame_id,
                     width,
                     height,
-                    placeholder_frame_mappings,
+                    composition,
                     scene,
                 )?;
                 paint_frame
-            };
-            paint_frame
+            };paint_frame
         };
 
         event_sender
             .send(ContentEvent::PaintReady(paint_frame))
             .map_err(|error| format!("failed to send paint frame: {error}"))
+    }
+
+    fn node_absolute_border_origin(document: &BaseDocument, node_id: usize, scale: f64) -> Option<(f64, f64)> {
+        let mut x = -document.viewport_scroll().x * scale;
+        let mut y = -document.viewport_scroll().y * scale;
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            let node = document.get_node(id)?;
+            x += (f64::from(node.final_layout.location.x) - node.scroll_offset.x) * scale;
+            y += (f64::from(node.final_layout.location.y) - node.scroll_offset.y) * scale;
+            current = node.parent;
+        }
+        Some((x, y))
+    }
+
+    fn content_box_for_iframe(document: &BaseDocument, node_id: usize, scale: f64) -> Option<(f64, f64, f64, f64)> {
+        let node = document.get_node(node_id)?;
+        let layout = node.final_layout;
+        let edge = layout.padding + layout.border;
+        let (border_x, border_y) = Self::node_absolute_border_origin(document, node_id, scale)?;
+        let x = border_x + f64::from(edge.left) * scale;
+        let y = border_y + f64::from(edge.top) * scale;
+        let width = (f64::from(layout.size.width) - f64::from(edge.left + edge.right)) * scale;
+        let height = (f64::from(layout.size.height) - f64::from(edge.top + edge.bottom)) * scale;
+        if width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        Some((x, y, width, height))
+    }
+
+    fn build_frame_composition_metadata(
+        document: &BaseDocument,
+        container_states: &HashMap<usize, NavigableContainerState>,
+        scale: f64,
+    ) -> FrameCompositionMetadata {
+        let mut iframe_node_ids = container_states
+            .iter()
+            .filter_map(|(iframe_node_id, state)| state.cross_origin.then_some((*iframe_node_id, state)))
+            .collect::<Vec<_>>();
+        iframe_node_ids.sort_by_key(|(iframe_node_id, _)| *iframe_node_id);
+
+        let embed_sites = iframe_node_ids
+            .into_iter()
+            .enumerate()
+            .filter_map(|(paint_order, (iframe_node_id, state))| {
+                let (x, y, width, height) = Self::content_box_for_iframe(document, iframe_node_id, scale)?;
+                let clip_svg_path = format!(
+                    "M0,0 L{width},0 L{width},{height} L0,{height} Z"
+                );
+                Some(FrameEmbedSite {
+                    embed_site_id: EmbedSiteId((iframe_node_id as u64).wrapping_add(1)),
+                    child_frame_id: state.content_frame_id,
+                    z_index: 0,
+                    paint_order: paint_order as u32,
+                    background_policy: EmbedBackgroundPolicy::OpaqueWhite,
+                    transform: [1.0, 0.0, 0.0, 1.0, x, y],
+                    clip_bounds: [x, y, x + width, y + height],
+                    clip_svg_path,
+                })
+            })
+            .collect();
+
+        FrameCompositionMetadata { embed_sites }
     }
 
     fn complete_document_fetch(
@@ -1357,7 +1411,7 @@ impl ContentRuntime {
                 Ok(true)
             }
             SetTraversableViewport(viewport) => {
-                self.set_traversable_viewport(viewport);
+                self.set_traversable_viewport(viewport)?;
                 Ok(true)
             }
             CreateEmptyDocument {

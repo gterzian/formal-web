@@ -436,12 +436,9 @@ fn automation_screenshot_png(
     let Some(webview_id) = current_webview_id else {
         return Err(String::from("no current webview is active"));
     };
-    let Some(scene) = provider.current_scene(webview_id) else {
-        return Err(String::from("no committed scene is available for screenshot"));
-    };
 
     let rgba = render_to_buffer::<VelloCpuImageRenderer, _>(
-        move |painter| {
+        |painter| {
             painter.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
@@ -449,7 +446,7 @@ fn automation_screenshot_png(
                 None,
                 &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
             );
-            painter.append_scene(scene, Affine::IDENTITY);
+            let _ = provider.append_web_content_scene(webview_id, painter, Affine::IDENTITY);
         },
         width,
         height,
@@ -916,14 +913,8 @@ impl HeadedEmbedderApp {
         };
         let chrome_height = f64::from(self.chrome_height_physical());
         let chrome_scene = self.chrome.as_mut().map(ChromeUi::paint_scene);
-        let content_scene = self
-            .provider
-            .as_mut()
-            .zip(self.current_webview_id)
-            .and_then(|(provider, webview_id)| provider.current_scene(webview_id))
-            .map(|scene| scene);
 
-        if chrome_scene.is_none() && content_scene.is_none() {
+        if chrome_scene.is_none() && self.current_webview_id.is_none() {
             return;
         }
 
@@ -937,14 +928,23 @@ impl HeadedEmbedderApp {
             self.renderer.complete_resume();
         }
 
+        let mut provider = self.provider.take();
+        let current_webview_id = self.current_webview_id;
         self.renderer.render(|scene| {
-            if let Some(content_scene) = content_scene.clone() {
-                scene.append_scene(content_scene, Affine::translate((0.0, chrome_height)));
+            if let Some(webview_id) = current_webview_id
+                && let Some(provider) = provider.as_mut()
+            {
+                let _ = provider.append_web_content_scene(
+                    webview_id,
+                    scene,
+                    Affine::translate((0.0, chrome_height)),
+                );
             }
             if let Some(chrome_scene) = chrome_scene.clone() {
                 scene.append_scene(chrome_scene, Affine::IDENTITY);
             }
         });
+        self.provider = provider;
     }
 
     fn logical_position(&self, position: PhysicalPosition<f64>) -> LogicalPosition<f32> {

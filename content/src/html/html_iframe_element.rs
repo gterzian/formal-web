@@ -231,19 +231,17 @@ fn attach_iframe_subdocument_from_html(
         return Ok(());
     }
     let mut mutator = document.mutate();
-    mutator.remove_cross_origin_iframe(iframe_node_id);
     mutator.set_sub_document(iframe_node_id, Box::new(sub_document));
     Ok(())
 }
 
-/// Implementation hook for cross-origin iframe placeholders used by embedder composition.
-/// This is not a spec concept; it installs a token on the DOM node so UI hit-testing and
-/// child webview composition can target the correct iframe box.
+/// Implementation hook for cross-origin iframe embedding used by embedder composition.
+/// This is not a spec concept; it removes any local subdocument so the parent scene exposes
+/// a pure iframe region that the webview compositor can fill using frame composition metadata.
 fn attach_cross_origin_iframe(
     runtime: &mut ContentRuntime,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
-    frame_token: u64,
 ) -> Result<(), String> {
     let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
         return Ok(());
@@ -254,7 +252,6 @@ fn attach_cross_origin_iframe(
     }
     let mut mutator = document.mutate();
     mutator.remove_sub_document(iframe_node_id);
-    mutator.set_cross_origin_iframe(iframe_node_id, frame_token);
     Ok(())
 }
 
@@ -320,7 +317,6 @@ fn remove_iframe_subdocument(
         }
         let mut mutator = document.mutate();
         mutator.remove_sub_document(iframe_node_id);
-        mutator.remove_cross_origin_iframe(iframe_node_id);
     }
 }
 
@@ -413,7 +409,6 @@ fn create_a_new_child_navigable(
     // Step 9: "Set element's content navigable to navigable."
     // Note: The content side stores only IDs for the element's content navigable.
     let content_frame_id = runtime.allocate_child_frame_id();
-    let content_frame_token = runtime.allocate_placeholder_frame_token();
 
     if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
         content_document.navigable_container_states.insert(
@@ -421,7 +416,6 @@ fn create_a_new_child_navigable(
             NavigableContainerState {
                 content_navigable: Some(content_navigable),
                 content_frame_id,
-                content_frame_token,
                 current_key: String::new(),
                 cross_origin: false,
             },
@@ -515,7 +509,6 @@ pub(crate) fn attach_same_origin_child_document_for_traversable(
         return Ok(());
     }
     let mut mutator = document.mutate();
-    mutator.remove_cross_origin_iframe(iframe_node_id);
     mutator.set_sub_document(iframe_node_id, Box::new(child_subdocument));
     Ok(())
 }
@@ -794,14 +787,6 @@ fn process_iframe_attributes(
         Some(content_frame_id) => content_frame_id,
         None => return Ok(()),
     };
-    let content_frame_token = match previous_iframe_state
-        .as_ref()
-        .map(|state| state.content_frame_token)
-    {
-        Some(content_frame_token) => content_frame_token,
-        None => return Ok(()),
-    };
-
     // Note: Determine whether the navigation is cross-origin for cross-origin frame setup.
     let cross_origin =
         matches!(&target, IframeNavigationTarget::Url { url } if creation_url.origin() != url.origin());
@@ -827,7 +812,6 @@ fn process_iframe_attributes(
                         NavigableContainerState {
                             content_navigable: Some(content_navigable_id),
                             content_frame_id,
-                            content_frame_token,
                             current_key: desired_key.clone(),
                             cross_origin: false,
                         },
@@ -845,7 +829,6 @@ fn process_iframe_attributes(
                         NavigableContainerState {
                             content_navigable: Some(content_navigable_id),
                             content_frame_id,
-                            content_frame_token,
                             current_key: desired_key.clone(),
                             cross_origin: false,
                         },
@@ -868,7 +851,6 @@ fn process_iframe_attributes(
             NavigableContainerState {
                 content_navigable: Some(content_navigable_id),
                 content_frame_id,
-                content_frame_token,
                 current_key: desired_key.clone(),
                 cross_origin,
             },
@@ -920,7 +902,6 @@ fn process_iframe_attributes(
                     runtime,
                     parent_document_id,
                     iframe_node_id,
-                    content_frame_token,
                 )?;
             }
             navigate_an_iframe_or_frame(

@@ -1,6 +1,8 @@
-use anyrender::recording::{PlaceholderCommand, PlaceholderKind, RenderCommand};
 use anyrender::{PaintScene, Scene as RenderScene};
-use ipc_messages::content::{FontTransportReceiver, FrameId, RecordedScene};
+use ipc_messages::content::{
+    EmbedBackgroundPolicy, FontTransportReceiver, FrameCompositionMetadata, FrameEmbedSite,
+    FrameId, RecordedScene,
+};
 use kurbo::{Affine, Point, Rect, Shape};
 use peniko::{Color, Fill};
 use std::env;
@@ -54,9 +56,7 @@ struct CachedFrame {
     parent_frame_id: Option<FrameId>,
     resolved_viewport: Option<ResolvedViewport>,
     child_frames: Vec<NavigableContainerLayout>,
-    /// Maps vendor placeholder tokens (u64) to compositor FrameIds for this frame's children.
-    /// Populated from PaintFrame.placeholder_frame_mappings when the frame is stored.
-    placeholder_token_to_frame_id: HashMap<u64, FrameId>,
+    composition: FrameCompositionMetadata,
     scene: RecordedScene,
 }
 
@@ -79,28 +79,6 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    fn placeholder_child_frame_id(
-        cached_frame: &CachedFrame,
-        kind: &PlaceholderKind,
-    ) -> Option<FrameId> {
-        match kind {
-            PlaceholderKind::CrossOriginIframe { frame_id } => {
-                cached_frame.placeholder_token_to_frame_id.get(frame_id).copied()
-            }
-        }
-    }
-
-    fn placeholder_child_frame_id_from_map(
-        placeholder_token_to_frame_id: &HashMap<u64, FrameId>,
-        kind: &PlaceholderKind,
-    ) -> Option<FrameId> {
-        match kind {
-            PlaceholderKind::CrossOriginIframe { frame_id } => {
-                placeholder_token_to_frame_id.get(frame_id).copied()
-            }
-        }
-    }
-
     pub fn note_navigation_finalized(&mut self) {
         self.pending_frames.clear();
         self.replace_root_on_next_paint = true;
@@ -128,19 +106,19 @@ impl Compositor {
         frame_id: FrameId,
         viewport_width: u32,
         viewport_height: u32,
-        placeholder_token_to_frame_id: HashMap<u64, FrameId>,
+        composition: FrameCompositionMetadata,
         scene: RecordedScene,
         is_root_candidate: bool,
     ) {
         if input_debug_enabled() {
             let summary = scene.summary();
             eprintln!(
-                "[input-debug][compositor] store_frame frame={} root_candidate={} viewport=({},{}) placeholders={} commands={}",
+                "[input-debug][compositor] store_frame frame={} root_candidate={} viewport=({},{}) embed_sites={} commands={}",
                 frame_id.0,
                 is_root_candidate,
                 viewport_width,
                 viewport_height,
-                summary.placeholder_commands,
+                composition.embed_sites.len(),
                 summary.commands,
             );
         }
@@ -151,7 +129,7 @@ impl Compositor {
             parent_frame_id: None,
             resolved_viewport: None,
             child_frames: Vec::new(),
-            placeholder_token_to_frame_id,
+            composition,
             scene,
         };
 
@@ -251,16 +229,21 @@ impl Compositor {
         stack: &mut HashSet<FrameId>,
         frame_local_to_root: Affine,
     ) -> Option<RenderScene> {
+        if input_debug_enabled() {
+            eprintln!("[input-debug][compositor] composing frame {}", frame_id.0);
+        }
         let parent_viewport = self
             .committed_frames
             .get(&frame_id)?
             .resolved_viewport
             .clone()?;
-        let placeholder_token_to_frame_id = self
+        let mut embed_sites = self
             .committed_frames
             .get(&frame_id)?
-            .placeholder_token_to_frame_id
+            .composition
+            .embed_sites
             .clone();
+        embed_sites.sort_by_key(|site| (site.z_index, site.paint_order, site.embed_site_id.0));
         let decoded_scene = {
             let cached_frame = self.committed_frames.get_mut(&frame_id)?;
             cached_frame.scene.clone().into_scene(font_receiver)
@@ -268,59 +251,63 @@ impl Compositor {
         let mut composed_scene = RenderScene::with_tolerance(decoded_scene.tolerance);
 
         for command in decoded_scene.commands {
-            match command {
-                RenderCommand::Placeholder(placeholder) => {
-                    let Some(child_frame_id) = Self::placeholder_child_frame_id_from_map(
-                        &placeholder_token_to_frame_id,
-                        &placeholder.kind,
-                    ) else {
-                        continue;
-                    };
-                    let Some(child_local_to_root) = self.record_child_frame_layout(
-                        frame_id,
-                        &parent_viewport,
-                        frame_local_to_root,
-                        &placeholder,
-                        child_frame_id,
-                    ) else {
-                        continue;
-                    };
+            composed_scene.commands.push(command);
+        }
 
-                    if !stack.insert(child_frame_id) {
-                        continue;
-                    }
+        for embed_site in embed_sites {
+            let child_frame_id = embed_site.child_frame_id;
+            let Some(child_local_to_root) = self.record_child_frame_layout(
+                frame_id,
+                &parent_viewport,
+                frame_local_to_root,
+                &embed_site,
+            ) else {
+                continue;
+            };
 
-                    if let Some(child_scene) =
-                        self.compose_frame(
-                            child_frame_id,
-                            font_receiver,
-                            stack,
-                            child_local_to_root,
-                        )
-                    {
-                        let child_transform = self
-                            .child_scene_transform(&placeholder.clip, child_frame_id)
-                            .map(|transform| placeholder.transform * transform)
-                            .unwrap_or(placeholder.transform);
-                        composed_scene.fill(
-                            Fill::NonZero,
-                            placeholder.transform,
-                            Color::WHITE,
-                            None,
-                            &placeholder.clip,
-                        );
-                        composed_scene.push_clip_layer(placeholder.transform, &placeholder.clip);
-                        composed_scene.append_scene(child_scene, child_transform);
-                        composed_scene.pop_layer();
-                    }
-
-                    stack.remove(&child_frame_id);
-                }
-                command => composed_scene.commands.push(command),
+            if !stack.insert(child_frame_id) {
+                continue;
             }
+
+            if let Some(child_scene) =
+                self.compose_frame(child_frame_id, font_receiver, stack, child_local_to_root)
+            {
+                let clip = Self::embed_local_clip(&embed_site);
+                let transform = Affine::new(embed_site.transform);
+                let child_transform = self
+                    .child_scene_transform(&clip, child_frame_id)
+                    .map(|scene_transform| transform * scene_transform)
+                    .unwrap_or(transform);
+                if matches!(embed_site.background_policy, EmbedBackgroundPolicy::OpaqueWhite) {
+                    composed_scene.fill(Fill::NonZero, transform, Color::WHITE, None, &clip);
+                }
+                composed_scene.push_clip_layer(transform, &clip);
+                composed_scene.append_scene(child_scene, child_transform);
+                composed_scene.pop_layer();
+                if input_debug_enabled() {
+                    eprintln!(
+                        "[input-debug][compositor] composed embed site {} with child frame {}",
+                        embed_site.embed_site_id.0, child_frame_id.0
+                    );
+                }
+            }
+
+            stack.remove(&child_frame_id);
         }
 
         Some(composed_scene)
+    }
+
+    fn embed_local_clip(embed_site: &FrameEmbedSite) -> Rect {
+        let transform = Affine::new(embed_site.transform);
+        let translation_x = transform.as_coeffs()[4];
+        let translation_y = transform.as_coeffs()[5];
+        Rect::new(
+            embed_site.clip_bounds[0] - translation_x,
+            embed_site.clip_bounds[1] - translation_y,
+            embed_site.clip_bounds[2] - translation_x,
+            embed_site.clip_bounds[3] - translation_y,
+        )
     }
 
     fn reset_composed_frame_state(&mut self) {
@@ -353,17 +340,16 @@ impl Compositor {
         parent_frame_id: FrameId,
         parent_viewport: &ResolvedViewport,
         parent_local_to_root: Affine,
-        placeholder: &PlaceholderCommand,
-        child_frame_id: FrameId,
+        embed_site: &FrameEmbedSite,
     ) -> Option<Affine> {
         let Some(layout) =
-            self.navigable_container_layout(parent_local_to_root, placeholder, child_frame_id)
+            self.navigable_container_layout(parent_local_to_root, embed_site)
         else {
             if input_debug_enabled() {
                 eprintln!(
                     "[input-debug][compositor] parent={} child={} record=skip reason=no-layout",
                     parent_frame_id.0,
-                    child_frame_id.0,
+                    embed_site.child_frame_id.0,
                 );
             }
             return None;
@@ -374,7 +360,7 @@ impl Compositor {
                 eprintln!(
                     "[input-debug][compositor] parent={} child={} record=skip visible=false clip=({:.1},{:.1})-({:.1},{:.1}) parent_viewport=({:.1},{:.1})",
                     parent_frame_id.0,
-                    child_frame_id.0,
+                    embed_site.child_frame_id.0,
                     layout.clip_bounds.x0,
                     layout.clip_bounds.y0,
                     layout.clip_bounds.x1,
@@ -392,7 +378,7 @@ impl Compositor {
             eprintln!(
                 "[input-debug][compositor] parent={} child={} record=ok clip=({:.1},{:.1})-({:.1},{:.1})",
                 parent_frame_id.0,
-                child_frame_id.0,
+                embed_site.child_frame_id.0,
                 layout.clip_bounds.x0,
                 layout.clip_bounds.y0,
                 layout.clip_bounds.x1,
@@ -404,8 +390,8 @@ impl Compositor {
             frame.child_frames.push(layout);
         }
 
-        if let Some(resolved_viewport) = self.frame_viewport(child_frame_id)
-            && let Some(child_frame) = self.committed_frames.get_mut(&child_frame_id)
+        if let Some(resolved_viewport) = self.frame_viewport(embed_site.child_frame_id)
+            && let Some(child_frame) = self.committed_frames.get_mut(&embed_site.child_frame_id)
         {
             child_frame.parent_frame_id = Some(parent_frame_id);
             child_frame.resolved_viewport = Some(resolved_viewport);
@@ -417,19 +403,21 @@ impl Compositor {
     fn navigable_container_layout(
         &self,
         parent_local_to_root: Affine,
-        placeholder: &PlaceholderCommand,
-        child_frame_id: FrameId,
+        embed_site: &FrameEmbedSite,
     ) -> Option<NavigableContainerLayout> {
+        let child_frame_id = embed_site.child_frame_id;
+        let transform = Affine::new(embed_site.transform);
+        let clip = Self::embed_local_clip(embed_site);
         let child_scene_transform = self
-            .child_scene_transform(&placeholder.clip, child_frame_id)
+            .child_scene_transform(&clip, child_frame_id)
             .unwrap_or(Affine::IDENTITY);
-        let child_local_from_parent = (placeholder.transform * child_scene_transform).inverse();
-        let mut transformed_clip = placeholder.clip.clone();
-        transformed_clip.apply_affine(parent_local_to_root * placeholder.transform);
+        let child_local_from_parent = (transform * child_scene_transform).inverse();
+        let mut transformed_clip = clip.to_path(0.1);
+        transformed_clip.apply_affine(parent_local_to_root * transform);
         let root_clip_bounds = transformed_clip.bounding_box();
 
-        let mut local_clip = placeholder.clip.clone();
-        local_clip.apply_affine(placeholder.transform);
+        let mut local_clip = clip.to_path(0.1);
+        local_clip.apply_affine(transform);
         let clip_bounds = local_clip.bounding_box();
         Some(NavigableContainerLayout {
             child_frame_id,
@@ -452,7 +440,7 @@ impl Compositor {
             let viewport_width = child.root_clip_bounds.width().ceil().max(1.0) as u32;
             let viewport_height = child.root_clip_bounds.height().ceil().max(1.0) as u32;
 
-            // Publish placeholder-derived child viewport bounds even before the child content
+            // Publish embed-site-derived child viewport bounds even before the child content
             // has committed its first frame. Cross-origin iframes need that first viewport to
             // trigger their initial rendering opportunity.
             viewports.push(VisibleFrameViewport {
@@ -481,15 +469,10 @@ impl Compositor {
         };
 
         let child_frame_ids = frame
-            .scene
-            .commands
+            .composition
+            .embed_sites
             .iter()
-            .filter_map(|command| match &command.0 {
-                RenderCommand::Placeholder(command) => {
-                    Self::placeholder_child_frame_id(frame, &command.kind)
-                }
-                _ => None,
-            })
+            .map(|site| site.child_frame_id)
             .collect::<Vec<_>>();
         for child_frame_id in child_frame_ids {
             if !stack.insert(child_frame_id) {
@@ -528,7 +511,7 @@ impl Compositor {
             frame_id,
             local_x: point.x as f32,
             local_y: point.y as f32,
-            // Child placeholders should remain targetable before the child process commits its
+            // Child embed sites should remain targetable before the child process commits its
             // first frame, so an unresolved child frame still reports as a child-frame hit.
             is_child_frame: frame.is_none_or(|frame| frame.parent_frame_id.is_some()),
             has_child_frames: frame.is_some_and(|frame| !frame.child_frames.is_empty()),

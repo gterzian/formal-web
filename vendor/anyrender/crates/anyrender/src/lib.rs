@@ -50,7 +50,7 @@ pub use types::*;
 mod null_backend;
 pub use null_backend::*;
 pub mod recording;
-pub use recording::{PlaceholderCommand, PlaceholderKind, Scene};
+pub use recording::Scene;
 
 mod resource_id;
 pub use resource_id::ResourceId;
@@ -248,9 +248,6 @@ pub trait PaintScene: RenderContext {
         std_dev: f64,
     );
 
-    /// Marks a region where a separately produced scene may be composited.
-    fn placeholder(&mut self, _kind: PlaceholderKind, _transform: Affine, _clip: &impl Shape) {}
-
     // --- Provided methods
 
     /// Append a recorded Scene Fragment to the current scene
@@ -319,9 +316,6 @@ pub trait PaintScene: RenderContext {
                     cmd.radius,
                     cmd.std_dev,
                 ),
-                RenderCommand::Placeholder(cmd) => {
-                    self.placeholder(cmd.kind, scene_transform * cmd.transform, &cmd.clip)
-                }
             }
         }
     }

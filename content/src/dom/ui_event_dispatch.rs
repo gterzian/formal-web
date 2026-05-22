@@ -84,16 +84,60 @@ fn localize_ui_event_for_document(
         UiEvent::PointerMove(event)
         | UiEvent::PointerUp(event)
         | UiEvent::PointerDown(event) => {
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][content] localize pointer before client=({:.1},{:.1}) page=({:.1},{:.1}) offset=({:.1},{:.1}) scroll=({:.1},{:.1})",
+                    event.coords.client_x,
+                    event.coords.client_y,
+                    event.coords.page_x,
+                    event.coords.page_y,
+                    viewport_offset_x,
+                    viewport_offset_y,
+                    scroll_x,
+                    scroll_y,
+                );
+            }
             event.coords.client_x -= viewport_offset_x;
             event.coords.client_y -= viewport_offset_y;
             event.coords.page_x = event.coords.client_x + scroll_x;
             event.coords.page_y = event.coords.client_y + scroll_y;
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][content] localize pointer after client=({:.1},{:.1}) page=({:.1},{:.1})",
+                    event.coords.client_x,
+                    event.coords.client_y,
+                    event.coords.page_x,
+                    event.coords.page_y,
+                );
+            }
         }
         UiEvent::Wheel(event) => {
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][content] localize wheel before client=({:.1},{:.1}) page=({:.1},{:.1}) offset=({:.1},{:.1}) scroll=({:.1},{:.1})",
+                    event.coords.client_x,
+                    event.coords.client_y,
+                    event.coords.page_x,
+                    event.coords.page_y,
+                    viewport_offset_x,
+                    viewport_offset_y,
+                    scroll_x,
+                    scroll_y,
+                );
+            }
             event.coords.client_x -= viewport_offset_x;
             event.coords.client_y -= viewport_offset_y;
             event.coords.page_x = event.coords.client_x + scroll_x;
             event.coords.page_y = event.coords.client_y + scroll_y;
+            if input_debug_enabled() {
+                eprintln!(
+                    "[input-debug][content] localize wheel after client=({:.1},{:.1}) page=({:.1},{:.1})",
+                    event.coords.client_x,
+                    event.coords.client_y,
+                    event.coords.page_x,
+                    event.coords.page_y,
+                );
+            }
         }
         UiEvent::KeyUp(_)
         | UiEvent::KeyDown(_)
