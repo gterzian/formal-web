@@ -8,7 +8,7 @@ use automation::{
     AutomationCommand, AutomationController, AutomationHost, AutomationSnapshot,
     AutomationVisibleFrameViewport,
 };
-use anyrender::{Paint, PaintScene, RenderContext, ResourceId, WindowRenderer, render_to_buffer};
+use anyrender::{PaintScene, WindowRenderer, render_to_buffer};
 use anyrender_vello::VelloWindowRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_traits::events::{
@@ -21,9 +21,8 @@ use cursor_icon::CursorIcon;
 use ipc_messages::content::{NavigableId, PaintFrame, WebviewId};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use kurbo::{Affine, Rect};
-use peniko::{Color, Fill, ImageBrush};
+use peniko::{Color, Fill};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -40,10 +39,6 @@ use winit::keyboard::{
     ModifiersState as WinitModifiersState, NamedKey, PhysicalKey,
 };
 use winit::window::{Cursor, Window, WindowAttributes, WindowId};
-use anyrender_vello::wgpu::{
-    Extent3d, Origin3d, TextureAspect, TextureDescriptor, TextureDimension, TextureFormat,
-    TextureUsages, TexelCopyBufferLayout, TexelCopyTextureInfo,
-};
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
 #[derive(Clone, Default)]
@@ -264,61 +259,6 @@ struct HeadedEmbedderApp {
     keyboard_modifiers: Modifiers,
     buttons: MouseEventButtons,
     pointer_pos: PhysicalPosition<f64>,
-    resource_backed_child_frames: bool,
-    child_frame_texture_cache: ChildFrameTextureCache,
-}
-
-#[derive(Default)]
-struct ChildFrameTextureCache {
-    textures_by_webview: HashMap<WebviewId, CachedWebviewTexture>,
-}
-
-#[derive(Clone, Copy)]
-struct CachedWebviewTexture {
-    resource_id: ResourceId,
-    width: u32,
-    height: u32,
-}
-
-impl ChildFrameTextureCache {
-    fn update(
-        &mut self,
-        renderer: &mut VelloWindowRenderer,
-        webview_id: WebviewId,
-        width: u32,
-        height: u32,
-        buffer: &[u8],
-    ) -> Result<ResourceId, String> {
-        let texture = upload_rgba_texture(renderer, width, height, buffer)?;
-        if let Some(previous) = self.textures_by_webview.insert(
-            webview_id,
-            CachedWebviewTexture {
-                resource_id: texture,
-                width,
-                height,
-            },
-        ) {
-            let _ = previous.width == width && previous.height == height;
-            renderer.unregister_resource(previous.resource_id);
-        }
-        Ok(texture)
-    }
-
-    fn clear_stale(&mut self, renderer: &mut VelloWindowRenderer, active_webview_ids: &HashSet<WebviewId>) {
-        self.textures_by_webview.retain(|webview_id, cached| {
-            let keep = active_webview_ids.contains(webview_id);
-            if !keep {
-                renderer.unregister_resource(cached.resource_id);
-            }
-            keep
-        });
-    }
-
-    fn resource_id(&self, webview_id: WebviewId) -> Option<ResourceId> {
-        self.textures_by_webview
-            .get(&webview_id)
-            .map(|cached| cached.resource_id)
-    }
 }
 
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
@@ -496,12 +436,9 @@ fn automation_screenshot_png(
     let Some(webview_id) = current_webview_id else {
         return Err(String::from("no current webview is active"));
     };
-    let Some(scene) = provider.current_scene(webview_id) else {
-        return Err(String::from("no committed scene is available for screenshot"));
-    };
 
     let rgba = render_to_buffer::<VelloCpuImageRenderer, _>(
-        move |painter| {
+        |painter| {
             painter.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
@@ -509,7 +446,7 @@ fn automation_screenshot_png(
                 None,
                 &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
             );
-            painter.append_scene(scene, Affine::IDENTITY);
+            let _ = provider.append_web_content_scene(webview_id, painter, Affine::IDENTITY);
         },
         width,
         height,
@@ -617,156 +554,6 @@ fn viewport_snapshot_for_window(window: &Window) -> (u32, u32, f32, ColorScheme)
 fn viewport_of_snapshot(snapshot: (u32, u32, f32, ColorScheme)) -> Viewport {
     let (width, height, scale, color_scheme) = snapshot;
     Viewport::new(width, height, scale, color_scheme)
-}
-
-fn upload_rgba_texture(
-    renderer: &mut VelloWindowRenderer,
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-) -> Result<ResourceId, String> {
-    let Some(device_handle) = renderer.current_device_handle() else {
-        return Err(String::from("renderer is not active"));
-    };
-
-    let row_byte_width = width as usize * 4;
-    let padded_row_byte_width = row_byte_width.next_multiple_of(256);
-    let mut padded_rgba = vec![0_u8; padded_row_byte_width * height as usize];
-    for row in 0..height as usize {
-        let src_start = row * row_byte_width;
-        let dst_start = row * padded_row_byte_width;
-        padded_rgba[dst_start..dst_start + row_byte_width]
-            .copy_from_slice(&rgba[src_start..src_start + row_byte_width]);
-    }
-
-    let texture = device_handle.device.create_texture(&TextureDescriptor {
-        label: Some("formal-web child frame texture"),
-        size: Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba8Unorm,
-        usage: TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    device_handle.queue.write_texture(
-        TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: Origin3d::ZERO,
-            aspect: TextureAspect::All,
-        },
-        &padded_rgba,
-        TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(padded_row_byte_width as u32),
-            rows_per_image: Some(height),
-        },
-        Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-
-    renderer
-        .try_register_custom_resource(Box::new(texture))
-        .map_err(|error| format!("failed to register child frame texture: {error:?}"))
-}
-
-fn blend_child_buffer(
-    parent: &mut [u8],
-    parent_width: u32,
-    parent_height: u32,
-    child: &[u8],
-    child_width: u32,
-    child_height: u32,
-    offset_x: i32,
-    offset_y: i32,
-) {
-    let parent_stride = parent_width as usize * 4;
-    let child_stride = child_width as usize * 4;
-
-    let dest_x0 = offset_x.max(0) as u32;
-    let dest_y0 = offset_y.max(0) as u32;
-    let src_x0 = if offset_x < 0 { (-offset_x) as u32 } else { 0 };
-    let src_y0 = if offset_y < 0 { (-offset_y) as u32 } else { 0 };
-
-    let blend_width = parent_width.saturating_sub(dest_x0).min(child_width.saturating_sub(src_x0));
-    let blend_height = parent_height.saturating_sub(dest_y0).min(child_height.saturating_sub(src_y0));
-
-    for row in 0..blend_height as usize {
-        let parent_row = ((dest_y0 as usize) + row) * parent_stride + dest_x0 as usize * 4;
-        let child_row = ((src_y0 as usize) + row) * child_stride + src_x0 as usize * 4;
-        for col in 0..blend_width as usize {
-            let dst = parent_row + col * 4;
-            let src = child_row + col * 4;
-
-            let src_a = child[src + 3] as u32;
-            let inv_src_a = 255_u32.saturating_sub(src_a);
-            for channel in 0..3 {
-                let src_c = child[src + channel] as u32;
-                let dst_c = parent[dst + channel] as u32;
-                parent[dst + channel] = ((src_c * src_a + dst_c * inv_src_a) / 255) as u8;
-            }
-            let dst_a = parent[dst + 3] as u32;
-            parent[dst + 3] = (src_a + (dst_a * inv_src_a) / 255) as u8;
-        }
-    }
-}
-
-fn render_webview_buffer(
-    provider: &mut WebviewProvider,
-    webview_id: WebviewId,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, String> {
-    let scene = provider
-        .current_scene(webview_id)
-        .ok_or_else(|| format!("no scene available for webview {}", webview_id.0))?;
-    Ok(render_to_buffer::<VelloCpuImageRenderer, _>(
-        move |painter| painter.append_scene(scene, Affine::IDENTITY),
-        width,
-        height,
-    ))
-}
-
-fn composite_webview_buffer(
-    provider: &mut WebviewProvider,
-    webview_id: WebviewId,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, String> {
-    let mut buffer = render_webview_buffer(provider, webview_id, width, height)?;
-    let child_viewports = provider.visible_frame_viewports(webview_id);
-    for viewport in child_viewports {
-        let child_webview_id = provider.webview_id_for_frame(webview_id, viewport.frame_id);
-        let child_buffer = composite_webview_buffer(
-            provider,
-            child_webview_id,
-            viewport.width,
-            viewport.height,
-        )?;
-        blend_child_buffer(
-            &mut buffer,
-            width,
-            height,
-            &child_buffer,
-            viewport.width,
-            viewport.height,
-            viewport.offset_x.round() as i32,
-            viewport.offset_y.round() as i32,
-        );
-    }
-    Ok(buffer)
-}
-
-fn resource_backed_child_frames_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_RESOURCE_BACKED_CHILD_FRAMES").is_some()
 }
 
 fn winit_ime_to_blitz(event: Ime) -> BlitzImeEvent {
@@ -948,8 +735,6 @@ impl Default for HeadedEmbedderApp {
             keyboard_modifiers: Modifiers::default(),
             buttons: MouseEventButtons::None,
             pointer_pos: PhysicalPosition::default(),
-            resource_backed_child_frames: resource_backed_child_frames_enabled(),
-            child_frame_texture_cache: ChildFrameTextureCache::default(),
         }
     }
 }
@@ -1106,32 +891,6 @@ impl HeadedEmbedderApp {
         }
     }
 
-    fn collect_webview_texture_jobs(
-        provider: &mut WebviewProvider,
-        webview_id: WebviewId,
-        width: u32,
-        height: u32,
-        jobs: &mut Vec<(WebviewId, u32, u32)>,
-        active_webview_ids: &mut HashSet<WebviewId>,
-    ) {
-        if !active_webview_ids.insert(webview_id) {
-            return;
-        }
-
-        jobs.push((webview_id, width, height));
-        for viewport in provider.visible_frame_viewports(webview_id) {
-            let child_webview_id = provider.webview_id_for_frame(webview_id, viewport.frame_id);
-            Self::collect_webview_texture_jobs(
-                provider,
-                child_webview_id,
-                viewport.width,
-                viewport.height,
-                jobs,
-                active_webview_ids,
-            );
-        }
-    }
-
     fn create_window(event_loop: &ActiveEventLoop) -> Result<Arc<Window>, String> {
         let options = event_loop_options();
         let title = options
@@ -1154,72 +913,8 @@ impl HeadedEmbedderApp {
         };
         let chrome_height = f64::from(self.chrome_height_physical());
         let chrome_scene = self.chrome.as_mut().map(ChromeUi::paint_scene);
-        let mut content_scene = None;
-        let mut content_texture_resource = None;
-        let content_viewport_size = self.content_viewport_snapshot(window);
 
-        if let Some(webview_id) = self.current_webview_id {
-            if self.resource_backed_child_frames {
-                let mut active_webview_ids = HashSet::new();
-                let mut texture_jobs = Vec::new();
-                {
-                    let Some(provider) = self.provider.as_mut() else {
-                        return;
-                    };
-                    Self::collect_webview_texture_jobs(
-                        provider,
-                        webview_id,
-                        content_viewport_size.0,
-                        content_viewport_size.1,
-                        &mut texture_jobs,
-                        &mut active_webview_ids,
-                    );
-                }
-                self.child_frame_texture_cache
-                    .clear_stale(&mut self.renderer, &active_webview_ids);
-
-                for (job_webview_id, job_width, job_height) in texture_jobs {
-                    let buffer = {
-                        let Some(provider) = self.provider.as_mut() else {
-                            return;
-                        };
-                        match composite_webview_buffer(
-                            provider,
-                            job_webview_id,
-                            job_width,
-                            job_height,
-                        ) {
-                            Ok(buffer) => buffer,
-                            Err(error) => {
-                                eprintln!("{error}");
-                                return;
-                            }
-                        }
-                    };
-                    if self
-                        .child_frame_texture_cache
-                        .update(
-                            &mut self.renderer,
-                            job_webview_id,
-                            job_width,
-                            job_height,
-                            &buffer,
-                        )
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                content_texture_resource = self.child_frame_texture_cache.resource_id(webview_id);
-            } else {
-                let Some(provider) = self.provider.as_mut() else {
-                    return;
-                };
-                content_scene = provider.current_scene(webview_id);
-            }
-        }
-
-        if chrome_scene.is_none() && content_scene.is_none() && content_texture_resource.is_none() {
+        if chrome_scene.is_none() && self.current_webview_id.is_none() {
             return;
         }
 
@@ -1233,31 +928,23 @@ impl HeadedEmbedderApp {
             self.renderer.complete_resume();
         }
 
+        let mut provider = self.provider.take();
+        let current_webview_id = self.current_webview_id;
         self.renderer.render(|scene| {
-            if let Some(content_scene) = content_scene.clone() {
-                scene.append_scene(content_scene, Affine::translate((0.0, chrome_height)));
-            } else if let Some(resource_id) = content_texture_resource {
-                let resource_paint = Paint::Resource(ImageBrush {
-                    image: resource_id,
-                    sampler: Default::default(),
-                });
-                scene.fill(
-                    Fill::NonZero,
+            if let Some(webview_id) = current_webview_id
+                && let Some(provider) = provider.as_mut()
+            {
+                let _ = provider.append_web_content_scene(
+                    webview_id,
+                    scene,
                     Affine::translate((0.0, chrome_height)),
-                    resource_paint,
-                    None,
-                    &Rect::new(
-                        0.0,
-                        0.0,
-                        f64::from(content_viewport_size.0),
-                        f64::from(content_viewport_size.1),
-                    ),
                 );
             }
             if let Some(chrome_scene) = chrome_scene.clone() {
                 scene.append_scene(chrome_scene, Affine::IDENTITY);
             }
         });
+        self.provider = provider;
     }
 
     fn logical_position(&self, position: PhysicalPosition<f64>) -> LogicalPosition<f32> {

@@ -1,7 +1,7 @@
 mod compositor;
 pub mod ui_event;
 
-use anyrender::Scene as RenderScene;
+use anyrender::{PaintScene, Scene as RenderScene};
 use blitz_traits::events::UiEvent;
 use blitz_traits::shell::ColorScheme;
 use compositor::Compositor;
@@ -9,6 +9,7 @@ use ipc_messages::content::{
     FontTransportReceiver, FrameId, NavigableId, NavigateRequest, PaintFrame,
     UserNavigationInvolvement, WebviewId,
 };
+use kurbo::Affine;
 use std::env;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -357,7 +358,7 @@ impl WebviewProvider {
         self.webviews.entry(webview_id).or_default();
     }
 
-    pub fn current_scene(&mut self, webview_id: WebviewId) -> Option<RenderScene> {
+    fn composed_scene_for_webview(&mut self, webview_id: WebviewId) -> Option<RenderScene> {
         let (scene, viewports) = {
             let state = self.webviews.get_mut(&webview_id)?;
             let scene = state.compositor.compose_scene(&self.font_receiver);
@@ -366,6 +367,29 @@ impl WebviewProvider {
         };
         self.publish_visible_child_viewports(viewports);
         scene
+    }
+
+    pub fn append_web_content_scene(
+        &mut self,
+        webview_id: WebviewId,
+        target_scene: &mut impl PaintScene,
+        transform: Affine,
+    ) -> bool {
+        let Some(scene) = self.composed_scene_for_webview(webview_id) else {
+            return false;
+        };
+        if input_debug_enabled() {
+            eprintln!(
+                "[input-debug][webview] append_web_content_scene webview={}",
+                webview_id.0
+            );
+        }
+        target_scene.append_scene(scene, transform);
+        true
+    }
+
+    pub fn current_scene(&mut self, webview_id: WebviewId) -> Option<RenderScene> {
+        self.composed_scene_for_webview(webview_id)
     }
 
     pub fn visible_frame_viewports(&mut self, webview_id: WebviewId) -> Vec<VisibleFrameViewport> {
