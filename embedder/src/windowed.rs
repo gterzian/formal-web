@@ -1,4 +1,73 @@
-use super::*;
+#[path = "windowed/chrome.rs"]
+mod chrome;
+
+use super::{
+    BrowserState, FormalWebUserEvent, NavigationCompleted, NavigationCompletion,
+    PendingNavigation, automation_screenshot_png, automation_visible_frame_viewports,
+    normalize_browser_destination, parse_child_navigable_host_target, read_clipboard_text,
+    startup_destination_url, write_clipboard_text,
+};
+use self::chrome::{ChromeAction, ChromeUi, ChromeViewState};
+use super::winit_integration::{
+    WinitShellProvider, event_loop_options, touch_pointer_details, viewport_of_snapshot,
+    viewport_snapshot_for_window, winit_ime_to_blitz, winit_key_event_to_blitz,
+    winit_modifiers_to_kbt_modifiers,
+};
+use automation::{AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport};
+use anyrender::{PaintScene, WindowRenderer};
+use anyrender_vello::VelloWindowRenderer;
+use blitz_traits::events::{
+    BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
+    MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
+};
+use blitz_traits::shell::{ColorScheme, ShellProvider};
+use kurbo::Affine;
+use ipc_messages::content::WebviewId;
+use serde_json::Value;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+use webview::WebviewProvider;
+use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalPosition, PhysicalPosition};
+use winit::event::{
+    ElementState, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
+};
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{Window, WindowAttributes, WindowId};
+
+pub(super) struct HeadedEmbedderApp {
+    pub(super) window: Option<Arc<Window>>,
+    pub(super) renderer: VelloWindowRenderer,
+    pub(super) chrome: Option<ChromeUi>,
+    pub(super) browser: BrowserState,
+    pub(super) automation: AutomationController,
+    pub(super) provider: Option<WebviewProvider>,
+    pub(super) current_webview_id: Option<WebviewId>,
+    pub(super) has_top_level_traversable: bool,
+    pub(super) window_occluded: bool,
+    pub(super) animation_timer: Option<Instant>,
+    pub(super) keyboard_modifiers: Modifiers,
+    pub(super) buttons: MouseEventButtons,
+    pub(super) pointer_pos: PhysicalPosition<f64>,
+}
+
+pub(super) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+pub(super) fn update_window_viewport_snapshot(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
+    let mut guard = WINDOW_VIEWPORT_SNAPSHOT
+        .lock()
+        .expect("window viewport snapshot mutex poisoned");
+    *guard = snapshot;
+}
+
+pub(super) fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
+    WINDOW_VIEWPORT_SNAPSHOT
+        .lock()
+        .expect("window viewport snapshot mutex poisoned")
+        .as_ref()
+        .copied()
+}
 
 impl Default for HeadedEmbedderApp {
     fn default() -> Self {

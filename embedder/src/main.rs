@@ -1,3 +1,5 @@
+mod event_loop;
+
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -5,10 +7,13 @@ use verification::{TraceSender, VerificationRun, run_validation_from_iter};
 
 #[derive(Parser, Debug)]
 #[command(name = "formal-web-embedder")]
-#[command(about = "Run the formal-web embedder runtime")]
+#[command(about = "Run the formal-web embedder app")]
 struct Cli {
     #[arg(long, alias = "tla", global = true, default_value_t = false)]
     verify: bool,
+
+    #[arg(long, global = true, default_value_t = false)]
+    headless: bool,
 
     #[command(subcommand)]
     command: Option<CommandKind>,
@@ -29,27 +34,19 @@ struct AppRunOptions {
 }
 
 fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
-    embedder::set_event_loop_options(embedder::EventLoopOptions {
+    event_loop::set_event_loop_options(event_loop::EventLoopOptions {
         startup_url: options.startup_url,
         window_title: options.window_title,
     });
 
     let event_loop_result = if options.headless {
-        embedder::run_headless_event_loop(options.trace_sender.clone())
+        event_loop::run_headless_event_loop(options.trace_sender.clone())
     } else {
-        embedder::run_headed_event_loop(options.trace_sender.clone())
+        event_loop::run_headed_event_loop(options.trace_sender.clone())
     };
-    embedder::clear_event_loop_options();
+    event_loop::clear_event_loop_options();
 
     event_loop_result
-}
-
-fn automation_runtime() -> automation::AutomationRuntime {
-    automation::AutomationRuntime::new(
-        |command| embedder::send_user_event(embedder::FormalWebUserEvent::Automation(command)),
-        || embedder::send_user_event(embedder::FormalWebUserEvent::Exit),
-        embedder::event_loop_is_ready,
-    )
 }
 
 fn run_webdriver(
@@ -59,7 +56,13 @@ fn run_webdriver(
     let server = automation::WebDriverServer::start(
         args.port,
         args.exit_on_session_delete,
-        automation_runtime(),
+        automation::automation_bridge(
+            |command| {
+                event_loop::send_user_event(event_loop::FormalWebUserEvent::Automation(command))
+            },
+            || event_loop::send_user_event(event_loop::FormalWebUserEvent::Exit),
+            event_loop::event_loop_is_ready,
+        ),
     )?;
     let result = run_app_with_options(AppRunOptions {
         headless: args.headless,
@@ -125,6 +128,7 @@ fn main() -> ExitCode {
     let trace_sender = verification_run.as_ref().map(VerificationRun::sender_clone);
     let result = match cli.command {
         None => run_app_with_options(AppRunOptions {
+            headless: cli.headless,
             trace_sender: trace_sender.clone(),
             ..AppRunOptions::default()
         }),

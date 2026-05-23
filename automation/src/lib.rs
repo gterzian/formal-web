@@ -335,6 +335,19 @@ impl AutomationRuntime {
     }
 }
 
+pub fn automation_bridge<SendCommand, RequestExit, IsReady>(
+    send_command: SendCommand,
+    request_exit: RequestExit,
+    is_ready: IsReady,
+) -> AutomationRuntime
+where
+    SendCommand: Fn(AutomationCommand) -> Result<(), String> + Send + Sync + 'static,
+    RequestExit: Fn() -> Result<(), String> + Send + Sync + 'static,
+    IsReady: Fn() -> bool + Send + Sync + 'static,
+{
+    AutomationRuntime::new(send_command, request_exit, is_ready)
+}
+
 #[derive(Args, Debug)]
 pub struct WebDriverArgs {
     #[arg(long, default_value_t = 4444)]
