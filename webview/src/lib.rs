@@ -15,11 +15,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use user_agent::{UserAgent, UserAgentEvent, UserAgentHost};
+use user_agent::UserAgent;
 use verification::TraceSender;
 
 pub use compositor::VisibleFrameViewport;
-pub use user_agent::{NavigationCompleted, NavigationCompletion, UserAgentEvent as RuntimeEvent};
+pub use user_agent::{Embedder, EmbedderMsg, NavigationCompleted, NavigationCompletion};
 
 #[derive(Clone)]
 pub struct WebviewState {
@@ -54,40 +54,6 @@ struct PublishedChildViewport {
     offset_y: f32,
 }
 
-pub trait EmbedderApi {
-    fn request_redraw(&self, webview_id: WebviewId);
-    fn viewport_scale_factor(&self) -> f32;
-}
-
-pub trait RuntimeHost: Send + Sync {
-    fn send_user_agent_event(&self, event: UserAgentEvent) -> Result<(), String>;
-    fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
-    fn clipboard_get_text(&self, timeout: Duration) -> Result<String, String>;
-    fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String>;
-}
-
-struct RuntimeHostAdapter {
-    host: Arc<dyn RuntimeHost>,
-}
-
-impl UserAgentHost for RuntimeHostAdapter {
-    fn send_event(&self, event: UserAgentEvent) -> Result<(), String> {
-        self.host.send_user_agent_event(event)
-    }
-
-    fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)> {
-        self.host.window_viewport_snapshot()
-    }
-
-    fn clipboard_get_text(&self, timeout: Duration) -> Result<String, String> {
-        self.host.clipboard_get_text(timeout)
-    }
-
-    fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String> {
-        self.host.clipboard_set_text(text, timeout)
-    }
-}
-
 fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
     match startup_url {
         Some(url) => Ok(url.to_owned()),
@@ -117,20 +83,16 @@ pub struct WebviewProvider {
     published_child_viewports: HashMap<WebviewId, PublishedChildViewport>,
     font_receiver: FontTransportReceiver,
     viewport_snapshot: Option<(u32, u32, f32, ColorScheme)>,
-    embedder: Box<dyn EmbedderApi>,
+    embedder: Arc<dyn Embedder>,
     user_agent: UserAgent,
 }
 
 impl WebviewProvider {
     pub fn new(
-        embedder: Box<dyn EmbedderApi>,
-        runtime_host: Arc<dyn RuntimeHost>,
+        embedder: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
-        let user_agent = UserAgent::start(
-            Arc::new(RuntimeHostAdapter { host: runtime_host }),
-            trace_sender,
-        )?;
+        let user_agent = UserAgent::start(embedder.clone(), trace_sender)?;
 
         Ok(Self {
             webviews: HashMap::new(),

@@ -65,7 +65,7 @@ pub struct NavigationCompleted {
 }
 
 #[derive(Clone, Debug)]
-pub enum UserAgentEvent {
+pub enum EmbedderMsg {
     Paint(PaintFrame),
     NavigationRequested {
         webview_id: WebviewId,
@@ -75,8 +75,10 @@ pub enum UserAgentEvent {
     NewTopLevelTraversable(WebviewId, String),
 }
 
-pub trait UserAgentHost: Send + Sync {
-    fn send_event(&self, event: UserAgentEvent) -> Result<(), String>;
+pub trait Embedder: Send + Sync {
+    fn send_msg(&self, msg: EmbedderMsg) -> Result<(), String>;
+    fn request_redraw(&self, webview_id: WebviewId);
+    fn viewport_scale_factor(&self) -> f32;
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_get_text(&self, timeout: Duration) -> Result<String, String>;
     fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String>;
@@ -819,7 +821,7 @@ pub struct UserAgent {
 impl UserAgent {
     /// spawning the dedicated user-agent thread owned by the webview layer.
     pub fn start(
-        host: Arc<dyn UserAgentHost>,
+        host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
@@ -1139,7 +1141,7 @@ struct UserAgentWorker {
     /// Join handle for the timer worker thread during shutdown.
     timer_join_handle: Option<JoinHandle<()>>,
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
-    host: Arc<dyn UserAgentHost>,
+    host: Arc<dyn Embedder>,
     /// Trace logger for the Navigation TLA+ spec.
     navigation_tracer: TLATracer,
     /// Sender cloned into child workers and sidecars when TLA tracing is enabled.
@@ -1154,7 +1156,7 @@ impl UserAgentWorker {
     fn new(
         user_agent_command_sender: Sender<UserAgentCommand>,
         command_receiver: Receiver<UserAgentCommand>,
-        host: Arc<dyn UserAgentHost>,
+        host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
@@ -1539,7 +1541,7 @@ impl UserAgentWorker {
         // The embedder notification is the model's observable hook for a new top-level
         // traversable.
         self.host
-            .send_event(UserAgentEvent::NewTopLevelTraversable(
+            .send_msg(EmbedderMsg::NewTopLevelTraversable(
                 WebviewId(traversable_id),
                 target_name,
             ))?;
@@ -1662,11 +1664,10 @@ impl UserAgentWorker {
             .traversable_ids
             .insert(traversable_id);
 
-        self.host
-            .send_event(UserAgentEvent::NewTopLevelTraversable(
-                WebviewId(traversable_id),
-                target_name,
-            ))?;
+        self.host.send_msg(EmbedderMsg::NewTopLevelTraversable(
+            WebviewId(traversable_id),
+            target_name,
+        ))?;
 
         Ok(traversable_id)
     }
@@ -2208,7 +2209,7 @@ impl UserAgentWorker {
                 .map(|n| n.parent_navigable_id.is_none())
                 .unwrap_or(true);
             if is_top_level {
-                self.host.send_event(UserAgentEvent::NavigationRequested {
+                self.host.send_msg(EmbedderMsg::NavigationRequested {
                     webview_id: WebviewId(traversable_id),
                     destination_url: request.destination_url,
                 })?;
@@ -2385,7 +2386,7 @@ impl UserAgentWorker {
                     self.state
                         .set_navigable_ongoing_navigation(traversable_id, None);
                 }
-                self.host.send_event(UserAgentEvent::NavigationCompleted(
+                self.host.send_msg(EmbedderMsg::NavigationCompleted(
                     NavigationCompleted {
                         webview_id: WebviewId(pending.navigable_id),
                         status: NavigationCompletion::Aborted {
@@ -2507,7 +2508,7 @@ impl UserAgentWorker {
             document.is_initial_about_blank = finalized.url == "about:blank";
         }
         self.handle_rendering_opportunity_for(pending.traversable_id);
-        let notify_result = self.host.send_event(UserAgentEvent::NavigationCompleted(
+        let notify_result = self.host.send_msg(EmbedderMsg::NavigationCompleted(
             NavigationCompleted {
                 webview_id: WebviewId(pending.traversable_id),
                 status: NavigationCompletion::Committed {
@@ -2841,7 +2842,7 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.send_event(UserAgentEvent::NavigationCompleted(
+                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
                     NavigationCompleted {
                         webview_id: WebviewId(pending.traversable_id),
                         status: NavigationCompletion::Aborted { message: error },
@@ -2859,7 +2860,7 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.send_event(UserAgentEvent::NavigationCompleted(
+                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
                     NavigationCompleted {
                         webview_id: WebviewId(pending.traversable_id),
                         status: NavigationCompletion::Aborted { message: error },
@@ -2935,7 +2936,7 @@ impl UserAgentWorker {
                 );
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.send_event(UserAgentEvent::NavigationCompleted(
+                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
                     NavigationCompleted {
                         webview_id: WebviewId(pending.traversable_id),
                         status: NavigationCompletion::Aborted { message: error },
@@ -2952,7 +2953,7 @@ impl UserAgentWorker {
         };
         self.state
             .set_navigable_ongoing_navigation(pending.traversable_id, None);
-        let _ = self.host.send_event(UserAgentEvent::NavigationCompleted(
+        let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
             NavigationCompleted {
                 webview_id: WebviewId(pending.traversable_id),
                 status: NavigationCompletion::Aborted {

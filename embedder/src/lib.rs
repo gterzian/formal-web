@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use verification::TraceSender;
-use webview::{EmbedderApi, NavigationCompletion as RuntimeNavigationCompletion, RuntimeHost, RuntimeEvent, WebviewProvider};
+use webview::{Embedder, EmbedderMsg, WebviewProvider};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{
@@ -78,11 +78,7 @@ impl UserEventDispatcher {
     }
 }
 
-struct EventLoopEmbedderApi {
-    dispatcher: UserEventDispatcher,
-}
-
-struct EventLoopRuntimeHost {
+struct EventLoopEmbedder {
     dispatcher: UserEventDispatcher,
 }
 
@@ -143,7 +139,38 @@ impl ShellProvider for WinitShellProvider {
     }
 }
 
-impl EmbedderApi for EventLoopEmbedderApi {
+impl Embedder for EventLoopEmbedder {
+    fn send_msg(&self, msg: EmbedderMsg) -> Result<(), String> {
+        let event = match msg {
+            EmbedderMsg::Paint(snapshot) => FormalWebUserEvent::Paint(snapshot),
+            EmbedderMsg::NavigationRequested {
+                webview_id,
+                destination_url,
+            } => FormalWebUserEvent::NavigationRequested {
+                webview_id,
+                destination_url,
+            },
+            EmbedderMsg::NavigationCompleted(completed) => {
+                let status = match completed.status {
+                    webview::NavigationCompletion::Committed { url } => {
+                        NavigationCompletion::Committed { url }
+                    }
+                    webview::NavigationCompletion::Aborted { message } => {
+                        NavigationCompletion::Aborted { message }
+                    }
+                };
+                FormalWebUserEvent::NavigationCompleted(NavigationCompleted {
+                    webview_id: completed.webview_id,
+                    status,
+                })
+            }
+            EmbedderMsg::NewTopLevelTraversable(webview_id, target_name) => {
+                FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name)
+            }
+        };
+        self.dispatcher.send(event)
+    }
+
     fn request_redraw(&self, webview_id: WebviewId) {
         let _ = self
             .dispatcher
@@ -154,39 +181,6 @@ impl EmbedderApi for EventLoopEmbedderApi {
         window_viewport_snapshot()
             .map(|(_, _, scale, _)| scale)
             .unwrap_or(1.0)
-    }
-}
-
-impl RuntimeHost for EventLoopRuntimeHost {
-    fn send_user_agent_event(&self, event: RuntimeEvent) -> Result<(), String> {
-        let event = match event {
-            RuntimeEvent::Paint(snapshot) => FormalWebUserEvent::Paint(snapshot),
-            RuntimeEvent::NavigationRequested {
-                webview_id,
-                destination_url,
-            } => FormalWebUserEvent::NavigationRequested {
-                webview_id,
-                destination_url,
-            },
-            RuntimeEvent::NavigationCompleted(completed) => {
-                let status = match completed.status {
-                    RuntimeNavigationCompletion::Committed { url } => {
-                        NavigationCompletion::Committed { url }
-                    }
-                    RuntimeNavigationCompletion::Aborted { message } => {
-                        NavigationCompletion::Aborted { message }
-                    }
-                };
-                FormalWebUserEvent::NavigationCompleted(NavigationCompleted {
-                    webview_id: completed.webview_id,
-                    status,
-                })
-            }
-            RuntimeEvent::NewTopLevelTraversable(webview_id, target_name) => {
-                FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name)
-            }
-        };
-        self.dispatcher.send(event)
     }
 
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)> {
@@ -404,11 +398,8 @@ where
         *guard = Some(dispatcher.proxy.clone());
     }
 
-    let embedder: Box<dyn EmbedderApi> = Box::new(EventLoopEmbedderApi {
-        dispatcher: dispatcher.clone(),
-    });
-    let runtime_host: Arc<dyn RuntimeHost> = Arc::new(EventLoopRuntimeHost { dispatcher });
-    let provider = match WebviewProvider::new(embedder, runtime_host, trace_sender) {
+    let embedder: Arc<dyn Embedder> = Arc::new(EventLoopEmbedder { dispatcher });
+    let provider = match WebviewProvider::new(embedder, trace_sender) {
         Ok(provider) => provider,
         Err(error) => {
             let mut guard = EVENT_LOOP_PROXY

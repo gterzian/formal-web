@@ -18,7 +18,7 @@ use verification::TraceSender;
 
 use crate::fetch::FetchCommand;
 use crate::timer::{TimerCommand, TimerCompletion};
-use crate::{UserAgentCommand, UserAgentEvent, UserAgentHost, sidecar_executable_path};
+use crate::{Embedder, EmbedderMsg, UserAgentCommand, sidecar_executable_path};
 
 /// graceful shutdown of the content process owned by one HTML event loop.
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
@@ -173,7 +173,7 @@ struct EventLoopWorker {
     /// Receiver for commands from the user-agent thread into this event-loop/content pair.
     command_receiver: Receiver<EventLoopCommand>,
     /// Host integration for paint, clipboard, and initial viewport state.
-    host: Arc<dyn UserAgentHost>,
+    host: Arc<dyn Embedder>,
     /// Deferred shutdown reply completed after the content process acknowledges shutdown.
     stop_reply: Option<Sender<Result<(), String>>>,
     /// flag that mirrors the single in-flight task step in the HTML event loop
@@ -211,7 +211,7 @@ impl EventLoopWorker {
         user_agent_command_sender: Sender<UserAgentCommand>,
         fetch_command_sender: Sender<FetchCommand>,
         timer_command_sender: Sender<TimerCommand>,
-        host: Arc<dyn UserAgentHost>,
+        host: Arc<dyn Embedder>,
         command_receiver: Receiver<EventLoopCommand>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
@@ -577,7 +577,7 @@ impl EventLoopWorker {
                     snapshot.viewport_width,
                     snapshot.viewport_height,
                 ));
-                let _ = self.host.send_event(UserAgentEvent::Paint(snapshot));
+                let _ = self.host.send_msg(EmbedderMsg::Paint(snapshot));
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
@@ -723,7 +723,7 @@ pub fn spawn_event_loop_entry(
     user_agent_command_sender: Sender<UserAgentCommand>,
     fetch_command_sender: Sender<FetchCommand>,
     timer_command_sender: Sender<TimerCommand>,
-    host: Arc<dyn UserAgentHost>,
+    host: Arc<dyn Embedder>,
     trace_sender: Option<TraceSender>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();

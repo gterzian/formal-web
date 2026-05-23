@@ -1957,8 +1957,13 @@ fn maybe_reexec_test_wpt_runner(args: &TestWptArgs) -> Result<(), String> {
 
     build_runner_executable(desired_profile)?;
 
+    let mut forwarded_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if forwarded_args.first().is_some_and(|arg| arg == "wpt") {
+        forwarded_args.remove(0);
+    }
+
     let status = Command::new(&desired_executable)
-        .args(std::env::args_os().skip(1))
+        .args(forwarded_args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
