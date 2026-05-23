@@ -13,9 +13,13 @@ use kurbo::Affine;
 use std::env;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use user_agent::UserAgent;
+use verification::TraceSender;
 
 pub use compositor::VisibleFrameViewport;
+pub use user_agent::{Embedder, EmbedderMsg, NavigationCompleted, NavigationCompletion};
 
 #[derive(Clone)]
 pub struct WebviewState {
@@ -50,36 +54,6 @@ struct PublishedChildViewport {
     offset_y: f32,
 }
 
-pub trait EmbedderApi {
-    fn request_redraw(&self, webview_id: WebviewId);
-    fn viewport_scale_factor(&self) -> f32;
-}
-
-pub trait UserAgentApi {
-    fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String>;
-    fn start_navigation(&self, request: NavigateRequest) -> Result<(), String>;
-    fn dispatch_event_for(&self, traversable_id: NavigableId, event: String) -> Result<(), String>;
-    fn note_rendering_opportunity(&self, traversable_id: NavigableId) -> Result<(), String>;
-    fn set_default_viewport(
-        &self,
-        snapshot: Option<(u32, u32, f32, ColorScheme)>,
-    ) -> Result<(), String>;
-    fn set_traversable_viewport(
-        &self,
-        traversable_id: NavigableId,
-        snapshot: (u32, u32, f32, ColorScheme),
-        offset_x: f32,
-        offset_y: f32,
-    ) -> Result<(), String>;
-    fn evaluate_script(
-        &self,
-        traversable_id: NavigableId,
-        source: String,
-        timeout: Duration,
-    ) -> Result<serde_json::Value, String>;
-    fn click_element(&self, traversable_id: NavigableId, selector: String) -> Result<(), String>;
-}
-
 fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
     match startup_url {
         Some(url) => Ok(url.to_owned()),
@@ -109,13 +83,18 @@ pub struct WebviewProvider {
     published_child_viewports: HashMap<WebviewId, PublishedChildViewport>,
     font_receiver: FontTransportReceiver,
     viewport_snapshot: Option<(u32, u32, f32, ColorScheme)>,
-    embedder: Box<dyn EmbedderApi>,
-    user_agent: Box<dyn UserAgentApi>,
+    embedder: Arc<dyn Embedder>,
+    user_agent: UserAgent,
 }
 
 impl WebviewProvider {
-    pub fn new(embedder: Box<dyn EmbedderApi>, user_agent: Box<dyn UserAgentApi>) -> Self {
-        Self {
+    pub fn new(
+        embedder: Arc<dyn Embedder>,
+        trace_sender: Option<TraceSender>,
+    ) -> Result<Self, String> {
+        let user_agent = UserAgent::start(embedder.clone(), trace_sender)?;
+
+        Ok(Self {
             webviews: HashMap::new(),
             child_navigable_hosts_by_webview: HashMap::new(),
             child_host_webviews_by_content_navigable: HashMap::new(),
@@ -124,7 +103,7 @@ impl WebviewProvider {
             viewport_snapshot: None,
             embedder,
             user_agent,
-        }
+        })
     }
 
     pub fn start(&self, startup_url: Option<&str>) -> Result<(), String> {

@@ -1,15 +1,17 @@
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
-use std::process::ExitCode;
-use verification::{TraceSender, VerificationRun, run_validation_from_iter};
-use webview::UserAgentApi;
+use std::process::{Command as ProcessCommand, ExitCode, Stdio};
+use verification::run_validation_from_iter;
 
 #[derive(Parser, Debug)]
 #[command(name = "formal-web")]
-#[command(about = "Rust entry point for the formal-web runtime and local WPT tooling")]
+#[command(about = "Convenient repository development entrypoint")]
 struct Cli {
     #[arg(long, alias = "tla", global = true, default_value_t = false)]
     verify: bool,
+
+    #[arg(long, default_value_t = false)]
+    headless: bool,
 
     #[command(subcommand)]
     command: Option<CommandKind>,
@@ -17,68 +19,14 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum CommandKind {
-    TestWpt(wpt_runner::TestWptArgs),
+    #[command(name = "wpt")]
+    Wpt {
+        #[command(flatten)]
+        args: wpt_runner::TestWptArgs,
+    },
+
     #[command(name = "webdriver")]
     WebDriver(automation::WebDriverArgs),
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct AppRunOptions {
-    pub headless: bool,
-    pub startup_url: Option<String>,
-    pub window_title: Option<String>,
-    pub trace_sender: Option<TraceSender>,
-}
-
-pub(crate) fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
-    embedder::set_event_loop_options(embedder::EventLoopOptions {
-        startup_url: options.startup_url,
-        window_title: options.window_title,
-    });
-
-    let event_loop_result = if options.headless {
-        embedder::run_headless_event_loop(|dispatcher| {
-            user_agent::UserAgent::start(dispatcher, options.trace_sender.clone())
-                .map(|user_agent| Box::new(user_agent) as Box<dyn UserAgentApi>)
-        })
-    } else {
-        embedder::run_headed_event_loop(|dispatcher| {
-            user_agent::UserAgent::start(dispatcher, options.trace_sender.clone())
-                .map(|user_agent| Box::new(user_agent) as Box<dyn UserAgentApi>)
-        })
-    };
-    embedder::clear_event_loop_options();
-
-    event_loop_result
-}
-
-fn automation_runtime() -> automation::AutomationRuntime {
-    automation::AutomationRuntime::new(
-        |command| embedder::send_user_event(embedder::FormalWebUserEvent::Automation(command)),
-        || embedder::send_user_event(embedder::FormalWebUserEvent::Exit),
-        embedder::event_loop_is_ready,
-    )
-}
-
-fn run_webdriver(
-    args: automation::WebDriverArgs,
-    trace_sender: Option<TraceSender>,
-) -> Result<(), String> {
-    let server = automation::WebDriverServer::start(
-        args.port,
-        args.exit_on_session_delete,
-        automation_runtime(),
-    )?;
-    let result = run_app_with_options(AppRunOptions {
-        headless: args.headless,
-        startup_url: args
-            .startup_url
-            .or_else(|| Some(String::from("about:blank"))),
-        window_title: Some(format!("formal-web WebDriver :{}", args.port)),
-        trace_sender,
-    });
-    drop(server);
-    result
 }
 
 fn delegated_tla_validate_command() -> Option<ExitCode> {
@@ -99,16 +47,69 @@ fn delegated_tla_validate_command() -> Option<ExitCode> {
     })
 }
 
-fn combine_results(
-    primary: Result<(), String>,
-    final_step: Result<(), String>,
-) -> Result<(), String> {
-    match (primary, final_step) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(final_error)) => Err(format!("{error}; {final_error}")),
+
+fn run_embedder_process(embedder_args: Vec<OsString>) -> Result<(), String> {
+    let mut command = ProcessCommand::new("rustup");
+    command.arg("run").arg("1.92.0").arg("cargo").arg("run");
+    if !cfg!(debug_assertions) {
+        command.arg("--release");
     }
+    command
+        .arg("--manifest-path")
+        .arg("embedder/Cargo.toml")
+        .arg("--bin")
+        .arg("formal-web-embedder")
+        .arg("--")
+        .args(embedder_args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    let status = command
+        .status()
+        .map_err(|error| format!("failed to execute embedder process: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "embedder process exited with status {}",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| String::from("unknown"))
+        ))
+    }
+}
+
+fn run_embedder_default(verify: bool, headless: bool) -> Result<(), String> {
+    let mut args = Vec::<OsString>::new();
+    if verify {
+        args.push(OsString::from("--verify"));
+    }
+    if headless {
+        args.push(OsString::from("--headless"));
+    }
+    run_embedder_process(args)
+}
+
+fn run_embedder_webdriver(verify: bool, args: automation::WebDriverArgs) -> Result<(), String> {
+    let mut embedder_args = Vec::<OsString>::new();
+    if verify {
+        embedder_args.push(OsString::from("--verify"));
+    }
+    embedder_args.push(OsString::from("webdriver"));
+    embedder_args.push(OsString::from("--port"));
+    embedder_args.push(OsString::from(args.port.to_string()));
+    if args.headless {
+        embedder_args.push(OsString::from("--headless"));
+    }
+    if let Some(startup_url) = args.startup_url {
+        embedder_args.push(OsString::from("--startup-url"));
+        embedder_args.push(OsString::from(startup_url));
+    }
+    embedder_args.push(OsString::from("--exit-on-session-delete"));
+    embedder_args.push(OsString::from(args.exit_on_session_delete.to_string()));
+    run_embedder_process(embedder_args)
 }
 
 fn main() -> ExitCode {
@@ -117,41 +118,26 @@ fn main() -> ExitCode {
     }
 
     let cli = Cli::parse();
+    let (wpt_args, command) = match cli.command {
+        Some(CommandKind::Wpt { args }) => (Some(args), None),
+        other => (None, other),
+    };
 
-    if let Some(CommandKind::TestWpt(args)) = cli.command {
-        if let Err(error) = wpt_runner::run(args, cli.verify) {
-            eprintln!("formal-web: {error}");
-            return ExitCode::from(1);
-        }
-        return ExitCode::SUCCESS;
-    }
-
-    let verification_run = if cli.verify {
-        match VerificationRun::start() {
-            Ok(run) => Some(run),
+    if let Some(args) = wpt_args {
+        return match wpt_runner::run(args, cli.verify) {
+            Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("formal-web: {error}");
-                return ExitCode::from(1);
+                ExitCode::from(1)
             }
-        }
-    } else {
-        None
-    };
+        };
+    }
 
-    let trace_sender = verification_run.as_ref().map(VerificationRun::sender_clone);
-    let result = match cli.command {
-        None => run_app_with_options(AppRunOptions {
-            trace_sender: trace_sender.clone(),
-            ..AppRunOptions::default()
-        }),
-        Some(CommandKind::WebDriver(args)) => run_webdriver(args, trace_sender.clone()),
-        Some(CommandKind::TestWpt(_)) => unreachable!(),
+    let result = match command {
+        None => run_embedder_default(cli.verify, cli.headless),
+        Some(CommandKind::WebDriver(args)) => run_embedder_webdriver(cli.verify, args),
+        Some(CommandKind::Wpt { .. }) => Ok(()),
     };
-    drop(trace_sender);
-    let verification_result = verification_run
-        .map(VerificationRun::finish)
-        .unwrap_or(Ok(()));
-    let result = combine_results(result, verification_result);
 
     if let Err(error) = result {
         eprintln!("formal-web: {error}");

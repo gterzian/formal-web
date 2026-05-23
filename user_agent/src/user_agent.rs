@@ -4,9 +4,6 @@ mod timer;
 
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-use embedder::{
-    FormalWebUserEvent, NavigationCompleted, NavigationCompletion, UserEventDispatcher,
-};
 use ipc_messages::{
     content::{
         AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult,
@@ -14,12 +11,14 @@ use ipc_messages::{
         DispatchEventEntry, DocumentFetchId, DocumentId, EventLoopId,
         FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
         FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse,
-        NavigableId, NavigateRequest, NavigationFetchId, NavigationId, UserNavigationInvolvement, WebviewId,
-        WindowTimerKey, iframe_target_name, parse_iframe_target_name,
+        NavigableId, NavigateRequest, NavigationFetchId, NavigationId, PaintFrame,
+        UserNavigationInvolvement, WebviewId, WindowTimerKey, iframe_target_name,
+        parse_iframe_target_name,
     },
 };
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use url::Url;
@@ -38,19 +37,82 @@ pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, Stri
     let executable_directory = current_executable
         .parent()
         .ok_or_else(|| String::from("failed to resolve executable directory"))?;
-    let sidecar_executable = executable_directory.join(format!(
-        "{binary_name}{}",
-        std::env::consts::EXE_SUFFIX
-    ));
+    let executable_name = format!("{binary_name}{}", std::env::consts::EXE_SUFFIX);
 
-    if sidecar_executable.is_file() {
-        Ok(sidecar_executable)
-    } else {
-        Err(format!(
-            "failed to locate sidecar executable {binary_name} at {}",
-            sidecar_executable.display()
-        ))
+    for candidate in sidecar_search_paths(executable_directory, &executable_name) {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
     }
+
+    let attempted_paths = sidecar_search_paths(executable_directory, &executable_name)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Err(format!(
+        "failed to locate sidecar executable {binary_name}; looked in: {attempted_paths}"
+    ))
+}
+
+fn sidecar_search_paths(executable_directory: &Path, executable_name: &str) -> Vec<PathBuf> {
+    let mut search_paths = vec![executable_directory.join(executable_name)];
+
+    let Some(profile_dir_name) = executable_directory.file_name().and_then(|name| name.to_str()) else {
+        return search_paths;
+    };
+    if !matches!(profile_dir_name, "debug" | "release") {
+        return search_paths;
+    }
+
+    if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        search_paths.push(PathBuf::from(target_dir).join(profile_dir_name).join(executable_name));
+    }
+
+    for ancestor in executable_directory.ancestors().skip(1) {
+        search_paths.push(
+            ancestor
+                .join("target")
+                .join(profile_dir_name)
+                .join(executable_name),
+        );
+    }
+
+    search_paths.dedup();
+    search_paths
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NavigationCompletion {
+    Committed { url: String },
+    Aborted { message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NavigationCompleted {
+    pub webview_id: WebviewId,
+    pub status: NavigationCompletion,
+}
+
+#[derive(Clone, Debug)]
+pub enum EmbedderMsg {
+    Paint(PaintFrame),
+    NavigationRequested {
+        webview_id: WebviewId,
+        destination_url: String,
+    },
+    NavigationCompleted(NavigationCompleted),
+    NewTopLevelTraversable(WebviewId, String),
+}
+
+pub trait Embedder: Send + Sync {
+    fn send_msg(&self, msg: EmbedderMsg) -> Result<(), String>;
+    fn request_redraw(&self, webview_id: WebviewId);
+    fn viewport_scale_factor(&self) -> f32;
+    fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
+    fn clipboard_get_text(&self, timeout: Duration) -> Result<String, String>;
+    fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String>;
 }
 
 /// <https://html.spec.whatwg.org/multipage/#cross-origin-isolation-mode>
@@ -790,14 +852,14 @@ pub struct UserAgent {
 impl UserAgent {
     /// spawning the dedicated user-agent thread owned by the webview layer.
     pub fn start(
-        user_event_dispatcher: UserEventDispatcher,
+        host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
         let mut worker = UserAgentWorker::new(
             command_sender.clone(),
             command_receiver,
-            user_event_dispatcher,
+            host,
             trace_sender,
         );
         let join_handle = thread::Builder::new()
@@ -842,7 +904,18 @@ impl UserAgent {
         source: String,
         timeout: Duration,
     ) -> Result<serde_json::Value, String> {
-        webview::UserAgentApi::evaluate_script(self, traversable_id, source, timeout)
+        let (reply_sender, reply_receiver) = bounded(1);
+        self.command_sender
+            .send(UserAgentCommand::EvaluateScript {
+                traversable_id,
+                source,
+                timeout,
+                reply: reply_sender,
+            })
+            .map_err(|error| format!("failed to send script evaluation request: {error}"))?;
+        reply_receiver
+            .recv()
+            .map_err(|error| format!("script evaluation reply channel closed: {error}"))?
     }
 }
 
@@ -855,9 +928,9 @@ impl Drop for UserAgent {
     }
 }
 
-impl webview::UserAgentApi for UserAgent {
+impl UserAgent {
     /// <https://html.spec.whatwg.org/multipage/#create-a-fresh-top-level-traversable>
-    fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String> {
+    pub fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::CreateFreshTopLevelTraversable { destination_url })
             .map_err(|error| {
@@ -866,7 +939,7 @@ impl webview::UserAgentApi for UserAgent {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate>
-    fn start_navigation(&self, request: NavigateRequest) -> Result<(), String> {
+    pub fn start_navigation(&self, request: NavigateRequest) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::Navigate { request })
             .map_err(|error| format!("failed to send navigate command: {error}"))
@@ -874,7 +947,11 @@ impl webview::UserAgentApi for UserAgent {
 
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
-    fn dispatch_event_for(&self, traversable_id: NavigableId, event: String) -> Result<(), String> {
+    pub fn dispatch_event_for(
+        &self,
+        traversable_id: NavigableId,
+        event: String,
+    ) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::DispatchEventFor {
                 traversable_id,
@@ -884,14 +961,14 @@ impl webview::UserAgentApi for UserAgent {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
-    fn note_rendering_opportunity(&self, traversable_id: NavigableId) -> Result<(), String> {
+    pub fn note_rendering_opportunity(&self, traversable_id: NavigableId) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::RenderingOpportunityFor { traversable_id })
             .map_err(|error| format!("failed to send rendering-opportunity request: {error}"))
     }
 
     /// broadcasting the embedder viewport to every owned content event loop.
-    fn set_default_viewport(
+    pub fn set_default_viewport(
         &self,
         snapshot: Option<(u32, u32, f32, ColorScheme)>,
     ) -> Result<(), String> {
@@ -904,7 +981,7 @@ impl webview::UserAgentApi for UserAgent {
     }
 
     /// updating the viewport of one traversable's content implementation.
-    fn set_traversable_viewport(
+    pub fn set_traversable_viewport(
         &self,
         traversable_id: NavigableId,
         snapshot: (u32, u32, f32, ColorScheme),
@@ -922,7 +999,11 @@ impl webview::UserAgentApi for UserAgent {
     }
 
     /// the automation-only selector-click bridge into content.
-    fn click_element(&self, traversable_id: NavigableId, selector: String) -> Result<(), String> {
+    pub fn click_element(
+        &self,
+        traversable_id: NavigableId,
+        selector: String,
+    ) -> Result<(), String> {
         let (reply_sender, reply_receiver) = bounded(1);
         self.command_sender
             .send(UserAgentCommand::ClickElement {
@@ -934,27 +1015,6 @@ impl webview::UserAgentApi for UserAgent {
         reply_receiver
             .recv()
             .map_err(|error| format!("selector click reply channel closed: {error}"))?
-    }
-
-    /// the automation-only script-evaluation bridge into content.
-    fn evaluate_script(
-        &self,
-        traversable_id: NavigableId,
-        source: String,
-        timeout: Duration,
-    ) -> Result<serde_json::Value, String> {
-        let (reply_sender, reply_receiver) = bounded(1);
-        self.command_sender
-            .send(UserAgentCommand::EvaluateScript {
-                traversable_id,
-                source,
-                timeout,
-                reply: reply_sender,
-            })
-            .map_err(|error| format!("failed to send script evaluation request: {error}"))?;
-        reply_receiver
-            .recv()
-            .map_err(|error| format!("script evaluation reply channel closed: {error}"))?
     }
 }
 
@@ -1093,7 +1153,6 @@ fn find_navigable_by_target_name(state: &UserAgentState, target_name: &str) -> O
     })
 }
 
-/// Stateful owner of browser-global state plus the fetch, timer, and event-loop workers that the
 /// user-agent thread coordinates.
 struct UserAgentWorker {
     /// Spec-facing browser state plus the indices that make the implementation route
@@ -1112,9 +1171,8 @@ struct UserAgentWorker {
     timer_command_sender: Sender<TimerCommand>,
     /// Join handle for the timer worker thread during shutdown.
     timer_join_handle: Option<JoinHandle<()>>,
-    /// Async dispatcher used to notify the embedder event loop about navigation and traversable
-    /// updates without routing through a global sender.
-    user_event_dispatcher: UserEventDispatcher,
+    /// Host integration used to surface navigation, paint, clipboard, and viewport state.
+    host: Arc<dyn Embedder>,
     /// Trace logger for the Navigation TLA+ spec.
     navigation_tracer: TLATracer,
     /// Sender cloned into child workers and sidecars when TLA tracing is enabled.
@@ -1129,7 +1187,7 @@ impl UserAgentWorker {
     fn new(
         user_agent_command_sender: Sender<UserAgentCommand>,
         command_receiver: Receiver<UserAgentCommand>,
-        user_event_dispatcher: UserEventDispatcher,
+        host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
@@ -1167,7 +1225,7 @@ impl UserAgentWorker {
             fetch_join_handle: Some(fetch_join_handle),
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
-            user_event_dispatcher,
+            host,
             navigation_tracer: TLATracer::new(
                 "Navigation",
                 "formal-web:user-agent",
@@ -1175,7 +1233,7 @@ impl UserAgentWorker {
             ),
             trace_sender,
             next_automation_request_id: 1,
-        }
+            }
     }
 
     /// the top-level command loop that owns browser-global coordination.
@@ -1364,7 +1422,7 @@ impl UserAgentWorker {
             self.command_sender.clone(),
             self.fetch_command_sender.clone(),
             self.timer_command_sender.clone(),
-            self.user_event_dispatcher.clone(),
+            self.host.clone(),
             self.trace_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
@@ -1513,8 +1571,8 @@ impl UserAgentWorker {
         // openerNavigableForWebDriver.
         // The embedder notification is the model's observable hook for a new top-level
         // traversable.
-        self.user_event_dispatcher
-            .send(FormalWebUserEvent::NewTopLevelTraversable(
+        self.host
+            .send_msg(EmbedderMsg::NewTopLevelTraversable(
                 WebviewId(traversable_id),
                 target_name,
             ))?;
@@ -1637,11 +1695,10 @@ impl UserAgentWorker {
             .traversable_ids
             .insert(traversable_id);
 
-        self.user_event_dispatcher
-            .send(FormalWebUserEvent::NewTopLevelTraversable(
-                WebviewId(traversable_id),
-                target_name,
-            ))?;
+        self.host.send_msg(EmbedderMsg::NewTopLevelTraversable(
+            WebviewId(traversable_id),
+            target_name,
+        ))?;
 
         Ok(traversable_id)
     }
@@ -2183,7 +2240,7 @@ impl UserAgentWorker {
                 .map(|n| n.parent_navigable_id.is_none())
                 .unwrap_or(true);
             if is_top_level {
-                self.user_event_dispatcher.send(FormalWebUserEvent::NavigationRequested {
+                self.host.send_msg(EmbedderMsg::NavigationRequested {
                     webview_id: WebviewId(traversable_id),
                     destination_url: request.destination_url,
                 })?;
@@ -2360,7 +2417,7 @@ impl UserAgentWorker {
                     self.state
                         .set_navigable_ongoing_navigation(traversable_id, None);
                 }
-                self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+                self.host.send_msg(EmbedderMsg::NavigationCompleted(
                     NavigationCompleted {
                         webview_id: WebviewId(pending.navigable_id),
                         status: NavigationCompletion::Aborted {
@@ -2482,14 +2539,14 @@ impl UserAgentWorker {
             document.is_initial_about_blank = finalized.url == "about:blank";
         }
         self.handle_rendering_opportunity_for(pending.traversable_id);
-        let notify_result = self.user_event_dispatcher.send(
-            FormalWebUserEvent::NavigationCompleted(NavigationCompleted {
+        let notify_result = self.host.send_msg(EmbedderMsg::NavigationCompleted(
+            NavigationCompleted {
                 webview_id: WebviewId(pending.traversable_id),
                 status: NavigationCompletion::Committed {
                     url: finalized.url.clone(),
                 },
-            }),
-        );
+            },
+        ));
 
         if let Some(previous_document_id) = pending.previous_document_id {
             if previous_document_id != finalized.document_id {
@@ -2816,7 +2873,7 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
                     NavigationCompleted {
                         webview_id: WebviewId(pending.traversable_id),
                         status: NavigationCompletion::Aborted { message: error },
@@ -2834,7 +2891,7 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
                     NavigationCompleted {
                         webview_id: WebviewId(pending.traversable_id),
                         status: NavigationCompletion::Aborted { message: error },
@@ -2910,7 +2967,7 @@ impl UserAgentWorker {
                 );
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
                     NavigationCompleted {
                         webview_id: WebviewId(pending.traversable_id),
                         status: NavigationCompletion::Aborted { message: error },
@@ -2927,7 +2984,7 @@ impl UserAgentWorker {
         };
         self.state
             .set_navigable_ongoing_navigation(pending.traversable_id, None);
-        let _ = self.user_event_dispatcher.send(FormalWebUserEvent::NavigationCompleted(
+        let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
             NavigationCompleted {
                 webview_id: WebviewId(pending.traversable_id),
                 status: NavigationCompletion::Aborted {
