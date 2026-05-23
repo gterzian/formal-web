@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[[bin]]
+name = "formal-web-embedder"
+path = "src/main.rs"
+
 [dependencies]
 anyrender = { version = "0.10", features = ["serde"] }
 anyrender_vello = "0.10.1"
@@ -14,6 +18,7 @@ blitz-dom = { path = "../vendor/blitz/packages/blitz-dom", default-features = fa
 blitz-html = { path = "../vendor/blitz/packages/blitz-html", default-features = false }
 blitz-paint = { path = "../vendor/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
+clap = { version = "4.5", features = ["derive"] }
 cursor-icon = "1"
 html5ever = "0.37"
 ipc-channel = "0.21"
@@ -24,5 +29,6 @@ peniko = "0.6"
 png = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+verification = { path = "../verification" }
 winit = "0.30"
 webview = { path = "../webview" }

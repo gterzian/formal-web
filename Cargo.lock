@@ -1187,6 +1187,7 @@ dependencies = [
  "blitz-html",
  "blitz-paint",
  "blitz-traits",
+ "clap",
  "cursor-icon",
  "html5ever 0.37.1",
  "ipc-channel",
@@ -1197,6 +1198,7 @@ dependencies = [
  "png 0.17.16",
  "serde",
  "serde_json",
+ "verification",
  "webview",
  "winit",
 ]
@@ -4878,7 +4880,6 @@ version = "0.1.0"
 dependencies = [
  "blitz-traits",
  "crossbeam-channel",
- "embedder",
  "ipc-channel",
  "ipc_messages",
  "psl",
@@ -4886,7 +4887,6 @@ dependencies = [
  "url",
  "uuid",
  "verification",
- "webview",
 ]
 
 [[package]]
@@ -5348,6 +5348,8 @@ dependencies = [
  "peniko",
  "serde",
  "serde_json",
+ "user_agent",
+ "verification",
 ]
 
 [[package]]

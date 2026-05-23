@@ -34,6 +34,8 @@ const HTTP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REPORT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const RUNNER_ARTIFACT_ROOT: &str = "scratchpad/wpt-runner";
 const WPTSERVE_PID_REGISTRY: &str = "wptserve-pids.txt";
+const RUNNER_BINARY_NAME: &str = "formal-web-wpt";
+const BROWSER_BINARY_NAME: &str = "formal-web-embedder";
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -926,7 +928,7 @@ impl SharedTestRunner {
     ) -> Result<Self, String> {
         let base_url = server.base_url();
         let startup_url = format!("{base_url}/common/blank.html");
-        let executable = ensure_runner_executable(build_profile)?;
+        let executable = ensure_browser_executable(build_profile)?;
         let port = pick_unused_port()?;
         let browser =
             BrowserProcess::start(&executable, port, Some(&startup_url), headless, verify)?;
@@ -1985,26 +1987,28 @@ fn same_file_path(left: &Path, right: &Path) -> bool {
 }
 
 fn runner_executable_path(build_profile: RunnerBuildProfile) -> Result<PathBuf, String> {
-    let current_executable = std::env::current_exe()
-        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
-    let executable_name = current_executable
-        .file_name()
-        .ok_or_else(|| String::from("current executable path was missing a file name"))?;
     Ok(repo_root()
         .join("target")
         .join(build_profile.target_dir_name())
-        .join(executable_name))
+        .join(format!("{RUNNER_BINARY_NAME}{}", std::env::consts::EXE_SUFFIX)))
 }
 
-fn ensure_runner_executable(build_profile: RunnerBuildProfile) -> Result<PathBuf, String> {
-    let executable = runner_executable_path(build_profile)?;
+fn browser_executable_path(build_profile: RunnerBuildProfile) -> PathBuf {
+    repo_root()
+        .join("target")
+        .join(build_profile.target_dir_name())
+        .join(format!("{BROWSER_BINARY_NAME}{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn ensure_browser_executable(build_profile: RunnerBuildProfile) -> Result<PathBuf, String> {
+    let executable = browser_executable_path(build_profile);
 
     build_runner_executable(build_profile)?;
     if executable.exists() {
         Ok(executable)
     } else {
         Err(format!(
-            "expected {} WPT runner executable at {}, but it was not produced",
+            "expected {} browser executable at {}, but it was not produced",
             build_profile.as_str(),
             executable.display()
         ))
@@ -2012,39 +2016,47 @@ fn ensure_runner_executable(build_profile: RunnerBuildProfile) -> Result<PathBuf
 }
 
 fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), String> {
-    let mut command = Command::new("cargo");
-    command.arg("build");
-    if let Some(flag) = build_profile.cargo_profile_flag() {
-        command.arg(flag);
+    let repo_root = repo_root();
+    let target_dir = repo_root.join("target");
+    let builds = [
+        (repo_root.join("tests/wpt_runner/Cargo.toml"), RUNNER_BINARY_NAME),
+        (repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME),
+        (repo_root.join("content/Cargo.toml"), "formal-web-content"),
+        (repo_root.join("net/Cargo.toml"), "formal-web-net"),
+    ];
+
+    for (manifest_path, binary_name) in builds {
+        let mut command = Command::new("cargo");
+        command.arg("build");
+        if let Some(flag) = build_profile.cargo_profile_flag() {
+            command.arg(flag);
+        }
+        command
+            .arg("--manifest-path")
+            .arg(&manifest_path)
+            .arg("--target-dir")
+            .arg(&target_dir)
+            .arg("--bin")
+            .arg(binary_name)
+            .current_dir(&repo_root);
+
+        let status = command.status().map_err(|error| {
+            format!(
+                "failed to start cargo build for {} binary {}: {error}",
+                build_profile.as_str(),
+                binary_name,
+            )
+        })?;
+        if !status.success() {
+            return Err(format!(
+                "cargo build for {} binary {} exited with status {status}",
+                build_profile.as_str(),
+                binary_name,
+            ));
+        }
     }
-    command
-        .arg("-p")
-        .arg("formal-web")
-        .arg("--bin")
-        .arg("formal-web")
-        .arg("-p")
-        .arg("content")
-        .arg("--bin")
-        .arg("formal-web-content")
-        .arg("-p")
-        .arg("net")
-        .arg("--bin")
-        .arg("formal-web-net");
-    command.current_dir(repo_root());
-    let status = command.status().map_err(|error| {
-        format!(
-            "failed to start cargo build for {} WPT runner and sidecar binaries: {error}",
-            build_profile.as_str()
-        )
-    })?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "cargo build for {} WPT runner and sidecar binaries exited with status {status}",
-            build_profile.as_str()
-        ))
-    }
+
+    Ok(())
 }
 
 fn wptserve_pid_registry_path() -> PathBuf {
