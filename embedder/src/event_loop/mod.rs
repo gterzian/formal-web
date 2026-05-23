@@ -1,16 +1,13 @@
-#[path = "headless.rs"]
 mod headless;
-#[path = "winit.rs"]
-mod winit_integration;
-#[path = "windowed/mod.rs"]
+mod winit;
 mod windowed;
 
 use self::headless::HeadlessEmbedderApp;
 use self::windowed::HeadedEmbedderApp;
-pub use self::winit_integration::{
+pub use self::winit::{
     EventLoopOptions, clear_event_loop_options, set_event_loop_options,
 };
-use self::winit_integration::UserEventDispatcher;
+use self::winit::UserEventDispatcher;
 use automation::{
     AutomationCommand, AutomationSnapshot, AutomationVisibleFrameViewport,
 };
@@ -25,8 +22,8 @@ use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Duration;
 use verification::TraceSender;
 use webview::{Embedder, EmbedderMsg, WebviewProvider};
-use winit::application::ApplicationHandler;
-use winit::event_loop::{EventLoop, EventLoopProxy};
+use ::winit::application::ApplicationHandler;
+use ::winit::event_loop::{EventLoop, EventLoopProxy};
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
 

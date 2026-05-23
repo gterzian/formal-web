@@ -1,4 +1,3 @@
-#[path = "windowed/chrome.rs"]
 mod chrome;
 
 use super::{
@@ -8,7 +7,7 @@ use super::{
     startup_destination_url, write_clipboard_text,
 };
 use self::chrome::{ChromeAction, ChromeUi, ChromeViewState};
-use super::winit_integration::{
+use super::winit::{
     WinitShellProvider, event_loop_options, touch_pointer_details, viewport_of_snapshot,
     viewport_snapshot_for_window, winit_ime_to_blitz, winit_key_event_to_blitz,
     winit_modifiers_to_kbt_modifiers,
@@ -27,13 +26,13 @@ use serde_json::Value;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use webview::WebviewProvider;
-use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, PhysicalPosition};
-use winit::event::{
+use ::winit::application::ApplicationHandler;
+use ::winit::dpi::{LogicalPosition, PhysicalPosition};
+use ::winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
-use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowAttributes, WindowId};
+use ::winit::event_loop::ActiveEventLoop;
+use ::winit::window::{Window, WindowAttributes, WindowId};
 
 pub(super) struct HeadedEmbedderApp {
     pub(super) window: Option<Arc<Window>>,

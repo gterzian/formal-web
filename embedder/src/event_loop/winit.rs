@@ -6,14 +6,14 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 use std::sync::{Arc, LazyLock, Mutex};
-use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent};
-use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{
+use ::winit::dpi::{LogicalPosition, LogicalSize};
+use ::winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent};
+use ::winit::event_loop::EventLoopProxy;
+use ::winit::keyboard::{
     Key as WinitKey, KeyCode as WinitKeyCode, KeyLocation as WinitKeyLocation,
     ModifiersState as WinitModifiersState, NamedKey, PhysicalKey,
 };
-use winit::window::{Cursor, Window};
+use ::winit::window::{Cursor, Window};
 
 #[derive(Clone, Default)]
 pub struct EventLoopOptions {
@@ -119,17 +119,17 @@ impl ShellProvider for WinitShellProvider {
     }
 }
 
-fn theme_to_color_scheme(theme: winit::window::Theme) -> ColorScheme {
+fn theme_to_color_scheme(theme: ::winit::window::Theme) -> ColorScheme {
     match theme {
-        winit::window::Theme::Light => ColorScheme::Light,
-        winit::window::Theme::Dark => ColorScheme::Dark,
+        ::winit::window::Theme::Light => ColorScheme::Light,
+        ::winit::window::Theme::Dark => ColorScheme::Dark,
     }
 }
 
 pub fn viewport_snapshot_for_window(window: &Window) -> (u32, u32, f32, ColorScheme) {
     let size = window.inner_size();
     let scale = window.scale_factor() as f32;
-    let color_scheme = theme_to_color_scheme(window.theme().unwrap_or(winit::window::Theme::Light));
+    let color_scheme = theme_to_color_scheme(window.theme().unwrap_or(::winit::window::Theme::Light));
     (size.width, size.height, scale, color_scheme)
 }
 
@@ -147,7 +147,7 @@ pub fn winit_ime_to_blitz(event: Ime) -> BlitzImeEvent {
     }
 }
 
-pub fn touch_pointer_details(force: Option<winit::event::Force>) -> PointerDetails {
+pub fn touch_pointer_details(force: Option<::winit::event::Force>) -> PointerDetails {
     PointerDetails {
         pressure: force.map(|value| value.normalized()).unwrap_or(0.0),
         ..PointerDetails::default()

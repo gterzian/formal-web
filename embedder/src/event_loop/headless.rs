@@ -4,7 +4,7 @@ use super::{
     parse_child_navigable_host_target, read_clipboard_text, startup_destination_url,
     update_window_viewport_snapshot, write_clipboard_text,
 };
-use super::winit_integration::event_loop_options;
+use super::winit::event_loop_options;
 use automation::{AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport};
 use blitz_traits::events::{
     BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
@@ -16,10 +16,10 @@ use keyboard_types::Modifiers as KeyboardModifiers;
 use serde_json::Value;
 use std::time::Duration;
 use webview::WebviewProvider;
-use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
-use winit::event_loop::ActiveEventLoop;
-use winit::window::WindowId;
+use ::winit::application::ApplicationHandler;
+use ::winit::event::WindowEvent;
+use ::winit::event_loop::ActiveEventLoop;
+use ::winit::window::WindowId;
 
 const HEADLESS_VIEWPORT_WIDTH: u32 = 800;
 const HEADLESS_VIEWPORT_HEIGHT: u32 = 600;

@@ -17,7 +17,7 @@ use ipc_messages::{
     },
 };
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -37,19 +37,50 @@ pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, Stri
     let executable_directory = current_executable
         .parent()
         .ok_or_else(|| String::from("failed to resolve executable directory"))?;
-    let sidecar_executable = executable_directory.join(format!(
-        "{binary_name}{}",
-        std::env::consts::EXE_SUFFIX
-    ));
+    let executable_name = format!("{binary_name}{}", std::env::consts::EXE_SUFFIX);
 
-    if sidecar_executable.is_file() {
-        Ok(sidecar_executable)
-    } else {
-        Err(format!(
-            "failed to locate sidecar executable {binary_name} at {}",
-            sidecar_executable.display()
-        ))
+    for candidate in sidecar_search_paths(executable_directory, &executable_name) {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
     }
+
+    let attempted_paths = sidecar_search_paths(executable_directory, &executable_name)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Err(format!(
+        "failed to locate sidecar executable {binary_name}; looked in: {attempted_paths}"
+    ))
+}
+
+fn sidecar_search_paths(executable_directory: &Path, executable_name: &str) -> Vec<PathBuf> {
+    let mut search_paths = vec![executable_directory.join(executable_name)];
+
+    let Some(profile_dir_name) = executable_directory.file_name().and_then(|name| name.to_str()) else {
+        return search_paths;
+    };
+    if !matches!(profile_dir_name, "debug" | "release") {
+        return search_paths;
+    }
+
+    if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        search_paths.push(PathBuf::from(target_dir).join(profile_dir_name).join(executable_name));
+    }
+
+    for ancestor in executable_directory.ancestors().skip(1) {
+        search_paths.push(
+            ancestor
+                .join("target")
+                .join(profile_dir_name)
+                .join(executable_name),
+        );
+    }
+
+    search_paths.dedup();
+    search_paths
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
