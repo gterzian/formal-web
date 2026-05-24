@@ -6,6 +6,7 @@ use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, CreateChildNavigableRequest,
     ColorScheme as MessageColorScheme, Command as ContentCommand, ElementClickResult,
     Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
+    WebviewProviderMessage,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(unix)]
@@ -18,7 +19,7 @@ use verification::TraceSender;
 
 use crate::fetch::FetchCommand;
 use crate::timer::{TimerCommand, TimerCompletion};
-use crate::{Embedder, EmbedderMsg, UserAgentCommand, sidecar_executable_path};
+use crate::{Embedder, UserAgentCommand, sidecar_executable_path};
 
 /// graceful shutdown of the content process owned by one HTML event loop.
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
@@ -174,6 +175,8 @@ struct EventLoopWorker {
     command_receiver: Receiver<EventLoopCommand>,
     /// Host integration for paint, clipboard, and initial viewport state.
     host: Arc<dyn Embedder>,
+    /// Sender for queued webview-provider updates drained by embedder sync calls.
+    webview_provider_sender: Sender<WebviewProviderMessage>,
     /// Deferred shutdown reply completed after the content process acknowledges shutdown.
     stop_reply: Option<Sender<Result<(), String>>>,
     /// flag that mirrors the single in-flight task step in the HTML event loop
@@ -212,6 +215,7 @@ impl EventLoopWorker {
         fetch_command_sender: Sender<FetchCommand>,
         timer_command_sender: Sender<TimerCommand>,
         host: Arc<dyn Embedder>,
+        webview_provider_sender: Sender<WebviewProviderMessage>,
         command_receiver: Receiver<EventLoopCommand>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
@@ -260,6 +264,7 @@ impl EventLoopWorker {
             click_waiters: HashMap::new(),
             command_receiver,
             host,
+            webview_provider_sender,
             stop_reply: None,
             awaiting_task_completion: false,
             pending_task_commands: VecDeque::new(),
@@ -577,7 +582,15 @@ impl EventLoopWorker {
                     snapshot.viewport_width,
                     snapshot.viewport_height,
                 ));
-                let _ = self.host.send_msg(EmbedderMsg::Paint(snapshot));
+                if let Err(error) = self
+                    .webview_provider_sender
+                    .send(WebviewProviderMessage::PaintFrame(snapshot))
+                {
+                    eprintln!("failed to enqueue webview-provider paint frame: {error}");
+                } else {
+                    let _ = self.host.webview_provider_sync();
+                    let _ = self.host.new_frame_rendered();
+                }
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
@@ -724,6 +737,7 @@ pub fn spawn_event_loop_entry(
     fetch_command_sender: Sender<FetchCommand>,
     timer_command_sender: Sender<TimerCommand>,
     host: Arc<dyn Embedder>,
+    webview_provider_sender: Sender<WebviewProviderMessage>,
     trace_sender: Option<TraceSender>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();
@@ -734,6 +748,7 @@ pub fn spawn_event_loop_entry(
         fetch_command_sender,
         timer_command_sender,
         host,
+        webview_provider_sender,
         command_receiver,
         trace_sender,
     )?;

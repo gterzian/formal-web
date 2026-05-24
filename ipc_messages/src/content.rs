@@ -625,6 +625,19 @@ impl PaintFrame {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum WebviewProviderMessage {
+    PaintFrame(PaintFrame),
+    RegisterChildNavigableHost {
+        child_webview_id: WebviewId,
+        parent_traversable_id: WebviewId,
+        content_frame_id: FrameId,
+    },
+    NewWebview {
+        webview_id: WebviewId,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetTraceSender(Option<TraceSender>),

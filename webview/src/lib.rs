@@ -5,9 +5,10 @@ use anyrender::{PaintScene, Scene as RenderScene};
 use blitz_traits::events::UiEvent;
 use blitz_traits::shell::ColorScheme;
 use compositor::Compositor;
+use crossbeam_channel::{Receiver, unbounded};
 use ipc_messages::content::{
     FontTransportReceiver, FrameId, NavigableId, NavigateRequest, PaintFrame,
-    UserNavigationInvolvement, WebviewId,
+    UserNavigationInvolvement, WebviewId, WebviewProviderMessage,
 };
 use kurbo::Affine;
 use std::env;
@@ -19,7 +20,7 @@ use user_agent::UserAgent;
 use verification::TraceSender;
 
 pub use compositor::VisibleFrameViewport;
-pub use user_agent::{Embedder, EmbedderMsg, NavigationCompleted, NavigationCompletion};
+pub use user_agent::{Embedder, NavigationCompleted, NavigationCompletion};
 
 #[derive(Clone)]
 pub struct WebviewState {
@@ -83,6 +84,7 @@ pub struct WebviewProvider {
     published_child_viewports: HashMap<WebviewId, PublishedChildViewport>,
     font_receiver: FontTransportReceiver,
     viewport_snapshot: Option<(u32, u32, f32, ColorScheme)>,
+    provider_message_receiver: Receiver<WebviewProviderMessage>,
     embedder: Arc<dyn Embedder>,
     user_agent: UserAgent,
 }
@@ -92,7 +94,8 @@ impl WebviewProvider {
         embedder: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
-        let user_agent = UserAgent::start(embedder.clone(), trace_sender)?;
+        let (provider_message_sender, provider_message_receiver) = unbounded();
+        let user_agent = UserAgent::start(embedder.clone(), provider_message_sender, trace_sender)?;
 
         Ok(Self {
             webviews: HashMap::new(),
@@ -101,9 +104,40 @@ impl WebviewProvider {
             published_child_viewports: HashMap::new(),
             font_receiver: FontTransportReceiver::default(),
             viewport_snapshot: None,
+            provider_message_receiver,
             embedder,
             user_agent,
         })
+    }
+
+    pub fn sync_pending_messages(&mut self) -> Result<(), String> {
+        let message = self
+            .provider_message_receiver
+            .recv()
+            .map_err(|error| format!("failed to receive webview provider message: {error}"))?;
+        self.handle_provider_message(message)
+    }
+
+    fn handle_provider_message(&mut self, message: WebviewProviderMessage) -> Result<(), String> {
+        match message {
+            WebviewProviderMessage::PaintFrame(frame) => self.on_paint_frame(frame),
+            WebviewProviderMessage::RegisterChildNavigableHost {
+                child_webview_id,
+                parent_traversable_id,
+                content_frame_id,
+            } => {
+                self.register_child_navigable_host(
+                    child_webview_id,
+                    parent_traversable_id,
+                    content_frame_id,
+                );
+                Ok(())
+            }
+            WebviewProviderMessage::NewWebview { webview_id } => {
+                self.on_new_webview(webview_id);
+                Ok(())
+            }
+        }
     }
 
     pub fn start(&self, startup_url: Option<&str>) -> Result<(), String> {
@@ -333,7 +367,7 @@ impl WebviewProvider {
         state.focused_frame_id = None;
     }
 
-    pub fn on_new_top_level_traversable(&mut self, webview_id: WebviewId) {
+    pub fn on_new_webview(&mut self, webview_id: WebviewId) {
         self.webviews.entry(webview_id).or_default();
     }
 
