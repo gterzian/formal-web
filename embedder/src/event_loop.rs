@@ -1,8 +1,8 @@
-#[path = "headless.rs"]
+#[path = "event_loop/headless.rs"]
 mod headless;
-#[path = "winit.rs"]
+#[path = "event_loop/winit.rs"]
 mod winit_integration;
-#[path = "windowed/mod.rs"]
+#[path = "event_loop/windowed/mod.rs"]
 mod windowed;
 
 use self::headless::HeadlessEmbedderApp;
@@ -74,6 +74,15 @@ impl Embedder for EventLoopEmbedder {
             EmbedderMsg::NewTopLevelTraversable(webview_id, target_name) => {
                 FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name)
             }
+            EmbedderMsg::RegisterChildNavigableHost {
+                child_webview_id,
+                parent_traversable_id,
+                content_frame_id,
+            } => FormalWebUserEvent::RegisterChildNavigableHost {
+                child_webview_id,
+                parent_traversable_id,
+                content_frame_id,
+            },
         };
         self.dispatcher.send(event)
     }
@@ -109,6 +118,11 @@ pub enum FormalWebUserEvent {
     NavigationRequested { webview_id: WebviewId, destination_url: String },
     NavigationCompleted(NavigationCompleted),
     NewTopLevelTraversable(WebviewId, String),
+    RegisterChildNavigableHost {
+        child_webview_id: WebviewId,
+        parent_traversable_id: WebviewId,
+        content_frame_id: ipc_messages::content::FrameId,
+    },
     Automation(AutomationCommand),
     ClipboardRead {
         reply: mpsc::Sender<Result<String, String>>,
@@ -123,12 +137,6 @@ pub enum FormalWebUserEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingNavigation {
     url: String,
-}
-
-#[derive(Clone, Copy)]
-struct ChildNavigableHostTarget {
-    parent_traversable_id: WebviewId,
-    content_frame_id: ipc_messages::content::FrameId,
 }
 
 #[derive(Default)]
@@ -199,16 +207,6 @@ impl BrowserState {
 
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
     LazyLock::new(|| Mutex::new(None));
-
-fn parse_child_navigable_host_target(target_name: &str) -> Option<ChildNavigableHostTarget> {
-    let (parent_traversable_id, _content_navigable_id, content_frame_id) =
-        ipc_messages::content::parse_iframe_target_name(target_name)?;
-
-    Some(ChildNavigableHostTarget {
-        parent_traversable_id: WebviewId(parent_traversable_id),
-        content_frame_id,
-    })
-}
 
 pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
     with_event_loop_proxy(|proxy| match proxy {
