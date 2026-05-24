@@ -3,8 +3,8 @@ mod chrome;
 use super::{
     BrowserState, FormalWebUserEvent, NavigationCompleted, NavigationCompletion,
     PendingNavigation, automation_screenshot_png, automation_visible_frame_viewports,
-    normalize_browser_destination, parse_child_navigable_host_target, read_clipboard_text,
-    startup_destination_url, write_clipboard_text,
+    normalize_browser_destination, read_clipboard_text, startup_destination_url,
+    write_clipboard_text,
 };
 use self::chrome::{ChromeAction, ChromeUi, ChromeViewState};
 use super::winit_integration::{
@@ -953,25 +953,27 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadedEmbedderApp {
             FormalWebUserEvent::NavigationCompleted(completed) => {
                 self.handle_navigation_completed(completed);
             }
-            FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name) => {
-                if let Some(child_navigable_host) =
-                    parse_child_navigable_host_target(&target_name)
-                {
-                    if let Some(provider) = self.provider.as_mut() {
-                        provider.register_child_navigable_host(
-                            webview_id,
-                            child_navigable_host.parent_traversable_id,
-                            child_navigable_host.content_frame_id,
-                        );
-                    }
-                } else {
-                    self.has_top_level_traversable = true;
-                    self.current_webview_id = Some(webview_id);
-                    if let Some(provider) = self.provider.as_mut() {
-                        provider.on_new_top_level_traversable(webview_id);
-                    }
-                    self.request_visible_redraw("request_redraw");
+            FormalWebUserEvent::RegisterChildNavigableHost {
+                child_webview_id,
+                parent_traversable_id,
+                content_frame_id,
+            } => {
+                if let Some(provider) = self.provider.as_mut() {
+                    provider.register_child_navigable_host(
+                        child_webview_id,
+                        parent_traversable_id,
+                        content_frame_id,
+                    );
                 }
+            }
+            FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name) => {
+                let _ = target_name;
+                self.has_top_level_traversable = true;
+                self.current_webview_id = Some(webview_id);
+                if let Some(provider) = self.provider.as_mut() {
+                    provider.on_new_top_level_traversable(webview_id);
+                }
+                self.request_visible_redraw("request_redraw");
             }
             FormalWebUserEvent::Automation(command) => {
                 self.with_automation_controller(|automation, app| {

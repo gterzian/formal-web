@@ -104,6 +104,11 @@ pub enum EmbedderMsg {
     },
     NavigationCompleted(NavigationCompleted),
     NewTopLevelTraversable(WebviewId, String),
+    RegisterChildNavigableHost {
+        child_webview_id: WebviewId,
+        parent_traversable_id: WebviewId,
+        content_frame_id: FrameId,
+    },
 }
 
 pub trait Embedder: Send + Sync {
@@ -1695,10 +1700,11 @@ impl UserAgentWorker {
             .traversable_ids
             .insert(traversable_id);
 
-        self.host.send_msg(EmbedderMsg::NewTopLevelTraversable(
-            WebviewId(traversable_id),
-            target_name,
-        ))?;
+        self.host.send_msg(EmbedderMsg::RegisterChildNavigableHost {
+            child_webview_id: WebviewId(traversable_id),
+            parent_traversable_id: WebviewId(parent_navigable_id),
+            content_frame_id,
+        })?;
 
         Ok(traversable_id)
     }

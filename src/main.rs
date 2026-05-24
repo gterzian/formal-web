@@ -107,8 +107,9 @@ fn run_embedder_webdriver(verify: bool, args: automation::WebDriverArgs) -> Resu
         embedder_args.push(OsString::from("--startup-url"));
         embedder_args.push(OsString::from(startup_url));
     }
-    embedder_args.push(OsString::from("--exit-on-session-delete"));
-    embedder_args.push(OsString::from(args.exit_on_session_delete.to_string()));
+    if args.exit_on_session_delete {
+        embedder_args.push(OsString::from("--exit-on-session-delete"));
+    }
     run_embedder_process(embedder_args)
 }
 

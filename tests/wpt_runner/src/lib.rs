@@ -36,6 +36,7 @@ const RUNNER_ARTIFACT_ROOT: &str = "scratchpad/wpt-runner";
 const WPTSERVE_PID_REGISTRY: &str = "wptserve-pids.txt";
 const RUNNER_BINARY_NAME: &str = "formal-web-wpt";
 const BROWSER_BINARY_NAME: &str = "formal-web-embedder";
+const WPT_PREBUILD_TARGET_DIR: &str = "wpt-prebuild";
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2023,6 +2024,7 @@ fn ensure_browser_executable(build_profile: RunnerBuildProfile) -> Result<PathBu
 fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), String> {
     let repo_root = repo_root();
     let target_dir = repo_root.join("target");
+    let prebuild_target_root = target_dir.join(WPT_PREBUILD_TARGET_DIR);
     let builds = [
         (repo_root.join("tests/wpt_runner/Cargo.toml"), RUNNER_BINARY_NAME),
         (repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME),
@@ -2030,7 +2032,16 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
         (repo_root.join("net/Cargo.toml"), "formal-web-net"),
     ];
 
+    let target_profile_dir = target_dir.join(build_profile.target_dir_name());
+    fs::create_dir_all(&target_profile_dir).map_err(|error| {
+        format!(
+            "failed to create target profile directory {}: {error}",
+            target_profile_dir.display()
+        )
+    })?;
+
     for (manifest_path, binary_name) in builds {
+        let isolated_target_dir = prebuild_target_root.join(binary_name);
         let mut command = Command::new("cargo");
         command.arg("build");
         if let Some(flag) = build_profile.cargo_profile_flag() {
@@ -2040,7 +2051,7 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
             .arg("--manifest-path")
             .arg(&manifest_path)
             .arg("--target-dir")
-            .arg(&target_dir)
+            .arg(&isolated_target_dir)
             .arg("--bin")
             .arg(binary_name)
             .current_dir(&repo_root);
@@ -2059,7 +2070,55 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
                 binary_name,
             ));
         }
+
+        copy_built_binary(
+            &isolated_target_dir.join(build_profile.target_dir_name()),
+            &target_profile_dir,
+            binary_name,
+        )?;
     }
+
+    Ok(())
+}
+
+fn copy_built_binary(
+    source_profile_dir: &Path,
+    target_profile_dir: &Path,
+    binary_name: &str,
+) -> Result<(), String> {
+    let executable_name = format!("{binary_name}{}", std::env::consts::EXE_SUFFIX);
+    let source_path = source_profile_dir.join(&executable_name);
+    if !source_path.is_file() {
+        return Err(format!(
+            "expected built executable {} at {}",
+            executable_name,
+            source_path.display()
+        ));
+    }
+
+    let target_path = target_profile_dir.join(&executable_name);
+    fs::copy(&source_path, &target_path).map_err(|error| {
+        format!(
+            "failed to copy executable from {} to {}: {error}",
+            source_path.display(),
+            target_path.display()
+        )
+    })?;
+
+    let permissions = fs::metadata(&source_path)
+        .map_err(|error| {
+            format!(
+                "failed to read executable metadata for {}: {error}",
+                source_path.display()
+            )
+        })?
+        .permissions();
+    fs::set_permissions(&target_path, permissions).map_err(|error| {
+        format!(
+            "failed to preserve executable permissions on {}: {error}",
+            target_path.display()
+        )
+    })?;
 
     Ok(())
 }

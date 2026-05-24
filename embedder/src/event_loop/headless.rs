@@ -1,10 +1,10 @@
 use super::{
     BrowserState, FormalWebUserEvent, NavigationCompleted, NavigationCompletion,
     PendingNavigation, automation_screenshot_png, automation_visible_frame_viewports,
-    parse_child_navigable_host_target, read_clipboard_text, startup_destination_url,
-    update_window_viewport_snapshot, write_clipboard_text,
+    read_clipboard_text, startup_destination_url, update_window_viewport_snapshot,
+    write_clipboard_text,
 };
-use super::winit::event_loop_options;
+use super::winit_integration::event_loop_options;
 use automation::{AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport};
 use blitz_traits::events::{
     BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
@@ -400,26 +400,29 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
             FormalWebUserEvent::NavigationCompleted(completed) => {
                 self.handle_navigation_completed(completed);
             }
+            FormalWebUserEvent::RegisterChildNavigableHost {
+                child_webview_id,
+                parent_traversable_id,
+                content_frame_id,
+            } => {
+                if let Some(provider) = self.provider.as_mut() {
+                    provider.register_child_navigable_host(
+                        child_webview_id,
+                        parent_traversable_id,
+                        content_frame_id,
+                    );
+                }
+            }
             FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name) => {
-                if let Some(child_navigable_host) = parse_child_navigable_host_target(&target_name)
-                {
-                    if let Some(provider) = self.provider.as_mut() {
-                        provider.register_child_navigable_host(
-                            webview_id,
-                            child_navigable_host.parent_traversable_id,
-                            child_navigable_host.content_frame_id,
-                        );
-                    }
-                } else {
-                    self.has_top_level_traversable = true;
-                    self.current_webview_id = Some(webview_id);
-                    if let Some(provider) = self.provider.as_mut() {
-                        provider.on_new_top_level_traversable(webview_id);
-                    }
-                    self.apply_viewport_snapshot();
-                    if let Some(provider) = self.provider.as_ref() {
-                        provider.note_rendering_opportunity(webview_id, "request_redraw");
-                    }
+                let _ = target_name;
+                self.has_top_level_traversable = true;
+                self.current_webview_id = Some(webview_id);
+                if let Some(provider) = self.provider.as_mut() {
+                    provider.on_new_top_level_traversable(webview_id);
+                }
+                self.apply_viewport_snapshot();
+                if let Some(provider) = self.provider.as_ref() {
+                    provider.note_rendering_opportunity(webview_id, "request_redraw");
                 }
             }
             FormalWebUserEvent::Automation(command) => {
