@@ -11,9 +11,9 @@ use ipc_messages::{
         DispatchEventEntry, DocumentFetchId, DocumentId, EventLoopId,
         FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
         FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse,
-        NavigableId, NavigateRequest, NavigationFetchId, NavigationId, PaintFrame,
-        UserNavigationInvolvement, WebviewId, WindowTimerKey, iframe_target_name,
-        parse_iframe_target_name,
+        NavigableId, NavigateRequest, NavigationFetchId, NavigationId,
+        UserNavigationInvolvement, WebviewId, WebviewProviderMessage, WindowTimerKey,
+        iframe_target_name, parse_iframe_target_name,
     },
 };
 use std::collections::{HashMap, HashSet};
@@ -95,24 +95,12 @@ pub struct NavigationCompleted {
     pub status: NavigationCompletion,
 }
 
-#[derive(Clone, Debug)]
-pub enum EmbedderMsg {
-    Paint(PaintFrame),
-    NavigationRequested {
-        webview_id: WebviewId,
-        destination_url: String,
-    },
-    NavigationCompleted(NavigationCompleted),
-    NewTopLevelTraversable(WebviewId, String),
-    RegisterChildNavigableHost {
-        child_webview_id: WebviewId,
-        parent_traversable_id: WebviewId,
-        content_frame_id: FrameId,
-    },
-}
-
 pub trait Embedder: Send + Sync {
-    fn send_msg(&self, msg: EmbedderMsg) -> Result<(), String>;
+    fn navigation_requested(&self, webview_id: WebviewId, destination_url: String) -> Result<(), String>;
+    fn navigation_completed(&self, completed: NavigationCompleted) -> Result<(), String>;
+    fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String>;
+    fn webview_provider_sync(&self) -> Result<(), String>;
+    fn new_frame_rendered(&self) -> Result<(), String>;
     fn request_redraw(&self, webview_id: WebviewId);
     fn viewport_scale_factor(&self) -> f32;
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
@@ -858,6 +846,7 @@ impl UserAgent {
     /// spawning the dedicated user-agent thread owned by the webview layer.
     pub fn start(
         host: Arc<dyn Embedder>,
+        webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
@@ -865,6 +854,7 @@ impl UserAgent {
             command_sender.clone(),
             command_receiver,
             host,
+            webview_provider_sender,
             trace_sender,
         );
         let join_handle = thread::Builder::new()
@@ -1178,6 +1168,8 @@ struct UserAgentWorker {
     timer_join_handle: Option<JoinHandle<()>>,
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
+    /// Sender for webview-provider updates that must be drained by host sync calls.
+    webview_provider_sender: Sender<WebviewProviderMessage>,
     /// Trace logger for the Navigation TLA+ spec.
     navigation_tracer: TLATracer,
     /// Sender cloned into child workers and sidecars when TLA tracing is enabled.
@@ -1193,6 +1185,7 @@ impl UserAgentWorker {
         user_agent_command_sender: Sender<UserAgentCommand>,
         command_receiver: Receiver<UserAgentCommand>,
         host: Arc<dyn Embedder>,
+        webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
@@ -1231,6 +1224,7 @@ impl UserAgentWorker {
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
             host,
+            webview_provider_sender,
             navigation_tracer: TLATracer::new(
                 "Navigation",
                 "formal-web:user-agent",
@@ -1428,6 +1422,7 @@ impl UserAgentWorker {
             self.fetch_command_sender.clone(),
             self.timer_command_sender.clone(),
             self.host.clone(),
+            self.webview_provider_sender.clone(),
             self.trace_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
@@ -1576,11 +1571,15 @@ impl UserAgentWorker {
         // openerNavigableForWebDriver.
         // The embedder notification is the model's observable hook for a new top-level
         // traversable.
-        self.host
-            .send_msg(EmbedderMsg::NewTopLevelTraversable(
-                WebviewId(traversable_id),
-                target_name,
-            ))?;
+        self.host.new_webview(WebviewId(traversable_id), target_name)?;
+        self.webview_provider_sender
+            .send(WebviewProviderMessage::NewWebview {
+                webview_id: WebviewId(traversable_id),
+            })
+            .map_err(|error| {
+                format!("failed to enqueue webview-provider new-webview message: {error}")
+            })?;
+        self.host.webview_provider_sync()?;
         // Step 13: Return traversable.
         Ok(traversable_id)
     }
@@ -1700,11 +1699,18 @@ impl UserAgentWorker {
             .traversable_ids
             .insert(traversable_id);
 
-        self.host.send_msg(EmbedderMsg::RegisterChildNavigableHost {
-            child_webview_id: WebviewId(traversable_id),
-            parent_traversable_id: WebviewId(parent_navigable_id),
-            content_frame_id,
-        })?;
+        self.webview_provider_sender
+            .send(WebviewProviderMessage::RegisterChildNavigableHost {
+                child_webview_id: WebviewId(traversable_id),
+                parent_traversable_id: WebviewId(parent_navigable_id),
+                content_frame_id,
+            })
+            .map_err(|error| {
+                format!(
+                    "failed to enqueue webview-provider child-host registration message: {error}"
+                )
+            })?;
+        self.host.webview_provider_sync()?;
 
         Ok(traversable_id)
     }
@@ -2246,10 +2252,10 @@ impl UserAgentWorker {
                 .map(|n| n.parent_navigable_id.is_none())
                 .unwrap_or(true);
             if is_top_level {
-                self.host.send_msg(EmbedderMsg::NavigationRequested {
-                    webview_id: WebviewId(traversable_id),
-                    destination_url: request.destination_url,
-                })?;
+                self.host.navigation_requested(
+                    WebviewId(traversable_id),
+                    request.destination_url,
+                )?;
             }
             Ok(())
         })();
@@ -2423,14 +2429,12 @@ impl UserAgentWorker {
                     self.state
                         .set_navigable_ongoing_navigation(traversable_id, None);
                 }
-                self.host.send_msg(EmbedderMsg::NavigationCompleted(
-                    NavigationCompleted {
-                        webview_id: WebviewId(pending.navigable_id),
-                        status: NavigationCompletion::Aborted {
-                            message: String::from("navigation was canceled by beforeunload"),
-                        },
+                self.host.navigation_completed(NavigationCompleted {
+                    webview_id: WebviewId(pending.navigable_id),
+                    status: NavigationCompletion::Aborted {
+                        message: String::from("navigation was canceled by beforeunload"),
                     },
-                ))
+                })
             } else {
                 self.continue_navigation_after_before_unload(pending)
             }
@@ -2545,14 +2549,12 @@ impl UserAgentWorker {
             document.is_initial_about_blank = finalized.url == "about:blank";
         }
         self.handle_rendering_opportunity_for(pending.traversable_id);
-        let notify_result = self.host.send_msg(EmbedderMsg::NavigationCompleted(
-            NavigationCompleted {
-                webview_id: WebviewId(pending.traversable_id),
-                status: NavigationCompletion::Committed {
-                    url: finalized.url.clone(),
-                },
+        let notify_result = self.host.navigation_completed(NavigationCompleted {
+            webview_id: WebviewId(pending.traversable_id),
+            status: NavigationCompletion::Committed {
+                url: finalized.url.clone(),
             },
-        ));
+        });
 
         if let Some(previous_document_id) = pending.previous_document_id {
             if previous_document_id != finalized.document_id {
@@ -2879,12 +2881,10 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
-                    NavigationCompleted {
-                        webview_id: WebviewId(pending.traversable_id),
-                        status: NavigationCompletion::Aborted { message: error },
-                    },
-                ));
+                let _ = self.host.navigation_completed(NavigationCompleted {
+                    webview_id: WebviewId(pending.traversable_id),
+                    status: NavigationCompletion::Aborted { message: error },
+                });
                 return;
             }
         };
@@ -2897,12 +2897,10 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
-                    NavigationCompleted {
-                        webview_id: WebviewId(pending.traversable_id),
-                        status: NavigationCompletion::Aborted { message: error },
-                    },
-                ));
+                let _ = self.host.navigation_completed(NavigationCompleted {
+                    webview_id: WebviewId(pending.traversable_id),
+                    status: NavigationCompletion::Aborted { message: error },
+                });
                 return;
             }
         };
@@ -2973,12 +2971,10 @@ impl UserAgentWorker {
                 );
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
-                    NavigationCompleted {
-                        webview_id: WebviewId(pending.traversable_id),
-                        status: NavigationCompletion::Aborted { message: error },
-                    },
-                ));
+                let _ = self.host.navigation_completed(NavigationCompleted {
+                    webview_id: WebviewId(pending.traversable_id),
+                    status: NavigationCompletion::Aborted { message: error },
+                });
             }
         }
     }
@@ -2990,14 +2986,12 @@ impl UserAgentWorker {
         };
         self.state
             .set_navigable_ongoing_navigation(pending.traversable_id, None);
-        let _ = self.host.send_msg(EmbedderMsg::NavigationCompleted(
-            NavigationCompleted {
-                webview_id: WebviewId(pending.traversable_id),
-                status: NavigationCompletion::Aborted {
-                    message: format!("navigation fetch failed for {}", pending.request.url),
-                },
+        let _ = self.host.navigation_completed(NavigationCompleted {
+            webview_id: WebviewId(pending.traversable_id),
+            status: NavigationCompletion::Aborted {
+                message: format!("navigation fetch failed for {}", pending.request.url),
             },
-        ));
+        });
     }
 
     /// the document-fetch watchdog fired by the timer worker.

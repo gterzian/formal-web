@@ -17,14 +17,14 @@ use automation::{
 use anyrender::{PaintScene, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_traits::shell::ColorScheme;
-use ipc_messages::content::{NavigableId, PaintFrame, WebviewId};
+use ipc_messages::content::{NavigableId, WebviewId};
 use kurbo::{Affine, Rect};
 use peniko::{Color, Fill};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Duration;
 use verification::TraceSender;
-use webview::{Embedder, EmbedderMsg, WebviewProvider};
+use webview::{Embedder, WebviewProvider};
 use winit::application::ApplicationHandler;
 use winit::event_loop::{EventLoop, EventLoopProxy};
 
@@ -46,45 +46,45 @@ struct EventLoopEmbedder {
     dispatcher: UserEventDispatcher,
 }
 
+impl EventLoopEmbedder {
+    fn new(dispatcher: UserEventDispatcher) -> Self {
+        Self { dispatcher }
+    }
+}
+
 impl Embedder for EventLoopEmbedder {
-    fn send_msg(&self, msg: EmbedderMsg) -> Result<(), String> {
-        let event = match msg {
-            EmbedderMsg::Paint(snapshot) => FormalWebUserEvent::Paint(snapshot),
-            EmbedderMsg::NavigationRequested {
-                webview_id,
-                destination_url,
-            } => FormalWebUserEvent::NavigationRequested {
-                webview_id,
-                destination_url,
-            },
-            EmbedderMsg::NavigationCompleted(completed) => {
-                let status = match completed.status {
-                    webview::NavigationCompletion::Committed { url } => {
-                        NavigationCompletion::Committed { url }
-                    }
-                    webview::NavigationCompletion::Aborted { message } => {
-                        NavigationCompletion::Aborted { message }
-                    }
-                };
-                FormalWebUserEvent::NavigationCompleted(NavigationCompleted {
-                    webview_id: completed.webview_id,
-                    status,
-                })
+    fn navigation_requested(&self, webview_id: WebviewId, destination_url: String) -> Result<(), String> {
+        self.dispatcher.send(FormalWebUserEvent::NavigationRequested {
+            webview_id,
+            destination_url,
+        })
+    }
+
+    fn navigation_completed(&self, completed: webview::NavigationCompleted) -> Result<(), String> {
+        let status = match completed.status {
+            webview::NavigationCompletion::Committed { url } => NavigationCompletion::Committed { url },
+            webview::NavigationCompletion::Aborted { message } => {
+                NavigationCompletion::Aborted { message }
             }
-            EmbedderMsg::NewTopLevelTraversable(webview_id, target_name) => {
-                FormalWebUserEvent::NewTopLevelTraversable(webview_id, target_name)
-            }
-            EmbedderMsg::RegisterChildNavigableHost {
-                child_webview_id,
-                parent_traversable_id,
-                content_frame_id,
-            } => FormalWebUserEvent::RegisterChildNavigableHost {
-                child_webview_id,
-                parent_traversable_id,
-                content_frame_id,
-            },
         };
-        self.dispatcher.send(event)
+        self.dispatcher
+            .send(FormalWebUserEvent::NavigationCompleted(NavigationCompleted {
+                webview_id: completed.webview_id,
+                status,
+            }))
+    }
+
+    fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String> {
+        self.dispatcher
+            .send(FormalWebUserEvent::NewWebview(webview_id, target_name))
+    }
+
+    fn webview_provider_sync(&self) -> Result<(), String> {
+        self.dispatcher.send(FormalWebUserEvent::WebviewProviderSync)
+    }
+
+    fn new_frame_rendered(&self) -> Result<(), String> {
+        self.dispatcher.send(FormalWebUserEvent::NewFrameRendered)
     }
 
     fn request_redraw(&self, webview_id: WebviewId) {
@@ -113,16 +113,12 @@ impl Embedder for EventLoopEmbedder {
 }
 
 pub enum FormalWebUserEvent {
-    Paint(PaintFrame),
     RequestRedraw(WebviewId),
     NavigationRequested { webview_id: WebviewId, destination_url: String },
     NavigationCompleted(NavigationCompleted),
-    NewTopLevelTraversable(WebviewId, String),
-    RegisterChildNavigableHost {
-        child_webview_id: WebviewId,
-        parent_traversable_id: WebviewId,
-        content_frame_id: ipc_messages::content::FrameId,
-    },
+    NewWebview(WebviewId, String),
+    WebviewProviderSync,
+    NewFrameRendered,
     Automation(AutomationCommand),
     ClipboardRead {
         reply: mpsc::Sender<Result<String, String>>,
@@ -278,7 +274,8 @@ where
         *guard = Some(dispatcher.proxy.clone());
     }
 
-    let embedder: Arc<dyn Embedder> = Arc::new(EventLoopEmbedder { dispatcher });
+    let event_loop_embedder = Arc::new(EventLoopEmbedder::new(dispatcher));
+    let embedder: Arc<dyn Embedder> = event_loop_embedder.clone();
     let provider = match WebviewProvider::new(embedder, trace_sender) {
         Ok(provider) => provider,
         Err(error) => {

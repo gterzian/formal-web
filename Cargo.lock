@@ -3905,6 +3905,7 @@ version = "0.1.0"
 dependencies = [
  "anyrender",
  "blitz-traits",
+ "crossbeam-channel",
  "ipc_messages",
  "keyboard-types",
  "kurbo",
