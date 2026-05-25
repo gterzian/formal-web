@@ -27,6 +27,9 @@ enum CommandKind {
 
     #[command(name = "webdriver")]
     WebDriver(automation::WebDriverArgs),
+
+    #[command(name = "cdp")]
+    Cdp(automation::CdpArgs),
 }
 
 fn delegated_tla_validate_command() -> Option<ExitCode> {
@@ -100,6 +103,10 @@ fn run_embedder_webdriver(verify: bool, args: automation::WebDriverArgs) -> Resu
     embedder_args.push(OsString::from("webdriver"));
     embedder_args.push(OsString::from("--port"));
     embedder_args.push(OsString::from(args.port.to_string()));
+    if let Some(cdp_port) = args.cdp_port {
+        embedder_args.push(OsString::from("--cdp-port"));
+        embedder_args.push(OsString::from(cdp_port.to_string()));
+    }
     if args.headless {
         embedder_args.push(OsString::from("--headless"));
     }
@@ -109,6 +116,24 @@ fn run_embedder_webdriver(verify: bool, args: automation::WebDriverArgs) -> Resu
     }
     if args.exit_on_session_delete {
         embedder_args.push(OsString::from("--exit-on-session-delete"));
+    }
+    run_embedder_process(embedder_args)
+}
+
+fn run_embedder_cdp(verify: bool, args: automation::CdpArgs) -> Result<(), String> {
+    let mut embedder_args = Vec::<OsString>::new();
+    if verify {
+        embedder_args.push(OsString::from("--verify"));
+    }
+    embedder_args.push(OsString::from("cdp"));
+    embedder_args.push(OsString::from("--port"));
+    embedder_args.push(OsString::from(args.port.to_string()));
+    if args.headless {
+        embedder_args.push(OsString::from("--headless"));
+    }
+    if let Some(startup_url) = args.startup_url {
+        embedder_args.push(OsString::from("--startup-url"));
+        embedder_args.push(OsString::from(startup_url));
     }
     run_embedder_process(embedder_args)
 }
@@ -137,6 +162,7 @@ fn main() -> ExitCode {
     let result = match command {
         None => run_embedder_default(cli.verify, cli.headless),
         Some(CommandKind::WebDriver(args)) => run_embedder_webdriver(cli.verify, args),
+        Some(CommandKind::Cdp(args)) => run_embedder_cdp(cli.verify, args),
         Some(CommandKind::Wpt { .. }) => Ok(()),
     };
 
