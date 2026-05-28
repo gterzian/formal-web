@@ -8,6 +8,16 @@ The above should form a chain of readmes, based on the directories where you are
 
 You can also update this documentation chain based on lessons learned from user feedback: update the lowest-level file that owns the rule or pattern, and avoid repeating the same guidance in multiple places.
 
+# Local Extensions
+
+## pi-share-hf — Session Collection
+
+The `.pi/extensions/pi-share-hf/` extension provides:
+
+- **`collect_session` tool** — Used by the agent at end of task to archive the current pi session to `.pi/collected-sessions/`. Does not upload or share session data.
+- **`/collect-session` command** — Interactive equivalent of the above.
+- **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
+
 # Documentation Style
 
 - Describe current architecture and behavior; keep task history out of repository docs.
@@ -26,6 +36,7 @@ You can also update this documentation chain based on lessons learned from user 
 - Put plans and temporary task notes under `scratchpad/`.
 
 At the end of each task, you MUST
+- Collect the current session by invoking the `collect_session` tool (or running `/collect-session`) to archive the session trace to `.pi/collected-sessions/`.
 - Finish tasks with the default WPT run, and `./verification/verify-navigation.sh`.
-- treat unexpected results in the above as something that needs to be fixed as part of the current task.
+- Treat unexpected results in the above as something that needs to be fixed as part of the current task.
 - Suggest a commit message for the completed task to the user, if the task involved changes tracked by git.

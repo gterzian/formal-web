@@ -1,0 +1,2 @@
+This is an extension based on https://github.com/badlogic/pi-share-hf, which collects and uploads the session for this repo without the whole review of the session part, because it is unnecessary for this repo.
+The original repo did not come with a license at the time it was downloaded, so the best I can do is add this attribution note.
