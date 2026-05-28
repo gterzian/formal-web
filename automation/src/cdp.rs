@@ -1,22 +1,24 @@
 use crate::{
     AUTOMATION_TIMEOUT, CdpEvent, HttpRequest, SCRIPT_TIMEOUT, find_header_terminator,
-    read_http_request, write_http_response,
 };
 use crate::AutomationRuntime;
 use base64::Engine as _;
 use clap::Args;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::fs;
 use std::io::ErrorKind;
-use std::net::{TcpListener, TcpStream};
-use std::sync::{
-    Arc, Mutex, mpsc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::net::TcpListener;
+use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use tungstenite::{Error as WebSocketError, Message, WebSocket, accept};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::{oneshot, watch};
+use tokio::task::JoinSet;
+use tokio::time;
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::{WebSocketStream, accept_async};
+use tungstenite::{Error as WebSocketError, Message};
 use uuid::Uuid;
 
 const CDP_BROWSER_PRODUCT: &str = "formal-web/0.1";
@@ -26,17 +28,6 @@ const CDP_PEEK_LIMIT: usize = 16 * 1024;
 const CDP_EXECUTION_CONTEXT_ID: u64 = 1;
 const CDP_UTILITY_EXECUTION_CONTEXT_ID: u64 = 2;
 const CDP_DOCUMENT_NODE_ID: u64 = 1;
-
-fn cdp_runtime_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some()
-}
-
-fn maybe_dump_runtime_expression(expression: &str) {
-    let Some(path) = std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME_EXPR_FILE") else {
-        return;
-    };
-    let _ = fs::write(path, expression);
-}
 
 #[derive(Args, Debug, Clone)]
 pub struct CdpArgs {
@@ -50,12 +41,12 @@ pub struct CdpArgs {
     pub startup_url: Option<String>,
 }
 
-pub struct CdpServer {
-    stop: Arc<AtomicBool>,
+pub struct CdpServerHandle {
+    shutdown: Option<oneshot::Sender<()>>,
     listener_thread: Option<JoinHandle<()>>,
-    connection_threads: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
+#[derive(Clone)]
 struct CdpState {
     port: u16,
     runtime: AutomationRuntime,
@@ -113,7 +104,7 @@ struct CdpDomNode {
     locator: CdpNodeLocator,
 }
 
-impl CdpServer {
+impl CdpServerHandle {
     pub fn start(port: u16, runtime: AutomationRuntime) -> Result<Self, String> {
         let listener = TcpListener::bind(("127.0.0.1", port))
             .map_err(|error| format!("failed to bind CDP server on port {port}: {error}"))?;
@@ -125,54 +116,42 @@ impl CdpServer {
             .set_nonblocking(true)
             .map_err(|error| format!("failed to configure CDP server listener: {error}"))?;
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        let connection_threads = Arc::new(Mutex::new(Vec::new()));
-        let thread_connection_threads = Arc::clone(&connection_threads);
-        let state = Arc::new(CdpState {
+        let state = CdpState {
             port: actual_port,
             runtime,
             browser_id: new_cdp_id(),
             browser_context_id: new_cdp_id(),
             page_target_id: new_cdp_id(),
-        });
-        let thread_state = Arc::clone(&state);
+        };
+        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
         let listener_thread = thread::Builder::new()
             .name(String::from("formal-web-cdp"))
             .spawn(move || {
-                run_cdp_server(
-                    listener,
-                    thread_state,
-                    thread_stop,
-                    thread_connection_threads,
-                )
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build();
+                match runtime {
+                    Ok(runtime) => runtime.block_on(run_cdp_server(listener, state, shutdown_receiver)),
+                    Err(error) => eprintln!("formal-web cdp runtime init error: {error}"),
+                }
             })
             .map_err(|error| format!("failed to spawn CDP server thread: {error}"))?;
 
         Ok(Self {
-            stop,
+            shutdown: Some(shutdown_sender),
             listener_thread: Some(listener_thread),
-            connection_threads,
         })
     }
 }
 
-impl Drop for CdpServer {
+impl Drop for CdpServerHandle {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
         if let Some(listener_thread) = self.listener_thread.take() {
             let _ = listener_thread.join();
-        }
-
-        let connection_threads = {
-            let mut guard = self
-                .connection_threads
-                .lock()
-                .expect("cdp connection thread mutex poisoned");
-            std::mem::take(&mut *guard)
-        };
-        for connection_thread in connection_threads {
-            let _ = connection_thread.join();
         }
     }
 }
@@ -488,33 +467,11 @@ impl CdpConnectionState {
                         String::from("`Runtime.evaluate` requires a string `expression` parameter"),
                     )]);
                 };
-                let return_by_value = request
-                    .params
-                    .get("returnByValue")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                if cdp_runtime_debug_enabled() {
-                    eprintln!(
-                        "[cdp-runtime] evaluate start id={:?} session={:?} len={} return_by_value={}",
-                        request.id,
-                        response_session_id,
-                        expression.len(),
-                        return_by_value
-                    );
-                    maybe_dump_runtime_expression(expression);
-                }
                 let value = state
                     .runtime
                     .evaluate_script(expression.to_owned(), SCRIPT_TIMEOUT)
                     .map_err(|error| format!("script evaluation failed: {error}"))?;
                 let result = remote_object_payload(value);
-                if cdp_runtime_debug_enabled() {
-                    eprintln!(
-                        "[cdp-runtime] evaluate ok id={:?} session={:?}",
-                        request.id,
-                        response_session_id
-                    );
-                }
                 Ok(json!({
                     "result": result
                 }))
@@ -889,80 +846,81 @@ impl CdpConnectionState {
     }
 }
 
-fn run_cdp_server(
-    listener: TcpListener,
-    state: Arc<CdpState>,
-    stop: Arc<AtomicBool>,
-    connection_threads: Arc<Mutex<Vec<JoinHandle<()>>>>,
-) {
-    while !stop.load(Ordering::Relaxed) {
-        match listener.accept() {
-            Ok((stream, _address)) => {
-                let state = Arc::clone(&state);
-                let stop = Arc::clone(&stop);
-                let spawn_result = thread::Builder::new()
-                    .name(String::from("formal-web-cdp-connection"))
-                    .spawn(move || {
-                        if let Err(error) = handle_cdp_stream(stream, state, stop) {
-                            eprintln!("formal-web cdp connection error: {error}");
-                        }
-                    });
-                match spawn_result {
-                    Ok(connection_thread) => {
-                        let mut guard = connection_threads
-                            .lock()
-                            .expect("cdp connection thread mutex poisoned");
-                        guard.push(connection_thread);
+async fn run_cdp_server(listener: TcpListener, state: CdpState, mut shutdown: oneshot::Receiver<()>) {
+    let listener = match tokio::net::TcpListener::from_std(listener) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("formal-web cdp listener init error: {error}");
+            return;
+        }
+    };
+
+    let (session_shutdown_tx, session_shutdown_rx) = watch::channel(false);
+    let mut sessions = JoinSet::new();
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                let _ = session_shutdown_tx.send(true);
+                break;
+            }
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, _address)) => {
+                        let task_state = state.clone();
+                        let task_shutdown = session_shutdown_rx.clone();
+                        sessions.spawn(async move {
+                            if let Err(error) = handle_cdp_stream(stream, task_state, task_shutdown).await {
+                                eprintln!("formal-web cdp connection error: {error}");
+                            }
+                        });
                     }
                     Err(error) => {
-                        eprintln!("formal-web cdp thread spawn error: {error}");
+                        eprintln!("formal-web cdp accept error: {error}");
+                        break;
                     }
                 }
             }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => {
-                eprintln!("formal-web cdp accept error: {error}");
-                break;
-            }
+        }
+    }
+
+    while let Some(joined) = sessions.join_next().await {
+        if let Err(error) = joined {
+            eprintln!("formal-web cdp session task error: {error}");
         }
     }
 }
 
-fn handle_cdp_stream(
+async fn handle_cdp_stream(
     mut stream: TcpStream,
-    state: Arc<CdpState>,
-    stop: Arc<AtomicBool>,
+    state: CdpState,
+    shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let Some(peeked_request) = peek_request(&stream)? else {
+    let Some(peeked_request) = peek_request(&stream).await? else {
         return Ok(());
     };
 
     if peeked_request.websocket_upgrade {
         match parse_route(&peeked_request.target, &state) {
-            Some(route) => handle_websocket_connection(stream, state, stop, route),
+            Some(route) => handle_websocket_connection(stream, state, shutdown, route).await,
             None => write_json_response(
                 &mut stream,
                 &peeked_request.method,
                 404,
                 "Not Found",
                 json!({ "error": "unknown CDP websocket route" }),
-            ),
+            )
+            .await,
         }
     } else {
-        handle_http_connection(stream, &state)
+        handle_http_connection(stream, &state).await
     }
 }
 
-fn peek_request(stream: &TcpStream) -> Result<Option<PeekedRequest>, String> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| format!("failed to set CDP request peek timeout: {error}"))?;
-
+async fn peek_request(stream: &TcpStream) -> Result<Option<PeekedRequest>, String> {
     let mut buffer = vec![0_u8; CDP_PEEK_LIMIT];
     loop {
-        let bytes_peeked = match stream.peek(&mut buffer) {
+        let bytes_peeked = match stream.peek(&mut buffer).await {
             Ok(bytes_peeked) => bytes_peeked,
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 continue;
@@ -1038,13 +996,47 @@ fn parse_route(target: &str, state: &CdpState) -> Option<CdpRoute> {
     }
 }
 
-fn handle_http_connection(mut stream: TcpStream, state: &CdpState) -> Result<(), String> {
-    let Some(request) = read_http_request(&mut stream)? else {
+async fn handle_http_connection(mut stream: TcpStream, state: &CdpState) -> Result<(), String> {
+    let Some(request) = read_http_request_head(&mut stream).await? else {
         return Ok(());
     };
 
     let (status, status_text, body) = dispatch_http_request(&request, state);
-    write_http_response(&mut stream, &request.method, status, status_text, &body)
+    write_http_response_async(&mut stream, &request.method, status, status_text, &body).await
+}
+
+async fn read_http_request_head(stream: &mut TcpStream) -> Result<Option<HttpRequest>, String> {
+    let mut buffer = vec![0_u8; CDP_PEEK_LIMIT];
+    let mut total = 0usize;
+    loop {
+        let read = stream
+            .read(&mut buffer[total..])
+            .await
+            .map_err(|error| format!("failed to read CDP HTTP request: {error}"))?;
+        if read == 0 {
+            if total == 0 {
+                return Ok(None);
+            }
+            return Err(String::from("unexpected EOF while reading CDP HTTP request headers"));
+        }
+        total += read;
+        if let Some(header_end) = find_header_terminator(&buffer[..total]) {
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]);
+            let mut lines = header_text.lines();
+            let request_line = lines.next().unwrap_or_default();
+            let mut request_parts = request_line.split_whitespace();
+            let method = request_parts.next().unwrap_or("GET").to_owned();
+            let target = request_parts.next().unwrap_or("/").to_owned();
+            return Ok(Some(HttpRequest {
+                method,
+                target,
+                body: Vec::new(),
+            }));
+        }
+        if total == buffer.len() {
+            return Err(String::from("incoming CDP HTTP headers exceeded the size limit"));
+        }
+    }
 }
 
 fn dispatch_http_request(request: &HttpRequest, state: &CdpState) -> (u16, &'static str, Vec<u8>) {
@@ -1095,69 +1087,81 @@ fn dispatch_http_request(request: &HttpRequest, state: &CdpState) -> (u16, &'sta
     }
 }
 
-fn handle_websocket_connection(
+async fn handle_websocket_connection(
     stream: TcpStream,
-    state: Arc<CdpState>,
-    stop: Arc<AtomicBool>,
+    state: CdpState,
+    mut shutdown: watch::Receiver<bool>,
     route: CdpRoute,
 ) -> Result<(), String> {
     let mut websocket =
-        accept(stream).map_err(|error| format!("failed to accept CDP websocket: {error}"))?;
-    websocket
-        .get_mut()
-        .set_read_timeout(Some(CDP_SOCKET_IO_TIMEOUT))
-        .map_err(|error| format!("failed to configure CDP websocket timeout: {error}"))?;
+        accept_async(stream).await.map_err(|error| format!("failed to accept CDP websocket: {error}"))?;
 
     let (event_sender, event_receiver) = mpsc::channel();
+    let event_receiver = std::sync::Mutex::new(event_receiver);
     state
         .runtime
         .set_cdp_event_sink(Some(event_sender), AUTOMATION_TIMEOUT)?;
 
     let mut connection = CdpConnectionState::new(route);
-    let result = (|| {
+    let result = async {
         loop {
-            drain_cdp_events(&mut websocket, &connection, &event_receiver, &state)?;
-            if stop.load(Ordering::Relaxed) {
+            for message in collect_cdp_event_messages(&connection, &event_receiver, &state) {
+                send_cdp_message(&mut websocket, &message).await?;
+            }
+            if *shutdown.borrow() {
                 return Ok(());
             }
 
-            match websocket.read() {
-                Ok(message) => match message {
-                    Message::Text(text) => {
-                        let outgoing = match connection.handle_text(&state, text.as_ref()) {
-                            Ok(outgoing) => outgoing,
-                            Err(error) => {
-                                let fallback = cdp_error_response(
-                                    raw_request_id(text.as_ref()),
-                                    raw_response_session_id(&connection, text.as_ref()).as_deref(),
-                                    error,
-                                );
-                                vec![fallback]
-                            }
-                        };
-                        for message in outgoing {
-                            send_cdp_message(&mut websocket, &message)?;
-                        }
-                        drain_cdp_events(&mut websocket, &connection, &event_receiver, &state)?;
+            tokio::select! {
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        return Ok(());
                     }
-                    Message::Ping(payload) => websocket
-                        .send(Message::Pong(payload))
-                        .map_err(|error| format!("failed to send CDP pong: {error}"))?,
-                    Message::Close(_frame) => return Ok(()),
-                    _ => {}
-                },
-                Err(WebSocketError::Io(error))
-                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-                {
+                }
+                _ = time::sleep(CDP_SOCKET_IO_TIMEOUT) => {
                     continue;
                 }
-                Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => {
-                    return Ok(());
+                incoming = websocket.next() => {
+                    match incoming {
+                        Some(Ok(message)) => match message {
+                            Message::Text(text) => {
+                                let outgoing = match connection.handle_text(&state, text.as_ref()) {
+                                    Ok(outgoing) => outgoing,
+                                    Err(error) => {
+                                        let fallback = cdp_error_response(
+                                            raw_request_id(text.as_ref()),
+                                            raw_response_session_id(&connection, text.as_ref()).as_deref(),
+                                            error,
+                                        );
+                                        vec![fallback]
+                                    }
+                                };
+                                for message in outgoing {
+                                    send_cdp_message(&mut websocket, &message).await?;
+                                }
+                                for message in collect_cdp_event_messages(&connection, &event_receiver, &state) {
+                                    send_cdp_message(&mut websocket, &message).await?;
+                                }
+                            }
+                            Message::Ping(payload) => {
+                                send_ws_message(&mut websocket, Message::Pong(payload)).await?;
+                            }
+                            Message::Close(_frame) => return Ok(()),
+                            _ => {}
+                        },
+                        Some(Err(WebSocketError::Io(error))) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                            continue;
+                        }
+                        Some(Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed)) | None => {
+                            return Ok(());
+                        }
+                        Some(Err(error)) => return Err(format!("failed to read CDP websocket message: {error}")),
+                    }
                 }
-                Err(error) => return Err(format!("failed to read CDP websocket message: {error}")),
             }
         }
-    })();
+    }
+    .await;
 
     let _ = state
         .runtime
@@ -1165,29 +1169,41 @@ fn handle_websocket_connection(
     result
 }
 
-fn drain_cdp_events(
-    websocket: &mut WebSocket<TcpStream>,
+fn collect_cdp_event_messages(
     connection: &CdpConnectionState,
-    event_receiver: &mpsc::Receiver<CdpEvent>,
+    event_receiver: &std::sync::Mutex<mpsc::Receiver<CdpEvent>>,
     state: &CdpState,
-) -> Result<(), String> {
-    while let Ok(event) = event_receiver.try_recv() {
-        for message in connection.translate_event(state, event) {
-            send_cdp_message(websocket, &message)?;
-        }
+) -> Vec<Value> {
+    let mut outgoing = Vec::new();
+    let Ok(receiver) = event_receiver.lock() else {
+        return outgoing;
+    };
+    while let Ok(event) = receiver.try_recv() {
+        outgoing.extend(connection.translate_event(state, event));
     }
-    Ok(())
+    outgoing
 }
 
-fn send_cdp_message(websocket: &mut WebSocket<TcpStream>, message: &Value) -> Result<(), String> {
-    let payload = serde_json::to_string(message)
-        .map_err(|error| format!("failed to serialize CDP message: {error}"))?;
+async fn send_ws_message(
+    websocket: &mut WebSocketStream<TcpStream>,
+    message: Message,
+) -> Result<(), String> {
     websocket
-        .send(Message::Text(payload.into()))
+        .send(message)
+        .await
         .map_err(|error| format!("failed to send CDP websocket message: {error}"))
 }
 
-fn write_json_response(
+async fn send_cdp_message(
+    websocket: &mut WebSocketStream<TcpStream>,
+    message: &Value,
+) -> Result<(), String> {
+    let payload = serde_json::to_string(message)
+        .map_err(|error| format!("failed to serialize CDP message: {error}"))?;
+    send_ws_message(websocket, Message::Text(payload.into())).await
+}
+
+async fn write_json_response(
     stream: &mut TcpStream,
     method: &str,
     status: u16,
@@ -1195,7 +1211,38 @@ fn write_json_response(
     body: Value,
 ) -> Result<(), String> {
     let body = json_bytes(body);
-    write_http_response(stream, method, status, status_text, &body)
+    write_http_response_async(stream, method, status, status_text, &body).await
+}
+
+async fn write_http_response_async(
+    stream: &mut TcpStream,
+    method: &str,
+    status: u16,
+    status_text: &str,
+    body: &[u8],
+) -> Result<(), String> {
+    let mut header = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n",
+        body.len()
+    );
+    if method.eq_ignore_ascii_case("OPTIONS") {
+        header.push_str("Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n");
+    }
+    header.push_str("\r\n");
+    stream
+        .write_all(header.as_bytes())
+        .await
+        .map_err(|error| format!("failed to write CDP HTTP response headers: {error}"))?;
+    if !method.eq_ignore_ascii_case("HEAD") {
+        stream
+            .write_all(body)
+            .await
+            .map_err(|error| format!("failed to write CDP HTTP response body: {error}"))?;
+    }
+    stream
+        .flush()
+        .await
+        .map_err(|error| format!("failed to flush CDP HTTP response: {error}"))
 }
 
 fn json_bytes(value: Value) -> Vec<u8> {
@@ -1534,7 +1581,7 @@ fn session_scoped_method(method: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CDP_BROWSER_PRODUCT, CDP_PROTOCOL_VERSION, CdpEvent, CdpServer,
+        CDP_BROWSER_PRODUCT, CDP_PROTOCOL_VERSION, CdpEvent, CdpServerHandle,
         find_header_terminator,
     };
     use crate::{
@@ -1904,7 +1951,7 @@ mod tests {
         let _ = socket.close(None);
     }
 
-    fn start_test_server() -> (CdpServer, Arc<Mutex<MockRuntimeState>>, u16) {
+    fn start_test_server() -> (CdpServerHandle, Arc<Mutex<MockRuntimeState>>, u16) {
         let port = free_local_port();
         let state = Arc::new(Mutex::new(MockRuntimeState {
             snapshot: automation_snapshot("about:blank", NavigableId::from_u128(1)),
@@ -1914,7 +1961,8 @@ mod tests {
             event_sink: None,
         }));
         let runtime = mock_runtime(Arc::clone(&state));
-        let server = CdpServer::start(port, runtime).expect("test CDP server should start");
+        let server =
+            CdpServerHandle::start(port, runtime).expect("test CDP server should start");
         (server, state, port)
     }
 

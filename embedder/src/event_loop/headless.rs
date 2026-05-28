@@ -25,11 +25,11 @@ const HEADLESS_VIEWPORT_WIDTH: u32 = 800;
 const HEADLESS_VIEWPORT_HEIGHT: u32 = 600;
 
 fn input_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+    false
 }
 
 fn startup_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_STARTUP").is_some()
+    false
 }
 
 fn ui_event_summary(event: &UiEvent) -> String {
@@ -398,14 +398,6 @@ impl AutomationHost for HeadlessEmbedderApp {
         source: String,
         timeout: Duration,
     ) -> Result<Value, String> {
-        let runtime_debug_enabled = std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some();
-        if runtime_debug_enabled {
-            eprintln!(
-                "[cdp-runtime][headless] evaluate enter len={} timeout_ms={}",
-                source.len(),
-                timeout.as_millis()
-            );
-        }
         if startup_debug_enabled() {
             eprintln!(
                 "[startup-debug][embedder-headless] automation_evaluate current_webview={:?} has_top_level={} script_len={}",
@@ -417,13 +409,6 @@ impl AutomationHost for HeadlessEmbedderApp {
         match self.provider.as_ref().zip(self.current_webview_id) {
             Some((provider, webview_id)) => {
                 let result = provider.evaluate_script(webview_id, source, timeout);
-                if runtime_debug_enabled {
-                    eprintln!(
-                        "[cdp-runtime][headless] evaluate exit ok={} webview={:?}",
-                        result.is_ok(),
-                        webview_id
-                    );
-                }
                 result
             }
             None => Err(String::from(

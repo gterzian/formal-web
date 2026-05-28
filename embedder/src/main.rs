@@ -68,7 +68,7 @@ fn run_webdriver(
     )?;
     let cdp_server = args
         .cdp_port
-        .map(|port| automation::CdpServer::start(port, runtime.clone()))
+        .map(|port| automation::CdpServerHandle::start(port, runtime.clone()))
         .transpose()?;
     let result = run_app_with_options(AppRunOptions {
         headless: args.headless,
@@ -89,7 +89,7 @@ fn run_cdp(args: automation::CdpArgs, trace_sender: Option<TraceSender>) -> Resu
         || event_loop::send_user_event(event_loop::FormalWebUserEvent::Exit),
         event_loop::event_loop_is_ready,
     );
-    let server = automation::CdpServer::start(args.port, runtime)?;
+    let server = automation::CdpServerHandle::start(args.port, runtime)?;
     let result = run_app_with_options(AppRunOptions {
         headless: args.headless,
         startup_url: args

@@ -12,10 +12,6 @@ path = "src/bin/tla_validate.rs"
 name = "webdriver-screenshot-check"
 path = "src/bin/webdriver_screenshot_check.rs"
 
-[[bin]]
-name = "cdp-smoke-check"
-path = "src/bin/cdp_smoke_check.rs"
-
 [dependencies]
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
@@ -23,4 +19,3 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 ipc-channel = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tungstenite = "0.24"

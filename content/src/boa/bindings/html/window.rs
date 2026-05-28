@@ -1,19 +1,24 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
+    Context, JsArgs, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::{JsObject, ObjectInitializer},
+    object::JsObject,
     property::Attribute,
 };
 
+use crate::boa::platform_objects::{
+    location_object as cached_location_object, store_location_object,
+};
 use crate::boa::with_event_target_mut;
-use crate::html::{Window, WindowOrWorkerGlobalScope};
+use crate::html::{
+    Location, Window, WindowOrWorkerGlobalScope, window_computed_style_properties_for_element,
+};
 use crate::webidl::{callback_function_value, nullable_value};
 
 use crate::boa::bindings::dom::{register_event_target_methods, with_element_ref};
 
-use super::{computed_style_object_for_element, hyperlink_element_utils::document_creation_url};
+use super::{hyperlink_element_utils::document_creation_url, style_declaration_object};
 
 impl Class for Window {
     const NAME: &'static str = "Window";
@@ -234,86 +239,34 @@ fn get_computed_style_method(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
+    let pseudo_elt = if args.get_or_undefined(1).is_null_or_undefined() {
+        None
+    } else {
+        Some(
+            args.get_or_undefined(1)
+                .to_string(context)?
+                .to_std_string_escaped(),
+        )
+    };
+
     with_element_ref(args.get_or_undefined(0), |element| {
-        computed_style_object_for_element(element, context).map(JsValue::from)
+        style_declaration_object(
+            &window_computed_style_properties_for_element(element, pseudo_elt.as_deref()),
+            context,
+        )
+        .map(JsValue::from)
     })?
 }
 
 fn location_object(context: &mut Context) -> JsResult<JsObject> {
-    let url = document_creation_url(context)?;
-    let href = url.as_str().to_owned();
-    let protocol = format!("{}:", url.scheme());
-    let hostname = url.host_str().unwrap_or_default().to_owned();
-    let host = match url.port() {
-        Some(port) if !hostname.is_empty() => format!("{hostname}:{port}"),
-        _ => hostname.clone(),
-    };
-    let port = url.port().map(|value| value.to_string()).unwrap_or_default();
-    let pathname = url.path().to_owned();
-    let search = url
-        .query()
-        .map(|value| format!("?{value}"))
-        .unwrap_or_default();
-    let hash = url
-        .fragment()
-        .map(|value| format!("#{value}"))
-        .unwrap_or_default();
-
-    let mut initializer = ObjectInitializer::new(context);
-    initializer.property(js_string!("href"), JsString::from(href.as_str()), Attribute::all());
-    initializer.property(
-        js_string!("origin"),
-        JsString::from(url.origin().unicode_serialization()),
-        Attribute::all(),
-    );
-    initializer.property(
-        js_string!("protocol"),
-        JsString::from(protocol.as_str()),
-        Attribute::all(),
-    );
-    initializer.property(
-        js_string!("host"),
-        JsString::from(host.as_str()),
-        Attribute::all(),
-    );
-    initializer.property(
-        js_string!("hostname"),
-        JsString::from(hostname.as_str()),
-        Attribute::all(),
-    );
-    initializer.property(js_string!("port"), JsString::from(port.as_str()), Attribute::all());
-    initializer.property(
-        js_string!("pathname"),
-        JsString::from(pathname.as_str()),
-        Attribute::all(),
-    );
-    initializer.property(
-        js_string!("search"),
-        JsString::from(search.as_str()),
-        Attribute::all(),
-    );
-    initializer.property(js_string!("hash"), JsString::from(hash.as_str()), Attribute::all());
-    initializer.function(
-        NativeFunction::from_fn_ptr(location_to_string_method),
-        js_string!("toString"),
-        0,
-    );
-    Ok(initializer.build())
-}
-
-fn location_to_string_method(
-    this: &JsValue,
-    _: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let Some(object) = this.as_object() else {
-        return Ok(JsValue::from(JsString::from("")));
-    };
-    let href = object.get(js_string!("href"), context)?;
-    if href.is_undefined() {
-        return Ok(JsValue::from(JsString::from("")));
+    if let Some(object) = cached_location_object(context)? {
+        return Ok(object);
     }
-    Ok(href)
+
+    let url = document_creation_url(context)?;
+    let object = Location::from_data(Location::new(url), context)?;
+    store_location_object(context, object.clone())?;
+    Ok(object)
 }
 
 fn current_window_object(this: &JsValue, context: &Context) -> JsObject {

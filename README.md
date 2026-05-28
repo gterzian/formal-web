@@ -12,7 +12,6 @@ formal-web is a Rust web-engine prototype in alpha status, with an embedding API
 - `rustup run 1.92.0 cargo run --release -- webdriver --headless` runs the WebDriver server using the repository entrypoint.
 - `rustup run 1.92.0 cargo run --release -- cdp --headless` runs the CDP server for CDP-native tooling.
 - `rustup run 1.92.0 cargo run --release -- webdriver --headless --cdp-port 9222` runs WebDriver and CDP together on one embedder runtime.
-- `./verification/run-cdp-startup-feature-check.sh` runs the Rust-native external CDP startup-artifact feature checks.
 - `rustup run 1.92.0 cargo run --release -- wpt` runs the default WPT and local formal test selection from the repository entrypoint.
 - `rustup run 1.92.0 cargo run --release -- wpt formal/load-event-fires.html` runs one selected WPT/formal test from the repository entrypoint.
 - `./verification/verify-navigation.sh` runs the headless navigation workflow whose acceptance target is the shutdown-time TLA+ `Navigation` check.

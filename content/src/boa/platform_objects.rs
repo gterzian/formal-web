@@ -33,6 +33,17 @@ pub(crate) fn store_document_object(context: &Context, object: JsObject) -> JsRe
     })
 }
 
+pub(crate) fn location_object(context: &Context) -> JsResult<Option<JsObject>> {
+    with_global_scope(context, |global_scope| Ok(global_scope.location_object()))
+}
+
+pub(crate) fn store_location_object(context: &Context, object: JsObject) -> JsResult<()> {
+    with_global_scope(context, |global_scope| {
+        global_scope.store_location_object(object);
+        Ok(())
+    })
+}
+
 fn collect_node_subtree_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
     let Some(node) = document.get_node(node_id) else {
         return;

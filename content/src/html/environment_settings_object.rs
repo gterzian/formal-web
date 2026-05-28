@@ -25,7 +25,7 @@ use crate::dom::{
     EventTarget, Node, UIEvent,
 };
 use crate::html::{
-    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLIFrameElement, HTMLElement,
+    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Location,
     TimerHandler, Window,
 };
 use crate::streams::{
@@ -159,6 +159,9 @@ impl EnvironmentSettingsObject {
             .register_global_class::<Window>()
             .map_err(|error| error.to_string())?;
         context
+            .register_global_class::<Location>()
+            .map_err(|error| error.to_string())?;
+        context
             .register_global_class::<ByteLengthQueuingStrategy>()
             .map_err(|error| error.to_string())?;
         context
@@ -218,8 +221,6 @@ impl EnvironmentSettingsObject {
         context
             .register_global_property(js_string!("self"), global, Attribute::all())
             .map_err(|error| error.to_string())?;
-
-        install_runtime_stubs(&mut context)?;
 
         Ok(Self {
             context,
@@ -392,31 +393,6 @@ impl EnvironmentSettingsObject {
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
         self.context.run_jobs().map_err(|error| error.to_string())
     }
-}
-
-fn install_runtime_stubs(context: &mut Context) -> Result<(), String> {
-        context
-                .eval(Source::from_bytes(
-                        r#"
-                                if (typeof globalThis.MutationObserver !== "function") {
-                                    globalThis.MutationObserver = class MutationObserver {
-                                        constructor(callback) {
-                                            this._callback = callback;
-                                        }
-
-                                        observe() {}
-
-                                        disconnect() {}
-
-                                        takeRecords() {
-                                            return [];
-                                        }
-                                    };
-                                }
-                        "#,
-                ))
-                .map(|_| ())
-                .map_err(|error| error.to_string())
 }
 
 fn wire_interface_prototypes(context: &mut Context) {

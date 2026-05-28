@@ -167,9 +167,12 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "clap",
+ "futures-util",
  "ipc_messages",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-tungstenite",
  "tungstenite",
  "uuid",
 ]
@@ -3526,7 +3529,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -3537,6 +3552,18 @@ checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite",
 ]
 
 [[package]]
@@ -3854,7 +3881,6 @@ dependencies = [
  "ipc-channel",
  "serde",
  "serde_json",
- "tungstenite",
 ]
 
 [[package]]

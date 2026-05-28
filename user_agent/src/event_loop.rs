@@ -63,23 +63,17 @@ pub struct EventLoopEntry {
 
 /// navigation debug output related to HTML navigation continuations.
 fn log_navigation_debug(message: impl AsRef<str>) {
-    if std::env::var_os("FORMAL_WEB_DEBUG_NAVIGATION").is_some() {
-        eprintln!("[navigation-debug][content-process] {}", message.as_ref());
-    }
+    let _ = message;
 }
 
 /// render-state debug output related to update-the-rendering work.
 fn log_render_state_debug(message: impl AsRef<str>) {
-    if std::env::var_os("FORMAL_WEB_DEBUG_RENDER_STATE").is_some() {
-        eprintln!("[render-state][content-process] {}", message.as_ref());
-    }
+    let _ = message;
 }
 
 /// timer debug output related to HTML timers and fetch watchdogs.
 fn log_timer_debug(message: impl AsRef<str>) {
-    if std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some() {
-        eprintln!("[timer-debug][user-agent] {}", message.as_ref());
-    }
+    let _ = message;
 }
 
 /// translating embedder color-scheme state into content IPC messages.
@@ -219,7 +213,6 @@ impl EventLoopWorker {
         command_receiver: Receiver<EventLoopCommand>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
-        let startup_debug_enabled = std::env::var_os("FORMAL_WEB_DEBUG_STARTUP").is_some();
         let (server, token) = IpcOneShotServer::<Bootstrap>::new()
             .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
 
@@ -236,35 +229,12 @@ impl EventLoopWorker {
         child_process.arg("--content-token").arg(&token);
         child_process.arg("--content-label").arg(&process_label);
 
-        if startup_debug_enabled {
-            eprintln!(
-                "[startup-debug][event-loop] spawn_content event_loop={} label={} executable={}",
-                event_loop_id,
-                process_label,
-                executable_path.display()
-            );
-        }
-
         let child = child_process
             .spawn()
             .map_err(|error| format!("failed to start content: {error}"))?;
-        if startup_debug_enabled {
-            eprintln!(
-                "[startup-debug][event-loop] waiting_for_content_bootstrap event_loop={} pid={}",
-                event_loop_id,
-                child.id()
-            );
-        }
         let (_receiver, bootstrap) = server
             .accept()
             .map_err(|error| format!("failed to accept content bootstrap: {error}"))?;
-        if startup_debug_enabled {
-            eprintln!(
-                "[startup-debug][event-loop] content_bootstrap_accepted event_loop={} pid={}",
-                event_loop_id,
-                child.id()
-            );
-        }
 
         let (event_sender, event_receiver) = unbounded();
         ROUTER.add_typed_route(
@@ -385,14 +355,6 @@ impl EventLoopWorker {
                 source,
                 reply,
             } => {
-                if std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some() {
-                    eprintln!(
-                        "[cdp-runtime][event-loop] evaluate command start request_id={} traversable={} len={}",
-                        request_id,
-                        traversable_id,
-                        source.len()
-                    );
-                }
                 self.script_waiters.insert(request_id, reply);
                 let command = ContentCommand::EvaluateScript {
                     traversable_id,
@@ -403,12 +365,6 @@ impl EventLoopWorker {
                     && let Some(reply) = self.script_waiters.remove(&request_id)
                 {
                     let _ = reply.send(Err(error));
-                }
-                if std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some() {
-                    eprintln!(
-                        "[cdp-runtime][event-loop] evaluate command sent request_id={}",
-                        request_id
-                    );
                 }
             }
             EventLoopCommand::ClickElement {
@@ -586,13 +542,6 @@ impl EventLoopWorker {
                 self.flush_next_task_command();
             }
             ContentEvent::ScriptEvaluated(result) => {
-                if std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some() {
-                    eprintln!(
-                        "[cdp-runtime][event-loop] script_evaluated request_id={} has_error={}",
-                        result.request_id,
-                        result.error.is_some()
-                    );
-                }
                 if let Some(waiter) = self.script_waiters.remove(&result.request_id) {
                     let send_result = match result.error {
                         Some(error) => Err(error),

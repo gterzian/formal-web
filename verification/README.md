@@ -8,5 +8,3 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 - Verification uses the local TLA+ Toolbox jar at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar` by default.
 - `./verification/verify-navigation.sh` is the canonical end-to-end navigation verification command. It drives one link click and treats successful `Navigation` TLA+ validation as the acceptance criterion.
 - `./verification/verify-rendering.sh` is the screenshot-based rendering verification command. It focuses on startup-artifact rendering, visible cross-origin iframe composition, and wheel-driven iframe scrolling, and it is intentionally separate from TLA+ navigation validation.
-- `./verification/run-cdp-startup-feature-check.sh` is the Rust-native external CDP feature-check command for startup artifact checks.
-- `verification/src/bin/cdp_smoke_check.rs` is the reusable CDP client implementation used by the script above.

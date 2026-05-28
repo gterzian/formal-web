@@ -7,7 +7,7 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
+use crate::boa::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
 use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
 
@@ -144,9 +144,7 @@ fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    let dropped_node_ids = with_element_ref(this, |element| {
-        collect_child_subtree_node_ids(&element.node.document, element.node.node_id)
-    })?;
+    let dropped_node_ids = with_element_ref(this, Element::child_subtree_node_ids)?;
     invalidate_cached_node_ids(context, &dropped_node_ids)?;
     with_element_ref(this, |element| {
         element.set_inner_html(&html);

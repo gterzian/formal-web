@@ -917,16 +917,7 @@ impl UserAgent {
         source: String,
         timeout: Duration,
     ) -> Result<serde_json::Value, String> {
-        let runtime_debug_enabled = std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some();
         let (reply_sender, reply_receiver) = bounded(1);
-        if runtime_debug_enabled {
-            eprintln!(
-                "[cdp-runtime][user-agent-api] evaluate send traversable={} len={} timeout_ms={}",
-                traversable_id,
-                source.len(),
-                timeout.as_millis()
-            );
-        }
         self.command_sender
             .send(UserAgentCommand::EvaluateScript {
                 traversable_id,
@@ -943,13 +934,6 @@ impl UserAgent {
                     timeout.as_millis()
                 )
             })?;
-        if runtime_debug_enabled {
-            eprintln!(
-                "[cdp-runtime][user-agent-api] evaluate recv ok={} traversable={}",
-                result.is_ok(),
-                traversable_id
-            );
-        }
         result
     }
 }
@@ -2679,17 +2663,9 @@ impl UserAgentWorker {
         &mut self,
         traversable_id: NavigableId,
         source: String,
-        timeout: Duration,
+        _timeout: Duration,
         reply: Sender<Result<serde_json::Value, String>>,
     ) {
-        if std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some() {
-            eprintln!(
-                "[cdp-runtime][user-agent] evaluate handoff start traversable={} len={} timeout_ms={}",
-                traversable_id,
-                source.len(),
-                timeout.as_millis()
-            );
-        }
         let error_reply = reply.clone();
         let send_result =
             match self.state.traversable_handles.get(&traversable_id).copied() {
@@ -2719,14 +2695,6 @@ impl UserAgentWorker {
                     "no content process owns traversable {traversable_id}"
                 )),
             };
-
-        if std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some() {
-            eprintln!(
-                "[cdp-runtime][user-agent] evaluate handoff queued traversable={} ok={}",
-                traversable_id,
-                send_result.is_ok()
-            );
-        }
 
         if let Err(error) = send_result {
             let _ = error_reply.send(Err(error));
