@@ -219,6 +219,8 @@ impl EnvironmentSettingsObject {
             .register_global_property(js_string!("self"), global, Attribute::all())
             .map_err(|error| error.to_string())?;
 
+        install_runtime_stubs(&mut context)?;
+
         Ok(Self {
             context,
             origin: Origin {
@@ -390,6 +392,31 @@ impl EnvironmentSettingsObject {
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
         self.context.run_jobs().map_err(|error| error.to_string())
     }
+}
+
+fn install_runtime_stubs(context: &mut Context) -> Result<(), String> {
+        context
+                .eval(Source::from_bytes(
+                        r#"
+                                if (typeof globalThis.MutationObserver !== "function") {
+                                    globalThis.MutationObserver = class MutationObserver {
+                                        constructor(callback) {
+                                            this._callback = callback;
+                                        }
+
+                                        observe() {}
+
+                                        disconnect() {}
+
+                                        takeRecords() {
+                                            return [];
+                                        }
+                                    };
+                                }
+                        "#,
+                ))
+                .map(|_| ())
+                .map_err(|error| error.to_string())
 }
 
 fn wire_interface_prototypes(context: &mut Context) {

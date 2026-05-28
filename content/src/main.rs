@@ -1457,6 +1457,14 @@ impl ContentRuntime {
                 request_id,
                 source,
             } => {
+                if std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some() {
+                    eprintln!(
+                        "[cdp-runtime][content] evaluate start request_id={} traversable={} len={}",
+                        request_id,
+                        traversable_id,
+                        source.len()
+                    );
+                }
                 let (value_json, error) = match self.evaluate_script(traversable_id, source) {
                     Ok(value) => {
                         let value_json = serde_json::to_string(&value).map_err(|error| {
@@ -1473,6 +1481,12 @@ impl ContentRuntime {
                         error,
                     }))
                     .map_err(|error| format!("failed to send script evaluation result: {error}"))?;
+                if std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some() {
+                    eprintln!(
+                        "[cdp-runtime][content] evaluate sent request_id={}",
+                        request_id
+                    );
+                }
                 Ok(true)
             }
             ClickElement {
@@ -1549,18 +1563,34 @@ fn content_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
+fn startup_debug_enabled() -> bool {
+    env::var_os("FORMAL_WEB_DEBUG_STARTUP").is_some()
+}
+
 pub fn run_content_process(token: String) -> Result<(), String> {
+    if startup_debug_enabled() {
+        eprintln!("[startup-debug][content] run_content_process start");
+    }
     let (command_sender, command_receiver) =
         ipc::channel::<Command>().map_err(|error| error.to_string())?;
     let (event_sender, event_receiver) =
         ipc::channel::<ContentEvent>().map_err(|error| error.to_string())?;
+    if startup_debug_enabled() {
+        eprintln!("[startup-debug][content] channels_created");
+    }
     let bootstrap = IpcSender::<Bootstrap>::connect(token).map_err(|error| error.to_string())?;
+    if startup_debug_enabled() {
+        eprintln!("[startup-debug][content] bootstrap_connected");
+    }
     bootstrap
         .send(Bootstrap {
             command_sender,
             event_receiver,
         })
         .map_err(|error| error.to_string())?;
+    if startup_debug_enabled() {
+        eprintln!("[startup-debug][content] bootstrap_sent");
+    }
 
     let mut runtime = ContentRuntime::new(event_sender);
     loop {

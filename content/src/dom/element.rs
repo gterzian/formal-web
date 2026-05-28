@@ -11,6 +11,30 @@ use style::dom_apis::{
 
 use super::{DOMException, Node};
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DomRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ElementBoxMetrics {
+    pub border_top: f64,
+    pub border_right: f64,
+    pub border_bottom: f64,
+    pub border_left: f64,
+    pub padding_top: f64,
+    pub padding_right: f64,
+    pub padding_bottom: f64,
+    pub padding_left: f64,
+}
+
 fn attribute_qualified_name(name: &QualName) -> String {
     match name.prefix.as_ref() {
         Some(prefix) => format!("{prefix}:{}", name.local),
@@ -219,6 +243,50 @@ impl Element {
                     .iter()
                     .any(|attribute| attribute_qualified_name(&attribute.name) == normalized_name)
             })
+    }
+
+    /// <https://drafts.csswg.org/cssom-view/#dom-element-getboundingclientrect>
+    pub(crate) fn bounding_client_rect(&self) -> Option<DomRect> {
+        let document = self.node.document.borrow();
+        let mut x = -document.viewport_scroll().x;
+        let mut y = -document.viewport_scroll().y;
+        let mut current = Some(self.node.node_id);
+
+        while let Some(node_id) = current {
+            let node = document.get_node(node_id)?;
+            x += f64::from(node.final_layout.location.x) - node.scroll_offset.x;
+            y += f64::from(node.final_layout.location.y) - node.scroll_offset.y;
+            current = node.parent;
+        }
+
+        let node = document.get_node(self.node.node_id)?;
+        let width = f64::from(node.final_layout.size.width).max(0.0);
+        let height = f64::from(node.final_layout.size.height).max(0.0);
+        Some(DomRect {
+            x,
+            y,
+            width,
+            height,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+            left: x,
+        })
+    }
+
+    pub(crate) fn box_metrics(&self) -> Option<ElementBoxMetrics> {
+        let document = self.node.document.borrow();
+        let node = document.get_node(self.node.node_id)?;
+        Some(ElementBoxMetrics {
+            border_top: f64::from(node.final_layout.border.top),
+            border_right: f64::from(node.final_layout.border.right),
+            border_bottom: f64::from(node.final_layout.border.bottom),
+            border_left: f64::from(node.final_layout.border.left),
+            padding_top: f64::from(node.final_layout.padding.top),
+            padding_right: f64::from(node.final_layout.padding.right),
+            padding_bottom: f64::from(node.final_layout.padding.bottom),
+            padding_left: f64::from(node.final_layout.padding.left),
+        })
     }
 
     /// <https://dom.spec.whatwg.org/#dom-element-setattribute>

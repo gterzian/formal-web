@@ -1,0 +1,25 @@
+{
+  "name": "formal-web",
+  "version": "1.0.0",
+  "description": "formal-web is a Rust web-engine prototype in alpha status, with an embedding API, and an optional verification layer that checks recorded runtime traces against the TLA+ specs.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gterzian/formal-web.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/gterzian/formal-web/issues"
+  },
+  "homepage": "https://github.com/gterzian/formal-web#readme",
+  "devDependencies": {
+    "@types/node": "^25.9.1"
+  }
+}

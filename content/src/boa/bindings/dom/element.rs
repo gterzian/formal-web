@@ -3,7 +3,7 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::builtins::JsArray,
+    object::{ObjectInitializer, builtins::JsArray},
     property::Attribute,
 };
 
@@ -93,6 +93,11 @@ pub(crate) fn register_element_methods(class: &mut ClassBuilder<'_>) -> JsResult
             js_string!("removeAttribute"),
             1,
             NativeFunction::from_fn_ptr(remove_attribute),
+        )
+        .method(
+            js_string!("getBoundingClientRect"),
+            0,
+            NativeFunction::from_fn_ptr(get_bounding_client_rect),
         );
     Ok(())
 }
@@ -273,4 +278,22 @@ fn remove_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
         element.remove_attribute(&name);
     })?;
     Ok(JsValue::undefined())
+}
+
+fn get_bounding_client_rect(
+    this: &JsValue,
+    _: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let rect = with_element_ref(this, |element| element.bounding_client_rect().unwrap_or_default())?;
+    let mut initializer = ObjectInitializer::new(context);
+    initializer.property(js_string!("x"), rect.x, Attribute::all());
+    initializer.property(js_string!("y"), rect.y, Attribute::all());
+    initializer.property(js_string!("width"), rect.width, Attribute::all());
+    initializer.property(js_string!("height"), rect.height, Attribute::all());
+    initializer.property(js_string!("top"), rect.top, Attribute::all());
+    initializer.property(js_string!("right"), rect.right, Attribute::all());
+    initializer.property(js_string!("bottom"), rect.bottom, Attribute::all());
+    initializer.property(js_string!("left"), rect.left, Attribute::all());
+    Ok(initializer.build().into())
 }

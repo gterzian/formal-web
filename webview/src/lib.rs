@@ -215,8 +215,25 @@ impl WebviewProvider {
         source: String,
         timeout: Duration,
     ) -> Result<serde_json::Value, String> {
-        self.user_agent
-            .evaluate_script(traversable_id.0, source, timeout)
+        let runtime_debug_enabled = std::env::var_os("FORMAL_WEB_DEBUG_CDP_RUNTIME").is_some();
+        if runtime_debug_enabled {
+            eprintln!(
+                "[cdp-runtime][webview] evaluate enter traversable={:?} len={} timeout_ms={}",
+                traversable_id,
+                source.len(),
+                timeout.as_millis()
+            );
+        }
+        let result = self.user_agent
+            .evaluate_script(traversable_id.0, source, timeout);
+        if runtime_debug_enabled {
+            eprintln!(
+                "[cdp-runtime][webview] evaluate exit ok={} traversable={:?}",
+                result.is_ok(),
+                traversable_id
+            );
+        }
+        result
     }
 
     pub fn click_element(&self, traversable_id: WebviewId, selector: String) -> Result<(), String> {
