@@ -12,3 +12,4 @@ ipc_messages/target/
 target/
 .DS_Store
 node_modules/
+.pi/collected-sessions/
