@@ -26,6 +26,7 @@ pub(crate) use html_parser::PendingParserScript;
 pub use html_parser::{JsHtmlParserProvider, execute_parser_scripts, parse_html_into_document};
 pub(crate) use hyperlink_element_utils::HyperlinkElementUtils;
 pub use location::Location;
+pub(crate) use location::LocationError;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub use window::Window;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;

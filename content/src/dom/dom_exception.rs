@@ -48,6 +48,11 @@ impl DOMException {
         Self::new(String::new(), String::from("SyntaxError"))
     }
 
+    /// <https://webidl.spec.whatwg.org/#dfn-error-names-table>
+    pub(crate) fn security_error() -> Self {
+        Self::new(String::new(), String::from("SecurityError"))
+    }
+
     /// <https://webidl.spec.whatwg.org/#dom-domexception-message>
     pub(crate) fn message_value(&self) -> &str {
         &self.message
@@ -66,6 +71,7 @@ impl DOMException {
             "NotFoundError" => 8,
             "NotSupportedError" => 9,
             "SyntaxError" => 12,
+            "SecurityError" => 18,
             "AbortError" => 20,
             "TimeoutError" => 23,
             _ => 0,
