@@ -3,11 +3,11 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::builtins::JsArray,
+    object::{ObjectInitializer, builtins::JsArray},
     property::Attribute,
 };
 
-use crate::boa::platform_objects::{collect_child_subtree_node_ids, invalidate_cached_node_ids};
+use crate::boa::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
 use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
 
@@ -93,6 +93,11 @@ pub(crate) fn register_element_methods(class: &mut ClassBuilder<'_>) -> JsResult
             js_string!("removeAttribute"),
             1,
             NativeFunction::from_fn_ptr(remove_attribute),
+        )
+        .method(
+            js_string!("getBoundingClientRect"),
+            0,
+            NativeFunction::from_fn_ptr(get_bounding_client_rect),
         );
     Ok(())
 }
@@ -139,9 +144,7 @@ fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    let dropped_node_ids = with_element_ref(this, |element| {
-        collect_child_subtree_node_ids(&element.node.document, element.node.node_id)
-    })?;
+    let dropped_node_ids = with_element_ref(this, Element::child_subtree_node_ids)?;
     invalidate_cached_node_ids(context, &dropped_node_ids)?;
     with_element_ref(this, |element| {
         element.set_inner_html(&html);
@@ -273,4 +276,22 @@ fn remove_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
         element.remove_attribute(&name);
     })?;
     Ok(JsValue::undefined())
+}
+
+fn get_bounding_client_rect(
+    this: &JsValue,
+    _: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let rect = with_element_ref(this, |element| element.bounding_client_rect().unwrap_or_default())?;
+    let mut initializer = ObjectInitializer::new(context);
+    initializer.property(js_string!("x"), rect.x, Attribute::all());
+    initializer.property(js_string!("y"), rect.y, Attribute::all());
+    initializer.property(js_string!("width"), rect.width, Attribute::all());
+    initializer.property(js_string!("height"), rect.height, Attribute::all());
+    initializer.property(js_string!("top"), rect.top, Attribute::all());
+    initializer.property(js_string!("right"), rect.right, Attribute::all());
+    initializer.property(js_string!("bottom"), rect.bottom, Attribute::all());
+    initializer.property(js_string!("left"), rect.left, Attribute::all());
+    Ok(initializer.build().into())
 }

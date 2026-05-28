@@ -1,13 +1,19 @@
+use std::collections::BTreeMap;
+
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::ObjectInitializer,
+    object::{JsObject, ObjectInitializer},
     property::Attribute,
 };
 
-use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
+use crate::dom::Element;
+use crate::html::{
+    HTMLAnchorElement, HTMLIFrameElement, HTMLElement,
+    inline_style_properties_for_element,
+};
 
 use crate::boa::bindings::dom::{
     register_element_methods, register_event_target_methods, register_node_methods,
@@ -148,5 +154,85 @@ fn set_hidden(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsV
 }
 
 fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    with_html_element_ref(this, |_| ObjectInitializer::new(context).build().into())
+    with_html_element_ref(this, |html_element| {
+        inline_style_object_for_element(&html_element.element, context).map(JsValue::from)
+    })?
+}
+
+fn inline_style_object_for_element(
+    element: &Element,
+    context: &mut Context,
+) -> JsResult<JsObject> {
+    style_declaration_object(&inline_style_properties_for_element(element), context)
+}
+
+pub(crate) fn style_declaration_object(
+    properties: &BTreeMap<String, String>,
+    context: &mut Context,
+) -> JsResult<JsObject> {
+    let mut initializer = ObjectInitializer::new(context);
+    for (name, value) in properties {
+        let value = JsValue::from(JsString::from(value.as_str()));
+        initializer.property(JsString::from(name.as_str()), value.clone(), Attribute::all());
+
+        let alias = camel_case_property_name(name);
+        if alias != *name {
+            initializer.property(JsString::from(alias.as_str()), value, Attribute::all());
+        }
+    }
+    initializer.function(
+        NativeFunction::from_fn_ptr(get_style_property_value),
+        js_string!("getPropertyValue"),
+        1,
+    );
+    Ok(initializer.build())
+}
+
+fn get_style_property_value(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    // Step 1.1 of CSSStyleDeclaration.getPropertyValue(property): if property is not a custom
+    // property, convert it to ASCII lowercase.
+    let property_name = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped()
+        .trim()
+        .to_ascii_lowercase();
+
+    // Step 2: "If property is a case-sensitive match for a property name of a CSS declaration in
+    // the declarations, then return the result of invoking serialize a CSS value of that
+    // declaration."
+    let Some(object) = this.as_object() else {
+        return Ok(JsValue::from(JsString::from("")));
+    };
+    let value = object.get(JsString::from(property_name.as_str()), context)?;
+
+    // Step 3: "Return the empty string."
+    // Note: This snapshot object currently exposes directly materialized longhand values only, so
+    // shorthand serialization still falls through to the empty string.
+    if value.is_undefined() {
+        return Ok(JsValue::from(JsString::from("")));
+    }
+    Ok(value)
+}
+
+fn camel_case_property_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    let mut uppercase_next = false;
+    for ch in name.chars() {
+        if ch == '-' {
+            uppercase_next = true;
+            continue;
+        }
+        if uppercase_next {
+            result.extend(ch.to_uppercase());
+            uppercase_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
 }

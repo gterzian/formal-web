@@ -25,7 +25,7 @@ use crate::dom::{
     EventTarget, Node, UIEvent,
 };
 use crate::html::{
-    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLIFrameElement, HTMLElement,
+    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Location,
     TimerHandler, Window,
 };
 use crate::streams::{
@@ -157,6 +157,9 @@ impl EnvironmentSettingsObject {
             .map_err(|error| error.to_string())?;
         context
             .register_global_class::<Window>()
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_class::<Location>()
             .map_err(|error| error.to_string())?;
         context
             .register_global_class::<ByteLengthQueuingStrategy>()

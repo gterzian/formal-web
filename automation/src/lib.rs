@@ -1,3 +1,5 @@
+mod cdp;
+
 use base64::Engine as _;
 use clap::Args;
 use ipc_messages::content::{NavigableId, WebviewId};
@@ -10,17 +12,15 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const HTTP_BODY_LIMIT: usize = 2 * 1024 * 1024;
-const AUTOMATION_TIMEOUT: Duration = Duration::from_secs(30);
-const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10);
+pub use cdp::{CdpArgs, CdpServerHandle};
+
+pub(crate) const HTTP_BODY_LIMIT: usize = 2 * 1024 * 1024;
+pub(crate) const AUTOMATION_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
-
-fn webdriver_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutomationSnapshot {
@@ -37,6 +37,15 @@ pub struct AutomationVisibleFrameViewport {
     pub offset_y: f32,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CdpEvent {
+    NavigationCommitted {
+        url: String,
+        frame_id: String,
+        timestamp: f64,
+    },
 }
 
 pub enum AutomationCommand {
@@ -74,6 +83,10 @@ pub enum AutomationCommand {
         timeout: Duration,
         reply: mpsc::Sender<Result<Value, String>>,
     },
+    SetCdpEventSink {
+        sink: Option<mpsc::Sender<CdpEvent>>,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
 }
 
 pub trait AutomationHost {
@@ -102,6 +115,7 @@ pub trait AutomationHost {
 #[derive(Default)]
 pub struct AutomationController {
     pending_navigation: Option<PendingAutomationNavigation>,
+    cdp_event_sink: Option<mpsc::Sender<CdpEvent>>,
 }
 
 struct PendingAutomationNavigation {
@@ -159,15 +173,26 @@ impl AutomationController {
             } => {
                 let _ = reply.send(host.automation_evaluate_script(source, timeout));
             }
+            AutomationCommand::SetCdpEventSink { sink, reply } => {
+                self.cdp_event_sink = sink;
+                let _ = reply.send(Ok(()));
+            }
         }
     }
 
     pub fn note_navigation_committed<H: AutomationHost>(&mut self, host: &mut H) {
-        self.complete_pending_navigation_if_ready(host);
+        let Some(snapshot) = self.automation_snapshot_if_ready(host) else {
+            return;
+        };
+        self.emit_navigation_committed(&snapshot);
+        self.complete_pending_navigation(snapshot);
     }
 
     pub fn note_rendering_update<H: AutomationHost>(&mut self, host: &mut H) {
-        self.complete_pending_navigation_if_ready(host);
+        let Some(snapshot) = self.automation_snapshot_if_ready(host) else {
+            return;
+        };
+        self.complete_pending_navigation(snapshot);
     }
 
     pub fn abort_pending_navigation(&mut self, message: String) {
@@ -176,15 +201,47 @@ impl AutomationController {
         }
     }
 
-    fn complete_pending_navigation_if_ready<H: AutomationHost>(&mut self, host: &mut H) {
+    fn automation_snapshot_if_ready<H: AutomationHost>(
+        &mut self,
+        host: &mut H,
+    ) -> Option<AutomationSnapshot> {
         let snapshot = host.automation_snapshot();
         if snapshot.navigable_id.is_none() {
-            return;
+            return None;
         }
+        Some(snapshot)
+    }
+
+    fn emit_navigation_committed(&self, snapshot: &AutomationSnapshot) {
+        let Some(sink) = self.cdp_event_sink.as_ref() else {
+            return;
+        };
+        let Some(url) = snapshot.current_url.clone() else {
+            return;
+        };
+        let Some(frame_id) = snapshot.navigable_id.map(|id| id.to_string()) else {
+            return;
+        };
+
+        let _ = sink.send(CdpEvent::NavigationCommitted {
+            url,
+            frame_id,
+            timestamp: cdp_timestamp_now(),
+        });
+    }
+
+    fn complete_pending_navigation(&mut self, snapshot: AutomationSnapshot) {
         if let Some(pending_navigation) = self.pending_navigation.take() {
             let _ = pending_navigation.reply.send(Ok(snapshot));
         }
     }
+}
+
+fn cdp_timestamp_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 #[derive(Clone)]
@@ -330,6 +387,21 @@ impl AutomationRuntime {
         })?
     }
 
+    pub fn set_cdp_event_sink(
+        &self,
+        sink: Option<mpsc::Sender<CdpEvent>>,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::SetCdpEventSink { sink, reply })?;
+        receiver.recv_timeout(timeout).map_err(|error| {
+            format!(
+                "timed out after {} ms waiting to update the CDP event sink: {error}",
+                timeout.as_millis()
+            )
+        })?
+    }
+
     pub fn request_exit(&self) -> Result<(), String> {
         (self.request_exit)()
     }
@@ -354,6 +426,9 @@ pub struct WebDriverArgs {
     pub port: u16,
 
     #[arg(long)]
+    pub cdp_port: Option<u16>,
+
+    #[arg(long)]
     pub headless: bool,
 
     #[arg(long, value_name = "URL")]
@@ -364,10 +439,10 @@ pub struct WebDriverArgs {
 }
 
 #[derive(Debug)]
-struct HttpRequest {
-    method: String,
-    target: String,
-    body: Vec<u8>,
+pub(crate) struct HttpRequest {
+    pub(crate) method: String,
+    pub(crate) target: String,
+    pub(crate) body: Vec<u8>,
 }
 
 pub struct WebDriverServer {
@@ -525,15 +600,6 @@ fn dispatch_request_inner(
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
 
-    if webdriver_debug_enabled() {
-        eprintln!(
-            "[input-debug][webdriver] request method={} target={} body_bytes={}",
-            request.method,
-            request.target,
-            request.body.len()
-        );
-    }
-
     match (request.method.as_str(), segments.as_slice()) {
         ("GET", ["status"]) => Ok(status_payload(&state.runtime)),
         ("POST", ["session"]) => create_session(state),
@@ -559,15 +625,6 @@ fn dispatch_session_request(
     body: &[u8],
     state: &WebDriverState,
 ) -> Result<Value, WebDriverError> {
-    if webdriver_debug_enabled() {
-        eprintln!(
-            "[input-debug][webdriver] session method={} route=/{} body_bytes={}",
-            method,
-            rest.join("/"),
-            body.len()
-        );
-    }
-
     match (method, rest) {
         ("DELETE", []) => {
             clear_session(state)?;
@@ -604,12 +661,6 @@ fn dispatch_session_request(
         ("POST", ["formal-web", "click"]) => {
             let request: ClickRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
-            if webdriver_debug_enabled() {
-                eprintln!(
-                    "[input-debug][webdriver] click x={:.1} y={:.1}",
-                    request.x, request.y
-                );
-            }
             state
                 .runtime
                 .click(request.x, request.y, AUTOMATION_TIMEOUT)
@@ -628,12 +679,6 @@ fn dispatch_session_request(
         ("POST", ["formal-web", "scroll"]) => {
             let request: ScrollRequest =
                 serde_json::from_slice(body).map_err(WebDriverError::invalid_argument)?;
-            if webdriver_debug_enabled() {
-                eprintln!(
-                    "[input-debug][webdriver] scroll x={:.1} y={:.1} delta=({:.1},{:.1})",
-                    request.x, request.y, request.delta_x, request.delta_y
-                );
-            }
             state
                 .runtime
                 .scroll(
@@ -798,14 +843,14 @@ fn json_error(error: &'static str, message: &str) -> Vec<u8> {
     .expect("webdriver error response serialization failed")
 }
 
-fn find_header_terminator(buffer: &[u8]) -> Option<usize> {
+pub(crate) fn find_header_terminator(buffer: &[u8]) -> Option<usize> {
     buffer
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .map(|position| position + 4)
 }
 
-fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, String> {
+pub(crate) fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(1)))
         .map_err(|error| format!("failed to set WebDriver read timeout: {error}"))?;
@@ -886,7 +931,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, Stri
     }))
 }
 
-fn write_http_response(
+pub(crate) fn write_http_response(
     stream: &mut TcpStream,
     method: &str,
     status: u16,

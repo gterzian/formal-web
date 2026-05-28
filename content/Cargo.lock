@@ -3188,6 +3188,7 @@ dependencies = [
 name = "verification"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
  "image",
  "ipc-channel",

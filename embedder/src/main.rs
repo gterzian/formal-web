@@ -23,6 +23,9 @@ struct Cli {
 enum CommandKind {
     #[command(name = "webdriver")]
     WebDriver(automation::WebDriverArgs),
+
+    #[command(name = "cdp")]
+    Cdp(automation::CdpArgs),
 }
 
 #[derive(Clone, Default)]
@@ -53,23 +56,46 @@ fn run_webdriver(
     args: automation::WebDriverArgs,
     trace_sender: Option<TraceSender>,
 ) -> Result<(), String> {
-    let server = automation::WebDriverServer::start(
+    let runtime = automation::automation_bridge(
+        |command| event_loop::send_user_event(event_loop::FormalWebUserEvent::Automation(command)),
+        || event_loop::send_user_event(event_loop::FormalWebUserEvent::Exit),
+        event_loop::event_loop_is_ready,
+    );
+    let webdriver_server = automation::WebDriverServer::start(
         args.port,
         args.exit_on_session_delete,
-        automation::automation_bridge(
-            |command| {
-                event_loop::send_user_event(event_loop::FormalWebUserEvent::Automation(command))
-            },
-            || event_loop::send_user_event(event_loop::FormalWebUserEvent::Exit),
-            event_loop::event_loop_is_ready,
-        ),
+        runtime.clone(),
     )?;
+    let cdp_server = args
+        .cdp_port
+        .map(|port| automation::CdpServerHandle::start(port, runtime.clone()))
+        .transpose()?;
     let result = run_app_with_options(AppRunOptions {
         headless: args.headless,
         startup_url: args
             .startup_url
             .or_else(|| Some(String::from("about:blank"))),
         window_title: Some(format!("formal-web WebDriver :{}", args.port)),
+        trace_sender,
+    });
+    drop(cdp_server);
+    drop(webdriver_server);
+    result
+}
+
+fn run_cdp(args: automation::CdpArgs, trace_sender: Option<TraceSender>) -> Result<(), String> {
+    let runtime = automation::automation_bridge(
+        |command| event_loop::send_user_event(event_loop::FormalWebUserEvent::Automation(command)),
+        || event_loop::send_user_event(event_loop::FormalWebUserEvent::Exit),
+        event_loop::event_loop_is_ready,
+    );
+    let server = automation::CdpServerHandle::start(args.port, runtime)?;
+    let result = run_app_with_options(AppRunOptions {
+        headless: args.headless,
+        startup_url: args
+            .startup_url
+            .or_else(|| Some(String::from("about:blank"))),
+        window_title: Some(format!("formal-web CDP :{}", args.port)),
         trace_sender,
     });
     drop(server);
@@ -133,6 +159,7 @@ fn main() -> ExitCode {
             ..AppRunOptions::default()
         }),
         Some(CommandKind::WebDriver(args)) => run_webdriver(args, trace_sender.clone()),
+        Some(CommandKind::Cdp(args)) => run_cdp(args, trace_sender.clone()),
     };
     drop(trace_sender);
 

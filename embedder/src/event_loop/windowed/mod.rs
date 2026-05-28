@@ -422,6 +422,10 @@ impl HeadedEmbedderApp {
     }
 
     fn handle_navigation_requested(&mut self, webview_id: WebviewId, destination_url: String) {
+        if self.current_webview_id.is_none() {
+            self.current_webview_id = Some(webview_id);
+            self.has_top_level_traversable = true;
+        }
         if self.current_webview_id == Some(webview_id) {
             self.browser.begin_navigation(PendingNavigation {
                 url: destination_url,
@@ -451,6 +455,10 @@ impl HeadedEmbedderApp {
     }
 
     fn handle_navigation_completed(&mut self, completed: NavigationCompleted) {
+        if self.current_webview_id.is_none() {
+            self.current_webview_id = Some(completed.webview_id);
+            self.has_top_level_traversable = true;
+        }
         let is_current = self.current_webview_id == Some(completed.webview_id);
 
         match &completed.status {

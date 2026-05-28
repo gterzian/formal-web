@@ -7,11 +7,18 @@ use boa_engine::{
     property::Attribute,
 };
 
+use crate::boa::platform_objects::{
+    location_object as cached_location_object, store_location_object,
+};
 use crate::boa::with_event_target_mut;
-use crate::html::{Window, WindowOrWorkerGlobalScope};
+use crate::html::{
+    Location, Window, WindowOrWorkerGlobalScope, window_computed_style_properties_for_element,
+};
 use crate::webidl::{callback_function_value, nullable_value};
 
-use crate::boa::bindings::dom::register_event_target_methods;
+use crate::boa::bindings::dom::{register_event_target_methods, with_element_ref};
+
+use super::{hyperlink_element_utils::document_creation_url, style_declaration_object};
 
 impl Class for Window {
     const NAME: &'static str = "Window";
@@ -53,6 +60,12 @@ pub(crate) fn register_window_methods(class: &mut ClassBuilder<'_>) -> JsResult<
             None,
             Attribute::all(),
         )
+        .accessor(
+            js_string!("location"),
+            Some(NativeFunction::from_fn_ptr(get_location).to_js_function(&realm)),
+            None,
+            Attribute::all(),
+        )
         .method(
             js_string!("requestAnimationFrame"),
             1,
@@ -82,6 +95,11 @@ pub(crate) fn register_window_methods(class: &mut ClassBuilder<'_>) -> JsResult<
             js_string!("clearInterval"),
             1,
             NativeFunction::from_fn_ptr(clear_interval_method),
+        )
+        .method(
+            js_string!("getComputedStyle"),
+            1,
+            NativeFunction::from_fn_ptr(get_computed_style_method),
         );
     Ok(())
 }
@@ -144,6 +162,10 @@ fn get_parent(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
 
 fn get_top(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(current_window_object(this, context)))
+}
+
+fn get_location(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::from(location_object(context)?))
 }
 
 fn cancel_animation_frame_method(
@@ -210,6 +232,41 @@ fn clear_interval_method(
     let window = downcast_window(&window_object)?;
     window.clear_interval(timer_id);
     Ok(JsValue::undefined())
+}
+
+fn get_computed_style_method(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let pseudo_elt = if args.get_or_undefined(1).is_null_or_undefined() {
+        None
+    } else {
+        Some(
+            args.get_or_undefined(1)
+                .to_string(context)?
+                .to_std_string_escaped(),
+        )
+    };
+
+    with_element_ref(args.get_or_undefined(0), |element| {
+        style_declaration_object(
+            &window_computed_style_properties_for_element(element, pseudo_elt.as_deref()),
+            context,
+        )
+        .map(JsValue::from)
+    })?
+}
+
+fn location_object(context: &mut Context) -> JsResult<JsObject> {
+    if let Some(object) = cached_location_object(context)? {
+        return Ok(object);
+    }
+
+    let url = document_creation_url(context)?;
+    let object = Location::from_data(Location::new(url), context)?;
+    store_location_object(context, object.clone())?;
+    Ok(object)
 }
 
 fn current_window_object(this: &JsValue, context: &Context) -> JsObject {

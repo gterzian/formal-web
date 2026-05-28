@@ -63,23 +63,17 @@ pub struct EventLoopEntry {
 
 /// navigation debug output related to HTML navigation continuations.
 fn log_navigation_debug(message: impl AsRef<str>) {
-    if std::env::var_os("FORMAL_WEB_DEBUG_NAVIGATION").is_some() {
-        eprintln!("[navigation-debug][content-process] {}", message.as_ref());
-    }
+    let _ = message;
 }
 
 /// render-state debug output related to update-the-rendering work.
 fn log_render_state_debug(message: impl AsRef<str>) {
-    if std::env::var_os("FORMAL_WEB_DEBUG_RENDER_STATE").is_some() {
-        eprintln!("[render-state][content-process] {}", message.as_ref());
-    }
+    let _ = message;
 }
 
 /// timer debug output related to HTML timers and fetch watchdogs.
 fn log_timer_debug(message: impl AsRef<str>) {
-    if std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some() {
-        eprintln!("[timer-debug][user-agent] {}", message.as_ref());
-    }
+    let _ = message;
 }
 
 /// translating embedder color-scheme state into content IPC messages.

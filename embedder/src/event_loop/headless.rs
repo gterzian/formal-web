@@ -25,7 +25,11 @@ const HEADLESS_VIEWPORT_WIDTH: u32 = 800;
 const HEADLESS_VIEWPORT_HEIGHT: u32 = 600;
 
 fn input_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
+    false
+}
+
+fn startup_debug_enabled() -> bool {
+    false
 }
 
 fn ui_event_summary(event: &UiEvent) -> String {
@@ -81,6 +85,45 @@ impl Default for HeadlessEmbedderApp {
 }
 
 impl HeadlessEmbedderApp {
+    fn ensure_started(&mut self, event_loop: &ActiveEventLoop) {
+        if self.started {
+            return;
+        }
+        self.started = true;
+        self.apply_viewport_snapshot();
+
+        let startup_url = event_loop_options().startup_url;
+        if startup_debug_enabled() {
+            eprintln!(
+                "[startup-debug][embedder-headless] ensure_started startup_url={:?}",
+                startup_url
+            );
+        }
+        match startup_destination_url(startup_url.as_deref()) {
+            Ok(destination_url) => {
+                if startup_debug_enabled() {
+                    eprintln!(
+                        "[startup-debug][embedder-headless] begin startup navigation url={}",
+                        destination_url
+                    );
+                }
+                self.browser.begin_navigation(PendingNavigation {
+                    url: destination_url,
+                });
+                if let Some(provider) = self.provider.as_ref()
+                    && provider.start(startup_url.as_deref()).is_err()
+                {
+                    update_window_viewport_snapshot(None);
+                    event_loop.exit();
+                }
+            }
+            Err(_error) => {
+                update_window_viewport_snapshot(None);
+                event_loop.exit();
+            }
+        }
+    }
+
     fn apply_viewport_snapshot(&mut self) {
         let viewport_snapshot = headless_viewport_snapshot();
         update_window_viewport_snapshot(Some(viewport_snapshot));
@@ -107,6 +150,19 @@ impl HeadlessEmbedderApp {
     }
 
     fn handle_navigation_requested(&mut self, webview_id: WebviewId, destination_url: String) {
+        if startup_debug_enabled() {
+            eprintln!(
+                "[startup-debug][embedder-headless] navigation_requested webview={} current_before={:?} url={}",
+                webview_id.0,
+                self.current_webview_id,
+                destination_url
+            );
+        }
+        if self.current_webview_id.is_none() {
+            self.current_webview_id = Some(webview_id);
+            self.has_top_level_traversable = true;
+            self.apply_viewport_snapshot();
+        }
         if self.current_webview_id == Some(webview_id) {
             self.browser.begin_navigation(PendingNavigation {
                 url: destination_url,
@@ -134,6 +190,19 @@ impl HeadlessEmbedderApp {
     }
 
     fn handle_navigation_completed(&mut self, completed: NavigationCompleted) {
+        if startup_debug_enabled() {
+            eprintln!(
+                "[startup-debug][embedder-headless] navigation_completed webview={} current_before={:?} status={:?}",
+                completed.webview_id.0,
+                self.current_webview_id,
+                completed.status
+            );
+        }
+        if self.current_webview_id.is_none() {
+            self.current_webview_id = Some(completed.webview_id);
+            self.has_top_level_traversable = true;
+            self.apply_viewport_snapshot();
+        }
         let is_current = self.current_webview_id == Some(completed.webview_id);
 
         match &completed.status {
@@ -329,8 +398,19 @@ impl AutomationHost for HeadlessEmbedderApp {
         source: String,
         timeout: Duration,
     ) -> Result<Value, String> {
+        if startup_debug_enabled() {
+            eprintln!(
+                "[startup-debug][embedder-headless] automation_evaluate current_webview={:?} has_top_level={} script_len={}",
+                self.current_webview_id,
+                self.has_top_level_traversable,
+                source.len()
+            );
+        }
         match self.provider.as_ref().zip(self.current_webview_id) {
-            Some((provider, webview_id)) => provider.evaluate_script(webview_id, source, timeout),
+            Some((provider, webview_id)) => {
+                let result = provider.evaluate_script(webview_id, source, timeout);
+                result
+            }
             None => Err(String::from(
                 "no active top-level traversable is available for script execution",
             )),
@@ -340,30 +420,7 @@ impl AutomationHost for HeadlessEmbedderApp {
 
 impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.started {
-            return;
-        }
-        self.started = true;
-        self.apply_viewport_snapshot();
-
-        let startup_url = event_loop_options().startup_url;
-        match startup_destination_url(startup_url.as_deref()) {
-            Ok(destination_url) => {
-                self.browser.begin_navigation(PendingNavigation {
-                    url: destination_url,
-                });
-                if let Some(provider) = self.provider.as_ref()
-                    && provider.start(startup_url.as_deref()).is_err()
-                {
-                    update_window_viewport_snapshot(None);
-                    event_loop.exit();
-                }
-            }
-            Err(_error) => {
-                update_window_viewport_snapshot(None);
-                event_loop.exit();
-            }
-        }
+        self.ensure_started(event_loop);
     }
 
     fn window_event(
@@ -374,7 +431,9 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
     ) {
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.ensure_started(event_loop);
+    }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
@@ -399,6 +458,14 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 self.handle_navigation_completed(completed);
             }
             FormalWebUserEvent::NewWebview(webview_id, target_name) => {
+                if startup_debug_enabled() {
+                    eprintln!(
+                        "[startup-debug][embedder-headless] new_webview webview={} current_before={:?} target_name={}",
+                        webview_id.0,
+                        self.current_webview_id,
+                        target_name
+                    );
+                }
                 let _ = target_name;
                 self.has_top_level_traversable = true;
                 self.current_webview_id = Some(webview_id);

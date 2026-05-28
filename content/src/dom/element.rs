@@ -11,6 +11,30 @@ use style::dom_apis::{
 
 use super::{DOMException, Node};
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DomRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ElementBoxMetrics {
+    pub border_top: f64,
+    pub border_right: f64,
+    pub border_bottom: f64,
+    pub border_left: f64,
+    pub padding_top: f64,
+    pub padding_right: f64,
+    pub padding_bottom: f64,
+    pub padding_left: f64,
+}
+
 fn attribute_qualified_name(name: &QualName) -> String {
     match name.prefix.as_ref() {
         Some(prefix) => format!("{prefix}:{}", name.local),
@@ -22,6 +46,16 @@ fn split_qualified_name(qualified_name: &str) -> (Option<Prefix>, LocalName) {
     match qualified_name.split_once(':') {
         Some((prefix, local_name)) => (Some(Prefix::from(prefix)), LocalName::from(local_name)),
         None => (None, LocalName::from(qualified_name)),
+    }
+}
+
+fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
+    let Some(node) = document.get_node(node_id) else {
+        return;
+    };
+    node_ids.push(node_id);
+    for child_id in node.children.iter().copied() {
+        collect_subtree_node_ids(document, child_id, node_ids);
     }
 }
 
@@ -94,6 +128,19 @@ impl Element {
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         mutator.set_inner_html(self.node.node_id, html);
+    }
+
+    pub(crate) fn child_subtree_node_ids(&self) -> Vec<usize> {
+        let document = self.node.document.borrow();
+        let Some(node) = document.get_node(self.node.node_id) else {
+            return Vec::new();
+        };
+
+        let mut node_ids = Vec::new();
+        for child_id in node.children.iter().copied() {
+            collect_subtree_node_ids(&document, child_id, &mut node_ids);
+        }
+        node_ids
     }
 
     /// <https://dom.spec.whatwg.org/#dom-parentnode-queryselector>
@@ -219,6 +266,107 @@ impl Element {
                     .iter()
                     .any(|attribute| attribute_qualified_name(&attribute.name) == normalized_name)
             })
+    }
+
+    /// <https://dom.spec.whatwg.org/#connected>
+    pub(crate) fn is_connected(&self) -> bool {
+        let document = self.node.document.borrow();
+        let mut current = Some(self.node.node_id);
+
+        while let Some(node_id) = current {
+            if node_id == 0 {
+                return true;
+            }
+
+            current = document.get_node(node_id).and_then(|node| node.parent);
+        }
+
+        false
+    }
+
+    /// <https://drafts.csswg.org/cssom-view/#dom-element-getboundingclientrect>
+    pub(crate) fn bounding_client_rect(&self) -> Option<DomRect> {
+        // Step 1 of getBoundingClientRect(): "Let list be the result of invoking
+        // getClientRects() on element."
+        let list = self.client_rects_for_layout_box();
+
+        // Step 2: "If the list is empty, return a DOMRect object whose x, y, width and height
+        // members are zero."
+        if list.is_empty() {
+            return Some(DomRect::default());
+        }
+
+        // Step 3: "If all rectangles in list have zero width or height, return the first
+        // rectangle in list."
+        if list.iter().all(|rect| rect.width == 0.0 || rect.height == 0.0) {
+            return list.first().copied();
+        }
+
+        // Step 4: "Otherwise, return a DOMRect object describing the smallest rectangle that
+        // includes all of the rectangles in list of which the height or width is not zero."
+        let mut non_zero_rects = list
+            .into_iter()
+            .filter(|rect| rect.width != 0.0 && rect.height != 0.0);
+        let first_rect = non_zero_rects.next()?;
+        let smallest_enclosing_rect = non_zero_rects.fold(first_rect, |accumulator, rect| DomRect {
+            x: accumulator.x.min(rect.x),
+            y: accumulator.y.min(rect.y),
+            width: accumulator.right.max(rect.right) - accumulator.x.min(rect.x),
+            height: accumulator.bottom.max(rect.bottom) - accumulator.y.min(rect.y),
+            top: accumulator.top.min(rect.top),
+            right: accumulator.right.max(rect.right),
+            bottom: accumulator.bottom.max(rect.bottom),
+            left: accumulator.left.min(rect.left),
+        });
+
+        Some(smallest_enclosing_rect)
+    }
+
+    fn client_rects_for_layout_box(&self) -> Vec<DomRect> {
+        let document = self.node.document.borrow();
+        let mut x = -document.viewport_scroll().x;
+        let mut y = -document.viewport_scroll().y;
+        let mut current = Some(self.node.node_id);
+
+        while let Some(node_id) = current {
+            let Some(node) = document.get_node(node_id) else {
+                return Vec::new();
+            };
+            x += f64::from(node.final_layout.location.x) - node.scroll_offset.x;
+            y += f64::from(node.final_layout.location.y) - node.scroll_offset.y;
+            current = node.parent;
+        }
+
+        let Some(node) = document.get_node(self.node.node_id) else {
+            return Vec::new();
+        };
+        let width = f64::from(node.final_layout.size.width).max(0.0);
+        let height = f64::from(node.final_layout.size.height).max(0.0);
+        vec![DomRect {
+            x,
+            y,
+            width,
+            height,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+            left: x,
+        }]
+    }
+
+    pub(crate) fn box_metrics(&self) -> Option<ElementBoxMetrics> {
+        let document = self.node.document.borrow();
+        let node = document.get_node(self.node.node_id)?;
+        Some(ElementBoxMetrics {
+            border_top: f64::from(node.final_layout.border.top),
+            border_right: f64::from(node.final_layout.border.right),
+            border_bottom: f64::from(node.final_layout.border.bottom),
+            border_left: f64::from(node.final_layout.border.left),
+            padding_top: f64::from(node.final_layout.padding.top),
+            padding_right: f64::from(node.final_layout.padding.right),
+            padding_bottom: f64::from(node.final_layout.padding.bottom),
+            padding_left: f64::from(node.final_layout.padding.left),
+        })
     }
 
     /// <https://dom.spec.whatwg.org/#dom-element-setattribute>

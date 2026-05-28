@@ -113,6 +113,9 @@ pub struct GlobalScope {
     /// <https://dom.spec.whatwg.org/#interface-document>
     document_object: GcRefCell<Option<JsObject>>,
 
+    /// <https://html.spec.whatwg.org/#dom-location>
+    location_object: GcRefCell<Option<JsObject>>,
+
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
     node_objects: GcRefCell<Vec<CachedNodeObject>>,
 
@@ -144,6 +147,7 @@ impl GlobalScope {
             kind,
             document,
             document_object: GcRefCell::new(None),
+            location_object: GcRefCell::new(None),
             node_objects: GcRefCell::new(Vec::new()),
             animation_frame_callback_identifier: Cell::new(0),
             animation_frame_callbacks: GcRefCell::new(Vec::new()),
@@ -205,6 +209,14 @@ impl GlobalScope {
 
     pub(crate) fn store_document_object(&self, object: JsObject) {
         self.document_object.borrow_mut().replace(object);
+    }
+
+    pub(crate) fn location_object(&self) -> Option<JsObject> {
+        self.location_object.borrow().clone()
+    }
+
+    pub(crate) fn store_location_object(&self, object: JsObject) {
+        self.location_object.borrow_mut().replace(object);
     }
 
     pub(crate) fn cached_node_object(&self, node_id: usize) -> Option<JsObject> {

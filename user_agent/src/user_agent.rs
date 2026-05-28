@@ -24,6 +24,10 @@ use std::time::Duration;
 use url::Url;
 use verification::{TLATracer, TraceSender};
 
+fn startup_debug_enabled() -> bool {
+    std::env::var_os("FORMAL_WEB_DEBUG_STARTUP").is_some()
+}
+
 use crate::event_loop::{
     EventLoopCommand, EventLoopEntry, spawn_event_loop_entry, stop_event_loop_entry,
     traversable_viewport_command,
@@ -67,10 +71,24 @@ fn sidecar_search_paths(executable_directory: &Path, executable_name: &str) -> V
     }
 
     if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
-        search_paths.push(PathBuf::from(target_dir).join(profile_dir_name).join(executable_name));
+        let target_dir = PathBuf::from(target_dir);
+        search_paths.push(
+            target_dir
+                .join("sidecar-prebuild")
+                .join(profile_dir_name)
+                .join(executable_name),
+        );
+        search_paths.push(target_dir.join(profile_dir_name).join(executable_name));
     }
 
     for ancestor in executable_directory.ancestors().skip(1) {
+        search_paths.push(
+            ancestor
+                .join("target")
+                .join("sidecar-prebuild")
+                .join(profile_dir_name)
+                .join(executable_name),
+        );
         search_paths.push(
             ancestor
                 .join("target")
@@ -908,9 +926,15 @@ impl UserAgent {
                 reply: reply_sender,
             })
             .map_err(|error| format!("failed to send script evaluation request: {error}"))?;
-        reply_receiver
-            .recv()
-            .map_err(|error| format!("script evaluation reply channel closed: {error}"))?
+        let result = reply_receiver
+            .recv_timeout(timeout)
+            .map_err(|error| {
+                format!(
+                    "timed out after {} ms waiting for script evaluation reply: {error}",
+                    timeout.as_millis()
+                )
+            })?;
+        result
     }
 }
 
@@ -1464,6 +1488,15 @@ impl UserAgentWorker {
             .map(|entry| entry.command_sender.clone())
             .ok_or_else(|| format!("missing event loop entry for id {}", agent.event_loop_id))?;
 
+        if startup_debug_enabled() {
+            eprintln!(
+                "[startup-debug][user-agent] create_new_top_level_traversable sending CreateEmptyDocument traversable={} document={} event_loop={}",
+                traversable_id,
+                document_id,
+                agent.event_loop_id
+            );
+        }
+
         // Step 4: Let documentState be a new document state, with
         // The Rust model splits document-state fields across `Traversable`,
         // `DocumentState`, and `traversable_target_names`.
@@ -1479,6 +1512,15 @@ impl UserAgentWorker {
                 top_level_traversable_id: traversable_id,
             },
         )?;
+
+        if startup_debug_enabled() {
+            eprintln!(
+                "[startup-debug][user-agent] create_new_top_level_traversable CreateEmptyDocument queued traversable={} document={} event_loop={}",
+                traversable_id,
+                document_id,
+                agent.event_loop_id
+            );
+        }
 
         self.state
             .event_loops
@@ -1571,7 +1613,14 @@ impl UserAgentWorker {
         // openerNavigableForWebDriver.
         // The embedder notification is the model's observable hook for a new top-level
         // traversable.
-        self.host.new_webview(WebviewId(traversable_id), target_name)?;
+        if startup_debug_enabled() {
+            eprintln!(
+                "[startup-debug][user-agent] create_new_top_level_traversable traversable={} target_name={}",
+                traversable_id,
+                target_name
+            );
+        }
+        self.host.new_webview(WebviewId(traversable_id), target_name.clone())?;
         self.webview_provider_sender
             .send(WebviewProviderMessage::NewWebview {
                 webview_id: WebviewId(traversable_id),
@@ -2208,6 +2257,12 @@ impl UserAgentWorker {
     /// continues through the normal user-agent `navigate` / fetch / finalization path for the
     /// supplied startup URL.
     fn create_a_fresh_top_level_traversable(&mut self, destination_url: String) {
+        if startup_debug_enabled() {
+            eprintln!(
+                "[startup-debug][user-agent] create_fresh_top_level_traversable destination_url={}",
+                destination_url
+            );
+        }
         let result = (|| {
             // Step 1: Let traversable be the result of creating a new top-level traversable given
             // null and the empty string.
@@ -2608,7 +2663,7 @@ impl UserAgentWorker {
         &mut self,
         traversable_id: NavigableId,
         source: String,
-        timeout: Duration,
+        _timeout: Duration,
         reply: Sender<Result<serde_json::Value, String>>,
     ) {
         let error_reply = reply.clone();
@@ -2641,7 +2696,6 @@ impl UserAgentWorker {
                 )),
             };
 
-        let _ = timeout;
         if let Err(error) = send_result {
             let _ = error_reply.send(Err(error));
         }
