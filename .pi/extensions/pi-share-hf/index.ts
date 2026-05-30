@@ -15,14 +15,17 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const result = collectSession(sessionFile, ctx.cwd);
+      const header = ctx.sessionManager.getHeader();
+      const entries = ctx.sessionManager.getEntries();
+
+      const result = collectSession(sessionFile, header, entries, ctx.cwd);
       if (!result) {
         ctx.ui.notify("Failed to collect session (file not found or unreadable)", "error");
         return;
       }
 
       ctx.ui.notify(
-        `Collected session: ${result.sessionName} (${result.fileName})`,
+        `Collected session: ${result.sessionName} (${result.sizeBytes} bytes, ${entries.length} entries)`,
         "info",
       );
     },
@@ -51,7 +54,10 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      const result = collectSession(sessionFile, ctx.cwd);
+      const header = ctx.sessionManager.getHeader();
+      const entries = ctx.sessionManager.getEntries();
+
+      const result = collectSession(sessionFile, header, entries, ctx.cwd);
       if (!result) {
         return {
           content: [
@@ -72,7 +78,7 @@ export default function (pi: ExtensionAPI) {
               `Session collected successfully.\n` +
               `  Session: ${result.sessionName}\n` +
               `  File: ${result.fileName}\n` +
-              `  Size: ${result.sizeBytes} bytes\n` +
+              `  Size: ${result.sizeBytes} bytes (${entries.length} entries)\n` +
               `  Hash: ${result.hash}\n` +
               `  Path: ${result.collectedPath}`,
           },
@@ -84,6 +90,7 @@ export default function (pi: ExtensionAPI) {
           sizeBytes: result.sizeBytes,
           hash: result.hash,
           collectedPath: result.collectedPath,
+          entryCount: entries.length,
         },
       };
     },
