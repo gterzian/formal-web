@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { SessionHeader } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 export interface CollectResult {
   /** The session display name (basename without .jsonl). */
@@ -16,58 +18,75 @@ export interface CollectResult {
 }
 
 /**
- * Collect a pi session file by copying it to a local archive directory.
+ * Collect a pi session file to a local archive directory.
  *
- * @param sessionFile - Full path to the session file (from sessionManager.getSessionFile()).
+ * Uses in-memory session data (header + entries) to reconstruct the JSONL file.
+ * This avoids the race condition of copying a file that pi may be concurrently appending to.
+ *
+ * @param sessionFile - Full path to the session file (used for file naming).
+ * @param header      - Session header from sessionManager.getHeader().
+ * @param entries     - Session entries from sessionManager.getEntries().
  * @param cwd         - Current working directory (used to locate `.pi/collected-sessions/`).
- * @returns CollectResult on success, undefined if the session file doesn't exist or is unreadable.
+ * @returns CollectResult on success, undefined if something went wrong.
  */
 export function collectSession(
   sessionFile: string,
+  header: SessionHeader | null,
+  entries: SessionEntry[],
   cwd: string,
 ): CollectResult | undefined {
-  // Resolve the archive directory relative to the project root.
-  // Use .pi/collected-sessions/ inside the project root.
   const projectRoot = findProjectRoot(cwd);
   if (!projectRoot) return undefined;
 
   const archiveDir = path.join(projectRoot, ".pi", "collected-sessions");
   fs.mkdirSync(archiveDir, { recursive: true });
 
-  // Determine the session file name.
   const fileName = path.basename(sessionFile);
   if (!fileName.endsWith(".jsonl")) return undefined;
 
   const destPath = path.join(archiveDir, fileName);
 
-  // Copy the session file.
-  if (!fs.existsSync(sessionFile)) {
-    return undefined;
-  }
-
+  // Serialize from in-memory data to avoid race conditions with concurrent file writes.
+  let jsonlContent: string;
   try {
-    fs.copyFileSync(sessionFile, destPath);
+    const lines: string[] = [];
+    // First line: session header
+    if (header) {
+      lines.push(JSON.stringify(header));
+    }
+    // Remaining lines: session entries
+    for (const entry of entries) {
+      lines.push(JSON.stringify(entry));
+    }
+    jsonlContent = lines.join("\n");
+    if (lines.length > 0) {
+      jsonlContent += "\n";
+    }
   } catch {
     return undefined;
   }
 
-  // Compute SHA-256 hash of the collected copy.
-  const hash = sha256File(destPath);
-  const stat = fs.statSync(destPath);
+  try {
+    fs.writeFileSync(destPath, jsonlContent, "utf-8");
+  } catch {
+    return undefined;
+  }
+
+  // Compute SHA-256 hash of the collected content.
+  const hash = sha256Content(jsonlContent);
 
   return {
     sessionName: fileName.replace(/\.jsonl$/, ""),
     fileName,
     collectedPath: destPath,
     hash,
-    sizeBytes: stat.size,
+    sizeBytes: Buffer.byteLength(jsonlContent, "utf-8"),
   };
 }
 
-function sha256File(filePath: string): string {
+function sha256Content(content: string): string {
   const hash = createHash("sha256");
-  const data = fs.readFileSync(filePath);
-  hash.update(data);
+  hash.update(content, "utf-8");
   return `sha256:${hash.digest("hex")}`;
 }
 
@@ -76,7 +95,7 @@ function sha256File(filePath: string): string {
  * This is the project root where pi stores its local extensions and where we
  * place the collected sessions archive.
  */
-function findProjectRoot(startDir: string): string | undefined {
+export function findProjectRoot(startDir: string): string | undefined {
   let current = path.resolve(startDir);
   // Limit traversal depth to avoid infinite loops.
   for (let i = 0; i < 32; i++) {
