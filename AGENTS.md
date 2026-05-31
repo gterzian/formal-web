@@ -43,7 +43,7 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Use neutral, factual language.
 - Use the `web_standards` extension tools (`spec_section`, `spec_algorithm`, `spec_select`, `spec_html`) to read spec content instead of reading local copies or fetching directly.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
-- The word "runtime" is forbidden in this repo. Why? Because the entire thing is a "runtime", one that implements the Web, and so the concept of runtime should never be used to model or document some component of what is basically one big runtime. Instead of reaching for this forbidden word, think about what the thing you want to name does, what its role in the system is, and come-up with something that actually explains what it is the thing does. 
+- The word "runtime" is forbidden in this repo. Why? Because the entire thing is a "runtime", one that implements the Web, and so the concept of runtime should never be used to model or document some component of what is basically one big runtime. Instead of reaching for this forbidden word, think about what the thing you want to name does, what its role in the system is, and come-up with something descriptive. 
 
 # End-of-Task Flow
 
