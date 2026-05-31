@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { SessionHeader } from "@earendil-works/pi-coding-agent";
@@ -41,8 +41,16 @@ export function collectSession(
   const archiveDir = path.join(projectRoot, ".pi", "collected-sessions");
   fs.mkdirSync(archiveDir, { recursive: true });
 
-  const fileName = path.basename(sessionFile);
-  if (!fileName.endsWith(".jsonl")) return undefined;
+  const originalName = path.basename(sessionFile);
+  if (!originalName.endsWith(".jsonl")) return undefined;
+
+  // Generate a unique file name by appending a timestamp and random suffix.
+  // This ensures every collection creates a separate file, even when called
+  // multiple times against the same pi session file.
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const rand = randomBytes(4).toString("hex");
+  const stem = originalName.replace(/\.jsonl$/, "");
+  const fileName = `${stem}_${timestamp}_${rand}.jsonl`;
 
   const destPath = path.join(archiveDir, fileName);
 
