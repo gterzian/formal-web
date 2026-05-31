@@ -15,10 +15,16 @@ set -euo pipefail
 COLLECTED=".pi/collected-sessions"
 
 echo "=== Uploading collected sessions to HF dataset ==="
-hf upload formal-web/pi-coding-sessions "$COLLECTED/" --repo-type=dataset --create-pr
 
-echo ""
-echo "=== Clearing local collected-sessions directory ==="
-rm -rf "$COLLECTED"/*
-
-echo "=== Done ==="
+echo "Using hf upload to upload $COLLECTED/ to formal-web/pi-coding-sessions..."
+if hf upload formal-web/pi-coding-sessions "$COLLECTED/" --repo-type=dataset --create-pr; then
+    echo ""
+    echo "=== Upload succeeded — clearing local collected-sessions directory ==="
+    rm -rf "$COLLECTED"/*
+    echo "=== Done ==="
+else
+    exit_code=$?
+    echo ""
+    echo "=== Upload FAILED (exit code $exit_code) — local collected sessions preserved in $COLLECTED/ ===" >&2
+    exit "$exit_code"
+fi
