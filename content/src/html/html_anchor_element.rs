@@ -101,14 +101,14 @@ impl HTMLAnchorElement {
         // TODO: Model `img[ismap]` click coordinates and derive `hyperlinkSuffix` from the event target.
 
         // Step 4: "Let userInvolvement be event's user navigation involvement."
-        // Note: Blitz-driven pointer activation currently reaches this hook only for direct user click dispatch, so the runtime collapses this to `activation`.
+        // Note: Blitz-driven pointer activation currently reaches this hook only for direct user click dispatch, so the implementation collapses this to `activation`.
         let user_involvement = UserNavigationInvolvement::Activation;
 
         // Step 5: "If the user has expressed a preference to download the hyperlink, then set userInvolvement to \"browser UI\"."
-        // Note: The current runtime does not yet model a separate browser-UI download preference channel.
+        // Note: The implementation does not yet model a separate browser-UI download preference channel.
 
         // Step 6: "If element has a download attribute, or if the user has expressed a preference to download the hyperlink, then download the hyperlink created by element with hyperlinkSuffix set to hyperlinkSuffix and userInvolvement set to userInvolvement."
-        // Note: Download handling is deferred; the current runtime treats download anchors as non-navigating activation targets.
+        // Note: Download handling is deferred; the implementation treats download anchors as non-navigating activation targets.
         if self.has_download_attribute() {
             return Ok(());
         }
@@ -184,7 +184,7 @@ impl HTMLAnchorElement {
         hyperlink_suffix: Option<&str>,
     ) -> Option<String> {
         // Step 1: "If subject cannot navigate, then return."
-        // Note: The current content runtime does not yet model sandboxing or disconnected-navigable checks, so the missing-`href` case is the only early return handled here.
+        // Note: The current content process does not yet model sandboxing or disconnected-navigable checks, so the missing-`href` case is the only early return handled here.
         let mut url = self.reinitialize_url(document_creation_url)?;
 
         // Step 6: "If hyperlinkSuffix is non-null, then append hyperlinkSuffix to url, appropriately encoded."
@@ -295,13 +295,13 @@ impl HyperlinkElementUtils for HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#api-for-a-and-area-elements:concept-hyperlink-url-set-2>
     fn set_the_url(&self, document_creation_url: &Url) -> Option<Url> {
         // Step 1: "Set this element's url to null."
-        // Note: The current runtime does not persist the associated hyperlink URL, so this method returns the computed URL instead of storing it on the carrier.
+        // Note: The implementation does not persist the associated hyperlink URL, so this method returns the computed URL instead of storing it on the carrier.
 
         // Step 2: "If this element's href content attribute is absent, then return."
         let href = self.href_attribute()?;
 
         // Step 3: "Let url be the result of encoding-parsing a URL given this element's href content attribute's value, relative to this element's node document."
-        // Note: The current runtime resolves relative URLs against the document creation URL because the document base URL is not yet exposed on the DOM carrier.
+        // Note: The implementation resolves relative URLs against the document creation URL because the document base URL is not yet exposed on the DOM carrier.
         let url = document_creation_url.join(&href).ok();
 
         // Step 4: "If url is not failure, then set this element's url to url."

@@ -67,7 +67,7 @@ where
 {
     // Step 6: "Let iterator be a newly created default asynchronous iterator object for definition with idlObject as its target, \"value\" as its kind, and is finished set to false."
     // Step 7: "Run the asynchronous iterator initialization steps for definition with idlObject, iterator, and idlArgs, if any such steps exist."
-    // Note: No current content-runtime async iterable needs the JavaScript iterator object's identity during initialization, so the interface-specific hook returns the iterator state before the wrapper object is allocated.
+    // Note: No current content-process async iterable needs the JavaScript iterator object's identity during initialization, so the interface-specific hook returns the iterator state before the wrapper object is allocated.
     let state = target.create_async_iterator_state(args, context)?;
 
     let iterator = DefaultAsyncIterator::new(target, state);

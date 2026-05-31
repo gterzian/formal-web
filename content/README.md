@@ -1,6 +1,6 @@
 # content crate
 
-The content crate owns the content-process runtime: DOM and HTML algorithms, document parsing and lifecycle, Boa integration, Streams and Web IDL bridges, and the typed IPC boundary back to the embedder and user agent.
+The content crate owns the content process: DOM and HTML algorithms, document parsing and lifecycle, Boa integration, Streams and Web IDL bridges, and the typed IPC boundary back to the embedder and user agent.
 
 ## Layout
 
@@ -20,6 +20,6 @@ The content crate owns the content-process runtime: DOM and HTML algorithms, doc
   - `/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>`
   - `/// <https://streams.spec.whatwg.org/#writablestream-state>`
 - Inside function bodies, map relevant code with verbatim `Step N:` comments.
-- Use `Note:` comments only for representation or runtime-mapping details that are not obvious from the spec text.
+- Use `Note:` comments only for representation or mapping details that are not obvious from the spec text.
 - Put unimplemented work in `TODO:` directly below the related `Step N:` comment.
-- Keep `content/src/boa/bindings` thin: argument conversion and downcasting live there, while stateful algorithms live on the owning carrier or runtime type.
+- Keep `content/src/boa/bindings` thin: argument conversion and downcasting live there, while stateful algorithms live on the owning carrier type.

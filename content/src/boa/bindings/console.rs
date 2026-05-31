@@ -72,14 +72,14 @@ fn logger(sink: ConsoleSink, args: &[JsValue]) -> JsResult<JsValue> {
     let rest = &args[1..];
 
     // Step 4: "If rest is empty, perform Printer(logLevel, « first ») and return."
-    // Note: The content runtime uses `println!` as the implementation-defined console side effect.
+    // Note: The content process uses `println!` as the implementation-defined console side effect.
     if rest.is_empty() {
         print_console_line(&sink, format_console_argument(first));
         return Ok(JsValue::undefined());
     }
 
     // Step 5: "Otherwise, perform Printer(logLevel, Formatter(args))."
-    // Note: The content runtime does not yet model the Console Standard's separate Printer and Formatter abstractions; it joins the rendered arguments with spaces before printing.
+    // Note: The content process does not yet model the Console Standard's separate Printer and Formatter abstractions; it joins the rendered arguments with spaces before printing.
     let rendered = args
         .iter()
         .map(format_console_argument)

@@ -143,7 +143,7 @@ impl Document {
     /// <https://dom.spec.whatwg.org/#dom-document-createcomment>
     pub(crate) fn create_comment(&self, _data: &str) -> usize {
         // Step 1: "Return a new Comment node whose data is data and node document is this."
-        // Note: Blitz exposes comment nodes without comment-text storage, so the current runtime preserves the node identity and tree behavior but not the comment payload yet.
+        // Note: Blitz exposes comment nodes without comment-text storage, so the implementation preserves the node identity and tree behavior but not the comment payload yet.
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         mutator.create_comment_node()

@@ -11,7 +11,7 @@ pub(crate) trait HyperlinkElementUtils {
     /// <https://html.spec.whatwg.org/#reinitialise-url>
     fn reinitialize_url(&self, document_creation_url: &Url) -> Option<Url> {
         // Step 1: "If the element's url is non-null, its scheme is \"blob\", and it has an opaque path, then terminate these steps."
-        // Note: The current runtime does not persist the associated hyperlink URL between calls, so there is no cached blob URL instance to preserve here.
+        // Note: The implementation does not persist the associated hyperlink URL between calls, so there is no cached blob URL instance to preserve here.
 
         // Step 2: "Set the url."
         self.set_the_url(document_creation_url)

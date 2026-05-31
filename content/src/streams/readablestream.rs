@@ -997,7 +997,7 @@ pub(crate) fn construct_readable_stream(
     };
 
     // Step 2: "Let underlyingSourceDict be underlyingSource, converted to an IDL value of type UnderlyingSource."
-    // Note: The current runtime keeps the original JavaScript object so it can invoke the underlying source callbacks directly.
+    // Note: The implementation keeps the original JavaScript object so it can invoke the underlying source callbacks directly.
     let underlying_source_object = if underlying_source.is_undefined() {
         None
     } else {
@@ -2715,7 +2715,7 @@ fn readable_stream_pipe_to(
     let pipe_promise_obj: JsObject = pipe_promise.into();
 
     // Step 8: "If source.[[controller]] implements ReadableByteStreamController, let reader be either ! AcquireReadableStreamBYOBReader(source) or ! AcquireReadableStreamDefaultReader(source), at the user agent’s discretion."
-    // Note: Readable byte streams are not implemented yet, so the current runtime always uses the default reader path.
+    // Note: Readable byte streams are not implemented yet, so the implementation always uses the default reader path.
 
     // Step 9: "Otherwise, let reader be ! AcquireReadableStreamDefaultReader(source)."
     let reader_object = match acquire_readable_stream_default_reader(source.clone(), context) {

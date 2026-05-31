@@ -1150,7 +1150,7 @@ pub(crate) fn construct_transform_stream(
     };
 
     // Step 2: "Let transformerDict be transformer, converted to an IDL value of type Transformer."
-    // Note: The runtime retains the original transformer object so it can invoke the transformer callbacks with the original callback this value.
+    // Note: The implementation retains the original transformer object so it can invoke the transformer callbacks with the original callback this value.
 
     // Step 3: "If transformerDict[\"readableType\"] exists, throw a RangeError exception."
     if let Some(ref obj) = transformer_object {

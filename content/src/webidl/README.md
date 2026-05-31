@@ -1,6 +1,6 @@
 # content/src/webidl
 
-`content/src/webidl` stores the shared Web IDL algorithms that sit between DOM, HTML, and Streams code and the ECMAScript operations used by the current runtime.
+`content/src/webidl` stores the shared Web IDL algorithms that sit between DOM, HTML, and Streams code and the ECMAScript operations used by the current JavaScript engine.
 
 - Callback-interface conversion, `call a user object's operation`, and promise helpers belong here.
 - This layer should depend on abstract `Get`, `IsCallable`, and `Call` hooks instead of reaching into engine-specific context APIs directly.

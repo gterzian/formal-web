@@ -1,4 +1,4 @@
-use crate::ContentRuntime;
+use crate::ContentProcess;
 use ipc_messages::content::DocumentId;
 
 use super::html_iframe_element::{
@@ -7,16 +7,16 @@ use super::html_iframe_element::{
 
 /// <https://html.spec.whatwg.org/#dom-trees>
 pub(crate) fn run_dom_post_connection_steps_for_document(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     document_id: DocumentId,
 ) -> Result<(), String> {
-    run_iframe_post_connection_steps_for_document(runtime, document_id)
+    run_iframe_post_connection_steps_for_document(process, document_id)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-node-remove>
 pub(crate) fn run_dom_removing_steps_for_document(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     document_id: DocumentId,
 ) -> Result<(), String> {
-    run_iframe_removing_steps_for_document(runtime, document_id)
+    run_iframe_removing_steps_for_document(process, document_id)
 }

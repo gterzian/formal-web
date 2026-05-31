@@ -98,7 +98,7 @@ pub(crate) fn inline_style_properties_for_element(element: &Element) -> BTreeMap
     // Step 2: "Let parsed declarations be a new empty list."
     // Step 3: "For each item declaration in declarations..."
     //
-    // Note: The current runtime does not yet route style attributes through a full CSS Syntax
+    // Note: The implementation does not yet route style attributes through a full CSS Syntax
     // parser. It accepts the subset used by the targeted tests by splitting declarations on `;`
     // and the first `:` while normalizing property names to ASCII lowercase.
     for declaration in style_attribute.split(';') {

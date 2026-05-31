@@ -133,7 +133,7 @@ impl CdpServerHandle {
                     .build();
                 match runtime {
                     Ok(runtime) => runtime.block_on(run_cdp_server(listener, state, shutdown_receiver)),
-                    Err(error) => eprintln!("formal-web cdp runtime init error: {error}"),
+                    Err(error) => eprintln!("formal-web cdp server init error: {error}"),
                 }
             })
             .map_err(|error| format!("failed to spawn CDP server thread: {error}"))?;
