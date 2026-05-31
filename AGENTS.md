@@ -18,6 +18,16 @@ The `.pi/extensions/pi-share-hf/` extension provides:
 - **`/collect-session` command** — Interactive equivalent of the above.
 - **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
 
+## web_standards — Spec Reading
+
+The `.pi/extensions/web_standards/` extension lazily loads and caches web standards documents (WHATWG, W3C, etc.) using cheerio. Provides four tools for the agent to read specs interactively:
+
+- **`spec_select`** — Run CSS selectors against a spec document to discover headings (`h2[id]`), definitions (`dfn[id]`), algorithm boxes (`div[data-algorithm]`), etc.
+- **`spec_section`** — Read a full section by anchor ID. Walks flat siblings from heading to next same-level heading. Detects algorithm boxes and renders their top-level step structure.
+- **`spec_algorithm`** — Read numbered steps from an algorithm box. The HTML uses nested `<ol>` without step numbers; this tool assigns numbers recursively (1, 1.1, 1.1.1, …). Supports `start`/`limit` pagination for long algorithms.
+- **`spec_html`** — Return inner HTML of the first matching element. Best for self-contained blocks: tables, definition lists (`dl`), example blocks.
+- **`/spec-loaded` command** — Lists all spec URLs currently cached in memory.
+
 # Documentation Style
 
 - Describe current architecture and behavior; keep task history out of repository docs.
