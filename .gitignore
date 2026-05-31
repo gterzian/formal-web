@@ -13,3 +13,4 @@ target/
 .DS_Store
 node_modules/
 .pi/collected-sessions/
+.pi/extensions/pi-share-hf/.archive.log

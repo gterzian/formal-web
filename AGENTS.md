@@ -20,9 +20,10 @@ Plans and temporary task notes go under `scratchpad/`.
 
 ## pi-share-hf — Session Collection
 
-The `.pi/extensions/pi-share-hf/` extension provides:
+The `.pi/extensions/pi-share-hf/` extension archives pi sessions to `.pi/collected-sessions/`.
 
-- **`collect_session` tool** — Used by the agent at end of task to archive the current pi session to `.pi/collected-sessions/`. Does not upload or share session data.
+- **Auto-collection on shutdown:** When pi exits, the session is automatically saved to a unique file in `.pi/collected-sessions/`. No manual action is needed.
+- **`collect_session` tool** — Available for manual collection mid-task, when you want to checkpoint before a risky operation or before a `/new` session. Does not upload or share session data.
 - **`/collect-session` command** — Interactive equivalent of the above.
 - **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
 
@@ -55,4 +56,4 @@ At the end of each task, run the following steps **in order**:
    - **Default WPT run** — Runs the Web Platform Tests suite to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
 
-3. **Collect the session** — Run `collect_session` (or `/collect-session`) to archive the session trace to `.pi/collected-sessions/`.
+3. **Collect the session is automatic** — Session collection happens automatically on shutdown via the `pi-share-hf` extension. You no longer need a manual collection step. However, you can still use `collect_session` mid-task to checkpoint before a risky operation or before starting a new session.

@@ -17,3 +17,31 @@ formal-web is a Rust web-engine prototype in alpha status, with an embedding API
 - `./verification/verify-navigation.sh` runs the headless navigation workflow whose acceptance target is the shutdown-time TLA+ `Navigation` check.
 - `./verification/verify-rendering.sh` runs the headless screenshot-based rendering workflow for the startup artifact and its cross-origin iframe.
 - `rustup run 1.92.0 cargo run -- validate-tla --logs /path/to/logs --json` validates a saved trace log directory via the root validation entrypoint.
+
+## Pi Coding Sessions
+
+Pi (the coding agent used to develop this repository) coding sessions are archived on session shutdown,
+and a bash script is made available to upload them to hf. Those sessions are unredacted, so make sure you avoid
+sharing any secret in those.
+
+The local infrastructure consists of three parts:
+
+- **[pi-share-hf extension](.pi/extensions/pi-share-hf/)** — A pi extension that
+automatically collects session data to `.pi/collected-sessions/` on shutdown.
+It also exposes a `collect_session` tool and `/collect-session` command for
+mid-task checkpoints.
+
+- **[`sync-hf-sessions.sh`](./sync-hf-sessions.sh)** — Uploads collected
+sessions to the Hugging Face dataset and clears the local directory. Run it
+whenever you want to push accumulated sessions upstream:
+
+  ```bash
+  ./sync-hf-sessions.sh
+  ```
+
+  Prerequisites: the `hf` CLI must be installed and authenticated, and you need
+  write access to the target dataset.
+
+- **[Hugging Face dataset](https://huggingface.co/datasets/formal-web/pi-coding-sessions)**
+— Remote destination for archived sessions. Pull requests to this dataset are
+created automatically by `sync-hf-sessions.sh`.

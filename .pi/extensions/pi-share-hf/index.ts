@@ -3,6 +3,24 @@ import { Type } from "typebox";
 import { collectSession } from "./collect.ts";
 
 export default function (pi: ExtensionAPI) {
+  // ─── Auto-collect on shutdown ────────────────────────────────────────
+  pi.on("session_shutdown", async (event, ctx) => {
+    if (event.reason !== "quit") return;
+
+    const sessionFile = ctx.sessionManager.getSessionFile();
+    if (!sessionFile) return;
+
+    const header = ctx.sessionManager.getHeader();
+    const entries = ctx.sessionManager.getEntries();
+    if (!entries.length) return;
+
+    try {
+      collectSession(sessionFile, header, entries, ctx.cwd);
+    } catch {
+      // Best-effort collection — discard if anything fails.
+    }
+  });
+
   // ─── /collect-session command ─────────────────────────────────────────
   pi.registerCommand("collect-session", {
     description:
