@@ -20,7 +20,7 @@ The `.pi/extensions/pi-share-hf/` extension provides:
 
 ## web_standards — Spec Reading
 
-The `.pi/extensions/web_standards/` extension lazily loads and caches web standards documents (WHATWG, W3C, etc.) using cheerio. Provides four tools for the agent to read specs interactively:
+The `.pi/extensions/web_standards/` extension lazily loads and caches web standards documents (WHATWG, W3C, etc.) on first use. Provides four tools for the agent to read specs interactively:
 
 - **`spec_select`** — Run CSS selectors against a spec document to discover headings (`h2[id]`), definitions (`dfn[id]`), algorithm boxes (`div[data-algorithm]`), etc.
 - **`spec_section`** — Read a full section by anchor ID. Walks flat siblings from heading to next same-level heading. Detects algorithm boxes and renders their top-level step structure.
@@ -33,7 +33,7 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Describe current architecture and behavior; keep task history out of repository docs.
 - Keep README guidance general and durable; one-off implementation details belong in source or tests, not in repository docs.
 - Use neutral, factual language.
-- Check `web_standards/` before fetching standards text from the network.
+- Use the `web_standards` extension tools (`spec_section`, `spec_algorithm`, `spec_select`, `spec_html`) to read spec content instead of reading local copies or fetching directly.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
 
 # Cross-Cutting Rules

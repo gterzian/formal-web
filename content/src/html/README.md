@@ -6,4 +6,4 @@
 - Keep iframe bindings and iframe runtime algorithms together in `content/src/html/html_iframe_element.rs` as free functions over `ContentRuntime` state.
 - Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns or `debug_assert!` plus safe early returns over sentinel ids.
 - Trigger parser-discovered iframe work from document-load parsing completion.
-- The spec source is `web_standards/HTML.html`.
+- Use the `web_standards` extension (`spec_section`, `spec_algorithm`) with `https://html.spec.whatwg.org/` to read the HTML spec.
