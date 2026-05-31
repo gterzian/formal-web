@@ -121,7 +121,7 @@ pub(crate) fn fire_event(
 
     // Step 3: "Initialize event's type attribute to e."
     // Step 4: "Initialize any other IDL attributes of event as described in the invocation of this algorithm."
-    // Note: The runtime constructs the `Event` carrier with the final attribute values before dispatch.
+    // Note: The implementation constructs the `Event` carrier with the final attribute values before dispatch.
 
     // Step 5: "Return the result of dispatching event at target, with legacy target override flag set if set."
     dispatch(host, target, &event, legacy_target_override)
@@ -331,7 +331,7 @@ fn dispatch_on_path(
 
     // Step 4: "Let relatedTarget be the result of retargeting event's relatedTarget against target."
     // Step 5: "Let clearTargets be false."
-    // Note: The content runtime does not yet model related targets or shadow-tree target clearing.
+    // Note: The content process does not yet model related targets or shadow-tree target clearing.
 
     // Step 12: "If activationTarget is non-null and activationTarget has legacy-pre-activation behavior, then run activationTarget's legacy-pre-activation behavior."
     if let Some(activation_target) = activation_target.as_ref() {
@@ -396,7 +396,7 @@ fn dispatch_on_path(
     })?;
 
     // Step 19: "If clearTargets is true:"
-    // Note: The content runtime does not yet model shadow-tree target clearing.
+    // Note: The content process does not yet model shadow-tree target clearing.
 
     // Step 20: "If activationTarget is non-null:"
     if let Some(activation_target) = activation_target.as_ref() {
@@ -417,12 +417,12 @@ fn activation_target(
     event: &JsObject,
 ) -> JsResult<Option<JsObject>> {
     // Note: This helper models the `activationTarget` selection performed while DOM dispatch
-    // appends the initial target and then walks up through its parents. The current runtime does
+    // appends the initial target and then walks up through its parents. The implementation does
     // not model shadow trees, so the spec's two `activationTarget` assignment sites collapse to a
     // target-first check plus a bubbling-only ancestor scan.
 
     // Step 5: "If isActivationEvent is true and target has activation behavior, then set activationTarget to target."
-    // Note: The current runtime does not yet materialize `MouseEvent`, so trusted `click`
+    // Note: The implementation does not yet materialize `MouseEvent`, so trusted `click`
     // dispatch is treated as the activation-event signal used by HTML activation behavior hooks.
     if !is_activation_event(event)? {
         return Ok(None);
@@ -472,7 +472,7 @@ fn invoke(
 
     // Step 2: "Set event's relatedTarget to struct's relatedTarget."
     // Step 3: "Set event's touch target list to struct's touch target list."
-    // Note: The content runtime does not yet model related targets or touch target lists.
+    // Note: The content process does not yet model related targets or touch target lists.
 
     // Step 4: "If event's stop propagation flag is set, then return."
     if stop_propagation(event)? {
@@ -511,13 +511,13 @@ fn invoke(
     }
 
     // Step 7: "Let invocationTargetInShadowTree be struct's invocation-target-in-shadow-tree."
-    // Note: The current runtime does not model shadow trees, so this is always false.
+    // Note: The implementation does not model shadow trees, so this is always false.
 
     // Step 8: "Let found be the result of running inner invoke with event, listeners, phase, invocationTargetInShadowTree, and legacyOutputDidListenersThrowFlag if given."
     let _found = inner_invoke(host, &entry.invocation_target, event, &listeners, phase)?;
 
     // Step 9: "If found is false and event's isTrusted attribute is true:"
-    // Note: The current runtime does not implement legacy event-type remapping.
+    // Note: The implementation does not implement legacy event-type remapping.
 
     Ok(())
 }
@@ -567,7 +567,7 @@ fn inner_invoke(
         // Step 2.6: "Let global be listener callback's associated realm's global object."
         // Step 2.7: "Let currentEvent be undefined."
         // Step 2.8: "If global is a Window object:"
-        // Note: The content runtime does not yet model callback realms or Window.currentEvent tracking.
+        // Note: The content process does not yet model callback realms or Window.currentEvent tracking.
 
         // Step 2.9: "If listener's passive is true, then set event's in passive listener flag."
         if listener.passive == Some(true) {
@@ -577,7 +577,7 @@ fn inner_invoke(
         }
 
         // Step 2.10: "If global is a Window object, then record timing info for event listener given event and listener."
-        // Note: The content runtime does not yet record per-listener performance timing.
+        // Note: The content process does not yet record per-listener performance timing.
 
         // Step 2.11: "Call a user object's operation with listener's callback, `handleEvent`, « event », and event's currentTarget attribute value."
         if let Some(callback) = listener.callback.as_ref() {
@@ -598,7 +598,7 @@ fn inner_invoke(
         })?;
 
         // Step 2.13: "If global is a Window object, then set global's current event to currentEvent."
-        // Note: The content runtime does not yet model Window.currentEvent restoration.
+        // Note: The content process does not yet model Window.currentEvent restoration.
 
         // Step 2.14: "If event's stop immediate propagation flag is set, then break."
         if stop_immediate(event)? {

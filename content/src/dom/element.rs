@@ -393,7 +393,7 @@ impl Element {
         value: &str,
     ) {
         // Step 1: "Let (namespace, prefix, localName) be the result of validating and extracting namespace and qualifiedName given \"attribute\"."
-        // Note: The current runtime accepts the already-stringified qualified name shape used by the targeted WPTs and does not yet implement the full validation-and-extraction error surface.
+        // Note: The implementation accepts the already-stringified qualified name shape used by the targeted WPTs and does not yet implement the full validation-and-extraction error surface.
         let (prefix, local_name) = split_qualified_name(qualified_name);
 
         let mut document = self.node.document.borrow_mut();

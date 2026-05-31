@@ -266,16 +266,16 @@ impl Node {
 
         if matches!(node.data, NodeData::Element(_)) {
             // Step 1: "The descendant text content of node."
-            // Note: BaseDocument does not currently materialize DocumentFragment wrappers in the JS runtime, so this reachable branch covers Element nodes.
+            // Note: BaseDocument does not currently materialize DocumentFragment wrappers in the JavaScript engine, so this reachable branch covers Element nodes.
             return Some(node.text_content());
         }
 
         // Step 2: "node’s value."
-        // Note: The current runtime does not materialize Attr nodes, so there is no corresponding branch here.
+        // Note: The implementation does not materialize Attr nodes, so there is no corresponding branch here.
 
         if let Some(text) = node.text_data() {
             // Step 3: "node’s data."
-            // Note: The current runtime currently materializes Text nodes as CharacterData. Comment and processing-instruction data are not retained separately.
+            // Note: The implementation currently materializes Text nodes as CharacterData. Comment and processing-instruction data are not retained separately.
             return Some(text.content.clone());
         }
 
@@ -305,13 +305,13 @@ impl Node {
 
         if matches!(node_data, NodeData::Element(_)) {
             // Step 1: "String replace all with value within node."
-            // Note: BaseDocument does not currently materialize DocumentFragment wrappers in the JS runtime, so this reachable branch covers Element nodes.
+            // Note: BaseDocument does not currently materialize DocumentFragment wrappers in the JavaScript engine, so this reachable branch covers Element nodes.
             string_replace_all(&self.document, self.node_id, value);
             return;
         }
 
         // Step 2: "Set an existing attribute value with node and value."
-        // Note: The current runtime does not materialize Attr nodes, so there is no corresponding branch here.
+        // Note: The implementation does not materialize Attr nodes, so there is no corresponding branch here.
 
         if matches!(node_data, NodeData::Text(_)) {
             // Step 3: "Replace data of node with 0, node’s length, and value."
@@ -436,7 +436,7 @@ impl Node {
         // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment nodes, so these substeps are unreachable here.
 
         // Step 5: "If child is non-null:"
-        // Note: The current runtime does not yet model live ranges.
+        // Note: The implementation does not yet model live ranges.
 
         // Step 6: "Let previousSibling be child's previous sibling or parent's last child if child is null."
         // Note: Blitz's mutator derives the insertion position from `reference_child_node_id`, so this helper does not materialize `previousSibling`.
@@ -471,16 +471,16 @@ impl Node {
         // Note: The current DOM carrier does not yet model shadow trees or slot assignment.
 
         // Step 7.7: "For each shadow-including inclusive descendant inclusiveDescendant of node, in shadow-including tree order:"
-        // Note: HTML insertion steps, connected callbacks, and other post-connection work continue in higher-level runtime code paths rather than this low-level tree mutator adapter.
+        // Note: HTML insertion steps, connected callbacks, and other post-connection work continue in higher-level code paths rather than this low-level tree mutator adapter.
 
         // Step 8: "If suppressObservers is unset, then queue a tree mutation record for parent with nodes, « », previousSibling, and child."
         // Note: The current DOM carrier does not yet model mutation observers.
 
         // Step 9: "Run the children changed steps for parent."
-        // Note: The current runtime resumes higher-level children-changed consequences outside this low-level tree mutator adapter.
+        // Note: The implementation resumes higher-level children-changed consequences outside this low-level tree mutator adapter.
 
         // Step 10: "If isConnected is true, then:"
-        // Note: The current runtime continues post-connection work outside this low-level tree mutator adapter.
+        // Note: The implementation continues post-connection work outside this low-level tree mutator adapter.
 
         Ok(())
     }

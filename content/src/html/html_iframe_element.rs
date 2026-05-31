@@ -12,7 +12,7 @@ use html5ever::{local_name, ns};
 use url::Url;
 
 use crate::{
-    ContentRuntime, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
+    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
     html::HTMLElement, webidl::Callback,
 };
 
@@ -200,20 +200,20 @@ fn connected_iframe_node_ids(document: &BaseDocument) -> Vec<usize> {
 }
 
 fn attach_iframe_subdocument_from_html(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
     base_url: String,
     html: String,
 ) -> Result<(), String> {
-    let Some(traversable_id) = runtime
+    let Some(traversable_id) = process
         .documents
         .get(&parent_document_id)
         .map(|content_document| content_document.traversable_id)
     else {
         return Ok(());
     };
-    let sub_document = Rc::new(RefCell::new(BaseDocument::new(runtime.document_config(
+    let sub_document = Rc::new(RefCell::new(BaseDocument::new(process.document_config(
         traversable_id,
         parent_document_id,
         Some(base_url),
@@ -223,7 +223,7 @@ fn attach_iframe_subdocument_from_html(
         super::parse_html_into_document(&mut sub_document_guard, &html);
     }
 
-    let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
+    let Some(content_document) = process.documents.get_mut(&parent_document_id) else {
         return Ok(());
     };
     let mut document = content_document.document.borrow_mut();
@@ -239,11 +239,11 @@ fn attach_iframe_subdocument_from_html(
 /// This is not a spec concept; it removes any local subdocument so the parent scene exposes
 /// a pure iframe region that the webview compositor can fill using frame composition metadata.
 fn attach_cross_origin_iframe(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
-    let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
+    let Some(content_document) = process.documents.get_mut(&parent_document_id) else {
         return Ok(());
     };
     let mut document = content_document.document.borrow_mut();
@@ -261,7 +261,7 @@ fn attach_cross_origin_iframe(
 /// message that triggers user-agent-side navigation of the child navigable, which handles
 /// historyHandling and the full navigate algorithm (Step 4 of the spec).
 fn navigate_an_iframe_or_frame(
-    runtime: &ContentRuntime,
+    process: &ContentProcess,
     content_navigable_id: NavigableId,
     parent_traversable_id: NavigableId,
     content_frame_id: FrameId,
@@ -270,7 +270,7 @@ fn navigate_an_iframe_or_frame(
     // Step 4: "Navigate element's content navigable to url using element's node document."
     // Note: Navigation is performed by sending a request to the user agent, which executes
     // the navigate algorithm including historyHandling and referrer policy resolution.
-    runtime
+    process
         .event_sender
         .send(ContentEvent::NavigationRequested(NavigateRequest {
             navigation_id: Some(NavigationId::new()),
@@ -289,12 +289,12 @@ fn navigate_an_iframe_or_frame(
 }
 
 fn attach_iframe_about_blank(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
     attach_iframe_subdocument_from_html(
-        runtime,
+        process,
         parent_document_id,
         iframe_node_id,
         String::from("about:blank"),
@@ -303,11 +303,11 @@ fn attach_iframe_about_blank(
 }
 
 fn remove_iframe_subdocument(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) {
-    let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
+    let Some(content_document) = process.documents.get_mut(&parent_document_id) else {
         return;
     };
     {
@@ -321,7 +321,7 @@ fn remove_iframe_subdocument(
 }
 
 pub(crate) fn retire_iframe_traversable(
-    runtime: &ContentRuntime,
+    process: &ContentProcess,
     parent_traversable_id: NavigableId,
     container_state: &NavigableContainerState,
 ) -> Result<(), String> {
@@ -333,7 +333,7 @@ pub(crate) fn retire_iframe_traversable(
         return Ok(());
     };
 
-    runtime
+    process
         .event_sender
         .send(ContentEvent::IframeTraversableRemoved(IframeTraversableRemoval {
             parent_traversable_id,
@@ -348,13 +348,13 @@ pub(crate) fn retire_iframe_traversable(
 /// require a browsing context, document creation, or session history manipulation are
 /// executed by the user agent after receiving the `CreateChildNavigable` IPC message.
 fn create_a_new_child_navigable(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_navigable_id: NavigableId,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
     // Early return if this iframe already has a content navigable.
-    if runtime
+    if process
         .documents
         .get(&parent_document_id)
         .and_then(|content_document| {
@@ -384,7 +384,7 @@ fn create_a_new_child_navigable(
 
     // Step 5: "If element has a name content attribute, then set targetName to the value
     // of that attribute."
-    if let Some(content_document) = runtime.documents.get(&parent_document_id) {
+    if let Some(content_document) = process.documents.get(&parent_document_id) {
         let document = content_document.document.borrow();
         if let Some(node) = document.get_node(iframe_node_id)
             && let Some(element) = node.element_data()
@@ -401,16 +401,16 @@ fn create_a_new_child_navigable(
     // Step 7: "Let navigable be a new navigable."
     // Note: Content allocates the stable navigable ID here; the user agent materializes
     // the navigable object from that ID.
-    let content_navigable = runtime.allocate_navigable_id()?;
+    let content_navigable = process.allocate_navigable_id()?;
 
     // Step 8: "Initialize the navigable navigable given documentState and parentNavigable."
     // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
 
     // Step 9: "Set element's content navigable to navigable."
     // Note: The content side stores only IDs for the element's content navigable.
-    let content_frame_id = runtime.allocate_child_frame_id();
+    let content_frame_id = process.allocate_child_frame_id();
 
-    if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
+    if let Some(content_document) = process.documents.get_mut(&parent_document_id) {
         content_document.navigable_container_states.insert(
             iframe_node_id,
             NavigableContainerState {
@@ -436,7 +436,7 @@ fn create_a_new_child_navigable(
 
     // Note: Notify the user agent to execute Steps 2–8 and 10, 12–13 of
     // `create a new child navigable`.
-    runtime
+    process
         .event_sender
         .send(ContentEvent::CreateChildNavigable(CreateChildNavigableRequest {
             parent_traversable_id,
@@ -448,10 +448,10 @@ fn create_a_new_child_navigable(
 }
 
 fn navigable_container_for_child_navigable(
-    runtime: &ContentRuntime,
+    process: &ContentProcess,
     content_frame_id: FrameId,
 ) -> Option<(DocumentId, usize)> {
-    runtime
+    process
         .documents
         .iter()
         .find_map(|(parent_document_id, content_document)| {
@@ -471,27 +471,27 @@ fn navigable_container_for_child_navigable(
 /// This is an engine integration detail: it wires the already-loaded child document into
 /// Blitz sub-document painting for iframe embedding.
 pub(crate) fn attach_same_origin_child_document_for_traversable(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     traversable_id: NavigableId,
 ) -> Result<(), String> {
-    let Some(document_id) = runtime
+    let Some(document_id) = process
         .active_documents_by_traversable
         .get(&traversable_id)
         .copied()
     else {
         return Ok(());
     };
-    let Some(child_document) = runtime.documents.get(&document_id) else {
+    let Some(child_document) = process.documents.get(&document_id) else {
         return Ok(());
     };
     let child_frame_id = child_document.frame_id;
     let child_subdocument = Rc::clone(&child_document.document);
     let Some((parent_document_id, iframe_node_id)) =
-        navigable_container_for_child_navigable(runtime, child_frame_id)
+        navigable_container_for_child_navigable(process, child_frame_id)
     else {
         return Ok(());
     };
-    let Some(container_state) = runtime
+    let Some(container_state) = process
         .documents
         .get(&parent_document_id)
         .and_then(|content_document| content_document.navigable_container_states.get(&iframe_node_id))
@@ -501,7 +501,7 @@ pub(crate) fn attach_same_origin_child_document_for_traversable(
     if container_state.cross_origin {
         return Ok(());
     }
-    let Some(parent_document) = runtime.documents.get_mut(&parent_document_id) else {
+    let Some(parent_document) = process.documents.get_mut(&parent_document_id) else {
         return Ok(());
     };
     let mut document = parent_document.document.borrow_mut();
@@ -515,11 +515,11 @@ pub(crate) fn attach_same_origin_child_document_for_traversable(
 
 /// <https://html.spec.whatwg.org/#iframe-load-event-steps>
 fn run_iframe_load_event_steps(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
-    let Some(content_document) = runtime.documents.get_mut(&parent_document_id) else {
+    let Some(content_document) = process.documents.get_mut(&parent_document_id) else {
         return Ok(());
     };
 
@@ -564,39 +564,39 @@ fn run_iframe_load_event_steps(
 }
 
 pub(crate) fn run_iframe_load_event_steps_for_traversable(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     traversable_id: NavigableId,
 ) -> Result<(), String> {
-    let Some(document_id) = runtime
+    let Some(document_id) = process
         .active_documents_by_traversable
         .get(&traversable_id)
         .copied()
     else {
         return Ok(());
     };
-    let Some(content_frame_id) = runtime.documents.get(&document_id).map(|document| document.frame_id)
+    let Some(content_frame_id) = process.documents.get(&document_id).map(|document| document.frame_id)
     else {
         return Ok(());
     };
     let Some((parent_document_id, iframe_node_id)) =
-        navigable_container_for_child_navigable(runtime, content_frame_id)
+        navigable_container_for_child_navigable(process, content_frame_id)
     else {
         return Ok(());
     };
 
-    run_iframe_load_event_steps(runtime, parent_document_id, iframe_node_id)
+    run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)
 }
 
 /// <https://html.spec.whatwg.org/#the-iframe-element:html-element-post-connection-steps>
 fn run_iframe_post_connection_steps(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
     // Step 1: "If insertedNode has a sandbox attribute, then parse the sandboxing
     // directive given the attribute's value and insertedNode's iframe sandboxing flag set."
     // <https://html.spec.whatwg.org/#parse-a-sandboxing-directive>
-    if let Some(content_document) = runtime.documents.get(&parent_document_id) {
+    if let Some(content_document) = process.documents.get(&parent_document_id) {
         let document = content_document.document.borrow();
         if let Some(node) = document.get_node(iframe_node_id)
             && let Some(element) = node.element_data()
@@ -608,13 +608,13 @@ fn run_iframe_post_connection_steps(
     }
 
     // Step 2: "Create a new child navigable for insertedNode."
-    let parent_navigable_id = runtime
+    let parent_navigable_id = process
         .documents
         .get(&parent_document_id)
         .map(|content_document| content_document.traversable_id)
         .ok_or_else(|| format!("missing parent document {parent_document_id}"))?;
     create_a_new_child_navigable(
-        runtime,
+        process,
         parent_navigable_id,
         parent_document_id,
         iframe_node_id,
@@ -623,15 +623,15 @@ fn run_iframe_post_connection_steps(
     // Step 3: "Process the iframe attributes for insertedNode, with initialInsertion
     // set to true."
     // Note: This executes synchronously in the same task as Step 2.
-    process_iframe_attributes(runtime, parent_document_id, iframe_node_id, true)
+    process_iframe_attributes(process, parent_document_id, iframe_node_id, true)
 }
 
 pub(crate) fn run_iframe_post_connection_steps_for_document(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
 ) -> Result<(), String> {
     let iframe_node_ids = {
-        let Some(content_document) = runtime.documents.get(&parent_document_id) else {
+        let Some(content_document) = process.documents.get(&parent_document_id) else {
             return Ok(());
         };
         let document = content_document.document.borrow();
@@ -639,7 +639,7 @@ pub(crate) fn run_iframe_post_connection_steps_for_document(
     };
 
     for iframe_node_id in iframe_node_ids {
-        run_iframe_post_connection_steps(runtime, parent_document_id, iframe_node_id)?;
+        run_iframe_post_connection_steps(process, parent_document_id, iframe_node_id)?;
     }
 
     Ok(())
@@ -651,11 +651,11 @@ pub(crate) fn run_iframe_post_connection_steps_for_document(
 /// subdocument, and clears the navigable container state. The user agent completes the
 /// full destroy-a-child-navigable algorithm upon receiving the IframeTraversableRemoved message.
 fn run_iframe_removing_steps(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
-    let Some((parent_traversable_id, iframe_state)) = runtime
+    let Some((parent_traversable_id, iframe_state)) = process
         .documents
         .get(&parent_document_id)
         .and_then(|content_document| {
@@ -669,9 +669,9 @@ fn run_iframe_removing_steps(
         return Ok(());
     };
 
-    retire_iframe_traversable(runtime, parent_traversable_id, &iframe_state)?;
-    remove_iframe_subdocument(runtime, parent_document_id, iframe_node_id);
-    if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
+    retire_iframe_traversable(process, parent_traversable_id, &iframe_state)?;
+    remove_iframe_subdocument(process, parent_document_id, iframe_node_id);
+    if let Some(content_document) = process.documents.get_mut(&parent_document_id) {
         content_document
             .navigable_container_states
             .remove(&iframe_node_id);
@@ -680,11 +680,11 @@ fn run_iframe_removing_steps(
 }
 
 pub(crate) fn run_iframe_removing_steps_for_document(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
 ) -> Result<(), String> {
     let iframe_node_ids = {
-        let Some(content_document) = runtime.documents.get(&parent_document_id) else {
+        let Some(content_document) = process.documents.get(&parent_document_id) else {
             return Ok(());
         };
         let document = content_document.document.borrow();
@@ -692,7 +692,7 @@ pub(crate) fn run_iframe_removing_steps_for_document(
     };
 
     for iframe_node_id in iframe_node_ids {
-        run_iframe_removing_steps(runtime, parent_document_id, iframe_node_id)?;
+        run_iframe_removing_steps(process, parent_document_id, iframe_node_id)?;
     }
 
     Ok(())
@@ -700,13 +700,13 @@ pub(crate) fn run_iframe_removing_steps_for_document(
 
 /// <https://html.spec.whatwg.org/#process-the-iframe-attributes>
 fn process_iframe_attributes(
-    runtime: &mut ContentRuntime,
+    process: &mut ContentProcess,
     parent_document_id: DocumentId,
     iframe_node_id: usize,
     initial_insertion: bool,
 ) -> Result<(), String> {
     let (creation_url, parent_traversable_id, srcdoc_value, desired_url) = {
-        let Some(content_document) = runtime.documents.get(&parent_document_id) else {
+        let Some(content_document) = process.documents.get(&parent_document_id) else {
             return Ok(());
         };
         let creation_url = content_document.settings.creation_url.clone();
@@ -759,7 +759,7 @@ fn process_iframe_attributes(
     // Note: The spec checks whether the pending-navigations map already contains an entry
     // for this URL. We track the last-committed key (`current_key`) as an approximation:
     // if the desired key is unchanged since the last navigation, no new navigation is needed.
-    let previous_iframe_state = runtime
+    let previous_iframe_state = process
         .documents
         .get(&parent_document_id)
         .and_then(|content_document| {
@@ -795,7 +795,7 @@ fn process_iframe_attributes(
     // so the user agent can clean up the cross-origin child navigable.
     if let Some(previous_iframe_state) = previous_iframe_state.as_ref() {
         if previous_iframe_state.cross_origin && !cross_origin {
-            retire_iframe_traversable(runtime, parent_traversable_id, previous_iframe_state)?;
+            retire_iframe_traversable(process, parent_traversable_id, previous_iframe_state)?;
         }
     }
 
@@ -806,7 +806,7 @@ fn process_iframe_attributes(
     if initial_insertion {
         match &target {
             IframeNavigationTarget::AboutBlank => {
-                if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
+                if let Some(content_document) = process.documents.get_mut(&parent_document_id) {
                     content_document.navigable_container_states.insert(
                         iframe_node_id,
                         NavigableContainerState {
@@ -818,12 +818,12 @@ fn process_iframe_attributes(
                     );
                 }
                 // Step 2.3.1: "Run the iframe load event steps given element."
-                run_iframe_load_event_steps(runtime, parent_document_id, iframe_node_id)?;
+                run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)?;
                 // Step 2.3.2: "Return."
                 return Ok(());
             }
             IframeNavigationTarget::Url { url } if matches_about_blank(url) => {
-                if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
+                if let Some(content_document) = process.documents.get_mut(&parent_document_id) {
                     content_document.navigable_container_states.insert(
                         iframe_node_id,
                         NavigableContainerState {
@@ -835,7 +835,7 @@ fn process_iframe_attributes(
                     );
                 }
                 // Step 2.3.1: "Run the iframe load event steps given element."
-                run_iframe_load_event_steps(runtime, parent_document_id, iframe_node_id)?;
+                run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)?;
                 // Step 2.3.2: "Return."
                 return Ok(());
             }
@@ -845,7 +845,7 @@ fn process_iframe_attributes(
 
     // Note: Record the current navigation key and cross-origin flag before navigating,
     // so re-entrant attribute changes do not trigger a redundant navigation.
-    if let Some(content_document) = runtime.documents.get_mut(&parent_document_id) {
+    if let Some(content_document) = process.documents.get_mut(&parent_document_id) {
         content_document.navigable_container_states.insert(
             iframe_node_id,
             NavigableContainerState {
@@ -877,13 +877,13 @@ fn process_iframe_attributes(
 
         // Step 1.3: "Navigate to the srcdoc resource."
         attach_iframe_subdocument_from_html(
-            runtime,
+            process,
             parent_document_id,
             iframe_node_id,
             creation_url.to_string(),
             html.clone(),
         )?;
-        run_iframe_load_event_steps(runtime, parent_document_id, iframe_node_id)?;
+        run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)?;
         return Ok(());
     }
 
@@ -893,19 +893,19 @@ fn process_iframe_attributes(
     // delegated to the user agent.
     match target {
         IframeNavigationTarget::AboutBlank => {
-            attach_iframe_about_blank(runtime, parent_document_id, iframe_node_id)?;
-            run_iframe_load_event_steps(runtime, parent_document_id, iframe_node_id)?;
+            attach_iframe_about_blank(process, parent_document_id, iframe_node_id)?;
+            run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)?;
         }
         IframeNavigationTarget::Url { url } => {
             if cross_origin {
                 attach_cross_origin_iframe(
-                    runtime,
+                    process,
                     parent_document_id,
                     iframe_node_id,
                 )?;
             }
             navigate_an_iframe_or_frame(
-                runtime,
+                process,
                 content_navigable_id,
                 parent_traversable_id,
                 content_frame_id,

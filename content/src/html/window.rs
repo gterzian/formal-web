@@ -62,7 +62,7 @@ pub(crate) fn window_computed_style_properties_for_element(
             // Step 3.2 / 3.3: Map invalid, ::slotted(), ::part(), or supported pseudo-element
             // requests to the corresponding pseudo-element object.
             //
-            // Note: The current runtime does not yet expose pseudo-element carriers, so any
+            // Note: The implementation does not yet expose pseudo-element carriers, so any
             // pseudo-element request leaves `obj` null and therefore produces an empty declaration
             // list below.
             obj = None;
@@ -75,7 +75,7 @@ pub(crate) fn window_computed_style_properties_for_element(
     // Step 5: "If obj is not null, and elt is connected, part of the flat tree, and its
     // shadow-including root has a browsing context ... being rendered, set decls ..."
     //
-    // Note: The current runtime represents the connected predicate, but it does not yet model flat
+    // Note: The implementation represents the connected predicate, but it does not yet model flat
     // tree membership, pseudo-elements, or the browsing-context-container rendering gate. The
     // populated branch therefore uses the connected element carrier that exists today.
     if let Some(obj) = obj.filter(|element| element.is_connected()) {

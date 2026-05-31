@@ -394,7 +394,7 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
-pub(crate) struct ContentRuntime {
+pub(crate) struct ContentProcess {
     event_sender: IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     default_viewport: Option<ViewportSnapshot>,
@@ -406,7 +406,7 @@ pub(crate) struct ContentRuntime {
     navigation_tracer: TLATracer,
 }
 
-impl ContentRuntime {
+impl ContentProcess {
     fn new(event_sender: IpcSender<ContentEvent>) -> Self {
         Self {
             event_sender,
@@ -764,21 +764,21 @@ impl ContentRuntime {
 
         // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
-        // TODO: Persist the document's post-load readiness state in the DOM/runtime model.
+        // TODO: Persist the document's post-load readiness state in the DOM model.
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
 
             // Step 8: "Populate with html/head/body given document."
-            // Note: The content runtime drives the shared HTML parser with a fixed `about:blank` skeleton instead of constructing the three elements manually.
+            // Note: The content process drives the shared HTML parser with a fixed `about:blank` skeleton instead of constructing the three elements manually.
             parse_html_into_document(&mut document_guard, EMPTY_HTML_DOCUMENT)
         };
 
         // Step 10: "Completely finish loading document."
-        // Note: The content runtime executes parser-discovered classic scripts immediately after the initial tree build.
+        // Note: The content process executes parser-discovered classic scripts immediately after the initial tree build.
         // TODO: Model the rest of the `completely finish loading` bookkeeping explicitly instead of relying on parser-discovered script execution alone.
         // Step 9: "Make active document."
-        // Note: The runtime records the document as addressable for future commands by storing it under `document_id` after initialization completes.
+        // Note: The implementation records the document as addressable for future commands by storing it under `document_id` after initialization completes.
         self.documents.insert(
             document_id,
             ContentDocument {
@@ -841,7 +841,7 @@ impl ContentRuntime {
             let mut document_guard = document.borrow_mut();
 
             // Step 3: "Otherwise, create an HTML parser and associate it with the document."
-            // Note: The embedder has already buffered the response body, so the content runtime feeds it into the parser immediately instead of waiting on separate networking tasks.
+            // Note: The embedder has already buffered the response body, so the content process feeds it into the parser immediately instead of waiting on separate networking tasks.
             parse_html_into_document(&mut document_guard, &body)
         };
 
@@ -995,7 +995,7 @@ impl ContentRuntime {
                 maybe_log_input_layout_debug(document_id, &document_guard);
             }
 
-            // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event batch to the content runtime.
+            // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event batch to the content process.
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
@@ -1075,7 +1075,7 @@ impl ContentRuntime {
     }
 
     /// <https://html.spec.whatwg.org/#update-the-rendering>
-    /// Note: The Rust user-agent and event-loop workers queue this rendering task, and the content runtime continues the noted rendering opportunity once critical fetches finish.
+    /// Note: The Rust user-agent and event-loop workers queue this rendering task, and the content process continues the noted rendering opportunity once critical fetches finish.
     fn continue_updating_the_rendering(
         &mut self,
         traversable_id: NavigableId,
@@ -1111,10 +1111,10 @@ impl ContentRuntime {
             let frame_timestamp_ms = document.settings.current_time_millis();
 
             // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
-            // Note: The content runtime currently derives a monotonic frame timestamp from the document's environment settings object time origin instead of the HTML event loop's shared render-opportunity clock.
+            // Note: The content process currently derives a monotonic frame timestamp from the document's environment settings object time origin instead of the HTML event loop's shared render-opportunity clock.
 
             // Step 14: "For each `doc` of `docs`, run the animation frame callbacks for `doc`, passing in the relative high resolution time given `frameTimestamp` and `doc`'s relevant global object as the timestamp."
-            // Note: The content runtime collapses `docs` to the single active document for this content process and uses the same environment-relative time as both the HTML frame timestamp and the callback timestamp.
+            // Note: The content process collapses `docs` to the single active document for this content process and uses the same environment-relative time as both the HTML frame timestamp and the callback timestamp.
             document
                 .settings
                 .run_animation_frame_callbacks(frame_timestamp_ms)?;
@@ -1399,7 +1399,7 @@ impl ContentRuntime {
     }
 
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
-    /// Note: The Rust event-loop worker emits these runtime effects, and each branch below resumes the corresponding Rust-owned continuation.
+    /// Note: The Rust event-loop worker emits these process effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         match command {
             Command::SetTraceSender(trace_sender) => {
@@ -1562,7 +1562,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?;
 
-    let mut runtime = ContentRuntime::new(event_sender);
+    let mut process = ContentProcess::new(event_sender);
     loop {
         let command = match command_receiver.recv() {
             Ok(command) => command,
@@ -1580,10 +1580,10 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                 | CompleteDocumentFetch { .. }
                 | FailDocumentFetch { .. }
         );
-        match runtime.handle_command(command) {
+        match process.handle_command(command) {
             Ok(true) => {
                 if notify_event_loop {
-                    if let Err(error) = runtime.note_command_completed() {
+                    if let Err(error) = process.note_command_completed() {
                         eprintln!("content error: {error}");
                     }
                 }
@@ -1592,7 +1592,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             Err(error) => {
                 eprintln!("content error: {error}");
                 if notify_event_loop {
-                    if let Err(error) = runtime.note_command_completed() {
+                    if let Err(error) = process.note_command_completed() {
                         eprintln!("content error: {error}");
                     }
                 }

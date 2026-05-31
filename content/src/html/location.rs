@@ -7,7 +7,7 @@ use url::{Host, Url};
 pub struct Location {
     /// Model-local backing URL used for Location attribute serialization and URL parsing.
     ///
-    /// Note: The spec defines Location.url in terms of the relevant Document URL. This runtime
+    /// Note: The spec defines Location.url in terms of the relevant Document URL. This implementation
     /// currently snapshots that URL when creating the Location object.
     #[unsafe_ignore_trace]
     url: Url,
@@ -530,7 +530,7 @@ impl Location {
 
         // Step 3: "Assert: this's relevant Document's ancestor origins list is not null."
         // Step 4: "Otherwise, return this's relevant Document's ancestor origins list."
-        // Note: The current runtime does not yet expose a document ancestor-origins carrier, so
+        // Note: The implementation does not yet expose a document ancestor-origins carrier, so
         // this model returns an empty list.
         Ok(Vec::new())
     }
@@ -547,7 +547,7 @@ impl Location {
         // historyHandling to 'replace'."
         // Step 4: "Navigate navigable to url using sourceDocument ... with historyHandling set to
         // historyHandling."
-        // Note: The content runtime does not yet expose this navigation entrypoint from the
+        // Note: The content process does not yet expose this navigation entrypoint from the
         // Location carrier, so this algorithm currently terminates with NotSupportedError.
         let history_handling = match history_handling {
             NavigationHistoryBehavior::Auto => "auto",
@@ -560,7 +560,7 @@ impl Location {
 
     fn unsupported_navigation(&self, operation: String) -> Result<(), LocationError> {
         Err(LocationError::NotSupported(format!(
-            "{operation} is not yet implemented: content runtime cannot issue Location navigation requests from this path"
+            "{operation} is not yet implemented: content process cannot issue Location navigation requests from this path"
         )))
     }
 
@@ -584,7 +584,7 @@ impl Location {
         };
 
         // Note: The model approximates same origin-domain by matching serialized origins because
-        // document.domain relaxation is not yet represented in this runtime.
+        // document.domain relaxation is not yet represented in this implementation.
         if relevant_document_origin != entry_settings_origin {
             return Err(LocationError::Security);
         }

@@ -1,6 +1,6 @@
 # content/src/streams
 
-`content/src/streams` owns the native stream carriers and Streams Standard algorithms used by the content runtime.
+`content/src/streams` owns the native stream carriers and Streams Standard algorithms used by the content process.
 
 - Keep Web IDL-visible stream methods on the carrier types here, and keep `content/src/boa/bindings/streams` limited to argument conversion, downcasting, and delegation.
 - Match each carrier method's return channel to the Web IDL contract: throwing operations use `JsResult`, while promise-returning operations create and settle their promise on the carrier side.

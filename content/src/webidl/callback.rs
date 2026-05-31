@@ -5,8 +5,8 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace};
 
 /// <https://webidl.spec.whatwg.org/#idl-callback-function>
-// Note: The content runtime reuses this carrier for both callback function and callback interface type values because both Web IDL representations carry a JavaScript object reference plus callback context.
-// Note: The callback context remains implicit in the current single-realm content runtime until callback-realm bookkeeping is modeled explicitly.
+// Note: The content process reuses this carrier for both callback function and callback interface type values because both Web IDL representations carry a JavaScript object reference plus callback context.
+// Note: The callback context remains implicit in the current single-realm content process until callback-realm bookkeeping is modeled explicitly.
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct Callback {
     object: JsObject,
@@ -22,7 +22,7 @@ impl Callback {
     }
 
     /// <https://webidl.spec.whatwg.org/#callback-function-to-js>
-    // Note: The callback interface type conversion back to JavaScript yields the same referenced object in the current runtime, so this helper serves both representations.
+    // Note: The callback interface type conversion back to JavaScript yields the same referenced object in the implementation, so this helper serves both representations.
     pub(crate) fn to_js_value(&self) -> JsValue {
         JsValue::from(self.object.clone())
     }
@@ -120,7 +120,7 @@ pub(crate) fn callback_interface_type_value(value: &JsValue) -> JsResult<Callbac
     })?;
 
     // Step 2: "Return the IDL callback interface type value that represents a reference to V, with the incumbent settings object as the callback context."
-    // Note: The shared `Callback` carrier stores the referenced JavaScript object and relies on the current single-realm runtime for the callback-context portion of the value.
+    // Note: The shared `Callback` carrier stores the referenced JavaScript object and relies on the current single-realm implementation for the callback-context portion of the value.
     Ok(Callback::from_object(object.clone()))
 }
 
@@ -138,7 +138,7 @@ pub(crate) fn callback_function_value(value: &JsValue) -> JsResult<Callback> {
     };
 
     // Step 2: "Return the IDL callback function type value that represents a reference to the same object that V represents, with the incumbent settings object as the callback context."
-    // Note: The shared `Callback` carrier stores the referenced JavaScript object and relies on the current single-realm runtime for the callback-context portion of the value.
+    // Note: The shared `Callback` carrier stores the referenced JavaScript object and relies on the current single-realm implementation for the callback-context portion of the value.
     Ok(Callback::from_object(object.clone()))
 }
 
@@ -147,7 +147,7 @@ pub(crate) fn nullable_value<T>(
     value: &JsValue,
     convert_inner: impl FnOnce(&JsValue) -> JsResult<T>,
 ) -> JsResult<Option<T>> {
-    // Note: The current content runtime uses this helper for nullable callback interface and nullable callback function conversions, so the Rust carrier models the `null` result as `None` and delegates all non-null inputs to the inner conversion.
+    // Note: The current content process uses this helper for nullable callback interface and nullable callback function conversions, so the Rust carrier models the `null` result as `None` and delegates all non-null inputs to the inner conversion.
 
     // Step 1: "If V is not an Object, and the conversion to an IDL value is being performed due to V being assigned to an attribute whose type is a nullable callback function that is annotated with [LegacyTreatNonObjectAsNull], then return the IDL nullable type T? value null."
     // Note: No current content call sites use [LegacyTreatNonObjectAsNull].
@@ -185,7 +185,7 @@ pub(crate) fn call_user_objects_operation(
     // Step 6: "Let stored settings be value's callback context."
     // Step 7: "Prepare to run script with relevant settings."
     // Step 8: "Prepare to run a callback with stored settings."
-    // Note: The content runtime does not yet model callback realms or HTML callback/script preparation stacks explicitly.
+    // Note: The content process does not yet model callback realms or HTML callback/script preparation stacks explicitly.
 
     // Step 9: "Let X be O."
     let object_value = JsValue::from(object.clone());
@@ -239,7 +239,7 @@ pub(crate) fn call_user_objects_operation(
 
     // Return.1: "Clean up after running a callback with stored settings."
     // Return.2: "Clean up after running script with relevant settings."
-    // Note: The content runtime does not yet model callback/script cleanup stacks explicitly.
+    // Note: The content process does not yet model callback/script cleanup stacks explicitly.
 
     // Return.3: "If completion is an IDL value, return completion."
     Ok(result)
@@ -265,7 +265,7 @@ pub(crate) fn invoke_callback_function(
     // Step 4: "If IsCallable(F) is false:"
     if !host.is_callable(&function_value) {
         // Step 4.1: "Return the result of converting undefined to the callback function's return type."
-        // Note: The current content runtime returns the raw ECMAScript `undefined` value here; current callers either expect `undefined`/`any` directly or immediately perform the surrounding algorithm's return-value conversion.
+        // Note: The current content process returns the raw ECMAScript `undefined` value here; current callers either expect `undefined`/`any` directly or immediately perform the surrounding algorithm's return-value conversion.
         return Ok(JsValue::undefined());
     }
 
@@ -274,7 +274,7 @@ pub(crate) fn invoke_callback_function(
     // Step 7: "Let stored settings be callable's callback context."
     // Step 8: "Prepare to run script with relevant settings."
     // Step 9: "Prepare to run a callback with stored settings."
-    // Note: The content runtime does not yet model callback realms or HTML callback/script preparation stacks explicitly.
+    // Note: The content process does not yet model callback realms or HTML callback/script preparation stacks explicitly.
 
     // Step 10: "Let jsArgs be the result of converting args to a JavaScript arguments list."
     // Note: Callers already provide ECMAScript values, so there is no additional conversion layer here yet.
@@ -290,7 +290,7 @@ pub(crate) fn invoke_callback_function(
         Err(error) => {
             // Return.1: "Clean up after running a callback with stored settings."
             // Return.2: "Clean up after running script with relevant settings."
-            // Note: The content runtime does not yet model callback/script cleanup stacks explicitly.
+            // Note: The content process does not yet model callback/script cleanup stacks explicitly.
 
             // Return.5: "If exceptionBehavior is \"rethrow\", throw completion.[[Value]]."
             if exception_behavior == ExceptionBehavior::Rethrow {
