@@ -20,8 +20,11 @@ formal-web is a Rust web-engine prototype in alpha status, with an embedding API
 
 ## Pi Coding Sessions
 
-Pi (the coding agent used to develop this repository) can archive session traces
-for reproducibility and review. The local infrastructure consists of three parts:
+Pi (the coding agent used to develop this repository) coding sessions are archived on session shutdown,
+and a bash script is made available to upload them to hf. Those sessions are unredacted, so make sure you avoid
+sharing any secret in those.
+
+The local infrastructure consists of three parts:
 
 - **[pi-share-hf extension](.pi/extensions/pi-share-hf/)** — A pi extension that
 automatically collects session data to `.pi/collected-sessions/` on shutdown.
