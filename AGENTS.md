@@ -8,6 +8,14 @@ The above should form a chain of readmes, based on the directories where you are
 
 You can also update this documentation chain based on lessons learned from user feedback: update the lowest-level file that owns the rule or pattern, and avoid repeating the same guidance in multiple places.
 
+# Project Structure
+
+The formal-web project implements a web browser from scratch, with the main `formal-web` binary launching dedicated `formal-web-content` and `formal-web-net` sidecars from the `content` and `net` packages. The embedder coordinates these sidecars, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.
+
+TLA+ models under `verification/` verify critical algorithms (e.g. navigation). The TLA+ Toolbox jar is at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar`. Verification artifacts go in temporary directories.
+
+Plans and temporary task notes go under `scratchpad/`.
+
 # Local Extensions
 
 ## pi-share-hf — Session Collection
@@ -36,17 +44,14 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Use the `web_standards` extension tools (`spec_section`, `spec_algorithm`, `spec_select`, `spec_html`) to read spec content instead of reading local copies or fetching directly.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
 
-# Cross-Cutting Rules
+# End-of-Task Flow
 
-- Model cross-component browser identities such as documents, browsing contexts, navigables, traversables, event loops, and related handles as UUID newtypes in `ipc_messages`; reserve raw integers for process-local sequencing or transport details.
-- Build and launch the dedicated `formal-web-content` and `formal-web-net` sidecars from the `content` and `net` packages for the selected profile together with the main `formal-web` binary.
-- Keep large paint payloads on shared-memory transport and keep typed IPC messages focused on metadata and handles.
-- Track navigation completion with explicit content-to-embedder commit signaling instead of inferring it from paint delivery.
-- Keep verification artifacts in temporary directories, and use the local TLA+ Toolbox jar at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar`.
-- Put plans and temporary task notes under `scratchpad/`.
+At the end of each task, run the following steps **in order**:
 
-At the end of each task, you MUST
-- Collect the current session by invoking the `collect_session` tool (or running `/collect-session`) to archive the session trace to `.pi/collected-sessions/`.
-- Finish tasks with the default WPT run, and `./verification/verify-navigation.sh`.
-- Treat unexpected results in the above as something that needs to be fixed as part of the current task.
-- Suggest a commit message for the completed task to the user, if the task involved changes tracked by git.
+1. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+
+2. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
+   - **Default WPT run** — Runs the Web Platform Tests suite to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
+   - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content runtime code.
+
+3. **Collect the session** — Run `collect_session` (or `/collect-session`) to archive the session trace to `.pi/collected-sessions/`.
