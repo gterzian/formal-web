@@ -7,4 +7,4 @@
 - HTML-owned global-object carriers such as `GlobalScope` and `Window` live in `content/src/html`, and DOM dispatch code here depends on them when the DOM Standard talks about window-backed targets.
 - `content/src/boa/bindings` should delegate DOM algorithms here instead of embedding DOM logic in the binding layer.
 - Native UI-event to DOM-dispatch bridging belongs here, with activation-target selection kept in `dispatch.rs`.
-- Use the checked-in standards under `web_standards/`, and for single-sentence spec definitions quote the defining sentence instead of inventing `Step N:` comments.
+- Use the `web_standards` extension (`spec_section`, `spec_algorithm`) with `https://dom.spec.whatwg.org/` to read the DOM spec, and for single-sentence spec definitions quote the defining sentence instead of inventing `Step N:` comments.
