@@ -1,12 +1,12 @@
 mod chrome;
 
 use super::{
-    BrowserState, FormalWebUserEvent, NavigationCompleted, NavigationCompletion,
-    PendingNavigation, automation_screenshot_png, automation_visible_frame_viewports,
+    FormalWebUserEvent, NavigationCompletion,
+    automation_screenshot_png, automation_visible_frame_viewports,
     normalize_browser_destination, read_clipboard_text, startup_destination_url,
     write_clipboard_text,
 };
-use self::chrome::{ChromeAction, ChromeUi, ChromeViewState};
+use self::chrome::{ChromeAction, ChromeTabInfo, ChromeUi, ChromeViewState};
 use super::winit_integration::{
     WinitShellProvider, event_loop_options, touch_pointer_details, viewport_of_snapshot,
     viewport_snapshot_for_window, winit_ime_to_blitz, winit_key_event_to_blitz,
@@ -20,972 +20,563 @@ use blitz_traits::events::{
     MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::{ColorScheme, ShellProvider};
-use kurbo::Affine;
 use ipc_messages::content::WebviewId;
+use kurbo::Affine;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 use webview::WebviewProvider;
-use ::winit::application::ApplicationHandler;
-use ::winit::dpi::{LogicalPosition, PhysicalPosition};
-use ::winit::event::{
+use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalPosition, PhysicalPosition};
+use winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
-use ::winit::event_loop::ActiveEventLoop;
-use ::winit::window::{Window, WindowAttributes, WindowId};
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{Window, WindowId as WinitWindowId};
 
-pub(super) struct HeadedEmbedderApp {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WindowId(Uuid);
+impl WindowId { pub fn new() -> Self { Self(Uuid::new_v4()) } }
+
+/// Per-tab state
+pub(super) struct TabState {
+    webview_id: WebviewId,
+    pending_url: Option<String>,
+    committed_url: Option<String>,
+}
+impl TabState {
+    fn new(webview_id: WebviewId) -> Self { Self { webview_id, pending_url: None, committed_url: None } }
+    fn display_url(&self) -> String { self.pending_url.clone().or_else(|| self.committed_url.clone()).unwrap_or_default() }
+}
+
+/// Per-window state: owns a winit window, a renderer, chrome, and tabs
+pub(super) struct WindowState {
+    pub(super) window_id: WindowId,
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: VelloWindowRenderer,
     pub(super) chrome: Option<ChromeUi>,
-    pub(super) browser: BrowserState,
+    pub(super) tabs: HashMap<WebviewId, TabState>,
+    pub(super) active_tab: Option<WebviewId>,
     pub(super) automation: AutomationController,
-    pub(super) provider: Option<WebviewProvider>,
-    pub(super) current_webview_id: Option<WebviewId>,
-    pub(super) has_top_level_traversable: bool,
     pub(super) window_occluded: bool,
     pub(super) animation_timer: Option<Instant>,
     pub(super) keyboard_modifiers: Modifiers,
     pub(super) buttons: MouseEventButtons,
     pub(super) pointer_pos: PhysicalPosition<f64>,
 }
-
-pub(super) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
-    LazyLock::new(|| Mutex::new(None));
-
-pub(super) fn update_window_viewport_snapshot(snapshot: Option<(u32, u32, f32, ColorScheme)>) {
-    let mut guard = WINDOW_VIEWPORT_SNAPSHOT
-        .lock()
-        .expect("window viewport snapshot mutex poisoned");
-    *guard = snapshot;
-}
-
-pub(super) fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> {
-    WINDOW_VIEWPORT_SNAPSHOT
-        .lock()
-        .expect("window viewport snapshot mutex poisoned")
-        .as_ref()
-        .copied()
-}
-
-impl Default for HeadedEmbedderApp {
-    fn default() -> Self {
+impl WindowState {
+    fn new(window_id: WindowId) -> Self {
         Self {
-            window: None,
-            renderer: VelloWindowRenderer::new(),
-            chrome: None,
-            browser: BrowserState::default(),
-            automation: AutomationController::default(),
-            provider: None,
-            current_webview_id: None,
-            has_top_level_traversable: false,
-            window_occluded: false,
-            animation_timer: None,
-            keyboard_modifiers: Modifiers::default(),
-            buttons: MouseEventButtons::None,
-            pointer_pos: PhysicalPosition::default(),
+            window_id, window: None, renderer: VelloWindowRenderer::new(), chrome: None,
+            tabs: HashMap::new(), active_tab: None, automation: AutomationController::default(),
+            window_occluded: false, animation_timer: None, keyboard_modifiers: Modifiers::default(),
+            buttons: MouseEventButtons::None, pointer_pos: PhysicalPosition::default(),
         }
     }
 }
 
-impl HeadedEmbedderApp {
-    fn has_visible_viewport(&self) -> bool {
-        let Some(window) = self.window.as_ref() else {
-            return false;
-        };
-        if self.window_occluded {
-            return false;
+pub(super) struct WindowedApp {
+    pub(super) windows: HashMap<WindowId, WindowState>,
+    pub(super) webview_to_window: HashMap<WebviewId, WindowId>,
+    pub(super) provider: Option<WebviewProvider>,
+    pub(super) active_window_id: Option<WindowId>,
+}
+impl Default for WindowedApp {
+    fn default() -> Self { Self { windows: HashMap::new(), webview_to_window: HashMap::new(), provider: None, active_window_id: None } }
+}
+
+pub(super) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> = LazyLock::new(|| Mutex::new(None));
+pub(super) fn update_window_viewport_snapshot(s: Option<(u32, u32, f32, ColorScheme)>) { *WINDOW_VIEWPORT_SNAPSHOT.lock().expect("poisoned") = s; }
+pub(super) fn window_viewport_snapshot() -> Option<(u32, u32, f32, ColorScheme)> { *WINDOW_VIEWPORT_SNAPSHOT.lock().expect("poisoned") }
+
+// ── Static helpers ─────────────────────────────────────────────────────────
+impl WindowedApp {
+    fn has_visible_viewport(s: &WindowState) -> bool {
+        let Some(w) = s.window.as_ref() else { return false; };
+        if s.window_occluded || matches!(w.is_visible(), Some(false)) { return false; }
+        let size = w.inner_size(); size.width > 0 && size.height > 0
+    }
+    fn chrome_height_css(s: &WindowState) -> f32 { s.chrome.as_ref().map(ChromeUi::height_css).unwrap_or_default() }
+    fn chrome_height_physical(s: &WindowState) -> u32 { s.chrome.as_ref().map(ChromeUi::height_physical).unwrap_or_default() }
+    fn content_has_visible_viewport(s: &WindowState) -> bool { Self::has_visible_viewport(s) && s.window.as_ref().is_some_and(|w| w.inner_size().height > Self::chrome_height_physical(s)) }
+    fn pointer_in_viewport(s: &WindowState, pos: PhysicalPosition<f64>) -> bool {
+        Self::has_visible_viewport(s) && s.window.as_ref().is_some_and(|w| { let sz = w.inner_size(); pos.x >= 0.0 && pos.y >= 0.0 && pos.x < f64::from(sz.width) && pos.y < f64::from(sz.height) })
+    }
+    fn pointer_in_chrome(s: &WindowState, pos: PhysicalPosition<f64>) -> bool { Self::pointer_in_viewport(s, pos) && pos.y < f64::from(Self::chrome_height_physical(s)) }
+    fn pointer_in_content(s: &WindowState, pos: PhysicalPosition<f64>) -> bool { Self::pointer_in_viewport(s, pos) && pos.y >= f64::from(Self::chrome_height_physical(s)) && Self::content_has_visible_viewport(s) }
+    fn request_window_redraw(s: &WindowState) { if let Some(w) = s.window.as_ref() { if Self::has_visible_viewport(s) { w.request_redraw(); } } }
+    fn request_visible_redraw(s: &WindowState, prov: Option<&WebviewProvider>, reason: &str) {
+        Self::request_window_redraw(s);
+        if let Some((p, id)) = prov.zip(s.active_tab) { p.note_rendering_opportunity(id, reason); }
+    }
+    fn tab_display_url(s: &WindowState) -> String { s.active_tab.and_then(|id| s.tabs.get(&id)).map(TabState::display_url).unwrap_or_default() }
+    fn build_chrome_view_state(s: &WindowState) -> ChromeViewState {
+        let tabs: Vec<ChromeTabInfo> = s.tabs.values().enumerate().map(|(i, t)| ChromeTabInfo { label: format!("Tab {}", i + 1), active: s.active_tab == Some(t.webview_id) }).collect();
+        ChromeViewState { address: Self::tab_display_url(s), tabs }
+    }
+    fn sync_chrome_and_viewport(s: &mut WindowState, provider: &mut Option<WebviewProvider>) {
+        // Sync chrome visuals
+        let v = Self::build_chrome_view_state(s);
+        if let Some(c) = s.chrome.as_mut() { c.sync_state(&v); }
+        // Update viewport on the provider
+        let Some(window) = s.window.as_ref() else { return; };
+        let (w, h, scale, cs) = viewport_snapshot_for_window(window);
+        let viewport = (w, h.saturating_sub(Self::chrome_height_physical(s)), scale, cs);
+        update_window_viewport_snapshot(Some(viewport));
+        if let Some(p) = provider.as_mut() {
+            let _ = p.set_default_viewport(Some(viewport));
+            if let Some(wid) = s.active_tab {
+                let _ = p.set_traversable_viewport(wid, viewport, 0.0, 0.0);
+            }
         }
-        if matches!(window.is_visible(), Some(false)) {
-            return false;
-        }
+    }
+    fn logical_pos(s: &WindowState, pos: PhysicalPosition<f64>) -> LogicalPosition<f32> { let scale = s.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0); pos.to_logical(scale) }
+    fn c_coords(s: &WindowState, pos: PhysicalPosition<f64>) -> PointerCoords { let LogicalPosition::<f32> { x, y } = Self::logical_pos(s, pos); PointerCoords { screen_x: x, screen_y: y, client_x: x, client_y: y, page_x: x, page_y: y } }
+    fn ct_coords(s: &WindowState, pos: PhysicalPosition<f64>) -> PointerCoords { let LogicalPosition::<f32> { x, y } = Self::logical_pos(s, pos); let ch = Self::chrome_height_css(s); PointerCoords { screen_x: x, screen_y: y, client_x: x, client_y: y - ch, page_x: x, page_y: y - ch } }
+    fn add_tab(w2w: &mut HashMap<WebviewId, WindowId>, st: &mut WindowState, wid: WebviewId) {
+        if st.tabs.contains_key(&wid) { st.active_tab = Some(wid); w2w.insert(wid, st.window_id); return; }
+        st.tabs.insert(wid, TabState::new(wid)); st.active_tab = Some(wid); w2w.insert(wid, st.window_id);
+    }
+    fn paint_frame(st: &mut WindowState, prov: &mut Option<WebviewProvider>) {
+        if !Self::has_visible_viewport(st) { return; }
+        st.animation_timer.get_or_insert_with(Instant::now);
+        let Some(window) = st.window.as_ref() else { return; };
+        let ch = f64::from(Self::chrome_height_physical(st));
+        let cs = st.chrome.as_mut().map(ChromeUi::paint_scene);
+        if cs.is_none() && st.active_tab.is_none() { return; }
         let size = window.inner_size();
-        size.width > 0 && size.height > 0
-    }
-
-    fn pointer_position_in_viewport(&self, position: PhysicalPosition<f64>) -> bool {
-        if !self.has_visible_viewport() {
-            return false;
-        }
-        let Some(window) = self.window.as_ref() else {
-            return false;
-        };
-        let size = window.inner_size();
-        position.x >= 0.0
-            && position.y >= 0.0
-            && position.x < f64::from(size.width)
-            && position.y < f64::from(size.height)
-    }
-
-    fn chrome_height_css(&self) -> f32 {
-        self.chrome
-            .as_ref()
-            .map(ChromeUi::height_css)
-            .unwrap_or_default()
-    }
-
-    fn chrome_height_physical(&self) -> u32 {
-        self.chrome
-            .as_ref()
-            .map(ChromeUi::height_physical)
-            .unwrap_or_default()
-    }
-
-    fn content_has_visible_viewport(&self) -> bool {
-        if !self.has_visible_viewport() {
-            return false;
-        }
-        let Some(window) = self.window.as_ref() else {
-            return false;
-        };
-        window.inner_size().height > self.chrome_height_physical()
-    }
-
-    fn pointer_position_in_chrome(&self, position: PhysicalPosition<f64>) -> bool {
-        self.pointer_position_in_viewport(position)
-            && position.y < f64::from(self.chrome_height_physical())
-    }
-
-    fn pointer_position_in_content_viewport(&self, position: PhysicalPosition<f64>) -> bool {
-        self.pointer_position_in_viewport(position)
-            && position.y >= f64::from(self.chrome_height_physical())
-            && self.content_has_visible_viewport()
-    }
-
-    fn request_visible_redraw(&self, reason: &str) {
-        if !self.has_visible_viewport() {
-            return;
-        }
-        self.request_window_redraw();
-        if let Some((provider, webview_id)) = self.provider.as_ref().zip(self.current_webview_id)
-        {
-            provider.note_rendering_opportunity(webview_id, reason);
-        }
-    }
-
-    fn request_window_redraw(&self) {
-        if !self.has_visible_viewport() {
-            return;
-        }
-        let Some(window) = self.window.as_ref() else {
-            return;
-        };
-        window.request_redraw();
-    }
-
-    fn content_viewport_snapshot(&self, window: &Window) -> (u32, u32, f32, ColorScheme) {
-        let (width, height, scale, color_scheme): (u32, u32, f32, ColorScheme) =
-            viewport_snapshot_for_window(window);
-        (
-            width,
-            height.saturating_sub(self.chrome_height_physical()),
-            scale,
-            color_scheme,
-        )
-    }
-
-    fn update_content_viewport_snapshot(&mut self, window: &Window) {
-        let viewport_snapshot = self.content_viewport_snapshot(window);
-        update_window_viewport_snapshot(Some(viewport_snapshot));
-        if let Some(provider) = self.provider.as_mut() {
-            if let Err(error) = provider.set_default_viewport(Some(viewport_snapshot)) {
-                eprintln!("failed to set default viewport: {error}");
-            }
-            if let Some(webview_id) = self.current_webview_id {
-                let (width, height, scale, color_scheme) = viewport_snapshot;
-                if let Err(error) = provider.set_traversable_viewport(
-                    webview_id,
-                    (width, height, scale, color_scheme),
-                    0.0,
-                    0.0,
-                ) {
-                    eprintln!("failed to set traversable viewport: {error}");
-                }
-            }
-        }
-    }
-
-    fn current_chrome_view_state(&self) -> ChromeViewState {
-        ChromeViewState {
-            address: self.browser.displayed_url(),
-        }
-    }
-
-    fn sync_chrome_state(&mut self) {
-        let chrome_view_state = self.current_chrome_view_state();
-        if let Some(chrome) = self.chrome.as_mut() {
-            chrome.sync_state(&chrome_view_state);
-        }
-        if let Some(window) = self.window.clone() {
-            self.update_content_viewport_snapshot(&window);
-        }
-    }
-
-    fn resume_renderer_for_window(&mut self, window: &Arc<Window>) {
-        let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-        if self.renderer.is_active() {
-            self.renderer.set_size(size.width, size.height);
-        } else {
-            let window_handle: Arc<dyn anyrender::WindowHandle> = window.clone();
-            self.renderer.resume(window_handle, size.width, size.height, || {});
-            self.renderer.complete_resume();
-        }
-    }
-
-    fn current_animation_time(&mut self) -> f64 {
-        match self.animation_timer {
-            Some(start) => Instant::now().duration_since(start).as_secs_f64(),
-            None => {
-                self.animation_timer = Some(Instant::now());
-                0.0
-            }
-        }
-    }
-
-    fn create_window(event_loop: &ActiveEventLoop) -> Result<Arc<Window>, String> {
-        let options = event_loop_options();
-        let title = options
-            .window_title
-            .unwrap_or_else(|| String::from("formal-web"));
-        let attributes: WindowAttributes = Window::default_attributes().with_title(title);
-        event_loop
-            .create_window(attributes)
-            .map(Arc::new)
-            .map_err(|error| format!("failed to create winit window: {error}"))
-    }
-
-    fn paint_current_frame(&mut self) {
-        if !self.has_visible_viewport() {
-            return;
-        }
-        let _ = self.current_animation_time();
-        let Some(window) = self.window.as_ref() else {
-            return;
-        };
-        let chrome_height = f64::from(self.chrome_height_physical());
-        let chrome_scene = self.chrome.as_mut().map(ChromeUi::paint_scene);
-
-        if chrome_scene.is_none() && self.current_webview_id.is_none() {
-            return;
-        }
-
-        let size = window.inner_size();
-
-        if self.renderer.is_active() {
-            self.renderer.set_size(size.width, size.height);
-        } else {
-            let window_handle: Arc<dyn anyrender::WindowHandle> = window.clone();
-            self.renderer.resume(window_handle, size.width, size.height, || {});
-            self.renderer.complete_resume();
-        }
-
-        let mut provider = self.provider.take();
-        let current_webview_id = self.current_webview_id;
-        self.renderer.render(|scene| {
-            if let Some(webview_id) = current_webview_id
-                && let Some(provider) = provider.as_mut()
-            {
-                let _ = provider.append_web_content_scene(
-                    webview_id,
-                    scene,
-                    Affine::translate((0.0, chrome_height)),
-                );
-            }
-            if let Some(chrome_scene) = chrome_scene.clone() {
-                scene.append_scene(chrome_scene, Affine::IDENTITY);
-            }
+        if st.renderer.is_active() { st.renderer.set_size(size.width, size.height); }
+        else { let wh: Arc<dyn anyrender::WindowHandle> = window.clone(); st.renderer.resume(wh, size.width, size.height, || {}); st.renderer.complete_resume(); }
+        let at = st.active_tab;
+        st.renderer.render(|scene| {
+            if let Some(wid) = at { if let Some(p) = prov.as_mut() { let _ = p.append_web_content_scene(wid, scene, Affine::translate((0.0, ch))); } }
+            if let Some(cs) = cs.clone() { scene.append_scene(cs, Affine::IDENTITY); }
         });
-        self.provider = provider;
     }
-
-    fn logical_position(&self, position: PhysicalPosition<f64>) -> LogicalPosition<f32> {
-        let scale = self
-            .window
-            .as_ref()
-            .map(|window| window.scale_factor())
-            .unwrap_or(1.0);
-        position.to_logical(scale)
+    fn auto_snapshot(s: &WindowState) -> AutomationSnapshot { AutomationSnapshot { webview_id: s.active_tab, current_url: s.active_tab.and_then(|id| s.tabs.get(&id)).and_then(|t| t.committed_url.clone()), displayed_url: Self::tab_display_url(s), navigable_id: None, has_top_level_traversable: s.active_tab.is_some() } }
+    fn create_winit_window(el: &ActiveEventLoop) -> Result<Arc<Window>, String> { let title = event_loop_options().window_title.unwrap_or_else(|| String::from("formal-web")); el.create_window(Window::default_attributes().with_title(title)).map(Arc::new).map_err(|e| format!("failed to create winit window: {e}")) }
+    fn resume_renderer(st: &mut WindowState, w: &Arc<Window>) { let sz = w.inner_size(); if sz.width == 0 || sz.height == 0 { return; } if st.renderer.is_active() { st.renderer.set_size(sz.width, sz.height); } else { let wh: Arc<dyn anyrender::WindowHandle> = w.clone(); st.renderer.resume(wh, sz.width, sz.height, || {}); st.renderer.complete_resume(); } }
+    fn with_provider<R>(&mut self, f: impl FnOnce(&mut WebviewProvider) -> R) -> Option<R> { self.provider.as_mut().map(f) }
+    fn dispatch_to_content(&mut self, window_id: WindowId, event: UiEvent) {
+        let wid = self.windows.get(&window_id).and_then(|s| s.active_tab);
+        let Some(wid) = wid else { return; };
+        self.with_provider(|p| { if let Err(e) = p.send_ui_event(wid, event) { eprintln!("content event error: {e}"); } });
+        if let Some(s) = self.windows.get(&window_id) { Self::request_window_redraw(s); }
     }
-
-    fn chrome_pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
-        let LogicalPosition::<f32> { x: screen_x, y: screen_y } = self.logical_position(position);
-        PointerCoords {
-            screen_x,
-            screen_y,
-            client_x: screen_x,
-            client_y: screen_y,
-            page_x: screen_x,
-            page_y: screen_y,
-        }
-    }
-
-    fn content_pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
-        let LogicalPosition::<f32> { x: screen_x, y: screen_y } = self.logical_position(position);
-        let client_x = screen_x;
-        let client_y = screen_y - self.chrome_height_css();
-        PointerCoords {
-            screen_x,
-            screen_y,
-            client_x,
-            client_y,
-            page_x: client_x,
-            page_y: client_y,
-        }
-    }
-
-    fn send_content_ui_event(
-        &mut self,
-        event: UiEvent,
-        require_visible_viewport: bool,
-    ) -> Result<(), String> {
-        if require_visible_viewport {
-            if !self.content_has_visible_viewport() {
-                return Err(String::from("content viewport is not visible"));
-            }
-        } else {
-            let Some(window) = self.window.as_ref() else {
-                return Err(String::from("window is not initialized"));
-            };
-            if window.inner_size().height <= self.chrome_height_physical() {
-                return Err(String::from("content viewport is not ready for automation clicks"));
-            }
-        }
-
-        if !self.has_top_level_traversable {
-            return Err(String::from("no top-level traversable is active"));
-        }
-
-        let Some(provider) = self.provider.as_mut() else {
-            return Err(String::from("webview provider is not initialized"));
-        };
-        let Some(webview_id) = self.current_webview_id else {
-            return Err(String::from("no current webview is active"));
-        };
-
-        provider.send_ui_event(webview_id, event)?;
-        if require_visible_viewport {
-            self.request_window_redraw();
-        }
-        Ok(())
-    }
-
-    fn dispatch_content_ui_event(&mut self, event: UiEvent) {
-        if let Err(error) = self.send_content_ui_event(event, true) {
-            eprintln!("failed to send content UI event: {error}");
-        }
-    }
-
-    fn handle_chrome_ui_event(&mut self, event: UiEvent) {
-        if !self.has_visible_viewport() {
-            return;
-        }
-
-        let action = self
-            .chrome
-            .as_mut()
-            .and_then(|chrome| chrome.handle_ui_event(event));
-        self.request_window_redraw();
-        if let Some(action) = action {
-            self.handle_chrome_action(action);
-        }
-    }
-
-    fn start_navigation_request(&self, destination_url: &str) -> Result<(), String> {
-        let provider = self
-            .provider
-            .as_ref()
-            .ok_or_else(|| String::from("webview provider is not initialized"))?;
-        provider.navigate(self.current_webview_id, destination_url)
-    }
-
-    fn begin_navigation(&mut self, pending_navigation: PendingNavigation) -> Result<(), String> {
-        self.start_navigation_request(&pending_navigation.url)?;
-        self.browser.begin_navigation(pending_navigation);
-        self.sync_chrome_state();
-        self.request_window_redraw();
-        Ok(())
-    }
-
-    fn handle_chrome_action(&mut self, action: ChromeAction) {
-        let result = match action {
-            ChromeAction::Navigate => {
-                let Some(chrome) = self.chrome.as_ref() else {
-                    return;
-                };
-                let Some(destination_url) = normalize_browser_destination(&chrome.address_value()) else {
-                    return;
-                };
-                self.begin_navigation(PendingNavigation { url: destination_url })
-            }
-        };
-
-        if let Err(error) = result {
-            eprintln!("{error}");
-        }
-    }
-
-    fn handle_navigation_requested(&mut self, webview_id: WebviewId, destination_url: String) {
-        if self.current_webview_id.is_none() {
-            self.current_webview_id = Some(webview_id);
-            self.has_top_level_traversable = true;
-        }
-        if self.current_webview_id == Some(webview_id) {
-            self.browser.begin_navigation(PendingNavigation {
-                url: destination_url,
-            });
-            self.sync_chrome_state();
-            self.request_window_redraw();
-        }
-    }
-
-    fn sync_browser_navigable_id_from_provider(&mut self) {
-        let navigable_id = self
-            .provider
-            .as_ref()
-            .zip(self.current_webview_id)
-            .and_then(|(provider, webview_id)| provider.current_navigable_id(webview_id));
-        self.browser.set_current_navigable_id(navigable_id);
-    }
-
-    fn with_automation_controller<R>(
-        &mut self,
-        f: impl FnOnce(&mut AutomationController, &mut Self) -> R,
-    ) -> R {
-        let mut automation = std::mem::take(&mut self.automation);
+    fn try_run_automation<R>(&mut self, f: impl FnOnce(&mut AutomationController, &mut WindowedApp) -> R) -> Option<R> {
+        let wid = self.active_window_id?;
+        let state = self.windows.get_mut(&wid)?;
+        let mut automation = std::mem::take(&mut state.automation);
         let result = f(&mut automation, self);
-        self.automation = automation;
-        result
-    }
-
-    fn handle_navigation_completed(&mut self, completed: NavigationCompleted) {
-        if self.current_webview_id.is_none() {
-            self.current_webview_id = Some(completed.webview_id);
-            self.has_top_level_traversable = true;
-        }
-        let is_current = self.current_webview_id == Some(completed.webview_id);
-
-        match &completed.status {
-            NavigationCompletion::Committed { url } => {
-                if is_current {
-                    self.browser.commit_navigation(url.clone());
-                    self.sync_chrome_state();
-                    self.request_window_redraw();
-                    self.with_automation_controller(|automation, app| {
-                        automation.note_navigation_committed(app)
-                    });
-                }
-
-                if let Some(provider) = self.provider.as_mut() {
-                    provider.on_navigation_committed(completed.webview_id);
-                }
-            }
-            NavigationCompletion::Aborted { message } => {
-                if is_current {
-                    self.with_automation_controller(|automation, _app| {
-                        automation.abort_pending_navigation(message.clone())
-                    });
-                    self.browser.cancel_pending_navigation();
-                    self.sync_chrome_state();
-                }
-            }
-        }
-
-        self.request_window_redraw();
-    }
-
-    fn dispatch_automation_click(&mut self, x: f32, y: f32) -> Result<(), String> {
-        let Some(window) = self.window.as_ref() else {
-            return Err(String::from("window is not initialized"));
-        };
-
-        let scale = window.scale_factor();
-        let chrome_height_css = f64::from(self.chrome_height_css());
-        let position = PhysicalPosition::new(
-            f64::from(x) * scale,
-            (f64::from(y) + chrome_height_css) * scale,
-        );
-        self.pointer_pos = position;
-
-        if let Some(chrome) = self.chrome.as_mut() {
-            chrome.clear_focus();
-        }
-        self.request_window_redraw();
-
-        let modifiers = winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state());
-        let move_event = BlitzPointerEvent {
-            id: BlitzPointerId::Mouse,
-            is_primary: true,
-            coords: self.content_pointer_coords(position),
-            button: Default::default(),
-            buttons: self.buttons,
-            mods: modifiers,
-            details: PointerDetails::default(),
-        };
-        self.send_content_ui_event(UiEvent::PointerMove(move_event), false)?;
-
-        self.buttons |= MouseEventButton::Main.into();
-        let down_event = BlitzPointerEvent {
-            id: BlitzPointerId::Mouse,
-            is_primary: true,
-            coords: self.content_pointer_coords(position),
-            button: MouseEventButton::Main,
-            buttons: self.buttons,
-            mods: modifiers,
-            details: PointerDetails::default(),
-        };
-        self.send_content_ui_event(UiEvent::PointerDown(down_event), false)?;
-
-        self.buttons.remove(MouseEventButton::Main.into());
-        let up_event = BlitzPointerEvent {
-            id: BlitzPointerId::Mouse,
-            is_primary: true,
-            coords: self.content_pointer_coords(position),
-            button: MouseEventButton::Main,
-            buttons: self.buttons,
-            mods: modifiers,
-            details: PointerDetails::default(),
-        };
-        self.send_content_ui_event(UiEvent::PointerUp(up_event), false)?;
-
-        Ok(())
-    }
-
-    fn dispatch_automation_click_element(&self, selector: String) -> Result<(), String> {
-        match self.provider.as_ref().zip(self.current_webview_id) {
-            Some((provider, webview_id)) => {
-                provider.click_element(webview_id, selector)?;
-                provider.note_rendering_opportunity(webview_id, "automation_element_click");
-                Ok(())
-            }
-            None => Err(String::from(
-                "no active top-level traversable is available for element click",
-            )),
-        }
-    }
-
-    fn dispatch_automation_scroll(
-        &mut self,
-        x: f32,
-        y: f32,
-        delta_x: f32,
-        delta_y: f32,
-    ) -> Result<(), String> {
-        let Some(window) = self.window.as_ref() else {
-            return Err(String::from("window is not initialized"));
-        };
-
-        let scale = window.scale_factor();
-        let chrome_height_css = f64::from(self.chrome_height_css());
-        let position = PhysicalPosition::new(
-            f64::from(x) * scale,
-            (f64::from(y) + chrome_height_css) * scale,
-        );
-        self.pointer_pos = position;
-
-        let modifiers = winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state());
-        let move_event = BlitzPointerEvent {
-            id: BlitzPointerId::Mouse,
-            is_primary: true,
-            coords: self.content_pointer_coords(position),
-            button: Default::default(),
-            buttons: self.buttons,
-            mods: modifiers,
-            details: PointerDetails::default(),
-        };
-        self.send_content_ui_event(UiEvent::PointerMove(move_event), false)?;
-
-        self.send_content_ui_event(
-            UiEvent::Wheel(BlitzWheelEvent {
-                delta: BlitzWheelDelta::Pixels(f64::from(delta_x), f64::from(delta_y)),
-                coords: self.content_pointer_coords(position),
-                buttons: self.buttons,
-                mods: modifiers,
-            }),
-            false,
-        )?;
-
-        Ok(())
+        if let Some(s) = self.windows.get_mut(&wid) { s.automation = automation; }
+        Some(result)
     }
 }
 
-impl AutomationHost for HeadedEmbedderApp {
-    fn automation_snapshot(&mut self) -> AutomationSnapshot {
-        self.sync_browser_navigable_id_from_provider();
-        self.browser.automation_snapshot(
-            self.current_webview_id,
-            self.has_top_level_traversable,
-        )
-    }
-
-    fn automation_visible_frame_viewports(
-        &mut self,
-    ) -> Result<Vec<AutomationVisibleFrameViewport>, String> {
-        automation_visible_frame_viewports(&mut self.provider, self.current_webview_id)
-    }
-
-    fn automation_screenshot(&mut self) -> Result<Vec<u8>, String> {
-        automation_screenshot_png(&mut self.provider, self.current_webview_id)
-    }
-
-    fn begin_automation_navigation(&mut self, url: String) -> Result<(), String> {
-        self.begin_navigation(PendingNavigation { url })
-    }
-
-    fn automation_click(&mut self, x: f32, y: f32) -> Result<(), String> {
-        self.dispatch_automation_click(x, y)
-    }
-
-    fn automation_click_element(&mut self, selector: String) -> Result<(), String> {
-        self.dispatch_automation_click_element(selector)
-    }
-
-    fn automation_scroll(
-        &mut self,
-        x: f32,
-        y: f32,
-        delta_x: f32,
-        delta_y: f32,
-    ) -> Result<(), String> {
-        self.dispatch_automation_scroll(x, y, delta_x, delta_y)
-    }
-
-    fn automation_evaluate_script(
-        &mut self,
-        source: String,
-        timeout: Duration,
-    ) -> Result<Value, String> {
-        match self.provider.as_ref().zip(self.current_webview_id) {
-            Some((provider, webview_id)) => provider.evaluate_script(webview_id, source, timeout),
-            None => Err(String::from(
-                "no active top-level traversable is available for script execution",
-            )),
-        }
-    }
-}
-
-impl ApplicationHandler<FormalWebUserEvent> for HeadedEmbedderApp {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_none() {
-            match Self::create_window(event_loop) {
-                Ok(window) => {
-                    let full_viewport = viewport_of_snapshot(viewport_snapshot_for_window(&window));
-                    let chrome_shell_provider: Arc<dyn ShellProvider> =
-                        Arc::new(WinitShellProvider::new(window.clone()));
-                    let chrome = match ChromeUi::new(full_viewport, chrome_shell_provider) {
-                        Ok(chrome) => chrome,
-                        Err(_error) => {
-                            event_loop.exit();
-                            return;
-                        }
-                    };
-                    self.chrome = Some(chrome);
-                    self.window = Some(window.clone());
-                    self.sync_chrome_state();
-                    self.update_content_viewport_snapshot(&window);
-                    self.resume_renderer_for_window(&window);
-                    let startup_url = event_loop_options().startup_url;
-                    match startup_destination_url(startup_url.as_deref()) {
-                        Ok(destination_url) => {
-                            self.browser.begin_navigation(PendingNavigation {
-                                url: destination_url,
-                            });
-                            self.sync_chrome_state();
-                            if let Some(provider) = self.provider.as_ref() {
-                                if provider.start(startup_url.as_deref()).is_err() {
-                                    event_loop.exit();
-                                }
-                            }
-                        }
-                        Err(_error) => event_loop.exit(),
-                    }
-                    self.request_window_redraw();
-                }
-                Err(_error) => event_loop.exit(),
+// ── ApplicationHandler ─────────────────────────────────────────────────────
+impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        eprintln!("[startup] resumed called");
+        if !self.windows.is_empty() { return; }
+        let wid = WindowId::new();
+        let window = match Self::create_winit_window(el) { Ok(w) => w, Err(e) => { eprintln!("[startup] create_window failed: {e}"); el.exit(); return; } };
+        let fvp = viewport_of_snapshot(viewport_snapshot_for_window(&window));
+        let cp: Arc<dyn ShellProvider> = Arc::new(WinitShellProvider::new(window.clone()));
+        let chrome = match ChromeUi::new(fvp, cp) { Ok(c) => c, Err(e) => { eprintln!("[startup] ChromeUi::new failed: {e}"); el.exit(); return; } };
+        let mut st = WindowState::new(wid);
+        st.chrome = Some(chrome); st.window = Some(window.clone());
+        self.active_window_id = Some(wid);
+        Self::sync_chrome(&mut st); Self::resume_renderer(&mut st, &window);
+        match startup_destination_url(event_loop_options().startup_url.as_deref()) {
+            Ok(url) => {
+                eprintln!("[startup] destination URL: {url}");
+                if let Some(p) = self.provider.as_ref() { let _ = p.start(event_loop_options().startup_url.as_deref()); }
+                self.windows.insert(wid, st);
+                if let Some(s) = self.windows.get(&wid) { Self::request_window_redraw(s); }
             }
+            Err(e) => { eprintln!("[startup] startup_destination_url failed: {e}"); el.exit(); },
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
-        let Some(current_window_id) = self.window.as_ref().map(|window| window.id()) else {
-            return;
+    fn window_event(&mut self, _el: &ActiveEventLoop, ww_id: WinitWindowId, event: WindowEvent) {
+        let window_id = match self.windows.iter().find(|(_, s)| s.window.as_ref().map(|w| w.id()) == Some(ww_id)).map(|(id, _)| *id) {
+            Some(id) => id, None => return,
         };
-        if current_window_id != window_id {
-            return;
-        }
+        self.active_window_id = Some(window_id);
 
         match event {
             WindowEvent::RedrawRequested => {
-                if self.provider.is_some() || self.chrome.is_some() {
-                    self.paint_current_frame();
+                if let Some(st) = self.windows.get_mut(&window_id) {
+                    if self.provider.is_some() || st.chrome.is_some() { Self::paint_frame(st, &mut self.provider); }
                 }
             }
             WindowEvent::Occluded(occluded) => {
-                self.window_occluded = occluded;
+                if let Some(st) = self.windows.get_mut(&window_id) { st.window_occluded = occluded; }
             }
             WindowEvent::Resized(size) => {
-                if let Some(window) = self.window.as_ref() {
-                    let full_viewport = viewport_of_snapshot(viewport_snapshot_for_window(window));
-                    if let Some(chrome) = self.chrome.as_mut() {
-                        chrome.set_viewport(full_viewport);
+                if let Some(st) = self.windows.get_mut(&window_id) {
+                    if let Some(w) = st.window.as_ref() {
+                        let fvp = viewport_of_snapshot(viewport_snapshot_for_window(w));
+                        if let Some(c) = st.chrome.as_mut() { c.set_viewport(fvp); }
+                        Self::sync_chrome(st);
                     }
-                    self.sync_chrome_state();
-                }
-                if self.renderer.is_active() {
-                    self.renderer.set_size(size.width, size.height);
-                }
-                if self.has_top_level_traversable {
-                    self.request_visible_redraw("request_redraw");
-                } else {
-                    self.request_window_redraw();
+                    if st.renderer.is_active() { st.renderer.set_size(size.width, size.height); }
                 }
             }
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
-                if let Some(window) = self.window.as_ref() {
-                    window.set_visible(false);
+                if let Some(st) = self.windows.get_mut(&window_id) {
+                    if let Some(w) = st.window.as_ref() { w.set_visible(false); }
+                    st.automation.abort_pending_navigation(String::from("window closed"));
+                    st.renderer.suspend(); st.animation_timer = None; st.chrome = None;
+                    st.tabs.clear(); st.active_tab = None; st.window_occluded = false; st.window = None;
                 }
-                self.with_automation_controller(|automation, _app| {
-                    automation.abort_pending_navigation(String::from(
-                        "window closed before navigation completed",
-                    ))
-                });
-                self.renderer.suspend();
-                self.animation_timer = None;
-                self.chrome = None;
-                self.browser = BrowserState::default();
-                self.provider = None;
-                self.current_webview_id = None;
-                self.has_top_level_traversable = false;
-                self.window_occluded = false;
-                update_window_viewport_snapshot(None);
-                self.window = None;
-                event_loop.exit();
+                self.webview_to_window.retain(|_, wid| *wid != window_id);
+                self.windows.remove(&window_id);
+                if self.windows.is_empty() { let _ = super::send_user_event(FormalWebUserEvent::Exit); }
             }
-            WindowEvent::Ime(ime_event) => {
-                let event = UiEvent::Ime(winit_ime_to_blitz(ime_event));
-                if self.chrome.as_ref().is_some_and(ChromeUi::takes_text_input_focus) {
-                    self.handle_chrome_ui_event(event);
-                } else {
-                    self.dispatch_content_ui_event(event);
-                }
+            WindowEvent::Ime(event) => {
+                let ui_event = UiEvent::Ime(winit_ime_to_blitz(event));
+                if Self::is_chrome_focused(&self.windows, window_id) { Self::chrome_event(self, window_id, ui_event); }
+                else { self.dispatch_to_content(window_id, ui_event); }
             }
-            WindowEvent::ModifiersChanged(new_state) => {
-                self.keyboard_modifiers = new_state;
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                let key_event = winit_key_event_to_blitz(&event, self.keyboard_modifiers.state());
-                let event = if event.state.is_pressed() {
-                    UiEvent::KeyDown(key_event)
-                } else {
-                    UiEvent::KeyUp(key_event)
-                };
-                if self.chrome.as_ref().is_some_and(ChromeUi::takes_text_input_focus) {
-                    self.handle_chrome_ui_event(event);
-                } else {
-                    self.dispatch_content_ui_event(event);
-                }
+            WindowEvent::ModifiersChanged(ms) => { if let Some(st) = self.windows.get_mut(&window_id) { st.keyboard_modifiers = ms; } }
+            WindowEvent::KeyboardInput { event: ke, .. } => {
+                let mods = self.windows.get(&window_id).map(|s| s.keyboard_modifiers.state()).unwrap_or_default();
+                let key = winit_key_event_to_blitz(&ke, mods);
+                let ui_event = if ke.state.is_pressed() { UiEvent::KeyDown(key) } else { UiEvent::KeyUp(key) };
+                if Self::is_chrome_focused(&self.windows, window_id) { Self::chrome_event(self, window_id, ui_event); }
+                else { self.dispatch_to_content(window_id, ui_event); }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer_pos = position;
-                if self.pointer_position_in_chrome(position) {
-                    self.handle_chrome_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
-                        id: BlitzPointerId::Mouse,
-                        is_primary: true,
-                        coords: self.chrome_pointer_coords(position),
-                        button: Default::default(),
-                        buttons: self.buttons,
-                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                        details: PointerDetails::default(),
-                    }));
-                } else if self.pointer_position_in_content_viewport(position) {
-                    self.dispatch_content_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
-                        id: BlitzPointerId::Mouse,
-                        is_primary: true,
-                        coords: self.content_pointer_coords(position),
-                        button: Default::default(),
-                        buttons: self.buttons,
-                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                        details: PointerDetails::default(),
-                    }));
+                if Self::pointer_in_chrome_st(&self.windows, window_id, position) {
+                    if let Some(st) = self.windows.get_mut(&window_id) {
+                        st.pointer_pos = position;
+                        let ev = UiEvent::PointerMove(BlitzPointerEvent {
+                            id: BlitzPointerId::Mouse, is_primary: true,
+                            coords: Self::c_coords(st, position),
+                            button: Default::default(), buttons: st.buttons,
+                            mods: winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state()),
+                            details: PointerDetails::default(),
+                        });
+                        drop(st);
+                        Self::chrome_event(self, window_id, ev);
+                    }
+                } else if Self::pointer_in_content_st(&self.windows, window_id, position) {
+                    if let Some(st) = self.windows.get_mut(&window_id) {
+                        st.pointer_pos = position;
+                        let coords = Self::ct_coords(st, position);
+                        let buttons = st.buttons;
+                        let mods = winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state());
+                        drop(st);
+                        self.dispatch_to_content(window_id, UiEvent::PointerMove(BlitzPointerEvent {
+                            id: BlitzPointerId::Mouse, is_primary: true,
+                            coords, button: Default::default(), buttons,
+                            mods, details: PointerDetails::default(),
+                        }));
+                    }
                 }
             }
-            WindowEvent::MouseInput { button, state, .. } => {
-                if !self.pointer_position_in_viewport(self.pointer_pos) {
-                    return;
-                }
-                let mapped_button = match button {
-                    MouseButton::Left => MouseEventButton::Main,
-                    MouseButton::Right => MouseEventButton::Secondary,
-                    MouseButton::Middle => MouseEventButton::Auxiliary,
-                    MouseButton::Back => MouseEventButton::Fourth,
-                    MouseButton::Forward => MouseEventButton::Fifth,
-                    MouseButton::Other(_) => MouseEventButton::Auxiliary,
-                };
-                match state {
-                    ElementState::Pressed => self.buttons |= mapped_button.into(),
-                    ElementState::Released => self.buttons.remove(mapped_button.into()),
-                }
-                if self.pointer_position_in_chrome(self.pointer_pos) {
-                    let event = BlitzPointerEvent {
-                        id: BlitzPointerId::Mouse,
-                        is_primary: true,
-                        coords: self.chrome_pointer_coords(self.pointer_pos),
-                        button: mapped_button,
-                        buttons: self.buttons,
-                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                        details: PointerDetails::default(),
-                    };
-                    self.handle_chrome_ui_event(match state {
-                        ElementState::Pressed => UiEvent::PointerDown(event),
-                        ElementState::Released => UiEvent::PointerUp(event),
-                    });
-                } else if self.pointer_position_in_content_viewport(self.pointer_pos) {
-                    if state.is_pressed() {
-                        if let Some(chrome) = self.chrome.as_mut() {
-                            chrome.clear_focus();
+            WindowEvent::MouseInput { button, state: bs, .. } => {
+                if let Some(st) = self.windows.get_mut(&window_id) {
+                    if !Self::pointer_in_viewport(st, st.pointer_pos) { return; }
+                    let mb = Self::map_button(button);
+                    match bs { ElementState::Pressed => st.buttons |= mb.into(), ElementState::Released => st.buttons.remove(mb.into()), }
+                    if Self::pointer_in_chrome(st, st.pointer_pos) {
+                        let ev = BlitzPointerEvent {
+                            id: BlitzPointerId::Mouse, is_primary: true,
+                            coords: Self::c_coords(st, st.pointer_pos),
+                            button: mb, buttons: st.buttons,
+                            mods: winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state()),
+                            details: PointerDetails::default(),
+                        };
+                        drop(st);
+                        Self::chrome_event(self, window_id, match bs { ElementState::Pressed => UiEvent::PointerDown(ev), ElementState::Released => UiEvent::PointerUp(ev) });
+                    } else if Self::pointer_in_content(st, st.pointer_pos) {
+                        if bs.is_pressed() { if let Some(c) = st.chrome.as_mut() { c.clear_focus(); } Self::request_window_redraw(st); }
+                        let ev = BlitzPointerEvent {
+                            id: BlitzPointerId::Mouse, is_primary: true,
+                            coords: Self::ct_coords(st, st.pointer_pos),
+                            button: mb, buttons: st.buttons,
+                            mods: winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state()),
+                            details: PointerDetails::default(),
+                        };
+                        let webview_id = st.active_tab;
+                        drop(st);
+                        if let Some(wid) = webview_id {
+                            self.with_provider(|p| {
+                                let r = match bs { ElementState::Pressed => p.send_ui_event(wid, UiEvent::PointerDown(ev)), ElementState::Released => p.send_ui_event(wid, UiEvent::PointerUp(ev)) };
+                                if let Err(e) = r { eprintln!("content event error: {e}"); }
+                            });
                         }
-                        self.request_window_redraw();
+                        if let Some(st) = self.windows.get(&window_id) { Self::request_window_redraw(st); }
                     }
-                    let event = BlitzPointerEvent {
-                        id: BlitzPointerId::Mouse,
-                        is_primary: true,
-                        coords: self.content_pointer_coords(self.pointer_pos),
-                        button: mapped_button,
-                        buttons: self.buttons,
-                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                        details: PointerDetails::default(),
-                    };
-                    self.dispatch_content_ui_event(match state {
-                        ElementState::Pressed => UiEvent::PointerDown(event),
-                        ElementState::Released => UiEvent::PointerUp(event),
-                    });
                 }
             }
             WindowEvent::Touch(Touch { phase, location, force, id, .. }) => {
-                if !self.pointer_position_in_viewport(location) {
-                    return;
-                }
-                if self.pointer_position_in_chrome(location) {
-                    let event = BlitzPointerEvent {
-                        id: BlitzPointerId::Finger(id),
-                        is_primary: true,
-                        coords: self.chrome_pointer_coords(location),
-                        button: Default::default(),
-                        buttons: MouseEventButtons::None,
-                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                let in_chrome = Self::pointer_in_chrome_st(&self.windows, window_id, location);
+                if let Some(st) = self.windows.get_mut(&window_id) {
+                    if !Self::pointer_in_viewport(st, location) { return; }
+                    let ev = BlitzPointerEvent {
+                        id: BlitzPointerId::Finger(id), is_primary: true,
+                        coords: if in_chrome { Self::c_coords(st, location) } else { Self::ct_coords(st, location) },
+                        button: Default::default(), buttons: MouseEventButtons::None,
+                        mods: winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state()),
                         details: touch_pointer_details(force),
                     };
-                    match phase {
-                        TouchPhase::Started => self.handle_chrome_ui_event(UiEvent::PointerDown(event)),
-                        TouchPhase::Moved => self.handle_chrome_ui_event(UiEvent::PointerMove(event)),
-                        TouchPhase::Ended | TouchPhase::Cancelled => {
-                            self.handle_chrome_ui_event(UiEvent::PointerUp(event))
+                    if in_chrome {
+                        drop(st);
+                        Self::chrome_event(self, window_id, match phase {
+                            TouchPhase::Started => UiEvent::PointerDown(ev), TouchPhase::Moved => UiEvent::PointerMove(ev),
+                            TouchPhase::Ended | TouchPhase::Cancelled => UiEvent::PointerUp(ev),
+                        });
+                    } else if Self::pointer_in_content(st, location) {
+                        if phase == TouchPhase::Started { if let Some(c) = st.chrome.as_mut() { c.clear_focus(); } Self::request_window_redraw(st); }
+                        let wid = st.active_tab;
+                        drop(st);
+                        if let Some(wid) = wid {
+                            self.with_provider(|p| {
+                                let r = match phase { TouchPhase::Started => p.send_ui_event(wid, UiEvent::PointerDown(ev)), TouchPhase::Moved => p.send_ui_event(wid, UiEvent::PointerMove(ev)), TouchPhase::Ended | TouchPhase::Cancelled => p.send_ui_event(wid, UiEvent::PointerUp(ev)) };
+                                if let Err(e) = r { eprintln!("touch event error: {e}"); }
+                            });
                         }
-                    }
-                } else if self.pointer_position_in_content_viewport(location) {
-                    let event = BlitzPointerEvent {
-                        id: BlitzPointerId::Finger(id),
-                        is_primary: true,
-                        coords: self.content_pointer_coords(location),
-                        button: Default::default(),
-                        buttons: MouseEventButtons::None,
-                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                        details: touch_pointer_details(force),
-                    };
-                    match phase {
-                        TouchPhase::Started => {
-                            if let Some(chrome) = self.chrome.as_mut() {
-                                chrome.clear_focus();
-                            }
-                            self.request_window_redraw();
-                            self.dispatch_content_ui_event(UiEvent::PointerDown(event))
-                        }
-                        TouchPhase::Moved => self.dispatch_content_ui_event(UiEvent::PointerMove(event)),
-                        TouchPhase::Ended | TouchPhase::Cancelled => {
-                            self.dispatch_content_ui_event(UiEvent::PointerUp(event))
-                        }
+                        if let Some(st) = self.windows.get(&window_id) { Self::request_window_redraw(st); }
                     }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if !self.pointer_position_in_viewport(self.pointer_pos) {
-                    return;
-                }
-                let delta = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => BlitzWheelDelta::Lines(x as f64, y as f64),
-                    MouseScrollDelta::PixelDelta(pos) => BlitzWheelDelta::Pixels(pos.x, pos.y),
-                };
-                if self.pointer_position_in_chrome(self.pointer_pos) {
-                    self.handle_chrome_ui_event(UiEvent::Wheel(BlitzWheelEvent {
-                        delta,
-                        coords: self.chrome_pointer_coords(self.pointer_pos),
-                        buttons: self.buttons,
-                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                    }));
-                } else if self.pointer_position_in_content_viewport(self.pointer_pos) {
-                    self.dispatch_content_ui_event(UiEvent::Wheel(BlitzWheelEvent {
-                        delta,
-                        coords: self.content_pointer_coords(self.pointer_pos),
-                        buttons: self.buttons,
-                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
-                    }));
+                let wd = match delta { MouseScrollDelta::LineDelta(x, y) => BlitzWheelDelta::Lines(x as f64, y as f64), MouseScrollDelta::PixelDelta(p) => BlitzWheelDelta::Pixels(p.x, p.y) };
+                if Self::pointer_in_chrome_st(&self.windows, window_id, self.windows.get(&window_id).map_or(PhysicalPosition::default(), |s| s.pointer_pos)) {
+                    if let Some(st) = self.windows.get_mut(&window_id) {
+                        if !Self::pointer_in_viewport(st, st.pointer_pos) { return; }
+                        let ev = UiEvent::Wheel(BlitzWheelEvent { delta: wd, coords: Self::c_coords(st, st.pointer_pos), buttons: st.buttons, mods: winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state()) });
+                        drop(st);
+                        Self::chrome_event(self, window_id, ev);
+                    }
+                } else if let Some(st) = self.windows.get_mut(&window_id) {
+                    if !Self::pointer_in_viewport(st, st.pointer_pos) { return; }
+                    let wid = st.active_tab; let coords = Self::ct_coords(st, st.pointer_pos); let buttons = st.buttons;
+                    let mods = winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state());
+                    drop(st);
+                    if let Some(wid) = wid { self.with_provider(|p| { if let Err(e) = p.send_ui_event(wid, UiEvent::Wheel(BlitzWheelEvent { delta: wd, coords, buttons, mods })) { eprintln!("wheel event error: {e}"); } }); }
+                    if let Some(st) = self.windows.get(&window_id) { Self::request_window_redraw(st); }
                 }
             }
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
+    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {}
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
+    fn user_event(&mut self, el: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
             FormalWebUserEvent::WebviewProviderSync => {
-                let Some(provider) = self.provider.as_mut() else {
-                    return;
-                };
-                if let Err(error) = provider.sync_pending_messages() {
-                    eprintln!("webview provider sync error: {error}");
-                }
+                if let Some(p) = self.provider.as_mut() { if let Err(e) = p.sync_pending_messages() { eprintln!("provider sync error: {e}"); } }
             }
             FormalWebUserEvent::NewFrameRendered => {
-                self.with_automation_controller(|automation, app| {
-                    automation.note_rendering_update(app)
-                });
-                self.request_window_redraw();
+                self.try_run_automation(|a, app| a.note_rendering_update(app));
+                for s in self.windows.values() { Self::request_window_redraw(s); }
             }
-            FormalWebUserEvent::RequestRedraw(webview_id) => {
-                if self.current_webview_id == Some(webview_id) {
-                    self.request_window_redraw();
+            FormalWebUserEvent::RequestRedraw(wid) => {
+                if let Some(w) = self.webview_to_window.get(&wid).copied() {
+                    if let Some(s) = self.windows.get(&w) { if s.active_tab == Some(wid) { Self::request_window_redraw(s); } }
                 }
             }
             FormalWebUserEvent::NavigationRequested { webview_id, destination_url } => {
-                self.handle_navigation_requested(webview_id, destination_url);
+                if let Some(w) = self.webview_to_window.get(&webview_id).copied() {
+                    if let Some(st) = self.windows.get_mut(&w) {
+                        if st.active_tab == Some(webview_id) {
+                            if let Some(t) = st.tabs.get_mut(&webview_id) { t.pending_url = Some(destination_url); }
+                            Self::sync_chrome(st); Self::request_window_redraw(st);
+                        }
+                    }
+                } else if let Some(a) = self.active_window_id {
+                    if let Some(st) = self.windows.get_mut(&a) { Self::add_tab(&mut self.webview_to_window, st, webview_id); }
+                }
             }
-            FormalWebUserEvent::NavigationCompleted(completed) => {
-                self.handle_navigation_completed(completed);
+            FormalWebUserEvent::NavigationCompleted(c) => {
+                let w_opt = self.webview_to_window.get(&c.webview_id).copied();
+                let Some(w) = w_opt else {
+                    if let Some(a) = self.active_window_id { if let Some(st) = self.windows.get_mut(&a) { Self::add_tab(&mut self.webview_to_window, st, c.webview_id); } }
+                    return;
+                };
+                let is_current = self.windows.get(&w).map_or(false, |s| s.active_tab == Some(c.webview_id));
+                match &c.status {
+                    NavigationCompletion::Committed { url } => {
+                        if let Some(st) = self.windows.get_mut(&w) { if let Some(t) = st.tabs.get_mut(&c.webview_id) { t.pending_url = None; t.committed_url = Some(url.clone()); } }
+                        if is_current {
+                            if let Some(st) = self.windows.get_mut(&w) { Self::sync_chrome(st); Self::request_window_redraw(st); }
+                            self.try_run_automation(|a, app| a.note_navigation_committed(app));
+                        }
+                        if let Some(p) = self.provider.as_mut() { p.on_navigation_committed(c.webview_id); }
+                    }
+                    NavigationCompletion::Aborted { message } => {
+                        if is_current {
+                            if let Some(st) = self.windows.get_mut(&w) {
+                                let mut a = std::mem::take(&mut st.automation); a.abort_pending_navigation(message.clone()); st.automation = a;
+                                if let Some(t) = st.tabs.get_mut(&c.webview_id) { t.pending_url = None; }
+                                Self::sync_chrome(st); Self::request_window_redraw(st);
+                            }
+                        }
+                    }
+                }
             }
-            FormalWebUserEvent::NewWebview(webview_id, target_name) => {
-                let _ = target_name;
-                self.has_top_level_traversable = true;
-                self.current_webview_id = Some(webview_id);
-                self.request_visible_redraw("request_redraw");
+            FormalWebUserEvent::NewWebview(wid, _) => {
+                if let Some(w) = self.active_window_id {
+                    if let Some(st) = self.windows.get_mut(&w) {
+                        Self::add_tab(&mut self.webview_to_window, st, wid);
+                        Self::sync_chrome(st); Self::request_visible_redraw(st, self.provider.as_ref(), "request_redraw");
+                    }
+                }
             }
-            FormalWebUserEvent::Automation(command) => {
-                self.with_automation_controller(|automation, app| {
-                    automation.handle_command(app, command)
-                });
+            FormalWebUserEvent::CreateWindow => {
+                let wid = WindowId::new();
+                let window = match Self::create_winit_window(el) { Ok(w) => w, Err(_) => return };
+                let fvp = viewport_of_snapshot(viewport_snapshot_for_window(&window));
+                let cp: Arc<dyn ShellProvider> = Arc::new(WinitShellProvider::new(window.clone()));
+                let chrome = match ChromeUi::new(fvp, cp) { Ok(c) => c, Err(_) => return };
+                let mut st = WindowState::new(wid);
+                st.chrome = Some(chrome); st.window = Some(window.clone());
+                self.active_window_id = Some(wid);
+                Self::sync_chrome(&mut st); Self::resume_renderer(&mut st, &window);
+                if let Some(p) = self.provider.as_ref() { let _ = p.navigate(None, "about:blank"); }
+                self.windows.insert(wid, st);
             }
-            FormalWebUserEvent::ClipboardRead { reply } => {
-                let _ = reply.send(read_clipboard_text());
+            FormalWebUserEvent::Automation(cmd) => { self.try_run_automation(|a, app| a.handle_command(app, cmd)); }
+            FormalWebUserEvent::ClipboardRead { reply } => { let _ = reply.send(read_clipboard_text()); }
+            FormalWebUserEvent::ClipboardWrite { text, reply } => { let _ = reply.send(write_clipboard_text(text)); }
+            FormalWebUserEvent::Exit => el.exit(),
+        }
+    }
+}
+
+// ── Chrome helpers ─────────────────────────────────────────────────────────
+impl WindowedApp {
+    fn is_chrome_focused(windows: &HashMap<WindowId, WindowState>, wid: WindowId) -> bool {
+        windows.get(&wid).and_then(|s| s.chrome.as_ref()).map_or(false, ChromeUi::takes_text_input_focus)
+    }
+    fn pointer_in_chrome_st(windows: &HashMap<WindowId, WindowState>, wid: WindowId, pos: PhysicalPosition<f64>) -> bool {
+        windows.get(&wid).map_or(false, |s| Self::pointer_in_chrome(s, pos))
+    }
+    fn pointer_in_content_st(windows: &HashMap<WindowId, WindowState>, wid: WindowId, pos: PhysicalPosition<f64>) -> bool {
+        windows.get(&wid).map_or(false, |s| Self::pointer_in_content(s, pos))
+    }
+    fn map_button(b: MouseButton) -> MouseEventButton {
+        match b { MouseButton::Left => MouseEventButton::Main, MouseButton::Right => MouseEventButton::Secondary, MouseButton::Middle => MouseEventButton::Auxiliary, MouseButton::Back => MouseEventButton::Fourth, MouseButton::Forward => MouseEventButton::Fifth, MouseButton::Other(_) => MouseEventButton::Auxiliary }
+    }
+    fn chrome_event(app: &mut Self, wid: WindowId, event: UiEvent) {
+        let Some(st) = app.windows.get_mut(&wid) else { return; };
+        if !Self::has_visible_viewport(st) { return; }
+        let action = st.chrome.as_mut().and_then(|c| c.handle_ui_event(event));
+        Self::request_window_redraw(st);
+        if let Some(action) = action { Self::handle_chrome_action(app, wid, action); }
+    }
+    fn handle_chrome_action(app: &mut Self, wid: WindowId, action: ChromeAction) {
+        match action {
+            ChromeAction::Navigate => {
+                let url = app.windows.get_mut(&wid).and_then(|st| st.chrome.as_ref().and_then(|c| normalize_browser_destination(&c.address_value())));
+                let Some(url) = url else { return; };
+                if let Some(st) = app.windows.get_mut(&wid) {
+                    if let Some(p) = app.provider.as_ref() { if let Some(w) = st.active_tab { let _ = p.navigate(Some(w), &url); if let Some(t) = st.tabs.get_mut(&w) { t.pending_url = Some(url.clone()); } } }
+                    Self::sync_chrome(st); Self::request_window_redraw(st);
+                }
             }
-            FormalWebUserEvent::ClipboardWrite { text, reply } => {
-                let _ = reply.send(write_clipboard_text(text));
+            ChromeAction::NewTab => {
+                if let Some(p) = app.provider.as_ref() { let _ = p.navigate(None, "about:blank"); }
+                if let Some(st) = app.windows.get_mut(&wid) { Self::sync_chrome(st); Self::request_window_redraw(st); }
             }
-            FormalWebUserEvent::Exit => {
-                event_loop.exit();
+            ChromeAction::NewWindow => { let _ = super::send_user_event(FormalWebUserEvent::CreateWindow); }
+            ChromeAction::SwitchTab(index) => {
+                if let Some(st) = app.windows.get_mut(&wid) {
+                    let ids: Vec<WebviewId> = st.tabs.keys().copied().collect();
+                    if let Some(&id) = ids.get(index) { st.active_tab = Some(id); }
+                    Self::sync_chrome(st); Self::request_window_redraw(st);
+                }
             }
         }
+    }
+}
+
+// ── AutomationHost ─────────────────────────────────────────────────────────
+impl AutomationHost for WindowedApp {
+    fn automation_snapshot(&mut self) -> AutomationSnapshot {
+        self.active_window_id.and_then(|id| self.windows.get(&id)).map(Self::auto_snapshot).unwrap_or(AutomationSnapshot { webview_id: None, current_url: None, displayed_url: String::new(), navigable_id: None, has_top_level_traversable: false })
+    }
+    fn automation_visible_frame_viewports(&mut self) -> Result<Vec<AutomationVisibleFrameViewport>, String> {
+        let wid = self.active_window_id.and_then(|id| self.windows.get(&id)).and_then(|s| s.active_tab);
+        automation_visible_frame_viewports(&mut self.provider, wid)
+    }
+    fn automation_screenshot(&mut self) -> Result<Vec<u8>, String> {
+        let wid = self.active_window_id.and_then(|id| self.windows.get(&id)).and_then(|s| s.active_tab);
+        automation_screenshot_png(&mut self.provider, wid)
+    }
+    fn begin_automation_navigation(&mut self, url: String) -> Result<(), String> {
+        let (wid, st) = match self.active_window_id.and_then(|id| self.windows.get_mut(&id).map(|s| (id, s))) { Some((wid, st)) => (wid, st), None => return Err(String::from("no window")) };
+        let p = self.provider.as_ref().ok_or_else(|| String::from("no provider"))?;
+        Self::navigate_active_tab(p, st, &url)
+    }
+    fn automation_click(&mut self, x: f32, y: f32) -> Result<(), String> {
+        let wid = self.active_window_id.ok_or_else(|| String::from("no window"))?;
+        let st = self.windows.get_mut(&wid).ok_or_else(|| String::from("no state"))?;
+        Self::auto_click(st, &mut self.provider, x, y)
+    }
+    fn automation_click_element(&mut self, selector: String) -> Result<(), String> {
+        let wid = self.active_window_id.and_then(|id| self.windows.get(&id)).and_then(|s| s.active_tab).ok_or_else(|| String::from("no tab"))?;
+        self.with_provider(|p| { p.click_element(wid, selector).ok(); p.note_rendering_opportunity(wid, "automation_element_click"); }).ok_or_else(|| String::from("no provider"))
+    }
+    fn automation_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> Result<(), String> {
+        let wid = self.active_window_id.ok_or_else(|| String::from("no window"))?;
+        let st = self.windows.get_mut(&wid).ok_or_else(|| String::from("no state"))?;
+        Self::auto_scroll(st, &mut self.provider, x, y, dx, dy)
+    }
+    fn automation_evaluate_script(&mut self, source: String, timeout: Duration) -> Result<Value, String> {
+        let wid = self.active_window_id.and_then(|id| self.windows.get(&id)).and_then(|s| s.active_tab).ok_or_else(|| String::from("no tab"))?;
+        self.provider.as_ref().ok_or_else(|| String::from("no provider"))?.evaluate_script(wid, source, timeout)
+    }
+}
+
+// ── Automation and navigation helpers ─────────────────────────────────────
+impl WindowedApp {
+    fn navigate_active_tab(p: &WebviewProvider, st: &mut WindowState, url: &str) -> Result<(), String> {
+        let wid = st.active_tab.ok_or_else(|| String::from("no active tab"))?;
+        p.navigate(Some(wid), url)?;
+        if let Some(t) = st.tabs.get_mut(&wid) { t.pending_url = Some(url.to_owned()); }
+        Ok(())
+    }
+    fn auto_click(st: &mut WindowState, prov: &mut Option<WebviewProvider>, x: f32, y: f32) -> Result<(), String> {
+        let Some(w) = st.window.as_ref() else { return Err(String::from("no window")) };
+        let scale = w.scale_factor(); let ch = f64::from(Self::chrome_height_css(st));
+        let pos = PhysicalPosition::new(f64::from(x) * scale, (f64::from(y) + ch) * scale);
+        st.pointer_pos = pos;
+        if let Some(c) = st.chrome.as_mut() { c.clear_focus(); }
+        Self::request_window_redraw(st);
+        let mods = winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state());
+        let coords = Self::ct_coords(st, pos);
+        let do_send = |p: &mut WebviewProvider, w: WebviewId, e| { p.send_ui_event(w, e).ok(); };
+        let mk = |b: MouseEventButton, bt: MouseEventButtons| BlitzPointerEvent {
+            id: BlitzPointerId::Mouse, is_primary: true, coords: coords.clone(), button: b, buttons: bt, mods,
+            details: PointerDetails::default(),
+        };
+        let Some(wid) = st.active_tab else { return Ok(()); };
+        if let Some(p) = prov.as_mut() { do_send(p, wid, UiEvent::PointerMove(mk(Default::default(), st.buttons))); }
+        st.buttons |= MouseEventButton::Main.into();
+        if let Some(p) = prov.as_mut() { do_send(p, wid, UiEvent::PointerDown(mk(MouseEventButton::Main, st.buttons))); }
+        st.buttons.remove(MouseEventButton::Main.into());
+        if let Some(p) = prov.as_mut() { do_send(p, wid, UiEvent::PointerUp(mk(MouseEventButton::Main, st.buttons))); }
+        Ok(())
+    }
+    fn auto_scroll(st: &mut WindowState, prov: &mut Option<WebviewProvider>, x: f32, y: f32, dx: f32, dy: f32) -> Result<(), String> {
+        let Some(w) = st.window.as_ref() else { return Err(String::from("no window")) };
+        let scale = w.scale_factor(); let ch = f64::from(Self::chrome_height_css(st));
+        let pos = PhysicalPosition::new(f64::from(x) * scale, (f64::from(y) + ch) * scale);
+        st.pointer_pos = pos;
+        let mods = winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state());
+        let coords = Self::ct_coords(st, pos);
+        let mk_move = BlitzPointerEvent { id: BlitzPointerId::Mouse, is_primary: true, coords: coords.clone(), button: Default::default(), buttons: st.buttons, mods, details: PointerDetails::default() };
+        let Some(wid) = st.active_tab else { return Ok(()); };
+        if let Some(p) = prov.as_mut() { let _ = p.send_ui_event(wid, UiEvent::PointerMove(mk_move)); }
+        if let Some(p) = prov.as_mut() { let _ = p.send_ui_event(wid, UiEvent::Wheel(BlitzWheelEvent { delta: BlitzWheelDelta::Pixels(f64::from(dx), f64::from(dy)), coords, buttons: st.buttons, mods })); }
+        Ok(())
     }
 }

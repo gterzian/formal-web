@@ -489,6 +489,9 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
             FormalWebUserEvent::ClipboardWrite { text, reply } => {
                 let _ = reply.send(write_clipboard_text(text));
             }
+            FormalWebUserEvent::CreateWindow => {
+                // No-op in headless mode
+            }
             FormalWebUserEvent::Exit => {
                 self.with_automation_controller(|automation, _app| {
                     automation.abort_pending_navigation(String::from(

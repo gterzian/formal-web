@@ -6,7 +6,7 @@ mod winit_integration;
 mod windowed;
 
 use self::headless::HeadlessEmbedderApp;
-use self::windowed::HeadedEmbedderApp;
+use self::windowed::WindowedApp;
 pub use self::winit_integration::{
     EventLoopOptions, clear_event_loop_options, set_event_loop_options,
 };
@@ -122,6 +122,7 @@ pub enum FormalWebUserEvent {
     NewWebview(WebviewId, String),
     WebviewProviderSync,
     NewFrameRendered,
+    CreateWindow,
     Automation(AutomationCommand),
     ClipboardRead {
         reply: mpsc::Sender<Result<String, String>>,
@@ -308,9 +309,9 @@ where
 }
 
 pub fn run_headed_event_loop(trace_sender: Option<TraceSender>) -> Result<(), String> {
-    run_embedder_event_loop(trace_sender, |provider| HeadedEmbedderApp {
+    run_embedder_event_loop(trace_sender, |provider| WindowedApp {
         provider: Some(provider),
-        ..HeadedEmbedderApp::default()
+        ..WindowedApp::default()
     })
 }
 

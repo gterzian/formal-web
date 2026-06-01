@@ -7,103 +7,149 @@ use blitz_traits::shell::{ShellProvider, Viewport};
 use keyboard_types::Key;
 use std::sync::Arc;
 
-const DEFAULT_CHROME_HEIGHT_CSS: f32 = 40.0;
-const CHROME_HTML: &str = r#"
+const DEFAULT_CHROME_HEIGHT_CSS: f32 = 80.0;
+
+const CHROME_HTML_TEMPLATE: &str = r#"
 <!DOCTYPE html>
 <html>
   <head>
     <style>
-      :root {
-                color-scheme: light;
-      }
-
-      html,
+      :root { color-scheme: light; }
+      html, body { margin: 0; padding: 0; }
       body {
-        margin: 0;
-        padding: 0;
+        background: rgba(249, 248, 244, 0.98);
+        color: #2f3134;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+        font-size: 11px;
+        line-height: 1.25;
+        user-select: none;
+        -webkit-user-select: none;
       }
-
-      body {
-                background: rgba(249, 248, 244, 0.98);
-                color: #2f3134;
-            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-            font-size: 11px;
-            line-height: 1.25;
-      }
-
       #chrome-shell {
         box-sizing: border-box;
-                display: block;
-                min-height: 40px;
-            padding: 4px 8px;
-                background: linear-gradient(180deg, rgba(252, 251, 247, 0.99), rgba(247, 245, 240, 0.97));
-                border-bottom: 1px solid rgba(47, 49, 52, 0.14);
+        display: block;
+        min-height: 40px;
+        padding: 4px 8px;
+        background: linear-gradient(180deg, rgba(252, 251, 247, 0.99), rgba(247, 245, 240, 0.97));
+        border-bottom: 1px solid rgba(47, 49, 52, 0.14);
       }
-
-     #address {
-    box-sizing: border-box;
-    display: block;
-    width: 100%;
-    
-    /* 1. Set an explicit height to create the container size */
-    height: 42px; /* Adjust this slightly if you want the bar taller/shorter */
-    
-    /* 2. Remove top/bottom padding, keep horizontal padding */
-    padding: 0 11px; 
-    
-    /* 3. Reset line-height so the browser handles vertical centering */
-    line-height: normal; 
-    
-    border: 1px solid rgba(102, 110, 120, 0.24);
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.94);
-    color: #2f3134;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-    font-size: 12px;
-    appearance: none;
-    -webkit-appearance: none;
-    outline: none;
-}
-
-            #address:focus {
-                outline: none;
-                border-color: rgba(78, 109, 142, 0.42);
-            }
-
-            @media (max-width: 560px) {
-                #chrome-shell {
-                    padding: 4px 6px;
-                }
-
-                #address {
-        padding: 9px 10px;
+      #tab-strip {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 2px;
+        padding: 2px 0 4px 0;
+        min-height: 32px;
+      }
+      .tab-button {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 12px;
+        border: 1px solid rgba(102, 110, 120, 0.18);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.5);
+        color: #2f3134;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+        font-size: 11px;
+        cursor: default;
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex-shrink: 1;
+        min-width: 60px;
+      }
+      .tab-button.active {
+        background: rgba(255, 255, 255, 0.94);
+        border-color: rgba(78, 109, 142, 0.35);
+        font-weight: 500;
+      }
+      .tab-button:hover { background: rgba(255, 255, 255, 0.75); }
+      #new-tab-btn {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px 8px;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: #2f3134;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+        font-size: 16px;
+        font-weight: 400;
+        cursor: default;
+        line-height: 1;
+        flex-shrink: 0;
+        width: 28px;
+        height: 28px;
+      }
+      #new-tab-btn:hover { background: rgba(47, 49, 52, 0.08); }
+      .tab-spacer { flex: 1; }
+      #address {
+        box-sizing: border-box;
+        display: block;
+        width: 100%;
+        height: 42px;
+        padding: 0 11px;
+        line-height: normal;
+        border: 1px solid rgba(102, 110, 120, 0.24);
         border-radius: 16px;
-    }
-            }
+        background: rgba(255, 255, 255, 0.94);
+        color: #2f3134;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+        font-size: 12px;
+        appearance: none;
+        -webkit-appearance: none;
+        outline: none;
+        user-select: text;
+        -webkit-user-select: text;
+      }
+      #address:focus {
+        outline: none;
+        border-color: rgba(78, 109, 142, 0.42);
+      }
     </style>
   </head>
   <body>
     <div id="chrome-shell">
-      <input id="address" type="text" value="" spellcheck="false" autocomplete="off" />
+      <div id="tab-strip">
+        __TABS__
+        <div class="tab-spacer"></div>
+        <div id="new-tab-btn">+</div>
+      </div>
+      <input id="address" type="text" value="__URL__" spellcheck="false" autocomplete="off" />
     </div>
   </body>
 </html>
 "#;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChromeAction {
     Navigate,
+    NewTab,
+    NewWindow,
+    SwitchTab(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChromeTabInfo {
+    pub label: String,
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChromeViewState {
     pub address: String,
+    pub tabs: Vec<ChromeTabInfo>,
 }
 
-#[derive(Clone, Copy)]
 struct ChromeNodeIds {
     shell: usize,
     address: usize,
+    new_tab_btn: usize,
 }
 
 pub struct ChromeUi {
@@ -111,38 +157,53 @@ pub struct ChromeUi {
     node_ids: ChromeNodeIds,
     full_viewport: Viewport,
     height_css: f32,
+    shell_provider: Arc<dyn ShellProvider>,
+    last_tab_count: usize,
+}
+
+fn build_html(url: &str, tabs: &[ChromeTabInfo]) -> String {
+    let tab_html: String = tabs
+        .iter()
+        .enumerate()
+        .map(|(i, info)| {
+            let active = if info.active { " active" } else { "" };
+            format!(r#"<button id="tab-{}" class="tab-button{}">{}</button>"#, i, active, info.label)
+        })
+        .collect::<Vec<_>>()
+        .join("\n        ");
+    let escaped_url = url.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
+    CHROME_HTML_TEMPLATE.replace("__TABS__", &tab_html).replace("__URL__", &escaped_url)
 }
 
 impl ChromeUi {
-    pub fn new(
-        full_viewport: Viewport,
-        shell_provider: Arc<dyn ShellProvider>,
-    ) -> Result<Self, String> {
+    pub fn new(full_viewport: Viewport, shell_provider: Arc<dyn ShellProvider>) -> Result<Self, String> {
+        Self::from_html(full_viewport, shell_provider, "", &[])
+    }
+
+    fn from_html(full_viewport: Viewport, shell_provider: Arc<dyn ShellProvider>, url: &str, tabs: &[ChromeTabInfo]) -> Result<Self, String> {
+        let html = build_html(url, tabs);
         let mut document = HtmlDocument::from_html(
-            CHROME_HTML,
+            &html,
             DocumentConfig {
                 viewport: Some(Self::chrome_viewport(&full_viewport, DEFAULT_CHROME_HEIGHT_CSS)),
                 ..Default::default()
             },
         )
         .into_inner();
-        document.set_shell_provider(shell_provider);
+        document.set_shell_provider(shell_provider.clone());
         document.resolve(0.0);
-
         let node_ids = ChromeNodeIds {
-            shell: document
-                .get_element_by_id("chrome-shell")
-                .ok_or_else(|| String::from("chrome shell node missing"))?,
-            address: document
-                .get_element_by_id("address")
-                .ok_or_else(|| String::from("chrome address input missing"))?,
+            shell: document.get_element_by_id("chrome-shell").ok_or_else(|| String::from("chrome shell node missing"))?,
+            address: document.get_element_by_id("address").ok_or_else(|| String::from("chrome address input missing"))?,
+            new_tab_btn: document.get_element_by_id("new-tab-btn").ok_or_else(|| String::from("chrome new tab button missing"))?,
         };
-
         let mut chrome = Self {
             document,
             node_ids,
             full_viewport,
             height_css: DEFAULT_CHROME_HEIGHT_CSS,
+            shell_provider,
+            last_tab_count: tabs.len(),
         };
         chrome.refresh_layout();
         Ok(chrome)
@@ -150,19 +211,37 @@ impl ChromeUi {
 
     pub fn set_viewport(&mut self, full_viewport: Viewport) {
         self.full_viewport = full_viewport;
-        self.document
-            .set_viewport(Self::chrome_viewport(&self.full_viewport, self.height_css));
+        self.document.set_viewport(Self::chrome_viewport(&self.full_viewport, self.height_css));
         self.refresh_layout();
     }
 
     pub fn sync_state(&mut self, state: &ChromeViewState) {
-        self.set_address_value(&state.address);
-        self.refresh_layout();
+        if state.tabs.len() != self.last_tab_count {
+            // Rebuild document
+            let html = build_html(&state.address, &state.tabs);
+            let mut doc = HtmlDocument::from_html(
+                &html,
+                DocumentConfig {
+                    viewport: Some(Self::chrome_viewport(&self.full_viewport, self.height_css)),
+                    ..Default::default()
+                },
+            )
+            .into_inner();
+            doc.set_shell_provider(self.shell_provider.clone());
+            doc.resolve(0.0);
+            if let Some(s) = doc.get_element_by_id("chrome-shell") { self.node_ids.shell = s; }
+            if let Some(a) = doc.get_element_by_id("address") { self.node_ids.address = a; }
+            if let Some(n) = doc.get_element_by_id("new-tab-btn") { self.node_ids.new_tab_btn = n; }
+            self.document = doc;
+            self.last_tab_count = state.tabs.len();
+            self.refresh_layout();
+        } else if self.address_value() != state.address {
+            let mut mutator = self.document.mutate();
+            mutator.set_attribute(self.node_ids.address, qual_name!("value"), &state.address);
+        }
     }
 
-    pub fn height_css(&self) -> f32 {
-        self.height_css
-    }
+    pub fn height_css(&self) -> f32 { self.height_css }
 
     pub fn height_physical(&self) -> u32 {
         ((self.height_css * self.full_viewport.scale()).ceil() as u32).max(1)
@@ -172,15 +251,7 @@ impl ChromeUi {
         let viewport = self.document.viewport().clone();
         let (width, height) = viewport.window_size;
         let mut scene = RenderScene::new();
-        paint_scene(
-            &mut scene,
-            &self.document,
-            viewport.scale_f64(),
-            width,
-            height,
-            0,
-            0,
-        );
+        paint_scene(&mut scene, &self.document, viewport.scale_f64(), width, height, 0, 0);
         scene
     }
 
@@ -188,18 +259,47 @@ impl ChromeUi {
         self.document.get_focussed_node_id() == Some(self.node_ids.address)
     }
 
-    pub fn clear_focus(&mut self) {
-        self.document.clear_focus();
-    }
+    pub fn clear_focus(&mut self) { self.document.clear_focus(); }
 
     pub fn handle_ui_event(&mut self, event: UiEvent) -> Option<ChromeAction> {
         match event {
             UiEvent::PointerDown(event) => {
-                let was_address_focused = self.takes_text_input_focus();
                 let page_x = event.page_x();
                 let page_y = event.page_y();
+                let Some(hit) = self.document.hit(page_x, page_y) else {
+                    self.document.handle_ui_event(UiEvent::PointerDown(event));
+                    return None;
+                };
+                let chain = self.document.node_chain(hit.node_id);
+
+                // Check + button
+                if chain.contains(&self.node_ids.new_tab_btn) {
+                    return if event.mods.contains(keyboard_types::Modifiers::SHIFT) {
+                        Some(ChromeAction::NewWindow)
+                    } else {
+                        Some(ChromeAction::NewTab)
+                    };
+                }
+
+                // Check tab buttons by id
+                for node_id in &chain {
+                    if let Some(node) = self.document.get_node(*node_id) {
+                        if let Some(element) = node.element_data() {
+                            if let Some(ref id_str) = element.id {
+                                let id = id_str.to_string();
+                                if let Some(index_str) = id.strip_prefix("tab-") {
+                                    if let Ok(index) = index_str.parse::<usize>() {
+                                        return Some(ChromeAction::SwitchTab(index));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let was_focused = self.takes_text_input_focus();
                 self.document.handle_ui_event(UiEvent::PointerDown(event));
-                if !was_address_focused && self.is_address_hit(page_x, page_y) {
+                if !was_focused && chain.contains(&self.node_ids.address) {
                     self.select_all_address_text();
                 }
                 None
@@ -208,7 +308,14 @@ impl ChromeUi {
                 self.document.handle_ui_event(UiEvent::PointerUp(event));
                 None
             }
-            UiEvent::KeyDown(event) => self.handle_key_down(event),
+            UiEvent::KeyDown(event) => {
+                if self.takes_text_input_focus() && is_submit_key(&event) {
+                    self.clear_focus();
+                    return Some(ChromeAction::Navigate);
+                }
+                self.document.handle_ui_event(UiEvent::KeyDown(event));
+                None
+            }
             UiEvent::PointerMove(event) => {
                 self.document.handle_ui_event(UiEvent::PointerMove(event));
                 None
@@ -226,8 +333,7 @@ impl ChromeUi {
                 None
             }
             UiEvent::AppleStandardKeybinding(event) => {
-                self.document
-                    .handle_ui_event(UiEvent::AppleStandardKeybinding(event));
+                self.document.handle_ui_event(UiEvent::AppleStandardKeybinding(event));
                 None
             }
         }
@@ -242,63 +348,35 @@ impl ChromeUi {
             .unwrap_or_default()
     }
 
-    fn handle_key_down(&mut self, event: BlitzKeyEvent) -> Option<ChromeAction> {
-        if self.takes_text_input_focus() && is_submit_key(&event) {
-            self.clear_focus();
-            return Some(ChromeAction::Navigate);
-        }
-        self.document.handle_ui_event(UiEvent::KeyDown(event));
-        None
-    }
-
-    fn set_address_value(&mut self, value: &str) {
-        if self.address_value() == value {
-            return;
-        }
-
-        let mut mutator = self.document.mutate();
-        mutator.set_attribute(self.node_ids.address, qual_name!("value"), value);
-    }
-
     fn refresh_layout(&mut self) {
         self.document.resolve(0.0);
-        let measured_height = self
-            .document
+        let measured = self.document
             .get_client_bounding_rect(self.node_ids.shell)
-            .map(|rect| rect.height as f32)
+            .map(|r| r.height as f32)
             .unwrap_or(DEFAULT_CHROME_HEIGHT_CSS)
             .max(DEFAULT_CHROME_HEIGHT_CSS);
-        if (measured_height - self.height_css).abs() > 0.5 {
-            self.height_css = measured_height;
-            self.document
-                .set_viewport(Self::chrome_viewport(&self.full_viewport, self.height_css));
+        if (measured - self.height_css).abs() > 0.5 {
+            self.height_css = measured;
+            self.document.set_viewport(Self::chrome_viewport(&self.full_viewport, self.height_css));
             self.document.resolve(0.0);
         }
     }
 
-    fn is_address_hit(&self, x: f32, y: f32) -> bool {
-        let Some(hit) = self.document.hit(x, y) else {
-            return false;
-        };
-        self.document.node_chain(hit.node_id).contains(&self.node_ids.address)
-    }
-
     fn select_all_address_text(&mut self) {
-        self.document
-            .with_text_input(self.node_ids.address, |mut driver| driver.select_all());
+        self.document.with_text_input(self.node_ids.address, |mut driver| driver.select_all());
     }
 
     fn chrome_viewport(full_viewport: &Viewport, height_css: f32) -> Viewport {
-        let mut viewport = full_viewport.clone();
-        viewport.window_size.1 = ((height_css * full_viewport.scale()).ceil() as u32).max(1);
-        viewport
+        let mut vp = full_viewport.clone();
+        vp.window_size.1 = ((height_css * full_viewport.scale()).ceil() as u32).max(1);
+        vp
     }
 }
 
 fn is_submit_key(event: &BlitzKeyEvent) -> bool {
     match &event.key {
         Key::Enter => true,
-        Key::Character(value) => value == "\n",
+        Key::Character(v) if v == "\n" => true,
         _ => false,
     }
 }
