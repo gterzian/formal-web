@@ -1,6 +1,6 @@
 use ipc_messages::content::{
     CreateChildNavigableRequest, DocumentId,
-    Event as ContentEvent, FrameId, IframeTraversableRemoval, NavigableId, NavigateRequest, NavigationId,
+    Event as ContentEvent, FrameId, IframeTraversableRemoval, NavigableId,
     UserNavigationInvolvement, iframe_target_name,
 };
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::{
     ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
-    html::HTMLElement, webidl::Callback,
+    html::navigate, html::HTMLElement, webidl::Callback,
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
@@ -270,22 +270,19 @@ fn navigate_an_iframe_or_frame(
     // Step 4: "Navigate element's content navigable to url using element's node document."
     // Note: Navigation is performed by sending a request to the user agent, which executes
     // the navigate algorithm including historyHandling and referrer policy resolution.
-    process
-        .event_sender
-        .send(ContentEvent::NavigationRequested(NavigateRequest {
-            navigation_id: Some(NavigationId::new()),
-            source_navigable_id: content_navigable_id,
-            chosen_navigable_id: Some(content_navigable_id),
-            destination_url: destination_url.to_string(),
-            target: iframe_target_name(
-                parent_traversable_id,
-                content_navigable_id,
-                content_frame_id,
-            ),
-            user_involvement: UserNavigationInvolvement::None,
-            noopener: false,
-        }))
-        .map_err(|error| format!("failed to send iframe navigation request: {error}"))
+    navigate(
+        &process.event_sender,
+        content_navigable_id,
+        Some(content_navigable_id),
+        destination_url.to_string(),
+        iframe_target_name(
+            parent_traversable_id,
+            content_navigable_id,
+            content_frame_id,
+        ),
+        UserNavigationInvolvement::None,
+        false,
+    )
 }
 
 fn attach_iframe_about_blank(

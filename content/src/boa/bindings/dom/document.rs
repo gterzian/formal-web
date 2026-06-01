@@ -6,6 +6,7 @@ use boa_engine::{
     js_string,
     native_function::NativeFunction,
     object::builtins::JsArray,
+    object::JsObject,
     property::Attribute,
 };
 
@@ -287,7 +288,19 @@ fn set_dir(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
     Ok(JsValue::undefined())
 }
 
+/// Install the `document` property on the global object using a pre-resolved
+/// Document JsObject. Accepting the document as a parameter avoids an internal
+/// `with_global_scope` call that would borrow the global object's RefCell,
+/// which would then conflict with the subsequent `register_global_property`
+/// that needs to mutably borrow the same global object.
+pub(crate) fn install_document_property_with_object(
+    context: &mut Context,
+    document: JsObject,
+) -> JsResult<()> {
+    context.register_global_property(js_string!("document"), document, Attribute::all())
+}
+
 pub(crate) fn install_document_property(context: &mut Context) -> JsResult<()> {
     let document = document_object(context)?;
-    context.register_global_property(js_string!("document"), document, Attribute::all())
+    install_document_property_with_object(context, document)
 }

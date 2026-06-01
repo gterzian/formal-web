@@ -5,11 +5,11 @@ use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    Event as ContentEvent, NavigableId, NavigateRequest, NavigationId, UserNavigationInvolvement,
+    Event as ContentEvent, NavigableId, UserNavigationInvolvement,
 };
 use url::Url;
 
-use crate::html::{HTMLElement, HyperlinkElementUtils};
+use crate::html::{navigate, HTMLElement, HyperlinkElementUtils};
 
 /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
 /// Note: This helper runs the content-local prefix of the algorithm so content can resolve
@@ -132,24 +132,22 @@ impl HTMLAnchorElement {
         // Note: Content sends the locally resolved target selection, when available, so the
         // user agent can continue `navigate` from the remaining target-name and top-level-creation
         // branches instead of repeating these local steps or blocking on a reply path.
-        let request = NavigateRequest {
-            navigation_id: Some(NavigationId::new()),
+        navigate(
+            event_sender,
             source_navigable_id,
             chosen_navigable_id,
             destination_url,
             target,
             user_involvement,
             noopener,
-        };
-        event_sender
-            .send(ContentEvent::NavigationRequested(request))
-            .map_err(|error| {
-                JsNativeError::typ()
-                    .with_message(format!(
-                        "failed to send hyperlink activation navigation request: {error}"
-                    ))
-                    .into()
-            })
+        )
+        .map_err(|error| {
+            JsNativeError::typ()
+                .with_message(format!(
+                    "failed to send hyperlink activation navigation request: {error}"
+                ))
+                .into()
+        })
     }
 
     /// <https://html.spec.whatwg.org/#get-an-element's-noopener>

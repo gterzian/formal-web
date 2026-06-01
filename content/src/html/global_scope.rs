@@ -9,7 +9,7 @@ use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, WindowTimerClearRequest, WindowTimerKey,
+    DocumentId, Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey,
     WindowTimerRequest,
 };
 
@@ -139,6 +139,14 @@ pub struct GlobalScope {
 
     #[unsafe_ignore_trace]
     timer_host: RefCell<Option<TimerHost>>,
+
+    /// <https://html.spec.whatwg.org/#concept-navigable>
+    #[unsafe_ignore_trace]
+    source_navigable_id: Cell<Option<NavigableId>>,
+
+    /// Sender for content-to-user-agent IPC events (e.g. navigation requests).
+    #[unsafe_ignore_trace]
+    event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
 }
 
 impl GlobalScope {
@@ -155,6 +163,8 @@ impl GlobalScope {
             window_timers: GcRefCell::new(Vec::new()),
             current_timer_nesting_level: Cell::new(None),
             timer_host: RefCell::new(None),
+            source_navigable_id: Cell::new(None),
+            event_sender: RefCell::new(None),
         }
     }
 
@@ -192,7 +202,24 @@ impl GlobalScope {
         Rc::clone(&self.document)
     }
 
-    pub(crate) fn install_timer_host(
+    pub(crate) fn set_navigation_info(
+        &self,
+        source_navigable_id: NavigableId,
+        event_sender: IpcSender<ContentEvent>,
+    ) {
+        self.source_navigable_id.set(Some(source_navigable_id));
+        self.event_sender.borrow_mut().replace(event_sender);
+    }
+
+    pub(crate) fn source_navigable_id(&self) -> Option<NavigableId> {
+        self.source_navigable_id.get()
+    }
+
+    pub(crate) fn event_sender(&self) -> Option<IpcSender<ContentEvent>> {
+        self.event_sender.borrow().clone()
+    }
+
+    pub(crate) fn set_timer_host(
         &self,
         document_id: DocumentId,
         event_sender: IpcSender<ContentEvent>,

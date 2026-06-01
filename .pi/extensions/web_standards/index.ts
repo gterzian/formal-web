@@ -85,9 +85,15 @@ export default function (pi: ExtensionAPI) {
 
   async function getDoc(url: string, signal?: AbortSignal): Promise<CheerioAPI> {
     if (docs.has(url)) return docs.get(url)!;
-    const res = await fetch(url, { signal });
+    // Request identity encoding to avoid gzip compression issues in the pi runtime's fetch.
+    const res = await fetch(url, { signal, headers: { "Accept-Encoding": "identity" } });
     if (!res.ok) throw new Error(`Failed to fetch ${url}: HTTP ${res.status}`);
-    const $ = load(await res.text());
+    const html = await res.text();
+    // Verify the response is valid HTML (not gzip-compressed bytes).
+    if (html.length > 0 && html.charCodeAt(0) === 0x1f && html.charCodeAt(1) === 0x8b) {
+      throw new Error(`Fetched ${url} returned gzip-compressed data but identity encoding was requested`);
+    }
+    const $ = load(html);
     docs.set(url, $);
     return $;
   }

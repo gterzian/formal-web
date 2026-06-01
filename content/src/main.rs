@@ -759,8 +759,10 @@ impl ContentProcess {
         let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
+            Some(self.event_sender.clone()),
+            Some(traversable_id),
+            Some(document_id),
         )?;
-        settings.install_timer_host(document_id, self.event_sender.clone())?;
 
         // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
@@ -834,8 +836,10 @@ impl ContentProcess {
         let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse(&final_url).map_err(|error| error.to_string())?,
+            Some(self.event_sender.clone()),
+            Some(traversable_id),
+            Some(document_id),
         )?;
-        settings.install_timer_host(document_id, self.event_sender.clone())?;
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();

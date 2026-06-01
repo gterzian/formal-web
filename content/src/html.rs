@@ -10,6 +10,12 @@ mod location;
 mod window;
 mod window_or_worker_global_scope;
 
+use ipc_channel::ipc::IpcSender;
+use ipc_messages::content::{
+    Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,
+    UserNavigationInvolvement,
+};
+
 pub use environment_settings_object::EnvironmentSettingsObject;
 pub(crate) use global_scope::TimerHandler;
 pub use global_scope::{GlobalScope, GlobalScopeKind};
@@ -30,3 +36,32 @@ pub(crate) use location::LocationError;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub use window::Window;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
+
+/// <https://html.spec.whatwg.org/#navigate>
+/// Shared content-process helper to send a navigation request to the user agent.
+///
+/// Builds a `NavigateRequest` message and sends it via the content-to-user-agent IPC
+/// channel. This is the common call point for hyperlink activation, iframe navigation,
+/// and Location-object navigation.
+pub(crate) fn navigate(
+    event_sender: &IpcSender<ContentEvent>,
+    source_navigable_id: NavigableId,
+    chosen_navigable_id: Option<NavigableId>,
+    destination_url: String,
+    target: String,
+    user_involvement: UserNavigationInvolvement,
+    noopener: bool,
+) -> Result<(), String> {
+    let request = NavigateRequest {
+        navigation_id: Some(NavigationId::new()),
+        source_navigable_id,
+        chosen_navigable_id,
+        destination_url,
+        target,
+        user_involvement,
+        noopener,
+    };
+    event_sender
+        .send(ContentEvent::NavigationRequested(request))
+        .map_err(|error| format!("failed to send navigation request: {error}"))
+}

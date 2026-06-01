@@ -1,6 +1,9 @@
-use boa_engine::JsData;
+use boa_engine::{JsData, object::JsObject};
 use boa_gc::{Finalize, Trace};
+use ipc_messages::content::UserNavigationInvolvement;
 use url::{Host, Url};
+
+use super::Window;
 
 /// <https://html.spec.whatwg.org/#location>
 #[derive(Trace, Finalize, JsData)]
@@ -15,6 +18,12 @@ pub struct Location {
     /// <https://html.spec.whatwg.org/#relevant-document>
     #[unsafe_ignore_trace]
     relevant_document_origin: Option<String>,
+
+    /// <https://html.spec.whatwg.org/#concept-relevant-global>
+    /// The Window JS object that owns the GlobalScope with navigation state.
+    /// Location uses `downcast_ref` through this handle to access the native
+    /// Window struct — this is safe and doesn't require raw pointer manipulation.
+    window: JsObject,
 }
 
 pub(crate) enum LocationError {
@@ -30,10 +39,11 @@ enum NavigationHistoryBehavior {
 }
 
 impl Location {
-    pub(crate) fn new(url: Url) -> Self {
+    pub(crate) fn new(url: Url, window: JsObject) -> Self {
         Self {
             relevant_document_origin: Some(url.origin().unicode_serialization()),
             url,
+            window,
         }
     }
 
@@ -538,24 +548,61 @@ impl Location {
     /// <https://html.spec.whatwg.org/#location-object-navigate>
     fn location_object_navigate(
         &self,
-        _url: &Url,
-        history_handling: NavigationHistoryBehavior,
+        url: &Url,
+        _history_handling: NavigationHistoryBehavior,
     ) -> Result<(), LocationError> {
         // Step 1: "Let navigable be location's relevant global object's navigable."
-        // Step 2: "Let sourceDocument be the incumbent global object's associated Document."
-        // Step 3: "If location's relevant Document is not yet completely loaded ... set
-        // historyHandling to 'replace'."
-        // Step 4: "Navigate navigable to url using sourceDocument ... with historyHandling set to
-        // historyHandling."
-        // Note: The content process does not yet expose this navigation entrypoint from the
-        // Location carrier, so this algorithm currently terminates with NotSupportedError.
-        let history_handling = match history_handling {
-            NavigationHistoryBehavior::Auto => "auto",
-            NavigationHistoryBehavior::Replace => "replace",
+        // Note: Location's relevant global object is the Window stored as
+        // self.window. We reach the GlobalScope through the Window via
+        // `downcast_ref` — boa's safe API for accessing native data from
+        // a JsObject handle.
+        let window = self
+            .window
+            .downcast_ref::<Window>()
+            .ok_or_else(|| {
+                LocationError::NotSupported(String::from(
+                    "Location window is not a valid Window object",
+                ))
+            })?;
+        let Some(navigable_id) = window.global_scope.source_navigable_id() else {
+            return Ok(());
         };
-        self.unsupported_navigation(format!(
-            "Location navigation with history handling '{history_handling}'"
-        ))
+        let Some(event_sender) = window.global_scope.event_sender() else {
+            return Err(LocationError::NotSupported(String::from(
+                "Location navigation not available: no IPC sender",
+            )));
+        };
+
+        // Step 2: "Let sourceDocument be the incumbent global object's associated Document."
+        // Note: The user agent uses the incumbent global object's document as the source
+        // document for referrer policy and other navigation metadata. The content process
+        // signals this implicitly by sending a NavigationRequested from the current document,
+        // and the user agent derives the source document from the content process identity.
+
+        // Step 3: "If location's relevant Document is not yet completely loaded and the
+        // incumbent global object does not have transient activation, then set
+        // historyHandling to 'replace'."
+        // Note: TODO — Track document completely-loaded state and transient activation for the
+        // incumbent global object. Currently the navigation request marks the source
+        // navigable, and the user agent can apply 'replace' handling when it knows
+        // the document is not yet fully loaded.
+
+        // Step 4: "Navigate navigable to url using sourceDocument, with exceptionsEnabled
+        // set to true and historyHandling set to historyHandling."
+        super::navigate(
+            &event_sender,
+            navigable_id,
+            Some(navigable_id),
+            url.to_string(),
+            String::new(),
+            UserNavigationInvolvement::None,
+            false,
+        )
+        .map_err(|error| {
+            LocationError::NotSupported(format!(
+                "failed to send location navigation request: {error}"
+            ))
+        })
     }
 
     fn unsupported_navigation(&self, operation: String) -> Result<(), LocationError> {

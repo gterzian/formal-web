@@ -1,3 +1,23 @@
+# File System Boundaries
+
+Agents may read and write files freely within:
+
+- The current repository (all files, including git-ignored ones)
+- System temp directories (/tmp, $TMPDIR, or equivalent)
+
+All other locations require explicit user approval before any write, move, or delete operation. This includes (but is not limited to):
+
+- Files outside the repo root
+- Other repositories or project directories
+- Home directory dotfiles and config (~/.config, ~/.bashrc, etc.)
+- Shared or system-wide directories (/usr/local, /etc, etc.)
+
+When in doubt, ask before writing.
+
+# Safety
+
+Never write any unsafe code withou the user's explicit approval.
+
 # Documentation Chain
 
 Read repository documentation from general to specific:
@@ -26,6 +46,12 @@ The `.pi/extensions/pi-share-hf/` extension archives pi sessions to `.pi/collect
 - **`collect_session` tool** — Available for manual collection mid-task, when you want to checkpoint before a risky operation or before a `/new` session. Does not upload or share session data.
 - **`/collect-session` command** — Interactive equivalent of the above.
 - **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
+
+## Testing with formal-web
+
+Formal-web supports three testing interfaces. See `automation/README.md`
+for detailed documentation, and `.pi/extensions/browser/README.md` for the
+pi browser extension that wraps CDP into agent-callable tools.
 
 ## web_standards — Spec Reading
 
