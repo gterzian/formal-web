@@ -1,9 +1,7 @@
 use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 
-use crate::webidl::{
-    Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function,
-};
+use crate::webidl::{Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function};
 
 /// <https://streams.spec.whatwg.org/#blqs-class>
 #[derive(Clone, Trace, Finalize, JsData)]

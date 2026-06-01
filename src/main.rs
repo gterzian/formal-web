@@ -50,7 +50,6 @@ fn delegated_tla_validate_command() -> Option<ExitCode> {
     })
 }
 
-
 fn run_embedder_process(embedder_args: Vec<OsString>) -> Result<(), String> {
     let mut command = ProcessCommand::new("rustup");
     command.arg("run").arg("1.92.0").arg("cargo").arg("run");

@@ -15,8 +15,7 @@ use crate::boa::platform_objects::{
 use crate::boa::with_event_target_mut;
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::webidl::{
-    Callback, ContextCallbackHost, EcmascriptHost, callback_interface_type_value,
-    nullable_value,
+    Callback, ContextCallbackHost, EcmascriptHost, callback_interface_type_value, nullable_value,
 };
 
 #[derive(Clone)]
@@ -102,7 +101,8 @@ fn remove_event_listener(
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    let Some(callback) = nullable_value(args.get_or_undefined(1), callback_interface_type_value)? else {
+    let Some(callback) = nullable_value(args.get_or_undefined(1), callback_interface_type_value)?
+    else {
         return Ok(JsValue::undefined());
     };
     let capture = flatten(args.get_or_undefined(2), context)?;

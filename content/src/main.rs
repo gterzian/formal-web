@@ -13,8 +13,8 @@ use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
 use crate::html::{
-    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript, execute_parser_scripts,
-    attach_same_origin_child_document_for_traversable,
+    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
+    attach_same_origin_child_document_for_traversable, execute_parser_scripts,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
@@ -33,12 +33,11 @@ use ipc_messages::content::Command::{
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
-    ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId,
-    DocumentId, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent,
-    FrameCompositionMetadata, FrameEmbedSite, ElementClickResult,
+    ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
+    ElementClickResult, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FontTransportSender, FrameId, LoadedDocumentResponse, NavigableId, NavigationId,
-    PaintFrame, RecordedScene, ScriptEvaluationResult,
+    FontTransportSender, FrameCompositionMetadata, FrameEmbedSite, FrameId, LoadedDocumentResponse,
+    NavigableId, NavigationId, PaintFrame, RecordedScene, ScriptEvaluationResult,
     TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
 };
 use std::{
@@ -147,10 +146,9 @@ impl ShellProvider for ContentShellProvider {
         let (reply_sender, reply_receiver) =
             ipc::channel::<Result<(), String>>().map_err(|_| ClipboardError)?;
         self.event_sender
-            .send(ContentEvent::ClipboardWriteRequested(ClipboardWriteRequest {
-                text,
-                reply_sender,
-            }))
+            .send(ContentEvent::ClipboardWriteRequested(
+                ClipboardWriteRequest { text, reply_sender },
+            ))
             .map_err(|_| ClipboardError)?;
         reply_receiver
             .recv()
@@ -427,16 +425,22 @@ impl ContentProcess {
         self.navigation_tracer.set_sender(trace_sender);
     }
 
-    fn document_viewport_state(&self, traversable_id: NavigableId) -> Option<DocumentViewportState> {
+    fn document_viewport_state(
+        &self,
+        traversable_id: NavigableId,
+    ) -> Option<DocumentViewportState> {
         self.traversable_viewports
             .get(&traversable_id)
             .cloned()
             .or_else(|| {
-                self.default_viewport.as_ref().cloned().map(|snapshot| DocumentViewportState {
-                    snapshot,
-                    offset_x: 0.0,
-                    offset_y: 0.0,
-                })
+                self.default_viewport
+                    .as_ref()
+                    .cloned()
+                    .map(|snapshot| DocumentViewportState {
+                        snapshot,
+                        offset_x: 0.0,
+                        offset_y: 0.0,
+                    })
             })
     }
 
@@ -525,7 +529,9 @@ impl ContentProcess {
             .local_state
             .lock()
             .expect("local content state mutex poisoned");
-        local_state.pending_handlers.insert(handler_id, pending_handler);
+        local_state
+            .pending_handlers
+            .insert(handler_id, pending_handler);
         Ok(handler_id)
     }
 
@@ -536,9 +542,7 @@ impl ContentProcess {
     ) -> Result<(), String> {
         log_render_state_debug(format!(
             "request remote fetch handler={} method={} url={}",
-            handler_id,
-            request.method,
-            request.url,
+            handler_id, request.method, request.url,
         ));
         self.event_sender
             .send(ContentEvent::DocumentFetchRequested(ContentFetchRequest {
@@ -724,9 +728,7 @@ impl ContentProcess {
         run_iframe_load_event_steps_for_traversable(self, traversable_id)?;
         log_render_state_debug(format!(
             "finalize document load document={} traversable={} url={}",
-            document_id,
-            traversable_id,
-            pending_document_load.finalize_url,
+            document_id, traversable_id, pending_document_load.finalize_url,
         ));
 
         self.event_sender
@@ -753,9 +755,11 @@ impl ContentProcess {
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
-        let document = Rc::new(RefCell::new(BaseDocument::new(
-            self.document_config(traversable_id, document_id, None),
-        )));
+        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
+            traversable_id,
+            document_id,
+            None,
+        ))));
         let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
@@ -793,8 +797,14 @@ impl ContentProcess {
                 pending_update_the_rendering: false,
                 pending_document_load: None,
                 navigable_container_states: HashMap::new(),
-                viewport_offset_x: viewport_state.as_ref().map(|viewport| viewport.offset_x).unwrap_or(0.0),
-                viewport_offset_y: viewport_state.as_ref().map(|viewport| viewport.offset_y).unwrap_or(0.0),
+                viewport_offset_x: viewport_state
+                    .as_ref()
+                    .map(|viewport| viewport.offset_x)
+                    .unwrap_or(0.0),
+                viewport_offset_y: viewport_state
+                    .as_ref()
+                    .map(|viewport| viewport.offset_y)
+                    .unwrap_or(0.0),
             },
         );
         self.active_documents_by_traversable
@@ -830,9 +840,11 @@ impl ContentProcess {
         // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
         // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the DOM carrier and the JavaScript environment settings object.
-        let document = Rc::new(RefCell::new(BaseDocument::new(
-            self.document_config(traversable_id, document_id, Some(final_url.clone())),
-        )));
+        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
+            traversable_id,
+            document_id,
+            Some(final_url.clone()),
+        ))));
         let settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse(&final_url).map_err(|error| error.to_string())?,
@@ -869,8 +881,14 @@ impl ContentProcess {
                     scripts: deferred_scripts,
                 }),
                 navigable_container_states: HashMap::new(),
-                viewport_offset_x: viewport_state.as_ref().map(|viewport| viewport.offset_x).unwrap_or(0.0),
-                viewport_offset_y: viewport_state.as_ref().map(|viewport| viewport.offset_y).unwrap_or(0.0),
+                viewport_offset_x: viewport_state
+                    .as_ref()
+                    .map(|viewport| viewport.offset_x)
+                    .unwrap_or(0.0),
+                viewport_offset_y: viewport_state
+                    .as_ref()
+                    .map(|viewport| viewport.offset_y)
+                    .unwrap_or(0.0),
             },
         );
         attach_same_origin_child_document_for_traversable(self, traversable_id)?;
@@ -1026,7 +1044,8 @@ impl ContentProcess {
         check_id: BeforeUnloadCheckId,
         navigation_id: NavigationId,
     ) -> Result<(), String> {
-        let (navigable_id, canceled) = if let Some(document) = self.documents.get_mut(&document_id) {
+        let (navigable_id, canceled) = if let Some(document) = self.documents.get_mut(&document_id)
+        {
             let navigable_id = document.traversable_id;
             let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
                 .map_err(|error| error.to_string())?;
@@ -1171,7 +1190,8 @@ impl ContentProcess {
                     scene,
                 )?;
                 paint_frame
-            };paint_frame
+            };
+            paint_frame
         };
 
         event_sender
@@ -1179,7 +1199,11 @@ impl ContentProcess {
             .map_err(|error| format!("failed to send paint frame: {error}"))
     }
 
-    fn node_absolute_border_origin(document: &BaseDocument, node_id: usize, scale: f64) -> Option<(f64, f64)> {
+    fn node_absolute_border_origin(
+        document: &BaseDocument,
+        node_id: usize,
+        scale: f64,
+    ) -> Option<(f64, f64)> {
         let mut x = -document.viewport_scroll().x * scale;
         let mut y = -document.viewport_scroll().y * scale;
         let mut current = Some(node_id);
@@ -1192,7 +1216,11 @@ impl ContentProcess {
         Some((x, y))
     }
 
-    fn content_box_for_iframe(document: &BaseDocument, node_id: usize, scale: f64) -> Option<(f64, f64, f64, f64)> {
+    fn content_box_for_iframe(
+        document: &BaseDocument,
+        node_id: usize,
+        scale: f64,
+    ) -> Option<(f64, f64, f64, f64)> {
         let node = document.get_node(node_id)?;
         let layout = node.final_layout;
         let edge = layout.padding + layout.border;
@@ -1214,7 +1242,9 @@ impl ContentProcess {
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
-            .filter_map(|(iframe_node_id, state)| state.cross_origin.then_some((*iframe_node_id, state)))
+            .filter_map(|(iframe_node_id, state)| {
+                state.cross_origin.then_some((*iframe_node_id, state))
+            })
             .collect::<Vec<_>>();
         iframe_node_ids.sort_by_key(|(iframe_node_id, _)| *iframe_node_id);
 
@@ -1222,10 +1252,9 @@ impl ContentProcess {
             .into_iter()
             .enumerate()
             .filter_map(|(paint_order, (iframe_node_id, state))| {
-                let (x, y, width, height) = Self::content_box_for_iframe(document, iframe_node_id, scale)?;
-                let clip_svg_path = format!(
-                    "M0,0 L{width},0 L{width},{height} L0,{height} Z"
-                );
+                let (x, y, width, height) =
+                    Self::content_box_for_iframe(document, iframe_node_id, scale)?;
+                let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
                 Some(FrameEmbedSite {
                     embed_site_id: EmbedSiteId((iframe_node_id as u64).wrapping_add(1)),
                     child_frame_id: state.content_frame_id,
@@ -1268,15 +1297,25 @@ impl ContentProcess {
                 request_url: _,
                 handler,
             } => {
-                handler.bytes(response.final_url.clone(), Bytes::copy_from_slice(&response.body));
+                handler.bytes(
+                    response.final_url.clone(),
+                    Bytes::copy_from_slice(&response.body),
+                );
                 let Some(content_document) = self.documents.get(&document_id) else {
-                    eprintln!("[content] complete_document_fetch: document {document_id} not found");
+                    eprintln!(
+                        "[content] complete_document_fetch: document {document_id} not found"
+                    );
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
                 log_render_state_debug(format!(
                     "complete resource fetch handler={} traversable={} document={} status={} type={} url={}",
-                    handler_id, traversable_id, document_id, response_status, response_type, response_url,
+                    handler_id,
+                    traversable_id,
+                    document_id,
+                    response_status,
+                    response_type,
+                    response_url,
                 ));
                 self.continue_document_load(document_id)?;
                 self.request_render_update(traversable_id, document_id, "resource_fetch_complete")?;
@@ -1296,7 +1335,9 @@ impl ContentProcess {
                     self.mark_deferred_script_failed(document_id, script_index);
                 }
                 let Some(content_document) = self.documents.get(&document_id) else {
-                    eprintln!("[content] complete_document_fetch (deferred script): document {document_id} not found");
+                    eprintln!(
+                        "[content] complete_document_fetch (deferred script): document {document_id} not found"
+                    );
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
@@ -1360,7 +1401,9 @@ impl ContentProcess {
             } => {
                 self.mark_deferred_script_failed(document_id, script_index);
                 let Some(content_document) = self.documents.get(&document_id) else {
-                    eprintln!("[content] fail_document_fetch (deferred script): document {document_id} not found");
+                    eprintln!(
+                        "[content] fail_document_fetch (deferred script): document {document_id} not found"
+                    );
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
@@ -1389,7 +1432,9 @@ impl ContentProcess {
         let Some(document) = self.documents.get_mut(&document_id) else {
             return Ok(());
         };
-        document.settings.run_window_timer(timer_id, timer_key, nesting_level)
+        document
+            .settings
+            .run_window_timer(timer_id, timer_key, nesting_level)
     }
 
     fn note_command_completed(&self) -> Result<(), String> {

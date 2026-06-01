@@ -134,7 +134,10 @@ fn with_location_ref<R>(this: &JsValue, f: impl FnOnce(&Location) -> R) -> JsRes
     Ok(f(&location))
 }
 
-fn map_location_result(result: Result<(), LocationError>, context: &mut Context) -> JsResult<JsValue> {
+fn map_location_result(
+    result: Result<(), LocationError>,
+    context: &mut Context,
+) -> JsResult<JsValue> {
     result
         .map(|_| JsValue::undefined())
         .map_err(|error| location_error_to_js_error(error, context))
@@ -148,9 +151,10 @@ fn location_error_to_js_error(error: LocationError, context: &mut Context) -> Js
     match error {
         LocationError::Security => dom_exception_error(DOMException::security_error(), context),
         LocationError::Syntax => dom_exception_error(DOMException::syntax_error(), context),
-        LocationError::NotSupported(message) => {
-            dom_exception_error(DOMException::new(message, String::from("NotSupportedError")), context)
-        }
+        LocationError::NotSupported(message) => dom_exception_error(
+            DOMException::new(message, String::from("NotSupportedError")),
+            context,
+        ),
     }
 }
 
@@ -355,7 +359,9 @@ fn replace_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
 
 fn reload_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let entry_settings = entry_settings_object(context)?;
-    let result = with_location_ref(this, |location| location.reload_with_origin(&entry_settings.origin))?;
+    let result = with_location_ref(this, |location| {
+        location.reload_with_origin(&entry_settings.origin)
+    })?;
     map_location_result(result, context)
 }
 

@@ -4,12 +4,10 @@ use blitz_dom::BaseDocument;
 use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{
-    Event as ContentEvent, NavigableId, UserNavigationInvolvement,
-};
+use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
 use url::Url;
 
-use crate::html::{navigate, HTMLElement, HyperlinkElementUtils};
+use crate::html::{HTMLElement, HyperlinkElementUtils, navigate};
 
 /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
 /// Note: This helper runs the content-local prefix of the algorithm so content can resolve

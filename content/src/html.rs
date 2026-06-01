@@ -12,8 +12,7 @@ mod window_or_worker_global_scope;
 
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,
-    UserNavigationInvolvement,
+    Event as ContentEvent, NavigableId, NavigateRequest, NavigationId, UserNavigationInvolvement,
 };
 
 pub use environment_settings_object::EnvironmentSettingsObject;
@@ -23,8 +22,10 @@ pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
     run_dom_post_connection_steps_for_document, run_dom_removing_steps_for_document,
 };
-pub(crate) use html_element::{inline_style_properties_for_element, resolved_style_properties_for_element};
 pub use html_element::HTMLElement;
+pub(crate) use html_element::{
+    inline_style_properties_for_element, resolved_style_properties_for_element,
+};
 pub use html_iframe_element::HTMLIFrameElement;
 pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traversable;
 pub(crate) use html_iframe_element::run_iframe_load_event_steps_for_traversable;
@@ -33,8 +34,8 @@ pub use html_parser::{JsHtmlParserProvider, execute_parser_scripts, parse_html_i
 pub(crate) use hyperlink_element_utils::HyperlinkElementUtils;
 pub use location::Location;
 pub(crate) use location::LocationError;
-pub(crate) use window::window_computed_style_properties_for_element;
 pub use window::Window;
+pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
 
 /// <https://html.spec.whatwg.org/#navigate>

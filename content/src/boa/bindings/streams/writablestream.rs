@@ -9,8 +9,8 @@ use boa_engine::{
 use crate::streams::{
     WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
     construct_writable_stream, construct_writable_stream_default_writer,
-    with_writable_stream_default_controller_ref,
-    with_writable_stream_default_writer_ref, with_writable_stream_ref,
+    with_writable_stream_default_controller_ref, with_writable_stream_default_writer_ref,
+    with_writable_stream_ref,
 };
 
 impl Class for WritableStream {
@@ -192,9 +192,10 @@ fn error_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
             .with_message("WritableStreamDefaultController receiver is not an object")
     })?;
 
-    let controller = with_writable_stream_default_controller_ref(&controller_object, |controller| {
-        controller.clone()
-    })?;
+    let controller =
+        with_writable_stream_default_controller_ref(&controller_object, |controller| {
+            controller.clone()
+        })?;
     controller.error(args.get_or_undefined(0).clone(), context)?;
     Ok(JsValue::undefined())
 }
@@ -204,7 +205,8 @@ fn get_closed(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValu
         JsNativeError::typ().with_message("WritableStreamDefaultWriter receiver is not an object")
     })?;
 
-    let promise = with_writable_stream_default_writer_ref(&writer_object, |writer| writer.closed())??;
+    let promise =
+        with_writable_stream_default_writer_ref(&writer_object, |writer| writer.closed())??;
     Ok(JsValue::from(promise))
 }
 
@@ -213,7 +215,8 @@ fn get_desired_size(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<
         JsNativeError::typ().with_message("WritableStreamDefaultWriter receiver is not an object")
     })?;
 
-    match with_writable_stream_default_writer_ref(&writer_object, |writer| writer.desired_size())?? {
+    match with_writable_stream_default_writer_ref(&writer_object, |writer| writer.desired_size())??
+    {
         Some(size) => Ok(JsValue::from(size)),
         None => Ok(JsValue::null()),
     }
@@ -224,7 +227,8 @@ fn get_ready(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue
         JsNativeError::typ().with_message("WritableStreamDefaultWriter receiver is not an object")
     })?;
 
-    let promise = with_writable_stream_default_writer_ref(&writer_object, |writer| writer.ready())??;
+    let promise =
+        with_writable_stream_default_writer_ref(&writer_object, |writer| writer.ready())??;
     Ok(JsValue::from(promise))
 }
 
@@ -248,17 +252,12 @@ fn close_writer_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> 
         JsNativeError::typ().with_message("WritableStreamDefaultWriter receiver is not an object")
     })?;
 
-    let promise = with_writable_stream_default_writer_ref(&writer_object, |writer| {
-        writer.close(context)
-    })??;
+    let promise =
+        with_writable_stream_default_writer_ref(&writer_object, |writer| writer.close(context))??;
     Ok(JsValue::from(promise))
 }
 
-fn release_lock_method(
-    this: &JsValue,
-    _: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn release_lock_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let writer_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("WritableStreamDefaultWriter receiver is not an object")
     })?;

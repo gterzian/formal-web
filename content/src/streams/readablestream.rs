@@ -13,7 +13,10 @@ use boa_engine::{
     class::Class,
     js_string,
     native_function::NativeFunction,
-    object::{JsObject, builtins::{JsArray, JsFunction, JsPromise}},
+    object::{
+        JsObject,
+        builtins::{JsArray, JsFunction, JsPromise},
+    },
     symbol::JsSymbol,
 };
 use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
@@ -23,29 +26,21 @@ use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::{
     error_to_rejection_reason, mark_promise_as_handled, promise_from_completion,
-    promise_from_value,
-    rejected_promise, rejected_promise_from_error, resolved_promise,
+    promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
     transform_promise_to_undefined,
 };
 
 use super::{
-    ArrayBufferViewDescriptor, CancelAlgorithm, PullAlgorithm, ReadIntoRequest,
-    ReadableByteStreamController, ReadableStreamController,
-    ReadableStreamReader, ReadableStreamState, StartAlgorithm,
-    ReadableStreamDefaultReader, ReadableStreamGenericReader, ReadRequest,
-    acquire_readable_stream_byob_reader,
-    acquire_readable_stream_default_reader,
-    queue_internal_stream_microtask,
-    readable_stream_byob_reader_release,
-    readable_stream_default_reader_error_read_requests,
-    readable_stream_default_reader_release,
-    rejected_type_error_promise,
-    set_up_readable_byte_stream_controller_from_underlying_source,
+    ArrayBufferViewDescriptor, CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest,
+    ReadableByteStreamController, ReadableStreamController, ReadableStreamDefaultReader,
+    ReadableStreamGenericReader, ReadableStreamReader, ReadableStreamState, StartAlgorithm,
+    acquire_readable_stream_byob_reader, acquire_readable_stream_default_reader,
+    queue_internal_stream_microtask, readable_stream_byob_reader_release,
+    readable_stream_default_reader_error_read_requests, readable_stream_default_reader_release,
+    rejected_type_error_promise, set_up_readable_byte_stream_controller_from_underlying_source,
     set_up_readable_stream_default_controller,
-    set_up_readable_stream_default_controller_from_underlying_source,
-    type_error_value,
-    with_readable_stream_byob_reader_ref,
-    with_readable_stream_default_reader_ref,
+    set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
+    with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
 };
 
 /// <https://streams.spec.whatwg.org/#rs-class>
@@ -168,11 +163,11 @@ impl ReadableStream {
         }
 
         // Step 2: "Return ! ReadableStreamCancel(this, reason)."
-        readable_stream_cancel(self.clone(), reason, context)
-            .map_err(|e| {
-                JsNativeError::typ().with_message(format!("Failed to cancel stream: {}", e))
-                    .into()
-            })
+        readable_stream_cancel(self.clone(), reason, context).map_err(|e| {
+            JsNativeError::typ()
+                .with_message(format!("Failed to cancel stream: {}", e))
+                .into()
+        })
     }
 
     /// <https://streams.spec.whatwg.org/#rs-get-reader>
@@ -185,9 +180,8 @@ impl ReadableStream {
             None
         } else {
             Some(options.as_object().ok_or_else(|| {
-                JsNativeError::typ().with_message(
-                    "ReadableStream.getReader() options must be an object",
-                )
+                JsNativeError::typ()
+                    .with_message("ReadableStream.getReader() options must be an object")
             })?)
         };
 
@@ -361,8 +355,7 @@ impl ReadableStream {
     pub(crate) fn tee(&mut self, context: &mut Context) -> JsResult<JsValue> {
         // Step 1: "Return ? ReadableStreamTee(this, false)."
         Ok(readable_stream_tee(self.clone(), false, context)?.into_js_value(context))
-}
-
+    }
 }
 
 struct ReadableStreamTeeBranches {
@@ -572,7 +565,8 @@ fn structured_clone_value(value: JsValue, context: &mut Context) -> JsResult<JsV
         .as_object()
         .and_then(JsFunction::from_object)
         .ok_or_else(|| {
-            JsNativeError::typ().with_message("structuredClone is not available on the global object")
+            JsNativeError::typ()
+                .with_message("structuredClone is not available on the global object")
         })?;
     structured_clone.call(&JsValue::undefined(), &[value], context)
 }
@@ -693,15 +687,23 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
 
                         // Step 13.3 chunk steps 1.3.2.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
-                            if let Err(error) = default_tee_error_branch(branch1, error.clone(), context) {
-                                eprintln!("[readable-stream] default tee error branch1 (chunk) failed: {error}");
+                            if let Err(error) =
+                                default_tee_error_branch(branch1, error.clone(), context)
+                            {
+                                eprintln!(
+                                    "[readable-stream] default tee error branch1 (chunk) failed: {error}"
+                                );
                             }
                         }
 
                         // Step 13.3 chunk steps 1.3.2.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
-                            if let Err(error) = default_tee_error_branch(branch2, error.clone(), context) {
-                                eprintln!("[readable-stream] default tee error branch2 (chunk) failed: {error}");
+                            if let Err(error) =
+                                default_tee_error_branch(branch2, error.clone(), context)
+                            {
+                                eprintln!(
+                                    "[readable-stream] default tee error branch2 (chunk) failed: {error}"
+                                );
                             }
                         }
 
@@ -796,11 +798,9 @@ pub(crate) fn readable_stream_default_tee_read_request_close_steps(
 
     // Step 13.3 close steps 4: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
     if !canceled1 || !canceled2 {
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::undefined()],
-            context,
-        )?;
+        cancel_resolvers
+            .resolve
+            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
     }
 
     Ok(())
@@ -843,17 +843,12 @@ pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
     // Step 14.3: "If canceled2 is true,"
     if canceled2 {
         // Step 14.3.1: "Let compositeReason be ! CreateArrayFromList(« reason1, reason2 »)."
-        let composite_reason = JsArray::from_iter(
-            [reason1, reason2].into_iter().map(JsValue::from),
-            context,
-        );
+        let composite_reason =
+            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
 
         // Step 14.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
-        let cancel_result = readable_stream_cancel(
-            source_stream,
-            JsValue::from(composite_reason),
-            context,
-        )?;
+        let cancel_result =
+            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
 
         // Step 14.3.3: "Resolve cancelPromise with cancelResult."
         cancel_resolvers.resolve.call(
@@ -894,17 +889,12 @@ pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
     // Step 15.3: "If canceled1 is true,"
     if canceled1 {
         // Step 15.3.1: "Let compositeReason be ! CreateArrayFromList(« reason1, reason2 »)."
-        let composite_reason = JsArray::from_iter(
-            [reason1, reason2].into_iter().map(JsValue::from),
-            context,
-        );
+        let composite_reason =
+            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
 
         // Step 15.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
-        let cancel_result = readable_stream_cancel(
-            source_stream,
-            JsValue::from(composite_reason),
-            context,
-        )?;
+        let cancel_result =
+            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
 
         // Step 15.3.3: "Resolve cancelPromise with cancelResult."
         cancel_resolvers.resolve.call(
@@ -933,9 +923,9 @@ struct ReadableStreamFromIteratorRecord {
 
 impl ReadableStreamFromIteratorRecord {
     fn next_result_promise(&self, context: &mut Context) -> JsResult<JsObject> {
-        let next_result = self
-            .next_method
-            .call(&JsValue::from(self.iterator.clone()), &[], context)?;
+        let next_result =
+            self.next_method
+                .call(&JsValue::from(self.iterator.clone()), &[], context)?;
 
         match self.kind {
             ReadableStreamFromIteratorKind::Async => promise_from_value(next_result, context),
@@ -945,7 +935,11 @@ impl ReadableStreamFromIteratorRecord {
         }
     }
 
-    fn return_result_promise(&self, reason: JsValue, context: &mut Context) -> JsResult<Option<JsObject>> {
+    fn return_result_promise(
+        &self,
+        reason: JsValue,
+        context: &mut Context,
+    ) -> JsResult<Option<JsObject>> {
         let return_method = get_optional_callable_method_value(
             self.iterator.get(js_string!("return"), context)?,
             "ReadableStream.from() iterator.return",
@@ -954,7 +948,8 @@ impl ReadableStreamFromIteratorRecord {
             return Ok(None);
         };
 
-        let return_result = return_method.call(&JsValue::from(self.iterator.clone()), &[reason], context)?;
+        let return_result =
+            return_method.call(&JsValue::from(self.iterator.clone()), &[reason], context)?;
         let return_promise = match self.kind {
             ReadableStreamFromIteratorKind::Async => promise_from_value(return_result, context)?,
             ReadableStreamFromIteratorKind::Sync => {
@@ -1098,7 +1093,8 @@ pub(crate) fn create_readable_stream(
 
     // Step 6: "Let controller be a new ReadableStreamDefaultController."
     let controller = super::ReadableStreamDefaultController::new();
-    let controller_object = super::ReadableStreamDefaultController::from_data(controller.clone(), context)?;
+    let controller_object =
+        super::ReadableStreamDefaultController::from_data(controller.clone(), context)?;
 
     // Step 7: "Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm)."
     set_up_readable_stream_default_controller(
@@ -1220,12 +1216,15 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
 
             // Step 4.4.1: "If iterResult is not an Object, throw a TypeError."
             let iter_result_object = iter_result.as_object().ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("ReadableStream.from() iterator next() must fulfill with an object")
+                JsNativeError::typ().with_message(
+                    "ReadableStream.from() iterator next() must fulfill with an object",
+                )
             })?;
 
             // Step 4.4.2: "Let done be ? IteratorComplete(iterResult)."
-            let done = iter_result_object.get(js_string!("done"), context)?.to_boolean();
+            let done = iter_result_object
+                .get(js_string!("done"), context)?
+                .to_boolean();
 
             let stream = state.stream()?;
             let controller = stream.controller_slot().ok_or_else(|| {
@@ -1333,13 +1332,15 @@ fn get_readable_stream_from_iterator_record(
         "ReadableStream.from() iterable[@@iterator]",
     )?
     .ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream.from() requires an async iterable or iterable")
+        JsNativeError::typ()
+            .with_message("ReadableStream.from() requires an async iterable or iterable")
     })?;
     let iterator = iterator_method
         .call(&async_iterable, &[], context)?
         .as_object()
         .ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream.from() @@iterator must return an object")
+            JsNativeError::typ()
+                .with_message("ReadableStream.from() @@iterator must return an object")
         })?
         .clone();
     let next_method = get_required_callable_method(
@@ -1355,7 +1356,10 @@ fn get_readable_stream_from_iterator_record(
     })
 }
 
-fn promise_from_sync_iterator_result(iter_result: JsValue, context: &mut Context) -> JsResult<JsObject> {
+fn promise_from_sync_iterator_result(
+    iter_result: JsValue,
+    context: &mut Context,
+) -> JsResult<JsObject> {
     let iter_result_object = match iter_result.as_object() {
         Some(iter_result_object) => iter_result_object.clone(),
         None => {
@@ -1407,15 +1411,11 @@ fn get_optional_callable_method_value(
     }
 
     let method = value.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message(format!(
-            "{description} must be callable when provided"
-        ))
+        JsNativeError::typ().with_message(format!("{description} must be callable when provided"))
     })?;
     if !method.is_callable() {
         return Err(JsNativeError::typ()
-            .with_message(format!(
-                "{description} must be callable when provided"
-            ))
+            .with_message(format!("{description} must be callable when provided"))
             .into());
     }
 
@@ -1595,9 +1595,12 @@ pub(crate) fn readable_stream_add_read_request(
     read_request: ReadRequest,
 ) -> JsResult<()> {
     // Step 1: "Assert: stream.[[reader]] implements ReadableStreamDefaultReader."
-    let reader = stream.reader_slot().and_then(|reader| reader.as_default_reader()).ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream is not locked to a default reader")
-    })?;
+    let reader = stream
+        .reader_slot()
+        .and_then(|reader| reader.as_default_reader())
+        .ok_or_else(|| {
+            JsNativeError::typ().with_message("ReadableStream is not locked to a default reader")
+        })?;
 
     // Step 2: "Assert: stream.[[state]] is \"readable\"."
     debug_assert_eq!(stream.state(), ReadableStreamState::Readable);
@@ -1615,9 +1618,12 @@ pub(crate) fn readable_stream_fulfill_read_request(
     context: &mut Context,
 ) -> JsResult<()> {
     // Step 1: "Assert: ! ReadableStreamHasDefaultReader(stream) is true."
-    let reader = stream.reader_slot().and_then(|reader| reader.as_default_reader()).ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream is not locked to a default reader")
-    })?;
+    let reader = stream
+        .reader_slot()
+        .and_then(|reader| reader.as_default_reader())
+        .ok_or_else(|| {
+            JsNativeError::typ().with_message("ReadableStream is not locked to a default reader")
+        })?;
 
     // Step 2: "Let reader be stream.[[reader]]."
 
@@ -1722,7 +1728,10 @@ fn byte_tee_enqueue_to_branch(
     context: &mut Context,
 ) -> JsResult<()> {
     // Step helper: "Perform ! ReadableByteStreamControllerEnqueue(branchX.[[controller]], chunkX)."
-    let Some(controller) = branch.controller_slot().and_then(|c| c.as_byte_controller()) else {
+    let Some(controller) = branch
+        .controller_slot()
+        .and_then(|c| c.as_byte_controller())
+    else {
         return Ok(());
     };
     controller.enqueue(chunk, context)
@@ -1735,7 +1744,10 @@ fn byte_tee_error_branch(
     context: &mut Context,
 ) -> JsResult<()> {
     // Step helper: "Perform ! ReadableByteStreamControllerError(branchX.[[controller]], r)."
-    let Some(controller) = branch.controller_slot().and_then(|c| c.as_byte_controller()) else {
+    let Some(controller) = branch
+        .controller_slot()
+        .and_then(|c| c.as_byte_controller())
+    else {
         return Ok(());
     };
     controller.error(error, context)
@@ -1744,7 +1756,10 @@ fn byte_tee_error_branch(
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn byte_tee_close_branch(branch: &ReadableStream, context: &mut Context) -> JsResult<()> {
     // Step helper: "Perform ! ReadableByteStreamControllerClose(branchX.[[controller]])."
-    let Some(controller) = branch.controller_slot().and_then(|c| c.as_byte_controller()) else {
+    let Some(controller) = branch
+        .controller_slot()
+        .and_then(|c| c.as_byte_controller())
+    else {
         return Ok(());
     };
     controller.close(context)
@@ -1769,7 +1784,9 @@ fn byte_tee_forward_reader_error(
     context: &mut Context,
 ) -> JsResult<()> {
     let closed_promise = if let Ok(closed) = reader_object.get(js_string!("closed"), context) {
-        closed.as_object().and_then(|o| JsPromise::from_object(o.clone()).ok())
+        closed
+            .as_object()
+            .and_then(|o| JsPromise::from_object(o.clone()).ok())
     } else {
         None
     };
@@ -1919,15 +1936,23 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
 
                         // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
-                            if let Err(error) = byte_tee_error_branch(branch1, error.clone(), context) {
-                                eprintln!("[readable-stream] byte tee error branch1 (chunk) failed: {error}");
+                            if let Err(error) =
+                                byte_tee_error_branch(branch1, error.clone(), context)
+                            {
+                                eprintln!(
+                                    "[readable-stream] byte tee error branch1 (chunk) failed: {error}"
+                                );
                             }
                         }
 
                         // Step 18.2 chunk steps 1.4.2.2: "Perform ! ReadableByteStreamControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
-                            if let Err(error) = byte_tee_error_branch(branch2, error.clone(), context) {
-                                eprintln!("[readable-stream] byte tee error branch2 (chunk) failed: {error}");
+                            if let Err(error) =
+                                byte_tee_error_branch(branch2, error.clone(), context)
+                            {
+                                eprintln!(
+                                    "[readable-stream] byte tee error branch2 (chunk) failed: {error}"
+                                );
                             }
                         }
 
@@ -2029,11 +2054,9 @@ pub(crate) fn readable_byte_stream_tee_default_reader_close_steps(
         }
     }
     if !canceled1 || !canceled2 {
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::undefined()],
-            context,
-        )?;
+        cancel_resolvers
+            .resolve
+            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
     }
     Ok(())
 }
@@ -2424,15 +2447,10 @@ pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
         )
     };
     if canceled2 {
-        let composite_reason = JsArray::from_iter(
-            [reason1, reason2].into_iter().map(JsValue::from),
-            context,
-        );
-        let cancel_result = readable_stream_cancel(
-            source_stream,
-            JsValue::from(composite_reason),
-            context,
-        )?;
+        let composite_reason =
+            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
+        let cancel_result =
+            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
         cancel_resolvers.resolve.call(
             &JsValue::undefined(),
             &[JsValue::from(cancel_result)],
@@ -2462,15 +2480,10 @@ pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
         )
     };
     if canceled1 {
-        let composite_reason = JsArray::from_iter(
-            [reason1, reason2].into_iter().map(JsValue::from),
-            context,
-        );
-        let cancel_result = readable_stream_cancel(
-            source_stream,
-            JsValue::from(composite_reason),
-            context,
-        )?;
+        let composite_reason =
+            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
+        let cancel_result =
+            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
         cancel_resolvers.resolve.call(
             &JsValue::undefined(),
             &[JsValue::from(cancel_result)],
@@ -2624,7 +2637,8 @@ fn extract_abort_signal(
     }
 
     let signal_object = signal.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream pipe options.signal must be an AbortSignal")
+        JsNativeError::typ()
+            .with_message("ReadableStream pipe options.signal must be an AbortSignal")
     })?;
 
     with_abort_signal_ref(&signal_object, |signal| signal.clone()).map(Some)
@@ -2679,9 +2693,10 @@ fn promise_rejected_with_reason(reason: JsValue, context: &mut Context) -> JsObj
     crate::webidl::rejected_promise(reason, context).unwrap_or_else(|_| {
         let (promise, resolvers) = JsPromise::new_pending(context);
         let promise_object: JsObject = promise.into();
-        if let Err(error) = resolvers
-            .reject
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)
+        if let Err(error) =
+            resolvers
+                .reject
+                .call(&JsValue::undefined(), &[JsValue::undefined()], context)
         {
             eprintln!("[readable-stream] failed to reject fallback promise: {error}");
         }
@@ -2753,22 +2768,23 @@ fn readable_stream_pipe_to(
             return pipe_promise_obj;
         }
     };
-    let reader = match with_readable_stream_default_reader_ref(&reader_object, |reader| {
-        reader.clone()
-    }) {
-        Ok(reader) => reader,
-        Err(error) => {
-            reject_promise_with_error(&pipe_resolvers, error, context);
-            return pipe_promise_obj;
-        }
-    };
+    let reader =
+        match with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone()) {
+            Ok(reader) => reader,
+            Err(error) => {
+                reject_promise_with_error(&pipe_resolvers, error, context);
+                return pipe_promise_obj;
+            }
+        };
 
     // Step 10: "Let writer be ! AcquireWritableStreamDefaultWriter(dest)."
     let writer_object = match super::acquire_writable_stream_default_writer(dest.clone(), context) {
         Ok(writer_object) => writer_object,
         Err(error) => {
             if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
-                eprintln!("[readable-stream] failed to release reader on pipe setup error: {error}");
+                eprintln!(
+                    "[readable-stream] failed to release reader on pipe setup error: {error}"
+                );
             }
             reject_promise_with_error(&pipe_resolvers, error, context);
             return pipe_promise_obj;
@@ -3019,10 +3035,7 @@ impl PipeToState {
             return Ok(false);
         }
 
-        if result_object
-            .get(js_string!("done"), context)?
-            .to_boolean()
-        {
+        if result_object.get(js_string!("done"), context)?.to_boolean() {
             return Ok(false);
         }
 
@@ -3185,11 +3198,7 @@ impl PipeToState {
 
     /// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown-with-action>
     /// Note: This also covers <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown> when `action` is `None`.
-    fn shutdown(
-        &self,
-        action: Option<PipeShutdownAction>,
-        context: &mut Context,
-    ) -> JsResult<()> {
+    fn shutdown(&self, action: Option<PipeShutdownAction>, context: &mut Context) -> JsResult<()> {
         let pending_write = {
             let mut state = self.borrow_mut();
             if state.shutting_down {
@@ -3198,14 +3207,11 @@ impl PipeToState {
 
             state.shutting_down = true;
 
-            let should_wait = state
-                .writer
-                .stream_slot_value()
-                .is_some_and(|dest| {
-                    dest.state() == super::WritableStreamState::Writable
-                        && !dest.close_queued_or_in_flight()
-                        && !state.pending_writes.is_empty()
-                });
+            let should_wait = state.writer.stream_slot_value().is_some_and(|dest| {
+                dest.state() == super::WritableStreamState::Writable
+                    && !dest.close_queued_or_in_flight()
+                    && !state.pending_writes.is_empty()
+            });
             if should_wait {
                 state.state = PipePumpState::ShuttingDownWithPendingWrites(action);
                 state.pending_writes.front().cloned()
@@ -3286,12 +3292,7 @@ impl PipeToState {
 
                 match (abort_promise, cancel_source) {
                     (Some(abort_promise), Some(source)) => {
-                        abort_destination_then_cancel_source(
-                            abort_promise,
-                            source,
-                            error,
-                            context,
-                        )?
+                        abort_destination_then_cancel_source(abort_promise, source, error, context)?
                     }
                     (Some(abort_promise), None) => abort_promise,
                     (None, Some(source)) => readable_stream_cancel(source, error, context)?,
@@ -3406,8 +3407,9 @@ impl PipeToState {
             super::WritableStreamState::Erroring | super::WritableStreamState::Errored
         ) {
             self.set_shutdown_error(Some(dest.stored_error()));
-            return Ok((!prevent_cancel && source_is_readable)
-                .then_some(PipeShutdownAction::CancelSource));
+            return Ok(
+                (!prevent_cancel && source_is_readable).then_some(PipeShutdownAction::CancelSource)
+            );
         }
 
         if dest.state() == super::WritableStreamState::Closed || dest.close_queued_or_in_flight() {
@@ -3420,8 +3422,9 @@ impl PipeToState {
                 context,
             )?;
             self.set_shutdown_error(Some(error));
-            return Ok((!prevent_cancel && source_is_readable)
-                .then_some(PipeShutdownAction::CancelSource));
+            return Ok(
+                (!prevent_cancel && source_is_readable).then_some(PipeShutdownAction::CancelSource)
+            );
         }
 
         Ok(action)
@@ -3469,8 +3472,11 @@ impl PipeToState {
     fn append_reaction(&self, promise: JsObject, context: &mut Context) -> JsResult<()> {
         let on_fulfilled = pipe_reaction_function(self.clone(), context);
         let on_rejected = pipe_reaction_function(self.clone(), context);
-        let _ = JsPromise::from_object(promise)?
-            .then(Some(on_fulfilled), Some(on_rejected), context)?;
+        let _ = JsPromise::from_object(promise)?.then(
+            Some(on_fulfilled),
+            Some(on_rejected),
+            context,
+        )?;
         Ok(())
     }
 }
@@ -3550,7 +3556,10 @@ fn pipe_to_on_promise_settled(
 
     match current_state {
         PipePumpState::Starting => {
-            debug_assert!(false, "ReadableStream pipeTo callback reached the Starting state");
+            debug_assert!(
+                false,
+                "ReadableStream pipeTo callback reached the Starting state"
+            );
         }
         PipePumpState::PendingReady => {
             state.read_chunk(context)?;
@@ -3615,18 +3624,13 @@ fn pipe_read_result_done(result: &JsValue, context: &mut Context) -> JsResult<Op
     }
 
     Ok(Some(
-        result_object
-            .get(js_string!("done"), context)?
-            .to_boolean(),
+        result_object.get(js_string!("done"), context)?.to_boolean(),
     ))
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
 #[allow(dead_code)]
-fn wait_for_all_promises(
-    promises: Vec<JsObject>,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsResult<JsObject> {
     if promises.is_empty() {
         return resolved_promise(JsValue::undefined(), context);
     }
@@ -3749,8 +3753,11 @@ fn wait_for_all_promises(
         )
         .to_js_function(context.realm());
 
-        let _ = JsPromise::from_object(promise)?
-            .then(Some(on_fulfilled), Some(on_rejected), context)?;
+        let _ = JsPromise::from_object(promise)?.then(
+            Some(on_fulfilled),
+            Some(on_rejected),
+            context,
+        )?;
     }
 
     Ok(promise.into())
@@ -3788,7 +3795,11 @@ fn abort_destination_then_cancel_source(
         state.clone(),
     )
     .to_js_function(context.realm());
-    let _ = JsPromise::from_object(abort_promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+    let _ = JsPromise::from_object(abort_promise)?.then(
+        Some(on_fulfilled),
+        Some(on_rejected),
+        context,
+    )?;
 
     Ok(promise.into())
 }
@@ -3827,7 +3838,11 @@ fn start_abort_cancel_source(
         state,
     )
     .to_js_function(context.realm());
-    let _ = JsPromise::from_object(cancel_promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+    let _ = JsPromise::from_object(cancel_promise)?.then(
+        Some(on_fulfilled),
+        Some(on_rejected),
+        context,
+    )?;
     Ok(JsValue::undefined())
 }
 
@@ -3838,17 +3853,20 @@ fn finalize_abort_cancel_source(
 ) -> JsResult<JsValue> {
     let (abort_rejection, resolvers) = {
         let state_ref = state.borrow();
-        (state_ref.abort_rejection.clone(), state_ref.resolvers.clone())
+        (
+            state_ref.abort_rejection.clone(),
+            state_ref.resolvers.clone(),
+        )
     };
 
     if let Some(reason) = abort_rejection.or(cancel_rejection) {
-        resolvers.reject.call(&JsValue::undefined(), &[reason], context)?;
+        resolvers
+            .reject
+            .call(&JsValue::undefined(), &[reason], context)?;
     } else {
-        resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::undefined()],
-            context,
-        )?;
+        resolvers
+            .resolve
+            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
     }
 
     Ok(JsValue::undefined())

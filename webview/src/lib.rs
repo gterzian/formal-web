@@ -11,8 +11,8 @@ use ipc_messages::content::{
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage,
 };
 use kurbo::Affine;
-use std::env;
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -84,9 +84,9 @@ pub struct WebviewProvider {
     published_child_viewports: HashMap<WebviewId, PublishedChildViewport>,
     font_receiver: FontTransportReceiver,
     viewport_snapshot: Option<(u32, u32, f32, ColorScheme)>,
-    provider_message_receiver: Receiver<WebviewProviderMessage>,
     embedder: Arc<dyn Embedder>,
     user_agent: UserAgent,
+    provider_message_receiver: Receiver<WebviewProviderMessage>,
 }
 
 impl WebviewProvider {
@@ -104,9 +104,9 @@ impl WebviewProvider {
             published_child_viewports: HashMap::new(),
             font_receiver: FontTransportReceiver::default(),
             viewport_snapshot: None,
-            provider_message_receiver,
             embedder,
             user_agent,
+            provider_message_receiver,
         })
     }
 
@@ -158,7 +158,7 @@ impl WebviewProvider {
                     user_involvement: UserNavigationInvolvement::BrowserUi,
                     noopener: false,
                 })
-            },
+            }
             None => self.user_agent.start_top_level_traversable(url.to_owned()),
         }
     }
@@ -193,7 +193,11 @@ impl WebviewProvider {
         // until the next input-driven composition pass.
         let mut visible_viewports = Vec::new();
         for state in self.webviews.values_mut() {
-            visible_viewports.extend(state.compositor.visible_frame_viewports(&self.font_receiver));
+            visible_viewports.extend(
+                state
+                    .compositor
+                    .visible_frame_viewports(&self.font_receiver),
+            );
         }
         self.publish_visible_child_viewports(visible_viewports);
 
@@ -226,7 +230,8 @@ impl WebviewProvider {
                 timeout.as_millis()
             );
         }
-        let result = self.user_agent
+        let result = self
+            .user_agent
             .evaluate_script(traversable_id.0, source, timeout);
         if cdp_debug_enabled {
             eprintln!(
@@ -262,7 +267,9 @@ impl WebviewProvider {
         // traversable registration arrives. Publish immediately so the child gets the
         // correct viewport on first paint instead of waiting for later input-driven redraws.
         if let Some(state) = self.webviews.get_mut(&parent_traversable_id) {
-            let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
+            let viewports = state
+                .compositor
+                .visible_frame_viewports(&self.font_receiver);
             self.publish_visible_child_viewports(viewports);
         }
 
@@ -279,9 +286,12 @@ impl WebviewProvider {
 
     pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
         let source_webview_id = frame.traversable_id;
-        let is_root_candidate = !self.child_navigable_hosts_by_webview.contains_key(&frame.traversable_id);
-        if let Some(child_navigable_host) =
-            self.child_navigable_hosts_by_webview.get(&frame.traversable_id)
+        let is_root_candidate = !self
+            .child_navigable_hosts_by_webview
+            .contains_key(&frame.traversable_id);
+        if let Some(child_navigable_host) = self
+            .child_navigable_hosts_by_webview
+            .get(&frame.traversable_id)
         {
             frame.traversable_id = child_navigable_host.parent_traversable_id;
             frame.frame_id = child_navigable_host.content_frame_id;
@@ -316,7 +326,9 @@ impl WebviewProvider {
 
         // Publish child viewport bounds immediately after any paint update so iframe content
         // receives the correct viewport before the next user input-driven composition pass.
-        let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
+        let viewports = state
+            .compositor
+            .visible_frame_viewports(&self.font_receiver);
         self.publish_visible_child_viewports(viewports);
 
         if let Some(expected) = self.published_child_viewports.get(&source_webview_id)
@@ -340,22 +352,16 @@ impl WebviewProvider {
     }
 
     pub fn on_navigation_committed(&mut self, webview_id: WebviewId) {
-        if let Some(child_navigable_host) = self.child_navigable_hosts_by_webview.get(&webview_id)
-        {
+        if let Some(child_navigable_host) = self.child_navigable_hosts_by_webview.get(&webview_id) {
             let parent_traversable_id = child_navigable_host.parent_traversable_id;
             let content_frame_id = child_navigable_host.content_frame_id;
             if input_debug_enabled() {
                 eprintln!(
                     "[input-debug][webview] navigation_committed child_webview={} parent_webview={} content_frame={}",
-                    webview_id.0,
-                    parent_traversable_id.0,
-                    content_frame_id.0,
+                    webview_id.0, parent_traversable_id.0, content_frame_id.0,
                 );
             }
-            let state = self
-                .webviews
-                .entry(parent_traversable_id)
-                .or_default();
+            let state = self.webviews.entry(parent_traversable_id).or_default();
             state
                 .compositor
                 .note_child_navigation_finalized(content_frame_id);
@@ -394,7 +400,9 @@ impl WebviewProvider {
         let (scene, viewports) = {
             let state = self.webviews.get_mut(&webview_id)?;
             let scene = state.compositor.compose_scene(&self.font_receiver);
-            let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
+            let viewports = state
+                .compositor
+                .visible_frame_viewports(&self.font_receiver);
             (scene, viewports)
         };
         self.publish_visible_child_viewports(viewports);
@@ -429,7 +437,9 @@ impl WebviewProvider {
             let Some(state) = self.webviews.get_mut(&webview_id) else {
                 return Vec::new();
             };
-            state.compositor.visible_frame_viewports(&self.font_receiver)
+            state
+                .compositor
+                .visible_frame_viewports(&self.font_receiver)
         };
         self.publish_visible_child_viewports(viewports.clone());
         viewports
@@ -454,14 +464,21 @@ impl WebviewProvider {
                     return (root_webview_id, event, Vec::new());
                 };
                 let root_frame_id = state.compositor.committed_root_frame_id();
-                let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
+                let viewports = state
+                    .compositor
+                    .visible_frame_viewports(&self.font_receiver);
                 let composed_frame_ids = composition_frame_ids(root_frame_id, &viewports);
                 let target_frame_id = state
                     .focused_frame_id
                     .filter(|frame_id| composed_frame_ids.contains(frame_id))
                     .or(root_frame_id);
                 state.focused_frame_id = target_frame_id;
-                (target_frame_id, root_frame_id, composed_frame_ids, viewports)
+                (
+                    target_frame_id,
+                    root_frame_id,
+                    composed_frame_ids,
+                    viewports,
+                )
             };
             self.publish_visible_child_viewports(viewports);
             let target_webview_id = target_frame_id
@@ -491,23 +508,22 @@ impl WebviewProvider {
                 f64::from(client_y * viewport_scale),
                 &self.font_receiver,
             );
-            let viewports = state.compositor.visible_frame_viewports(&self.font_receiver);
+            let viewports = state
+                .compositor
+                .visible_frame_viewports(&self.font_receiver);
             (root_frame_id, hit, viewports)
         };
         let composed_frame_ids = composition_frame_ids(root_frame_id, &viewports);
 
         let Some(hit) = hit else {
-            if is_pointer_down
-                && let Some(state) = self.webviews.get_mut(&root_webview_id)
-            {
+            if is_pointer_down && let Some(state) = self.webviews.get_mut(&root_webview_id) {
                 state.focused_frame_id = root_frame_id;
             }
             self.publish_visible_child_viewports(viewports);
             if input_debug_enabled() {
                 eprintln!(
                     "[input-debug][webview] root={} client=({client_x:.1},{client_y:.1}) hit=none target={}",
-                    root_webview_id.0,
-                    root_webview_id.0,
+                    root_webview_id.0, root_webview_id.0,
                 );
             }
             return (root_webview_id, event, composed_frame_ids);
@@ -515,9 +531,7 @@ impl WebviewProvider {
 
         let target_webview_id = self.webview_id_for_frame(root_webview_id, hit.frame_id);
         let routed_event = retarget_ui_event_for_hit(event, hit, &viewports, viewport_scale);
-        if is_pointer_down
-            && let Some(state) = self.webviews.get_mut(&root_webview_id)
-        {
+        if is_pointer_down && let Some(state) = self.webviews.get_mut(&root_webview_id) {
             state.focused_frame_id = Some(hit.frame_id);
         }
         self.publish_visible_child_viewports(viewports);
@@ -562,10 +576,8 @@ impl WebviewProvider {
                 offset_x: viewport.offset_x / viewport_scale,
                 offset_y: viewport.offset_y / viewport_scale,
             };
-            let viewport_changed = self
-                .published_child_viewports
-                .get(&child_webview_id)
-                != Some(&published_viewport);
+            let viewport_changed =
+                self.published_child_viewports.get(&child_webview_id) != Some(&published_viewport);
             next_published_child_viewports.insert(child_webview_id, published_viewport.clone());
 
             if input_debug_enabled() {
@@ -604,8 +616,7 @@ impl WebviewProvider {
             // Also refresh the parent traversable. Embed-site clip/transform data is produced
             // by the parent frame paint, so parent composition must not wait for a later
             // root-page scroll/input event to pick up child viewport/layout changes.
-            if let Some(child_host) = self.child_navigable_hosts_by_webview.get(&child_webview_id)
-            {
+            if let Some(child_host) = self.child_navigable_hosts_by_webview.get(&child_webview_id) {
                 self.note_rendering_opportunity(
                     child_host.parent_traversable_id,
                     "visible_child_viewport_parent",
@@ -663,16 +674,17 @@ fn retarget_ui_event_for_hit(
     viewports: &[VisibleFrameViewport],
     viewport_scale: f32,
 ) -> UiEvent {
-    let Some(viewport) = viewports.iter().find(|viewport| viewport.frame_id == hit.frame_id) else {
+    let Some(viewport) = viewports
+        .iter()
+        .find(|viewport| viewport.frame_id == hit.frame_id)
+    else {
         return event;
     };
 
     let routed_client_x = (viewport.offset_x + hit.local_x) / viewport_scale;
     let routed_client_y = (viewport.offset_y + hit.local_y) / viewport_scale;
     match &mut event {
-        UiEvent::PointerMove(event)
-        | UiEvent::PointerUp(event)
-        | UiEvent::PointerDown(event) => {
+        UiEvent::PointerMove(event) | UiEvent::PointerUp(event) | UiEvent::PointerDown(event) => {
             event.coords.client_x = routed_client_x;
             event.coords.client_y = routed_client_y;
             event.coords.page_x = routed_client_x;
@@ -695,9 +707,9 @@ fn retarget_ui_event_for_hit(
 
 fn ui_event_client_position(event: &UiEvent) -> Option<(f32, f32)> {
     match event {
-        UiEvent::PointerMove(event)
-        | UiEvent::PointerUp(event)
-        | UiEvent::PointerDown(event) => Some((event.coords.client_x, event.coords.client_y)),
+        UiEvent::PointerMove(event) | UiEvent::PointerUp(event) | UiEvent::PointerDown(event) => {
+            Some((event.coords.client_x, event.coords.client_y))
+        }
         UiEvent::Wheel(event) => Some((event.coords.client_x, event.coords.client_y)),
         UiEvent::KeyUp(_)
         | UiEvent::KeyDown(_)

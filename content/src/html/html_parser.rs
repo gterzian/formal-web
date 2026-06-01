@@ -331,4 +331,3 @@ fn parser_script_for_node(document: &BaseDocument, node_id: usize) -> Option<Pen
 
     Some(PendingParserScript::Inline { source })
 }
-

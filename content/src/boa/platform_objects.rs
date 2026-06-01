@@ -5,7 +5,7 @@ use boa_engine::{Context, JsError, JsNativeError, JsResult, class::Class, object
 use html5ever::{local_name, ns};
 
 use crate::dom::{Element, Node};
-use crate::html::{GlobalScope, HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Window};
+use crate::html::{GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Window};
 
 pub(crate) fn with_global_scope<R>(
     context: &Context,

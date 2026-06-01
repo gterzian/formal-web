@@ -86,6 +86,17 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - **`spec_html`** — Return inner HTML of the first matching element. Best for self-contained blocks: tables, definition lists (`dl`), example blocks.
 - **`/spec-loaded` command** — Lists all spec URLs currently cached in memory.
 
+# Naming Conventions
+
+- Use descriptive variable names throughout. Single-letter names (`s`, `st`, `wid`, `el`, `p`,
+  `cs`, `at`, `ch`) are prohibited in new code and should be expanded when touching existing
+  code. A variable called `state` is always clearer than `s`.
+- Exception: closure parameters in iterator chains (`.map(|x| ...)`) where the type is obvious
+  from context. But even there, prefer short but meaningful names like `tab` over `t`.
+- Do not bulk-rename existing code with scripts — it creates merge conflicts, breaks history,
+  and introduces subtle bugs when renames are inconsistent. Rename incrementally when
+  modifying nearby code.
+
 # Documentation Style
 
 - Describe current architecture and behavior; keep task history out of repository docs.
@@ -113,9 +124,12 @@ At the end of each task, run the following steps **in order**:
    were started during the session. Leftover processes can block ports and
    interfere with subsequent tasks.
 
-2. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+2. **Run `cargo fmt`** — Format the entire project before committing. Run
+   from the project root: `cargo fmt`. This covers all crates in the workspace.
 
-3. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
+3. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+
+4. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
    - **Default WPT run** — Runs the Web Platform Tests suite to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
 4. DO NOT collect pi sessions; those are collected automatically on shutdown.

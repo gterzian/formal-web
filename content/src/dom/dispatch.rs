@@ -4,7 +4,7 @@ use blitz_dom::BaseDocument;
 use boa_engine::{JsResult, JsValue, object::JsObject};
 
 use crate::boa::{with_event_mut, with_event_target_mut, with_event_target_ref};
-use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Window};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Window};
 use crate::webidl::{EcmascriptHost, call_user_objects_operation};
 
 use super::event::{EventListener, NONE};

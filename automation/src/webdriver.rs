@@ -219,14 +219,19 @@ fn dispatch_session_request(
         ("DELETE", []) => {
             clear_session(state)?;
             if state.exit_on_session_delete {
-                state.runtime.request_exit().map_err(WebDriverError::unsupported)?;
+                state
+                    .runtime
+                    .request_exit()
+                    .map_err(WebDriverError::unsupported)?;
             }
             Ok(Value::Null)
         }
-        ("GET", ["formal-web", "frame-viewports"]) => Ok(json!(state
-            .runtime
-            .visible_frame_viewports(AUTOMATION_TIMEOUT)
-            .map_err(WebDriverError::timeout)?)),
+        ("GET", ["formal-web", "frame-viewports"]) => Ok(json!(
+            state
+                .runtime
+                .visible_frame_viewports(AUTOMATION_TIMEOUT)
+                .map_err(WebDriverError::timeout)?
+        )),
         ("GET", ["screenshot"]) => {
             let png = state
                 .runtime

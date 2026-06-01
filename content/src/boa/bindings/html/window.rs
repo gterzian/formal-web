@@ -129,7 +129,9 @@ fn get_onload(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
 fn set_onload(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let window_object = current_window_object(this, context);
     let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
-    let previous = with_window_mut(&window_object, |window| window.replace_onload(callback.clone()))?;
+    let previous = with_window_mut(&window_object, |window| {
+        window.replace_onload(callback.clone())
+    })?;
 
     if let Some(previous) = previous {
         let receiver = JsValue::from(window_object.clone());
@@ -286,10 +288,7 @@ fn downcast_window(object: &JsObject) -> JsResult<boa_gc::GcRef<'_, Window>> {
     })
 }
 
-fn with_window_mut<R>(
-    object: &JsObject,
-    f: impl FnOnce(&mut Window) -> R,
-) -> JsResult<R> {
+fn with_window_mut<R>(object: &JsObject, f: impl FnOnce(&mut Window) -> R) -> JsResult<R> {
     let Some(mut window) = object.downcast_mut::<Window>() else {
         return Err(JsNativeError::typ()
             .with_message("receiver is not a Window")

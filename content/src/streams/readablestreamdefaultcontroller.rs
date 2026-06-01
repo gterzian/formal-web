@@ -11,27 +11,23 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use crate::streams::SizeAlgorithm;
 use crate::webidl::{mark_promise_as_handled, promise_from_completion, resolved_promise};
 
-use super::{
-    ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState, SourceMethod,
-    TransformStream, range_error_value,
-};
 use super::readablestream::{
     ByteTeeState, ReadableStreamFromIterableState, TeeState,
-    readable_byte_stream_tee_cancel1_algorithm,
-    readable_byte_stream_tee_cancel2_algorithm,
-    readable_byte_stream_tee_pull1_algorithm,
-    readable_byte_stream_tee_pull2_algorithm,
-    readable_stream_add_read_request, readable_stream_close, readable_stream_error,
-    readable_stream_default_tee_cancel1_algorithm,
-    readable_stream_default_tee_cancel2_algorithm,
-    readable_stream_default_tee_pull_algorithm,
-    readable_stream_from_iterable_cancel_algorithm,
-    readable_stream_from_iterable_pull_algorithm,
+    readable_byte_stream_tee_cancel1_algorithm, readable_byte_stream_tee_cancel2_algorithm,
+    readable_byte_stream_tee_pull1_algorithm, readable_byte_stream_tee_pull2_algorithm,
+    readable_stream_add_read_request, readable_stream_close,
+    readable_stream_default_tee_cancel1_algorithm, readable_stream_default_tee_cancel2_algorithm,
+    readable_stream_default_tee_pull_algorithm, readable_stream_error,
+    readable_stream_from_iterable_cancel_algorithm, readable_stream_from_iterable_pull_algorithm,
     readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
 };
 use super::transformstream::{
     transform_stream_default_source_cancel_algorithm,
     transform_stream_default_source_pull_algorithm,
+};
+use super::{
+    ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState, SourceMethod,
+    TransformStream, range_error_value,
 };
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
@@ -118,19 +114,11 @@ impl CancelAlgorithm {
                 context,
             ),
             Self::ReadableStreamDefaultTeeBranch1(tee_state) => promise_from_completion(
-                readable_stream_default_tee_cancel1_algorithm(
-                    tee_state.clone(),
-                    reason,
-                    context,
-                ),
+                readable_stream_default_tee_cancel1_algorithm(tee_state.clone(), reason, context),
                 context,
             ),
             Self::ReadableStreamDefaultTeeBranch2(tee_state) => promise_from_completion(
-                readable_stream_default_tee_cancel2_algorithm(
-                    tee_state.clone(),
-                    reason,
-                    context,
-                ),
+                readable_stream_default_tee_cancel2_algorithm(tee_state.clone(), reason, context),
                 context,
             ),
             Self::ReadableByteStreamTeeBranch1(tee_state) => promise_from_completion(
@@ -162,7 +150,11 @@ pub(crate) enum StartAlgorithm {
 
 impl StartAlgorithm {
     /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller>
-    pub(crate) fn call(&self, controller_object: &JsObject, context: &mut Context) -> JsResult<JsValue> {
+    pub(crate) fn call(
+        &self,
+        controller_object: &JsObject,
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
         match self {
             Self::ReturnUndefined => Ok(JsValue::undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
@@ -300,7 +292,11 @@ impl ReadableStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-private-cancel>
-    pub(crate) fn cancel_steps(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn cancel_steps(
+        &self,
+        reason: JsValue,
+        context: &mut Context,
+    ) -> JsResult<JsObject> {
         // Step 1: "Perform ! ResetQueue(this)."
         self.reset_queue();
 
@@ -320,7 +316,11 @@ impl ReadableStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-private-pull>
-    pub(crate) fn pull_steps(&self, read_request: ReadRequest, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn pull_steps(
+        &self,
+        read_request: ReadRequest,
+        context: &mut Context,
+    ) -> JsResult<()> {
         // Step 1: "Let stream be this.[[stream]]."
         let stream = self.stream_slot()?;
 
@@ -330,7 +330,9 @@ impl ReadableStreamDefaultController {
                 let mut queue = self.queue.borrow_mut();
 
                 // Step 2.1: "Let chunk be ! DequeueValue(this)."
-                let entry = queue.pop_front().expect("queue was checked to be non-empty");
+                let entry = queue
+                    .pop_front()
+                    .expect("queue was checked to be non-empty");
                 {
                     let mut new_size = self.queue_total_size.get() - entry.size;
                     if new_size <= 0.0 {
@@ -497,11 +499,15 @@ impl ReadableStreamDefaultController {
             readable_stream_fulfill_read_request(stream, chunk, false, context)?;
         } else {
             // Step 4.1: "Let result be the result of performing controller.[[strategySizeAlgorithm]], passing in chunk, and interpreting the result as a completion record."
-            let size_algorithm = self.strategy_size_algorithm.borrow().clone().ok_or_else(|| {
-                JsNativeError::typ().with_message(
-                    "ReadableStreamDefaultController is missing its size algorithm",
-                )
-            })?;
+            let size_algorithm =
+                self.strategy_size_algorithm
+                    .borrow()
+                    .clone()
+                    .ok_or_else(|| {
+                        JsNativeError::typ().with_message(
+                            "ReadableStreamDefaultController is missing its size algorithm",
+                        )
+                    })?;
             let chunk_size = match size_algorithm.size(&chunk, context) {
                 Ok(chunk_size) => chunk_size,
                 Err(error) => {
@@ -574,7 +580,9 @@ impl ReadableStreamDefaultController {
         }
 
         // Step 4: "Return controller.[[strategyHWM]] - controller.[[queueTotalSize]]."
-        Ok(Some(self.strategy_high_water_mark.get() - self.queue_total_size.get()))
+        Ok(Some(
+            self.strategy_high_water_mark.get() - self.queue_total_size.get(),
+        ))
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-has-backpressure>
@@ -734,7 +742,8 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
 ) -> JsResult<()> {
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
-    let controller_object = ReadableStreamDefaultController::from_data(controller.clone(), context)?;
+    let controller_object =
+        ReadableStreamDefaultController::from_data(controller.clone(), context)?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
@@ -746,17 +755,23 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     let mut cancel_algorithm = CancelAlgorithm::ReturnUndefined;
 
     // Step 5: "If underlyingSourceDict[\"start\"] exists, then set startAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"start\"] with argument list « controller » and callback this value underlyingSource."
-    if let Some(start_method) = extract_source_method(underlying_source_object.as_ref(), "start", context)? {
+    if let Some(start_method) =
+        extract_source_method(underlying_source_object.as_ref(), "start", context)?
+    {
         start_algorithm = StartAlgorithm::JavaScript(start_method);
     }
 
     // Step 6: "If underlyingSourceDict[\"pull\"] exists, then set pullAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"pull\"] with argument list « controller » and callback this value underlyingSource."
-    if let Some(pull_method) = extract_source_method(underlying_source_object.as_ref(), "pull", context)? {
+    if let Some(pull_method) =
+        extract_source_method(underlying_source_object.as_ref(), "pull", context)?
+    {
         pull_algorithm = PullAlgorithm::JavaScript(pull_method);
     }
 
     // Step 7: "If underlyingSourceDict[\"cancel\"] exists, then set cancelAlgorithm to an algorithm which takes an argument reason and returns the result of invoking underlyingSourceDict[\"cancel\"] with argument list « reason » and callback this value underlyingSource."
-    if let Some(cancel_method) = extract_source_method(underlying_source_object.as_ref(), "cancel", context)? {
+    if let Some(cancel_method) =
+        extract_source_method(underlying_source_object.as_ref(), "cancel", context)?
+    {
         cancel_algorithm = CancelAlgorithm::JavaScript(cancel_method);
     }
 
@@ -789,9 +804,12 @@ pub(crate) fn extract_source_method(
         return Ok(None);
     }
 
-    let callback = value.as_object().filter(|object| object.is_callable()).ok_or_else(|| {
-        JsNativeError::typ().with_message(format!("underlying source {name} must be callable"))
-    })?;
+    let callback = value
+        .as_object()
+        .filter(|object| object.is_callable())
+        .ok_or_else(|| {
+            JsNativeError::typ().with_message(format!("underlying source {name} must be callable"))
+        })?;
 
     Ok(Some(SourceMethod::new(
         source_object.clone(),

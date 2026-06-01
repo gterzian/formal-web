@@ -5,8 +5,8 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    object::builtins::JsArray,
     object::JsObject,
+    object::builtins::JsArray,
     property::Attribute,
 };
 

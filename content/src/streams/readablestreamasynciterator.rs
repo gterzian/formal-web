@@ -69,7 +69,10 @@ impl AsyncValueIterable for ReadableStream {
         let prevent_cancel = iterator_prevent_cancel(args.get_or_undefined(0), context)?;
 
         // Step 4: "Set iterator's prevent cancel to preventCancel."
-        Ok(ReadableStreamAsyncIteratorState::new(reader, prevent_cancel))
+        Ok(ReadableStreamAsyncIteratorState::new(
+            reader,
+            prevent_cancel,
+        ))
     }
 
     /// <https://streams.spec.whatwg.org/#rs-asynciterator-prototype-next>
@@ -85,11 +88,7 @@ impl AsyncValueIterable for ReadableStream {
         reader.read(context)
     }
 
-    fn finish_async_iterator(
-        &self,
-        state: &Self::State,
-        context: &mut Context,
-    ) -> JsResult<()> {
+    fn finish_async_iterator(&self, state: &Self::State, context: &mut Context) -> JsResult<()> {
         state.finish(context)
     }
 
@@ -113,9 +112,9 @@ impl AsyncValueIterable for ReadableStream {
             return resolved_promise(JsValue::undefined(), context);
         }
 
-        let cancel_promise = reader.cancel(value, context).or_else(|error| {
-            rejected_promise(error.into_opaque(context)?, context)
-        })?;
+        let cancel_promise = reader
+            .cancel(value, context)
+            .or_else(|error| rejected_promise(error.into_opaque(context)?, context))?;
 
         state.finish(context)?;
         Ok(cancel_promise)

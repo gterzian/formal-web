@@ -58,9 +58,9 @@ fn with_html_iframe_element_mut<R>(
     let object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
     })?;
-    let mut html_iframe_element = object.downcast_mut::<HTMLIFrameElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("receiver is not an HTMLIFrameElement")
-    })?;
+    let mut html_iframe_element = object
+        .downcast_mut::<HTMLIFrameElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLIFrameElement"))?;
     Ok(f(&mut html_iframe_element))
 }
 
@@ -125,9 +125,7 @@ fn register_html_iframe_element_methods(class: &mut ClassBuilder<'_>) -> JsResul
 }
 
 fn get_src(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| {
-        JsValue::from(JsString::from(iframe.src()))
-    })
+    with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.src())))
 }
 
 fn get_onload(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
@@ -144,7 +142,8 @@ fn set_onload(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsV
         JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
     })?;
     let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
-    let previous = with_html_iframe_element_mut(this, |iframe| iframe.replace_onload(callback.clone()))?;
+    let previous =
+        with_html_iframe_element_mut(this, |iframe| iframe.replace_onload(callback.clone()))?;
 
     if let Some(previous) = previous {
         with_event_target_mut(this, |target| {
@@ -183,7 +182,8 @@ fn set_onerror(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<Js
         JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
     })?;
     let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
-    let previous = with_html_iframe_element_mut(this, |iframe| iframe.replace_onerror(callback.clone()))?;
+    let previous =
+        with_html_iframe_element_mut(this, |iframe| iframe.replace_onerror(callback.clone()))?;
 
     if let Some(previous) = previous {
         with_event_target_mut(this, |target| {
@@ -233,9 +233,7 @@ fn set_srcdoc(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
 }
 
 fn get_name(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| {
-        JsValue::from(JsString::from(iframe.name()))
-    })
+    with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.name())))
 }
 
 fn set_name(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -248,9 +246,7 @@ fn set_name(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
 }
 
 fn get_width(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| {
-        JsValue::from(JsString::from(iframe.width()))
-    })
+    with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.width())))
 }
 
 fn set_width(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

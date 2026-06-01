@@ -9,12 +9,12 @@ use boa_engine::{
 };
 use boa_runtime::extensions::{RuntimeExtension, StructuredCloneExtension};
 
-
 use crate::dom::{
-    AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node, UIEvent,
+    AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
+    UIEvent,
 };
 use crate::html::{
-    GlobalScope, HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Location, Window,
+    GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Location, Window,
 };
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController, ReadableStream,
@@ -51,9 +51,7 @@ impl HostHooks for WindowHostHooks {
 /// Build a boa `Context` pre-configured with a Window global object and all
 /// registered Web API classes. Returns the context so the caller can capture
 /// a pointer to the GlobalScope inside the Window for direct access.
-pub(crate) fn build_boa_context(
-    document: Rc<RefCell<BaseDocument>>,
-) -> Result<Context, String> {
+pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
     let mut context = ContextBuilder::new()
         .host_hooks(Rc::new(WindowHostHooks::new(document)))
         .job_executor(Rc::new(SimpleJobExecutor::new()))

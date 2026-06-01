@@ -1,4 +1,7 @@
-use std::{cell::{Cell, RefCell}, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
@@ -13,10 +16,11 @@ use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algori
 use crate::webidl::resolved_promise;
 
 use super::{
-    AbortAlgorithm, CloseAlgorithm, PendingAbortRequest, WritableStartAlgorithm, WriteAlgorithm,
-    WritableStreamController, WritableStreamState, WritableStreamWriter, WriteRequest,
-    acquire_writable_stream_default_writer, create_writable_stream_default_controller,
-    rejected_type_error_promise, set_up_writable_stream_default_controller,
+    AbortAlgorithm, CloseAlgorithm, PendingAbortRequest, WritableStartAlgorithm,
+    WritableStreamController, WritableStreamState, WritableStreamWriter, WriteAlgorithm,
+    WriteRequest, acquire_writable_stream_default_writer,
+    create_writable_stream_default_controller, rejected_type_error_promise,
+    set_up_writable_stream_default_controller,
     set_up_writable_stream_default_controller_from_underlying_sink,
     writable_stream_default_controller_close,
 };
@@ -227,8 +231,15 @@ impl WritableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-abort>
-    pub(crate) fn abort_stream(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
-        if matches!(self.state(), WritableStreamState::Closed | WritableStreamState::Errored) {
+    pub(crate) fn abort_stream(
+        &self,
+        reason: JsValue,
+        context: &mut Context,
+    ) -> JsResult<JsObject> {
+        if matches!(
+            self.state(),
+            WritableStreamState::Closed | WritableStreamState::Errored
+        ) {
             return resolved_promise(JsValue::undefined(), context);
         }
 
@@ -237,7 +248,10 @@ impl WritableStream {
         })?;
         controller.signal_abort(reason.clone(), context)?;
 
-        if matches!(self.state(), WritableStreamState::Closed | WritableStreamState::Errored) {
+        if matches!(
+            self.state(),
+            WritableStreamState::Closed | WritableStreamState::Errored
+        ) {
             return resolved_promise(JsValue::undefined(), context);
         }
 
@@ -312,7 +326,11 @@ impl WritableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-deal-with-rejection>
-    pub(crate) fn deal_with_rejection(&self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn deal_with_rejection(
+        &self,
+        error: JsValue,
+        context: &mut Context,
+    ) -> JsResult<()> {
         if self.state() == WritableStreamState::Writable {
             self.start_erroring(error, context)?;
             return Ok(());
@@ -372,15 +390,19 @@ impl WritableStream {
             (abort_request, self.clone()),
         )
         .to_js_function(context.realm());
-        let _ =
-            JsPromise::from_object(promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+        let _ = JsPromise::from_object(promise)?.then(
+            Some(on_fulfilled),
+            Some(on_rejected),
+            context,
+        )?;
         Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-close>
     pub(crate) fn finish_in_flight_close(&self, context: &mut Context) -> JsResult<()> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its in-flight close request")
+            JsNativeError::typ()
+                .with_message("WritableStream is missing its in-flight close request")
         })?;
         close_request.resolve(context)?;
 
@@ -414,7 +436,8 @@ impl WritableStream {
         context: &mut Context,
     ) -> JsResult<()> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its in-flight close request")
+            JsNativeError::typ()
+                .with_message("WritableStream is missing its in-flight close request")
         })?;
         close_request.reject(error.clone(), context)?;
 
@@ -428,7 +451,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-write>
     pub(crate) fn finish_in_flight_write(&self, context: &mut Context) -> JsResult<()> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its in-flight write request")
+            JsNativeError::typ()
+                .with_message("WritableStream is missing its in-flight write request")
         })?;
         write_request.resolve(context)
     }
@@ -440,7 +464,8 @@ impl WritableStream {
         context: &mut Context,
     ) -> JsResult<()> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its in-flight write request")
+            JsNativeError::typ()
+                .with_message("WritableStream is missing its in-flight write request")
         })?;
         write_request.reject(error.clone(), context)?;
         self.deal_with_rejection(error, context)
@@ -448,7 +473,8 @@ impl WritableStream {
 
     /// <https://streams.spec.whatwg.org/#writable-stream-has-operation-marked-in-flight>
     pub(crate) fn has_operation_marked_in_flight(&self) -> bool {
-        self.in_flight_write_request_slot().is_some() || self.in_flight_close_request_slot().is_some()
+        self.in_flight_write_request_slot().is_some()
+            || self.in_flight_close_request_slot().is_some()
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-mark-close-request-in-flight>

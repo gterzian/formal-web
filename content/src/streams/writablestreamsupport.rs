@@ -53,11 +53,7 @@ pub(crate) struct PendingAbortRequest {
 }
 
 impl PendingAbortRequest {
-    pub(crate) fn new(
-        reason: JsValue,
-        was_already_erroring: bool,
-        context: &mut Context,
-    ) -> Self {
+    pub(crate) fn new(reason: JsValue, was_already_erroring: bool, context: &mut Context) -> Self {
         let (promise, resolvers) = JsPromise::new_pending(context);
         Self {
             promise: promise.into(),

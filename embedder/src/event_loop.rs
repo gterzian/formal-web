@@ -1,26 +1,23 @@
-#[path = "event_loop/headless.rs"]
+#[path = "headless.rs"]
 mod headless;
-#[path = "event_loop/winit.rs"]
-mod winit_integration;
-#[path = "event_loop/windowed/mod.rs"]
+#[path = "windowed.rs"]
 mod windowed;
+#[path = "winit_integration.rs"]
+mod winit_integration;
 
 use self::headless::HeadlessEmbedderApp;
-use self::windowed::HeadedEmbedderApp;
+use self::windowed::WindowedApp;
+use self::winit_integration::UserEventDispatcher;
 pub use self::winit_integration::{
     EventLoopOptions, clear_event_loop_options, set_event_loop_options,
 };
-use self::winit_integration::UserEventDispatcher;
-use automation::{
-    AutomationCommand, AutomationSnapshot, AutomationVisibleFrameViewport,
-};
 use anyrender::{PaintScene, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
+use automation::{AutomationCommand, AutomationVisibleFrameViewport};
 use blitz_traits::shell::ColorScheme;
-use ipc_messages::content::{NavigableId, WebviewId};
+use ipc_messages::content::WebviewId;
 use kurbo::{Affine, Rect};
 use peniko::{Color, Fill};
-use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Duration;
 use verification::TraceSender;
@@ -53,25 +50,34 @@ impl EventLoopEmbedder {
 }
 
 impl Embedder for EventLoopEmbedder {
-    fn navigation_requested(&self, webview_id: WebviewId, destination_url: String) -> Result<(), String> {
-        self.dispatcher.send(FormalWebUserEvent::NavigationRequested {
-            webview_id,
-            destination_url,
-        })
+    fn navigation_requested(
+        &self,
+        webview_id: WebviewId,
+        destination_url: String,
+    ) -> Result<(), String> {
+        self.dispatcher
+            .send(FormalWebUserEvent::NavigationRequested {
+                webview_id,
+                destination_url,
+            })
     }
 
     fn navigation_completed(&self, completed: webview::NavigationCompleted) -> Result<(), String> {
         let status = match completed.status {
-            webview::NavigationCompletion::Committed { url } => NavigationCompletion::Committed { url },
+            webview::NavigationCompletion::Committed { url } => {
+                NavigationCompletion::Committed { url }
+            }
             webview::NavigationCompletion::Aborted { message } => {
                 NavigationCompletion::Aborted { message }
             }
         };
         self.dispatcher
-            .send(FormalWebUserEvent::NavigationCompleted(NavigationCompleted {
-                webview_id: completed.webview_id,
-                status,
-            }))
+            .send(FormalWebUserEvent::NavigationCompleted(
+                NavigationCompleted {
+                    webview_id: completed.webview_id,
+                    status,
+                },
+            ))
     }
 
     fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String> {
@@ -80,7 +86,8 @@ impl Embedder for EventLoopEmbedder {
     }
 
     fn webview_provider_sync(&self) -> Result<(), String> {
-        self.dispatcher.send(FormalWebUserEvent::WebviewProviderSync)
+        self.dispatcher
+            .send(FormalWebUserEvent::WebviewProviderSync)
     }
 
     fn new_frame_rendered(&self) -> Result<(), String> {
@@ -117,11 +124,15 @@ impl Embedder for EventLoopEmbedder {
 
 pub enum FormalWebUserEvent {
     RequestRedraw(WebviewId),
-    NavigationRequested { webview_id: WebviewId, destination_url: String },
+    NavigationRequested {
+        webview_id: WebviewId,
+        destination_url: String,
+    },
     NavigationCompleted(NavigationCompleted),
     NewWebview(WebviewId, String),
     WebviewProviderSync,
     NewFrameRendered,
+    CreateWindow,
     Automation(AutomationCommand),
     ClipboardRead {
         reply: mpsc::Sender<Result<String, String>>,
@@ -131,77 +142,6 @@ pub enum FormalWebUserEvent {
         reply: mpsc::Sender<Result<(), String>>,
     },
     Exit,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingNavigation {
-    url: String,
-}
-
-#[derive(Default)]
-struct BrowserState {
-    history: Vec<String>,
-    history_index: Option<usize>,
-    pending_navigation: Option<PendingNavigation>,
-    current_navigable_id: Option<NavigableId>,
-}
-
-impl BrowserState {
-    fn displayed_url(&self) -> String {
-        self.pending_navigation
-            .as_ref()
-            .map(|pending| pending.url.clone())
-            .or_else(|| self.current_url().map(ToOwned::to_owned))
-            .unwrap_or_default()
-    }
-
-    fn current_url(&self) -> Option<&str> {
-        self.history_index
-            .and_then(|index| self.history.get(index).map(String::as_str))
-    }
-
-    fn begin_navigation(&mut self, pending_navigation: PendingNavigation) {
-        self.pending_navigation = Some(pending_navigation);
-    }
-
-    fn cancel_pending_navigation(&mut self) {
-        self.pending_navigation = None;
-    }
-
-    fn commit_navigation(&mut self, url: String) {
-        self.pending_navigation.take();
-
-        if let Some(index) = self.history_index {
-            if self.history.get(index).is_some_and(|current| current == &url) {
-                self.history[index] = url;
-            } else {
-                self.history.truncate(index + 1);
-                self.history.push(url);
-                self.history_index = Some(self.history.len() - 1);
-            }
-        } else {
-            self.history.push(url);
-            self.history_index = Some(0);
-        }
-    }
-
-    fn automation_snapshot(
-        &self,
-        current_webview_id: Option<WebviewId>,
-        has_top_level_traversable: bool,
-    ) -> AutomationSnapshot {
-        AutomationSnapshot {
-            webview_id: current_webview_id,
-            current_url: self.current_url().map(ToOwned::to_owned),
-            displayed_url: self.displayed_url(),
-            navigable_id: self.current_navigable_id,
-            has_top_level_traversable,
-        }
-    }
-
-    fn set_current_navigable_id(&mut self, navigable_id: Option<NavigableId>) {
-        self.current_navigable_id = navigable_id;
-    }
 }
 
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =
@@ -217,16 +157,16 @@ pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
 }
 
 fn read_clipboard_text() -> Result<String, String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("failed to access clipboard: {error}"))?;
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("failed to access clipboard: {error}"))?;
     clipboard
         .get_text()
         .map_err(|error| format!("failed to read clipboard text: {error}"))
 }
 
 fn write_clipboard_text(text: String) -> Result<(), String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("failed to access clipboard: {error}"))?;
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("failed to access clipboard: {error}"))?;
     clipboard
         .set_text(text)
         .map_err(|error| format!("failed to write clipboard text: {error}"))
@@ -308,9 +248,9 @@ where
 }
 
 pub fn run_headed_event_loop(trace_sender: Option<TraceSender>) -> Result<(), String> {
-    run_embedder_event_loop(trace_sender, |provider| HeadedEmbedderApp {
+    run_embedder_event_loop(trace_sender, |provider| WindowedApp {
         provider: Some(provider),
-        ..HeadedEmbedderApp::default()
+        ..WindowedApp::default()
     })
 }
 
@@ -413,11 +353,17 @@ fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> 
 fn startup_artifact_url() -> Result<String, String> {
     let current_dir = std::env::current_dir()
         .map_err(|error| format!("failed to determine current directory: {error}"))?;
-    let artifact_path: PathBuf = current_dir.join(STARTUP_ARTIFACT_RELATIVE_PATH);
-    let artifact_path = artifact_path
-        .canonicalize()
-        .map_err(|error| format!("failed to resolve startup artifact path: {error}"))?;
-    Ok(format!("file://{}", artifact_path.display()))
+    // Try CWD-relative path first, then parent directory (for running from embedder/).
+    for base in [current_dir.clone(), current_dir.join("..")] {
+        let artifact_path = base.join(STARTUP_ARTIFACT_RELATIVE_PATH);
+        if let Ok(canonical) = artifact_path.canonicalize() {
+            return Ok(format!("file://{}", canonical.display()));
+        }
+    }
+    Err(format!(
+        "startup artifact not found at {} or ../{}",
+        STARTUP_ARTIFACT_RELATIVE_PATH, STARTUP_ARTIFACT_RELATIVE_PATH
+    ))
 }
 
 fn normalize_browser_destination(input: &str) -> Option<String> {
@@ -439,4 +385,3 @@ pub(crate) fn with_event_loop_proxy<R>(
         .expect("event loop proxy mutex poisoned");
     f(&guard)
 }
-

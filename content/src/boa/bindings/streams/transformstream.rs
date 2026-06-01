@@ -7,10 +7,8 @@ use boa_engine::{
 };
 
 use crate::streams::{
-    TransformStream, TransformStreamDefaultController,
-    construct_transform_stream,
-    with_transform_stream_ref,
-    with_transform_stream_default_controller_ref,
+    TransformStream, TransformStreamDefaultController, construct_transform_stream,
+    with_transform_stream_default_controller_ref, with_transform_stream_ref,
 };
 
 impl Class for TransformStream {
@@ -85,7 +83,9 @@ fn get_readable(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> J
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("TransformStream.readable called on non-object")
     })?;
-    with_transform_stream_ref(&object, |stream| Ok(JsValue::from(stream.readable_object()?)))?
+    with_transform_stream_ref(&object, |stream| {
+        Ok(JsValue::from(stream.readable_object()?))
+    })?
 }
 
 /// <https://streams.spec.whatwg.org/#ts-writable>
@@ -93,7 +93,9 @@ fn get_writable(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> J
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("TransformStream.writable called on non-object")
     })?;
-    with_transform_stream_ref(&object, |stream| Ok(JsValue::from(stream.writable_object()?)))?
+    with_transform_stream_ref(&object, |stream| {
+        Ok(JsValue::from(stream.writable_object()?))
+    })?
 }
 
 /// <https://streams.spec.whatwg.org/#ts-default-controller-desired-size>
@@ -128,8 +130,7 @@ fn controller_enqueue(
     let controller = object
         .downcast_ref::<TransformStreamDefaultController>()
         .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("object is not a TransformStreamDefaultController")
+            JsNativeError::typ().with_message("object is not a TransformStreamDefaultController")
         })?
         .clone();
     controller.enqueue(chunk, context)?;
@@ -137,11 +138,7 @@ fn controller_enqueue(
 }
 
 /// <https://streams.spec.whatwg.org/#ts-default-controller-error>
-fn controller_error(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn controller_error(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("TransformStreamDefaultController.error called on non-object")
@@ -150,8 +147,7 @@ fn controller_error(
     let controller = object
         .downcast_ref::<TransformStreamDefaultController>()
         .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("object is not a TransformStreamDefaultController")
+            JsNativeError::typ().with_message("object is not a TransformStreamDefaultController")
         })?
         .clone();
     controller.error(reason, context)?;
@@ -171,8 +167,7 @@ fn controller_terminate(
     let controller = object
         .downcast_ref::<TransformStreamDefaultController>()
         .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("object is not a TransformStreamDefaultController")
+            JsNativeError::typ().with_message("object is not a TransformStreamDefaultController")
         })?
         .clone();
     controller.terminate(context)?;

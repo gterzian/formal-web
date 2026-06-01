@@ -10,10 +10,8 @@ use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise}
 
 use super::{
     WritableStream, WritableStreamState, WritableStreamWriter, rejected_type_error_promise,
-    type_error_value, with_writable_stream_ref,
-    writable_stream_default_controller_get_chunk_size,
-    writable_stream_default_controller_get_desired_size,
-    writable_stream_default_controller_write,
+    type_error_value, with_writable_stream_ref, writable_stream_default_controller_get_chunk_size,
+    writable_stream_default_controller_get_desired_size, writable_stream_default_controller_write,
 };
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
@@ -340,7 +338,9 @@ impl WritableStreamDefaultWriter {
         }
 
         match stream.state() {
-            WritableStreamState::Errored => return rejected_promise(stream.stored_error(), context),
+            WritableStreamState::Errored => {
+                return rejected_promise(stream.stored_error(), context);
+            }
             WritableStreamState::Closed => {
                 return rejected_type_error_promise(
                     "Cannot write to a WritableStream that is closing or closed",
@@ -405,7 +405,9 @@ pub(crate) fn with_writable_stream_default_writer_ref<R>(
 ) -> JsResult<R> {
     let writer = object
         .downcast_ref::<WritableStreamDefaultWriter>()
-        .ok_or_else(|| JsNativeError::typ().with_message("object is not a WritableStreamDefaultWriter"))?;
+        .ok_or_else(|| {
+            JsNativeError::typ().with_message("object is not a WritableStreamDefaultWriter")
+        })?;
     Ok(f(&writer))
 }
 

@@ -38,8 +38,16 @@ fn debug_blitz_node_label(document: &dyn BlitzDocument, node_id: usize) -> Optio
 
     let element = node.element_data()?;
     let tag_name = element.name.local.as_ref();
-    let id = element.id.as_ref().map(|id| id.as_ref()).filter(|id| !id.is_empty());
-    let prefix = if node.is_anonymous() { "anonymous:" } else { "" };
+    let id = element
+        .id
+        .as_ref()
+        .map(|id| id.as_ref())
+        .filter(|id| !id.is_empty());
+    let prefix = if node.is_anonymous() {
+        "anonymous:"
+    } else {
+        ""
+    };
     Some(match id {
         Some(id) => format!("{prefix}{tag_name}#{id}"),
         None => format!("{prefix}{tag_name}"),
@@ -65,8 +73,7 @@ fn debug_scroll_state(document: &BaseDocument) -> String {
 
     format!(
         "viewport=({:.1},{:.1}) html={html_scroll:?} body={body_scroll:?}",
-        viewport.x,
-        viewport.y,
+        viewport.x, viewport.y,
     )
 }
 
@@ -81,9 +88,7 @@ fn localize_ui_event_for_document(
     let scroll_y = viewport_scroll.y as f32;
 
     match event {
-        UiEvent::PointerMove(event)
-        | UiEvent::PointerUp(event)
-        | UiEvent::PointerDown(event) => {
+        UiEvent::PointerMove(event) | UiEvent::PointerUp(event) | UiEvent::PointerDown(event) => {
             if input_debug_enabled() {
                 eprintln!(
                     "[input-debug][content] localize pointer before client=({:.1},{:.1}) page=({:.1},{:.1}) offset=({:.1},{:.1}) scroll=({:.1},{:.1})",
@@ -172,12 +177,7 @@ pub(crate) fn dispatch_ui_event(
     let mut event = event;
     {
         let document = document.borrow();
-        localize_ui_event_for_document(
-            &document,
-            viewport_offset_x,
-            viewport_offset_y,
-            &mut event,
-        );
+        localize_ui_event_for_document(&document, viewport_offset_x, viewport_offset_y, &mut event);
     }
 
     let mut document = document;
@@ -242,9 +242,7 @@ pub(crate) fn dispatch_trusted_click_event(
         .settings
         .perform_a_microtask_checkpoint()
         .map_err(|error| {
-            format!(
-                "failed to run a microtask checkpoint after trusted click dispatch: {error}"
-            )
+            format!("failed to run a microtask checkpoint after trusted click dispatch: {error}")
         })?;
     Ok(())
 }
@@ -379,7 +377,10 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             let target_label = debug_blitz_node_label(doc, event.target);
             let chain_labels = chain
                 .iter()
-                .map(|node_id| debug_blitz_node_label(doc, *node_id).unwrap_or_else(|| format!("node#{node_id}")))
+                .map(|node_id| {
+                    debug_blitz_node_label(doc, *node_id)
+                        .unwrap_or_else(|| format!("node#{node_id}"))
+                })
                 .collect::<Vec<_>>();
             eprintln!(
                 "[input-debug][content-dom] document={} traversable={} type={} target_node={} target_label={:?} chain={:?} chain_labels={:?}",

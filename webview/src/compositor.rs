@@ -5,8 +5,8 @@ use ipc_messages::content::{
 };
 use kurbo::{Affine, Point, Rect, Shape};
 use peniko::{Color, Fill};
-use std::env;
 use std::collections::{HashMap, HashSet};
+use std::env;
 
 fn input_debug_enabled() -> bool {
     env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
@@ -278,7 +278,10 @@ impl Compositor {
                     .child_scene_transform(&clip, child_frame_id)
                     .map(|scene_transform| transform * scene_transform)
                     .unwrap_or(transform);
-                if matches!(embed_site.background_policy, EmbedBackgroundPolicy::OpaqueWhite) {
+                if matches!(
+                    embed_site.background_policy,
+                    EmbedBackgroundPolicy::OpaqueWhite
+                ) {
                     composed_scene.fill(Fill::NonZero, transform, Color::WHITE, None, &clip);
                 }
                 composed_scene.push_clip_layer(transform, &clip);
@@ -342,14 +345,11 @@ impl Compositor {
         parent_local_to_root: Affine,
         embed_site: &FrameEmbedSite,
     ) -> Option<Affine> {
-        let Some(layout) =
-            self.navigable_container_layout(parent_local_to_root, embed_site)
-        else {
+        let Some(layout) = self.navigable_container_layout(parent_local_to_root, embed_site) else {
             if input_debug_enabled() {
                 eprintln!(
                     "[input-debug][compositor] parent={} child={} record=skip reason=no-layout",
-                    parent_frame_id.0,
-                    embed_site.child_frame_id.0,
+                    parent_frame_id.0, embed_site.child_frame_id.0,
                 );
             }
             return None;

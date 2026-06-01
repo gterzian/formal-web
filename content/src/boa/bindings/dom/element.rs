@@ -9,7 +9,7 @@ use boa_engine::{
 
 use crate::boa::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
-use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 
 use super::{event_target::register_event_target_methods, node::register_node_methods};
 
@@ -160,7 +160,9 @@ fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let node_id = with_element_ref(this, |element| element.query_selector(&selector))?
         .map_err(|error| JsNativeError::syntax().with_message(error))?;
     match node_id {
-        Some(node_id) => Ok(crate::boa::platform_objects::resolve_element_object(node_id, context)?.into()),
+        Some(node_id) => {
+            Ok(crate::boa::platform_objects::resolve_element_object(node_id, context)?.into())
+        }
         None => Ok(JsValue::null()),
     }
 }
@@ -178,7 +180,10 @@ fn query_selector_all(
         .map_err(|error| JsNativeError::syntax().with_message(error))?;
     let values = node_ids
         .into_iter()
-        .map(|node_id| crate::boa::platform_objects::resolve_element_object(node_id, context).map(JsValue::from))
+        .map(|node_id| {
+            crate::boa::platform_objects::resolve_element_object(node_id, context)
+                .map(JsValue::from)
+        })
         .collect::<JsResult<Vec<_>>>()?;
     Ok(JsArray::from_iter(values, context).into())
 }
@@ -196,13 +201,14 @@ fn insert_adjacent_text(
         .get_or_undefined(1)
         .to_string(context)?
         .to_std_string_escaped();
-    with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?
-        .map_err(|error| {
+    with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
+        |error| {
             JsError::from_opaque(JsValue::from(
                 DOMException::from_data(error, context)
                     .expect("DOMException construction should not fail"),
             ))
-        })?;
+        },
+    )?;
     Ok(JsValue::undefined())
 }
 
@@ -224,7 +230,9 @@ fn has_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
-    Ok(JsValue::from(with_element_ref(this, |element| element.has_attribute(&name))?))
+    Ok(JsValue::from(with_element_ref(this, |element| {
+        element.has_attribute(&name)
+    })?))
 }
 
 fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -283,7 +291,9 @@ fn get_bounding_client_rect(
     _: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let rect = with_element_ref(this, |element| element.bounding_client_rect().unwrap_or_default())?;
+    let rect = with_element_ref(this, |element| {
+        element.bounding_client_rect().unwrap_or_default()
+    })?;
     let mut initializer = ObjectInitializer::new(context);
     initializer.property(js_string!("x"), rect.x, Attribute::all());
     initializer.property(js_string!("y"), rect.y, Attribute::all());

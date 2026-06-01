@@ -15,7 +15,7 @@ use crate::boa::platform_objects::{
     object_for_existing_node,
 };
 use crate::dom::{DOMException, Document, Element, Node};
-use crate::html::{HTMLAnchorElement, HTMLIFrameElement, HTMLElement};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 
 use super::event_target::register_event_target_methods;
 
@@ -56,7 +56,11 @@ pub(crate) fn register_node_methods(class: &mut ClassBuilder<'_>) -> JsResult<()
         .property(js_string!("COMMENT_NODE"), 8, constant_attributes)
         .property(js_string!("DOCUMENT_NODE"), 9, constant_attributes)
         .property(js_string!("DOCUMENT_TYPE_NODE"), 10, constant_attributes)
-        .property(js_string!("DOCUMENT_FRAGMENT_NODE"), 11, constant_attributes)
+        .property(
+            js_string!("DOCUMENT_FRAGMENT_NODE"),
+            11,
+            constant_attributes,
+        )
         .property(js_string!("NOTATION_NODE"), 12, constant_attributes)
         .property(
             js_string!("DOCUMENT_POSITION_DISCONNECTED"),
@@ -102,7 +106,11 @@ pub(crate) fn register_node_methods(class: &mut ClassBuilder<'_>) -> JsResult<()
         .static_property(js_string!("COMMENT_NODE"), 8, constant_attributes)
         .static_property(js_string!("DOCUMENT_NODE"), 9, constant_attributes)
         .static_property(js_string!("DOCUMENT_TYPE_NODE"), 10, constant_attributes)
-        .static_property(js_string!("DOCUMENT_FRAGMENT_NODE"), 11, constant_attributes)
+        .static_property(
+            js_string!("DOCUMENT_FRAGMENT_NODE"),
+            11,
+            constant_attributes,
+        )
         .static_property(js_string!("NOTATION_NODE"), 12, constant_attributes)
         .static_property(
             js_string!("DOCUMENT_POSITION_DISCONNECTED"),
@@ -220,11 +228,7 @@ pub(crate) fn register_node_methods(class: &mut ClassBuilder<'_>) -> JsResult<()
             0,
             NativeFunction::from_fn_ptr(has_child_nodes),
         )
-        .method(
-            js_string!("remove"),
-            0,
-            NativeFunction::from_fn_ptr(remove),
-        );
+        .method(js_string!("remove"), 0, NativeFunction::from_fn_ptr(remove));
     Ok(())
 }
 
@@ -263,7 +267,8 @@ fn get_text_content(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<
 }
 
 fn get_first_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) = with_node_ref(this, |node| (Rc::clone(&node.document), node.first_child()))?;
+    let (document, node_id) =
+        with_node_ref(this, |node| (Rc::clone(&node.document), node.first_child()))?;
     match node_id {
         Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
         None => Ok(JsValue::null()),
@@ -271,7 +276,8 @@ fn get_first_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRe
 }
 
 fn get_last_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) = with_node_ref(this, |node| (Rc::clone(&node.document), node.last_child()))?;
+    let (document, node_id) =
+        with_node_ref(this, |node| (Rc::clone(&node.document), node.last_child()))?;
     match node_id {
         Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
         None => Ok(JsValue::null()),
@@ -279,7 +285,8 @@ fn get_last_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
 }
 
 fn get_parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) = with_node_ref(this, |node| (Rc::clone(&node.document), node.parent_node()))?;
+    let (document, node_id) =
+        with_node_ref(this, |node| (Rc::clone(&node.document), node.parent_node()))?;
     match node_id {
         Some(0) => Ok(document_object(context)?.into()),
         Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
@@ -288,7 +295,9 @@ fn get_parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRe
 }
 
 fn get_previous_sibling(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) = with_node_ref(this, |node| (Rc::clone(&node.document), node.previous_sibling()))?;
+    let (document, node_id) = with_node_ref(this, |node| {
+        (Rc::clone(&node.document), node.previous_sibling())
+    })?;
     match node_id {
         Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
         None => Ok(JsValue::null()),
@@ -296,7 +305,9 @@ fn get_previous_sibling(this: &JsValue, _: &[JsValue], context: &mut Context) ->
 }
 
 fn get_next_sibling(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) = with_node_ref(this, |node| (Rc::clone(&node.document), node.next_sibling()))?;
+    let (document, node_id) = with_node_ref(this, |node| {
+        (Rc::clone(&node.document), node.next_sibling())
+    })?;
     match node_id {
         Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
         None => Ok(JsValue::null()),
@@ -309,7 +320,9 @@ fn get_child_nodes(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRe
     })?;
     let values = node_ids
         .into_iter()
-        .map(|node_id| object_for_existing_node(Rc::clone(&document), node_id, context).map(JsValue::from))
+        .map(|node_id| {
+            object_for_existing_node(Rc::clone(&document), node_id, context).map(JsValue::from)
+        })
         .collect::<JsResult<Vec<_>>>()?;
     Ok(JsArray::from_iter(values, context).into())
 }
@@ -319,7 +332,9 @@ fn get_node_type(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsV
 }
 
 fn get_node_name(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_node_ref(this, |node| JsValue::from(JsString::from(node.node_name().as_str())))
+    with_node_ref(this, |node| {
+        JsValue::from(JsString::from(node.node_name().as_str()))
+    })
 }
 
 fn get_owner_document(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -393,8 +408,10 @@ fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         value if value.is_null() || value.is_undefined() => None,
         value => Some(appendable_node(value)?),
     };
-    with_node_ref(this, |node| node.insert_before(&child, reference_child.as_ref()))?
-        .map_err(|error| dom_exception_error(error, context))?;
+    with_node_ref(this, |node| {
+        node.insert_before(&child, reference_child.as_ref())
+    })?
+    .map_err(|error| dom_exception_error(error, context))?;
     Ok(args.get_or_undefined(0).clone())
 }
 

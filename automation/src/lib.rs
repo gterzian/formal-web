@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, mpsc, atomic::AtomicU64};
+use std::sync::{Arc, atomic::AtomicU64, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use cdp::{CdpArgs, CdpServerHandle};
@@ -202,7 +202,7 @@ impl AutomationController {
         host: &mut H,
     ) -> Option<AutomationSnapshot> {
         let snapshot = host.automation_snapshot();
-        if snapshot.navigable_id.is_none() {
+        if snapshot.webview_id.is_none() {
             return None;
         }
         Some(snapshot)
@@ -215,7 +215,11 @@ impl AutomationController {
         let Some(url) = snapshot.current_url.clone() else {
             return;
         };
-        let Some(frame_id) = snapshot.navigable_id.map(|id| id.to_string()) else {
+        let frame_id = snapshot
+            .navigable_id
+            .map(|id| id.to_string())
+            .or_else(|| snapshot.webview_id.map(|id| id.0.to_string()));
+        let Some(frame_id) = frame_id else {
             return;
         };
 

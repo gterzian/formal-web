@@ -2,10 +2,7 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsResult, JsValue, Source,
-    class::Class,
-    js_string,
-    object::JsObject,
+    Context, JsError, JsResult, JsValue, Source, class::Class, js_string, object::JsObject,
     property::Attribute,
 };
 use ipc_channel::ipc::IpcSender;
@@ -14,10 +11,10 @@ use url::Url;
 
 use crate::boa::bindings::html::{build_boa_context, wire_interface_prototypes};
 use crate::boa::platform_objects::{store_document_object, with_global_scope};
-use crate::html::Window;
 use crate::boa::{install_console_namespace, install_document_property};
 use crate::dom::{Document, EventDispatchHost};
 use crate::html::TimerHandler;
+use crate::html::Window;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -100,12 +97,13 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let document_object =
-            Class::from_data(Document::new(document.clone(), creation_url.clone()), &mut context)
-                .map_err(|error| error.to_string())?;
+        let document_object = Class::from_data(
+            Document::new(document.clone(), creation_url.clone()),
+            &mut context,
+        )
+        .map_err(|error| error.to_string())?;
 
-        store_document_object(&context, document_object)
-            .map_err(|error| error.to_string())?;
+        store_document_object(&context, document_object).map_err(|error| error.to_string())?;
         install_document_property(&mut context).map_err(|error| error.to_string())?;
         install_console_namespace(&mut context).map_err(|error| error.to_string())?;
 
@@ -172,14 +170,15 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
-        let callbacks =
-            crate::boa::platform_objects::take_animation_frame_callbacks(&self.context)
-                .map_err(|error| error.to_string())?;
+        let callbacks = crate::boa::platform_objects::take_animation_frame_callbacks(&self.context)
+            .map_err(|error| error.to_string())?;
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
-            let mut host =
-                crate::webidl::ContextCallbackHost::new(&mut self.context, "animation frame callback");
+            let mut host = crate::webidl::ContextCallbackHost::new(
+                &mut self.context,
+                "animation frame callback",
+            );
             crate::webidl::invoke_callback_function(
                 &mut host,
                 &callback,
@@ -268,7 +267,9 @@ impl EnvironmentSettingsObject {
 
         if let Err(error) = with_global_scope(&self.context, |global_scope| {
             if let Err(error) = global_scope.complete_window_timer(timer_id, timer_key) {
-                eprintln!("failed to complete window timer (id={timer_id} key={timer_key}): {error}");
+                eprintln!(
+                    "failed to complete window timer (id={timer_id} key={timer_key}): {error}"
+                );
             }
             Ok(())
         }) {
@@ -360,5 +361,3 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         EnvironmentSettingsObject::current_time_millis(self)
     }
 }
-
-

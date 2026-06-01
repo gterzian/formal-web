@@ -5,7 +5,10 @@ pub(crate) fn strip_and_collapse_ascii_whitespace(value: &str) -> String {
     let mut pending_space = false;
 
     for character in value.chars() {
-        if matches!(character, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') {
+        if matches!(
+            character,
+            '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '
+        ) {
             pending_space = !normalized.is_empty();
             continue;
         }

@@ -1,4 +1,7 @@
-use std::{cell::{Cell, RefCell}, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
@@ -14,8 +17,8 @@ use crate::{
     dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
     streams::SizeAlgorithm,
     webidl::{
-        Callback, ContextCallbackHost, EcmascriptHost, promise_from_value,
-        rejected_promise, resolved_promise,
+        Callback, ContextCallbackHost, EcmascriptHost, promise_from_value, rejected_promise,
+        resolved_promise,
     },
 };
 
@@ -31,11 +34,7 @@ pub(crate) enum StartAlgorithm {
 
 impl StartAlgorithm {
     /// <https://streams.spec.whatwg.org/#set-up-writable-stream-default-controller>
-    fn call(
-        &self,
-        controller_object: &JsObject,
-        context: &mut Context,
-    ) -> JsResult<JsValue> {
+    fn call(&self, controller_object: &JsObject, context: &mut Context) -> JsResult<JsValue> {
         match self {
             Self::ReturnUndefined => Ok(JsValue::undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
@@ -329,7 +328,8 @@ impl WritableStreamDefaultController {
         chunk_size: f64,
         context: &mut Context,
     ) -> JsResult<()> {
-        if let Err(error) = self.enqueue_value_with_size(QueueEntryValue::Chunk(chunk), chunk_size) {
+        if let Err(error) = self.enqueue_value_with_size(QueueEntryValue::Chunk(chunk), chunk_size)
+        {
             self.error_if_needed(error.into_opaque(context)?, context)?;
             return Ok(());
         }
@@ -393,17 +393,18 @@ impl WritableStreamDefaultController {
         .to_js_function(context.realm());
         let on_rejected = NativeFunction::from_copy_closure_with_captures(
             |_, args, stream: &WritableStream, context| {
-                stream.finish_in_flight_close_with_error(
-                    args.get_or_undefined(0).clone(),
-                    context,
-                )?;
+                stream
+                    .finish_in_flight_close_with_error(args.get_or_undefined(0).clone(), context)?;
                 Ok(JsValue::undefined())
             },
             stream,
         )
         .to_js_function(context.realm());
-        let _ = JsPromise::from_object(sink_close_promise)?
-            .then(Some(on_fulfilled), Some(on_rejected), context)?;
+        let _ = JsPromise::from_object(sink_close_promise)?.then(
+            Some(on_fulfilled),
+            Some(on_rejected),
+            context,
+        )?;
         Ok(())
     }
 
@@ -416,9 +417,9 @@ impl WritableStreamDefaultController {
 
         // Step 3: "Let sinkWritePromise be the result of performing controller.[[writeAlgorithm]], passing in chunk."
         let controller_object = self.controller_object()?;
-        let sink_write_promise = self
-            .write_algorithm()?
-            .call(&controller_object, chunk, context)?;
+        let sink_write_promise =
+            self.write_algorithm()?
+                .call(&controller_object, chunk, context)?;
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();
@@ -434,7 +435,8 @@ impl WritableStreamDefaultController {
 
                 // Step 4.3: "Assert: state is \"writable\" or \"erroring\"."
                 debug_assert!(
-                    state == WritableStreamState::Writable || state == WritableStreamState::Erroring
+                    state == WritableStreamState::Writable
+                        || state == WritableStreamState::Erroring
                 );
 
                 // Step 4.4: "Perform ! DequeueValue(controller)."
@@ -466,17 +468,18 @@ impl WritableStreamDefaultController {
                 }
 
                 // Step 5.2: "Perform ! WritableStreamFinishInFlightWriteWithError(stream, reason)."
-                stream.finish_in_flight_write_with_error(
-                    args.get_or_undefined(0).clone(),
-                    context,
-                )?;
+                stream
+                    .finish_in_flight_write_with_error(args.get_or_undefined(0).clone(), context)?;
                 Ok(JsValue::undefined())
             },
             (self.clone(), stream),
         )
         .to_js_function(context.realm());
-        let _ = JsPromise::from_object(sink_write_promise)?
-            .then(Some(on_fulfilled), Some(on_rejected), context)?;
+        let _ = JsPromise::from_object(sink_write_promise)?.then(
+            Some(on_fulfilled),
+            Some(on_rejected),
+            context,
+        )?;
         Ok(())
     }
 
@@ -491,7 +494,8 @@ impl WritableStreamDefaultController {
             value,
             size: chunk_size,
         });
-        self.queue_total_size.set(self.queue_total_size.get() + chunk_size);
+        self.queue_total_size
+            .set(self.queue_total_size.get() + chunk_size);
         Ok(())
     }
 
