@@ -779,7 +779,8 @@ impl WptServeProcess {
         fs::write(&inject_script, reporter_inject_script())
             .map_err(|error| format!("failed to write {}: {error}", inject_script.display()))?;
 
-        let mut command = Command::new("python3");
+        let python = resolve_python_interpreter()?;
+        let mut command = Command::new(&python);
         command
             .arg("./wpt")
             .arg("serve")
@@ -794,6 +795,7 @@ impl WptServeProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         configure_wptserve_command(&mut command);
+        configure_wptserve_environment(&mut command, &python);
 
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -2043,13 +2045,6 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     let repo_root = repo_root();
     let target_dir = repo_root.join("target");
     let prebuild_target_root = target_dir.join(WPT_PREBUILD_TARGET_DIR);
-    let builds = [
-        (repo_root.join("tests/wpt_runner/Cargo.toml"), RUNNER_BINARY_NAME),
-        (repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME),
-        (repo_root.join("content/Cargo.toml"), "formal-web-content"),
-        (repo_root.join("net/Cargo.toml"), "formal-web-net"),
-    ];
-
     let target_profile_dir = target_dir.join(build_profile.target_dir_name());
     fs::create_dir_all(&target_profile_dir).map_err(|error| {
         format!(
@@ -2058,43 +2053,99 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
         )
     })?;
 
-    for (manifest_path, binary_name) in builds {
+    // The runner binary must always be freshly built via the isolated target dir,
+    // since the wpt-runner crate may not have been compiled for this profile yet.
+    let runner_builds = [
+        (repo_root.join("tests/wpt_runner/Cargo.toml"), RUNNER_BINARY_NAME),
+    ];
+
+    // Sidecar binaries (embedder, content, net) are prebuilt by the workspace
+    // build.rs before this function runs.  Only rebuild them if they are missing
+    // from the output directory — this avoids a redundant full build of all
+    // sidecar dependencies (boa_runtime, etc.) into a second target directory,
+    // which was a source of stale-artifact build failures.
+    let sidecar_builds = [
+        (repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME),
+        (repo_root.join("content/Cargo.toml"), "formal-web-content"),
+        (repo_root.join("net/Cargo.toml"), "formal-web-net"),
+    ];
+
+    for (manifest_path, binary_name) in &runner_builds {
         let isolated_target_dir = prebuild_target_root.join(binary_name);
-        let mut command = Command::new("cargo");
-        command.arg("build");
-        if let Some(flag) = build_profile.cargo_profile_flag() {
-            command.arg(flag);
-        }
-        command
-            .arg("--manifest-path")
-            .arg(&manifest_path)
-            .arg("--target-dir")
-            .arg(&isolated_target_dir)
-            .arg("--bin")
-            .arg(binary_name)
-            .current_dir(&repo_root);
-
-        let status = command.status().map_err(|error| {
-            format!(
-                "failed to start cargo build for {} binary {}: {error}",
-                build_profile.as_str(),
-                binary_name,
-            )
-        })?;
-        if !status.success() {
-            return Err(format!(
-                "cargo build for {} binary {} exited with status {status}",
-                build_profile.as_str(),
-                binary_name,
-            ));
-        }
-
-        copy_built_binary(
-            &isolated_target_dir.join(build_profile.target_dir_name()),
-            &target_profile_dir,
+        build_single_binary(
+            manifest_path,
             binary_name,
+            &isolated_target_dir,
+            &target_profile_dir,
+            build_profile,
         )?;
     }
+
+    for (manifest_path, binary_name) in &sidecar_builds {
+        let target_path = target_profile_dir.join(format!(
+            "{}{}",
+            binary_name,
+            std::env::consts::EXE_SUFFIX
+        ));
+        if target_path.is_file() {
+            // Already placed by build.rs — no need to rebuild.
+            continue;
+        }
+        let isolated_target_dir = prebuild_target_root.join(binary_name);
+        build_single_binary(
+            manifest_path,
+            binary_name,
+            &isolated_target_dir,
+            &target_profile_dir,
+            build_profile,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn build_single_binary(
+    manifest_path: &Path,
+    binary_name: &str,
+    isolated_target_dir: &Path,
+    target_profile_dir: &Path,
+    build_profile: RunnerBuildProfile,
+) -> Result<(), String> {
+    let repo_root = repo_root();
+    let mut command = Command::new("cargo");
+    command.arg("build");
+    if let Some(flag) = build_profile.cargo_profile_flag() {
+        command.arg(flag);
+    }
+    command
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--target-dir")
+        .arg(isolated_target_dir)
+        .arg("--bin")
+        .arg(binary_name)
+        .current_dir(&repo_root);
+
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to start cargo build for {} binary {}: {error}",
+            build_profile.as_str(),
+            binary_name,
+        )
+    })?;
+    if !status.success() {
+        return Err(format!(
+            "cargo build for {} binary {} exited with status {status}",
+            build_profile.as_str(),
+            binary_name,
+        ));
+    }
+
+    copy_built_binary(
+        &isolated_target_dir.join(build_profile.target_dir_name()),
+        target_profile_dir,
+        binary_name,
+    )?;
 
     Ok(())
 }
@@ -2213,6 +2264,130 @@ fn cleanup_registered_wptserve_processes() {
 
     if let Err(error) = save_registered_wptserve_pids(&[]) {
         eprintln!("[wpt-runner] failed to clear registered wptserve pids: {error}");
+    }
+}
+
+/// Resolve a working Python 3 interpreter to use for launching `wpt serve`.
+///
+/// Priority:
+/// 1. `PYTHON` environment variable (user override)
+/// 2. `python3` — may resolve to an incompatible version (e.g. 3.14 with
+///    broken expat), so we verify it can run a simple script first.
+/// 3. `python3.10`, `python3.11`, `python3.12`, `python3.13` — fallback
+///    candidates that are more likely to have a working `ensurepip`.
+/// Resolve a working Python 3 interpreter to use for launching `wpt serve`.
+///
+/// Priority:
+/// 1. `PYTHON` environment variable (user override)
+/// 2. `python3` — verify it can actually create a venv.
+/// 3. `python3.10`, `python3.11`, `python3.12`, `python3.13` — fallback.
+///
+/// The returned path is an absolute canonical path so that it works
+/// regardless of the subprocess working directory (e.g. `vendor/wpt/`
+/// has a `.python-version` file that confuses pyenv).
+fn resolve_python_interpreter() -> Result<String, String> {
+    // 1. User override via PYTHON env var.
+    if let Ok(path) = std::env::var("PYTHON") {
+        if !path.is_empty() && check_python_works(&path) {
+            return resolve_to_absolute(&path);
+        }
+    }
+
+    // 2. Try python3 first.
+    if check_python_works("python3") {
+        return resolve_to_absolute("python3");
+    }
+
+    // 3. Try known-stable minor versions.
+    for candidate in &[
+        "python3.10",
+        "python3.11",
+        "python3.12",
+        "python3.13",
+    ] {
+        if check_python_works(candidate) {
+            return resolve_to_absolute(candidate);
+        }
+    }
+
+    Err(String::from(
+        "no working Python 3 interpreter found — tried PYTHON env, python3, python3.10–13",
+    ))
+}
+
+/// Quick-check that the given Python interpreter is usable for `wpt serve`,
+/// which requires a working `ssl` module and a working `venv` module.  We
+/// check both via `-c "import ssl; import venv"` rather than just
+/// `--version`, because several macOS Python installs pass `--version` but
+/// fail at runtime (e.g. Homebrew 3.14 with a broken expat, or pyenv 3.10
+/// whose openssl@1.1 dependency was removed).
+fn check_python_works(name: &str) -> bool {
+    Command::new(name)
+        .args(["-c", "import ssl; import venv"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Resolve a command name (e.g. `"python3"`) to an absolute path so that
+/// it works correctly when the subprocess working directory changes (e.g.
+/// into `vendor/wpt/` which has a `.python-version` file that confuses
+/// pyenv).  Falls back to the bare name if resolution fails.
+///
+/// We ask the interpreter itself for its real `sys.executable` rather than
+/// using `command -v`, because pyenv shims hide the real path and using the
+/// shim from a different working directory would let pyenv re-read a
+/// `.python-version` file there.
+fn resolve_to_absolute(name: &str) -> Result<String, String> {
+    // Run the interpreter just enough to print its real executable path.
+    let output = Command::new(name)
+        .args(["-c", "import sys; print(sys.executable)"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| {
+            format!("failed to resolve python path for {name}: {error}")
+        })?;
+
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !path.is_empty() {
+            // Canonicalize to a clean absolute path (resolves symlinks).
+            let canonical = Path::new(&path)
+                .canonicalize()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(path);
+            return Ok(canonical);
+        }
+    }
+
+    // Fallback: use the name as-is.
+    Ok(name.to_owned())
+}
+
+/// Set up the environment for the `wpt serve` subprocess so that pyenv (if
+/// present) does not pick up the `.python-version` file shipped with the
+/// vendored WPT repository, which may request a Python version that is not
+/// installed.  We pin to the version of the interpreter we resolved.
+fn configure_wptserve_environment(command: &mut Command, python_bin: &str) {
+    // Resolve the Python version string so we can pass it to PYENV_VERSION.
+    if let Ok(output) = Command::new(python_bin)
+        .arg("--version")
+        .stderr(Stdio::piped())
+        .output()
+    {
+        let version_output = String::from_utf8_lossy(&output.stderr);
+        let version_str = version_output
+            .trim()
+            .strip_prefix("Python ")
+            .unwrap_or_default();
+        // Take just the major.minor part, e.g. "3.10.7" -> "3.10".
+        let short = version_str.split('.').take(2).collect::<Vec<_>>().join(".");
+        if !short.is_empty() {
+            command.env("PYENV_VERSION", &short);
+        }
     }
 }
 

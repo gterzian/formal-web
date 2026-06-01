@@ -43,6 +43,19 @@ fn prebuild_sidecars() -> Result<(), String> {
         .unwrap_or_else(|| manifest_dir.join("target"));
     let sidecar_target_root = target_root.join(SIDECAR_TARGET_DIR_NAME);
 
+    // Remove stale sidecar-prebuild artifacts that can cause dependency
+    // resolution conflicts (e.g. multiple versions of boa_gc) when cargo
+    // encounters cached build data from a previous run with a different
+    // feature-set or profile.
+    if sidecar_target_root.exists() {
+        if let Err(error) = fs::remove_dir_all(&sidecar_target_root) {
+            eprintln!(
+                "[build.rs] warning: failed to remove stale {}: {error}",
+                sidecar_target_root.display()
+            );
+        }
+    }
+
     let mut command = Command::new("cargo");
     command.arg("build");
     if profile == "release" {

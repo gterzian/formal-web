@@ -130,6 +130,14 @@ At the end of each task, run the following steps **in order**:
 3. **Suggest a commit message** — Propose a commit message for changes tracked by git.
 
 4. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
-   - **Default WPT run** — Runs the Web Platform Tests suite to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
+   - **Default WPT run** — Runs the Web Platform Tests suite (`tests/wpt/include.ini`) to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
+
+     ```bash
+     rustup run 1.92.0 cargo run --release -- wpt
+     ```
+
+     The WPT runner requires a working Python 3 with a functioning `ssl` module and `venv` support. If the run fails with a Python-related error, check `tests/wpt_runner/README.md` for debugging guidance.
+
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
-4. DO NOT collect pi sessions; those are collected automatically on shutdown.
+
+5. DO NOT collect pi sessions; those are collected automatically on shutdown.
