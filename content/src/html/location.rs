@@ -20,9 +20,9 @@ pub struct Location {
     relevant_document_origin: Option<String>,
 
     /// <https://html.spec.whatwg.org/#concept-relevant-global>
-    /// The Window object whose GlobalScope carries navigation and IPC state.
-    /// Location methods access the GlobalScope through this JsObject to reach
-    /// the navigable ID and event sender for issuing navigation requests.
+    /// The Window JS object that owns the GlobalScope with navigation state.
+    /// Location uses `downcast_ref` through this handle to access the native
+    /// Window struct — this is safe and doesn't require raw pointer manipulation.
     window: JsObject,
 }
 
@@ -552,9 +552,10 @@ impl Location {
         _history_handling: NavigationHistoryBehavior,
     ) -> Result<(), LocationError> {
         // Step 1: "Let navigable be location's relevant global object's navigable."
-        // Note: Location's relevant global object is the Window stored as self.window.
-        // We reach the GlobalScope through the Window to get the navigable ID and
-        // event sender — without going through boa's context.
+        // Note: Location's relevant global object is the Window stored as
+        // self.window. We reach the GlobalScope through the Window via
+        // `downcast_ref` — boa's safe API for accessing native data from
+        // a JsObject handle.
         let window = self
             .window
             .downcast_ref::<Window>()

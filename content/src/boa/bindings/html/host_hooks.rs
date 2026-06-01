@@ -69,91 +69,50 @@ pub(crate) fn build_boa_context(
         .register(None, &mut context)
         .map_err(|error| error.to_string())?;
 
-    context
-        .register_global_class::<EventTarget>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<DOMException>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<Event>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<UIEvent>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<AbortSignal>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<AbortController>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<Node>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<Document>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<Element>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<HTMLElement>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<HTMLAnchorElement>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<HTMLIFrameElement>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<Window>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<Location>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<ByteLengthQueuingStrategy>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<CountQueuingStrategy>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<ReadableStream>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<ReadableStreamDefaultController>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<ReadableByteStreamController>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<ReadableStreamDefaultReader>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<ReadableStreamBYOBReader>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<ReadableStreamBYOBRequest>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<WritableStream>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<WritableStreamDefaultController>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<WritableStreamDefaultWriter>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<TransformStream>()
-        .map_err(|error| error.to_string())?;
-    context
-        .register_global_class::<TransformStreamDefaultController>()
-        .map_err(|error| error.to_string())?;
-
-    wire_interface_prototypes(&mut context);
+    register_web_api_classes(&mut context)?;
 
     Ok(context)
+}
+
+/// Register all Web API classes with the boa context.
+fn register_web_api_classes(context: &mut Context) -> Result<(), String> {
+    macro_rules! register {
+        ($cls:ty) => {
+            context
+                .register_global_class::<$cls>()
+                .map_err(|error| error.to_string())?;
+        };
+    }
+
+    register!(EventTarget);
+    register!(DOMException);
+    register!(Event);
+    register!(UIEvent);
+    register!(AbortSignal);
+    register!(AbortController);
+    register!(Node);
+    register!(Document);
+    register!(Element);
+    register!(HTMLElement);
+    register!(HTMLAnchorElement);
+    register!(HTMLIFrameElement);
+    register!(Window);
+    register!(Location);
+    register!(ByteLengthQueuingStrategy);
+    register!(CountQueuingStrategy);
+    register!(ReadableStream);
+    register!(ReadableStreamDefaultController);
+    register!(ReadableByteStreamController);
+    register!(ReadableStreamDefaultReader);
+    register!(ReadableStreamBYOBReader);
+    register!(ReadableStreamBYOBRequest);
+    register!(WritableStream);
+    register!(WritableStreamDefaultController);
+    register!(WritableStreamDefaultWriter);
+    register!(TransformStream);
+    register!(TransformStreamDefaultController);
+
+    Ok(())
 }
 
 /// Install the `document` and `window` properties on the global object.
@@ -161,15 +120,20 @@ pub(crate) fn install_global_properties(
     context: &mut Context,
     document_object: JsObject,
 ) -> Result<(), String> {
-    let global = context.global_object();
-    if let Some(window_class) = context.get_global_class::<Window>() {
-        global.set_prototype(Some(window_class.prototype()));
-    }
+    // Wire interface prototypes BEFORE storing the document object, so the
+    // prototype chain is fully established before any property accessor might
+    // trigger a GC borrow on the global object's internal data.
+    wire_interface_prototypes(context);
 
     store_document_object(context, document_object.clone())
         .map_err(|error| error.to_string())?;
     install_document_property(context).map_err(|error| error.to_string())?;
     install_console_namespace(context).map_err(|error| error.to_string())?;
+
+    let global = context.global_object();
+    if let Some(window_class) = context.get_global_class::<Window>() {
+        global.set_prototype(Some(window_class.prototype()));
+    }
     context
         .register_global_property(js_string!("window"), global.clone(), Attribute::all())
         .map_err(|error| error.to_string())?;

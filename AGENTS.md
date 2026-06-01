@@ -27,6 +27,43 @@ The `.pi/extensions/pi-share-hf/` extension archives pi sessions to `.pi/collect
 - **`/collect-session` command** — Interactive equivalent of the above.
 - **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
 
+## CDP Browser Testing
+
+The pi agent has built-in browser tools (`browser_navigate`, `browser_click`,
+`browser_evaluate`, `browser_get_text`, `browser_screenshot`) that connect to a
+CDP-compatible browser. formal-web implements a CDP server for testing:
+
+```bash
+# Start the formal-web browser with CDP enabled
+cargo run --bin formal-web -- cdp --headless --port 9222 \
+  --startup-url "file:///path/to/artifacts/test-page.html"
+
+# Enumerate page targets
+curl http://127.0.0.1:9222/json
+
+# Connect to a page target via WebSocket for CDP commands
+# (Node.js WebSocket API works out of the box):
+```
+
+```javascript
+const ws = new WebSocket('ws://localhost:9222/devtools/page/<id>');
+ws.addEventListener('open', () => {
+  ws.send(JSON.stringify({
+    id: 1,
+    method: 'Runtime.evaluate',
+    params: { expression: 'document.title' }
+  }));
+});
+ws.addEventListener('message', (event) => {
+  console.log(JSON.parse(event.data));
+});
+```
+
+The built-in pi browser tools (`browser_navigate`, etc.) do not currently
+connect to formal-web's CDP — they target a separate browser instance.
+For testing formal-web, use direct WebSocket CDP commands as shown above
+or the WebDriver interface via `formal-web webdriver`.
+
 ## web_standards — Spec Reading
 
 The `.pi/extensions/web_standards/` extension lazily loads and caches web standards documents (WHATWG, W3C, etc.) on first use. Provides four tools for the agent to read specs interactively:
