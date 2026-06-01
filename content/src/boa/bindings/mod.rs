@@ -5,3 +5,4 @@ pub(crate) mod streams;
 
 pub(crate) use console::install_console_namespace;
 pub(crate) use dom::install_document_property;
+pub(crate) use dom::install_document_property_with_object;

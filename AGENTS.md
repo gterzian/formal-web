@@ -1,3 +1,19 @@
+# File System Boundaries
+
+Agents may read and write files freely within:
+
+- The current repository (all files, including git-ignored ones)
+- System temp directories (/tmp, $TMPDIR, or equivalent)
+
+All other locations require explicit user approval before any write, move, or delete operation. This includes (but is not limited to):
+
+- Files outside the repo root
+- Other repositories or project directories
+- Home directory dotfiles and config (~/.config, ~/.bashrc, etc.)
+- Shared or system-wide directories (/usr/local, /etc, etc.)
+
+When in doubt, ask before writing.
+
 # Documentation Chain
 
 Read repository documentation from general to specific:

@@ -9,6 +9,7 @@ mod node;
 mod ui_event;
 
 pub(crate) use document::install_document_property;
+pub(crate) use document::install_document_property_with_object;
 pub(crate) use element::{register_element_methods, with_element_ref};
 pub(crate) use event_target::register_event_target_methods;
 pub(crate) use node::register_node_methods;

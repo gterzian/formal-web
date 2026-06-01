@@ -12,7 +12,7 @@ use boa_engine::{
 use boa_runtime::extensions::{RuntimeExtension, StructuredCloneExtension};
 
 use crate::boa::{
-    install_console_namespace, install_document_property,
+    install_console_namespace, install_document_property_with_object,
     platform_objects::store_document_object,
 };
 use crate::dom::{
@@ -127,7 +127,11 @@ pub(crate) fn install_global_properties(
 
     store_document_object(context, document_object.clone())
         .map_err(|error| error.to_string())?;
-    install_document_property(context).map_err(|error| error.to_string())?;
+    // Use the pre-resolved document object to avoid a with_global_scope call
+    // that would borrow the global object's RefCell and conflict with the
+    // subsequent register_global_property inside install_document_property.
+    install_document_property_with_object(context, document_object.clone())
+        .map_err(|error| error.to_string())?;
     install_console_namespace(context).map_err(|error| error.to_string())?;
 
     let global = context.global_object();
