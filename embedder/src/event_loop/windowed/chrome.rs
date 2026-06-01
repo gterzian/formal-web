@@ -1,5 +1,5 @@
 use anyrender::Scene as RenderScene;
-use blitz_dom::{qual_name, BaseDocument, Document, DocumentConfig};
+use blitz_dom::{BaseDocument, Document, DocumentConfig, qual_name};
 use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
 use blitz_traits::events::{BlitzKeyEvent, UiEvent};
@@ -167,25 +167,45 @@ fn build_html(url: &str, tabs: &[ChromeTabInfo]) -> String {
         .enumerate()
         .map(|(i, info)| {
             let active = if info.active { " active" } else { "" };
-            format!(r#"<button id="tab-{}" class="tab-button{}">{}</button>"#, i, active, info.label)
+            format!(
+                r#"<button id="tab-{}" class="tab-button{}">{}</button>"#,
+                i, active, info.label
+            )
         })
         .collect::<Vec<_>>()
         .join("\n        ");
-    let escaped_url = url.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
-    CHROME_HTML_TEMPLATE.replace("__TABS__", &tab_html).replace("__URL__", &escaped_url)
+    let escaped_url = url
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    CHROME_HTML_TEMPLATE
+        .replace("__TABS__", &tab_html)
+        .replace("__URL__", &escaped_url)
 }
 
 impl ChromeUi {
-    pub fn new(full_viewport: Viewport, shell_provider: Arc<dyn ShellProvider>) -> Result<Self, String> {
+    pub fn new(
+        full_viewport: Viewport,
+        shell_provider: Arc<dyn ShellProvider>,
+    ) -> Result<Self, String> {
         Self::from_html(full_viewport, shell_provider, "", &[])
     }
 
-    fn from_html(full_viewport: Viewport, shell_provider: Arc<dyn ShellProvider>, url: &str, tabs: &[ChromeTabInfo]) -> Result<Self, String> {
+    fn from_html(
+        full_viewport: Viewport,
+        shell_provider: Arc<dyn ShellProvider>,
+        url: &str,
+        tabs: &[ChromeTabInfo],
+    ) -> Result<Self, String> {
         let html = build_html(url, tabs);
         let mut document = HtmlDocument::from_html(
             &html,
             DocumentConfig {
-                viewport: Some(Self::chrome_viewport(&full_viewport, DEFAULT_CHROME_HEIGHT_CSS)),
+                viewport: Some(Self::chrome_viewport(
+                    &full_viewport,
+                    DEFAULT_CHROME_HEIGHT_CSS,
+                )),
                 ..Default::default()
             },
         )
@@ -193,9 +213,15 @@ impl ChromeUi {
         document.set_shell_provider(shell_provider.clone());
         document.resolve(0.0);
         let node_ids = ChromeNodeIds {
-            shell: document.get_element_by_id("chrome-shell").ok_or_else(|| String::from("chrome shell node missing"))?,
-            address: document.get_element_by_id("address").ok_or_else(|| String::from("chrome address input missing"))?,
-            new_tab_btn: document.get_element_by_id("new-tab-btn").ok_or_else(|| String::from("chrome new tab button missing"))?,
+            shell: document
+                .get_element_by_id("chrome-shell")
+                .ok_or_else(|| String::from("chrome shell node missing"))?,
+            address: document
+                .get_element_by_id("address")
+                .ok_or_else(|| String::from("chrome address input missing"))?,
+            new_tab_btn: document
+                .get_element_by_id("new-tab-btn")
+                .ok_or_else(|| String::from("chrome new tab button missing"))?,
         };
         let mut chrome = Self {
             document,
@@ -211,7 +237,8 @@ impl ChromeUi {
 
     pub fn set_viewport(&mut self, full_viewport: Viewport) {
         self.full_viewport = full_viewport;
-        self.document.set_viewport(Self::chrome_viewport(&self.full_viewport, self.height_css));
+        self.document
+            .set_viewport(Self::chrome_viewport(&self.full_viewport, self.height_css));
         self.refresh_layout();
     }
 
@@ -229,9 +256,15 @@ impl ChromeUi {
             .into_inner();
             doc.set_shell_provider(self.shell_provider.clone());
             doc.resolve(0.0);
-            if let Some(s) = doc.get_element_by_id("chrome-shell") { self.node_ids.shell = s; }
-            if let Some(a) = doc.get_element_by_id("address") { self.node_ids.address = a; }
-            if let Some(n) = doc.get_element_by_id("new-tab-btn") { self.node_ids.new_tab_btn = n; }
+            if let Some(s) = doc.get_element_by_id("chrome-shell") {
+                self.node_ids.shell = s;
+            }
+            if let Some(a) = doc.get_element_by_id("address") {
+                self.node_ids.address = a;
+            }
+            if let Some(n) = doc.get_element_by_id("new-tab-btn") {
+                self.node_ids.new_tab_btn = n;
+            }
             self.document = doc;
             self.last_tab_count = state.tabs.len();
             self.refresh_layout();
@@ -241,7 +274,9 @@ impl ChromeUi {
         }
     }
 
-    pub fn height_css(&self) -> f32 { self.height_css }
+    pub fn height_css(&self) -> f32 {
+        self.height_css
+    }
 
     pub fn height_physical(&self) -> u32 {
         ((self.height_css * self.full_viewport.scale()).ceil() as u32).max(1)
@@ -251,7 +286,15 @@ impl ChromeUi {
         let viewport = self.document.viewport().clone();
         let (width, height) = viewport.window_size;
         let mut scene = RenderScene::new();
-        paint_scene(&mut scene, &self.document, viewport.scale_f64(), width, height, 0, 0);
+        paint_scene(
+            &mut scene,
+            &self.document,
+            viewport.scale_f64(),
+            width,
+            height,
+            0,
+            0,
+        );
         scene
     }
 
@@ -259,7 +302,9 @@ impl ChromeUi {
         self.document.get_focussed_node_id() == Some(self.node_ids.address)
     }
 
-    pub fn clear_focus(&mut self) { self.document.clear_focus(); }
+    pub fn clear_focus(&mut self) {
+        self.document.clear_focus();
+    }
 
     pub fn handle_ui_event(&mut self, event: UiEvent) -> Option<ChromeAction> {
         match event {
@@ -333,7 +378,8 @@ impl ChromeUi {
                 None
             }
             UiEvent::AppleStandardKeybinding(event) => {
-                self.document.handle_ui_event(UiEvent::AppleStandardKeybinding(event));
+                self.document
+                    .handle_ui_event(UiEvent::AppleStandardKeybinding(event));
                 None
             }
         }
@@ -350,20 +396,23 @@ impl ChromeUi {
 
     fn refresh_layout(&mut self) {
         self.document.resolve(0.0);
-        let measured = self.document
+        let measured = self
+            .document
             .get_client_bounding_rect(self.node_ids.shell)
             .map(|r| r.height as f32)
             .unwrap_or(DEFAULT_CHROME_HEIGHT_CSS)
             .max(DEFAULT_CHROME_HEIGHT_CSS);
         if (measured - self.height_css).abs() > 0.5 {
             self.height_css = measured;
-            self.document.set_viewport(Self::chrome_viewport(&self.full_viewport, self.height_css));
+            self.document
+                .set_viewport(Self::chrome_viewport(&self.full_viewport, self.height_css));
             self.document.resolve(0.0);
         }
     }
 
     fn select_all_address_text(&mut self) {
-        self.document.with_text_input(self.node_ids.address, |mut driver| driver.select_all());
+        self.document
+            .with_text_input(self.node_ids.address, |mut driver| driver.select_all());
     }
 
     fn chrome_viewport(full_viewport: &Viewport, height_css: f32) -> Viewport {

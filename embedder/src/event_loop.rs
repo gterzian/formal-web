@@ -1,21 +1,19 @@
 #[path = "event_loop/headless.rs"]
 mod headless;
-#[path = "event_loop/winit.rs"]
-mod winit_integration;
 #[path = "event_loop/windowed/mod.rs"]
 mod windowed;
+#[path = "event_loop/winit.rs"]
+mod winit_integration;
 
 use self::headless::HeadlessEmbedderApp;
 use self::windowed::WindowedApp;
+use self::winit_integration::UserEventDispatcher;
 pub use self::winit_integration::{
     EventLoopOptions, clear_event_loop_options, set_event_loop_options,
 };
-use self::winit_integration::UserEventDispatcher;
-use automation::{
-    AutomationCommand, AutomationSnapshot, AutomationVisibleFrameViewport,
-};
 use anyrender::{PaintScene, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
+use automation::{AutomationCommand, AutomationSnapshot, AutomationVisibleFrameViewport};
 use blitz_traits::shell::ColorScheme;
 use ipc_messages::content::{NavigableId, WebviewId};
 use kurbo::{Affine, Rect};
@@ -53,25 +51,34 @@ impl EventLoopEmbedder {
 }
 
 impl Embedder for EventLoopEmbedder {
-    fn navigation_requested(&self, webview_id: WebviewId, destination_url: String) -> Result<(), String> {
-        self.dispatcher.send(FormalWebUserEvent::NavigationRequested {
-            webview_id,
-            destination_url,
-        })
+    fn navigation_requested(
+        &self,
+        webview_id: WebviewId,
+        destination_url: String,
+    ) -> Result<(), String> {
+        self.dispatcher
+            .send(FormalWebUserEvent::NavigationRequested {
+                webview_id,
+                destination_url,
+            })
     }
 
     fn navigation_completed(&self, completed: webview::NavigationCompleted) -> Result<(), String> {
         let status = match completed.status {
-            webview::NavigationCompletion::Committed { url } => NavigationCompletion::Committed { url },
+            webview::NavigationCompletion::Committed { url } => {
+                NavigationCompletion::Committed { url }
+            }
             webview::NavigationCompletion::Aborted { message } => {
                 NavigationCompletion::Aborted { message }
             }
         };
         self.dispatcher
-            .send(FormalWebUserEvent::NavigationCompleted(NavigationCompleted {
-                webview_id: completed.webview_id,
-                status,
-            }))
+            .send(FormalWebUserEvent::NavigationCompleted(
+                NavigationCompleted {
+                    webview_id: completed.webview_id,
+                    status,
+                },
+            ))
     }
 
     fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String> {
@@ -80,7 +87,8 @@ impl Embedder for EventLoopEmbedder {
     }
 
     fn webview_provider_sync(&self) -> Result<(), String> {
-        self.dispatcher.send(FormalWebUserEvent::WebviewProviderSync)
+        self.dispatcher
+            .send(FormalWebUserEvent::WebviewProviderSync)
     }
 
     fn new_frame_rendered(&self) -> Result<(), String> {
@@ -117,7 +125,10 @@ impl Embedder for EventLoopEmbedder {
 
 pub enum FormalWebUserEvent {
     RequestRedraw(WebviewId),
-    NavigationRequested { webview_id: WebviewId, destination_url: String },
+    NavigationRequested {
+        webview_id: WebviewId,
+        destination_url: String,
+    },
     NavigationCompleted(NavigationCompleted),
     NewWebview(WebviewId, String),
     WebviewProviderSync,
@@ -173,7 +184,11 @@ impl BrowserState {
         self.pending_navigation.take();
 
         if let Some(index) = self.history_index {
-            if self.history.get(index).is_some_and(|current| current == &url) {
+            if self
+                .history
+                .get(index)
+                .is_some_and(|current| current == &url)
+            {
                 self.history[index] = url;
             } else {
                 self.history.truncate(index + 1);
@@ -218,16 +233,16 @@ pub fn send_user_event(event: FormalWebUserEvent) -> Result<(), String> {
 }
 
 fn read_clipboard_text() -> Result<String, String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("failed to access clipboard: {error}"))?;
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("failed to access clipboard: {error}"))?;
     clipboard
         .get_text()
         .map_err(|error| format!("failed to read clipboard text: {error}"))
 }
 
 fn write_clipboard_text(text: String) -> Result<(), String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("failed to access clipboard: {error}"))?;
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("failed to access clipboard: {error}"))?;
     clipboard
         .set_text(text)
         .map_err(|error| format!("failed to write clipboard text: {error}"))
@@ -440,4 +455,3 @@ pub(crate) fn with_event_loop_proxy<R>(
         .expect("event loop proxy mutex poisoned");
     f(&guard)
 }
-

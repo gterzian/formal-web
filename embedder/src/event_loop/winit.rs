@@ -1,11 +1,4 @@
 use super::FormalWebUserEvent;
-use blitz_traits::events::{
-    BlitzImeEvent, BlitzKeyEvent, KeyState, PointerDetails,
-};
-use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
-use cursor_icon::CursorIcon;
-use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
-use std::sync::{Arc, LazyLock, Mutex};
 use ::winit::dpi::{LogicalPosition, LogicalSize};
 use ::winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent};
 use ::winit::event_loop::EventLoopProxy;
@@ -14,6 +7,11 @@ use ::winit::keyboard::{
     ModifiersState as WinitModifiersState, NamedKey, PhysicalKey,
 };
 use ::winit::window::{Cursor, Window};
+use blitz_traits::events::{BlitzImeEvent, BlitzKeyEvent, KeyState, PointerDetails};
+use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
+use cursor_icon::CursorIcon;
+use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
+use std::sync::{Arc, LazyLock, Mutex};
 
 #[derive(Clone, Default)]
 pub struct EventLoopOptions {
@@ -73,16 +71,16 @@ impl WinitShellProvider {
 }
 
 fn read_clipboard_text() -> Result<String, String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("failed to access clipboard: {error}"))?;
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("failed to access clipboard: {error}"))?;
     clipboard
         .get_text()
         .map_err(|error| format!("failed to read clipboard text: {error}"))
 }
 
 fn write_clipboard_text(text: String) -> Result<(), String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("failed to access clipboard: {error}"))?;
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("failed to access clipboard: {error}"))?;
     clipboard
         .set_text(text)
         .map_err(|error| format!("failed to write clipboard text: {error}"))
@@ -129,7 +127,8 @@ fn theme_to_color_scheme(theme: ::winit::window::Theme) -> ColorScheme {
 pub fn viewport_snapshot_for_window(window: &Window) -> (u32, u32, f32, ColorScheme) {
     let size = window.inner_size();
     let scale = window.scale_factor() as f32;
-    let color_scheme = theme_to_color_scheme(window.theme().unwrap_or(::winit::window::Theme::Light));
+    let color_scheme =
+        theme_to_color_scheme(window.theme().unwrap_or(::winit::window::Theme::Light));
     (size.width, size.height, scale, color_scheme)
 }
 

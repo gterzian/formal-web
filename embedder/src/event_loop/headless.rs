@@ -1,11 +1,16 @@
-use super::{
-    BrowserState, FormalWebUserEvent, NavigationCompleted, NavigationCompletion,
-    PendingNavigation, automation_screenshot_png, automation_visible_frame_viewports,
-    read_clipboard_text, startup_destination_url, update_window_viewport_snapshot,
-    write_clipboard_text,
-};
 use super::winit_integration::event_loop_options;
-use automation::{AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport};
+use super::{
+    BrowserState, FormalWebUserEvent, NavigationCompleted, NavigationCompletion, PendingNavigation,
+    automation_screenshot_png, automation_visible_frame_viewports, read_clipboard_text,
+    startup_destination_url, update_window_viewport_snapshot, write_clipboard_text,
+};
+use ::winit::application::ApplicationHandler;
+use ::winit::event::WindowEvent;
+use ::winit::event_loop::ActiveEventLoop;
+use ::winit::window::WindowId;
+use automation::{
+    AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport,
+};
 use blitz_traits::events::{
     BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
     MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
@@ -16,10 +21,6 @@ use keyboard_types::Modifiers as KeyboardModifiers;
 use serde_json::Value;
 use std::time::Duration;
 use webview::WebviewProvider;
-use ::winit::application::ApplicationHandler;
-use ::winit::event::WindowEvent;
-use ::winit::event_loop::ActiveEventLoop;
-use ::winit::window::WindowId;
 
 const HEADLESS_VIEWPORT_WIDTH: u32 = 800;
 const HEADLESS_VIEWPORT_HEIGHT: u32 = 600;
@@ -34,12 +35,12 @@ fn startup_debug_enabled() -> bool {
 
 fn ui_event_summary(event: &UiEvent) -> String {
     match event {
-        UiEvent::PointerMove(event)
-        | UiEvent::PointerDown(event)
-        | UiEvent::PointerUp(event) => format!(
-            "pointer client=({:.1},{:.1})",
-            event.coords.client_x, event.coords.client_y
-        ),
+        UiEvent::PointerMove(event) | UiEvent::PointerDown(event) | UiEvent::PointerUp(event) => {
+            format!(
+                "pointer client=({:.1},{:.1})",
+                event.coords.client_x, event.coords.client_y
+            )
+        }
         UiEvent::Wheel(event) => format!(
             "wheel client=({:.1},{:.1}) delta={:?}",
             event.coords.client_x, event.coords.client_y, event.delta
@@ -132,7 +133,9 @@ impl HeadlessEmbedderApp {
                 eprintln!("failed to set default viewport: {error}");
             }
             if let Some(webview_id) = self.current_webview_id {
-                if let Err(error) = provider.set_traversable_viewport(webview_id, viewport_snapshot, 0.0, 0.0) {
+                if let Err(error) =
+                    provider.set_traversable_viewport(webview_id, viewport_snapshot, 0.0, 0.0)
+                {
                     eprintln!("failed to set traversable viewport: {error}");
                 }
             }
@@ -157,9 +160,7 @@ impl HeadlessEmbedderApp {
         if startup_debug_enabled() {
             eprintln!(
                 "[startup-debug][embedder-headless] navigation_requested webview={} current_before={:?} url={}",
-                webview_id.0,
-                self.current_webview_id,
-                destination_url
+                webview_id.0, self.current_webview_id, destination_url
             );
         }
         if self.current_webview_id.is_none() {
@@ -197,9 +198,7 @@ impl HeadlessEmbedderApp {
         if startup_debug_enabled() {
             eprintln!(
                 "[startup-debug][embedder-headless] navigation_completed webview={} current_before={:?} status={:?}",
-                completed.webview_id.0,
-                self.current_webview_id,
-                completed.status
+                completed.webview_id.0, self.current_webview_id, completed.status
             );
         }
         if self.current_webview_id.is_none() {
@@ -269,9 +268,7 @@ impl HeadlessEmbedderApp {
 
     fn dispatch_automation_click(&mut self, x: f32, y: f32) -> Result<(), String> {
         if input_debug_enabled() {
-            eprintln!(
-                "[input-debug][embedder-headless] automation_click at=({x:.1},{y:.1})"
-            );
+            eprintln!("[input-debug][embedder-headless] automation_click at=({x:.1},{y:.1})");
         }
         let modifiers = KeyboardModifiers::default();
         let move_event = BlitzPointerEvent {
@@ -359,10 +356,8 @@ impl HeadlessEmbedderApp {
 impl AutomationHost for HeadlessEmbedderApp {
     fn automation_snapshot(&mut self) -> AutomationSnapshot {
         self.sync_browser_navigable_id_from_provider();
-        self.browser.automation_snapshot(
-            self.current_webview_id,
-            self.has_top_level_traversable,
-        )
+        self.browser
+            .automation_snapshot(self.current_webview_id, self.has_top_level_traversable)
     }
 
     fn automation_visible_frame_viewports(
@@ -455,7 +450,10 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 });
             }
             FormalWebUserEvent::RequestRedraw(_webview_id) => {}
-            FormalWebUserEvent::NavigationRequested { webview_id, destination_url } => {
+            FormalWebUserEvent::NavigationRequested {
+                webview_id,
+                destination_url,
+            } => {
                 self.handle_navigation_requested(webview_id, destination_url);
             }
             FormalWebUserEvent::NavigationCompleted(completed) => {
@@ -465,9 +463,7 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 if startup_debug_enabled() {
                     eprintln!(
                         "[startup-debug][embedder-headless] new_webview webview={} current_before={:?} target_name={}",
-                        webview_id.0,
-                        self.current_webview_id,
-                        target_name
+                        webview_id.0, self.current_webview_id, target_name
                     );
                 }
                 let _ = target_name;
