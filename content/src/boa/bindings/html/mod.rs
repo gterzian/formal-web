@@ -7,5 +7,5 @@ mod location;
 mod window;
 
 pub(crate) use host_hooks::build_boa_context;
-pub(crate) use host_hooks::install_global_properties;
+pub(crate) use host_hooks::wire_interface_prototypes;
 pub(crate) use html_element::style_declaration_object;

@@ -14,6 +14,10 @@ All other locations require explicit user approval before any write, move, or de
 
 When in doubt, ask before writing.
 
+# Safety
+
+Never write any unsafe code withou the user's explicit approval.
+
 # Documentation Chain
 
 Read repository documentation from general to specific:
@@ -43,42 +47,11 @@ The `.pi/extensions/pi-share-hf/` extension archives pi sessions to `.pi/collect
 - **`/collect-session` command** — Interactive equivalent of the above.
 - **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
 
-## CDP Browser Testing
+## Testing with formal-web
 
-The pi agent has built-in browser tools (`browser_navigate`, `browser_click`,
-`browser_evaluate`, `browser_get_text`, `browser_screenshot`) that connect to a
-CDP-compatible browser. formal-web implements a CDP server for testing:
-
-```bash
-# Start the formal-web browser with CDP enabled
-cargo run --bin formal-web -- cdp --headless --port 9222 \
-  --startup-url "file:///path/to/artifacts/test-page.html"
-
-# Enumerate page targets
-curl http://127.0.0.1:9222/json
-
-# Connect to a page target via WebSocket for CDP commands
-# (Node.js WebSocket API works out of the box):
-```
-
-```javascript
-const ws = new WebSocket('ws://localhost:9222/devtools/page/<id>');
-ws.addEventListener('open', () => {
-  ws.send(JSON.stringify({
-    id: 1,
-    method: 'Runtime.evaluate',
-    params: { expression: 'document.title' }
-  }));
-});
-ws.addEventListener('message', (event) => {
-  console.log(JSON.parse(event.data));
-});
-```
-
-The built-in pi browser tools (`browser_navigate`, etc.) do not currently
-connect to formal-web's CDP — they target a separate browser instance.
-For testing formal-web, use direct WebSocket CDP commands as shown above
-or the WebDriver interface via `formal-web webdriver`.
+Formal-web supports three testing interfaces. See `automation/README.md`
+for detailed documentation, and `.pi/extensions/browser/README.md` for the
+pi browser extension that wraps CDP into agent-callable tools.
 
 ## web_standards — Spec Reading
 

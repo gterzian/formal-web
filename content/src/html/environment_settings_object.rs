@@ -4,26 +4,20 @@ use blitz_dom::BaseDocument;
 use boa_engine::{
     Context, JsError, JsResult, JsValue, Source,
     class::Class,
+    js_string,
     object::JsObject,
+    property::Attribute,
 };
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
-use crate::boa::bindings::html::{build_boa_context, install_global_properties};
-use crate::boa::platform_objects::{
-    document_object, object_for_existing_node, resolve_element_object, take_animation_frame_callbacks,
-};
-use crate::dom::{
-    Document, EventDispatchHost,
-};
-use crate::html::{
-    GlobalScope, TimerHandler, Window,
-};
-use crate::webidl::{
-    Callback, ContextCallbackHost, EcmascriptHost, ExceptionBehavior,
-    invoke_callback_function,
-};
+use crate::boa::bindings::html::{build_boa_context, wire_interface_prototypes};
+use crate::boa::platform_objects::{store_document_object, with_global_scope};
+use crate::html::Window;
+use crate::boa::{install_console_namespace, install_document_property};
+use crate::dom::{Document, EventDispatchHost};
+use crate::html::TimerHandler;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -68,23 +62,6 @@ pub struct EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#concept-settings-object-time-origin>
     pub time_origin: Instant,
-
-    /// Content-to-user-agent IPC sender for navigation and other content events.
-    pub event_sender: Option<IpcSender<ContentEvent>>,
-
-    /// <https://html.spec.whatwg.org/#concept-navigable>
-    pub source_navigable_id: Option<NavigableId>,
-
-    /// <https://html.spec.whatwg.org/#dom-document>
-    pub document_id: Option<DocumentId>,
-
-    /// Raw pointer to the `GlobalScope` owned by the `Window` inside the boa Context.
-    /// The Window lives inside the Context's realm as the global object, and the Context
-    /// is owned by this struct, so the pointer is valid for the entire lifecycle.
-    /// This exists so HTML algorithms can access window-global state without traversing
-    /// boa's GC heap. The GlobalScope IS traced through the Window — the raw pointer
-    /// is purely an access optimization for the native side.
-    global_scope_ptr: *const GlobalScope,
 }
 
 impl EnvironmentSettingsObject {
@@ -99,32 +76,27 @@ impl EnvironmentSettingsObject {
         // GlobalScope during build().
         let mut context = build_boa_context(Rc::clone(&document))?;
 
-        // Capture a raw pointer to the GlobalScope inside the Window for direct
-        // access by HTML algorithms without traversing boa's GC heap.
-        // Safety: The Window lives inside the Context's realm as the global object,
-        // and the Context is owned by this struct, so the pointer is valid for the
-        // entire lifecycle of EnvironmentSettingsObject.
-        // Keep the global object JsObject alive so the downcast_ref borrow is valid.
-        let global_object = context.global_object();
-        let window = global_object
-            .downcast_ref::<Window>()
-            .ok_or_else(|| String::from("global object is not a Window"))?;
-        let global_scope_ptr: *const GlobalScope = &window.global_scope as *const GlobalScope;
+        // Wire up prototype chains (Window → EventTarget, etc.) before any
+        // objects are created.
+        wire_interface_prototypes(&mut context);
 
-        // Install timer host and navigation info on the GlobalScope now that we
-        // have direct access to it.
+        // Install timer host and navigation info on the GlobalScope through the
+        // safe boa API (with_global_scope — traverses the GC heap to reach the
+        // Window's GlobalScope).
         if let (Some(event_sender), Some(document_id)) = (&event_sender, document_id) {
-            // Safety: global_scope_ptr is valid because the Context (which owns
-            // the Window that owns the GlobalScope) is alive.
-            unsafe {
-                (*global_scope_ptr).set_timer_host(document_id, event_sender.clone());
-            }
+            with_global_scope(&context, |global_scope| {
+                global_scope.set_timer_host(document_id, event_sender.clone());
+                Ok(())
+            })
+            .map_err(|error| error.to_string())?;
         }
         if let Some(navigable_id) = source_navigable_id {
             if let Some(event_sender) = &event_sender {
-                unsafe {
-                    (*global_scope_ptr).set_navigation_info(navigable_id, event_sender.clone());
-                }
+                with_global_scope(&context, |global_scope| {
+                    global_scope.set_navigation_info(navigable_id, event_sender.clone());
+                    Ok(())
+                })
+                .map_err(|error| error.to_string())?;
             }
         }
 
@@ -132,7 +104,21 @@ impl EnvironmentSettingsObject {
             Class::from_data(Document::new(document.clone(), creation_url.clone()), &mut context)
                 .map_err(|error| error.to_string())?;
 
-        install_global_properties(&mut context, document_object)?;
+        store_document_object(&context, document_object)
+            .map_err(|error| error.to_string())?;
+        install_document_property(&mut context).map_err(|error| error.to_string())?;
+        install_console_namespace(&mut context).map_err(|error| error.to_string())?;
+
+        let global = context.global_object();
+        if let Some(window_class) = context.get_global_class::<Window>() {
+            global.set_prototype(Some(window_class.prototype()));
+        }
+        context
+            .register_global_property(js_string!("window"), global.clone(), Attribute::all())
+            .map_err(|error| error.to_string())?;
+        context
+            .register_global_property(js_string!("self"), global, Attribute::all())
+            .map_err(|error| error.to_string())?;
 
         Ok(Self {
             context,
@@ -143,27 +129,19 @@ impl EnvironmentSettingsObject {
             creation_url,
             referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
             time_origin: Instant::now(),
-            event_sender,
-            source_navigable_id,
-            document_id,
-            global_scope_ptr,
         })
-    }
-
-    /// Access the GlobalScope directly without traversing the boa GC heap.
-    pub(crate) fn global_scope(&self) -> &GlobalScope {
-        // Safety: global_scope_ptr points to a GlobalScope owned by the Window
-        // inside self.context. Since self owns self.context, the pointer is valid
-        // as long as self exists.
-        unsafe { &*self.global_scope_ptr }
     }
 
     pub(crate) fn current_time_millis(&self) -> f64 {
         self.time_origin.elapsed().as_secs_f64() * 1000.0
     }
 
-    pub fn clear_all_window_timers(&self) {
-        self.global_scope().clear_all_timers();
+    pub fn clear_all_window_timers(&self) -> Result<(), String> {
+        with_global_scope(&self.context, |global_scope| {
+            global_scope.clear_all_timers();
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
     }
 
     pub fn evaluate_script(&mut self, source: &str) -> Result<(), String> {
@@ -195,16 +173,18 @@ impl EnvironmentSettingsObject {
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
         let callbacks =
-            take_animation_frame_callbacks(&self.context).map_err(|error| error.to_string())?;
+            crate::boa::platform_objects::take_animation_frame_callbacks(&self.context)
+                .map_err(|error| error.to_string())?;
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
-            let mut host = ContextCallbackHost::new(&mut self.context, "animation frame callback");
-            invoke_callback_function(
+            let mut host =
+                crate::webidl::ContextCallbackHost::new(&mut self.context, "animation frame callback");
+            crate::webidl::invoke_callback_function(
                 &mut host,
                 &callback,
                 &[JsValue::from(now)],
-                ExceptionBehavior::Report,
+                crate::webidl::ExceptionBehavior::Report,
                 None,
             )
             .map_err(|error| error.to_string())?;
@@ -224,17 +204,26 @@ impl EnvironmentSettingsObject {
             "run timer id={} key={} nesting={}",
             timer_id, timer_key, nesting_level
         ));
-        let previous_nesting_level =
-            self.global_scope().set_current_timer_nesting_level(Some(nesting_level));
 
-        let timer = self.global_scope().window_timer(timer_id, timer_key);
+        let previous_nesting_level = with_global_scope(&self.context, |global_scope| {
+            Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
+        })
+        .map_err(|error| error.to_string())?;
+
+        let timer = with_global_scope(&self.context, |global_scope| {
+            Ok(global_scope.window_timer(timer_id, timer_key))
+        })
+        .map_err(|error| error.to_string())?;
 
         let Some(timer) = timer else {
             log_timer_debug(format!(
                 "run timer id={} key={} missing_registration",
                 timer_id, timer_key
             ));
-            self.global_scope().set_current_timer_nesting_level(previous_nesting_level);
+            let _ = with_global_scope(&self.context, |global_scope| {
+                global_scope.set_current_timer_nesting_level(previous_nesting_level);
+                Ok(())
+            });
             return Ok(());
         };
 
@@ -245,12 +234,13 @@ impl EnvironmentSettingsObject {
                     timer_id, timer_key
                 ));
                 let global = JsValue::from(self.context.global_object());
-                let mut host = ContextCallbackHost::new(&mut self.context, "timer callback");
-                let callback_result = invoke_callback_function(
+                let mut host =
+                    crate::webidl::ContextCallbackHost::new(&mut self.context, "timer callback");
+                let callback_result = crate::webidl::invoke_callback_function(
                     &mut host,
                     callback,
                     &timer.arguments,
-                    ExceptionBehavior::Report,
+                    crate::webidl::ExceptionBehavior::Report,
                     Some(&global),
                 );
                 if let Err(error) = callback_result {
@@ -274,14 +264,18 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let completion_result = self
-            .global_scope()
-            .complete_window_timer(timer_id, timer_key);
-        self.global_scope().set_current_timer_nesting_level(previous_nesting_level);
+        let _ = with_global_scope(&self.context, |global_scope| {
+            let _ = global_scope.complete_window_timer(timer_id, timer_key);
+            Ok(())
+        });
+        let _ = with_global_scope(&self.context, |global_scope| {
+            global_scope.set_current_timer_nesting_level(previous_nesting_level);
+            Ok(())
+        });
         if let Err(error) = self.perform_a_microtask_checkpoint() {
             eprintln!("content error: {error}");
         }
-        completion_result
+        Ok(())
     }
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
@@ -290,13 +284,14 @@ impl EnvironmentSettingsObject {
     }
 }
 
-impl EcmascriptHost for EnvironmentSettingsObject {
+impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
     fn context(&mut self) -> &mut boa_engine::Context {
         &mut self.context
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        ContextCallbackHost::new(&mut self.context, "event listener").get(object, property)
+        crate::webidl::ContextCallbackHost::new(&mut self.context, "event listener")
+            .get(object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
@@ -312,17 +307,17 @@ impl EcmascriptHost for EnvironmentSettingsObject {
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> JsResult<JsValue> {
-        ContextCallbackHost::new(&mut self.context, "event listener")
+        crate::webidl::ContextCallbackHost::new(&mut self.context, "event listener")
             .call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        ContextCallbackHost::new(&mut self.context, "event listener")
+        crate::webidl::ContextCallbackHost::new(&mut self.context, "event listener")
             .perform_a_microtask_checkpoint()
     }
 
-    fn report_exception(&mut self, error: JsError, callback: &Callback) {
-        ContextCallbackHost::new(&mut self.context, "event listener")
+    fn report_exception(&mut self, error: JsError, callback: &crate::webidl::Callback) {
+        crate::webidl::ContextCallbackHost::new(&mut self.context, "event listener")
             .report_exception(error, callback)
     }
 }
@@ -333,7 +328,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
-        document_object(&self.context)
+        crate::boa::platform_objects::document_object(&self.context)
     }
 
     fn global_object(&mut self) -> JsObject {
@@ -341,7 +336,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        resolve_element_object(node_id, &mut self.context)
+        crate::boa::platform_objects::resolve_element_object(node_id, &mut self.context)
     }
 
     fn resolve_existing_node_object(
@@ -349,10 +344,12 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> JsResult<JsObject> {
-        object_for_existing_node(document, node_id, &mut self.context)
+        crate::boa::platform_objects::object_for_existing_node(document, node_id, &mut self.context)
     }
 
     fn current_time_millis(&self) -> f64 {
         EnvironmentSettingsObject::current_time_millis(self)
     }
 }
+
+
