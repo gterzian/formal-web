@@ -475,7 +475,9 @@ fn run_tlc(
         .arg(tlc_workers.to_string());
     if let Some(config_path) = spec.trace_config_path().as_ref().or(spec.config.as_ref()) {
         let Some(config_name) = config_path.file_name() else {
-            let _ = fs::remove_file(&generated_trace_data_path);
+            if let Err(error) = fs::remove_file(&generated_trace_data_path) {
+                eprintln!("[validate] failed to remove generated trace data: {error}");
+            }
             return Err(format!("invalid config path {}", config_path.display()));
         };
         command.arg("-config").arg(config_name);

@@ -2617,12 +2617,14 @@ impl UserAgentWorker {
                 // content-side traffic cannot revive it after the traversable has advanced.
                 if let Ok(command_sender) = self.command_sender_for_traversable(pending.traversable_id)
                 {
-                    let _ = self.send_event_loop_command(
+                    if let Err(error) = self.send_event_loop_command(
                         &command_sender,
                         ContentCommand::DestroyDocument {
                             document_id: previous_document_id,
                         },
-                    );
+                    ) {
+                        eprintln!("[user-agent] failed to destroy previous document: {error}");
+                    }
                 }
                 self.state.documents.remove(&previous_document_id);
             }
@@ -2935,10 +2937,12 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.navigation_completed(NavigationCompleted {
+                if let Err(error) = self.host.navigation_completed(NavigationCompleted {
                     webview_id: WebviewId(pending.traversable_id),
                     status: NavigationCompletion::Aborted { message: error },
-                });
+                }) {
+                    eprintln!("[user-agent] failed to report navigation completed (init doc): {error}");
+                }
                 return;
             }
         };
@@ -2951,10 +2955,12 @@ impl UserAgentWorker {
             Err(error) => {
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.navigation_completed(NavigationCompleted {
+                if let Err(error) = self.host.navigation_completed(NavigationCompleted {
                     webview_id: WebviewId(pending.traversable_id),
                     status: NavigationCompletion::Aborted { message: error },
-                });
+                }) {
+                    eprintln!("[user-agent] failed to report navigation completed (command sender): {error}");
+                }
                 return;
             }
         };
@@ -3025,10 +3031,12 @@ impl UserAgentWorker {
                 );
                 self.state
                     .set_navigable_ongoing_navigation(pending.traversable_id, None);
-                let _ = self.host.navigation_completed(NavigationCompleted {
+                if let Err(error) = self.host.navigation_completed(NavigationCompleted {
                     webview_id: WebviewId(pending.traversable_id),
                     status: NavigationCompletion::Aborted { message: error },
-                });
+                }) {
+                    eprintln!("[user-agent] failed to report navigation completed (send): {error}");
+                }
             }
         }
     }
@@ -3040,12 +3048,14 @@ impl UserAgentWorker {
         };
         self.state
             .set_navigable_ongoing_navigation(pending.traversable_id, None);
-        let _ = self.host.navigation_completed(NavigationCompleted {
+        if let Err(error) = self.host.navigation_completed(NavigationCompleted {
             webview_id: WebviewId(pending.traversable_id),
             status: NavigationCompletion::Aborted {
                 message: format!("navigation fetch failed for {}", pending.request.url),
             },
-        });
+        }) {
+            eprintln!("[user-agent] failed to report navigation completed (fetch failed): {error}");
+        }
     }
 
     /// the document-fetch watchdog fired by the timer worker.

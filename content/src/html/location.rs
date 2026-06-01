@@ -332,7 +332,9 @@ impl Location {
 
         // Step 5: "If the given value is the empty string, then set copyURL's port to null."
         if value.is_empty() {
-            let _ = copy_url.set_port(None);
+            if let Err(()) = copy_url.set_port(None) {
+                eprintln!("[location] failed to clear port on URL");
+            }
         } else {
             // Step 6: "Otherwise, basic URL parse the given value ... with port state as state
             // override."
@@ -648,10 +650,14 @@ impl Location {
             return;
         }
 
-        let _ = copy_url.set_host(Some(host_port.host));
+        if let Err(error) = copy_url.set_host(Some(host_port.host)) {
+            eprintln!("[location] failed to set host on URL: {error}");
+        }
         match host_port.port {
             Some(port) => {
-                let _ = copy_url.set_port(Some(port));
+                if let Err(()) = copy_url.set_port(Some(port)) {
+                    eprintln!("[location] failed to set port on URL");
+                }
             }
             None => {}
         }
@@ -661,14 +667,18 @@ impl Location {
         if Host::parse(value).is_err() {
             return;
         }
-        let _ = copy_url.set_host(Some(value));
+        if let Err(error) = copy_url.set_host(Some(value)) {
+            eprintln!("[location] failed to set hostname on URL: {error}");
+        }
     }
 
     fn basic_url_parse_port_state(&self, copy_url: &mut Url, value: &str) {
         let Ok(port) = value.parse::<u16>() else {
             return;
         };
-        let _ = copy_url.set_port(Some(port));
+        if let Err(()) = copy_url.set_port(Some(port)) {
+            eprintln!("[location] failed to set port on URL");
+        }
     }
 
     fn basic_url_parse_path_start_state(&self, copy_url: &mut Url, value: &str) {

@@ -11,6 +11,7 @@ All other locations require explicit user approval before any write, move, or de
 - Other repositories or project directories
 - Home directory dotfiles and config (~/.config, ~/.bashrc, etc.)
 - Shared or system-wide directories (/usr/local, /etc, etc.)
+- Files under `vendor/`, generally speaking those should not be edited unless the user directs you to do so. Those files should not be considered part of the repo (so if the user instructs to do something "across the repo", that excludes vendor).
 
 When in doubt, ask before writing.
 

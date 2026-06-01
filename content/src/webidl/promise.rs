@@ -67,11 +67,13 @@ pub(crate) fn promise_from_completion(
 pub(crate) fn rejected_promise_from_error(error: JsError, context: &mut Context) -> JsObject {
     rejected_promise(error_to_rejection_reason(error, context), context).unwrap_or_else(|_| {
         let (promise, resolvers) = JsPromise::new_pending(context);
-        let _ = resolvers.reject.call(
+        if let Err(error) = resolvers.reject.call(
             &JsValue::undefined(),
             &[JsValue::undefined()],
             context,
-        );
+        ) {
+            eprintln!("[webidl] failed to reject fallback promise in rejected_promise_from_error: {error}");
+        }
         promise.into()
     })
 }

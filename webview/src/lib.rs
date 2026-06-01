@@ -586,7 +586,7 @@ impl WebviewProvider {
                 continue;
             }
 
-            let _ = self.set_traversable_viewport(
+            if let Err(error) = self.set_traversable_viewport(
                 child_webview_id,
                 (
                     published_viewport.width,
@@ -596,7 +596,9 @@ impl WebviewProvider {
                 ),
                 published_viewport.offset_x,
                 published_viewport.offset_y,
-            );
+            ) {
+                eprintln!("[webview] failed to set traversable viewport: {error}");
+            }
             self.note_rendering_opportunity(child_webview_id, "visible_child_viewport");
 
             // Also refresh the parent traversable. Embed-site clip/transform data is produced

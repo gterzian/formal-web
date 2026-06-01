@@ -151,7 +151,9 @@ impl Drop for CdpServerHandle {
             let _ = shutdown.send(());
         }
         if let Some(listener_thread) = self.listener_thread.take() {
-            let _ = listener_thread.join();
+            if let Err(error) = listener_thread.join() {
+                eprintln!("[cdp] failed to join listener thread: {error:?}");
+            }
         }
     }
 }
@@ -861,7 +863,9 @@ async fn run_cdp_server(listener: TcpListener, state: CdpState, mut shutdown: on
     loop {
         tokio::select! {
             _ = &mut shutdown => {
-                let _ = session_shutdown_tx.send(true);
+                if let Err(error) = session_shutdown_tx.send(true) {
+                    eprintln!("[cdp] failed to signal session shutdown: {error}");
+                }
                 break;
             }
             accept_result = listener.accept() => {
@@ -1163,9 +1167,12 @@ async fn handle_websocket_connection(
     }
     .await;
 
-    let _ = state
+    if let Err(error) = state
         .runtime
-        .set_cdp_event_sink(None, Duration::from_millis(250));
+        .set_cdp_event_sink(None, Duration::from_millis(250))
+    {
+        eprintln!("[cdp] failed to clear CDP event sink: {error}");
+    }
     result
 }
 
@@ -1948,7 +1955,9 @@ mod tests {
         assert!(unknown_events.is_empty());
         assert_eq!(unknown_response["result"], json!({}));
 
-        let _ = socket.close(None);
+        if let Err(error) = socket.close(None) {
+            eprintln!("[cdp-test] failed to close test socket: {error}");
+        }
     }
 
     fn start_test_server() -> (CdpServerHandle, Arc<Mutex<MockRuntimeState>>, u16) {
@@ -2193,7 +2202,9 @@ mod tests {
         );
         assert_eq!(navigate_events[4]["params"]["frame"]["id"], page_target_id);
 
-        let _ = socket.close(None);
+        if let Err(error) = socket.close(None) {
+            eprintln!("[cdp-test] failed to close test socket: {error}");
+        }
     }
 
     fn automation_snapshot(url: &str, navigable_id: NavigableId) -> AutomationSnapshot {

@@ -220,10 +220,12 @@ impl EnvironmentSettingsObject {
                 "run timer id={} key={} missing_registration",
                 timer_id, timer_key
             ));
-            let _ = with_global_scope(&self.context, |global_scope| {
+            if let Err(error) = with_global_scope(&self.context, |global_scope| {
                 global_scope.set_current_timer_nesting_level(previous_nesting_level);
                 Ok(())
-            });
+            }) {
+                eprintln!("[timers] failed to reset timer nesting level: {error}");
+            }
             return Ok(());
         };
 
