@@ -1,4 +1,4 @@
-import { disconnect, setPort } from "./cdp.js";
+import { browserStatus, disconnect, setPort } from "./cdp.js";
 import { registerTools } from "./tools.js";
 import { FORMALWEB_TEST_PLAN } from "./tests/formalweb.js";
 
@@ -34,6 +34,29 @@ export default function (pi: any) {
     handler: async (_args, ctx) => {
       disconnect();
       ctx.ui.notify("Disconnected from browser", "info");
+    },
+  });
+
+  pi.registerCommand("browser-status", {
+    description: "Report connection status and available CDP targets. Usage: /browser-status",
+    handler: async (_args, ctx) => {
+      try {
+        const status = await browserStatus();
+        const lines: string[] = [];
+        lines.push(`Port: ${status.port}`);
+        lines.push(`Connected: ${status.connected}`);
+        if (status.targets.length > 0) {
+          lines.push(`Targets (${status.targets.length}):`);
+          for (const target of status.targets) {
+            lines.push(`  - ${target.type}: ${target.url}`);
+          }
+        } else {
+          lines.push("No targets found.");
+        }
+        ctx.ui.notify(lines.join("\n"), status.connected ? "info" : "warning");
+      } catch (error: any) {
+        ctx.ui.notify(`Status check failed: ${error.message}`, "error");
+      }
     },
   });
 
