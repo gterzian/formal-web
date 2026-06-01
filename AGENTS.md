@@ -91,3 +91,4 @@ At the end of each task, run the following steps **in order**:
 2. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
    - **Default WPT run** — Runs the Web Platform Tests suite to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
+3. DO NOT collect pi sessions; those are collected automatically on shutdown.
