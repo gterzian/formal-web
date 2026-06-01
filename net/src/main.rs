@@ -121,6 +121,7 @@ pub fn run_net_process(token: String) -> Result<(), String> {
 }
 
 pub fn run_net_process_from_args() -> Result<(), String> {
-    let token = net_token_from_args()?.ok_or_else(|| String::from("missing --net-token argument"))?;
+    let token =
+        net_token_from_args()?.ok_or_else(|| String::from("missing --net-token argument"))?;
     run_net_process(token)
 }

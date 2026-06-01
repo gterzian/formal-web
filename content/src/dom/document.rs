@@ -164,7 +164,8 @@ impl Document {
         // Note: The current WPT coverage here exercises HTML documents, so this getter currently follows the HTML branch below.
 
         // Step 2: "Otherwise, let value be the child text content of the title element, or the empty string if the title element is null."
-        let value = self.node
+        let value = self
+            .node
             .document
             .borrow()
             .find_title_node()

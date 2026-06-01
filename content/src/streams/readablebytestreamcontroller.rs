@@ -18,9 +18,8 @@ use crate::webidl::resolved_promise;
 use super::{
     CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest, ReadableStream,
     ReadableStreamController, ReadableStreamState, StartAlgorithm, extract_source_method,
-    readable_stream_add_read_request,
-    readable_stream_close, readable_stream_error, readable_stream_fulfill_read_request,
-    readable_stream_get_num_read_requests, type_error_value,
+    readable_stream_add_read_request, readable_stream_close, readable_stream_error,
+    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, type_error_value,
 };
 
 #[derive(Clone, Trace, Finalize)]
@@ -123,11 +122,7 @@ impl ArrayBufferViewDescriptor {
         })
     }
 
-    pub(crate) fn new_uint8(
-        buffer: JsArrayBuffer,
-        byte_offset: usize,
-        byte_length: usize,
-    ) -> Self {
+    pub(crate) fn new_uint8(buffer: JsArrayBuffer, byte_offset: usize, byte_length: usize) -> Self {
         Self {
             buffer,
             kind: ArrayBufferViewKind::Uint8Array,
@@ -253,9 +248,7 @@ impl PullIntoDescriptor {
             }
             PullRequest::Byob(read_into_request) => {
                 let value = JsValue::from(self.filled_view(context)?);
-                read_into_request
-                    .clone()
-                    .close_steps(Some(value), context)
+                read_into_request.clone().close_steps(Some(value), context)
             }
         }
     }
@@ -297,9 +290,7 @@ impl PullIntoDescriptor {
 
     fn error(self, error: JsValue, context: &mut Context) -> JsResult<()> {
         match &self.request {
-            PullRequest::Default(read_request) => {
-                read_request.clone().error_steps(error, context)
-            }
+            PullRequest::Default(read_request) => read_request.clone().error_steps(error, context),
             PullRequest::Byob(read_into_request) => {
                 read_into_request.clone().error_steps(error, context)
             }
@@ -391,7 +382,8 @@ impl ReadableStreamBYOBRequest {
         context: &mut Context,
     ) -> JsResult<()> {
         let view_object = view.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("respondWithNewView() requires an ArrayBufferView object")
+            JsNativeError::typ()
+                .with_message("respondWithNewView() requires an ArrayBufferView object")
         })?;
         let view = ArrayBufferViewDescriptor::from_value(view, context)?;
         self.controller_slot()?
@@ -497,11 +489,17 @@ impl ReadableByteStreamController {
             return Ok(());
         };
         let maybe_view = if let Some(descriptor) = self.pending_pull_intos.borrow().front() {
-            Some(descriptor.view.create_remaining_view(descriptor.bytes_filled, context)?)
+            Some(
+                descriptor
+                    .view
+                    .create_remaining_view(descriptor.bytes_filled, context)?,
+            )
         } else {
             None
         };
-        with_readable_stream_byob_request_ref(&object, |request| request.set_view_slot(maybe_view))?;
+        with_readable_stream_byob_request_ref(&object, |request| {
+            request.set_view_slot(maybe_view)
+        })?;
         Ok(())
     }
 
@@ -559,7 +557,9 @@ impl ReadableByteStreamController {
 
     /// <https://streams.spec.whatwg.org/#rbs-controller-close>
     pub(crate) fn close(&self, context: &mut Context) -> JsResult<()> {
-        if self.close_requested.get() || self.stream_slot()?.state() != ReadableStreamState::Readable {
+        if self.close_requested.get()
+            || self.stream_slot()?.state() != ReadableStreamState::Readable
+        {
             return Err(JsNativeError::typ()
                 .with_message("The stream is not in a state that permits close")
                 .into());
@@ -569,7 +569,9 @@ impl ReadableByteStreamController {
 
     /// <https://streams.spec.whatwg.org/#rbs-controller-enqueue>
     pub(crate) fn enqueue(&self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
-        if self.close_requested.get() || self.stream_slot()?.state() != ReadableStreamState::Readable {
+        if self.close_requested.get()
+            || self.stream_slot()?.state() != ReadableStreamState::Readable
+        {
             return Err(JsNativeError::typ()
                 .with_message("The stream is not in a state that permits enqueue")
                 .into());
@@ -583,7 +585,11 @@ impl ReadableByteStreamController {
     }
 
     /// <https://streams.spec.whatwg.org/#rbs-controller-private-cancel>
-    pub(crate) fn cancel_steps(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn cancel_steps(
+        &self,
+        reason: JsValue,
+        context: &mut Context,
+    ) -> JsResult<JsObject> {
         self.reset_queue();
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
         self.invalidate_byob_request()?;
@@ -601,7 +607,11 @@ impl ReadableByteStreamController {
     }
 
     /// <https://streams.spec.whatwg.org/#rbs-controller-private-pull>
-    pub(crate) fn pull_steps(&self, read_request: ReadRequest, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn pull_steps(
+        &self,
+        read_request: ReadRequest,
+        context: &mut Context,
+    ) -> JsResult<()> {
         let stream = self.stream_slot()?;
         if self.queue_total_size.get() > 0 {
             return self.fill_read_request_from_queue(stream, read_request, context);
@@ -870,11 +880,15 @@ impl ReadableByteStreamController {
                 return Ok(());
             }
             // Spec: ConvertPullIntoDescriptor — result view covers [byteOffset .. bytesFilled].
-            let result_view = descriptor.view.create_result_view(descriptor.bytes_filled, context)?;
+            let result_view = descriptor
+                .view
+                .create_result_view(descriptor.bytes_filled, context)?;
             descriptor.commit_with_value(JsValue::from(result_view), true, context)?;
         } else {
             // Spec: ConvertPullIntoDescriptor — result view covers [byteOffset .. bytesFilled].
-            let result_view = descriptor.view.create_result_view(descriptor.bytes_filled, context)?;
+            let result_view = descriptor
+                .view
+                .create_result_view(descriptor.bytes_filled, context)?;
             descriptor.commit_with_value(JsValue::from(result_view), false, context)?;
         }
 
@@ -904,7 +918,9 @@ impl ReadableByteStreamController {
         let controller_object = self.controller_object()?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
         let pull_promise = match pull_algorithm {
-            Some(pull_algorithm) => JsObject::from(pull_algorithm.call(&controller_object, context)),
+            Some(pull_algorithm) => {
+                JsObject::from(pull_algorithm.call(&controller_object, context))
+            }
             None => resolved_promise(JsValue::undefined(), context)?,
         };
 
@@ -929,8 +945,11 @@ impl ReadableByteStreamController {
         )
         .to_js_function(context.realm());
 
-        let _ = JsPromise::from_object(pull_promise)?
-            .then(Some(on_fulfilled), Some(on_rejected), context)?;
+        let _ = JsPromise::from_object(pull_promise)?.then(
+            Some(on_fulfilled),
+            Some(on_rejected),
+            context,
+        )?;
         Ok(())
     }
 
@@ -1008,7 +1027,10 @@ impl ReadableByteStreamController {
             readable_stream_fulfill_read_request(stream.clone(), chunk, false, context)?;
         }
 
-        if self.close_requested.get() && self.queue_total_size.get() == 0 && self.pending_pull_intos.borrow().is_empty() {
+        if self.close_requested.get()
+            && self.queue_total_size.get() == 0
+            && self.pending_pull_intos.borrow().is_empty()
+        {
             self.clear_algorithms();
             readable_stream_close(stream, context)?;
         }
@@ -1018,7 +1040,9 @@ impl ReadableByteStreamController {
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-fill-pull-into-descriptor-from-queue>
     fn fill_pull_into_from_queue(&self, descriptor: &mut PullIntoDescriptor) -> JsResult<()> {
-        let total_to_copy = descriptor.remaining_byte_length().min(self.queue_total_size.get());
+        let total_to_copy = descriptor
+            .remaining_byte_length()
+            .min(self.queue_total_size.get());
         if total_to_copy == 0 {
             return Ok(());
         }
@@ -1035,7 +1059,8 @@ impl ReadableByteStreamController {
                 let start = entry.remaining_byte_offset();
                 let bytes = {
                     let data = entry.buffer.data().ok_or_else(|| {
-                        JsNativeError::typ().with_message("Readable byte stream queue entry buffer is detached")
+                        JsNativeError::typ()
+                            .with_message("Readable byte stream queue entry buffer is detached")
                     })?;
                     data[start..start + to_take].to_vec()
                 };
@@ -1050,9 +1075,10 @@ impl ReadableByteStreamController {
 
         self.queue_total_size
             .set(self.queue_total_size.get().saturating_sub(copied.len()));
-        let mut data = descriptor.view.buffer.data_mut().ok_or_else(|| {
-            JsNativeError::typ().with_message("BYOB request buffer is detached")
-        })?;
+        let mut data =
+            descriptor.view.buffer.data_mut().ok_or_else(|| {
+                JsNativeError::typ().with_message("BYOB request buffer is detached")
+            })?;
         let start = descriptor.view.byte_offset() + descriptor.bytes_filled;
         let end = start + copied.len();
         data[start..end].copy_from_slice(&copied);
@@ -1087,9 +1113,11 @@ pub(crate) fn with_readable_byte_stream_controller_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&ReadableByteStreamController) -> R,
 ) -> JsResult<R> {
-    let controller = object.downcast_ref::<ReadableByteStreamController>().ok_or_else(|| {
-        JsNativeError::typ().with_message("object is not a ReadableByteStreamController")
-    })?;
+    let controller = object
+        .downcast_ref::<ReadableByteStreamController>()
+        .ok_or_else(|| {
+            JsNativeError::typ().with_message("object is not a ReadableByteStreamController")
+        })?;
     Ok(f(&controller))
 }
 
@@ -1097,9 +1125,11 @@ pub(crate) fn with_readable_stream_byob_request_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&ReadableStreamBYOBRequest) -> R,
 ) -> JsResult<R> {
-    let request = object.downcast_ref::<ReadableStreamBYOBRequest>().ok_or_else(|| {
-        JsNativeError::typ().with_message("object is not a ReadableStreamBYOBRequest")
-    })?;
+    let request = object
+        .downcast_ref::<ReadableStreamBYOBRequest>()
+        .ok_or_else(|| {
+            JsNativeError::typ().with_message("object is not a ReadableStreamBYOBRequest")
+        })?;
     Ok(f(&request))
 }
 
@@ -1111,23 +1141,31 @@ pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
     context: &mut Context,
 ) -> JsResult<()> {
     let controller = ReadableByteStreamController::new();
-    let controller_object: JsObject = ReadableByteStreamController::from_data(controller.clone(), context)?.into();
+    let controller_object: JsObject =
+        ReadableByteStreamController::from_data(controller.clone(), context)?.into();
 
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
     let mut pull_algorithm = PullAlgorithm::ReturnUndefined;
     let mut cancel_algorithm = CancelAlgorithm::ReturnUndefined;
 
-    if let Some(start_method) = extract_source_method(underlying_source_object.as_ref(), "start", context)? {
+    if let Some(start_method) =
+        extract_source_method(underlying_source_object.as_ref(), "start", context)?
+    {
         start_algorithm = StartAlgorithm::JavaScript(start_method);
     }
-    if let Some(pull_method) = extract_source_method(underlying_source_object.as_ref(), "pull", context)? {
+    if let Some(pull_method) =
+        extract_source_method(underlying_source_object.as_ref(), "pull", context)?
+    {
         pull_algorithm = PullAlgorithm::JavaScript(pull_method);
     }
-    if let Some(cancel_method) = extract_source_method(underlying_source_object.as_ref(), "cancel", context)? {
+    if let Some(cancel_method) =
+        extract_source_method(underlying_source_object.as_ref(), "cancel", context)?
+    {
         cancel_algorithm = CancelAlgorithm::JavaScript(cancel_method);
     }
 
-    let auto_allocate_chunk_size = extract_auto_allocate_chunk_size(underlying_source_object.as_ref(), context)?;
+    let auto_allocate_chunk_size =
+        extract_auto_allocate_chunk_size(underlying_source_object.as_ref(), context)?;
 
     set_up_readable_byte_stream_controller(
         stream,
@@ -1163,7 +1201,9 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     controller.pull_again.set(false);
     controller.pulling.set(false);
     controller.strategy_high_water_mark.set(high_water_mark);
-    controller.auto_allocate_chunk_size.set(auto_allocate_chunk_size);
+    controller
+        .auto_allocate_chunk_size
+        .set(auto_allocate_chunk_size);
     *controller.pull_algorithm.borrow_mut() = Some(pull_algorithm);
     *controller.cancel_algorithm.borrow_mut() = Some(cancel_algorithm);
     controller.pending_pull_intos.borrow_mut().clear();
@@ -1188,8 +1228,11 @@ pub(crate) fn set_up_readable_byte_stream_controller(
         controller,
     )
     .to_js_function(context.realm());
-    let _ = JsPromise::from_object(start_promise.into())?
-        .then(Some(on_fulfilled), Some(on_rejected), context)?;
+    let _ = JsPromise::from_object(start_promise.into())?.then(
+        Some(on_fulfilled),
+        Some(on_rejected),
+        context,
+    )?;
     Ok(())
 }
 
@@ -1259,21 +1302,65 @@ fn create_typed_array_view_object(
 ) -> JsResult<JsObject> {
     let length = byte_length / kind.element_size();
     let constructor = match kind {
-        ArrayBufferViewKind::Int8Array => context.intrinsics().constructors().typed_int8_array().constructor(),
-        ArrayBufferViewKind::Uint8Array => context.intrinsics().constructors().typed_uint8_array().constructor(),
-        ArrayBufferViewKind::Uint8ClampedArray => context.intrinsics().constructors().typed_uint8clamped_array().constructor(),
-        ArrayBufferViewKind::Int16Array => context.intrinsics().constructors().typed_int16_array().constructor(),
-        ArrayBufferViewKind::Uint16Array => context.intrinsics().constructors().typed_uint16_array().constructor(),
-        ArrayBufferViewKind::Int32Array => context.intrinsics().constructors().typed_int32_array().constructor(),
-        ArrayBufferViewKind::Uint32Array => context.intrinsics().constructors().typed_uint32_array().constructor(),
-        ArrayBufferViewKind::BigInt64Array => context.intrinsics().constructors().typed_bigint64_array().constructor(),
-        ArrayBufferViewKind::BigUint64Array => context.intrinsics().constructors().typed_biguint64_array().constructor(),
-        ArrayBufferViewKind::Float32Array => context.intrinsics().constructors().typed_float32_array().constructor(),
-        ArrayBufferViewKind::Float64Array => context.intrinsics().constructors().typed_float64_array().constructor(),
+        ArrayBufferViewKind::Int8Array => context
+            .intrinsics()
+            .constructors()
+            .typed_int8_array()
+            .constructor(),
+        ArrayBufferViewKind::Uint8Array => context
+            .intrinsics()
+            .constructors()
+            .typed_uint8_array()
+            .constructor(),
+        ArrayBufferViewKind::Uint8ClampedArray => context
+            .intrinsics()
+            .constructors()
+            .typed_uint8clamped_array()
+            .constructor(),
+        ArrayBufferViewKind::Int16Array => context
+            .intrinsics()
+            .constructors()
+            .typed_int16_array()
+            .constructor(),
+        ArrayBufferViewKind::Uint16Array => context
+            .intrinsics()
+            .constructors()
+            .typed_uint16_array()
+            .constructor(),
+        ArrayBufferViewKind::Int32Array => context
+            .intrinsics()
+            .constructors()
+            .typed_int32_array()
+            .constructor(),
+        ArrayBufferViewKind::Uint32Array => context
+            .intrinsics()
+            .constructors()
+            .typed_uint32_array()
+            .constructor(),
+        ArrayBufferViewKind::BigInt64Array => context
+            .intrinsics()
+            .constructors()
+            .typed_bigint64_array()
+            .constructor(),
+        ArrayBufferViewKind::BigUint64Array => context
+            .intrinsics()
+            .constructors()
+            .typed_biguint64_array()
+            .constructor(),
+        ArrayBufferViewKind::Float32Array => context
+            .intrinsics()
+            .constructors()
+            .typed_float32_array()
+            .constructor(),
+        ArrayBufferViewKind::Float64Array => context
+            .intrinsics()
+            .constructors()
+            .typed_float64_array()
+            .constructor(),
         ArrayBufferViewKind::DataView => {
             return Err(JsNativeError::typ()
                 .with_message("DataView uses a separate constructor path")
-                .into())
+                .into());
         }
     };
 

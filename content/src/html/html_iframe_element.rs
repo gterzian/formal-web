@@ -1,7 +1,6 @@
 use ipc_messages::content::{
-    CreateChildNavigableRequest, DocumentId,
-    Event as ContentEvent, FrameId, IframeTraversableRemoval, NavigableId,
-    UserNavigationInvolvement, iframe_target_name,
+    CreateChildNavigableRequest, DocumentId, Event as ContentEvent, FrameId,
+    IframeTraversableRemoval, NavigableId, UserNavigationInvolvement, iframe_target_name,
 };
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
@@ -13,7 +12,7 @@ use url::Url;
 
 use crate::{
     ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
-    html::navigate, html::HTMLElement, webidl::Callback,
+    html::HTMLElement, html::navigate, webidl::Callback,
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
@@ -332,11 +331,13 @@ pub(crate) fn retire_iframe_traversable(
 
     process
         .event_sender
-        .send(ContentEvent::IframeTraversableRemoved(IframeTraversableRemoval {
-            parent_traversable_id,
-            content_navigable_id,
-            content_frame_id: container_state.content_frame_id,
-        }))
+        .send(ContentEvent::IframeTraversableRemoved(
+            IframeTraversableRemoval {
+                parent_traversable_id,
+                content_navigable_id,
+                content_frame_id: container_state.content_frame_id,
+            },
+        ))
         .map_err(|error| format!("failed to send iframe traversable removal: {error}"))
 }
 
@@ -435,12 +436,14 @@ fn create_a_new_child_navigable(
     // `create a new child navigable`.
     process
         .event_sender
-        .send(ContentEvent::CreateChildNavigable(CreateChildNavigableRequest {
-            parent_traversable_id,
-            content_navigable_id: content_navigable,
-            content_frame_id,
-            target_name,
-        }))
+        .send(ContentEvent::CreateChildNavigable(
+            CreateChildNavigableRequest {
+                parent_traversable_id,
+                content_navigable_id: content_navigable,
+                content_frame_id,
+                target_name,
+            },
+        ))
         .map_err(|error| format!("failed to send create-child-navigable request: {error}"))
 }
 
@@ -452,17 +455,14 @@ fn navigable_container_for_child_navigable(
         .documents
         .iter()
         .find_map(|(parent_document_id, content_document)| {
-            content_document
-                .navigable_container_states
-                .iter()
-                .find_map(|(iframe_node_id, container_state)| {
+            content_document.navigable_container_states.iter().find_map(
+                |(iframe_node_id, container_state)| {
                     (container_state.content_frame_id == content_frame_id)
                         .then_some((*parent_document_id, *iframe_node_id))
-                })
+                },
+            )
         })
 }
-
-
 
 /// Implementation hook for same-origin iframe composition used by the local DOM renderer.
 /// This is an engine integration detail: it wires the already-loaded child document into
@@ -488,10 +488,15 @@ pub(crate) fn attach_same_origin_child_document_for_traversable(
     else {
         return Ok(());
     };
-    let Some(container_state) = process
-        .documents
-        .get(&parent_document_id)
-        .and_then(|content_document| content_document.navigable_container_states.get(&iframe_node_id))
+    let Some(container_state) =
+        process
+            .documents
+            .get(&parent_document_id)
+            .and_then(|content_document| {
+                content_document
+                    .navigable_container_states
+                    .get(&iframe_node_id)
+            })
     else {
         return Ok(());
     };
@@ -551,8 +556,13 @@ fn run_iframe_load_event_steps(
     // TODO: Implement document iframe load in progress flag.
 
     // Step 6: "Fire an event named load at element."
-    fire_event(&mut content_document.settings, &iframe_object, "load", false)
-        .map_err(|error| error.to_string())?;
+    fire_event(
+        &mut content_document.settings,
+        &iframe_object,
+        "load",
+        false,
+    )
+    .map_err(|error| error.to_string())?;
 
     // Step 7: "Unset childDocument's iframe load in progress flag."
     // TODO: Implement clearing of iframe load in progress flag.
@@ -571,7 +581,10 @@ pub(crate) fn run_iframe_load_event_steps_for_traversable(
     else {
         return Ok(());
     };
-    let Some(content_frame_id) = process.documents.get(&document_id).map(|document| document.frame_id)
+    let Some(content_frame_id) = process
+        .documents
+        .get(&document_id)
+        .map(|document| document.frame_id)
     else {
         return Ok(());
     };
@@ -765,7 +778,7 @@ fn process_iframe_attributes(
                 .get(&iframe_node_id)
         })
         .cloned();
-    
+
     let current_key = previous_iframe_state
         .as_ref()
         .map(|state| state.current_key.clone());
@@ -780,13 +793,15 @@ fn process_iframe_attributes(
     else {
         return Ok(());
     };
-    let content_frame_id = match previous_iframe_state.as_ref().map(|state| state.content_frame_id) {
+    let content_frame_id = match previous_iframe_state
+        .as_ref()
+        .map(|state| state.content_frame_id)
+    {
         Some(content_frame_id) => content_frame_id,
         None => return Ok(()),
     };
     // Note: Determine whether the navigation is cross-origin for cross-origin frame setup.
-    let cross_origin =
-        matches!(&target, IframeNavigationTarget::Url { url } if creation_url.origin() != url.origin());
+    let cross_origin = matches!(&target, IframeNavigationTarget::Url { url } if creation_url.origin() != url.origin());
 
     // Note: If transitioning from cross-origin to same-origin, retire the old traversable
     // so the user agent can clean up the cross-origin child navigable.
@@ -895,11 +910,7 @@ fn process_iframe_attributes(
         }
         IframeNavigationTarget::Url { url } => {
             if cross_origin {
-                attach_cross_origin_iframe(
-                    process,
-                    parent_document_id,
-                    iframe_node_id,
-                )?;
+                attach_cross_origin_iframe(process, parent_document_id, iframe_node_id)?;
             }
             navigate_an_iframe_or_frame(
                 process,

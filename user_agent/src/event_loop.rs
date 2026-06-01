@@ -3,8 +3,8 @@ use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
-    Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, CreateChildNavigableRequest,
-    ColorScheme as MessageColorScheme, Command as ContentCommand, ElementClickResult,
+    Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, ColorScheme as MessageColorScheme,
+    Command as ContentCommand, CreateChildNavigableRequest, ElementClickResult,
     Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
     WebviewProviderMessage,
 };
@@ -30,7 +30,9 @@ const CONTENT_CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(2);
 /// Commands that the user-agent thread can send into one HTML event-loop/content pair.
 #[derive(Clone)]
 pub enum EventLoopCommand {
-    FireAndForget { command: ContentCommand },
+    FireAndForget {
+        command: ContentCommand,
+    },
     SendCommand {
         command: ContentCommand,
         reply: Sender<Result<Option<NavigableId>, String>>,
@@ -220,7 +222,13 @@ impl EventLoopWorker {
 
         let sanitized_label = process_label
             .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, ':' | '-' | '_' | '.') { ch } else { '_' })
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, ':' | '-' | '_' | '.') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
             .collect::<String>();
 
         let mut child_process = ProcessCommand::new(&executable_path);
@@ -429,7 +437,9 @@ impl EventLoopWorker {
                             handler_id: request.handler_id,
                         },
                     })
-                    .map_err(|error| format!("failed to schedule document fetch timeout: {error}"))?;
+                    .map_err(|error| {
+                        format!("failed to schedule document fetch timeout: {error}")
+                    })?;
             }
             ContentEvent::WindowTimerRequested(request) => {
                 // Content already ran the timer initialization algorithm far enough to assign
@@ -482,7 +492,9 @@ impl EventLoopWorker {
                         content_frame_id,
                         target_name,
                     })
-                    .map_err(|error| format!("failed to send create-child-navigable request: {error}"))?;
+                    .map_err(|error| {
+                        format!("failed to send create-child-navigable request: {error}")
+                    })?;
             }
             ContentEvent::NavigationRequested(request) => {
                 // Navigation start leaves the content event loop and reenters the user-agent
@@ -504,9 +516,7 @@ impl EventLoopWorker {
                 ));
                 self.user_agent_command_sender
                     .send(UserAgentCommand::CompleteBeforeUnload { result })
-                    .map_err(|error| {
-                        format!("failed to send beforeunload completion: {error}")
-                    })?;
+                    .map_err(|error| format!("failed to send beforeunload completion: {error}"))?;
             }
             ContentEvent::FinalizeNavigation(finalized) => {
                 // Resume HTML's `finalize a cross-document navigation` continuation in
@@ -548,9 +558,7 @@ impl EventLoopWorker {
                     let send_result = match result.error {
                         Some(error) => Err(error),
                         None => serde_json::from_str(&result.value_json).map_err(|error| {
-                            format!(
-                                "failed to decode content script evaluation result: {error}"
-                            )
+                            format!("failed to decode content script evaluation result: {error}")
                         }),
                     };
                     let _ = waiter.send(send_result);
@@ -566,7 +574,9 @@ impl EventLoopWorker {
                 let _ = reply_sender.send(response);
             }
             ContentEvent::ClipboardWriteRequested(ClipboardWriteRequest { text, reply_sender }) => {
-                let response = self.host.clipboard_set_text(text, CONTENT_CLIPBOARD_TIMEOUT);
+                let response = self
+                    .host
+                    .clipboard_set_text(text, CONTENT_CLIPBOARD_TIMEOUT);
                 let _ = reply_sender.send(response);
             }
             ContentEvent::PaintReady(snapshot) => {
@@ -775,7 +785,9 @@ pub fn stop_event_loop_entry(entry: EventLoopEntry) -> Result<(), String> {
     let (reply_sender, reply_receiver) = bounded(1);
     entry
         .command_sender
-        .send(EventLoopCommand::Stop { reply: reply_sender })
+        .send(EventLoopCommand::Stop {
+            reply: reply_sender,
+        })
         .map_err(|error| format!("failed to send event-loop stop command: {error}"))?;
 
     let stop_result = reply_receiver

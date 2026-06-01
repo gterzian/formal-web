@@ -14,9 +14,6 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::{promise_from_value, rejected_promise, resolved_promise};
 
-use super::{
-    ReadableStream, WritableStream, type_error_value,
-};
 use super::readablestream::create_readable_stream;
 use super::readablestreamdefaultcontroller::{
     CancelAlgorithm, PullAlgorithm, StartAlgorithm as ReadableStartAlgorithm,
@@ -27,6 +24,7 @@ use super::writablestreamdefaultcontroller::{
     AbortAlgorithm, CloseAlgorithm, StartAlgorithm as WritableStartAlgorithm, WriteAlgorithm,
     writable_stream_default_controller_error_if_needed,
 };
+use super::{ReadableStream, WritableStream, type_error_value};
 
 fn stream_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some()
@@ -113,13 +111,17 @@ impl TransformStream {
 
     pub(crate) fn writable(&self) -> JsResult<WritableStream> {
         self.writable.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ().with_message("TransformStream is missing its writable side").into()
+            JsNativeError::typ()
+                .with_message("TransformStream is missing its writable side")
+                .into()
         })
     }
 
     pub(crate) fn writable_object(&self) -> JsResult<JsObject> {
         self.writable_object.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ().with_message("TransformStream is missing its writable JavaScript object").into()
+            JsNativeError::typ()
+                .with_message("TransformStream is missing its writable JavaScript object")
+                .into()
         })
     }
 
@@ -261,8 +263,10 @@ fn initialize_transform_stream(
 ) -> JsResult<()> {
     // Step 1: "Let startAlgorithm be an algorithm that returns startPromise."
     // Note: The readable and writable setup helpers expose distinct Rust enum types for the same spec algorithm.
-    let writable_start_algorithm = WritableStartAlgorithm::ReturnValue(JsValue::from(start_promise.clone()));
-    let readable_start_algorithm = ReadableStartAlgorithm::ReturnValue(JsValue::from(start_promise));
+    let writable_start_algorithm =
+        WritableStartAlgorithm::ReturnValue(JsValue::from(start_promise.clone()));
+    let readable_start_algorithm =
+        ReadableStartAlgorithm::ReturnValue(JsValue::from(start_promise));
 
     // Step 2: "Let writeAlgorithm be the following steps, taking a chunk argument:"
     let stream_for_write = stream.clone();
@@ -270,16 +274,20 @@ fn initialize_transform_stream(
         context.global_object(),
         crate::webidl::Callback::from_object(
             NativeFunction::from_copy_closure_with_captures(
-            |_, args, stream: &TransformStream, context| {
-                // Step 2.1: "Return ! TransformStreamDefaultSinkWriteAlgorithm(stream, chunk)."
-                let chunk = args.get_or_undefined(0).clone();
-                let promise = transform_stream_default_sink_write_algorithm(stream.clone(), chunk, context)?;
-                Ok(JsValue::from(promise))
-            },
-            stream_for_write,
-        )
-        .to_js_function(context.realm())
-        .into(),
+                |_, args, stream: &TransformStream, context| {
+                    // Step 2.1: "Return ! TransformStreamDefaultSinkWriteAlgorithm(stream, chunk)."
+                    let chunk = args.get_or_undefined(0).clone();
+                    let promise = transform_stream_default_sink_write_algorithm(
+                        stream.clone(),
+                        chunk,
+                        context,
+                    )?;
+                    Ok(JsValue::from(promise))
+                },
+                stream_for_write,
+            )
+            .to_js_function(context.realm())
+            .into(),
         ),
     ));
 
@@ -289,16 +297,20 @@ fn initialize_transform_stream(
         context.global_object(),
         crate::webidl::Callback::from_object(
             NativeFunction::from_copy_closure_with_captures(
-            |_, args, stream: &TransformStream, context| {
-                // Step 3.1: "Return ! TransformStreamDefaultSinkAbortAlgorithm(stream, reason)."
-                let reason = args.get_or_undefined(0).clone();
-                let promise = transform_stream_default_sink_abort_algorithm(stream.clone(), reason, context)?;
-                Ok(JsValue::from(promise))
-            },
-            stream_for_abort,
-        )
-        .to_js_function(context.realm())
-        .into(),
+                |_, args, stream: &TransformStream, context| {
+                    // Step 3.1: "Return ! TransformStreamDefaultSinkAbortAlgorithm(stream, reason)."
+                    let reason = args.get_or_undefined(0).clone();
+                    let promise = transform_stream_default_sink_abort_algorithm(
+                        stream.clone(),
+                        reason,
+                        context,
+                    )?;
+                    Ok(JsValue::from(promise))
+                },
+                stream_for_abort,
+            )
+            .to_js_function(context.realm())
+            .into(),
         ),
     ));
 
@@ -308,15 +320,16 @@ fn initialize_transform_stream(
         context.global_object(),
         crate::webidl::Callback::from_object(
             NativeFunction::from_copy_closure_with_captures(
-            |_, _, stream: &TransformStream, context| {
-                // Step 4.1: "Return ! TransformStreamDefaultSinkCloseAlgorithm(stream)."
-                let promise = transform_stream_default_sink_close_algorithm(stream.clone(), context)?;
-                Ok(JsValue::from(promise))
-            },
-            stream_for_close,
-        )
-        .to_js_function(context.realm())
-        .into(),
+                |_, _, stream: &TransformStream, context| {
+                    // Step 4.1: "Return ! TransformStreamDefaultSinkCloseAlgorithm(stream)."
+                    let promise =
+                        transform_stream_default_sink_close_algorithm(stream.clone(), context)?;
+                    Ok(JsValue::from(promise))
+                },
+                stream_for_close,
+            )
+            .to_js_function(context.realm())
+            .into(),
         ),
     ));
 
@@ -436,10 +449,7 @@ fn transform_stream_set_backpressure(
 }
 
 /// <https://streams.spec.whatwg.org/#transform-stream-unblock-write>
-fn transform_stream_unblock_write(
-    stream: &TransformStream,
-    context: &mut Context,
-) -> JsResult<()> {
+fn transform_stream_unblock_write(stream: &TransformStream, context: &mut Context) -> JsResult<()> {
     // Step 1: "If stream.[[backpressure]] is true, perform ! TransformStreamSetBackpressure(stream, false)."
     if stream.backpressure() {
         transform_stream_set_backpressure(stream, false, context)?;
@@ -579,7 +589,9 @@ fn transform_stream_default_controller_enqueue(
         transform_stream_error_writable_and_unblock_write(&stream, error_value, context)?;
 
         // Step 5.2: "Throw stream.[[readable]].[[storedError]]."
-        return Err(boa_engine::JsError::from_opaque(stream.readable()?.stored_error()));
+        return Err(boa_engine::JsError::from_opaque(
+            stream.readable()?.stored_error(),
+        ));
     }
 
     // Step 6: "Let backpressure be ! ReadableStreamDefaultControllerHasBackpressure(readableController)."
@@ -620,7 +632,9 @@ fn transform_stream_default_controller_perform_transform(
         Some(TransformAlgorithm::Identity) => {
             // Step 1: "Let transformPromise be the result of performing controller.[[transformAlgorithm]], passing chunk."
             // Note: The default identity transform algorithm enqueues chunk directly.
-            if let Err(error) = transform_stream_default_controller_enqueue(controller.clone(), chunk, context) {
+            if let Err(error) =
+                transform_stream_default_controller_enqueue(controller.clone(), chunk, context)
+            {
                 rejected_promise(error.into_opaque(context)?, context)?
             } else {
                 resolved_promise(JsValue::undefined(), context)?
@@ -653,7 +667,8 @@ fn transform_stream_default_controller_perform_transform(
         stream,
     )
     .to_js_function(context.realm());
-    let result = JsPromise::from_object(transform_promise)?.then(None, Some(on_rejected), context)?;
+    let result =
+        JsPromise::from_object(transform_promise)?.then(None, Some(on_rejected), context)?;
     Ok(result.into())
 }
 
@@ -706,15 +721,20 @@ fn transform_stream_default_sink_write_algorithm(
     // Step 3: "If stream.[[backpressure]] is true,"
     if stream.backpressure() {
         // Step 3.1: "Let backpressureChangePromise be stream.[[backpressureChangePromise]]."
-        let backpressure_change_promise = stream.backpressure_change_promise().ok_or_else(|| {
-            JsNativeError::typ().with_message("TransformStream is missing its backpressure change promise")
-        })?;
+        let backpressure_change_promise =
+            stream.backpressure_change_promise().ok_or_else(|| {
+                JsNativeError::typ()
+                    .with_message("TransformStream is missing its backpressure change promise")
+            })?;
 
         // Step 3.2: "Assert: backpressureChangePromise is not undefined."
 
         // Step 3.3: "Return the result of reacting to backpressureChangePromise with the following fulfillment steps:"
         let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, captures: &(TransformStream, TransformStreamDefaultController, JsValue), context| {
+            |_,
+             _,
+             captures: &(TransformStream, TransformStreamDefaultController, JsValue),
+             context| {
                 let (stream, controller, chunk) = captures;
 
                 // Step 3.3.1: "Let writable be stream.[[writable]]."
@@ -741,8 +761,11 @@ fn transform_stream_default_sink_write_algorithm(
         )
         .to_js_function(context.realm());
 
-        let result = JsPromise::from_object(backpressure_change_promise)?
-            .then(Some(on_fulfilled), None, context)?;
+        let result = JsPromise::from_object(backpressure_change_promise)?.then(
+            Some(on_fulfilled),
+            None,
+            context,
+        )?;
         return Ok(result.into());
     }
 
@@ -788,22 +811,34 @@ fn transform_stream_default_sink_abort_algorithm(
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
     };
-    let reject_finish_on_fulfilled_cancel =
-        readable_state_before_cancel == super::ReadableStreamState::Readable
-            && readable.state() == super::ReadableStreamState::Errored;
+    let reject_finish_on_fulfilled_cancel = readable_state_before_cancel
+        == super::ReadableStreamState::Readable
+        && readable.state() == super::ReadableStreamState::Errored;
 
     // Step 6: "Perform ! TransformStreamDefaultControllerClearAlgorithms(controller)."
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, captures: &(TransformStreamDefaultController, ReadableStream, JsValue, bool), context| {
+        |_,
+         _,
+         captures: &(
+            TransformStreamDefaultController,
+            ReadableStream,
+            JsValue,
+            bool,
+        ),
+         context| {
             let (controller, readable, reason, reject_finish_on_fulfilled_cancel) = captures;
 
             if *reject_finish_on_fulfilled_cancel {
                 // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                    resolvers.reject.call(&JsValue::undefined(), &[readable.stored_error()], context)?;
+                    resolvers.reject.call(
+                        &JsValue::undefined(),
+                        &[readable.stored_error()],
+                        context,
+                    )?;
                 }
             } else {
                 // Step 7.1.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], reason)."
@@ -816,7 +851,11 @@ fn transform_stream_default_sink_abort_algorithm(
 
                 // Step 7.1.2.2: Resolve finishPromise.
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                    resolvers.resolve.call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                    resolvers.resolve.call(
+                        &JsValue::undefined(),
+                        &[JsValue::undefined()],
+                        context,
+                    )?;
                 }
             }
 
@@ -846,7 +885,9 @@ fn transform_stream_default_sink_abort_algorithm(
 
             // Step 7.2.2: Reject finishPromise with r.
             if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                resolvers.reject.call(&JsValue::undefined(), &[error], context)?;
+                resolvers
+                    .reject
+                    .call(&JsValue::undefined(), &[error], context)?;
             }
 
             Ok(JsValue::undefined())
@@ -855,7 +896,11 @@ fn transform_stream_default_sink_abort_algorithm(
     )
     .to_js_function(context.realm());
 
-    let _ = JsPromise::from_object(cancel_promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+    let _ = JsPromise::from_object(cancel_promise)?.then(
+        Some(on_fulfilled),
+        Some(on_rejected),
+        context,
+    )?;
 
     // Step 8: "Return controller.[[finishPromise]]."
     Ok(finish_promise_obj)
@@ -911,18 +956,28 @@ fn transform_stream_default_sink_close_algorithm(
             if readable_state == super::ReadableStreamState::Errored {
                 // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                    resolvers.reject.call(&JsValue::undefined(), &[readable.stored_error()], context)?;
+                    resolvers.reject.call(
+                        &JsValue::undefined(),
+                        &[readable.stored_error()],
+                        context,
+                    )?;
                 }
             } else {
                 // Step 7.1.2.1: "Perform ! ReadableStreamDefaultControllerClose(readable.[[controller]])."
                 let readable_controller = readable.controller_slot().ok_or_else(|| {
                     JsNativeError::typ().with_message("ReadableStream is missing its controller")
                 })?;
-                readable_controller.as_default_controller().close_steps(context)?;
+                readable_controller
+                    .as_default_controller()
+                    .close_steps(context)?;
 
                 // Step 7.1.2.2: Resolve finishPromise.
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                    resolvers.resolve.call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                    resolvers.resolve.call(
+                        &JsValue::undefined(),
+                        &[JsValue::undefined()],
+                        context,
+                    )?;
                 }
             }
 
@@ -947,7 +1002,9 @@ fn transform_stream_default_sink_close_algorithm(
 
             // Step 7.2.2: Reject finishPromise with r.
             if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                resolvers.reject.call(&JsValue::undefined(), &[error], context)?;
+                resolvers
+                    .reject
+                    .call(&JsValue::undefined(), &[error], context)?;
             }
 
             Ok(JsValue::undefined())
@@ -956,7 +1013,11 @@ fn transform_stream_default_sink_close_algorithm(
     )
     .to_js_function(context.realm());
 
-    let _ = JsPromise::from_object(flush_promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+    let _ = JsPromise::from_object(flush_promise)?.then(
+        Some(on_fulfilled),
+        Some(on_rejected),
+        context,
+    )?;
 
     // Step 8: "Return controller.[[finishPromise]]."
     Ok(finish_promise_obj)
@@ -1024,17 +1085,27 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
     };
-    let reject_finish_on_fulfilled_cancel =
-        writable_state_before_cancel == super::WritableStreamState::Writable
-            && writable.state() != super::WritableStreamState::Writable;
+    let reject_finish_on_fulfilled_cancel = writable_state_before_cancel
+        == super::WritableStreamState::Writable
+        && writable.state() != super::WritableStreamState::Writable;
 
     // Step 6: "Perform ! TransformStreamDefaultControllerClearAlgorithms(controller)."
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, captures: &(TransformStreamDefaultController, TransformStream, WritableStream, JsValue, bool), context| {
-            let (controller, stream, writable, reason, reject_finish_on_fulfilled_cancel) = captures;
+        |_,
+         _,
+         captures: &(
+            TransformStreamDefaultController,
+            TransformStream,
+            WritableStream,
+            JsValue,
+            bool,
+        ),
+         context| {
+            let (controller, stream, writable, reason, reject_finish_on_fulfilled_cancel) =
+                captures;
             let writable_state = writable.state();
             log_stream_debug(format!(
                 "source cancel fulfilled writable_state={:?} reject_finish={} stored_error={}",
@@ -1046,7 +1117,11 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
             // Step 7.1.1: "If writable.[[state]] is \"errored\", reject controller.[[finishPromise]] with writable.[[storedError]]."
             if *reject_finish_on_fulfilled_cancel {
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                    resolvers.reject.call(&JsValue::undefined(), &[writable.stored_error()], context)?;
+                    resolvers.reject.call(
+                        &JsValue::undefined(),
+                        &[writable.stored_error()],
+                        context,
+                    )?;
                 }
             } else {
                 // Step 7.1.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], reason)."
@@ -1064,7 +1139,11 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
 
                 // Step 7.1.2.3: "Resolve controller.[[finishPromise]] with undefined."
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                    resolvers.resolve.call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                    resolvers.resolve.call(
+                        &JsValue::undefined(),
+                        &[JsValue::undefined()],
+                        context,
+                    )?;
                 }
             }
 
@@ -1081,7 +1160,14 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     .to_js_function(context.realm());
 
     let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, captures: &(TransformStreamDefaultController, TransformStream, WritableStream), context| {
+        |_,
+         args,
+         captures: &(
+            TransformStreamDefaultController,
+            TransformStream,
+            WritableStream,
+        ),
+         context| {
             let (controller, stream, writable) = captures;
             let error = args.get_or_undefined(0).clone();
 
@@ -1100,7 +1186,9 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
 
             // Step 7.2.3: Reject finishPromise with r.
             if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
-                resolvers.reject.call(&JsValue::undefined(), &[error], context)?;
+                resolvers
+                    .reject
+                    .call(&JsValue::undefined(), &[error], context)?;
             }
 
             Ok(JsValue::undefined())
@@ -1109,7 +1197,11 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     )
     .to_js_function(context.realm());
 
-    let _ = JsPromise::from_object(cancel_promise)?.then(Some(on_fulfilled), Some(on_rejected), context)?;
+    let _ = JsPromise::from_object(cancel_promise)?.then(
+        Some(on_fulfilled),
+        Some(on_rejected),
+        context,
+    )?;
 
     // Step 8: "Return controller.[[finishPromise]]."
     Ok(finish_promise_obj)
@@ -1217,9 +1309,11 @@ pub(crate) fn construct_transform_stream(
                 .call(&JsValue::undefined(), &[result], context)?;
         } else {
             // Step 13: "Otherwise, resolve startPromise with undefined."
-            start_resolvers
-                .resolve
-                .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+            start_resolvers.resolve.call(
+                &JsValue::undefined(),
+                &[JsValue::undefined()],
+                context,
+            )?;
         }
     } else {
         // Step 13: "Otherwise, resolve startPromise with undefined."
@@ -1248,8 +1342,7 @@ pub(crate) fn with_transform_stream_default_controller_ref<R>(
     let controller = object
         .downcast_ref::<TransformStreamDefaultController>()
         .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("object is not a TransformStreamDefaultController")
+            JsNativeError::typ().with_message("object is not a TransformStreamDefaultController")
         })?;
     Ok(f(&controller))
 }

@@ -11,8 +11,7 @@ use boa_engine::{
 
 use crate::dom::Element;
 use crate::html::{
-    HTMLAnchorElement, HTMLIFrameElement, HTMLElement,
-    inline_style_properties_for_element,
+    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, inline_style_properties_for_element,
 };
 
 use crate::boa::bindings::dom::{
@@ -159,10 +158,7 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     })?
 }
 
-fn inline_style_object_for_element(
-    element: &Element,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+fn inline_style_object_for_element(element: &Element, context: &mut Context) -> JsResult<JsObject> {
     style_declaration_object(&inline_style_properties_for_element(element), context)
 }
 
@@ -173,7 +169,11 @@ pub(crate) fn style_declaration_object(
     let mut initializer = ObjectInitializer::new(context);
     for (name, value) in properties {
         let value = JsValue::from(JsString::from(value.as_str()));
-        initializer.property(JsString::from(name.as_str()), value.clone(), Attribute::all());
+        initializer.property(
+            JsString::from(name.as_str()),
+            value.clone(),
+            Attribute::all(),
+        );
 
         let alias = camel_case_property_name(name);
         if alias != *name {

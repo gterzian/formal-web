@@ -114,9 +114,9 @@ pub(crate) enum ExceptionBehavior {
 pub(crate) fn callback_interface_type_value(value: &JsValue) -> JsResult<Callback> {
     // Step 1: "If V is not an Object, then throw a TypeError."
     let object = value.as_object().ok_or_else(|| {
-        JsError::from(JsNativeError::typ().with_message(
-            "callback interface value is not an object",
-        ))
+        JsError::from(
+            JsNativeError::typ().with_message("callback interface value is not an object"),
+        )
     })?;
 
     // Step 2: "Return the IDL callback interface type value that represents a reference to V, with the incumbent settings object as the callback context."
@@ -133,7 +133,7 @@ pub(crate) fn callback_function_value(value: &JsValue) -> JsResult<Callback> {
         _ => {
             return Err(JsNativeError::typ()
                 .with_message("callback function value is not callable")
-                .into())
+                .into());
         }
     };
 
@@ -212,9 +212,10 @@ pub(crate) fn call_user_objects_operation(
                 false,
                 "IsCallable returned true for a non-object callback operation"
             );
-            JsError::from(JsNativeError::typ().with_message(format!(
-                "callback operation `{op_name}` is not callable"
-            )))
+            JsError::from(
+                JsNativeError::typ()
+                    .with_message(format!("callback operation `{op_name}` is not callable")),
+            )
         })?;
 
         callable = operation;

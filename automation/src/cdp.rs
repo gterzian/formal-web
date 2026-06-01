@@ -1,9 +1,8 @@
-use crate::{
-    AUTOMATION_TIMEOUT, CdpEvent, HttpRequest, SCRIPT_TIMEOUT, find_header_terminator,
-};
 use crate::AutomationRuntime;
+use crate::{AUTOMATION_TIMEOUT, CdpEvent, HttpRequest, SCRIPT_TIMEOUT, find_header_terminator};
 use base64::Engine as _;
 use clap::Args;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -16,7 +15,6 @@ use tokio::net::TcpStream;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time;
-use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{WebSocketStream, accept_async};
 use tungstenite::{Error as WebSocketError, Message};
 use uuid::Uuid;
@@ -132,7 +130,9 @@ impl CdpServerHandle {
                     .enable_all()
                     .build();
                 match runtime {
-                    Ok(runtime) => runtime.block_on(run_cdp_server(listener, state, shutdown_receiver)),
+                    Ok(runtime) => {
+                        runtime.block_on(run_cdp_server(listener, state, shutdown_receiver))
+                    }
                     Err(error) => eprintln!("formal-web cdp server init error: {error}"),
                 }
             })
@@ -224,10 +224,7 @@ impl CdpRequest {
         Ok(Self {
             id: object.get("id").cloned(),
             method,
-            params: object
-                .get("params")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
+            params: object.get("params").cloned().unwrap_or_else(|| json!({})),
             session_id: object
                 .get("sessionId")
                 .and_then(Value::as_str)
@@ -308,7 +305,8 @@ impl CdpConnectionState {
     fn handle_text(&mut self, state: &CdpState, text: &str) -> Result<Vec<Value>, String> {
         let request = CdpRequest::parse(text)?;
         let mut events = Vec::new();
-        let response_session_id = self.response_session_id(&request.method, request.session_id.clone());
+        let response_session_id =
+            self.response_session_id(&request.method, request.session_id.clone());
 
         let result = match request.method.as_str() {
             "Browser.getVersion" => Ok(json!({
@@ -413,9 +411,7 @@ impl CdpConnectionState {
                     }
                 }))
             }
-            "Page.addScriptToEvaluateOnNewDocument" => {
-                Ok(json!({ "identifier": new_cdp_id() }))
-            }
+            "Page.addScriptToEvaluateOnNewDocument" => Ok(json!({ "identifier": new_cdp_id() })),
             "Page.createIsolatedWorld" => {
                 let world_name = request
                     .params
@@ -478,14 +474,10 @@ impl CdpConnectionState {
                     "result": result
                 }))
             }
-            "Runtime.callFunctionOn" => {
-                Err(String::from(
-                    "Runtime.callFunctionOn is not supported by formal-web yet",
-                ))
-            }
-            "Runtime.releaseObject" => {
-                Ok(json!({}))
-            }
+            "Runtime.callFunctionOn" => Err(String::from(
+                "Runtime.callFunctionOn is not supported by formal-web yet",
+            )),
+            "Runtime.releaseObject" => Ok(json!({})),
             "Input.dispatchMouseEvent" => {
                 let event_type = request
                     .params
@@ -651,7 +643,9 @@ impl CdpConnectionState {
                     .params
                     .get("nodeId")
                     .and_then(Value::as_u64)
-                    .ok_or_else(|| String::from("`DOM.scrollIntoViewIfNeeded` requires `nodeId`"))?;
+                    .ok_or_else(|| {
+                        String::from("`DOM.scrollIntoViewIfNeeded` requires `nodeId`")
+                    })?;
                 let _ = self.node_locator(node_id)?;
                 Ok(json!({}))
             }
@@ -660,7 +654,9 @@ impl CdpConnectionState {
                     .params
                     .get("nodeId")
                     .and_then(Value::as_u64)
-                    .ok_or_else(|| String::from("`Accessibility.getPartialAXTree` requires `nodeId`"))?;
+                    .ok_or_else(|| {
+                        String::from("`Accessibility.getPartialAXTree` requires `nodeId`")
+                    })?;
                 let locator = self.node_locator(node_id)?;
                 Ok(json!({
                     "nodes": accessibility_partial_tree(state, &locator, node_id)?
@@ -699,7 +695,11 @@ impl CdpConnectionState {
                 timestamp,
             } => {
                 let frame_id = state.page_target_id.clone();
-                let mut outgoing = vec![target_info_changed_event(state, &url, self.session_id.is_some())];
+                let mut outgoing = vec![target_info_changed_event(
+                    state,
+                    &url,
+                    self.session_id.is_some(),
+                )];
                 let session_id = self.event_session_id();
                 if matches!(self.route, CdpRoute::Browser) && session_id.is_none() {
                     return outgoing;
@@ -848,7 +848,11 @@ impl CdpConnectionState {
     }
 }
 
-async fn run_cdp_server(listener: TcpListener, state: CdpState, mut shutdown: oneshot::Receiver<()>) {
+async fn run_cdp_server(
+    listener: TcpListener,
+    state: CdpState,
+    mut shutdown: oneshot::Receiver<()>,
+) {
     let listener = match tokio::net::TcpListener::from_std(listener) {
         Ok(listener) => listener,
         Err(error) => {
@@ -907,14 +911,16 @@ async fn handle_cdp_stream(
     if peeked_request.websocket_upgrade {
         match parse_route(&peeked_request.target, &state) {
             Some(route) => handle_websocket_connection(stream, state, shutdown, route).await,
-            None => write_json_response(
-                &mut stream,
-                &peeked_request.method,
-                404,
-                "Not Found",
-                json!({ "error": "unknown CDP websocket route" }),
-            )
-            .await,
+            None => {
+                write_json_response(
+                    &mut stream,
+                    &peeked_request.method,
+                    404,
+                    "Not Found",
+                    json!({ "error": "unknown CDP websocket route" }),
+                )
+                .await
+            }
         }
     } else {
         handle_http_connection(stream, &state).await
@@ -1021,7 +1027,9 @@ async fn read_http_request_head(stream: &mut TcpStream) -> Result<Option<HttpReq
             if total == 0 {
                 return Ok(None);
             }
-            return Err(String::from("unexpected EOF while reading CDP HTTP request headers"));
+            return Err(String::from(
+                "unexpected EOF while reading CDP HTTP request headers",
+            ));
         }
         total += read;
         if let Some(header_end) = find_header_terminator(&buffer[..total]) {
@@ -1038,7 +1046,9 @@ async fn read_http_request_head(stream: &mut TcpStream) -> Result<Option<HttpReq
             }));
         }
         if total == buffer.len() {
-            return Err(String::from("incoming CDP HTTP headers exceeded the size limit"));
+            return Err(String::from(
+                "incoming CDP HTTP headers exceeded the size limit",
+            ));
         }
     }
 }
@@ -1097,8 +1107,9 @@ async fn handle_websocket_connection(
     mut shutdown: watch::Receiver<bool>,
     route: CdpRoute,
 ) -> Result<(), String> {
-    let mut websocket =
-        accept_async(stream).await.map_err(|error| format!("failed to accept CDP websocket: {error}"))?;
+    let mut websocket = accept_async(stream)
+        .await
+        .map_err(|error| format!("failed to accept CDP websocket: {error}"))?;
 
     let (event_sender, event_receiver) = mpsc::channel();
     let event_receiver = std::sync::Mutex::new(event_receiver);
@@ -1401,7 +1412,9 @@ fn dom_query_paths(
 ) -> Result<Vec<CdpNodeLocator>, String> {
     let value = evaluate_cdp_script(state, dom_query_paths_script(parent, selector))?;
     let Some(paths) = value.as_array() else {
-        return Err(String::from("DOM selector query did not evaluate to an array"));
+        return Err(String::from(
+            "DOM selector query did not evaluate to an array",
+        ));
     };
 
     paths
@@ -1625,9 +1638,7 @@ mod tests {
         let browser_ws_url = version["webSocketDebuggerUrl"]
             .as_str()
             .expect("browser websocket url should be a string");
-        assert!(browser_ws_url.starts_with(&format!(
-            "ws://localhost:{port}/devtools/browser/"
-        )));
+        assert!(browser_ws_url.starts_with(&format!("ws://localhost:{port}/devtools/browser/")));
 
         let targets = http_get_json(port, "/json")
             .as_array()
@@ -1662,20 +1673,36 @@ mod tests {
         let mut socket = connect_websocket(&browser_ws_url, port);
         let mut next_id = 1_u64;
 
-        let (browser_version, browser_events) =
-            send_cdp_request(&mut socket, &mut next_id, "Browser.getVersion", json!({}), None);
+        let (browser_version, browser_events) = send_cdp_request(
+            &mut socket,
+            &mut next_id,
+            "Browser.getVersion",
+            json!({}),
+            None,
+        );
         assert!(browser_events.is_empty());
         assert_eq!(browser_version["result"]["product"], CDP_BROWSER_PRODUCT);
-        assert_eq!(browser_version["result"]["protocolVersion"], CDP_PROTOCOL_VERSION);
+        assert_eq!(
+            browser_version["result"]["protocolVersion"],
+            CDP_PROTOCOL_VERSION
+        );
 
-        let (targets_response, target_events) =
-            send_cdp_request(&mut socket, &mut next_id, "Target.getTargets", json!({}), None);
+        let (targets_response, target_events) = send_cdp_request(
+            &mut socket,
+            &mut next_id,
+            "Target.getTargets",
+            json!({}),
+            None,
+        );
         assert!(target_events.is_empty());
         assert_eq!(
             targets_response["result"]["targetInfos"][0]["targetId"],
             page_target_id
         );
-        assert_eq!(targets_response["result"]["targetInfos"][0]["attached"], false);
+        assert_eq!(
+            targets_response["result"]["targetInfos"][0]["attached"],
+            false
+        );
 
         let (attach_response, attach_events) = send_cdp_request(
             &mut socket,
@@ -1690,12 +1717,20 @@ mod tests {
             .expect("session id should be a string")
             .to_owned();
 
-        let (page_enable, page_enable_events) =
-            send_cdp_request(&mut socket, &mut next_id, "Page.enable", json!({}), Some(&session_id));
+        let (page_enable, page_enable_events) = send_cdp_request(
+            &mut socket,
+            &mut next_id,
+            "Page.enable",
+            json!({}),
+            Some(&session_id),
+        );
         assert_eq!(page_enable["sessionId"], session_id);
         assert_event_methods(&page_enable_events, &["Page.frameNavigated"]);
         assert_eq!(page_enable_events[0]["sessionId"], session_id);
-        assert_eq!(page_enable_events[0]["params"]["frame"]["id"], page_target_id);
+        assert_eq!(
+            page_enable_events[0]["params"]["frame"]["id"],
+            page_target_id
+        );
 
         let (runtime_enable, runtime_enable_events) = send_cdp_request(
             &mut socket,
@@ -1748,7 +1783,10 @@ mod tests {
             Some(&session_id),
         );
         assert!(frame_events.is_empty());
-        assert_eq!(frame_tree["result"]["frameTree"]["frame"]["url"], navigation_url);
+        assert_eq!(
+            frame_tree["result"]["frameTree"]["frame"]["url"],
+            navigation_url
+        );
 
         let (document_response, document_events) = send_cdp_request(
             &mut socket,
@@ -1758,7 +1796,10 @@ mod tests {
             Some(&session_id),
         );
         assert!(document_events.is_empty());
-        assert_eq!(document_response["result"]["root"]["documentURL"], navigation_url);
+        assert_eq!(
+            document_response["result"]["root"]["documentURL"],
+            navigation_url
+        );
         let root_node_id = document_response["result"]["root"]["nodeId"]
             .as_u64()
             .expect("document root node id should be numeric");
@@ -1840,11 +1881,15 @@ mod tests {
         assert!(describe_events.is_empty());
         assert_eq!(describe_response["result"]["node"]["nodeName"], "BUTTON");
         assert_eq!(describe_response["result"]["node"]["localName"], "button");
-        assert!(describe_response["result"]["node"]["attributes"]
-            .as_array()
-            .is_some_and(|attributes| {
-                attributes.iter().any(|value| value == "click-counter-button")
-            }));
+        assert!(
+            describe_response["result"]["node"]["attributes"]
+                .as_array()
+                .is_some_and(|attributes| {
+                    attributes
+                        .iter()
+                        .any(|value| value == "click-counter-button")
+                })
+        );
 
         let (box_model_response, box_model_events) = send_cdp_request(
             &mut socket,
@@ -1907,12 +1952,14 @@ mod tests {
             Some(&session_id),
         );
         assert!(full_ax_events.is_empty());
-        assert!(full_ax_response["result"]["nodes"]
-            .as_array()
-            .is_some_and(|nodes| nodes.iter().any(|node| {
-                node["role"]["value"] == "button"
-                    && node["name"]["value"] == "Count interactions"
-            })));
+        assert!(
+            full_ax_response["result"]["nodes"]
+                .as_array()
+                .is_some_and(|nodes| nodes.iter().any(|node| {
+                    node["role"]["value"] == "button"
+                        && node["name"]["value"] == "Count interactions"
+                }))
+        );
 
         let (evaluate_response, evaluate_events) = send_cdp_request(
             &mut socket,
@@ -1970,8 +2017,7 @@ mod tests {
             event_sink: None,
         }));
         let runtime = mock_runtime(Arc::clone(&state));
-        let server =
-            CdpServerHandle::start(port, runtime).expect("test CDP server should start");
+        let server = CdpServerHandle::start(port, runtime).expect("test CDP server should start");
         (server, state, port)
     }
 
@@ -2133,7 +2179,10 @@ mod tests {
             Some(&session_id),
         );
         assert_event_methods(&page_enable_events, &["Page.frameNavigated"]);
-        assert_eq!(page_enable_events[0]["params"]["frame"]["id"], page_target_id);
+        assert_eq!(
+            page_enable_events[0]["params"]["frame"]["id"],
+            page_target_id
+        );
 
         let (_runtime_enable, runtime_enable_events) = send_cdp_request(
             &mut socket,

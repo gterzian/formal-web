@@ -149,7 +149,6 @@ pub struct ChromeViewState {
 struct ChromeNodeIds {
     shell: usize,
     address: usize,
-    new_tab_btn: usize,
 }
 
 pub struct ChromeUi {
@@ -219,9 +218,6 @@ impl ChromeUi {
             address: document
                 .get_element_by_id("address")
                 .ok_or_else(|| String::from("chrome address input missing"))?,
-            new_tab_btn: document
-                .get_element_by_id("new-tab-btn")
-                .ok_or_else(|| String::from("chrome new tab button missing"))?,
         };
         let mut chrome = Self {
             document,
@@ -261,9 +257,6 @@ impl ChromeUi {
             }
             if let Some(a) = doc.get_element_by_id("address") {
                 self.node_ids.address = a;
-            }
-            if let Some(n) = doc.get_element_by_id("new-tab-btn") {
-                self.node_ids.new_tab_btn = n;
             }
             self.document = doc;
             self.last_tab_count = state.tabs.len();
@@ -312,28 +305,38 @@ impl ChromeUi {
                 let page_x = event.page_x();
                 let page_y = event.page_y();
                 let Some(hit) = self.document.hit(page_x, page_y) else {
+                    eprintln!("[chrome-debug] PointerDown: no hit at ({page_x:.0},{page_y:.0})");
                     self.document.handle_ui_event(UiEvent::PointerDown(event));
                     return None;
                 };
                 let chain = self.document.node_chain(hit.node_id);
+                eprintln!("[chrome-debug] PointerDown at ({page_x:.0},{page_y:.0}) hit_node={} chain_len={}", hit.node_id, chain.len());
 
-                // Check + button
-                if chain.contains(&self.node_ids.new_tab_btn) {
-                    return if event.mods.contains(keyboard_types::Modifiers::SHIFT) {
-                        Some(ChromeAction::NewWindow)
-                    } else {
-                        Some(ChromeAction::NewTab)
-                    };
-                }
-
-                // Check tab buttons by id
-                for node_id in &chain {
-                    if let Some(node) = self.document.get_node(*node_id) {
-                        if let Some(element) = node.element_data() {
-                            if let Some(ref id_str) = element.id {
-                                let id = id_str.to_string();
-                                if let Some(index_str) = id.strip_prefix("tab-") {
+                for (i, node_id) in chain.iter().enumerate() {
+                    if let Some(node) = self.document.get_node_mut(*node_id) {
+                        if let Some(element) = node.element_data_mut() {
+                            // Dump ALL attributes on this element
+                            for attr in element.attrs.iter() {
+                                eprintln!("[chrome-debug]   chain[{i}] attr ns={:?} local='{}' val='{}'", attr.name.ns, attr.name.local, attr.value);
+                            }
+                            if element.attrs.is_empty() {
+                                eprintln!("[chrome-debug]   chain[{i}] no attrs");
+                            }
+                            let id_q = qual_name!("id");
+                            if let Some(attr) = element.attrs.get(&id_q) {
+                                eprintln!("[chrome-debug]   chain[{i}] MATCHED id='{}'", attr.value);
+                                if attr.value == "new-tab-btn" {
+                                    let is_shift = event.mods.contains(keyboard_types::Modifiers::SHIFT);
+                                    eprintln!("[chrome-debug] => NewTab/NewWindow (shift={is_shift})");
+                                    return if is_shift {
+                                        Some(ChromeAction::NewWindow)
+                                    } else {
+                                        Some(ChromeAction::NewTab)
+                                    };
+                                }
+                                if let Some(index_str) = attr.value.strip_prefix("tab-") {
                                     if let Ok(index) = index_str.parse::<usize>() {
+                                        eprintln!("[chrome-debug] => SwitchTab({index})");
                                         return Some(ChromeAction::SwitchTab(index));
                                     }
                                 }
@@ -354,7 +357,12 @@ impl ChromeUi {
                 None
             }
             UiEvent::KeyDown(event) => {
-                if self.takes_text_input_focus() && is_submit_key(&event) {
+                let focused = self.takes_text_input_focus();
+                let submit = is_submit_key(&event);
+                eprintln!("[chrome-debug] KeyDown focused={focused} submit={submit}");
+                if focused && submit {
+                    let addr = self.address_value();
+                    eprintln!("[chrome-debug] KeyDown Enter => Navigate (address='{addr}')");
                     self.clear_focus();
                     return Some(ChromeAction::Navigate);
                 }

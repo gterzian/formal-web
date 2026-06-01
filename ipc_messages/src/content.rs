@@ -164,9 +164,7 @@ pub fn iframe_target_name(
     format!("_iframe|{parent_traversable_id}|{content_navigable_id}|{content_frame_id}")
 }
 
-pub fn parse_iframe_target_name(
-    target_name: &str,
-) -> Option<(NavigableId, NavigableId, FrameId)> {
+pub fn parse_iframe_target_name(target_name: &str) -> Option<(NavigableId, NavigableId, FrameId)> {
     let payload = target_name.strip_prefix("_iframe|")?;
     let mut parts = payload.split('|');
     let parent_traversable_id = NavigableId::parse_str(parts.next()?).ok()?;
@@ -424,21 +422,19 @@ impl SerializableRenderCommand {
             RenderCommand::PopLayer => RenderCommand::PopLayer,
             RenderCommand::Stroke(command) => RenderCommand::Stroke(command),
             RenderCommand::Fill(command) => RenderCommand::Fill(command),
-            RenderCommand::GlyphRun(command) => {
-                RenderCommand::GlyphRun(GlyphRunCommand {
-                    font_data: font_data(command.font_data),
-                    font_size: command.font_size,
-                    hint: command.hint,
-                    normalized_coords: command.normalized_coords,
-                    embolden: command.embolden,
-                    style: command.style,
-                    brush: command.brush,
-                    brush_alpha: command.brush_alpha,
-                    transform: command.transform,
-                    glyph_transform: command.glyph_transform,
-                    glyphs: command.glyphs,
-                })
-            }
+            RenderCommand::GlyphRun(command) => RenderCommand::GlyphRun(GlyphRunCommand {
+                font_data: font_data(command.font_data),
+                font_size: command.font_size,
+                hint: command.hint,
+                normalized_coords: command.normalized_coords,
+                embolden: command.embolden,
+                style: command.style,
+                brush: command.brush,
+                brush_alpha: command.brush_alpha,
+                transform: command.transform,
+                glyph_transform: command.glyph_transform,
+                glyphs: command.glyphs,
+            }),
             RenderCommand::BoxShadow(command) => RenderCommand::BoxShadow(command),
         }
     }
@@ -556,7 +552,9 @@ fn serialize_scene_to_shared_memory(scene: &RecordedScene) -> Result<IpcSharedMe
     Ok(bytes)
 }
 
-fn deserialize_scene_from_shared_memory(scene_bytes: &IpcSharedMemory) -> Result<RecordedScene, String> {
+fn deserialize_scene_from_shared_memory(
+    scene_bytes: &IpcSharedMemory,
+) -> Result<RecordedScene, String> {
     postcard::from_bytes(scene_bytes)
         .map_err(|error| format!("failed to deserialize paint scene: {error}"))
 }
@@ -607,7 +605,11 @@ impl PaintFrame {
         PaintTransportSummary {
             scene_bytes: self.scene_bytes.len(),
             registered_fonts: self.font_registrations.len(),
-            registered_font_bytes: self.font_registrations.iter().map(RegisteredFont::len).sum(),
+            registered_font_bytes: self
+                .font_registrations
+                .iter()
+                .map(RegisteredFont::len)
+                .sum(),
         }
     }
 
@@ -662,7 +664,9 @@ pub enum Command {
         /// The root of this navigable's traversable navigable chain.
         top_level_traversable_id: NavigableId,
     },
-    DestroyDocument { document_id: DocumentId },
+    DestroyDocument {
+        document_id: DocumentId,
+    },
     EvaluateScript {
         traversable_id: NavigableId,
         request_id: u64,
@@ -724,13 +728,10 @@ pub enum Event {
 mod tests {
     use super::{
         Command, DocumentFetchId, FetchResponse, FontTransportReceiver, FontTransportSender,
-        FrameCompositionMetadata, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame, PaintTransportSummary,
-        SceneSummary, WebviewId,
+        FrameCompositionMetadata, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
+        PaintTransportSummary, SceneSummary, WebviewId,
     };
-    use anyrender::{
-        Glyph, PaintScene, Scene,
-        recording::RenderCommand,
-    };
+    use anyrender::{Glyph, PaintScene, Scene, recording::RenderCommand};
     use peniko::{Color, Fill, FontData, kurbo::Affine};
 
     fn scene_with_glyph(font: &FontData, glyph_id: u16, x: f32, y: f32) -> Scene {
@@ -745,7 +746,12 @@ mod tests {
             1.0,
             Affine::IDENTITY,
             None,
-            [Glyph { id: glyph_id.into(), x, y }].into_iter(),
+            [Glyph {
+                id: glyph_id.into(),
+                x,
+                y,
+            }]
+            .into_iter(),
         );
         scene
     }

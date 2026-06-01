@@ -429,11 +429,17 @@ fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> 
 fn startup_artifact_url() -> Result<String, String> {
     let current_dir = std::env::current_dir()
         .map_err(|error| format!("failed to determine current directory: {error}"))?;
-    let artifact_path: PathBuf = current_dir.join(STARTUP_ARTIFACT_RELATIVE_PATH);
-    let artifact_path = artifact_path
-        .canonicalize()
-        .map_err(|error| format!("failed to resolve startup artifact path: {error}"))?;
-    Ok(format!("file://{}", artifact_path.display()))
+    // Try CWD-relative path first, then parent directory (for running from embedder/).
+    for base in [current_dir.clone(), current_dir.join("..")] {
+        let artifact_path = base.join(STARTUP_ARTIFACT_RELATIVE_PATH);
+        if let Ok(canonical) = artifact_path.canonicalize() {
+            return Ok(format!("file://{}", canonical.display()));
+        }
+    }
+    Err(format!(
+        "startup artifact not found at {} or ../{}",
+        STARTUP_ARTIFACT_RELATIVE_PATH, STARTUP_ARTIFACT_RELATIVE_PATH
+    ))
 }
 
 fn normalize_browser_destination(input: &str) -> Option<String> {

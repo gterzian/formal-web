@@ -3,10 +3,7 @@ use boa_engine::{
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
-    object::{
-        JsObject, ObjectInitializer,
-        builtins::JsPromise,
-    },
+    object::{JsObject, ObjectInitializer, builtins::JsPromise},
     property::Attribute,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
@@ -16,16 +13,15 @@ use crate::webidl::{
     mark_promise_as_handled, rejected_promise,
 };
 
+use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestream::{
-    ByteTeeState, PipeToState, TeeState,
+    ByteTeeState, PipeToState, TeeState, readable_byte_stream_tee_default_reader_chunk_steps,
     readable_byte_stream_tee_default_reader_close_steps,
-    readable_byte_stream_tee_default_reader_chunk_steps,
     readable_byte_stream_tee_default_reader_error_steps,
-    readable_stream_default_tee_read_request_close_steps,
     readable_stream_default_tee_read_request_chunk_steps,
+    readable_stream_default_tee_read_request_close_steps,
     readable_stream_default_tee_read_request_error_steps,
 };
-use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
 use super::readablestreamdefaultreader::ReadableStreamDefaultReader;
@@ -105,11 +101,7 @@ impl ReadIntoRequest {
         Ok(())
     }
 
-    pub(crate) fn close_steps(
-        self,
-        chunk: Option<JsValue>,
-        context: &mut Context,
-    ) -> JsResult<()> {
+    pub(crate) fn close_steps(self, chunk: Option<JsValue>, context: &mut Context) -> JsResult<()> {
         let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, context)?;
         self.resolvers
             .resolve
@@ -214,10 +206,7 @@ impl ReadRequest {
     }
 }
 
-pub(crate) fn queue_internal_stream_microtask<F>(
-    task: F,
-    context: &mut Context,
-) -> JsResult<()>
+pub(crate) fn queue_internal_stream_microtask<F>(task: F, context: &mut Context) -> JsResult<()>
 where
     F: FnOnce(&mut Context) -> JsResult<()> + 'static,
 {
@@ -231,7 +220,9 @@ where
                         .unwrap_or_else(|_| JsValue::undefined());
                     if let Ok(rejected) = rejected_promise(reason, context) {
                         if let Err(error) = mark_promise_as_handled(&rejected, context) {
-                            eprintln!("[readable-stream] failed to mark promise as handled: {error}");
+                            eprintln!(
+                                "[readable-stream] failed to mark promise as handled: {error}"
+                            );
                         }
                     }
                 }
@@ -250,13 +241,21 @@ pub(crate) enum ReadableStreamController {
 }
 
 impl ReadableStreamController {
-    pub(crate) fn cancel_steps(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn cancel_steps(
+        &self,
+        reason: JsValue,
+        context: &mut Context,
+    ) -> JsResult<JsObject> {
         match self {
             Self::Default(controller) => controller.cancel_steps(reason, context),
             Self::Byte(controller) => controller.cancel_steps(reason, context),
         }
     }
-    pub(crate) fn pull_steps(&self, read_request: ReadRequest, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn pull_steps(
+        &self,
+        read_request: ReadRequest,
+        context: &mut Context,
+    ) -> JsResult<()> {
         match self {
             Self::Default(controller) => controller.pull_steps(read_request, context),
             Self::Byte(controller) => controller.pull_steps(read_request, context),
@@ -323,11 +322,15 @@ pub(crate) fn rejected_type_error_promise(
 }
 pub(crate) fn type_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(
-        JsNativeError::typ().with_message(message).into_opaque(context),
+        JsNativeError::typ()
+            .with_message(message)
+            .into_opaque(context),
     ))
 }
 pub(crate) fn range_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(
-        JsNativeError::range().with_message(message).into_opaque(context),
+        JsNativeError::range()
+            .with_message(message)
+            .into_opaque(context),
     ))
 }

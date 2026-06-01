@@ -120,9 +120,7 @@ pub(crate) fn inline_style_properties_for_element(element: &Element) -> BTreeMap
 }
 
 /// <https://drafts.csswg.org/cssom/#resolved-values>
-pub(crate) fn resolved_style_properties_for_element(
-    element: &Element,
-) -> BTreeMap<String, String> {
+pub(crate) fn resolved_style_properties_for_element(element: &Element) -> BTreeMap<String, String> {
     // This helper materializes the subset of longhand resolved values that the current DOM and
     // layout carriers can source for Window.getComputedStyle().
     let mut properties = inline_style_properties_for_element(element);
@@ -229,9 +227,8 @@ fn format_css_px(value: f64) -> String {
 
 fn default_display_for_tag_name(tag_name: &str) -> &'static str {
     match tag_name {
-        "BODY" | "DIV" | "FORM" | "H1" | "H2" | "H3" | "H4" | "H5" | "H6" | "HEADER"
-        | "HTML" | "IFRAME" | "LI" | "MAIN" | "NAV" | "OL" | "P" | "SECTION" | "TABLE"
-        | "UL" => "block",
+        "BODY" | "DIV" | "FORM" | "H1" | "H2" | "H3" | "H4" | "H5" | "H6" | "HEADER" | "HTML"
+        | "IFRAME" | "LI" | "MAIN" | "NAV" | "OL" | "P" | "SECTION" | "TABLE" | "UL" => "block",
         "BUTTON" => "inline-block",
         _ => "inline",
     }

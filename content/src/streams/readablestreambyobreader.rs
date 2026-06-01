@@ -1,8 +1,6 @@
 use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions,
-    class::Class,
-    object::JsObject,
+    builtins::promise::ResolvingFunctions, class::Class, object::JsObject,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -213,9 +211,11 @@ pub(crate) fn with_readable_stream_byob_reader_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&ReadableStreamBYOBReader) -> R,
 ) -> JsResult<R> {
-    let reader = object.downcast_ref::<ReadableStreamBYOBReader>().ok_or_else(|| {
-        JsNativeError::typ().with_message("object is not a ReadableStreamBYOBReader")
-    })?;
+    let reader = object
+        .downcast_ref::<ReadableStreamBYOBReader>()
+        .ok_or_else(|| {
+            JsNativeError::typ().with_message("object is not a ReadableStreamBYOBReader")
+        })?;
     Ok(f(&reader))
 }
 
@@ -236,7 +236,9 @@ fn normalize_min(
         } else {
             let min_number = min_value.to_number(context)?;
             if !min_number.is_finite() || min_number <= 0.0 || min_number.fract() != 0.0 {
-                return Err(JsNativeError::typ().with_message("min must be a positive integer").into());
+                return Err(JsNativeError::typ()
+                    .with_message("min must be a positive integer")
+                    .into());
             }
             min_number as usize
         }

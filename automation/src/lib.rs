@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, mpsc, atomic::AtomicU64};
+use std::sync::{Arc, atomic::AtomicU64, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use cdp::{CdpArgs, CdpServerHandle};

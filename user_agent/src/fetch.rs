@@ -1,4 +1,4 @@
-use crossbeam_channel::{Receiver, Sender, unbounded, select};
+use crossbeam_channel::{Receiver, Sender, select, unbounded};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
@@ -120,7 +120,14 @@ fn finish_shutdown(mut child: Option<Child>) {
 /// fetch-backed navigation and document fetch continuations.
 pub fn start_network_bridge(
     trace_sender: Option<TraceSender>,
-) -> Result<(IpcSender<NetworkRequest>, Receiver<Result<NetworkResponse, String>>, Child), String> {
+) -> Result<
+    (
+        IpcSender<NetworkRequest>,
+        Receiver<Result<NetworkResponse, String>>,
+        Child,
+    ),
+    String,
+> {
     let (server, token) = IpcOneShotServer::<NetworkBootstrap>::new()
         .map_err(|error| format!("failed to create network IPC one-shot server: {error}"))?;
 
@@ -147,9 +154,11 @@ pub fn start_network_bridge(
     ROUTER.add_typed_route(
         bootstrap.response_receiver,
         Box::new(move |message| {
-            let _ = event_sender.send(
-                message.map_err(|error| format!("failed to decode network IPC response: {error}")),
-            );
+            let _ =
+                event_sender
+                    .send(message.map_err(|error| {
+                        format!("failed to decode network IPC response: {error}")
+                    }));
         }),
     );
 
@@ -185,19 +194,19 @@ impl FetchWorker {
         for pending_fetch in self.pending_fetches.drain().map(|(_, pending)| pending) {
             match pending_fetch {
                 PendingFetch::Document(pending_fetch) => {
-                    let _ = self
-                        .user_agent_command_sender
-                        .send(UserAgentCommand::DocumentFetchFailed {
+                    let _ = self.user_agent_command_sender.send(
+                        UserAgentCommand::DocumentFetchFailed {
                             event_loop_id: pending_fetch.event_loop_id,
                             handler_id: pending_fetch.handler_id,
-                        });
+                        },
+                    );
                 }
                 PendingFetch::Navigation(pending_fetch) => {
-                    let _ = self
-                        .user_agent_command_sender
-                        .send(UserAgentCommand::NavigationFetchFailed {
+                    let _ = self.user_agent_command_sender.send(
+                        UserAgentCommand::NavigationFetchFailed {
                             fetch_id: pending_fetch.fetch_id,
-                        });
+                        },
+                    );
                 }
             }
         }
@@ -247,10 +256,7 @@ impl FetchWorker {
                     eprintln!("failed to send document fetch request to network process: {error}");
                 }
             }
-            FetchCommand::StartNavigationFetch {
-                fetch_id,
-                request,
-            } => {
+            FetchCommand::StartNavigationFetch { fetch_id, request } => {
                 // Step 1: Assert: this is running in parallel.
                 // The fetch worker is the concrete owner of the parallel navigation fetch
                 // branch started by `UserAgentWorker::create_navigation_params_by_fetching`.
@@ -268,7 +274,9 @@ impl FetchWorker {
                     let _ = self
                         .user_agent_command_sender
                         .send(UserAgentCommand::NavigationFetchFailed { fetch_id });
-                    eprintln!("failed to send navigation fetch request to network process: {error}");
+                    eprintln!(
+                        "failed to send navigation fetch request to network process: {error}"
+                    );
                 }
             }
             FetchCommand::Shutdown { reply } => {
@@ -288,44 +296,44 @@ impl FetchWorker {
             (PendingFetch::Document(pending_fetch), Ok(fetch_response)) => {
                 // Successful document fetches resume the owning event loop's content-side
                 // continuation.
-                let _ = self
-                    .user_agent_command_sender
-                    .send(UserAgentCommand::DocumentFetchCompleted {
-                        event_loop_id: pending_fetch.event_loop_id,
-                        handler_id: pending_fetch.handler_id,
-                        response: fetch_response,
-                    });
+                let _ =
+                    self.user_agent_command_sender
+                        .send(UserAgentCommand::DocumentFetchCompleted {
+                            event_loop_id: pending_fetch.event_loop_id,
+                            handler_id: pending_fetch.handler_id,
+                            response: fetch_response,
+                        });
             }
             (PendingFetch::Document(pending_fetch), Err(error)) => {
                 eprintln!("document fetch failed: {error}");
                 // Document fetch failures reenter the owning event loop so the content-side
                 // fetch algorithm can fail the handler in place.
-                let _ = self
-                    .user_agent_command_sender
-                    .send(UserAgentCommand::DocumentFetchFailed {
-                        event_loop_id: pending_fetch.event_loop_id,
-                        handler_id: pending_fetch.handler_id,
-                    });
+                let _ =
+                    self.user_agent_command_sender
+                        .send(UserAgentCommand::DocumentFetchFailed {
+                            event_loop_id: pending_fetch.event_loop_id,
+                            handler_id: pending_fetch.handler_id,
+                        });
             }
             (PendingFetch::Navigation(pending_fetch), Ok(fetch_response)) => {
                 // Successful navigation fetches resume the user-agent-side document creation
                 // and finalization continuation keyed by `fetch_id`.
-                let _ = self
-                    .user_agent_command_sender
-                    .send(UserAgentCommand::NavigationFetchCompleted {
+                let _ = self.user_agent_command_sender.send(
+                    UserAgentCommand::NavigationFetchCompleted {
                         fetch_id: pending_fetch.fetch_id,
                         response: fetch_response,
-                    });
+                    },
+                );
             }
             (PendingFetch::Navigation(pending_fetch), Err(error)) => {
                 eprintln!("navigation fetch failed: {error}");
                 // Navigation fetch failures resume the same pending navigation record so the
                 // user agent can clear `ongoing_navigation_id` and surface failure to the embedder.
-                let _ = self
-                    .user_agent_command_sender
-                    .send(UserAgentCommand::NavigationFetchFailed {
-                        fetch_id: pending_fetch.fetch_id,
-                    });
+                let _ =
+                    self.user_agent_command_sender
+                        .send(UserAgentCommand::NavigationFetchFailed {
+                            fetch_id: pending_fetch.fetch_id,
+                        });
             }
         }
     }
@@ -379,12 +387,13 @@ pub fn run_fetch_thread(
     user_agent_command_sender: Sender<UserAgentCommand>,
     trace_sender: Option<TraceSender>,
 ) {
-    let mut worker = match FetchWorker::new(command_receiver, user_agent_command_sender, trace_sender) {
-        Ok(worker) => worker,
-        Err(error) => {
-            eprintln!("fetch thread startup failed: {error}");
-            return;
-        }
-    };
+    let mut worker =
+        match FetchWorker::new(command_receiver, user_agent_command_sender, trace_sender) {
+            Ok(worker) => worker,
+            Err(error) => {
+                eprintln!("fetch thread startup failed: {error}");
+                return;
+            }
+        };
     worker.run();
 }

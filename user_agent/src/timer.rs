@@ -116,12 +116,12 @@ impl TimerWorker {
                 } => {
                     // Document fetch timeouts are a watchdog around fetches owned
                     // by an event loop; they are not Window timers.
-                    let _ = self
-                        .user_agent_command_sender
-                        .send(UserAgentCommand::DocumentFetchTimeout {
+                    let _ = self.user_agent_command_sender.send(
+                        UserAgentCommand::DocumentFetchTimeout {
                             event_loop_id,
                             handler_id,
-                        });
+                        },
+                    );
                 }
                 TimerCompletion::WindowTimerTask {
                     event_loop_id,
@@ -132,15 +132,15 @@ impl TimerWorker {
                 } => {
                     // Content already computed the timer id, key, and nesting level; the timer
                     // worker now re-enqueues the timer task on the owning event loop.
-                    let _ = self
-                        .user_agent_command_sender
-                        .send(UserAgentCommand::WindowTimerTask {
-                            event_loop_id,
-                            document_id,
-                            timer_id,
-                            timer_key,
-                            nesting_level,
-                        });
+                    let _ =
+                        self.user_agent_command_sender
+                            .send(UserAgentCommand::WindowTimerTask {
+                                event_loop_id,
+                                document_id,
+                                timer_id,
+                                timer_key,
+                                nesting_level,
+                            });
                 }
             }
         }
@@ -191,7 +191,11 @@ impl TimerWorker {
         loop {
             self.dispatch_due_timers();
 
-            let next_deadline = self.active_timers.values().map(|timer| timer.deadline).min();
+            let next_deadline = self
+                .active_timers
+                .values()
+                .map(|timer| timer.deadline)
+                .min();
             if let Some(deadline) = next_deadline {
                 let wait_duration: Duration = deadline.saturating_duration_since(Instant::now());
                 let command_receiver = &self.command_receiver;

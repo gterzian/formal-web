@@ -184,7 +184,11 @@ impl Element {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-element-insertadjacenttext>
-    pub(crate) fn insert_adjacent_text(&self, where_: &str, data: &str) -> Result<(), DOMException> {
+    pub(crate) fn insert_adjacent_text(
+        &self,
+        where_: &str,
+        data: &str,
+    ) -> Result<(), DOMException> {
         let (parent_id, first_child_id) = {
             let document = self.node.document.borrow();
             let Some(node) = document.get_node(self.node.node_id) else {
@@ -298,7 +302,10 @@ impl Element {
 
         // Step 3: "If all rectangles in list have zero width or height, return the first
         // rectangle in list."
-        if list.iter().all(|rect| rect.width == 0.0 || rect.height == 0.0) {
+        if list
+            .iter()
+            .all(|rect| rect.width == 0.0 || rect.height == 0.0)
+        {
             return list.first().copied();
         }
 
@@ -308,16 +315,17 @@ impl Element {
             .into_iter()
             .filter(|rect| rect.width != 0.0 && rect.height != 0.0);
         let first_rect = non_zero_rects.next()?;
-        let smallest_enclosing_rect = non_zero_rects.fold(first_rect, |accumulator, rect| DomRect {
-            x: accumulator.x.min(rect.x),
-            y: accumulator.y.min(rect.y),
-            width: accumulator.right.max(rect.right) - accumulator.x.min(rect.x),
-            height: accumulator.bottom.max(rect.bottom) - accumulator.y.min(rect.y),
-            top: accumulator.top.min(rect.top),
-            right: accumulator.right.max(rect.right),
-            bottom: accumulator.bottom.max(rect.bottom),
-            left: accumulator.left.min(rect.left),
-        });
+        let smallest_enclosing_rect =
+            non_zero_rects.fold(first_rect, |accumulator, rect| DomRect {
+                x: accumulator.x.min(rect.x),
+                y: accumulator.y.min(rect.y),
+                width: accumulator.right.max(rect.right) - accumulator.x.min(rect.x),
+                height: accumulator.bottom.max(rect.bottom) - accumulator.y.min(rect.y),
+                top: accumulator.top.min(rect.top),
+                right: accumulator.right.max(rect.right),
+                bottom: accumulator.bottom.max(rect.bottom),
+                left: accumulator.left.min(rect.left),
+            });
 
         Some(smallest_enclosing_rect)
     }
@@ -422,7 +430,9 @@ impl Element {
                     element
                         .attrs
                         .iter()
-                        .find(|attribute| attribute_qualified_name(&attribute.name) == normalized_name)
+                        .find(|attribute| {
+                            attribute_qualified_name(&attribute.name) == normalized_name
+                        })
                         .map(|attribute| attribute.name.clone())
                 })
         };

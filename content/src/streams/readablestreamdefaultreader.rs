@@ -4,20 +4,17 @@ use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     class::Class,
-    object::{
-        JsObject,
-        builtins::JsPromise,
-    },
+    object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::webidl::{mark_promise_as_handled, rejected_promise};
 
+use super::readablestream::{readable_stream_cancel, with_readable_stream_ref};
 use super::{
     ReadRequest, ReadableStream, ReadableStreamReader, ReadableStreamState,
     rejected_type_error_promise, type_error_value,
 };
-use super::readablestream::{readable_stream_cancel, with_readable_stream_ref};
 /// default readers and BYOB readers.
 pub(crate) trait ReadableStreamGenericReader: Clone {
     fn stream_slot_value(&self) -> Option<ReadableStream>;
@@ -61,8 +58,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     ) -> JsResult<JsObject> {
         // Step 1: "Let stream be reader.[[stream]]."
         let stream = self.stream_slot_value().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStream reader is not attached to a stream")
+            JsNativeError::typ().with_message("ReadableStream reader is not attached to a stream")
         })?;
 
         // Step 2: "Assert: stream is not undefined."
@@ -124,8 +120,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     fn readable_stream_reader_generic_release(&self, context: &mut Context) -> JsResult<()> {
         // Step 1: "Let stream be reader.[[stream]]."
         let stream = self.stream_slot_value().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStream reader is not attached to a stream")
+            JsNativeError::typ().with_message("ReadableStream reader is not attached to a stream")
         })?;
 
         // Step 2: "Assert: stream is not undefined."
@@ -392,9 +387,11 @@ pub(crate) fn with_readable_stream_default_reader_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&ReadableStreamDefaultReader) -> R,
 ) -> JsResult<R> {
-    let reader = object.downcast_ref::<ReadableStreamDefaultReader>().ok_or_else(|| {
-        JsNativeError::typ().with_message("object is not a ReadableStreamDefaultReader")
-    })?;
+    let reader = object
+        .downcast_ref::<ReadableStreamDefaultReader>()
+        .ok_or_else(|| {
+            JsNativeError::typ().with_message("object is not a ReadableStreamDefaultReader")
+        })?;
     Ok(f(&reader))
 }
 

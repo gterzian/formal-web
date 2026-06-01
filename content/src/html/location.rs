@@ -558,14 +558,11 @@ impl Location {
         // self.window. We reach the GlobalScope through the Window via
         // `downcast_ref` — boa's safe API for accessing native data from
         // a JsObject handle.
-        let window = self
-            .window
-            .downcast_ref::<Window>()
-            .ok_or_else(|| {
-                LocationError::NotSupported(String::from(
-                    "Location window is not a valid Window object",
-                ))
-            })?;
+        let window = self.window.downcast_ref::<Window>().ok_or_else(|| {
+            LocationError::NotSupported(String::from(
+                "Location window is not a valid Window object",
+            ))
+        })?;
         let Some(navigable_id) = window.global_scope.source_navigable_id() else {
             return Ok(());
         };

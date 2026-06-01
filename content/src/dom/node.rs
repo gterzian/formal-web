@@ -81,8 +81,13 @@ impl Node {
         let node = document.get_node(self.node_id)?;
         let parent_id = node.parent?;
         let parent = document.get_node(parent_id)?;
-        let index = parent.children.iter().position(|child_id| *child_id == self.node_id)?;
-        index.checked_sub(1).and_then(|index| parent.children.get(index).copied())
+        let index = parent
+            .children
+            .iter()
+            .position(|child_id| *child_id == self.node_id)?;
+        index
+            .checked_sub(1)
+            .and_then(|index| parent.children.get(index).copied())
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-nextsibling>
@@ -92,7 +97,10 @@ impl Node {
         let node = document.get_node(self.node_id)?;
         let parent_id = node.parent?;
         let parent = document.get_node(parent_id)?;
-        let index = parent.children.iter().position(|child_id| *child_id == self.node_id)?;
+        let index = parent
+            .children
+            .iter()
+            .position(|child_id| *child_id == self.node_id)?;
         parent.children.get(index + 1).copied()
     }
 
@@ -179,7 +187,10 @@ impl Node {
             // Step 2: "Replace data of this with 0, this's length, and the given value."
             NodeData::Text(_) => self.set_text_content(Some(normalized_value)),
             // Step 3: "Do nothing."
-            NodeData::Comment | NodeData::Document | NodeData::Element(_) | NodeData::AnonymousBlock(_) => {}
+            NodeData::Comment
+            | NodeData::Document
+            | NodeData::Element(_)
+            | NodeData::AnonymousBlock(_) => {}
         }
     }
 
@@ -200,9 +211,7 @@ impl Node {
         // Step 2: "Remove this."
         let mut document = self.document.borrow_mut();
         debug_assert_eq!(
-            document
-                .get_node(self.node_id)
-                .and_then(|node| node.parent),
+            document.get_node(self.node_id).and_then(|node| node.parent),
             Some(parent_node_id)
         );
         let mut mutator = document.mutate();
@@ -351,7 +360,8 @@ impl Node {
         // Step 3: "If child is non-null and its parent is not parent, then throw a \"NotFoundError\" DOMException."
         if let Some(child) = child {
             let child_parent = child.parent_node();
-            if child_parent != Some(parent.node_id) || !Rc::ptr_eq(&child.document, &parent.document)
+            if child_parent != Some(parent.node_id)
+                || !Rc::ptr_eq(&child.document, &parent.document)
             {
                 return Err(DOMException::not_found_error());
             }
@@ -382,7 +392,8 @@ impl Node {
         // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment or DocumentType nodes, so this branch is unreachable here.
 
         // Step 6.3: "parent has an element child, child is a doctype, or child is non-null and a doctype is following child."
-        if Self::node_kind(node) == Some(NodeKind::Element) && Self::document_has_element_child(parent)
+        if Self::node_kind(node) == Some(NodeKind::Element)
+            && Self::document_has_element_child(parent)
         {
             return Err(DOMException::hierarchy_request_error());
         }
@@ -531,7 +542,9 @@ impl Node {
                 return true;
             }
 
-            current = document.get_node(current_node_id).and_then(|current| current.parent);
+            current = document
+                .get_node(current_node_id)
+                .and_then(|current| current.parent);
         }
 
         false
@@ -545,7 +558,10 @@ impl Node {
 
         parent_node.children.iter().copied().any(|child_node_id| {
             document.get_node(child_node_id).is_some_and(|child| {
-                matches!(&child.data, NodeData::Element(_) | NodeData::AnonymousBlock(_))
+                matches!(
+                    &child.data,
+                    NodeData::Element(_) | NodeData::AnonymousBlock(_)
+                )
             })
         })
     }

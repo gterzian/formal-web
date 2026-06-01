@@ -8,8 +8,7 @@ use boa_engine::{
 
 use crate::boa::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
 use crate::dom::{
-    AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal,
-    signal_abort,
+    AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal, signal_abort,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 use crate::webidl::{callback_function_value, nullable_value};
@@ -240,8 +239,8 @@ fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Ve
             .downcast_ref::<AbortSignal>()
             .map(|signal| signal.clone())
             .ok_or_else(|| {
-            JsNativeError::typ().with_message("AbortSignal.any() requires AbortSignal objects")
-        })?;
+                JsNativeError::typ().with_message("AbortSignal.any() requires AbortSignal objects")
+            })?;
         signals.push(signal);
     }
 

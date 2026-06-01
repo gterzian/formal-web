@@ -34,11 +34,7 @@ pub(crate) trait AsyncValueIterable: Clone + Trace + Finalize + 'static {
         context: &mut Context,
     ) -> JsResult<JsObject>;
 
-    fn finish_async_iterator(
-        &self,
-        _state: &Self::State,
-        _context: &mut Context,
-    ) -> JsResult<()> {
+    fn finish_async_iterator(&self, _state: &Self::State, _context: &mut Context) -> JsResult<()> {
         Ok(())
     }
 
@@ -113,7 +109,9 @@ where
                 NativeFunction::from_copy_closure_with_captures(
                     |_, _, captures: &(DefaultAsyncIterator<T>, IteratorOperation), context| {
                         let (iterator, operation) = captures;
-                        Ok(JsValue::from(iterator.start_operation(operation.clone(), context)?))
+                        Ok(JsValue::from(
+                            iterator.start_operation(operation.clone(), context)?,
+                        ))
                     },
                     (self.clone(), operation),
                 ),
@@ -233,13 +231,14 @@ where
         self.finished.set(true);
 
         // Step 8.4: "Return the result of running the asynchronous iterator return algorithm for interface, given object's target, object, and value."
-        let return_promise = match self
-            .target
-            .return_async_iterator(&self.state, value.clone(), context)
-        {
-            Ok(return_promise) => return_promise,
-            Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
-        };
+        let return_promise =
+            match self
+                .target
+                .return_async_iterator(&self.state, value.clone(), context)
+            {
+                Ok(return_promise) => return_promise,
+                Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+            };
 
         let on_fulfilled = FunctionObjectBuilder::new(
             context.realm(),
@@ -348,11 +347,7 @@ where
 }
 
 /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
-fn async_iterator_next<T>(
-    this: &JsValue,
-    _: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue>
+fn async_iterator_next<T>(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue>
 where
     T: AsyncValueIterable,
 {
@@ -360,11 +355,18 @@ where
     // Step 5: "IfAbruptRejectPromise(object, thisValidationPromiseCapability)."
     let iterator = match default_async_iterator_from_this::<T>(this, context) {
         Ok(iterator) => iterator,
-        Err(error) => return Ok(JsValue::from(rejected_promise(error.into_opaque(context)?, context)?)),
+        Err(error) => {
+            return Ok(JsValue::from(rejected_promise(
+                error.into_opaque(context)?,
+                context,
+            )?));
+        }
     };
 
     // Step 12: "Return object's ongoing promise."
-    Ok(JsValue::from(iterator.queue_operation(IteratorOperation::Next, context)?))
+    Ok(JsValue::from(
+        iterator.queue_operation(IteratorOperation::Next, context)?,
+    ))
 }
 
 /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
@@ -382,9 +384,17 @@ where
     // Step 5: "IfAbruptRejectPromise(object, returnPromiseCapability)."
     let iterator = match default_async_iterator_from_this::<T>(this, context) {
         Ok(iterator) => iterator,
-        Err(error) => return Ok(JsValue::from(rejected_promise(error.into_opaque(context)?, context)?)),
+        Err(error) => {
+            return Ok(JsValue::from(rejected_promise(
+                error.into_opaque(context)?,
+                context,
+            )?));
+        }
     };
 
     // Step 15: "Return returnPromiseCapability.[[Promise]]."
-    Ok(JsValue::from(iterator.queue_operation(IteratorOperation::Return(value), context)?))
+    Ok(JsValue::from(iterator.queue_operation(
+        IteratorOperation::Return(value),
+        context,
+    )?))
 }
