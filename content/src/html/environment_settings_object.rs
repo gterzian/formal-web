@@ -2,45 +2,28 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue, Source,
+    Context, JsError, JsResult, JsValue, Source,
     class::Class,
-    context::{ContextBuilder, HostHooks, intrinsics::Intrinsics},
-    job::SimpleJobExecutor,
-    js_string,
     object::JsObject,
-    property::Attribute,
 };
-use boa_runtime::extensions::{RuntimeExtension, StructuredCloneExtension};
+use ipc_channel::ipc::IpcSender;
+use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
-use crate::boa::{
-    install_console_namespace, install_document_property,
-    platform_objects::{
-        document_object, object_for_existing_node, resolve_element_object, store_document_object,
-        take_animation_frame_callbacks,
-    },
+use crate::boa::bindings::html::{build_boa_context, install_global_properties};
+use crate::boa::platform_objects::{
+    document_object, object_for_existing_node, resolve_element_object, take_animation_frame_callbacks,
 };
 use crate::dom::{
-    AbortController, AbortSignal, DOMException, Document, Element, Event, EventDispatchHost,
-    EventTarget, Node, UIEvent,
+    Document, EventDispatchHost,
 };
 use crate::html::{
-    GlobalScope, GlobalScopeKind, HTMLAnchorElement, HTMLIFrameElement, HTMLElement, Location,
-    TimerHandler, Window,
-};
-use crate::streams::{
-    ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
-    ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest,
-    ReadableStreamDefaultController, ReadableStreamDefaultReader, WritableStream,
-    WritableStreamDefaultController, WritableStreamDefaultWriter,
-    TransformStream, TransformStreamDefaultController,
+    GlobalScope, TimerHandler, Window,
 };
 use crate::webidl::{
     Callback, ContextCallbackHost, EcmascriptHost, ExceptionBehavior,
     invoke_callback_function,
 };
-use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{DocumentId, Event as ContentEvent};
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -66,21 +49,13 @@ pub enum ReferrerPolicy {
     NoReferrerWhenDowngrade,
 }
 
-/// <https://html.spec.whatwg.org/#global-object>
-struct WindowHostHooks {
-    document: Rc<RefCell<BaseDocument>>,
-}
-
-impl WindowHostHooks {
-    fn new(document: Rc<RefCell<BaseDocument>>) -> Self {
-        Self { document }
-    }
-}
-
 /// <https://html.spec.whatwg.org/#environment-settings-object>
 pub struct EnvironmentSettingsObject {
     /// <https://html.spec.whatwg.org/#realms-settings-objects-global-objects>
     pub context: Context,
+
+    /// <https://dom.spec.whatwg.org/#concept-document>
+    pub document: Rc<RefCell<BaseDocument>>,
 
     /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
     pub origin: Origin,
@@ -93,168 +68,102 @@ pub struct EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#concept-settings-object-time-origin>
     pub time_origin: Instant,
-}
 
-impl HostHooks for WindowHostHooks {
-    fn create_global_object(&self, intrinsics: &Intrinsics) -> JsObject {
-        JsObject::from_proto_and_data(
-            intrinsics.constructors().object().prototype(),
-            Window::new(GlobalScope::new(
-                GlobalScopeKind::Window,
-                Rc::clone(&self.document),
-            )),
-        )
-    }
+    /// Content-to-user-agent IPC sender for navigation and other content events.
+    pub event_sender: Option<IpcSender<ContentEvent>>,
+
+    /// <https://html.spec.whatwg.org/#concept-navigable>
+    pub source_navigable_id: Option<NavigableId>,
+
+    /// <https://html.spec.whatwg.org/#dom-document>
+    pub document_id: Option<DocumentId>,
+
+    /// Raw pointer to the `GlobalScope` owned by the `Window` inside the boa Context.
+    /// The Window lives inside the Context's realm as the global object, and the Context
+    /// is owned by this struct, so the pointer is valid for the entire lifecycle.
+    /// This exists so HTML algorithms can access window-global state without traversing
+    /// boa's GC heap. The GlobalScope IS traced through the Window — the raw pointer
+    /// is purely an access optimization for the native side.
+    global_scope_ptr: *const GlobalScope,
 }
 
 impl EnvironmentSettingsObject {
-    pub fn new(document: Rc<RefCell<BaseDocument>>, creation_url: Url) -> Result<Self, String> {
-        let mut context = ContextBuilder::new()
-            .host_hooks(Rc::new(WindowHostHooks::new(Rc::clone(&document))))
-            .job_executor(Rc::new(SimpleJobExecutor::new()))
-            .build()
-            .map_err(|error| error.to_string())?;
+    pub fn new(
+        document: Rc<RefCell<BaseDocument>>,
+        creation_url: Url,
+        event_sender: Option<IpcSender<ContentEvent>>,
+        source_navigable_id: Option<NavigableId>,
+        document_id: Option<DocumentId>,
+    ) -> Result<Self, String> {
+        // Build the boa Context. WindowHostHooks creates the Window and its
+        // GlobalScope during build().
+        let mut context = build_boa_context(Rc::clone(&document))?;
 
-        StructuredCloneExtension
-            .register(None, &mut context)
-            .map_err(|error| error.to_string())?;
+        // Capture a raw pointer to the GlobalScope inside the Window for direct
+        // access by HTML algorithms without traversing boa's GC heap.
+        // Safety: The Window lives inside the Context's realm as the global object,
+        // and the Context is owned by this struct, so the pointer is valid for the
+        // entire lifecycle of EnvironmentSettingsObject.
+        // Keep the global object JsObject alive so the downcast_ref borrow is valid.
+        let global_object = context.global_object();
+        let window = global_object
+            .downcast_ref::<Window>()
+            .ok_or_else(|| String::from("global object is not a Window"))?;
+        let global_scope_ptr: *const GlobalScope = &window.global_scope as *const GlobalScope;
 
-        context
-            .register_global_class::<EventTarget>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<DOMException>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<Event>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<UIEvent>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<AbortSignal>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<AbortController>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<Node>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<Document>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<Element>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<HTMLElement>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<HTMLAnchorElement>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<HTMLIFrameElement>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<Window>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<Location>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<ByteLengthQueuingStrategy>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<CountQueuingStrategy>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<ReadableStream>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<ReadableStreamDefaultController>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<ReadableByteStreamController>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<ReadableStreamDefaultReader>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<ReadableStreamBYOBReader>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<ReadableStreamBYOBRequest>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<WritableStream>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<WritableStreamDefaultController>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<WritableStreamDefaultWriter>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<TransformStream>()
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_class::<TransformStreamDefaultController>()
-            .map_err(|error| error.to_string())?;
-
-        wire_interface_prototypes(&mut context);
-
-        let global = context.global_object();
-        if let Some(window_class) = context.get_global_class::<Window>() {
-            global.set_prototype(Some(window_class.prototype()));
+        // Install timer host and navigation info on the GlobalScope now that we
+        // have direct access to it.
+        if let (Some(event_sender), Some(document_id)) = (&event_sender, document_id) {
+            // Safety: global_scope_ptr is valid because the Context (which owns
+            // the Window that owns the GlobalScope) is alive.
+            unsafe {
+                (*global_scope_ptr).set_timer_host(document_id, event_sender.clone());
+            }
+        }
+        if let Some(navigable_id) = source_navigable_id {
+            if let Some(event_sender) = &event_sender {
+                unsafe {
+                    (*global_scope_ptr).set_navigation_info(navigable_id, event_sender.clone());
+                }
+            }
         }
 
         let document_object =
-            Document::from_data(Document::new(document, creation_url.clone()), &mut context)
+            Class::from_data(Document::new(document.clone(), creation_url.clone()), &mut context)
                 .map_err(|error| error.to_string())?;
-        store_document_object(&context, document_object.clone())
-            .map_err(|error| error.to_string())?;
-        install_document_property(&mut context).map_err(|error| error.to_string())?;
-        install_console_namespace(&mut context).map_err(|error| error.to_string())?;
-        context
-            .register_global_property(js_string!("window"), global.clone(), Attribute::all())
-            .map_err(|error| error.to_string())?;
-        context
-            .register_global_property(js_string!("self"), global, Attribute::all())
-            .map_err(|error| error.to_string())?;
+
+        install_global_properties(&mut context, document_object)?;
 
         Ok(Self {
             context,
+            document,
             origin: Origin {
                 serialized: creation_url.origin().unicode_serialization(),
             },
             creation_url,
             referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
             time_origin: Instant::now(),
+            event_sender,
+            source_navigable_id,
+            document_id,
+            global_scope_ptr,
         })
+    }
+
+    /// Access the GlobalScope directly without traversing the boa GC heap.
+    pub(crate) fn global_scope(&self) -> &GlobalScope {
+        // Safety: global_scope_ptr points to a GlobalScope owned by the Window
+        // inside self.context. Since self owns self.context, the pointer is valid
+        // as long as self exists.
+        unsafe { &*self.global_scope_ptr }
     }
 
     pub(crate) fn current_time_millis(&self) -> f64 {
         self.time_origin.elapsed().as_secs_f64() * 1000.0
     }
 
-    pub(crate) fn install_timer_host(
-        &self,
-        document_id: DocumentId,
-        event_sender: IpcSender<ContentEvent>,
-    ) -> Result<(), String> {
-        crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-            global_scope.install_timer_host(document_id, event_sender.clone());
-            Ok(())
-        })
-        .map_err(|error| error.to_string())
-    }
-
-    pub fn clear_all_window_timers(&self) -> Result<(), String> {
-        crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-            global_scope.clear_all_timers();
-            Ok(())
-        })
-        .map_err(|error| error.to_string())
+    pub fn clear_all_window_timers(&self) {
+        self.global_scope().clear_all_timers();
     }
 
     pub fn evaluate_script(&mut self, source: &str) -> Result<(), String> {
@@ -308,7 +217,7 @@ impl EnvironmentSettingsObject {
     pub(crate) fn run_window_timer(
         &mut self,
         timer_id: u32,
-        timer_key: ipc_messages::content::WindowTimerKey,
+        timer_key: WindowTimerKey,
         nesting_level: u32,
     ) -> Result<(), String> {
         log_timer_debug(format!(
@@ -316,27 +225,16 @@ impl EnvironmentSettingsObject {
             timer_id, timer_key, nesting_level
         ));
         let previous_nesting_level =
-            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-                Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
-            })
-            .map_err(|error| error.to_string())?;
+            self.global_scope().set_current_timer_nesting_level(Some(nesting_level));
 
-        let timer =
-            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-                Ok(global_scope.window_timer(timer_id, timer_key))
-            })
-            .map_err(|error| error.to_string())?;
+        let timer = self.global_scope().window_timer(timer_id, timer_key);
 
         let Some(timer) = timer else {
             log_timer_debug(format!(
                 "run timer id={} key={} missing_registration",
                 timer_id, timer_key
             ));
-            let _ =
-                crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-                    global_scope.set_current_timer_nesting_level(previous_nesting_level);
-                    Ok(())
-                });
+            self.global_scope().set_current_timer_nesting_level(previous_nesting_level);
             return Ok(());
         };
 
@@ -366,23 +264,20 @@ impl EnvironmentSettingsObject {
                     timer_key,
                     source.len()
                 ));
-                if let Err(error) = self.evaluate_script_without_microtask_checkpoint(source) {
+                if let Err(error) = self
+                    .context
+                    .eval(Source::from_bytes(source.as_str()))
+                    .map(|_| ())
+                {
                     eprintln!("content error: {error}");
                 }
             }
         }
 
-        let completion_result =
-            crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-                global_scope
-                    .complete_window_timer(timer_id, timer_key)
-                    .map_err(|error| JsError::from(JsNativeError::typ().with_message(error)))
-            })
-            .map_err(|error| error.to_string());
-        let _ = crate::boa::platform_objects::with_global_scope(&self.context, |global_scope| {
-            global_scope.set_current_timer_nesting_level(previous_nesting_level);
-            Ok(())
-        });
+        let completion_result = self
+            .global_scope()
+            .complete_window_timer(timer_id, timer_key);
+        self.global_scope().set_current_timer_nesting_level(previous_nesting_level);
         if let Err(error) = self.perform_a_microtask_checkpoint() {
             eprintln!("content error: {error}");
         }
@@ -393,38 +288,6 @@ impl EnvironmentSettingsObject {
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
         self.context.run_jobs().map_err(|error| error.to_string())
     }
-}
-
-fn wire_interface_prototypes(context: &mut Context) {
-    if let Some(dom_exception) = context.get_global_class::<DOMException>() {
-        dom_exception.prototype().set_prototype(Some(
-            context.intrinsics().constructors().error().prototype(),
-        ));
-    }
-
-    set_registered_interface_prototype::<UIEvent, Event>(context);
-    set_registered_interface_prototype::<AbortSignal, EventTarget>(context);
-    set_registered_interface_prototype::<Window, EventTarget>(context);
-    set_registered_interface_prototype::<Node, EventTarget>(context);
-    set_registered_interface_prototype::<Document, Node>(context);
-    set_registered_interface_prototype::<Element, Node>(context);
-    set_registered_interface_prototype::<HTMLElement, Element>(context);
-    set_registered_interface_prototype::<HTMLAnchorElement, HTMLElement>(context);
-    set_registered_interface_prototype::<HTMLIFrameElement, HTMLElement>(context);
-}
-
-fn set_registered_interface_prototype<Child: Class, Parent: Class>(context: &mut Context) {
-    let Some(child) = context.get_global_class::<Child>() else {
-        return;
-    };
-    let Some(parent) = context.get_global_class::<Parent>() else {
-        return;
-    };
-
-    child.prototype().set_prototype(Some(parent.prototype()));
-    child
-        .constructor()
-        .set_prototype(Some(parent.constructor()));
 }
 
 impl EcmascriptHost for EnvironmentSettingsObject {
@@ -465,8 +328,8 @@ impl EcmascriptHost for EnvironmentSettingsObject {
 }
 
 impl EventDispatchHost for EnvironmentSettingsObject {
-    fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        Event::from_data(event, &mut self.context)
+    fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
+        Class::from_data(event, &mut self.context)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

@@ -264,7 +264,8 @@ fn location_object(context: &mut Context) -> JsResult<JsObject> {
     }
 
     let url = document_creation_url(context)?;
-    let object = Location::from_data(Location::new(url), context)?;
+    let window = context.global_object();
+    let object = Location::from_data(Location::new(url, window), context)?;
     store_location_object(context, object.clone())?;
     Ok(object)
 }

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Location Navigation Test</title>
+  </head>
+  <body>
+    <h1>Location Navigation Test</h1>
+    <p id="status">Ready.</p>
+    <button id="nav-href" type="button">Navigate via location.href</button>
+    <button id="nav-assign" type="button">Navigate via location.assign</button>
+    <button id="nav-replace" type="button">Navigate via location.replace</button>
+    <script>
+      document.getElementById("nav-href").addEventListener("click", function() {
+        document.getElementById("status").textContent = "Navigating via location.href...";
+        location.href = "navigated.html";
+      });
+
+      document.getElementById("nav-assign").addEventListener("click", function() {
+        document.getElementById("status").textContent = "Navigating via location.assign...";
+        location.assign("navigated.html");
+      });
+
+      document.getElementById("nav-replace").addEventListener("click", function() {
+        document.getElementById("status").textContent = "Navigating via location.replace...";
+        location.replace("navigated.html");
+      });
+    </script>
+  </body>
+</html>
