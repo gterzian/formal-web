@@ -86,6 +86,17 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - **`spec_html`** — Return inner HTML of the first matching element. Best for self-contained blocks: tables, definition lists (`dl`), example blocks.
 - **`/spec-loaded` command** — Lists all spec URLs currently cached in memory.
 
+# Naming Conventions
+
+- Use descriptive variable names throughout. Single-letter names (`s`, `st`, `wid`, `el`, `p`,
+  `cs`, `at`, `ch`) are prohibited in new code and should be expanded when touching existing
+  code. A variable called `state` is always clearer than `s`.
+- Exception: closure parameters in iterator chains (`.map(|x| ...)`) where the type is obvious
+  from context. But even there, prefer short but meaningful names like `tab` over `t`.
+- Do not bulk-rename existing code with scripts — it creates merge conflicts, breaks history,
+  and introduces subtle bugs when renames are inconsistent. Rename incrementally when
+  modifying nearby code.
+
 # Documentation Style
 
 - Describe current architecture and behavior; keep task history out of repository docs.

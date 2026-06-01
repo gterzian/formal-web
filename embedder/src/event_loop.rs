@@ -1,8 +1,8 @@
-#[path = "event_loop/headless.rs"]
+#[path = "headless.rs"]
 mod headless;
-#[path = "event_loop/windowed/mod.rs"]
+#[path = "windowed.rs"]
 mod windowed;
-#[path = "event_loop/winit.rs"]
+#[path = "winit_integration.rs"]
 mod winit_integration;
 
 use self::headless::HeadlessEmbedderApp;
@@ -13,12 +13,11 @@ pub use self::winit_integration::{
 };
 use anyrender::{PaintScene, render_to_buffer};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use automation::{AutomationCommand, AutomationSnapshot, AutomationVisibleFrameViewport};
+use automation::{AutomationCommand, AutomationVisibleFrameViewport};
 use blitz_traits::shell::ColorScheme;
-use ipc_messages::content::{NavigableId, WebviewId};
+use ipc_messages::content::WebviewId;
 use kurbo::{Affine, Rect};
 use peniko::{Color, Fill};
-use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Duration;
 use verification::TraceSender;
@@ -143,81 +142,6 @@ pub enum FormalWebUserEvent {
         reply: mpsc::Sender<Result<(), String>>,
     },
     Exit,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingNavigation {
-    url: String,
-}
-
-#[derive(Default)]
-struct BrowserState {
-    history: Vec<String>,
-    history_index: Option<usize>,
-    pending_navigation: Option<PendingNavigation>,
-    current_navigable_id: Option<NavigableId>,
-}
-
-impl BrowserState {
-    fn displayed_url(&self) -> String {
-        self.pending_navigation
-            .as_ref()
-            .map(|pending| pending.url.clone())
-            .or_else(|| self.current_url().map(ToOwned::to_owned))
-            .unwrap_or_default()
-    }
-
-    fn current_url(&self) -> Option<&str> {
-        self.history_index
-            .and_then(|index| self.history.get(index).map(String::as_str))
-    }
-
-    fn begin_navigation(&mut self, pending_navigation: PendingNavigation) {
-        self.pending_navigation = Some(pending_navigation);
-    }
-
-    fn cancel_pending_navigation(&mut self) {
-        self.pending_navigation = None;
-    }
-
-    fn commit_navigation(&mut self, url: String) {
-        self.pending_navigation.take();
-
-        if let Some(index) = self.history_index {
-            if self
-                .history
-                .get(index)
-                .is_some_and(|current| current == &url)
-            {
-                self.history[index] = url;
-            } else {
-                self.history.truncate(index + 1);
-                self.history.push(url);
-                self.history_index = Some(self.history.len() - 1);
-            }
-        } else {
-            self.history.push(url);
-            self.history_index = Some(0);
-        }
-    }
-
-    fn automation_snapshot(
-        &self,
-        current_webview_id: Option<WebviewId>,
-        has_top_level_traversable: bool,
-    ) -> AutomationSnapshot {
-        AutomationSnapshot {
-            webview_id: current_webview_id,
-            current_url: self.current_url().map(ToOwned::to_owned),
-            displayed_url: self.displayed_url(),
-            navigable_id: self.current_navigable_id,
-            has_top_level_traversable,
-        }
-    }
-
-    fn set_current_navigable_id(&mut self, navigable_id: Option<NavigableId>) {
-        self.current_navigable_id = navigable_id;
-    }
 }
 
 static EVENT_LOOP_PROXY: LazyLock<Mutex<Option<EventLoopProxy<FormalWebUserEvent>>>> =

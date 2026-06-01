@@ -84,9 +84,9 @@ pub struct WebviewProvider {
     published_child_viewports: HashMap<WebviewId, PublishedChildViewport>,
     font_receiver: FontTransportReceiver,
     viewport_snapshot: Option<(u32, u32, f32, ColorScheme)>,
-    provider_message_receiver: Receiver<WebviewProviderMessage>,
     embedder: Arc<dyn Embedder>,
     user_agent: UserAgent,
+    provider_message_receiver: Receiver<WebviewProviderMessage>,
 }
 
 impl WebviewProvider {
@@ -104,9 +104,9 @@ impl WebviewProvider {
             published_child_viewports: HashMap::new(),
             font_receiver: FontTransportReceiver::default(),
             viewport_snapshot: None,
-            provider_message_receiver,
             embedder,
             user_agent,
+            provider_message_receiver,
         })
     }
 

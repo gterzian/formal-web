@@ -3,9 +3,12 @@ use blitz_dom::{BaseDocument, Document, DocumentConfig, qual_name};
 use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
 use blitz_traits::events::{BlitzKeyEvent, UiEvent};
-use blitz_traits::shell::{ShellProvider, Viewport};
+use blitz_traits::shell::{ClipboardError, ShellProvider, Viewport};
+use cursor_icon::CursorIcon;
 use keyboard_types::Key;
 use std::sync::Arc;
+use winit::dpi::{LogicalPosition, LogicalSize};
+use winit::window::{Cursor, Window};
 
 const DEFAULT_CHROME_HEIGHT_CSS: f32 = 80.0;
 
@@ -158,6 +161,7 @@ pub struct ChromeUi {
     height_css: f32,
     shell_provider: Arc<dyn ShellProvider>,
     last_tab_count: usize,
+    last_labels: Vec<String>,
 }
 
 fn build_html(url: &str, tabs: &[ChromeTabInfo]) -> String {
@@ -226,6 +230,7 @@ impl ChromeUi {
             height_css: DEFAULT_CHROME_HEIGHT_CSS,
             shell_provider,
             last_tab_count: tabs.len(),
+            last_labels: tabs.iter().map(|t| t.label.clone()).collect(),
         };
         chrome.refresh_layout();
         Ok(chrome)
@@ -239,8 +244,15 @@ impl ChromeUi {
     }
 
     pub fn sync_state(&mut self, state: &ChromeViewState) {
-        if state.tabs.len() != self.last_tab_count {
-            // Rebuild document
+        // Rebuild when tab count changes or any label changed
+        let labels_changed = state.tabs.len() == self.last_tab_count
+            && state
+                .tabs
+                .iter()
+                .zip(self.last_labels.iter())
+                .any(|(t, old)| t.label != *old);
+        if state.tabs.len() != self.last_tab_count || labels_changed {
+            self.last_labels = state.tabs.iter().map(|t| t.label.clone()).collect();
             let html = build_html(&state.address, &state.tabs);
             let mut doc = HtmlDocument::from_html(
                 &html,
@@ -260,6 +272,7 @@ impl ChromeUi {
             }
             self.document = doc;
             self.last_tab_count = state.tabs.len();
+            self.last_labels = state.tabs.iter().map(|t| t.label.clone()).collect();
             self.refresh_layout();
         } else if self.address_value() != state.address {
             let mut mutator = self.document.mutate();
@@ -305,29 +318,18 @@ impl ChromeUi {
                 let page_x = event.page_x();
                 let page_y = event.page_y();
                 let Some(hit) = self.document.hit(page_x, page_y) else {
-                    eprintln!("[chrome-debug] PointerDown: no hit at ({page_x:.0},{page_y:.0})");
                     self.document.handle_ui_event(UiEvent::PointerDown(event));
                     return None;
                 };
                 let chain = self.document.node_chain(hit.node_id);
-                eprintln!("[chrome-debug] PointerDown at ({page_x:.0},{page_y:.0}) hit_node={} chain_len={}", hit.node_id, chain.len());
-
                 for (i, node_id) in chain.iter().enumerate() {
                     if let Some(node) = self.document.get_node_mut(*node_id) {
                         if let Some(element) = node.element_data_mut() {
-                            // Dump ALL attributes on this element
-                            for attr in element.attrs.iter() {
-                                eprintln!("[chrome-debug]   chain[{i}] attr ns={:?} local='{}' val='{}'", attr.name.ns, attr.name.local, attr.value);
-                            }
-                            if element.attrs.is_empty() {
-                                eprintln!("[chrome-debug]   chain[{i}] no attrs");
-                            }
                             let id_q = qual_name!("id");
                             if let Some(attr) = element.attrs.get(&id_q) {
-                                eprintln!("[chrome-debug]   chain[{i}] MATCHED id='{}'", attr.value);
                                 if attr.value == "new-tab-btn" {
-                                    let is_shift = event.mods.contains(keyboard_types::Modifiers::SHIFT);
-                                    eprintln!("[chrome-debug] => NewTab/NewWindow (shift={is_shift})");
+                                    let is_shift =
+                                        event.mods.contains(keyboard_types::Modifiers::SHIFT);
                                     return if is_shift {
                                         Some(ChromeAction::NewWindow)
                                     } else {
@@ -336,7 +338,6 @@ impl ChromeUi {
                                 }
                                 if let Some(index_str) = attr.value.strip_prefix("tab-") {
                                     if let Ok(index) = index_str.parse::<usize>() {
-                                        eprintln!("[chrome-debug] => SwitchTab({index})");
                                         return Some(ChromeAction::SwitchTab(index));
                                     }
                                 }
@@ -359,10 +360,7 @@ impl ChromeUi {
             UiEvent::KeyDown(event) => {
                 let focused = self.takes_text_input_focus();
                 let submit = is_submit_key(&event);
-                eprintln!("[chrome-debug] KeyDown focused={focused} submit={submit}");
                 if focused && submit {
-                    let addr = self.address_value();
-                    eprintln!("[chrome-debug] KeyDown Enter => Navigate (address='{addr}')");
                     self.clear_focus();
                     return Some(ChromeAction::Navigate);
                 }
@@ -435,5 +433,54 @@ fn is_submit_key(event: &BlitzKeyEvent) -> bool {
         Key::Enter => true,
         Key::Character(v) if v == "\n" => true,
         _ => false,
+    }
+}
+
+// ── Shell provider for the chrome document ────────────────────────────────
+
+pub struct WinitShellProvider {
+    window: Arc<Window>,
+}
+
+impl WinitShellProvider {
+    pub fn new(window: Arc<Window>) -> Self {
+        Self { window }
+    }
+}
+
+fn clipboard_read() -> Result<String, String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.get_text())
+        .map_err(|e| format!("clipboard read error: {e}"))
+}
+
+fn clipboard_write(text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.set_text(text))
+        .map_err(|e| format!("clipboard write error: {e}"))
+}
+
+impl ShellProvider for WinitShellProvider {
+    fn request_redraw(&self) {
+        self.window.request_redraw();
+    }
+    fn set_cursor(&self, icon: CursorIcon) {
+        self.window.set_cursor(Cursor::Icon(icon));
+    }
+    fn set_window_title(&self, title: String) {
+        self.window.set_title(&title);
+    }
+    fn set_ime_enabled(&self, enabled: bool) {
+        self.window.set_ime_allowed(enabled);
+    }
+    fn set_ime_cursor_area(&self, x: f32, y: f32, w: f32, h: f32) {
+        self.window
+            .set_ime_cursor_area(LogicalPosition::new(x, y), LogicalSize::new(w, h));
+    }
+    fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
+        clipboard_read().map_err(|_| ClipboardError)
+    }
+    fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
+        clipboard_write(text).map_err(|_| ClipboardError)
     }
 }

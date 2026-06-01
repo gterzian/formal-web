@@ -594,12 +594,10 @@ impl EventLoopWorker {
                 {
                     eprintln!("failed to enqueue webview-provider paint frame: {error}");
                 } else {
-                    if let Err(error) = self.host.webview_provider_sync() {
-                        eprintln!("failed to sync webview provider: {error}");
-                    }
-                    if let Err(error) = self.host.new_frame_rendered() {
-                        eprintln!("failed to notify new frame rendered: {error}");
-                    }
+                    // Silently ignore send failures during shutdown — the event
+                    // loop may have already closed.
+                    let _ = self.host.webview_provider_sync();
+                    let _ = self.host.new_frame_rendered();
                 }
             }
             ContentEvent::ShutdownCompleted => return Ok(false),

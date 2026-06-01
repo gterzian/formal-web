@@ -1,17 +1,15 @@
-use super::FormalWebUserEvent;
-use ::winit::dpi::{LogicalPosition, LogicalSize};
+use crate::event_loop::FormalWebUserEvent;
 use ::winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent};
 use ::winit::event_loop::EventLoopProxy;
 use ::winit::keyboard::{
     Key as WinitKey, KeyCode as WinitKeyCode, KeyLocation as WinitKeyLocation,
     ModifiersState as WinitModifiersState, NamedKey, PhysicalKey,
 };
-use ::winit::window::{Cursor, Window};
+use ::winit::window::Window;
 use blitz_traits::events::{BlitzImeEvent, BlitzKeyEvent, KeyState, PointerDetails};
-use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
-use cursor_icon::CursorIcon;
+use blitz_traits::shell::{ColorScheme, Viewport};
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 
 #[derive(Clone, Default)]
 pub struct EventLoopOptions {
@@ -57,63 +55,6 @@ impl UserEventDispatcher {
         self.proxy
             .send_event(event)
             .map_err(|error| format!("failed to send user event: {error}"))
-    }
-}
-
-pub struct WinitShellProvider {
-    window: Arc<Window>,
-}
-
-impl WinitShellProvider {
-    pub fn new(window: Arc<Window>) -> Self {
-        Self { window }
-    }
-}
-
-fn read_clipboard_text() -> Result<String, String> {
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|error| format!("failed to access clipboard: {error}"))?;
-    clipboard
-        .get_text()
-        .map_err(|error| format!("failed to read clipboard text: {error}"))
-}
-
-fn write_clipboard_text(text: String) -> Result<(), String> {
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|error| format!("failed to access clipboard: {error}"))?;
-    clipboard
-        .set_text(text)
-        .map_err(|error| format!("failed to write clipboard text: {error}"))
-}
-
-impl ShellProvider for WinitShellProvider {
-    fn request_redraw(&self) {
-        self.window.request_redraw();
-    }
-
-    fn set_cursor(&self, icon: CursorIcon) {
-        self.window.set_cursor(Cursor::Icon(icon));
-    }
-
-    fn set_window_title(&self, title: String) {
-        self.window.set_title(&title);
-    }
-
-    fn set_ime_enabled(&self, is_enabled: bool) {
-        self.window.set_ime_allowed(is_enabled);
-    }
-
-    fn set_ime_cursor_area(&self, x: f32, y: f32, width: f32, height: f32) {
-        self.window
-            .set_ime_cursor_area(LogicalPosition::new(x, y), LogicalSize::new(width, height));
-    }
-
-    fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
-        read_clipboard_text().map_err(|_| ClipboardError)
-    }
-
-    fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
-        write_clipboard_text(text).map_err(|_| ClipboardError)
     }
 }
 

@@ -1,10 +1,9 @@
 mod chrome;
 
-use self::chrome::{ChromeAction, ChromeTabInfo, ChromeUi, ChromeViewState};
+use self::chrome::{ChromeAction, ChromeTabInfo, ChromeUi, ChromeViewState, WinitShellProvider};
 use super::winit_integration::{
-    WinitShellProvider, event_loop_options, touch_pointer_details, viewport_of_snapshot,
-    viewport_snapshot_for_window, winit_ime_to_blitz, winit_key_event_to_blitz,
-    winit_modifiers_to_kbt_modifiers,
+    event_loop_options, touch_pointer_details, viewport_of_snapshot, viewport_snapshot_for_window,
+    winit_ime_to_blitz, winit_key_event_to_blitz, winit_modifiers_to_kbt_modifiers,
 };
 use super::{
     FormalWebUserEvent, NavigationCompletion, automation_screenshot_png,
@@ -105,7 +104,6 @@ impl WindowState {
 
 pub(super) struct WindowedApp {
     pub(super) windows: HashMap<WindowId, WindowState>,
-    pub(super) webview_to_window: HashMap<WebviewId, WindowId>,
     pub(super) provider: Option<WebviewProvider>,
     pub(super) active_window_id: Option<WindowId>,
 }
@@ -113,7 +111,6 @@ impl Default for WindowedApp {
     fn default() -> Self {
         Self {
             windows: HashMap::new(),
-            webview_to_window: HashMap::new(),
             provider: None,
             active_window_id: None,
         }
@@ -291,7 +288,7 @@ impl WindowedApp {
             page_y: y - ch,
         }
     }
-    fn add_tab(w2w: &mut HashMap<WebviewId, WindowId>, st: &mut WindowState, wid: WebviewId) {
+    fn add_tab(st: &mut WindowState, wid: WebviewId) {
         if st.tabs.contains_key(&wid) {
             st.active_tab = Some(wid);
             return;
@@ -299,7 +296,6 @@ impl WindowedApp {
         st.tabs.insert(wid, TabState::new(wid));
         st.tab_order.push(wid);
         st.active_tab = Some(wid);
-        w2w.insert(wid, st.window_id);
     }
     fn paint_frame(st: &mut WindowState, prov: &mut Option<WebviewProvider>) {
         if !Self::has_visible_viewport(st) {
@@ -334,6 +330,16 @@ impl WindowedApp {
             }
         });
     }
+    fn window_for_webview(app: &Self, wid: WebviewId) -> Option<WindowId> {
+        app.windows.iter().find_map(|(id, s)| {
+            if s.tabs.contains_key(&wid) {
+                Some(*id)
+            } else {
+                None
+            }
+        })
+    }
+
     fn auto_snapshot(s: &WindowState) -> AutomationSnapshot {
         AutomationSnapshot {
             webview_id: s.active_tab,
@@ -514,7 +520,10 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                     st.window_occluded = false;
                     st.window = None;
                 }
-                self.webview_to_window.retain(|_, wid| *wid != window_id);
+                // Update active window if the closed one was active
+                if self.active_window_id == Some(window_id) {
+                    self.active_window_id = self.windows.keys().next().copied();
+                }
                 self.windows.remove(&window_id);
                 if self.windows.is_empty() {
                     let _ = super::send_user_event(FormalWebUserEvent::Exit);
@@ -552,8 +561,11 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let ch_phys = self.windows.get(&window_id).map(|s| Self::chrome_height_physical(s)).unwrap_or(0);
-                eprintln!("[input-debug] CursorMoved y={:.0} chrome_phys={ch_phys}", position.y);
+                let ch_phys = self
+                    .windows
+                    .get(&window_id)
+                    .map(|s| Self::chrome_height_physical(s))
+                    .unwrap_or(0);
                 if Self::pointer_in_chrome_st(&self.windows, window_id, position) {
                     if let Some(st) = self.windows.get_mut(&window_id) {
                         st.pointer_pos = position;
@@ -807,7 +819,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 // since every RedrawRequested can trigger another NewFrameRendered.
             }
             FormalWebUserEvent::RequestRedraw(wid) => {
-                if let Some(w) = self.webview_to_window.get(&wid).copied() {
+                if let Some(w) = Self::window_for_webview(self, wid) {
                     if let Some(s) = self.windows.get(&w) {
                         if s.active_tab == Some(wid) {
                             Self::request_window_redraw(s);
@@ -819,36 +831,32 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 webview_id,
                 destination_url,
             } => {
-                eprintln!("[tab-debug] NavigationRequested wid={:?} url={}", webview_id, destination_url);
-                if let Some(w) = self.webview_to_window.get(&webview_id).copied() {
+                // Update pending URL for any known webview (active tab or not).
+                // If the webview is not in any window, create a new tab for it.
+                if let Some(w) = Self::window_for_webview(self, webview_id) {
                     if let Some(st) = self.windows.get_mut(&w) {
+                        if let Some(t) = st.tabs.get_mut(&webview_id) {
+                            t.pending_url = Some(destination_url.clone());
+                        }
                         if st.active_tab == Some(webview_id) {
-                            if let Some(t) = st.tabs.get_mut(&webview_id) {
-                                t.pending_url = Some(destination_url);
-                            }
                             Self::sync_chrome(st);
                             Self::update_provider_viewport(st, &mut self.provider);
                             Self::request_window_redraw(st);
                         }
                     }
                 } else if let Some(a) = self.active_window_id {
-                    eprintln!("[tab-debug] NavigationRequested => CREATING TAB wid={:?}", webview_id);
                     if let Some(st) = self.windows.get_mut(&a) {
-                        Self::add_tab(&mut self.webview_to_window, st, webview_id);
+                        Self::add_tab(st, webview_id);
                         Self::sync_chrome(st);
                         Self::update_provider_viewport(st, &mut self.provider);
                     }
                 }
             }
             FormalWebUserEvent::NavigationCompleted(c) => {
-                let w_opt = self.webview_to_window.get(&c.webview_id).copied();
+                let w_opt = Self::window_for_webview(self, c.webview_id);
                 let Some(w) = w_opt else {
-                    if let Some(a) = self.active_window_id {
-                        if let Some(st) = self.windows.get_mut(&a) {
-                            Self::add_tab(&mut self.webview_to_window, st, c.webview_id);
-                            Self::update_provider_viewport(st, &mut self.provider);
-                        }
-                    }
+                    // Ignore: child traversables (iframes) fire their own
+                    // NavigationCompleted — those don't create tabs.
                     return;
                 };
                 let is_current = self
@@ -899,7 +907,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
             FormalWebUserEvent::NewWebview(wid, _) => {
                 if let Some(w) = self.active_window_id {
                     if let Some(st) = self.windows.get_mut(&w) {
-                        Self::add_tab(&mut self.webview_to_window, st, wid);
+                        Self::add_tab(st, wid);
                         Self::sync_chrome(st);
                         Self::update_provider_viewport(st, &mut self.provider);
                         Self::request_visible_redraw(st, self.provider.as_ref(), "request_redraw");
@@ -982,19 +990,14 @@ impl WindowedApp {
     }
     fn chrome_event(app: &mut Self, wid: WindowId, event: UiEvent) {
         let Some(st) = app.windows.get_mut(&wid) else {
-            eprintln!("[embed-debug] chrome_event: no window {wid:?}");
             return;
         };
         if !Self::has_visible_viewport(st) {
-            eprintln!("[embed-debug] chrome_event: no visible viewport");
             return;
         }
-        eprintln!("[embed-debug] chrome_event: calling chrome.handle_ui_event");
         let action = st.chrome.as_mut().and_then(|c| c.handle_ui_event(event));
         if let Some(ref a) = action {
-            eprintln!("[embed-debug] chrome_event => action={a:?}");
         } else {
-            eprintln!("[embed-debug] chrome_event => no action");
         }
         Self::request_window_redraw(st);
         if let Some(action) = action {
@@ -1002,7 +1005,6 @@ impl WindowedApp {
         }
     }
     fn handle_chrome_action(app: &mut Self, wid: WindowId, action: ChromeAction) {
-        eprintln!("[embed-debug] handle_chrome_action: {action:?}");
         match action {
             ChromeAction::Navigate => {
                 let url = app.windows.get_mut(&wid).and_then(|st| {
@@ -1083,7 +1085,7 @@ impl AutomationHost for WindowedApp {
         automation_screenshot_png(&mut self.provider, wid)
     }
     fn begin_automation_navigation(&mut self, url: String) -> Result<(), String> {
-        let (wid, st) = match self
+        let (_wid, st) = match self
             .active_window_id
             .and_then(|id| self.windows.get_mut(&id).map(|s| (id, s)))
         {
