@@ -48,11 +48,33 @@ The `.pi/extensions/pi-share-hf/` extension archives pi sessions to `.pi/collect
 - **`/collect-session` command** — Interactive equivalent of the above.
 - **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
 
+## pi-browser — CDP Browser Tools
+
+The `.pi/extensions/browser/` extension wraps formal-web's CDP server into
+agent-callable tools for live interactive debugging during feature development.
+
+- **`browser_navigate`** — Navigate to a URL and wait for load.
+- **`browser_evaluate`** — Run a JavaScript expression in the page context.
+- **`browser_click`** — Click an element by CSS selector.
+- **`browser_type`** — Type text into an input.
+- **`browser_hover`** — Hover over an element for CSS `:hover` testing.
+- **`browser_get_text`** — Read visible text from the page or a selector.
+- **`browser_get_attribute`** — Read a DOM attribute value.
+- **`browser_get_computed_style`** — Read a computed CSS property.
+- **`browser_screenshot`** — Capture a PNG screenshot.
+- **`browser_capture_console`** — Collect console output for N milliseconds.
+- **`browser_history_back`** — Go back in browser history.
+- **`browser_reload`** — Reload the current page.
+- **`/browser-connect [port]`** — Connect to a CDP endpoint.
+- **`/browser-status`** — Show connection state and targets.
+
+See `.pi/extensions/browser/README.md` for tool details, command reference,
+formal-web CDP specifics, and the future roadmap.
+
 ## Testing with formal-web
 
 Formal-web supports three testing interfaces. See `automation/README.md`
-for detailed documentation, and `.pi/extensions/browser/README.md` for the
-pi browser extension that wraps CDP into agent-callable tools.
+for detailed documentation.
 
 ## web_standards — Spec Reading
 
@@ -86,9 +108,14 @@ Errors must always be logged before being discarded. A `Result` value must never
 
 At the end of each task, run the following steps **in order**:
 
-1. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+1. **Tear down browser/CDP infra** — Kill any formal-web embedder processes
+   (`pkill -f "formal-web-embedder")`, CDP servers, or other sidecars that
+   were started during the session. Leftover processes can block ports and
+   interfere with subsequent tasks.
 
-2. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
+2. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+
+3. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
    - **Default WPT run** — Runs the Web Platform Tests suite to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
-3. DO NOT collect pi sessions; those are collected automatically on shutdown.
+4. DO NOT collect pi sessions; those are collected automatically on shutdown.
