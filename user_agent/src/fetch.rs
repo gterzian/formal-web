@@ -102,8 +102,12 @@ fn finish_shutdown(mut child: Option<Child>) {
         match wait_for_child_exit(child, FETCH_SHUTDOWN_GRACE_TIMEOUT) {
             Ok(true) => {}
             Ok(false) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Err(error) = child.kill() {
+                    eprintln!("failed to kill network process: {error}");
+                }
+                if let Err(error) = child.wait() {
+                    eprintln!("failed to wait for network process exit: {error}");
+                }
             }
             Err(error) => {
                 eprintln!("fetch shutdown poll error: {error}");

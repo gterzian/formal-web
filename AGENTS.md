@@ -70,7 +70,16 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Use neutral, factual language.
 - Use the `web_standards` extension tools (`spec_section`, `spec_algorithm`, `spec_select`, `spec_html`) to read spec content instead of reading local copies or fetching directly.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
-- The word "runtime" is forbidden in this repo. Why? Because the entire thing is a "runtime", one that implements the Web, and so the concept of runtime should never be used to model or document some component of what is basically one big runtime. Instead of reaching for this forbidden word, think about what the thing you want to name does, what its role in the system is, and come-up with something descriptive. 
+- The word "runtime" is forbidden in this repo. Why? Because the entire thing is a "runtime", one that implements the Web, and so the concept of runtime should never be used to model or document some component of what is basically one big runtime. Instead of reaching for this forbidden word, think about what the thing you want to name does, what its role in the system is, and come-up with something descriptive.
+
+# Error Logging
+
+Errors must always be logged before being discarded. A `Result` value must never be silently dropped anywhere in the codebase — every `Result<_, E>` carries diagnostic information that can help debug failures in this multi-process system.
+
+- Use `if let Err(error) = fallible_operation() { eprintln!("...: {error}"); }` instead of `let _ = fallible_operation();`. The error message should identify the operation and include the error.
+- The only exception is IPC `send()` on reply channels (e.g. `reply.send(...)`, `waiter.send(...)`) where a closed receiver is an expected condition (client disconnected) rather than a system error.
+- Avoid bare `.expect()` and `.unwrap()` on `Result` — prefer propagating the error with `?` or logging with `eprintln!` and recovering.
+- Use `.ok()` only when the `None`/`Err` case carries no diagnostic value (e.g. parsing an optional value from a fallible source where `None` is a valid "not present" signal). 
 
 # End-of-Task Flow
 
@@ -81,5 +90,3 @@ At the end of each task, run the following steps **in order**:
 2. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
    - **Default WPT run** — Runs the Web Platform Tests suite to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
-
-3. **Collect the session is automatic** — Session collection happens automatically on shutdown via the `pi-share-hf` extension. You no longer need a manual collection step. However, you can still use `collect_session` mid-task to checkpoint before a risky operation or before starting a new session.

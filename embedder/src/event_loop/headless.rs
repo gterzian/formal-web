@@ -128,9 +128,13 @@ impl HeadlessEmbedderApp {
         let viewport_snapshot = headless_viewport_snapshot();
         update_window_viewport_snapshot(Some(viewport_snapshot));
         if let Some(provider) = self.provider.as_mut() {
-            let _ = provider.set_default_viewport(Some(viewport_snapshot));
+            if let Err(error) = provider.set_default_viewport(Some(viewport_snapshot)) {
+                eprintln!("failed to set default viewport: {error}");
+            }
             if let Some(webview_id) = self.current_webview_id {
-                let _ = provider.set_traversable_viewport(webview_id, viewport_snapshot, 0.0, 0.0);
+                if let Err(error) = provider.set_traversable_viewport(webview_id, viewport_snapshot, 0.0, 0.0) {
+                    eprintln!("failed to set traversable viewport: {error}");
+                }
             }
         }
     }

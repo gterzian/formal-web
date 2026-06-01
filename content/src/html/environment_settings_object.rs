@@ -264,14 +264,21 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let _ = with_global_scope(&self.context, |global_scope| {
-            let _ = global_scope.complete_window_timer(timer_id, timer_key);
+        if let Err(error) = with_global_scope(&self.context, |global_scope| {
+            if let Err(error) = global_scope.complete_window_timer(timer_id, timer_key) {
+                eprintln!("failed to complete window timer (id={timer_id} key={timer_key}): {error}");
+            }
             Ok(())
-        });
-        let _ = with_global_scope(&self.context, |global_scope| {
+        }) {
+            eprintln!("failed to access global scope for timer completion: {error}");
+        }
+        if let Err(error) = with_global_scope(&self.context, |global_scope| {
             global_scope.set_current_timer_nesting_level(previous_nesting_level);
             Ok(())
-        });
+        }) {
+            eprintln!("failed to access global scope for timer nesting level: {error}");
+        }
+
         if let Err(error) = self.perform_a_microtask_checkpoint() {
             eprintln!("content error: {error}");
         }

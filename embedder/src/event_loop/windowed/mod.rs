@@ -188,15 +188,19 @@ impl HeadedEmbedderApp {
         let viewport_snapshot = self.content_viewport_snapshot(window);
         update_window_viewport_snapshot(Some(viewport_snapshot));
         if let Some(provider) = self.provider.as_mut() {
-            let _ = provider.set_default_viewport(Some(viewport_snapshot));
+            if let Err(error) = provider.set_default_viewport(Some(viewport_snapshot)) {
+                eprintln!("failed to set default viewport: {error}");
+            }
             if let Some(webview_id) = self.current_webview_id {
                 let (width, height, scale, color_scheme) = viewport_snapshot;
-                let _ = provider.set_traversable_viewport(
+                if let Err(error) = provider.set_traversable_viewport(
                     webview_id,
                     (width, height, scale, color_scheme),
                     0.0,
                     0.0,
-                );
+                ) {
+                    eprintln!("failed to set traversable viewport: {error}");
+                }
             }
         }
     }
@@ -369,7 +373,9 @@ impl HeadedEmbedderApp {
     }
 
     fn dispatch_content_ui_event(&mut self, event: UiEvent) {
-        let _ = self.send_content_ui_event(event, true);
+        if let Err(error) = self.send_content_ui_event(event, true) {
+            eprintln!("failed to send content UI event: {error}");
+        }
     }
 
     fn handle_chrome_ui_event(&mut self, event: UiEvent) {

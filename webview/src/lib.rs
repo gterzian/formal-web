@@ -176,7 +176,9 @@ impl WebviewProvider {
 
     pub fn note_rendering_opportunity(&self, webview_id: WebviewId, reason: &str) {
         let _ = reason;
-        let _ = self.user_agent.note_rendering_opportunity(webview_id.0);
+        if let Err(error) = self.user_agent.note_rendering_opportunity(webview_id.0) {
+            eprintln!("failed to note rendering opportunity for webview {webview_id:?}: {error}");
+        }
     }
 
     pub fn set_default_viewport(
