@@ -88,9 +88,12 @@ impl Embedder for EventLoopEmbedder {
     }
 
     fn request_redraw(&self, webview_id: WebviewId) {
-        let _ = self
+        if let Err(error) = self
             .dispatcher
-            .send(FormalWebUserEvent::RequestRedraw(webview_id));
+            .send(FormalWebUserEvent::RequestRedraw(webview_id))
+        {
+            eprintln!("failed to request redraw for webview {webview_id:?}: {error}");
+        }
     }
 
     fn viewport_scale_factor(&self) -> f32 {

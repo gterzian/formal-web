@@ -967,7 +967,9 @@ impl ContentProcess {
                 self.active_documents_by_traversable
                     .remove(&content_document.traversable_id);
             }
-            let _ = content_document.settings.clear_all_window_timers();
+            if let Err(error) = content_document.settings.clear_all_window_timers() {
+                eprintln!("failed to clear window timers during document teardown: {error}");
+            }
         }
         let mut local_state = self
             .local_state

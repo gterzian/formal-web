@@ -230,7 +230,9 @@ where
                         .into_opaque(context)
                         .unwrap_or_else(|_| JsValue::undefined());
                     if let Ok(rejected) = rejected_promise(reason, context) {
-                        let _ = mark_promise_as_handled(&rejected, context);
+                        if let Err(error) = mark_promise_as_handled(&rejected, context) {
+                            eprintln!("[readable-stream] failed to mark promise as handled: {error}");
+                        }
                     }
                 }
                 Ok(JsValue::undefined())

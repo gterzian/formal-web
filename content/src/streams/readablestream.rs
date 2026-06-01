@@ -523,21 +523,27 @@ fn readable_stream_default_tee(
 
             // Step 19.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], r)."
             if let Some(branch1) = branch1.as_ref() {
-                let _ = default_tee_error_branch(branch1, error.clone(), context);
+                if let Err(error) = default_tee_error_branch(branch1, error.clone(), context) {
+                    eprintln!("[readable-stream] default tee error branch1 failed: {error}");
+                }
             }
 
             // Step 19.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], r)."
             if let Some(branch2) = branch2.as_ref() {
-                let _ = default_tee_error_branch(branch2, error, context);
+                if let Err(error) = default_tee_error_branch(branch2, error, context) {
+                    eprintln!("[readable-stream] default tee error branch2 failed: {error}");
+                }
             }
 
             // Step 19.3: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
             if !canceled1 || !canceled2 {
-                let _ = cancel_resolvers.resolve.call(
+                if let Err(error) = cancel_resolvers.resolve.call(
                     &JsValue::undefined(),
                     &[JsValue::undefined()],
                     context,
-                );
+                ) {
+                    eprintln!("[readable-stream] failed to resolve cancel promise: {error}");
+                }
             }
 
             Ok(JsValue::undefined())
@@ -687,12 +693,16 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
 
                         // Step 13.3 chunk steps 1.3.2.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
-                            let _ = default_tee_error_branch(branch1, error.clone(), context);
+                            if let Err(error) = default_tee_error_branch(branch1, error.clone(), context) {
+                                eprintln!("[readable-stream] default tee error branch1 (chunk) failed: {error}");
+                            }
                         }
 
                         // Step 13.3 chunk steps 1.3.2.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
-                            let _ = default_tee_error_branch(branch2, error.clone(), context);
+                            if let Err(error) = default_tee_error_branch(branch2, error.clone(), context) {
+                                eprintln!("[readable-stream] default tee error branch2 (chunk) failed: {error}");
+                            }
                         }
 
                         // Step 13.3 chunk steps 1.3.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
@@ -1788,10 +1798,14 @@ fn byte_tee_forward_reader_error(
                 )
             };
             if let Some(ref branch1) = branch1 {
-                let _ = byte_tee_error_branch(branch1, error.clone(), context);
+                if let Err(error) = byte_tee_error_branch(branch1, error.clone(), context) {
+                    eprintln!("[readable-stream] byte tee error branch1 failed: {error}");
+                }
             }
             if let Some(ref branch2) = branch2 {
-                let _ = byte_tee_error_branch(branch2, error, context);
+                if let Err(error) = byte_tee_error_branch(branch2, error, context) {
+                    eprintln!("[readable-stream] byte tee error branch2 failed: {error}");
+                }
             }
             if !canceled1 || !canceled2 {
                 cancel_resolvers.resolve.call(
@@ -1905,12 +1919,16 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
 
                         // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
-                            let _ = byte_tee_error_branch(branch1, error.clone(), context);
+                            if let Err(error) = byte_tee_error_branch(branch1, error.clone(), context) {
+                                eprintln!("[readable-stream] byte tee error branch1 (chunk) failed: {error}");
+                            }
                         }
 
                         // Step 18.2 chunk steps 1.4.2.2: "Perform ! ReadableByteStreamControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
-                            let _ = byte_tee_error_branch(branch2, error.clone(), context);
+                            if let Err(error) = byte_tee_error_branch(branch2, error.clone(), context) {
+                                eprintln!("[readable-stream] byte tee error branch2 (chunk) failed: {error}");
+                            }
                         }
 
                         // Step 18.2 chunk steps 1.4.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
@@ -2192,12 +2210,16 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
 
                                     // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
                                     if let Some(branch) = byob_branch.as_ref() {
-                                        let _ = byte_tee_error_branch(branch, error.clone(), context);
+                                        if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
+                                            eprintln!("[readable-stream] byte tee error byob-branch (chunk) failed: {error}");
+                                        }
                                     }
 
                                     // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
                                     if let Some(branch) = other_branch.as_ref() {
-                                        let _ = byte_tee_error_branch(branch, error.clone(), context);
+                                        if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
+                                            eprintln!("[readable-stream] byte tee error other-branch (chunk) failed: {error}");
+                                        }
                                     }
 
                                     // Step 19.4 chunk steps 1.5.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
@@ -2657,9 +2679,12 @@ fn promise_rejected_with_reason(reason: JsValue, context: &mut Context) -> JsObj
     crate::webidl::rejected_promise(reason, context).unwrap_or_else(|_| {
         let (promise, resolvers) = JsPromise::new_pending(context);
         let promise_object: JsObject = promise.into();
-        let _ = resolvers
+        if let Err(error) = resolvers
             .reject
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context);
+            .call(&JsValue::undefined(), &[JsValue::undefined()], context)
+        {
+            eprintln!("[readable-stream] failed to reject fallback promise: {error}");
+        }
         promise_object
     })
 }
@@ -2682,9 +2707,12 @@ fn reject_promise_with_error(
     context: &mut Context,
 ) {
     let reason = error_to_rejection_reason(error, context);
-    let _ = resolvers
+    if let Err(error) = resolvers
         .reject
-        .call(&JsValue::undefined(), &[reason], context);
+        .call(&JsValue::undefined(), &[reason], context)
+    {
+        eprintln!("[readable-stream] failed to reject promise with error: {error}");
+    }
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
@@ -2739,7 +2767,9 @@ fn readable_stream_pipe_to(
     let writer_object = match super::acquire_writable_stream_default_writer(dest.clone(), context) {
         Ok(writer_object) => writer_object,
         Err(error) => {
-            let _ = readable_stream_default_reader_release(reader.clone(), context);
+            if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
+                eprintln!("[readable-stream] failed to release reader on pipe setup error: {error}");
+            }
             reject_promise_with_error(&pipe_resolvers, error, context);
             return pipe_promise_obj;
         }
@@ -2749,7 +2779,9 @@ fn readable_stream_pipe_to(
     }) {
         Ok(writer) => writer,
         Err(error) => {
-            let _ = readable_stream_default_reader_release(reader.clone(), context);
+            if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
+                eprintln!("[readable-stream] failed to release reader on writer error: {error}");
+            }
             reject_promise_with_error(&pipe_resolvers, error, context);
             return pipe_promise_obj;
         }
@@ -2910,7 +2942,9 @@ impl PipeToState {
 
     fn reject_and_finalize_with_reason(&self, reason: JsValue, context: &mut Context) {
         self.set_shutdown_error(Some(reason));
-        let _ = self.finalize(context);
+        if let Err(error) = self.finalize(context) {
+            eprintln!("[readable-stream] failed to finalize on rejection: {error}");
+        }
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>

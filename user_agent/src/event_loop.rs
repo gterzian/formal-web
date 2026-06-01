@@ -270,7 +270,9 @@ impl EventLoopWorker {
             // Initial viewport state is host configuration, not an HTML task, so it seeds the
             // content process immediately after bootstrap.
             let command = viewport_command(snapshot);
-            let _ = worker.send_command_inner(&command);
+            if let Err(error) = worker.send_command_inner(&command) {
+                eprintln!("failed to send initial viewport command: {error}");
+            }
         }
 
         Ok(worker)
@@ -582,8 +584,12 @@ impl EventLoopWorker {
                 {
                     eprintln!("failed to enqueue webview-provider paint frame: {error}");
                 } else {
-                    let _ = self.host.webview_provider_sync();
-                    let _ = self.host.new_frame_rendered();
+                    if let Err(error) = self.host.webview_provider_sync() {
+                        eprintln!("failed to sync webview provider: {error}");
+                    }
+                    if let Err(error) = self.host.new_frame_rendered() {
+                        eprintln!("failed to notify new frame rendered: {error}");
+                    }
                 }
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
@@ -607,8 +613,12 @@ impl EventLoopWorker {
             match wait_for_child_exit(child, CONTENT_SHUTDOWN_GRACE_TIMEOUT) {
                 Ok(true) => {}
                 Ok(false) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Err(error) = child.kill() {
+                        eprintln!("failed to kill content process: {error}");
+                    }
+                    if let Err(error) = child.wait() {
+                        eprintln!("failed to wait for content process exit: {error}");
+                    }
                 }
                 Err(error) => {
                     eprintln!("content bridge shutdown poll error: {error}");
@@ -632,7 +642,9 @@ impl EventLoopWorker {
                             "event loop command channel closed for event loop {}; sending shutdown to content",
                             self.event_loop_id
                         );
-                        let _ = self.send_command_inner(&ContentCommand::Shutdown);
+                        if let Err(error) = self.send_command_inner(&ContentCommand::Shutdown) {
+                            eprintln!("failed to send shutdown command to content: {error}");
+                        }
                         break;
                     };
 
