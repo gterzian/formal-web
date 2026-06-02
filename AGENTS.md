@@ -31,7 +31,7 @@ You can also update this documentation chain based on lessons learned from user 
 
 # Project Structure
 
-The formal-web project implements a web browser from scratch, with the main `formal-web` binary launching dedicated `formal-web-content` and `formal-web-net` sidecars from the `content` and `net` packages. The embedder coordinates these sidecars, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.
+The formal-web project implements a web browser from scratch from separate processes coordinated by the user agent. The main `formal-web` binary launches dedicated `formal-web-content` and `formal-web-net` processes from the `content` and `net` packages. The embedder delegates to these processes through the `webview` and `user_agent` layers, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.
 
 TLA+ models under `verification/` verify critical algorithms (e.g. navigation). The TLA+ Toolbox jar is at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar`. Verification artifacts go in temporary directories.
 
@@ -116,7 +116,7 @@ for Rust code analysis, navigation, and refactoring.
   that persists for hours, RA only indexes once.
 
 This project's workspace is complex (~1 GB vendor crates, edition 2024, patches,
-sidecar build script). RA takes 1-2 minutes to fully index on first start.
+build script). RA takes 1-2 minutes to fully index on first start.
 Tools don't block during loading — they proceed immediately and return partial
 results if the project isn't ready yet.
 
@@ -151,7 +151,7 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Use neutral, factual language.
 - Use the `web_standards` extension tools (`spec_section`, `spec_algorithm`, `spec_select`, `spec_html`) to read spec content instead of reading local copies or fetching directly.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
-- The word "runtime" is forbidden in this repo. Why? Because the entire thing is a "runtime", one that implements the Web, and so the concept of runtime should never be used to model or document some component of what is basically one big runtime. Instead of reaching for this forbidden word, think about what the thing you want to name does, what its role in the system is, and come-up with something descriptive.
+- The words "runtime" and "sidecar" are forbidden in this repo. Why? Because the entire thing is a runtime, one that implements the Web, and so neither concept should ever be used to model or document some component of what is basically one big integrated system. No component is more or less of a "sidecar" than any other — each plays a specific role. Instead of reaching for these forbidden words, think about what the thing you want to name does, what its role in the system is, and come up with something descriptive.
 
 # Error Logging
 
@@ -167,7 +167,7 @@ Errors must always be logged before being discarded. A `Result` value must never
 At the end of each task, run the following steps **in order**:
 
 1. **Tear down browser/CDP infra** — Kill any formal-web embedder processes
-   (`pkill -f "formal-web-embedder")`, CDP servers, or other sidecars that
+   (`pkill -f "formal-web-embedder")`, CDP servers, or other processes that
    were started during the session. Leftover processes can block ports and
    interfere with subsequent tasks.
 

@@ -39,7 +39,7 @@ target/release/formal-web-wpt dom/nodes/Element-hasAttribute.html
 cargo run --release -- wpt <args>
   │
   ├─ cargo builds `formal-web` (entrypoint binary)
-  │   └─ build.rs pre-builds sidecars (content, net) into
+  │   └─ build.rs pre-builds component binaries (content, net) into
   │      target/sidecar-prebuild/ and copies them to target/release/
   │
   ├─ formal-web starts, calls wpt_runner::run(args)
@@ -47,7 +47,7 @@ cargo run --release -- wpt <args>
   │      is target/release/formal-web-wpt. If not:
   │      ├─ build_runner_executable() builds the runner binary into
   │      │  target/wpt-prebuild/ and copies to target/release/
-  │      │  └─ sidecar binaries are skipped if they already exist
+  │      │  └─ component binaries are skipped if they already exist
   │      │     (build.rs already placed them)
   │      └─ re-execs via target/release/formal-web-wpt <args>
   │
@@ -104,9 +104,9 @@ subprocess working directory changes to `vendor/wpt/` (which contains a
 
 ## Build details
 
-### Sidecar binaries
+### Component binaries
 
-There are two places that build sidecar binaries (`formal-web-embedder`,
+There are two places that build the component binaries (`formal-web-embedder`,
 `formal-web-content`, `formal-web-net`):
 
 1. **`build.rs`** (workspace entrypoint) — prebuilds into
@@ -115,7 +115,7 @@ There are two places that build sidecar binaries (`formal-web-embedder`,
    dependency resolution conflicts.
 
 2. **`build_runner_executable()`** in `lib.rs` — builds the runner into
-   `target/wpt-prebuild/`. For sidecar binaries, it skips the build if they
+   `target/wpt-prebuild/`. For component binaries, it skips the build if they
    already exist in `target/release/` (placed there by `build.rs`). The runner
    binary itself is always built.
 
@@ -124,7 +124,7 @@ There are two places that build sidecar binaries (`formal-web-embedder`,
 To avoid cargo profile mismatches between the debug-mode cargo runner and
 the release build, `maybe_reexec_test_wpt_runner()` builds the runner binary
 for the target profile (release by default) and re-execs via that binary.
-This ensures the runner and sidecar binaries share the same profile.
+This ensures the runner and component binaries share the same profile.
 
 ## Test selection
 
@@ -169,7 +169,7 @@ note: there are multiple different versions of crate `boa_gc` in the dependency 
 ```
 
 Stale artifacts in `target/sidecar-prebuild/` or `target/wpt-prebuild/`. Clean
-and retry:
+those directories and retry:
 
 ```bash
 rm -rf target/sidecar-prebuild target/wpt-prebuild

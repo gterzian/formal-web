@@ -1,8 +1,8 @@
 # embedder crate
 
 The embedder crate owns the top-level application lifecycle, window management,
-browser chrome, and the redraw loop. It coordinates sidecar processes (content,
-net) through the `webview` and `user_agent` crates.
+browser chrome, and the redraw loop. It delegates to content and net
+processes through the `webview` and `user_agent` crates.
 
 ## Architecture
 
