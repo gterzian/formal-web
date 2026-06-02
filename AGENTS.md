@@ -171,12 +171,22 @@ At the end of each task, run the following steps **in order**:
    were started during the session. Leftover processes can block ports and
    interfere with subsequent tasks.
 
-2. **Run `cargo fmt`** — Format the entire project before committing. Run
+2. **Run `cargo clippy`** — Lint the entire workspace and fix any warnings
+   before committing. Run from the project root:
+
+   ```bash
+   rustup run 1.92.0 cargo clippy --workspace --all-targets
+   ```
+
+   Fix all warnings that appear (patch and vendored warnings can be ignored;
+   focus on code-level warnings).
+
+3. **Run `cargo fmt`** — Format the entire project before committing. Run
    from the project root: `cargo fmt`. This covers all crates in the workspace.
 
-3. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+4. **Suggest a commit message** — Propose a commit message for changes tracked by git.
 
-4. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
+5. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
    - **Default WPT run** — Runs the Web Platform Tests suite (`tests/wpt/include.ini`) to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
 
      ```bash
@@ -187,4 +197,4 @@ At the end of each task, run the following steps **in order**:
 
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
 
-5. DO NOT collect pi sessions; those are collected automatically on shutdown.
+6. DO NOT collect pi sessions; those are collected automatically on shutdown.
