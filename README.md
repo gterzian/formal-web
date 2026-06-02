@@ -15,17 +15,17 @@ This builds and runs the default windowed embedder for local development.
 
 | Directory | Description |
 |-----------|-------------|
-| [`embedder/`](./embedder/README.md) | Top-level application lifecycle, window management, browser chrome, and redraw loop |
-| [`user_agent/`](./user_agent/README.md) | Browser-global coordination: navigables, session history, event loops, timers, fetch workers, sidecar lifecycle |
-| [`content/`](./content/README.md) | Content process: DOM and HTML algorithms, Boa JS integration, Web IDL bridges, typed IPC |
-| [`net/`](./net/README.md) | Net sidecar: HTTP and file fetch execution |
-| [`webview/`](./webview/README.md) | Per-webview compositor state, hit testing, and redraw signaling |
+| [`embedder/`](./embedder/README.md) | Default embedding of the engine: top-level application lifecycle, window management, browser chrome, and redraw loop |
+| [`user_agent/`](./user_agent/README.md) | All global coordination: navigables and traversables, session history, event loops, timers, fetch workers, and incoming requests from the embedder and webview layers |
+| [`content/`](./content/README.md) | DOM and JS execution: HTML algorithm implementations, Boa JS integration, Web IDL bridges, typed IPC — but not coordination with other components |
+| [`net/`](./net/README.md) | Networking and HTTP cache (future): executes HTTP and file fetch when the Fetch spec reaches the network or cache layer |
+| [`webview/`](./webview/README.md) | Public API for embedders: per-webview compositor state, hit testing, and redraw signaling |
 | [`automation/`](./automation/README.md) | WebDriver and CDP wire-protocol servers |
 | [`verification/`](./verification/README.md) | Trace recording, TLA+ validation, and shutdown workflow |
-| `ipc_messages/` | Shared IPC message types between sidecars |
+| `ipc_messages/` | Shared IPC message types between components |
 | `src/` | Workspace entrypoint (`formal-web` binary) |
 | [`tests/`](./tests/formal/README.md) | Formal tests and WPT runner |
-| `artifacts/` | Shared-memory transport artifacts |
+| `artifacts/` | Default startup pages used for testing |
 
 ## Extensions
 
