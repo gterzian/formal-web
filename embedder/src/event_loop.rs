@@ -129,6 +129,7 @@ pub enum FormalWebUserEvent {
         destination_url: String,
     },
     NavigationCompleted(NavigationCompleted),
+    #[allow(dead_code)]
     NewWebview(WebviewId, String),
     WebviewProviderSync,
     NewFrameRendered,

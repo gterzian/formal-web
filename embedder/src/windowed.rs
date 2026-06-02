@@ -46,14 +46,12 @@ impl WindowId {
 
 /// Per-tab state
 pub(super) struct TabState {
-    webview_id: WebviewId,
     pending_url: Option<String>,
     committed_url: Option<String>,
 }
 impl TabState {
-    fn new(webview_id: WebviewId) -> Self {
+    fn new() -> Self {
         Self {
-            webview_id,
             pending_url: None,
             committed_url: None,
         }
@@ -68,7 +66,6 @@ impl TabState {
 
 /// Per-window state: owns a winit window, a renderer, chrome, and tabs
 pub(super) struct WindowState {
-    pub(super) window_id: WindowId,
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: VelloWindowRenderer,
     pub(super) chrome: Option<ChromeUi>,
@@ -83,9 +80,8 @@ pub(super) struct WindowState {
     pub(super) pointer_pos: PhysicalPosition<f64>,
 }
 impl WindowState {
-    fn new(window_id: WindowId) -> Self {
+    fn new() -> Self {
         Self {
-            window_id,
             window: None,
             renderer: VelloWindowRenderer::new(),
             chrome: None,
@@ -102,22 +98,15 @@ impl WindowState {
     }
 }
 
+#[derive(Default)]
 pub(super) struct WindowedApp {
     pub(super) windows: HashMap<WindowId, WindowState>,
     pub(super) provider: Option<WebviewProvider>,
     pub(super) active_window_id: Option<WindowId>,
 }
-impl Default for WindowedApp {
-    fn default() -> Self {
-        Self {
-            windows: HashMap::new(),
-            provider: None,
-            active_window_id: None,
-        }
-    }
-}
 
-pub(super) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<Option<(u32, u32, f32, ColorScheme)>>> =
+type ViewportSnapshot = Option<(u32, u32, f32, ColorScheme)>;
+pub(super) static WINDOW_VIEWPORT_SNAPSHOT: LazyLock<Mutex<ViewportSnapshot>> =
     LazyLock::new(|| Mutex::new(None));
 pub(super) fn update_window_viewport_snapshot(s: Option<(u32, u32, f32, ColorScheme)>) {
     *WINDOW_VIEWPORT_SNAPSHOT.lock().expect("poisoned") = s;
@@ -175,11 +164,10 @@ impl WindowedApp {
             && Self::content_has_visible_viewport(s)
     }
     fn request_window_redraw(s: &WindowState) {
-        if let Some(w) = s.window.as_ref() {
-            if Self::has_visible_viewport(s) {
+        if let Some(w) = s.window.as_ref()
+            && Self::has_visible_viewport(s) {
                 w.request_redraw();
             }
-        }
     }
     fn request_visible_redraw(s: &WindowState, prov: Option<&WebviewProvider>, reason: &str) {
         Self::request_window_redraw(s);
@@ -195,16 +183,14 @@ impl WindowedApp {
     }
     fn tab_label(s: &WindowState, wid: &WebviewId) -> String {
         if let Some(tab) = s.tabs.get(wid) {
-            if let Some(url) = &tab.committed_url {
-                if !url.is_empty() {
+            if let Some(url) = &tab.committed_url
+                && !url.is_empty() {
                     return Self::truncate_url(url);
                 }
-            }
-            if let Some(url) = &tab.pending_url {
-                if !url.is_empty() {
+            if let Some(url) = &tab.pending_url
+                && !url.is_empty() {
                     return Self::truncate_url(url);
                 }
-            }
         }
         String::from("New Tab")
     }
@@ -293,7 +279,7 @@ impl WindowedApp {
             st.active_tab = Some(wid);
             return;
         }
-        st.tabs.insert(wid, TabState::new(wid));
+        st.tabs.insert(wid, TabState::new());
         st.tab_order.push(wid);
         st.active_tab = Some(wid);
     }
@@ -320,11 +306,10 @@ impl WindowedApp {
         }
         let at = st.active_tab;
         st.renderer.render(|scene| {
-            if let Some(wid) = at {
-                if let Some(p) = prov.as_mut() {
+            if let Some(wid) = at
+                && let Some(p) = prov.as_mut() {
                     let _ = p.append_web_content_scene(wid, scene, Affine::translate((0.0, ch)));
                 }
-            }
             if let Some(cs) = cs.clone() {
                 scene.append_scene(cs, Affine::IDENTITY);
             }
@@ -428,7 +413,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 return;
             }
         };
-        let mut st = WindowState::new(wid);
+        let mut st = WindowState::new();
         st.chrome = Some(chrome);
         st.window = Some(window.clone());
         self.active_window_id = Some(wid);
@@ -475,11 +460,10 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
 
         match event {
             WindowEvent::RedrawRequested => {
-                if let Some(st) = self.windows.get_mut(&window_id) {
-                    if self.provider.is_some() || st.chrome.is_some() {
+                if let Some(st) = self.windows.get_mut(&window_id)
+                    && (self.provider.is_some() || st.chrome.is_some()) {
                         Self::paint_frame(st, &mut self.provider);
                     }
-                }
             }
             WindowEvent::Occluded(occluded) => {
                 if let Some(st) = self.windows.get_mut(&window_id) {
@@ -561,10 +545,10 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let ch_phys = self
+                let _ch_phys = self
                     .windows
                     .get(&window_id)
-                    .map(|s| Self::chrome_height_physical(s))
+                    .map(Self::chrome_height_physical)
                     .unwrap_or(0);
                 if Self::pointer_in_chrome_st(&self.windows, window_id, position) {
                     if let Some(st) = self.windows.get_mut(&window_id) {
@@ -578,16 +562,16 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             mods: winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state()),
                             details: PointerDetails::default(),
                         });
-                        drop(st);
+                        let _ = st;
                         Self::chrome_event(self, window_id, ev);
                     }
-                } else if Self::pointer_in_content_st(&self.windows, window_id, position) {
-                    if let Some(st) = self.windows.get_mut(&window_id) {
+                } else if Self::pointer_in_content_st(&self.windows, window_id, position)
+                    && let Some(st) = self.windows.get_mut(&window_id) {
                         st.pointer_pos = position;
                         let coords = Self::ct_coords(st, position);
                         let buttons = st.buttons;
                         let mods = winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state());
-                        drop(st);
+                        let _ = st;
                         self.dispatch_to_content(
                             window_id,
                             UiEvent::PointerMove(BlitzPointerEvent {
@@ -601,7 +585,6 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             }),
                         );
                     }
-                }
             }
             WindowEvent::MouseInput {
                 button, state: bs, ..
@@ -625,7 +608,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             mods: winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state()),
                             details: PointerDetails::default(),
                         };
-                        drop(st);
+                        let _ = st;
                         Self::chrome_event(
                             self,
                             window_id,
@@ -651,7 +634,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             details: PointerDetails::default(),
                         };
                         let webview_id = st.active_tab;
-                        drop(st);
+                        let _ = st;
                         if let Some(wid) = webview_id {
                             self.with_provider(|p| {
                                 let r = match bs {
@@ -699,7 +682,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         details: touch_pointer_details(force),
                     };
                     if in_chrome {
-                        drop(st);
+                        let _ = st;
                         Self::chrome_event(
                             self,
                             window_id,
@@ -717,7 +700,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             Self::request_window_redraw(st);
                         }
                         let wid = st.active_tab;
-                        drop(st);
+                        let _ = st;
                         if let Some(wid) = wid {
                             self.with_provider(|p| {
                                 let r = match phase {
@@ -764,7 +747,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             buttons: st.buttons,
                             mods: winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state()),
                         });
-                        drop(st);
+                        let _ = st;
                         Self::chrome_event(self, window_id, ev);
                     }
                 } else if let Some(st) = self.windows.get_mut(&window_id) {
@@ -775,7 +758,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                     let coords = Self::ct_coords(st, st.pointer_pos);
                     let buttons = st.buttons;
                     let mods = winit_modifiers_to_kbt_modifiers(st.keyboard_modifiers.state());
-                    drop(st);
+                    let _ = st;
                     if let Some(wid) = wid {
                         self.with_provider(|p| {
                             if let Err(e) = p.send_ui_event(
@@ -805,11 +788,10 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
     fn user_event(&mut self, el: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
             FormalWebUserEvent::WebviewProviderSync => {
-                if let Some(p) = self.provider.as_mut() {
-                    if let Err(e) = p.sync_pending_messages() {
+                if let Some(p) = self.provider.as_mut()
+                    && let Err(e) = p.sync_pending_messages() {
                         eprintln!("provider sync error: {e}");
                     }
-                }
             }
             FormalWebUserEvent::NewFrameRendered => {
                 self.try_run_automation(|a, app| a.note_rendering_update(app));
@@ -819,13 +801,11 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 // since every RedrawRequested can trigger another NewFrameRendered.
             }
             FormalWebUserEvent::RequestRedraw(wid) => {
-                if let Some(w) = Self::window_for_webview(self, wid) {
-                    if let Some(s) = self.windows.get(&w) {
-                        if s.active_tab == Some(wid) {
+                if let Some(w) = Self::window_for_webview(self, wid)
+                    && let Some(s) = self.windows.get(&w)
+                        && s.active_tab == Some(wid) {
                             Self::request_window_redraw(s);
                         }
-                    }
-                }
             }
             FormalWebUserEvent::NavigationRequested {
                 webview_id,
@@ -844,13 +824,12 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             Self::request_window_redraw(st);
                         }
                     }
-                } else if let Some(a) = self.active_window_id {
-                    if let Some(st) = self.windows.get_mut(&a) {
+                } else if let Some(a) = self.active_window_id
+                    && let Some(st) = self.windows.get_mut(&a) {
                         Self::add_tab(st, webview_id);
                         Self::sync_chrome(st);
                         Self::update_provider_viewport(st, &mut self.provider);
                     }
-                }
             }
             FormalWebUserEvent::NavigationCompleted(c) => {
                 let w_opt = Self::window_for_webview(self, c.webview_id);
@@ -862,15 +841,14 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 let is_current = self
                     .windows
                     .get(&w)
-                    .map_or(false, |s| s.active_tab == Some(c.webview_id));
+                    .is_some_and(|s| s.active_tab == Some(c.webview_id));
                 match &c.status {
                     NavigationCompletion::Committed { url } => {
-                        if let Some(st) = self.windows.get_mut(&w) {
-                            if let Some(t) = st.tabs.get_mut(&c.webview_id) {
+                        if let Some(st) = self.windows.get_mut(&w)
+                            && let Some(t) = st.tabs.get_mut(&c.webview_id) {
                                 t.pending_url = None;
                                 t.committed_url = Some(url.clone());
                             }
-                        }
                         // Clear compositor first so new paint frames populate it.
                         if let Some(p) = self.provider.as_mut() {
                             p.on_navigation_committed(c.webview_id);
@@ -889,8 +867,8 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         }
                     }
                     NavigationCompletion::Aborted { message } => {
-                        if is_current {
-                            if let Some(st) = self.windows.get_mut(&w) {
+                        if is_current
+                            && let Some(st) = self.windows.get_mut(&w) {
                                 let mut a = std::mem::take(&mut st.automation);
                                 a.abort_pending_navigation(message.clone());
                                 st.automation = a;
@@ -900,19 +878,17 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                 Self::sync_chrome(st);
                                 Self::request_window_redraw(st);
                             }
-                        }
                     }
                 }
             }
             FormalWebUserEvent::NewWebview(wid, _) => {
-                if let Some(w) = self.active_window_id {
-                    if let Some(st) = self.windows.get_mut(&w) {
+                if let Some(w) = self.active_window_id
+                    && let Some(st) = self.windows.get_mut(&w) {
                         Self::add_tab(st, wid);
                         Self::sync_chrome(st);
                         Self::update_provider_viewport(st, &mut self.provider);
                         Self::request_visible_redraw(st, self.provider.as_ref(), "request_redraw");
                     }
-                }
             }
             FormalWebUserEvent::CreateWindow => {
                 let wid = WindowId::new();
@@ -926,7 +902,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                     Ok(c) => c,
                     Err(_) => return,
                 };
-                let mut st = WindowState::new(wid);
+                let mut st = WindowState::new();
                 st.chrome = Some(chrome);
                 st.window = Some(window.clone());
                 self.active_window_id = Some(wid);
@@ -958,7 +934,7 @@ impl WindowedApp {
         windows
             .get(&wid)
             .and_then(|s| s.chrome.as_ref())
-            .map_or(false, ChromeUi::takes_text_input_focus)
+            .is_some_and(ChromeUi::takes_text_input_focus)
     }
     fn pointer_in_chrome_st(
         windows: &HashMap<WindowId, WindowState>,
@@ -967,7 +943,7 @@ impl WindowedApp {
     ) -> bool {
         windows
             .get(&wid)
-            .map_or(false, |s| Self::pointer_in_chrome(s, pos))
+            .is_some_and(|s| Self::pointer_in_chrome(s, pos))
     }
     fn pointer_in_content_st(
         windows: &HashMap<WindowId, WindowState>,
@@ -976,7 +952,7 @@ impl WindowedApp {
     ) -> bool {
         windows
             .get(&wid)
-            .map_or(false, |s| Self::pointer_in_content(s, pos))
+            .is_some_and(|s| Self::pointer_in_content(s, pos))
     }
     fn map_button(b: MouseButton) -> MouseEventButton {
         match b {
@@ -996,9 +972,7 @@ impl WindowedApp {
             return;
         }
         let action = st.chrome.as_mut().and_then(|c| c.handle_ui_event(event));
-        if let Some(ref a) = action {
-        } else {
-        }
+        // action consumed below if present
         Self::request_window_redraw(st);
         if let Some(action) = action {
             Self::handle_chrome_action(app, wid, action);
@@ -1016,14 +990,13 @@ impl WindowedApp {
                     return;
                 };
                 if let Some(st) = app.windows.get_mut(&wid) {
-                    if let Some(p) = app.provider.as_ref() {
-                        if let Some(w) = st.active_tab {
+                    if let Some(p) = app.provider.as_ref()
+                        && let Some(w) = st.active_tab {
                             let _ = p.navigate(Some(w), &url);
                             if let Some(t) = st.tabs.get_mut(&w) {
                                 t.pending_url = Some(url.clone());
                             }
                         }
-                    }
                     Self::sync_chrome(st);
                     Self::request_window_redraw(st);
                 }
@@ -1186,7 +1159,7 @@ impl WindowedApp {
         let mk = |b: MouseEventButton, bt: MouseEventButtons| BlitzPointerEvent {
             id: BlitzPointerId::Mouse,
             is_primary: true,
-            coords: coords.clone(),
+            coords,
             button: b,
             buttons: bt,
             mods,
@@ -1240,7 +1213,7 @@ impl WindowedApp {
         let mk_move = BlitzPointerEvent {
             id: BlitzPointerId::Mouse,
             is_primary: true,
-            coords: coords.clone(),
+            coords,
             button: Default::default(),
             buttons: st.buttons,
             mods,
