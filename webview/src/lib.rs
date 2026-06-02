@@ -110,12 +110,27 @@ impl WebviewProvider {
         })
     }
 
+    /// Process ALL pending provider messages in one batch.
+    ///
+    /// Drains the channel so that burst of PaintFrames (e.g. during iframe viewport
+    /// convergence) are processed together, avoiding one `WebviewProviderSync` + redraw
+    /// per frame.  `RegisterChildNavigableHost` and `NewWebview` messages are still
+    /// processed immediately since they don't participate in the render cascade.
     pub fn sync_pending_messages(&mut self) -> Result<(), String> {
+        // Block on the first message (we know at least one is pending because
+        // webview_provider_sync was called).
         let message = self
             .provider_message_receiver
             .recv()
             .map_err(|error| format!("failed to receive webview provider message: {error}"))?;
-        self.handle_provider_message(message)
+        self.handle_provider_message(message)?;
+
+        // Drain any additional messages that arrived while we were processing.
+        while let Ok(message) = self.provider_message_receiver.try_recv() {
+            self.handle_provider_message(message)?;
+        }
+
+        Ok(())
     }
 
     fn handle_provider_message(&mut self, message: WebviewProviderMessage) -> Result<(), String> {
@@ -285,7 +300,7 @@ impl WebviewProvider {
     }
 
     pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
-        let source_webview_id = frame.traversable_id;
+        let _source_webview_id = frame.traversable_id;
         let is_root_candidate = !self
             .child_navigable_hosts_by_webview
             .contains_key(&frame.traversable_id);
@@ -331,21 +346,15 @@ impl WebviewProvider {
             .visible_frame_viewports(&self.font_receiver);
         self.publish_visible_child_viewports(viewports);
 
-        if let Some(expected) = self.published_child_viewports.get(&source_webview_id)
-            && (expected.width != viewport_width || expected.height != viewport_height)
-        {
-            if input_debug_enabled() {
-                eprintln!(
-                    "[input-debug][webview] child_viewport_mismatch child_webview={} painted=({},{}) expected=({},{})",
-                    source_webview_id.0,
-                    viewport_width,
-                    viewport_height,
-                    expected.width,
-                    expected.height,
-                );
-            }
-            self.note_rendering_opportunity(source_webview_id, "child_viewport_mismatch");
-        }
+        // NOTE: We deliberately do NOT call note_rendering_opportunity for
+        // child_viewport_mismatch here. The viewport was just sent to the child
+        // via set_traversable_viewport in publish_visible_child_viewports above.
+        // If the child painted at a different size than what we last published,
+        // it's because set_traversable_viewport hadn't arrived yet — the child
+        // will pick up the correct viewport on its next natural render without
+        // an immediate forced re-render. Removing this avoids a rendering cascade
+        // where each mismatch triggers note_rendering_opportunity, which triggers
+        // another PaintFrame, which triggers another mismatch check, etc.
 
         self.embedder.request_redraw(traversable_id);
         Ok(())
@@ -611,22 +620,14 @@ impl WebviewProvider {
             ) {
                 eprintln!("[webview] failed to set traversable viewport: {error}");
             }
-            self.note_rendering_opportunity(child_webview_id, "visible_child_viewport");
-
-            // Also refresh the parent traversable. Embed-site clip/transform data is produced
-            // by the parent frame paint, so parent composition must not wait for a later
-            // root-page scroll/input event to pick up child viewport/layout changes.
-            if let Some(child_host) = self.child_navigable_hosts_by_webview.get(&child_webview_id) {
-                self.note_rendering_opportunity(
-                    child_host.parent_traversable_id,
-                    "visible_child_viewport_parent",
-                );
-                // Keep parent composition in lockstep with child viewport publication.
-                // Without this immediate redraw request, the parent can keep showing a stale
-                // child transform until a later parent interaction (for example, root scroll).
-                self.embedder
-                    .request_redraw(child_host.parent_traversable_id);
-            }
+            // Do NOT call note_rendering_opportunity or request_redraw here.
+            // Child viewport publishing during composition (composed_scene_for_webview)
+            // creates a render cascade: each publishing triggers re-rendering, which
+            // sends PaintFrames, which triggers on_paint_frame, which publishes child
+            // viewports again — producing 30–400+ NewFrameRendered events per cycle.
+            // The traversable viewport is already sent to content via
+            // set_traversable_viewport above; the next natural render cycle will pick
+            // it up without cascading.
         }
         self.published_child_viewports = next_published_child_viewports;
     }
