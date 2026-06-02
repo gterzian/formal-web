@@ -82,6 +82,8 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "anyrender"
 version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74dcad75fbef1209804ee5d1cfd7409665c5a7987865c758e45f8c5553f9a75f"
 dependencies = [
  "kurbo",
  "peniko",
@@ -92,6 +94,8 @@ dependencies = [
 [[package]]
 name = "anyrender_svg"
 version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb301bceaa7b9089211acb35f15b46aad96c433e63043d4a2ec4f2f83c4818df"
 dependencies = [
  "anyrender",
  "image",
@@ -4661,23 +4665,3 @@ checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "anyrender_serialize"
-version = "0.3.0"
-
-[[patch.unused]]
-name = "anyrender_vello"
-version = "0.10.1"
-
-[[patch.unused]]
-name = "anyrender_vello_cpu"
-version = "0.12.1"
-
-[[patch.unused]]
-name = "anyrender_vello_hybrid"
-version = "0.5.1"
-
-[[patch.unused]]
-name = "wgpu_context"
-version = "0.6.0"

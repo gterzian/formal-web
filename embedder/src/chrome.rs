@@ -322,9 +322,9 @@ impl ChromeUi {
                     return None;
                 };
                 let chain = self.document.node_chain(hit.node_id);
-                for (i, node_id) in chain.iter().enumerate() {
-                    if let Some(node) = self.document.get_node_mut(*node_id) {
-                        if let Some(element) = node.element_data_mut() {
+                for node_id in chain.iter() {
+                    if let Some(node) = self.document.get_node_mut(*node_id)
+                        && let Some(element) = node.element_data_mut() {
                             let id_q = qual_name!("id");
                             if let Some(attr) = element.attrs.get(&id_q) {
                                 if attr.value == "new-tab-btn" {
@@ -336,14 +336,12 @@ impl ChromeUi {
                                         Some(ChromeAction::NewTab)
                                     };
                                 }
-                                if let Some(index_str) = attr.value.strip_prefix("tab-") {
-                                    if let Ok(index) = index_str.parse::<usize>() {
+                                if let Some(index_str) = attr.value.strip_prefix("tab-")
+                                    && let Ok(index) = index_str.parse::<usize>() {
                                         return Some(ChromeAction::SwitchTab(index));
                                     }
-                                }
                             }
                         }
-                    }
                 }
 
                 let was_focused = self.takes_text_input_focus();

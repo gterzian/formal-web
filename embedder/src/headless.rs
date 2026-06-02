@@ -25,13 +25,6 @@ use webview::WebviewProvider;
 const HEADLESS_VIEWPORT_WIDTH: u32 = 800;
 const HEADLESS_VIEWPORT_HEIGHT: u32 = 600;
 
-fn input_debug_enabled() -> bool {
-    false
-}
-fn startup_debug_enabled() -> bool {
-    false
-}
-
 fn headless_viewport_snapshot() -> (u32, u32, f32, ColorScheme) {
     (
         HEADLESS_VIEWPORT_WIDTH,
@@ -214,7 +207,7 @@ impl AutomationHost for HeadlessEmbedderApp {
         let _mk = |b: MouseEventButton, bt: MouseEventButtons, _is_down: bool| BlitzPointerEvent {
             id: BlitzPointerId::Mouse,
             is_primary: true,
-            coords: coords.clone(),
+            coords,
             button: b,
             buttons: bt,
             mods,
@@ -223,7 +216,7 @@ impl AutomationHost for HeadlessEmbedderApp {
         let move_ev = UiEvent::PointerMove(BlitzPointerEvent {
             id: BlitzPointerId::Mouse,
             is_primary: true,
-            coords: coords.clone(),
+            coords,
             button: Default::default(),
             buttons: self.buttons,
             mods,
@@ -234,7 +227,7 @@ impl AutomationHost for HeadlessEmbedderApp {
         let down_ev = UiEvent::PointerDown(BlitzPointerEvent {
             id: BlitzPointerId::Mouse,
             is_primary: true,
-            coords: coords.clone(),
+            coords,
             button: MouseEventButton::Main,
             buttons: cur_bt,
             mods,
@@ -312,10 +305,9 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
     fn user_event(&mut self, el: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
             FormalWebUserEvent::WebviewProviderSync => {
-                if let Some(p) = self.provider.as_mut() {
-                    if let Err(e) = p.sync_pending_messages() {
-                        eprintln!("provider sync error: {e}");
-                    }
+                if let Some(p) = self.provider.as_mut()
+                    && let Err(e) = p.sync_pending_messages() {
+                    eprintln!("provider sync error: {e}");
                 }
             }
             FormalWebUserEvent::NewFrameRendered => {
