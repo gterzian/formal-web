@@ -34,3 +34,13 @@ The project ships three pi coding-agent extensions for repository development:
 - [**`pi-share-hf`**](.pi/extensions/pi-share-hf/README.md) — Archives pi coding sessions to `.pi/collected-sessions/` on shutdown. Includes a `collect_session` tool for mid-task checkpoints.
 - [**`browser`**](.pi/extensions/browser/README.md) — Wraps formal-web's CDP server into agent-callable tools (`browser_navigate`, `browser_click`, `browser_screenshot`, etc.) for live interactive debugging.
 - [**`rust-analyzer`**](.pi/extensions/rust-analyzer/README.md) — Spawns `rust-analyzer` as a child process and exposes 15 tools (`ra_hover`, `ra_diagnostics`, `ra_references`, `ra_rename`, etc.) for Rust code analysis, navigation, and refactoring.
+
+## Pi session archiving
+
+Pi coding sessions are archived on shutdown to `.pi/collected-sessions/`. To upload collected sessions to the Hugging Face dataset:
+
+```bash
+./sync-hf-sessions.sh
+```
+
+Prerequisites: the `hf` CLI must be installed and authenticated with write access to the [target dataset](https://huggingface.co/datasets/formal-web/pi-coding-sessions).

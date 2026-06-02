@@ -53,16 +53,6 @@ Plans and temporary task notes go under `scratchpad/`.
 - `./verification/verify-rendering.sh` — headless screenshot-based rendering verification (startup artifact + cross-origin iframe).
 - `rustup run 1.92.0 cargo run -- validate-tla --logs /path/to/logs --json` — validates a saved trace log directory.
 
-## Pi session archiving
-
-Pi coding sessions are archived on shutdown to `.pi/collected-sessions/`. To upload collected sessions to the Hugging Face dataset:
-
-```bash
-./sync-hf-sessions.sh
-```
-
-Prerequisites: the `hf` CLI must be installed and authenticated with write access to the [target dataset](https://huggingface.co/datasets/formal-web/pi-coding-sessions).
-
 # Local Extensions
 
 ## pi-share-hf — Session Collection
