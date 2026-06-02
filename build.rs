@@ -47,13 +47,13 @@ fn prebuild_sidecars() -> Result<(), String> {
     // resolution conflicts (e.g. multiple versions of boa_gc) when cargo
     // encounters cached build data from a previous run with a different
     // feature-set or profile.
-    if sidecar_target_root.exists() {
-        if let Err(error) = fs::remove_dir_all(&sidecar_target_root) {
-            eprintln!(
-                "[build.rs] warning: failed to remove stale {}: {error}",
-                sidecar_target_root.display()
-            );
-        }
+    if sidecar_target_root.exists()
+        && let Err(error) = fs::remove_dir_all(&sidecar_target_root)
+    {
+        eprintln!(
+            "[build.rs] warning: failed to remove stale {}: {error}",
+            sidecar_target_root.display()
+        );
     }
 
     let mut command = Command::new("cargo");
