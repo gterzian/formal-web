@@ -37,6 +37,22 @@ TLA+ models under `verification/` verify critical algorithms (e.g. navigation). 
 
 Plans and temporary task notes go under `scratchpad/`.
 
+## Commands
+
+- `rustup toolchain install 1.92.0` — installs the pinned Rust toolchain.
+- `rustup run 1.92.0 cargo check` — type-checks the workspace.
+- `rustup run 1.92.0 cargo run --release` — default windowed embedder.
+- `rustup run 1.92.0 cargo run --release -- --headless` — headless mode.
+- `rustup run 1.92.0 cargo run --release -- --verify` — with trace recording and shutdown-time TLA+ validation.
+- `rustup run 1.92.0 cargo run --release -- webdriver --headless` — WebDriver server.
+- `rustup run 1.92.0 cargo run --release -- cdp --headless` — CDP server.
+- `rustup run 1.92.0 cargo run --release -- webdriver --headless --cdp-port 9222` — WebDriver and CDP together.
+- `rustup run 1.92.0 cargo run --release -- wpt` — runs the default WPT and local formal test selection.
+- `rustup run 1.92.0 cargo run --release -- wpt formal/load-event-fires.html` — runs one selected test.
+- `./verification/verify-navigation.sh` — headless navigation workflow validated against the TLA+ `Navigation` spec.
+- `./verification/verify-rendering.sh` — headless screenshot-based rendering verification (startup artifact + cross-origin iframe).
+- `rustup run 1.92.0 cargo run -- validate-tla --logs /path/to/logs --json` — validates a saved trace log directory.
+
 # Local Extensions
 
 ## pi-share-hf — Session Collection

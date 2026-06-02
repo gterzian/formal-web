@@ -1,47 +1,46 @@
 # formal-web
 
-formal-web is a Rust web-engine prototype in alpha status, with an embedding API, and an optional verification layer that checks recorded execution traces against the TLA+ specs.
+formal-web is a Rust web-engine prototype in alpha status, with an embedding API and an optional TLA+ verification layer.
 
-## Commands
+## Quick start
 
-- `rustup toolchain install 1.92.0` installs the pinned Rust toolchain.
-- `rustup run 1.92.0 cargo check` type-checks the workspace.
-- `rustup run 1.92.0 cargo run --release` builds and runs the default windowed embedder for repository development.
-- `rustup run 1.92.0 cargo run --release -- --headless` runs the same entrypoint in headless mode.
-- `rustup run 1.92.0 cargo run --release -- --verify` runs with trace recording and shutdown-time TLA+ validation.
-- `rustup run 1.92.0 cargo run --release -- webdriver --headless` runs the WebDriver server using the repository entrypoint.
-- `rustup run 1.92.0 cargo run --release -- cdp --headless` runs the CDP server for CDP-native tooling.
-- `rustup run 1.92.0 cargo run --release -- webdriver --headless --cdp-port 9222` runs WebDriver and CDP together in one embedder process.
-- `rustup run 1.92.0 cargo run --release -- wpt` runs the default WPT and local formal test selection from the repository entrypoint.
-- `rustup run 1.92.0 cargo run --release -- wpt formal/load-event-fires.html` runs one selected WPT/formal test from the repository entrypoint.
-- `./verification/verify-navigation.sh` runs the headless navigation workflow whose acceptance target is the shutdown-time TLA+ `Navigation` check.
-- `./verification/verify-rendering.sh` runs the headless screenshot-based rendering workflow for the startup artifact and its cross-origin iframe.
-- `rustup run 1.92.0 cargo run -- validate-tla --logs /path/to/logs --json` validates a saved trace log directory via the root validation entrypoint.
+```bash
+rustup toolchain install 1.92.0
+rustup run 1.92.0 cargo run --release
+```
 
-## Pi Coding Sessions
+This builds and runs the default windowed embedder for local development.
 
-Pi (the coding agent used to develop this repository) coding sessions are archived on session shutdown,
-and a bash script is made available to upload them to hf. Those sessions are unredacted, so make sure you avoid
-sharing any secret in those.
+## Project structure
 
-The local infrastructure consists of three parts:
+| Directory | Description |
+|-----------|-------------|
+| [`embedder/`](./embedder/README.md) | Top-level application lifecycle, window management, browser chrome, and redraw loop |
+| [`user_agent/`](./user_agent/README.md) | Browser-global coordination: navigables, session history, event loops, timers, fetch workers, sidecar lifecycle |
+| [`content/`](./content/README.md) | Content process: DOM and HTML algorithms, Boa JS integration, Web IDL bridges, typed IPC |
+| [`net/`](./net/README.md) | Net sidecar: HTTP and file fetch execution |
+| [`webview/`](./webview/README.md) | Per-webview compositor state, hit testing, and redraw signaling |
+| [`automation/`](./automation/README.md) | WebDriver and CDP wire-protocol servers |
+| [`verification/`](./verification/README.md) | Trace recording, TLA+ validation, and shutdown workflow |
+| `ipc_messages/` | Shared IPC message types between sidecars |
+| `src/` | Workspace entrypoint (`formal-web` binary) |
+| [`tests/`](./tests/formal/README.md) | Formal tests and WPT runner |
+| `artifacts/` | Shared-memory transport artifacts |
 
-- **[pi-share-hf extension](.pi/extensions/pi-share-hf/)** — A pi extension that
-automatically collects session data to `.pi/collected-sessions/` on shutdown.
-It also exposes a `collect_session` tool and `/collect-session` command for
-mid-task checkpoints.
+## Extensions
 
-- **[`sync-hf-sessions.sh`](./sync-hf-sessions.sh)** — Uploads collected
-sessions to the Hugging Face dataset and clears the local directory. Run it
-whenever you want to push accumulated sessions upstream:
+The project ships three pi coding-agent extensions for repository development:
 
-  ```bash
-  ./sync-hf-sessions.sh
-  ```
+- [**`pi-share-hf`**](.pi/extensions/pi-share-hf/README.md) — Archives pi coding sessions to `.pi/collected-sessions/` on shutdown. Includes a `collect_session` tool for mid-task checkpoints.
+- [**`browser`**](.pi/extensions/browser/README.md) — Wraps formal-web's CDP server into agent-callable tools (`browser_navigate`, `browser_click`, `browser_screenshot`, etc.) for live interactive debugging.
+- [**`rust-analyzer`**](.pi/extensions/rust-analyzer/README.md) — Spawns `rust-analyzer` as a child process and exposes 15 tools (`ra_hover`, `ra_diagnostics`, `ra_references`, `ra_rename`, etc.) for Rust code analysis, navigation, and refactoring.
 
-  Prerequisites: the `hf` CLI must be installed and authenticated, and you need
-  write access to the target dataset.
+## Pi session archiving
 
-- **[Hugging Face dataset](https://huggingface.co/datasets/formal-web/pi-coding-sessions)**
-— Remote destination for archived sessions. Pull requests to this dataset are
-created automatically by `sync-hf-sessions.sh`.
+Pi coding sessions are archived on shutdown to `.pi/collected-sessions/`. To upload collected sessions to the Hugging Face dataset:
+
+```bash
+./sync-hf-sessions.sh
+```
+
+Prerequisites: the `hf` CLI must be installed and authenticated with write access to the [target dataset](https://huggingface.co/datasets/formal-web/pi-coding-sessions).
