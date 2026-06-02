@@ -172,7 +172,15 @@ class RustAnalyzerClient {
       this.pump();
     });
 
+    // The try/catch in send() handles synchronous write errors (EPIPE, etc.).
+    // This stream-level listener catches the async error event that fires when
+    // the pipe breaks before the next write attempts it.
+    this.proc.stdin?.on("error", (error) => {
+      console.error(`[ra] stdin error: ${error.message}`);
+    });
+
     this.proc.on("exit", (code) => {
+      console.error(`[ra] process exited with code ${code}`);
       // Reject all pending requests
       for (const [, req] of this.pending) {
         req.reject(new Error(`rust-analyzer exited with code ${code}`));
@@ -249,7 +257,21 @@ class RustAnalyzerClient {
     if (id !== undefined) msg.id = id;
     const body = JSON.stringify(msg);
     const frame = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
-    this.proc.stdin!.write(frame);
+    try {
+      this.proc.stdin!.write(frame);
+    } catch (error) {
+      // rust-analyzer process may have died — log and continue
+      console.error(
+        `[ra] send error (${method}): ${error instanceof Error ? error.message : error}`,
+      );
+      // Reject pending requests so tools report the error rather than hanging
+      for (const [, req] of this.pending) {
+        req.reject(
+          new Error(`rust-analyzer process disconnected (${method})`),
+        );
+      }
+      this.pending.clear();
+    }
   }
 
   private request<T>(
@@ -321,7 +343,24 @@ class RustAnalyzerClient {
         },
       },
       initializationOptions: {
-        checkOnSave: true,
+        // Optimized for agentic edit-compile-test cycles:
+        // - checkOnSave: false avoids cargo check competing for Cargo.lock on every save
+        // - No separate targetDir — shares the main target/ (6.4 GB prebuilt)
+        //   so first load is near-instant rather than compiling from scratch
+        // - Bumped threads for faster parallel indexing
+        // See README.md#Configuration for details on each setting.
+        checkOnSave: false,
+        cargo: {
+          buildScripts: {
+            rebuildOnSave: false,
+          },
+          autoreload: false,
+          allTargets: false,
+        },
+        numThreads: 8,
+        cachePriming: {
+          numThreads: 4,
+        },
       },
     });
     this.send("initialized", {});
@@ -352,7 +391,7 @@ class RustAnalyzerClient {
     }
 
     // Phase 1 (first 30s): workspace/symbol — fast if project is small
-    // Phase 2 (30s-5min): file-based check — open src/main.rs and try hover
+    // Phase 2 (30s-5min): documentSymbol on src/main.rs — file-level parse only
     // Phase 3 (5min+): force ready regardless
     if (attempt < 15) {
       this._checkViaWorkspaceSymbol(resolve, attempt);
@@ -380,45 +419,29 @@ class RustAnalyzerClient {
   }
 
   private _checkViaFileAccess(resolve: () => void, attempt: number): void {
-    // Open the root main.rs and check if semanticTokens works.
-    // This only needs file-level parsing, not full project index.
+    // Open the root main.rs and check whether RA returns document symbols.
+    // documentSymbol only needs file-level parsing, not full project index.
     const testUri = `${this.rootUri}/src/main.rs`;
     try {
       const { readFileSync } = require("node:fs");
       const text = readFileSync(this.rootUri.replace("file://", "") + "/src/main.rs", "utf8");
-      // Send didOpen to ensure RA processes the file
       this.send("textDocument/didOpen", {
         textDocument: { uri: testUri, languageId: "rust", version: 1, text },
       });
     } catch {}
 
-    // Wait a moment then check with a simple request
     setTimeout(() => {
-      this.request<any>("textDocument/semanticTokens/full", {
+      this.request<Array<unknown> | null>("textDocument/documentSymbol", {
         textDocument: { uri: testUri },
       })
         .then((result) => {
-          if (result && result.data && result.data.length > 0) {
+          if (result && result.length > 0) {
             this._projectLoaded = true;
             this._reportStatus("ra: ready");
             resolve();
           } else {
-            // No tokens yet — file might not be processed. Try hover instead.
-            this.request<any>("textDocument/hover", {
-              textDocument: { uri: testUri },
-              position: { line: 0, character: 4 },
-            }).then((hoverResult) => {
-              // Hover returning non-null (even error msg) means file is parsed
-              if (hoverResult !== null) {
-                this._projectLoaded = true;
-                this._reportStatus("ra: ready");
-                resolve();
-                return;
-              }
-              setTimeout(() => this._checkReadiness(resolve, attempt + 1), READINESS_POLL_MS);
-            }).catch(() => {
-              setTimeout(() => this._checkReadiness(resolve, attempt + 1), READINESS_POLL_MS);
-            });
+            // File not parsed yet — retry
+            setTimeout(() => this._checkReadiness(resolve, attempt + 1), READINESS_POLL_MS);
           }
         })
         .catch(() => setTimeout(() => this._checkReadiness(resolve, attempt + 1), READINESS_POLL_MS));
@@ -491,13 +514,38 @@ class RustAnalyzerClient {
     }
   }
 
-  async ensureProjectReady(): Promise<void> {
-    if (!this._projectLoaded) {
-      this._reportStatusFromProgress();
-      // Don't block — let the tool proceed. The LSP request may return
-      // null/empty if the project is still loading, and the tool handler
-      // will report that appropriately.
+  /** Return a human-readable loading status string, or null if the project
+   *  is fully loaded. The caller (typically a tool handler) can prepend this
+   *  to its output to let the agent see what RA is doing without blocking. */
+  loadingStatusMessage(): string | null {
+    if (this._projectLoaded) return null;
+    this._reportStatusFromProgress();
+    let cleanProgress: string | null = null;
+    if (this._latestProgress && !RustAnalyzerClient._isNoise(this._latestProgress)) {
+      cleanProgress = this._latestProgress;
     }
+    const progress = cleanProgress ? `: ${cleanProgress}` : "";
+    const elapsedSec = Math.round((this._pollAttempts * READINESS_POLL_MS) / 1000);
+    return `[rust-analyzer loading${progress} — ${elapsedSec}s]`;
+  }
+
+  /** Wait up to `timeoutMs` for the project to finish loading.
+   *  Throws a clear error if the timeout elapses (replaces the cryptic
+   *  "Aborted" that would otherwise come from the pi framework's signal).
+   *  During the wait the status callback is updated with progress info. */
+  async ensureProjectReady(timeoutMs = 60_000): Promise<void> {
+    if (this._projectLoaded) return;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this._projectLoaded) return;
+      this._reportStatusFromProgress();
+      await new Promise((r) => setTimeout(r, READINESS_POLL_MS));
+    }
+    this._reportStatusFromProgress();
+    throw new Error(
+      `rust-analyzer is still loading after ${timeoutMs / 1000}s. ` +
+      `Current progress: ${this._latestProgress ?? "initializing"}.`
+    );
   }
 
   shutdown(): void {
@@ -749,11 +797,18 @@ function clearRaClient(): void {
 
 function getOrCreateClient(cwd: string, onStatus?: StatusCallback): RustAnalyzerClient {
   const existing = getRaClient();
-  if (existing && existing.alive) {
+  // Check that the existing instance was created by the current class
+  // (extension reloads define a new RustAnalyzerClient class). If the
+  // instance is missing methods added in a newer version, replace it.
+  if (existing && existing.alive && typeof (existing as any).loadingStatusMessage === "function") {
     if (onStatus) existing.setStatusCallback(onStatus);
     return existing;
   }
-  // Stale client — discard it
+  if (existing && existing.alive) {
+    // Stale client from a previous extension version — kill and replace
+    existing.shutdown();
+  }
+  // Discard stale or dead client
   setRaClient(null);
 
   // Kill orphaned rust-analyzer processes before starting a new one
@@ -875,6 +930,21 @@ function checkRaBinary(): string | null {
   }
 }
 
+/** Return early result if RA is still loading, or null if ready. */
+function earlyReturnIfLoading(
+  ra: RustAnalyzerClient,
+  toolName: string,
+): { content: Array<{ type: string; text: string }>; details: object } | null {
+  const note = ra.loadingStatusMessage();
+  if (note) {
+    return {
+      content: [{ type: "text", text: `${note} ${toolName} unavailable — project still loading.` }],
+      details: {},
+    };
+  }
+  return null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Extension entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -991,15 +1061,18 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_diagnostics"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const result = await ra.diagnostics(uri, signal ?? undefined);
 
+      const loadingNote = ra.loadingStatusMessage();
+
       if (!result.items.length) {
+        const text = loadingNote
+          ? `${loadingNote} No diagnostics yet for ${params.file} — project still loading.`
+          : `No diagnostics for ${params.file}`;
         return {
-          content: [
-            { type: "text", text: `No diagnostics for ${params.file}` },
-          ],
+          content: [{ type: "text", text }],
           details: {},
         };
       }
@@ -1015,9 +1088,10 @@ export default function (pi: ExtensionAPI) {
         maxLines: DEFAULT_MAX_LINES,
         maxBytes: DEFAULT_MAX_BYTES,
       });
-      const out = truncation.truncated
+      let out = truncation.truncated
         ? `${truncation.content}\n\n[Truncated — ${result.items.length} total diagnostics]`
         : truncation.content;
+      if (loadingNote) out = `${loadingNote}\n${out}`;
 
       return {
         content: [{ type: "text", text: out }],
@@ -1045,7 +1119,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_hover"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const result = await ra.hover(
         uri,
@@ -1053,12 +1127,20 @@ export default function (pi: ExtensionAPI) {
         params.character - 1,
         signal ?? undefined,
       );
-      if (!result) throw new Error("No hover info at that position.");
+      if (!result) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} No hover info yet — project still loading.` }], details: {} };
+        }
+        throw new Error("No hover info at that position.");
+      }
       const hoverText =
         typeof result.contents === "string"
           ? result.contents
           : result.contents.value;
-      return { content: [{ type: "text", text: hoverText }], details: {} };
+      const loadingNote = ra.loadingStatusMessage();
+      const text = loadingNote ? `${loadingNote}\n${hoverText}` : hoverText;
+      return { content: [{ type: "text", text }], details: {} };
     },
   });
 
@@ -1082,7 +1164,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_definition"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const locations = await ra.definition(
         uri,
@@ -1090,14 +1172,22 @@ export default function (pi: ExtensionAPI) {
         params.character - 1,
         signal ?? undefined,
       );
-      if (!locations?.length) throw new Error("Definition not found.");
+      if (!locations?.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} Definition lookup unavailable — project still loading.` }], details: {} };
+        }
+        throw new Error("Definition not found.");
+      }
+      const text = locations
+        .map((location) => formatLocation(location, ctx.cwd))
+        .join("\n");
+      const loadingNote = ra.loadingStatusMessage();
       return {
         content: [
           {
             type: "text",
-            text: locations
-              .map((location) => formatLocation(location, ctx.cwd))
-              .join("\n"),
+            text: loadingNote ? `${loadingNote}\n${text}` : text,
           },
         ],
         details: {
@@ -1128,7 +1218,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_type_definition"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const locations = await ra.typeDefinition(
         uri,
@@ -1136,14 +1226,22 @@ export default function (pi: ExtensionAPI) {
         params.character - 1,
         signal ?? undefined,
       );
-      if (!locations?.length) throw new Error("Type definition not found.");
+      if (!locations?.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} Type definition unavailable — project still loading.` }], details: {} };
+        }
+        throw new Error("Type definition not found.");
+      }
+      const text = locations
+        .map((location) => formatLocation(location, ctx.cwd))
+        .join("\n");
+      const loadingNote = ra.loadingStatusMessage();
       return {
         content: [
           {
             type: "text",
-            text: locations
-              .map((location) => formatLocation(location, ctx.cwd))
-              .join("\n"),
+            text: loadingNote ? `${loadingNote}\n${text}` : text,
           },
         ],
         details: {
@@ -1174,7 +1272,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_implementation"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const locations = await ra.implementation(
         uri,
@@ -1182,17 +1280,22 @@ export default function (pi: ExtensionAPI) {
         params.character - 1,
         signal ?? undefined,
       );
-      if (!locations?.length) throw new Error("No implementations found.");
+      if (!locations?.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} Implementation lookup unavailable — project still loading.` }], details: {} };
+        }
+        throw new Error("No implementations found.");
+      }
       const lines = locations.map((location) =>
         formatLocation(location, ctx.cwd),
       );
+      const loadingNote = ra.loadingStatusMessage();
+      const text = loadingNote
+        ? `${loadingNote}\n${lines.length} implementation(s):\n${lines.join("\n")}`
+        : `${lines.length} implementation(s):\n${lines.join("\n")}`;
       return {
-        content: [
-          {
-            type: "text",
-            text: `${lines.length} implementation(s):\n${lines.join("\n")}`,
-          },
-        ],
+        content: [{ type: "text", text }],
         details: { count: lines.length, locations: lines },
       };
     },
@@ -1223,7 +1326,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_references"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const refs = await ra.references(
         uri,
@@ -1232,7 +1335,15 @@ export default function (pi: ExtensionAPI) {
         params.include_declaration ?? true,
         signal ?? undefined,
       );
-      if (!refs?.length) throw new Error("No references found.");
+      if (!refs?.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} Reference lookup unavailable — project still loading.` }], details: {} };
+        }
+        throw new Error("No references found.");
+      }
+
+      const loadingNote = ra.loadingStatusMessage();
 
       const lines = refs.map((r) => {
         const rel = uriToRelative(r.uri, ctx.cwd);
@@ -1244,9 +1355,10 @@ export default function (pi: ExtensionAPI) {
         maxLines: DEFAULT_MAX_LINES,
         maxBytes: DEFAULT_MAX_BYTES,
       });
-      const out = truncation.truncated
+      let out = truncation.truncated
         ? `${truncation.content}\n\n[Truncated — ${refs.length} total references]`
         : `${refs.length} reference(s):\n${truncation.content}`;
+      if (loadingNote) out = `${loadingNote}\n${out}`;
 
       return {
         content: [{ type: "text", text: out }],
@@ -1277,7 +1389,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_rename"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const edit = await ra.rename(
         uri,
@@ -1286,13 +1398,21 @@ export default function (pi: ExtensionAPI) {
         params.new_name,
         signal ?? undefined,
       );
-      if (!edit) throw new Error("Rename not applicable at that position.");
+      if (!edit) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} Rename unavailable — project still loading.` }], details: {} };
+        }
+        throw new Error("Rename not applicable at that position.");
+      }
 
+      const loadingNote = ra.loadingStatusMessage();
       const summary = summarizeWorkspaceEdit(edit, ctx.cwd);
       const full = JSON.stringify(edit, null, 2);
-      const out = summary.length
+      let out = summary.length
         ? `Rename edits (apply with write/edit tool):\n${summary.join("\n")}\n\nFull WorkspaceEdit:\n${full}`
         : `WorkspaceEdit:\n${full}`;
+      if (loadingNote) out = `${loadingNote}\n${out}`;
 
       return {
         content: [{ type: "text", text: out }],
@@ -1322,13 +1442,20 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_symbols"); if (_e) return _e; }
       const syms = await ra.workspaceSymbols(
         params.query,
         signal ?? undefined,
       );
-      if (!syms?.length)
+      if (!syms?.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} No symbols yet matching "${params.query}" — project still loading.` }], details: {} };
+        }
         throw new Error(`No symbols matching "${params.query}".`);
+      }
+
+      const loadingNote = ra.loadingStatusMessage();
 
       const lines = syms.map((s) => {
         const rel = uriToRelative(s.location.uri, ctx.cwd);
@@ -1341,9 +1468,10 @@ export default function (pi: ExtensionAPI) {
         maxLines: DEFAULT_MAX_LINES,
         maxBytes: DEFAULT_MAX_BYTES,
       });
-      const out = truncation.truncated
+      let out = truncation.truncated
         ? `${truncation.content}\n\n[Truncated — ${syms.length} total results. Refine your query.]`
         : truncation.content;
+      if (loadingNote) out = `${loadingNote}\n${out}`;
 
       return {
         content: [{ type: "text", text: out }],
@@ -1370,11 +1498,18 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_file_structure"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const syms = await ra.documentSymbols(uri, signal ?? undefined);
-      if (!syms?.length)
+      if (!syms?.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} No symbols found yet in ${params.file} — project still loading.` }], details: {} };
+        }
         throw new Error(`No symbols found in ${params.file}.`);
+      }
+
+      const loadingNote = ra.loadingStatusMessage();
 
       type Sym = (typeof syms)[number];
       function formatSymbol(s: Sym, indent = ""): string {
@@ -1394,10 +1529,13 @@ export default function (pi: ExtensionAPI) {
         maxLines: DEFAULT_MAX_LINES,
         maxBytes: DEFAULT_MAX_BYTES,
       });
+      let out = truncation.content;
+      if (loadingNote) out = `${loadingNote}\n${out}`;
+
       // Include raw first-symbol keys in details for debugging
       const debugInfo = syms.length > 0 ? Object.keys(syms[0] as any).join(",") : "none";
       return {
-        content: [{ type: "text", text: truncation.content }],
+        content: [{ type: "text", text: out }],
         details: { count: syms.length, keys: debugInfo },
       };
     },
@@ -1423,7 +1561,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_inlay_hints"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const hints = await ra.inlayHints(
         uri,
@@ -1431,9 +1569,15 @@ export default function (pi: ExtensionAPI) {
         { line: params.end_line, character: 0 },
         signal ?? undefined,
       );
-      if (!hints.length)
+      if (!hints.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} No inlay hints yet in that range — project still loading.` }], details: {} };
+        }
         throw new Error("No inlay hints in that range.");
+      }
 
+      const loadingNote = ra.loadingStatusMessage();
       const lines = hints.map((h) => {
         const label = Array.isArray(h.label)
           ? h.label.map((p) => p.value).join("")
@@ -1441,8 +1585,9 @@ export default function (pi: ExtensionAPI) {
         return `  line ${h.position.line + 1}:${h.position.character + 1}  ${label}`;
       });
 
+      const text = loadingNote ? `${loadingNote}\n${lines.join("\n")}` : lines.join("\n");
       return {
-        content: [{ type: "text", text: lines.join("\n") }],
+        content: [{ type: "text", text }],
         details: { count: hints.length },
       };
     },
@@ -1471,7 +1616,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_expand_macro"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
       const result = await ra.expandMacro(
         uri,
@@ -1479,19 +1624,26 @@ export default function (pi: ExtensionAPI) {
         params.character - 1,
         signal ?? undefined,
       );
-      if (!result)
+      if (!result) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} Macro expansion unavailable — project still loading.` }], details: {} };
+        }
         throw new Error(
           "No macro found at that position, or expansion failed.",
         );
+      }
 
+      const loadingNote = ra.loadingStatusMessage();
       const raw = `// Expansion of: ${result.name}\n${result.expansion}`;
       const truncation = truncateHead(raw, {
         maxLines: DEFAULT_MAX_LINES,
         maxBytes: DEFAULT_MAX_BYTES,
       });
-      const out = truncation.truncated
+      let out = truncation.truncated
         ? `${truncation.content}\n\n[Expansion truncated — macro output was very large]`
         : truncation.content;
+      if (loadingNote) out = `${loadingNote}\n${out}`;
 
       return {
         content: [{ type: "text", text: out }],
@@ -1531,7 +1683,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_code_actions"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
 
       const start: Position = {
@@ -1548,20 +1700,24 @@ export default function (pi: ExtensionAPI) {
         { start, end },
         signal ?? undefined,
       );
-      if (!actions.length)
+      if (!actions.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} No code actions yet — project still loading.` }], details: {} };
+        }
         throw new Error("No code actions available at that position.");
+      }
 
+      const loadingNote = ra.loadingStatusMessage();
       const lines = actions.map(
         (a, i) =>
           `[${i}] ${a.title}${a.kind ? `  (${a.kind})` : ""}`,
       );
+      const text = loadingNote
+        ? `${loadingNote}\n${actions.length} action(s):\n${lines.join("\n")}\n\nUse ra_apply_action with the index to apply one.`
+        : `${actions.length} action(s):\n${lines.join("\n")}\n\nUse ra_apply_action with the index to apply one.`;
       return {
-        content: [
-          {
-            type: "text",
-            text: `${actions.length} action(s):\n${lines.join("\n")}\n\nUse ra_apply_action with the index to apply one.`,
-          },
-        ],
+        content: [{ type: "text", text }],
         details: {
           actions: actions.map((a) => ({
             title: a.title,
@@ -1617,7 +1773,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_apply_action"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
 
       const start: Position = {
@@ -1635,10 +1791,17 @@ export default function (pi: ExtensionAPI) {
         signal ?? undefined,
       );
       const action = actions[params.action_index];
-      if (!action)
+      if (!action) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} Cannot apply code action — project still loading.` }], details: {} };
+        }
         throw new Error(
           `No action at index ${params.action_index}. Run ra_code_actions first.`,
         );
+      }
+
+      const loadingNote = ra.loadingStatusMessage();
 
       const resolved = action.edit
         ? action
@@ -1647,26 +1810,21 @@ export default function (pi: ExtensionAPI) {
 
       if (!edit) {
         // Command-based action — report but don't execute blindly
+        const text = loadingNote
+          ? `${loadingNote}\nAction "${action.title}" is a command: ${action.command?.command ?? "unknown"}\nArguments: ${JSON.stringify(action.command?.arguments ?? [])}`
+          : `Action "${action.title}" is a command: ${action.command?.command ?? "unknown"}\nArguments: ${JSON.stringify(action.command?.arguments ?? [])}`;
         return {
-          content: [
-            {
-              type: "text",
-              text: `Action "${action.title}" is a command: ${action.command?.command ?? "unknown"}\nArguments: ${JSON.stringify(action.command?.arguments ?? [])}`,
-            },
-          ],
+          content: [{ type: "text", text }],
           details: {},
         };
       }
 
       const summary = summarizeWorkspaceEdit(edit, ctx.cwd);
       const full = JSON.stringify(edit, null, 2);
+      let out = `Action: "${action.title}"\n\nAffected files:\n${summary.join("\n")}\n\nWorkspaceEdit (apply with write/edit tool):\n${full}`;
+      if (loadingNote) out = `${loadingNote}\n${out}`;
       return {
-        content: [
-          {
-            type: "text",
-            text: `Action: "${action.title}"\n\nAffected files:\n${summary.join("\n")}\n\nWorkspaceEdit (apply with write/edit tool):\n${full}`,
-          },
-        ],
+        content: [{ type: "text", text: out }],
         details: { edit },
       };
     },
@@ -1714,7 +1872,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_ssr"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
 
       const position: Position = {
@@ -1730,23 +1888,24 @@ export default function (pi: ExtensionAPI) {
         signal ?? undefined,
       );
 
+      const loadingNote = ra.loadingStatusMessage();
+
       const summary = summarizeWorkspaceEdit(edit, ctx.cwd);
-      if (!summary.length)
+      if (!summary.length) {
+        const text = loadingNote
+          ? `${loadingNote} SSR: no matches found yet — project still loading.`
+          : "SSR: no matches found.";
         return {
-          content: [
-            { type: "text", text: "SSR: no matches found." },
-          ],
+          content: [{ type: "text", text }],
           details: {},
         };
+      }
 
       const full = JSON.stringify(edit, null, 2);
+      let out = `SSR matches:\n${summary.join("\n")}\n\nWorkspaceEdit (apply with write/edit tool):\n${full}`;
+      if (loadingNote) out = `${loadingNote}\n${out}`;
       return {
-        content: [
-          {
-            type: "text",
-            text: `SSR matches:\n${summary.join("\n")}\n\nWorkspaceEdit (apply with write/edit tool):\n${full}`,
-          },
-        ],
+        content: [{ type: "text", text: out }],
         details: { edit },
       };
     },
@@ -1781,7 +1940,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       const ra = getOrCreateClient(ctx.cwd);
       await ra.ready();
-      await ra.ensureProjectReady();
+      { const _e = earlyReturnIfLoading(ra, "ra_call_hierarchy"); if (_e) return _e; }
       const { uri } = await openFile(ra, params.file, ctx.cwd);
 
       const items = await ra.prepareCallHierarchy(
@@ -1790,10 +1949,17 @@ export default function (pi: ExtensionAPI) {
         params.character - 1,
         signal ?? undefined,
       );
-      if (!items?.length)
+      if (!items?.length) {
+        const loadingNote = ra.loadingStatusMessage();
+        if (loadingNote) {
+          return { content: [{ type: "text", text: `${loadingNote} Call hierarchy unavailable — project still loading.` }], details: {} };
+        }
         throw new Error(
           "No call hierarchy item at that position.",
         );
+      }
+
+      const loadingNote = ra.loadingStatusMessage();
 
       const item = items[0];
       const dir = params.direction ?? "both";
@@ -1839,8 +2005,9 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      const text = loadingNote ? `${loadingNote}\n${parts.join("\n")}` : parts.join("\n");
       return {
-        content: [{ type: "text", text: parts.join("\n") }],
+        content: [{ type: "text", text }],
         details: {},
       };
     },

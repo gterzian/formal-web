@@ -37,7 +37,7 @@ ra_file_structure({ file: "src/main.rs" })
 ### ra_diagnostics — Errors, warnings, Clippy
 
 Returns compiler errors, warnings, and Clippy lints for a Rust file. Faster
-than `cargo check` for spot checks — no linking, no sidecar prebuild.
+than `cargo check` for spot checks — no linking needed.
 
 ```typescript
 ra_diagnostics({ file: "content/src/main.rs" })
@@ -202,6 +202,34 @@ ra_call_hierarchy({ file: "src/main.rs", line: 53, character: 4 })
 
 Use `direction: "incoming"` or `direction: "outgoing"` to filter.
 
+## Configuration
+
+The LSP server is configured via `initializationOptions` in the `initialize`
+handshake. All settings are hard-coded in `index.ts` and optimized for
+**fast first load during agentic workflows** — rapid edit-compile-test
+cycles.
+
+### Default Settings
+
+| Setting | Value | Why |
+|---|---|---|
+| `checkOnSave` | `false` | Prevents `cargo check` from competing for Cargo.lock on every save |
+| `cargo.buildScripts.rebuildOnSave` | `false` | Stops proc-macro / build script rebuilds when files change in quick succession |
+| `cargo.autoreload` | `false` | Prevents re-running `cargo metadata` when `Cargo.toml` changes — especially noisy when an agent touches deps repeatedly |
+| `cargo.allTargets` | `false` | Skips tests, benches, and examples during analysis — faster metadata and check runs |
+| `numThreads` | `8` | More parallel indexing workers for large workspaces (~1 GB vendor code) |
+| `cachePriming.numThreads` | `4` | Faster cache warm-up on project load |
+
+No separate `targetDir` is set — RA shares the main `target/` directory
+with its 6.4 GB of prebuilt artifacts. This means first load after a
+restart is near-instant instead of compiling from scratch.
+
+### Customizing
+
+Users who want different defaults (e.g., enabling `checkOnSave` during
+non-agentic editing) should edit the `initializationOptions` block in
+`index.ts` and run `/ra-restart` to apply.
+
 ## Commands
 
 | Command | Description |
@@ -214,7 +242,7 @@ Use `direction: "incoming"` or `direction: "outgoing"` to filter.
 ## Project Loading
 
 The formal-web project has a complex workspace with ~1 GB of vendor code
-(blitz, anyrender, boa), edition 2024, patched dependencies, and a sidecar
+(blitz, anyrender, boa), edition 2024, and patched dependencies
 build script. Rust-analyzer takes **1-2 minutes** to fully index on first
 start after pi launches.
 
@@ -232,6 +260,18 @@ Tools do **not block** during loading. If `ra_file_structure` or
 what it has — potentially null or partial results. The tool reports the
 data as-is rather than throwing an error. Call the tool again later once
 the status shows `ra: ready`.
+
+Every tool output is annotated with a loading status banner when the
+project isn't fully loaded yet, for example:
+
+```
+[rust-analyzer loading: fetching crates — 15s]
+<tool results...>
+```
+
+The agent can use this information to decide whether to retry or proceed
+with partial results. Tools that would return empty results during loading
+report the loading status instead of throwing a "not found" error.
 
 ### First start vs reloads
 
