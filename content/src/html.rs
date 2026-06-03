@@ -52,6 +52,8 @@ pub(crate) fn navigate(
     target: String,
     user_involvement: UserNavigationInvolvement,
     noopener: bool,
+    referrer_policy: Option<String>,
+    features_json: Option<String>,
 ) -> Result<(), String> {
     let request = NavigateRequest {
         navigation_id: Some(NavigationId::new()),
@@ -61,6 +63,8 @@ pub(crate) fn navigate(
         target,
         user_involvement,
         noopener,
+        referrer_policy,
+        features_json,
     };
     event_sender
         .send(ContentEvent::NavigationRequested(request))

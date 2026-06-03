@@ -114,9 +114,6 @@ fn open_method(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // https://html.spec.whatwg.org/#dom-open
-    // The open(url, target, features) method steps are to run
-    // the window open steps with url, target, and features.
     let url = args
         .get(0)
         .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))

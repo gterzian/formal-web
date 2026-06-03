@@ -507,15 +507,7 @@ impl EventLoopWorker {
                     .send(UserAgentCommand::Navigate { request })
                     .map_err(|error| format!("failed to send navigation request: {error}"))?;
             }
-            ContentEvent::WindowOpenRequested(request) => {
-                log_navigation_debug(format!(
-                    "forward window open request from {} target={}",
-                    request.source_navigable_id, request.target
-                ));
-                self.user_agent_command_sender
-                    .send(UserAgentCommand::WindowOpenRequest { request })
-                    .map_err(|error| format!("failed to send window open request: {error}"))?;
-            }
+
             ContentEvent::BeforeUnloadCompleted(result) => {
                 // Resume HTML's `checking if unloading is canceled` continuation in
                 // `UserAgentWorker`.

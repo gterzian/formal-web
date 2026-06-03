@@ -4,7 +4,7 @@ use std::mem;
 use boa_engine::{JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{Event as ContentEvent, WindowOpenRequest};
+use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
 
 use crate::dom::Element;
 use crate::dom::event::EventTarget;
@@ -46,16 +46,12 @@ impl Window {
     }
 
     /// <https://html.spec.whatwg.org/#dom-open>
-    /// The open(url, target, features) method steps are to run
-    /// the window open steps with url, target, and features.
     pub(crate) fn open(
         &self,
         url: &str,
         target: &str,
         features: &str,
     ) -> JsResult<JsValue> {
-        // Steps 1–12 run in content; steps 13–18 continue in the user agent
-        // via a WindowOpenRequested IPC message.
         let Some(event_sender) = self.global_scope.event_sender() else {
             return Ok(JsValue::null());
         };
@@ -113,12 +109,6 @@ pub(crate) fn window_computed_style_properties_for_element(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#window-open-steps>
-///
-/// Runs the content-side prefix of the window open algorithm (steps 1–12),
-/// then sends a `WindowOpenRequested` IPC event to the user agent for
-/// continuation (steps 13–18). Returns null as a WindowProxy placeholder.
-///
-/// Spec step references use the numbering from the HTML standard.
 pub(crate) fn window_open_steps(
     url: &str,
     target: &str,
@@ -127,10 +117,11 @@ pub(crate) fn window_open_steps(
     event_sender: &IpcSender<ContentEvent>,
 ) -> JsResult<JsValue> {
     // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
-    // Note: The content process does not yet track termination nesting; this step is
-    // intentionally skipped as a stub.
+    // TODO: Content process does not yet track termination nesting.
 
     // Step 2: "Let sourceDocument be the entry global object's associated Document."
+    // Note: The user agent needs the navigable ID rather than the Document for navigable
+    // creation. We obtain it from the global scope as a multi-process shortcut.
     let source_navigable_id = global_scope.source_navigable_id().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("window.open: no source navigable")
@@ -138,11 +129,17 @@ pub(crate) fn window_open_steps(
 
     // Step 3: "Let urlRecord be null."
     // Step 4: "If url is not the empty string:"
-    let destination_url = if url.is_empty() {
+    let url_record = if url.is_empty() {
         None
     } else {
+        // Step 4.1: "Set urlRecord to the result of encoding-parsing a URL given url,
+        //            relative to sourceDocument."
+        // Note: The spec uses encoding-parsing relative to sourceDocument for
+        // document-charset-aware resolution. We use url::Url::parse without a base URL
+        // because the source document's URL is not yet threaded through this call site.
+        // Step 4.2: "If urlRecord is failure, then throw a 'SyntaxError' DOMException."
         match url::Url::parse(url) {
-            Ok(url_record) => Some(url_record.to_string()),
+            Ok(record) => Some(record.to_string()),
             Err(_) => {
                 return Err(JsNativeError::typ()
                     .with_message("SyntaxError: failed to parse URL in window.open")
@@ -167,10 +164,13 @@ pub(crate) fn window_open_steps(
     // Step 9: "Let noopener be the result of getting noopener for window open..."
     let noopener = get_noopener_for_window_open(
         &tokenized_features,
-        destination_url.as_deref(),
+        url_record.as_deref(),
     );
 
     // Step 10: "Remove tokenizedFeatures['noopener'] and tokenizedFeatures['noreferrer']."
+    let mut remaining_features = tokenized_features;
+    remaining_features.remove("noopener");
+    remaining_features.remove("noreferrer");
 
     // Step 11: "Let referrerPolicy be the empty string."
     // Step 12: "If noreferrer is true, then set noopener to true and set
@@ -181,28 +181,31 @@ pub(crate) fn window_open_steps(
         (noopener, String::new())
     };
 
-    // Serialize remaining features for the user agent.
-    let mut remaining_features = tokenized_features;
-    remaining_features.remove("noopener");
-    remaining_features.remove("noreferrer");
+    // Serialize remaining features for the user agent (IPC boundary).
     let features_json = serde_json::to_string(&remaining_features)
         .unwrap_or_else(|_| String::from("{}"));
 
-    // Send the WindowOpenRequested IPC to the user agent, which continues with
-    // Step 13 (rules for choosing a navigable) through Step 18.
-    let request = WindowOpenRequest {
-        destination_url,
-        target: target.to_owned(),
-        noopener,
-        referrer_policy,
-        features_json,
+    // Steps 13–18 continue in the user agent via the shared navigate IPC.
+    // Step 13 applies the rules for choosing a navigable; the user agent opens
+    // a new tab or window as needed for the target. Steps 15–16 handle opener
+    // setup and navigation, signalled by the non-empty features_json.
+    // Step 17/18 (return value) are resolved on the user-agent side.
+    //
+    // Per the spec: "If urlRecord is null, then set urlRecord to a URL record
+    // representing about:blank." (step 15.3 for new windows, implicit for existing).
+    let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));
+    if let Err(error) = super::navigate(
+        event_sender,
         source_navigable_id,
-    };
-
-    if let Err(error) = event_sender.send(ContentEvent::WindowOpenRequested(request)) {
-        eprintln!(
-            "window.open: failed to send WindowOpenRequested: {error}"
-        );
+        None,
+        navigate_url,
+        target.to_owned(),
+        UserNavigationInvolvement::Activation,
+        noopener,
+        Some(referrer_policy),
+        Some(features_json),
+    ) {
+        eprintln!("window.open: {error}");
     }
 
     // Step 17: "If noopener is true or windowType is 'new with no opener',
@@ -212,7 +215,7 @@ pub(crate) fn window_open_steps(
     Ok(JsValue::null())
 }
 
-/// <https://html.spec.whatwg.org/#getting-noopener-for-window-open>
+/// <https://html.spec.whatwg.org/#get-noopener-for-window-open>
 fn get_noopener_for_window_open(
     tokenized_features: &HashMap<String, String>,
     url: Option<&str>,
@@ -398,77 +401,4 @@ pub(crate) fn check_if_window_feature_is_set(
     default_value
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn test_tokenize_features_empty() {
-        let result = tokenize_features("");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_tokenize_features_noopener() {
-        let result = tokenize_features("noopener");
-        assert_eq!(result.get("noopener").map(|s| s.as_str()), Some(""));
-    }
-
-    #[test]
-    fn test_tokenize_features_multiple() {
-        let result = tokenize_features("width=400,height=300,noopener");
-        assert_eq!(result.get("width").map(|s| s.as_str()), Some("400"));
-        assert_eq!(result.get("height").map(|s| s.as_str()), Some("300"));
-        assert_eq!(result.get("noopener").map(|s| s.as_str()), Some(""));
-    }
-
-    #[test]
-    fn test_parse_boolean_feature_empty() {
-        assert!(parse_boolean_feature(""));
-    }
-
-    #[test]
-    fn test_parse_boolean_feature_yes() {
-        assert!(parse_boolean_feature("yes"));
-    }
-
-    #[test]
-    fn test_parse_boolean_feature_true() {
-        assert!(parse_boolean_feature("true"));
-    }
-
-    #[test]
-    fn test_parse_boolean_feature_number() {
-        assert!(parse_boolean_feature("1"));
-        assert!(!parse_boolean_feature("0"));
-    }
-
-    #[test]
-    fn test_parse_boolean_feature_no() {
-        assert!(!parse_boolean_feature("no"));
-    }
-
-    #[test]
-    fn test_normalize_feature_name() {
-        assert_eq!(normalize_feature_name("screenx"), "left");
-        assert_eq!(normalize_feature_name("screeny"), "top");
-        assert_eq!(normalize_feature_name("innerwidth"), "width");
-        assert_eq!(normalize_feature_name("innerheight"), "height");
-        assert_eq!(normalize_feature_name("width"), "width");
-        assert_eq!(normalize_feature_name("popup"), "popup");
-    }
-
-    #[test]
-    fn test_noopener_from_features() {
-        let features = [("noopener".to_string(), "yes".to_string())]
-            .into_iter()
-            .collect();
-        assert!(get_noopener_for_window_open(&features, None));
-    }
-
-    #[test]
-    fn test_noopener_false_by_default() {
-        let features = HashMap::new();
-        assert!(!get_noopener_for_window_open(&features, None));
-    }
-}

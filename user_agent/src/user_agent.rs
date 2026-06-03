@@ -10,7 +10,6 @@ use ipc_messages::content::{
     EventLoopId, FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
     NavigateRequest, NavigationFetchId, NavigationId, UserNavigationInvolvement, WebviewId,
-    WindowOpenRequest,
     WebviewProviderMessage, WindowTimerKey, iframe_target_name,
 };
 use std::collections::{HashMap, HashSet};
@@ -885,9 +884,6 @@ pub enum UserAgentCommand {
         timer_key: WindowTimerKey,
         nesting_level: u32,
     },
-    WindowOpenRequest {
-        request: WindowOpenRequest,
-    },
     CreateChildNavigable {
         parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
@@ -1406,9 +1402,7 @@ impl UserAgentWorker {
                         nesting_level,
                     );
                 }
-                UserAgentCommand::WindowOpenRequest { request } => {
-                    self.handle_window_open(request);
-                }
+
                 UserAgentCommand::CreateChildNavigable {
                     parent_traversable_id,
                     content_navigable_id,
@@ -2370,23 +2364,102 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate>
+    /// <https://html.spec.whatwg.org/#navigate>
+    /// Handle navigation requests from the content process.
+    ///
+    /// For `window.open()` requests the content process sends a `NavigateRequest` with a
+    /// non-empty `features_json`. The user agent then applies the window-open-specific steps
+    /// from the spec (opener setup, popup detection, browsing context features) after choosing
+    /// the navigable.
     fn handle_navigate(&mut self, request: NavigateRequest) {
         let result: Result<(), String> = (|| {
             // Navigations that already resolved the target in the content process
             // carry a preselected navigable id. Otherwise, run the shared
-            // rules-for-choosing-a-navigable continuation (which returns windowType,
-            // but normal navigation ignores it).
-            let navigable_id = match request.chosen_navigable_id {
-                Some(chosen_navigable_id) => chosen_navigable_id,
+            // rules-for-choosing-a-navigable continuation.
+            let is_window_open = request.features_json.is_some();
+            let (navigable_id, window_type) = match request.chosen_navigable_id {
+                Some(chosen_navigable_id) => (chosen_navigable_id, String::new()),
                 None => {
-                    let (chosen, _window_type) = self.choose_navigable(
+                    let (chosen, window_type) = self.choose_navigable(
                         request.source_navigable_id,
                         &request.target,
                         request.noopener,
                     )?;
-                    chosen
+                    (chosen, window_type)
                 }
             };
+
+            // Window-open-specific setup (window.open steps 15–16).
+            if is_window_open {
+                let navigable = self
+                    .state
+                    .navigables
+                    .get(&navigable_id)
+                    .ok_or_else(|| format!("navigate: chosen navigable {navigable_id} not found"))?;
+
+                if let Some(browsing_context_id) = navigable.active_browsing_context_id {
+                    // Step 15: "If windowType is either 'new and unrestricted' or
+                    //           'new with no opener':"
+                    if window_type == "new and unrestricted"
+                        || window_type == "new with no opener"
+                    {
+                        // Step 15.1: Popup detection from tokenizedFeatures.
+                        // Note: Deferred to follow-up.
+
+                        // Step 15.2: Browsing context feature setup.
+                        // Note: Deferred to follow-up.
+
+                        // Step 15.3: Opener setup for 'new and unrestricted'.
+                        if window_type == "new and unrestricted" {
+                            let source_navigable = self
+                                .state
+                                .navigables
+                                .get(&request.source_navigable_id);
+                            if let Some(source_browsing_context_id) = source_navigable
+                                .and_then(|n| n.active_browsing_context_id)
+                            {
+                                self.state.set_opener_for_browsing_context(
+                                    browsing_context_id,
+                                    source_browsing_context_id,
+                                );
+                                if startup_debug_enabled() {
+                                    eprintln!(
+                                        "[navigate] set window.open opener: target={:?} source={:?}",
+                                        browsing_context_id, source_browsing_context_id
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Step 16.2: Opener setup when reusing an existing navigable and
+                    //            noopener is false.
+                    if window_type != "new and unrestricted"
+                        && window_type != "new with no opener"
+                        && !request.noopener
+                    {
+                        let source_navigable = self
+                            .state
+                            .navigables
+                            .get(&request.source_navigable_id);
+                        if let Some(source_browsing_context_id) = source_navigable
+                            .and_then(|n| n.active_browsing_context_id)
+                        {
+                            self.state.set_opener_for_browsing_context(
+                                browsing_context_id,
+                                source_browsing_context_id,
+                            );
+                            if startup_debug_enabled() {
+                                eprintln!(
+                                    "[navigate] set opener on existing: target={:?} source={:?}",
+                                    browsing_context_id, source_browsing_context_id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
             let navigation_id = request.navigation_id.unwrap_or_else(NavigationId::new);
             self.navigate(
@@ -2410,118 +2483,6 @@ impl UserAgentWorker {
         })();
         if let Err(error) = result {
             eprintln!("failed to run navigate: {error}");
-        }
-    }
-
-    /// <https://html.spec.whatwg.org/#window-open-steps>
-    /// Continues the window open algorithm from the user-agent side.
-    /// Implements steps 13–18 after the content-side prefix (steps 1–12).
-    fn handle_window_open(&mut self, request: WindowOpenRequest) {
-        let result: Result<(), String> = (|| {
-            // Step 13: "Let targetNavigable and windowType be the result of applying the
-            //           rules for choosing a navigable given target, sourceDocument's
-            //           node navigable, and noopener."
-            let (chosen_navigable_id, window_type) = self.choose_navigable(
-                request.source_navigable_id,
-                &request.target,
-                request.noopener,
-            )?;
-
-            // Step 14: "If targetNavigable is null, then return null."
-            // Note: choose_navigable returns an error if chosen is null,
-            // so this step is implicitly handled.
-
-            let navigable = self
-                .state
-                .navigables
-                .get(&chosen_navigable_id)
-                .ok_or_else(|| format!("window.open: chosen navigable {chosen_navigable_id} not found"))?;
-            let browsing_context_id = navigable.active_browsing_context_id.ok_or_else(|| {
-                format!("window.open: no browsing context for navigable {chosen_navigable_id}")
-            })?;
-
-            // Step 15: "If windowType is either 'new and unrestricted' or
-            //           'new with no opener':"
-            if window_type == "new and unrestricted" || window_type == "new with no opener" {
-                // Step 15.1: "Set targetNavigable's active browsing context's is popup
-                //             to the result of checking if a popup window is requested,
-                //             given tokenizedFeatures."
-                // Note: Popup feature detection from tokenizedFeatures requires parsing
-                // the features_json on the user-agent side. Deferred to follow-up.
-
-                // Step 15.2: "Set up browsing context features for targetNavigable's
-                //             active browsing context given tokenizedFeatures."
-                // Note: Browsing-context feature setup (window dimensions, scrollbars,
-                // etc.) is deferred to follow-up.
-
-                // Step 15.3: "If windowType is 'new and unrestricted':
-                //             15.3.1 Set targetNavigable's active browsing context's
-                //             opener browsing context to sourceDocument's browsing context."
-                if window_type == "new and unrestricted" {
-                    let source_navigable = self
-                        .state
-                        .navigables
-                        .get(&request.source_navigable_id);
-                    if let Some(source_browsing_context_id) = source_navigable
-                        .and_then(|n| n.active_browsing_context_id)
-                    {
-                        self.state.set_opener_for_browsing_context(
-                            browsing_context_id,
-                            source_browsing_context_id,
-                        );
-                        if startup_debug_enabled() {
-                            eprintln!(
-                                "[window-open] set opener: target={:?} source={:?}",
-                                browsing_context_id, source_browsing_context_id
-                            );
-                        }
-                    }
-                }
-            }
-
-            // Step 15.4 / 16.1: "Navigate targetNavigable to urlRecord (if urlRecord is
-            //                    non-null) or to 'about:blank' (otherwise), with referrerPolicy
-            //                    set to referrerPolicy, and with sourceDocument set to
-            //                    sourceDocument."
-            let navigate_url = request
-                .destination_url
-                .clone()
-                .unwrap_or_else(|| String::from("about:blank"));
-            let navigation_id = NavigationId::new();
-            self.navigate(
-                chosen_navigable_id,
-                navigate_url.clone(),
-                UserNavigationInvolvement::Activation,
-                navigation_id,
-            )?;
-
-            // Notify the embedder for top-level navigations.
-            let traversable_id =
-                self.traversable_id_for_navigable(chosen_navigable_id)?;
-            let is_top_level = self
-                .state
-                .navigables
-                .get(&traversable_id)
-                .map(|n| n.parent_navigable_id.is_none())
-                .unwrap_or(true);
-            if is_top_level {
-                self.host.navigation_requested(
-                    WebviewId(traversable_id),
-                    navigate_url,
-                )?;
-            }
-
-            // Step 17: "If noopener is true or windowType is 'new with no opener',
-            //           then return null."
-            // Note: The content-side window_open_steps already returns null in all cases
-            // as a WindowProxy placeholder. Real WindowProxy is a follow-up.
-            // Step 18: "Return targetNavigable's active WindowProxy."
-            // Note: Deferred to follow-up.
-
-            Ok(())
-        })();
-        if let Err(error) = result {
-            eprintln!("failed to handle window.open: {error}");
         }
     }
 
