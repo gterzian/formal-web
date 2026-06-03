@@ -111,6 +111,7 @@ pub enum UserNavigationInvolvement {
     BrowserUi,
 }
 
+/// <https://html.spec.whatwg.org/#window-open-steps>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigateRequest {
     #[serde(default)]
@@ -122,6 +123,13 @@ pub struct NavigateRequest {
     pub target: String,
     pub user_involvement: UserNavigationInvolvement,
     pub noopener: bool,
+    /// Referrer policy override for the navigation. `None` means the default referrer
+    /// policy from the source document is used.
+    pub referrer_policy: Option<String>,
+    /// JSON-serialized tokenized features from `window.open()`. `None` means the request
+    /// did not originate from `window.open`. Carried to the user agent for popup detection
+    /// and browsing context feature setup.
+    pub features_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

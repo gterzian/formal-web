@@ -170,6 +170,8 @@ impl WebviewProvider {
                     target: String::new(),
                     user_involvement: UserNavigationInvolvement::BrowserUi,
                     noopener: false,
+                    referrer_policy: None,
+                    features_json: None,
                 })
             }
             None => self.user_agent.start_top_level_traversable(url.to_owned()),

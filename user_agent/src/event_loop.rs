@@ -507,6 +507,7 @@ impl EventLoopWorker {
                     .send(UserAgentCommand::Navigate { request })
                     .map_err(|error| format!("failed to send navigation request: {error}"))?;
             }
+
             ContentEvent::BeforeUnloadCompleted(result) => {
                 // Resume HTML's `checking if unloading is canceled` continuation in
                 // `UserAgentWorker`.

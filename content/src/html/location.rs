@@ -596,6 +596,8 @@ impl Location {
             String::new(),
             UserNavigationInvolvement::None,
             false,
+            None,
+            None,
         )
         .map_err(|error| {
             LocationError::NotSupported(format!(

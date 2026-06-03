@@ -120,7 +120,8 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Use neutral, factual language.
 - Use the `web_standards` extension tools (`spec_section`, `spec_algorithm`, `spec_select`, `spec_html`) to read spec content instead of reading local copies or fetching directly.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
-- The words "runtime" and "sidecar" are forbidden in this repo. Why? Because the entire thing is a runtime, one that implements the Web, and so neither concept should ever be used to model or document some component of what is basically one big integrated system. No component is more or less of a "sidecar" than any other — each plays a specific role. Instead of reaching for these forbidden words, think about what the thing you want to name does, what its role in the system is, and come up with something descriptive.
+- The words "runtime" and "sidecar" are forbidden in this repo.
+- **Method doc comments:** A method that implements a spec algorithm should have only the spec link as its doc comment. All explanation, step references, and context belong in `//` comments inside the method body. A `// Note:` below the link is acceptable only for brief continuations of the algorithm that cannot be expressed as body comments. Why? Because the entire thing is a runtime, one that implements the Web, and so neither concept should ever be used to model or document some component of what is basically one big integrated system. No component is more or less of a "sidecar" than any other — each plays a specific role. Instead of reaching for these forbidden words, think about what the thing you want to name does, what its role in the system is, and come up with something descriptive.
 
 # Error Logging
 

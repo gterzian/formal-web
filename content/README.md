@@ -19,6 +19,7 @@ The content crate owns the content process: DOM and HTML algorithms, document pa
   - `/// <https://html.spec.whatwg.org/#global-object>`
   - `/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>`
   - `/// <https://streams.spec.whatwg.org/#writablestream-state>`
+  - If a `Note:` about the function or type overall is in order, it belongs below the anchor link.
 - Inside function bodies, map relevant code with verbatim `Step N:` comments.
 - Use `Note:` comments only for representation or mapping details that are not obvious from the spec text.
 - Put unimplemented work in `TODO:` directly below the related `Step N:` comment.

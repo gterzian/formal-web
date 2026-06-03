@@ -1,8 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::mem;
 
-use boa_engine::JsData;
+use boa_engine::{JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
+use ipc_channel::ipc::IpcSender;
+use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
 
 use crate::dom::Element;
 use crate::dom::event::EventTarget;
@@ -41,6 +43,19 @@ impl Window {
     /// <https://html.spec.whatwg.org/#handler-onload>
     pub(crate) fn replace_onload(&mut self, callback: Option<Callback>) -> Option<Callback> {
         mem::replace(&mut self.onload, callback)
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-open>
+    pub(crate) fn open(
+        &self,
+        url: &str,
+        target: &str,
+        features: &str,
+    ) -> JsResult<JsValue> {
+        let Some(event_sender) = self.global_scope.event_sender() else {
+            return Ok(JsValue::null());
+        };
+        window_open_steps(url, target, features, &self.global_scope, &event_sender)
     }
 }
 
@@ -87,3 +102,309 @@ pub(crate) fn window_computed_style_properties_for_element(
     // native CSSStyleProperties liveness is still pending.
     decls
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Window open steps
+// https://html.spec.whatwg.org/#window-open-steps
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// <https://html.spec.whatwg.org/#window-open-steps>
+pub(crate) fn window_open_steps(
+    url: &str,
+    target: &str,
+    features: &str,
+    global_scope: &GlobalScope,
+    event_sender: &IpcSender<ContentEvent>,
+) -> JsResult<JsValue> {
+    // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
+    // TODO: Content process does not yet track termination nesting.
+
+    // Step 2: "Let sourceDocument be the entry global object's associated Document."
+    // Note: The user agent needs the navigable ID rather than the Document for navigable
+    // creation. We obtain it from the global scope as a multi-process shortcut.
+    let source_navigable_id = global_scope.source_navigable_id().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("window.open: no source navigable")
+    })?;
+
+    // Step 3: "Let urlRecord be null."
+    // Step 4: "If url is not the empty string:"
+    let url_record = if url.is_empty() {
+        None
+    } else {
+        // Step 4.1: "Set urlRecord to the result of encoding-parsing a URL given url,
+        //            relative to sourceDocument."
+        // Note: The spec uses encoding-parsing relative to sourceDocument for
+        // document-charset-aware resolution. We use url::Url::parse without a base URL
+        // because the source document's URL is not yet threaded through this call site.
+        // Step 4.2: "If urlRecord is failure, then throw a 'SyntaxError' DOMException."
+        match url::Url::parse(url) {
+            Ok(record) => Some(record.to_string()),
+            Err(_) => {
+                return Err(JsNativeError::typ()
+                    .with_message("SyntaxError: failed to parse URL in window.open")
+                    .into());
+            }
+        }
+    };
+
+    // Step 5: "If target is the empty string, then set target to '_blank'."
+    let target = if target.is_empty() { "_blank" } else { target };
+
+    // Step 6: "Let tokenizedFeatures be the result of tokenizing features."
+    let tokenized_features = tokenize_features(features);
+
+    // Step 7: "Let noreferrer be false."
+    // Step 8: "If tokenizedFeatures['noreferrer'] exists..."
+    let noreferrer = tokenized_features
+        .get("noreferrer")
+        .map(|value| parse_boolean_feature(value))
+        .unwrap_or(false);
+
+    // Step 9: "Let noopener be the result of getting noopener for window open..."
+    let noopener = get_noopener_for_window_open(
+        &tokenized_features,
+        url_record.as_deref(),
+    );
+
+    // Step 10: "Remove tokenizedFeatures['noopener'] and tokenizedFeatures['noreferrer']."
+    let mut remaining_features = tokenized_features;
+    remaining_features.remove("noopener");
+    remaining_features.remove("noreferrer");
+
+    // Step 11: "Let referrerPolicy be the empty string."
+    // Step 12: "If noreferrer is true, then set noopener to true and set
+    //           referrerPolicy to 'no-referrer'."
+    let (noopener, referrer_policy) = if noreferrer {
+        (true, String::from("no-referrer"))
+    } else {
+        (noopener, String::new())
+    };
+
+    // Serialize remaining features for the user agent (IPC boundary).
+    let features_json = serde_json::to_string(&remaining_features)
+        .unwrap_or_else(|_| String::from("{}"));
+
+    // Step 13: "Apply the rules for choosing a navigable given name, window's
+    //          navigable, and noopener."
+    //
+    // Resolve _self locally; everything else (named targets, _blank, _parent, _top)
+    // is sent unmodified so the user agent continues with find-by-target-name or
+    // creates a new top-level traversable.
+    let chosen_target = if target.eq_ignore_ascii_case("_self") {
+        Some(source_navigable_id)
+    } else {
+        None
+    };
+
+    // Per the spec: "If urlRecord is null, then set urlRecord to a URL record
+    // representing about:blank." (step 15.3 for new windows, implicit for existing).
+    let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));
+    if let Err(error) = super::navigate(
+        event_sender,
+        source_navigable_id,
+        chosen_target,
+        navigate_url,
+        target.to_owned(),
+        UserNavigationInvolvement::Activation,
+        noopener,
+        Some(referrer_policy),
+        Some(features_json),
+    ) {
+        eprintln!("window.open: {error}");
+    }
+
+    // Step 17: "If noopener is true or windowType is 'new with no opener',
+    //           then return null."
+    // Step 18: "Return targetNavigable's active WindowProxy."
+    // For now, return null as a WindowProxy placeholder.
+    Ok(JsValue::null())
+}
+
+/// <https://html.spec.whatwg.org/#get-noopener-for-window-open>
+fn get_noopener_for_window_open(
+    tokenized_features: &HashMap<String, String>,
+    url: Option<&str>,
+) -> bool {
+    // Step 1: "If url is not null and url's blob URL entry is not null:"
+    // Note: Blob URL origin checks are not yet implemented.
+    let _ = url;
+
+    // Step 2: "Let noopener be false."
+    // Step 3: "If tokenizedFeatures['noopener'] exists, then set noopener to the result of
+    //          parsing tokenizedFeatures['noopener'] as a boolean feature."
+    // Step 4: "Return noopener."
+    tokenized_features
+        .get("noopener")
+        .map(|value| parse_boolean_feature(value))
+        .unwrap_or(false)
+}
+
+/// <https://html.spec.whatwg.org/#tokenize-the-features-argument>
+fn tokenize_features(features: &str) -> HashMap<String, String> {
+    // Step 1: "Let tokenizedFeatures be a new ordered map."
+    let mut tokenized_features = HashMap::new();
+
+    // Step 2: "Let position point at the first code point of features."
+    let bytes = features.as_bytes();
+    let mut position = 0;
+    let len = bytes.len();
+
+    // Step 3: "While position is not past the end of features:"
+    while position < len {
+        // Skip leading separators before name.
+        while position < len && is_feature_separator(bytes[position]) {
+            position += 1;
+        }
+        if position >= len {
+            break;
+        }
+
+        // Collect name: not-feature-separator characters, lowercased.
+        let name_start = position;
+        while position < len && !is_feature_separator(bytes[position]) {
+            position += 1;
+        }
+        let mut name: String = features[name_start..position]
+            .chars()
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+
+        // "Set name to the result of normalizing the feature name name."
+        name = normalize_feature_name(&name);
+
+        // Skip to first '=' but not past ','
+        while position < len && bytes[position] != b'=' && bytes[position] != b',' {
+            position += 1;
+        }
+
+        // Skip past '='
+        if position < len && bytes[position] == b'=' {
+            position += 1;
+        }
+
+        // Skip separators (but not comma)
+        while position < len && is_feature_separator(bytes[position]) && bytes[position] != b',' {
+            position += 1;
+        }
+
+        // Collect value: not-feature-separator characters, lowercased.
+        let value_start = position;
+        while position < len && !is_feature_separator(bytes[position]) {
+            position += 1;
+        }
+        let value: String = features[value_start..position]
+            .chars()
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+
+        // "If name is not the empty string, then set tokenizedFeatures[name] to value."
+        if !name.is_empty() {
+            tokenized_features.insert(name, value);
+        }
+
+        // Skip separators (including comma) before next iteration.
+        while position < len && is_feature_separator(bytes[position]) {
+            position += 1;
+        }
+    }
+
+    // Step 4: "Return tokenizedFeatures."
+    tokenized_features
+}
+
+/// <https://html.spec.whatwg.org/#feature-separator>
+fn is_feature_separator(c: u8) -> bool {
+    c == b' '
+        || c == b'\t'
+        || c == b'\n'
+        || c == b'\r'
+        || c == b'\x0C'
+        || c == b'='
+        || c == b','
+}
+
+/// <https://html.spec.whatwg.org/#normalize-feature-name>
+fn normalize_feature_name(name: &str) -> String {
+    match name {
+        "screenx" => String::from("left"),
+        "screeny" => String::from("top"),
+        "innerwidth" => String::from("width"),
+        "innerheight" => String::from("height"),
+        other => other.to_owned(),
+    }
+}
+
+/// <https://html.spec.whatwg.org/#parse-a-boolean-feature>
+fn parse_boolean_feature(value: &str) -> bool {
+    // Step 1: "If value is the empty string, then return true."
+    if value.is_empty() {
+        return true;
+    }
+    // Step 2: "If value is 'yes', then return true."
+    // Step 3: "If value is 'true', then return true."
+    if value == "yes" || value == "true" {
+        return true;
+    }
+    // Step 4: "Let parsed be the result of parsing value as an integer."
+    // Step 5: "If parsed is an error, then set it to 0."
+    // Step 6: "Return false if parsed is 0, and true otherwise."
+    let parsed: i64 = value.parse().unwrap_or(0);
+    parsed != 0
+}
+
+/// <https://html.spec.whatwg.org/#check-if-a-popup-window-is-requested>
+#[allow(dead_code)]
+pub(crate) fn check_if_popup_window_is_requested(
+    tokenized_features: &HashMap<String, String>,
+) -> bool {
+    // Step 1: "If tokenizedFeatures is empty, then return false."
+    if tokenized_features.is_empty() {
+        return false;
+    }
+    // Step 2: "If tokenizedFeatures['popup'] exists, then return the result of parsing..."
+    if let Some(value) = tokenized_features.get("popup") {
+        return parse_boolean_feature(value);
+    }
+    // Steps 3–13: check individual features
+    let location = check_if_window_feature_is_set(tokenized_features, "location", false);
+    let toolbar = check_if_window_feature_is_set(tokenized_features, "toolbar", false);
+    if !location && !toolbar {
+        return true;
+    }
+    let menubar = check_if_window_feature_is_set(tokenized_features, "menubar", false);
+    if !menubar {
+        return true;
+    }
+    let resizable = check_if_window_feature_is_set(tokenized_features, "resizable", true);
+    if !resizable {
+        return true;
+    }
+    let scrollbars = check_if_window_feature_is_set(tokenized_features, "scrollbars", false);
+    if !scrollbars {
+        return true;
+    }
+    let status = check_if_window_feature_is_set(tokenized_features, "status", false);
+    if !status {
+        return true;
+    }
+    // Step 14: "Return false."
+    false
+}
+
+/// <https://html.spec.whatwg.org/#check-if-a-window-feature-is-set>
+pub(crate) fn check_if_window_feature_is_set(
+    tokenized_features: &HashMap<String, String>,
+    feature_name: &str,
+    default_value: bool,
+) -> bool {
+    // Step 1: "If tokenizedFeatures[featureName] exists, then return the result of parsing
+    //          tokenizedFeatures[featureName] as a boolean feature."
+    if let Some(value) = tokenized_features.get(feature_name) {
+        return parse_boolean_feature(value);
+    }
+    // Step 2: "Return defaultValue."
+    default_value
+}
+
+

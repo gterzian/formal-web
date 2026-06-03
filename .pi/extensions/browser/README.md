@@ -79,6 +79,16 @@ The CDP pi tools are meant for **live interactive debugging** of formal-web
 during feature development. WebDriver is reserved for automated regression
 suites (WPT, verification smoke tests).
 
+### Known limitations (formal-web CDP server)
+
+1. **New webviews not listed as CDP targets** — When `window.open()` or a
+   `_blank` hyperlink creates a new top-level traversable, the new webview
+   is created and its content process starts, but the CDP server does not
+   register it as a debuggable target. Only the initial page target appears
+   in the `GET /json` target list. This makes it impossible to attach to
+   popup windows or new tabs via CDP. The new webview is still functional
+   (it renders, navigates, etc.) but is invisible to devtools-style inspection.
+
 ### Near-term improvements (CDP server side)
 
 1. **Synthesize DOM `click` from pointer events** —
