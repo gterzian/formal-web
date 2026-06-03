@@ -20,7 +20,7 @@ use crate::html::{
 };
 use crate::ui_event::deserialize_ui_event;
 use anyrender::Scene as RenderScene;
-use blitz_dom::{BaseDocument, DocumentConfig, NodeData};
+use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
@@ -37,7 +37,7 @@ use ipc_messages::content::{
     ElementClickResult, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FontTransportSender, FrameCompositionMetadata, FrameEmbedSite, FrameId, LoadedDocumentResponse,
-    NavigableId, NavigationId, PaintFrame, RecordedScene, ScriptEvaluationResult,
+    NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult,
     TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
 };
 use std::{
@@ -198,10 +198,6 @@ fn viewport_of_snapshot(snapshot: &ViewportSnapshot) -> Viewport {
     )
 }
 
-fn render_debug_enabled() -> bool {
-    env::var_os("FORMAL_WEB_DEBUG_RENDER").is_some()
-}
-
 fn render_state_debug_enabled() -> bool {
     env::var_os("FORMAL_WEB_DEBUG_RENDER_STATE").is_some()
 }
@@ -262,61 +258,6 @@ fn maybe_log_input_layout_debug(document_id: DocumentId, document: &BaseDocument
         while let Some(current_id) = ancestor_id {
             document.debug_log_node(current_id);
             ancestor_id = document.get_node(current_id).and_then(|node| node.parent);
-        }
-    }
-}
-
-fn log_paint_debug(document_id: DocumentId, document: &BaseDocument, scene: &RecordedScene) {
-    maybe_log_input_layout_debug(document_id, document);
-
-    if !render_debug_enabled() {
-        return;
-    }
-
-    let mut text_nodes = 0;
-    let mut non_empty_text_nodes = 0;
-    let mut inline_roots = 0;
-    let mut inline_layouts = 0;
-
-    document.visit(|_node_id, node| {
-        if node.flags.is_inline_root() {
-            inline_roots += 1;
-        }
-        if node
-            .element_data()
-            .and_then(|element| element.inline_layout_data.as_ref())
-            .is_some()
-        {
-            inline_layouts += 1;
-        }
-        if let NodeData::Text(text) = &node.data {
-            text_nodes += 1;
-            if !text.content.trim().is_empty() {
-                non_empty_text_nodes += 1;
-            }
-        }
-    });
-
-    eprintln!(
-        "[render-debug][content] doc={} {} text_nodes={} non_empty_text_nodes={} inline_roots={} inline_layouts={}",
-        document_id,
-        scene.summary().describe(),
-        text_nodes,
-        non_empty_text_nodes,
-        inline_roots,
-        inline_layouts,
-    );
-
-    if scene.summary().glyph_runs == 0 {
-        let mut inline_root_ids = Vec::new();
-        document.visit(|node_id, node| {
-            if node.flags.is_inline_root() {
-                inline_root_ids.push(node_id);
-            }
-        });
-
-        for node_id in inline_root_ids {
-            document.debug_log_node(node_id);
         }
     }
 }
@@ -1176,7 +1117,6 @@ impl ContentProcess {
                     0,
                 );
                 let scene = self.font_sender.prepare_scene(self.font_namespace, scene);
-                log_paint_debug(document_id, &document_guard, &scene.scene);
                 log_render_state_debug(format!(
                     "emit paint traversable={} document={} size=({}, {})",
                     traversable_id, document_id, width, height,

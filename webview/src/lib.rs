@@ -337,22 +337,19 @@ impl WebviewProvider {
             state.current_navigable_id = Some(traversable_id.0);
         }
 
-        // Publish child viewport bounds immediately after any paint update so iframe content
-        // receives the correct viewport before the next user input-driven composition pass.
-        let viewports = state
-            .compositor
-            .visible_frame_viewports(&self.font_receiver);
-        self.publish_visible_child_viewports(viewports);
-
-        // NOTE: We deliberately do NOT call note_rendering_opportunity for
-        // child_viewport_mismatch here. The viewport was just sent to the child
-        // via set_traversable_viewport in publish_visible_child_viewports above.
-        // If the child painted at a different size than what we last published,
-        // it's because set_traversable_viewport hadn't arrived yet — the child
-        // will pick up the correct viewport on its next natural render without
-        // an immediate forced re-render. Removing this avoids a rendering cascade
-        // where each mismatch triggers note_rendering_opportunity, which triggers
-        // another PaintFrame, which triggers another mismatch check, etc.
+        // NOTE: We deliberately do NOT call publish_visible_child_viewports here.
+        // Doing so during on_paint_frame creates a render cascade: publishing a child
+        // viewport triggers set_traversable_viewport, which sends an IPC command to
+        // the content process, which may produce a new PaintFrame. That PaintFrame is
+        // routed back to this same parent's on_paint_frame, which would call
+        // publish_visible_child_viewports again, detecting another "change" and
+        // issuing another set_traversable_viewport — creating a convergence loop
+        // that explodes in frame counts with multiple windows.
+        //
+        // Child viewport publication happens naturally in composed_scene_for_webview
+        // during the next redraw, which is triggered by the request_redraw call below.
+        // The one-cycle delay is insignificant compared to the IPC round-trip that
+        // follows the viewport broadcast.
 
         self.embedder.request_redraw(traversable_id);
         Ok(())

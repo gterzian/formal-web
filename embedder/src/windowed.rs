@@ -24,7 +24,7 @@ use ipc_messages::content::WebviewId;
 use kurbo::Affine;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -68,48 +68,7 @@ impl TabState {
     }
 }
 
-/// Per-window render debug counters (only populated when RENDER_DEBUG is set)
-#[derive(Clone, Copy, Debug, Default)]
-struct FrameDebugInfo {
-    redraw_count: u64,
-    paint_frame_count: u64,
-    paint_chrome_us: u64,
-    paint_content_us: u64,
-    paint_total_us: u64,
-    last_logged: Option<Instant>,
-    last_redraw: Option<Instant>,
-    new_frame_count: u64,
-    request_redraw_count: u64,
-}
 
-/// Whether per-frame render debug logging is active.
-/// Set env `FORMAL_WEB_RENDER_DEBUG=1` to enable.
-fn render_debug_enabled() -> bool {
-    static ENABLED: AtomicBool = AtomicBool::new(false);
-    static INITIALIZED: AtomicBool = AtomicBool::new(false);
-    if !INITIALIZED.load(Ordering::Relaxed) {
-        let enabled = std::env::var("FORMAL_WEB_RENDER_DEBUG").as_deref() == Ok("1");
-        eprintln!(
-            "[render-debug] RENDER_DEBUG_ENABLED={}. To enable: FORMAL_WEB_RENDER_DEBUG=1",
-            enabled
-        );
-        ENABLED.store(enabled, Ordering::Relaxed);
-        INITIALIZED.store(true, Ordering::Relaxed);
-    }
-    ENABLED.load(Ordering::Relaxed)
-}
-
-/// Log a render-debug message to stderr. The `window_id` is informational (may be fake in
-/// static helper contexts) — use `WindowId::new()` when the real ID is not available.
-fn log_render_debug(window_id: WindowId, message: &str) {
-    eprintln!(
-        "[render-debug] t={:.6} win={window_id:?} {message}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-    );
-}
 
 /// Per-window state: owns a winit window, a renderer, chrome, and tabs
 pub(super) struct WindowState {
@@ -125,9 +84,7 @@ pub(super) struct WindowState {
     pub(super) keyboard_modifiers: Modifiers,
     pub(super) buttons: MouseEventButtons,
     pub(super) pointer_pos: PhysicalPosition<f64>,
-    /// Per-window frame debug info (only populated when FORMAL_WEB_RENDER_DEBUG=1)
-    #[allow(dead_code)]
-    frame_debug: FrameDebugInfo,
+
 }
 
 impl WindowState {
@@ -145,43 +102,10 @@ impl WindowState {
             keyboard_modifiers: Modifiers::default(),
             buttons: MouseEventButtons::None,
             pointer_pos: PhysicalPosition::default(),
-            frame_debug: FrameDebugInfo::default(),
         }
     }
 
-    /// Log per-window frame-debug summary if enough time has passed
-    fn maybe_log_frame_debug(&mut self, window_id: WindowId) {
-        if !render_debug_enabled() {
-            return;
-        }
-        let debug = &self.frame_debug;
-        let should_log = debug
-            .last_logged
-            .map(|last| last.elapsed() >= Duration::from_secs(1))
-            .unwrap_or(true);
-        if !should_log {
-            return;
-        }
-        let fps_estimate = debug.redraw_count; // over the last ~1 s
-        eprintln!(
-            "[render-debug] t={:.6} win={window_id:?} SUMMARY redraw_count={} paint_count={} new_frame_count={} request_redraw_count={} paint_chrome_avg={}us paint_content_avg={}us paint_total_avg={}us fps≈{fps_estimate}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64(),
-            debug.redraw_count,
-            debug.paint_frame_count,
-            debug.new_frame_count,
-            debug.request_redraw_count,
-            debug.paint_chrome_us.checked_div(debug.paint_frame_count.max(1)).unwrap_or(0),
-            debug.paint_content_us.checked_div(debug.paint_frame_count.max(1)).unwrap_or(0),
-            debug.paint_total_us.checked_div(debug.paint_frame_count.max(1)).unwrap_or(0),
-        );
-        self.frame_debug = FrameDebugInfo {
-            last_logged: Some(Instant::now()),
-            ..Default::default()
-        };
-    }
+
 }
 
 #[derive(Default)]
@@ -438,23 +362,9 @@ impl WindowedApp {
         let Some(window) = state.window.as_ref() else {
             return;
         };
-        state.frame_debug.paint_frame_count += 1;
-
         let chrome_height = f64::from(Self::chrome_height_physical(state));
 
-        let paint_start = if render_debug_enabled() {
-            Some(Instant::now())
-        } else {
-            None
-        };
-
         let chrome_scene = state.chrome.as_mut().map(ChromeUi::paint_scene);
-
-        let chrome_elapsed = if let (Some(start), Some(_)) = (&paint_start, &chrome_scene) {
-            Some(start.elapsed())
-        } else {
-            None
-        };
 
         if chrome_scene.is_none() && state.active_tab.is_none() {
             return;
@@ -484,38 +394,6 @@ impl WindowedApp {
                 scene.append_scene(chrome_scene, Affine::IDENTITY);
             }
         });
-
-        if let Some(paint_start) = paint_start {
-            let total_elapsed = paint_start.elapsed();
-            state.frame_debug.paint_total_us =
-                state.frame_debug.paint_total_us.saturating_add(
-                    total_elapsed.as_micros() as u64,
-                );
-            if let Some(chrome_elapsed) = chrome_elapsed {
-                state.frame_debug.paint_chrome_us = state
-                    .frame_debug
-                    .paint_chrome_us
-                    .saturating_add(chrome_elapsed.as_micros() as u64);
-                if total_elapsed > chrome_elapsed {
-                    state.frame_debug.paint_content_us = state
-                        .frame_debug
-                        .paint_content_us
-                        .saturating_add(
-                            (total_elapsed - chrome_elapsed).as_micros() as u64,
-                        );
-                }
-            }
-            if total_elapsed > Duration::from_millis(16) {
-                log_render_debug(
-                    WindowId::new(),
-                    &format!(
-                        "paint_frame SLOW took={}ms chrome={}us",
-                        total_elapsed.as_millis(),
-                        chrome_elapsed.map(|d| d.as_micros()).unwrap_or(0),
-                    ),
-                );
-            }
-        }
     }
 
     fn window_for_webview(app: &Self, webview_id: WebviewId) -> Option<WindowId> {
@@ -694,11 +572,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 if let Some(state) = self.windows.get_mut(&window_id)
                     && (self.provider.is_some() || state.chrome.is_some())
                 {
-                    state.frame_debug.redraw_count += 1;
-                    state.frame_debug.last_redraw = Some(Instant::now());
-                    log_render_debug(window_id, "RedrawRequested");
                     Self::paint_frame(state, &mut self.provider);
-                    state.maybe_log_frame_debug(window_id);
                 }
             }
             WindowEvent::Occluded(occluded) => {
@@ -1060,19 +934,9 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 }
             }
             FormalWebUserEvent::NewFrameRendered => {
-                if let Some(active_window) = self.active_window_id {
-                    log_render_debug(active_window, "NewFrameRendered");
-                    if let Some(state) = self.windows.get_mut(&active_window) {
-                        state.frame_debug.new_frame_count += 1;
-                    }
-                }
                 self.try_run_automation(|automation, app| {
                     automation.note_rendering_update(app)
                 });
-                // Don't request redraw here — the per-webview RequestRedraw event
-                // (dispatched by Embedder::request_redraw) handles targeted redraws.
-                // Requesting redraw for all windows here causes a high-FPS cycle
-                // since every RedrawRequested can trigger another NewFrameRendered.
             }
             FormalWebUserEvent::RequestRedraw(webview_id) => {
                 if let Some(window) = Self::window_for_webview(self, webview_id) {
@@ -1080,21 +944,10 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         .windows
                         .get(&window)
                         .is_some_and(|state| state.active_tab == Some(webview_id));
-                    if is_active {
-                        log_render_debug(
-                            window,
-                            &format!("RequestRedraw webview={webview_id:?}"),
-                        );
-                        // Increment counter before immutable borrow
-                        if render_debug_enabled() {
-                            if let Some(state) = self.windows.get_mut(&window) {
-                                state.frame_debug.request_redraw_count += 1;
-                            }
-                        }
-                        // Re-borrow to call request_window_redraw
-                        if let Some(window_state) = self.windows.get(&window) {
-                            Self::request_window_redraw(window_state);
-                        }
+                    if is_active
+                        && let Some(window_state) = self.windows.get(&window)
+                    {
+                        Self::request_window_redraw(window_state);
                     }
                 }
             }

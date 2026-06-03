@@ -92,37 +92,6 @@ formal-web CDP specifics, and the future roadmap.
 Formal-web supports three testing interfaces. See `automation/README.md`
 for detailed documentation.
 
-## rust-analyzer — Rust Code Analysis
-
-The `.pi/extensions/rust-analyzer/` extension spawns `rust-analyzer` as a child
-process and communicates via LSP over stdio. Provides 15 agent-callable tools
-for Rust code analysis, navigation, and refactoring.
-
-- **Code understanding** — `ra_file_structure` shows all symbols in a file,
-  `ra_call_hierarchy` traces callers and callees, `ra_hover` shows type info
-  and docs, `ra_definition` jumps to symbol definitions.
-- **Error diagnostics** — `ra_diagnostics` returns compiler errors, warnings,
-  and Clippy lints for any Rust file. Faster than `cargo check` for spot checks.
-- **Cross-crate search** — `ra_references` finds AST-aware usages across the
-  entire workspace including vendor crates. `ra_symbols` fuzzy-searches by
-  name. Both avoid the false positives from string-based `grep`/`rg`.
-- **Refactoring** — `ra_rename` and `ra_ssr` (structural search and replace)
-  return `WorkspaceEdit` sets for the agent to apply with the built-in
-  `write`/`edit` tools. `ra_code_actions` lists quick-fixes and refactors.
-- **Macro expansion** — `ra_expand_macro` shows the generated code from derive
-  macros, proc macros, and function-like macros.
-- **LSP server lifecycle** — Starts on `session_start`, persists across `/reload`
-  via `globalThis`. Use `/ra-restart` to force a fresh start. In a pi session
-  that persists for hours, RA only indexes once.
-
-This project's workspace is complex (~1 GB vendor crates, edition 2024, patches,
-build script). RA takes 1-2 minutes to fully index on first start.
-Tools don't block during loading — they proceed immediately and return partial
-results if the project isn't ready yet.
-
-See `.pi/extensions/rust-analyzer/README.md` for the full tool reference,
-examples, and workflow guidance.
-
 ## web_standards — Spec Reading
 
 The `.pi/extensions/web_standards/` extension lazily loads and caches web standards documents (WHATWG, W3C, etc.) on first use. Provides four tools for the agent to read specs interactively:
