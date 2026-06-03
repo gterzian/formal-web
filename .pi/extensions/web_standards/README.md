@@ -4,6 +4,31 @@ Lazily loads and caches web standards documents (WHATWG, W3C, etc.) so the agent
 
 ## Tools
 
+### `spec_lookup` (recommended entry point)
+
+Look up any named anchor (dfn, heading, or element with an `id`) in a spec and return its rendered content. This is the recommended first tool to reach for when navigating a spec:
+
+- **Definition (`dfn[id]`):** Returns the definition text, its parent section heading, and surrounding context.
+- **Section heading (`h2[id]`, `h3[id]`, etc.):** Returns the full section content including all algorithm boxes with their top-level step structure — same behavior as `spec_section`.
+- **Algorithm box (`div[data-algorithm]`):** Returns the algorithm header and step structure.
+
+```
+spec_lookup(url="https://html.spec.whatwg.org/", id="window-open-steps")
+spec_lookup(url="https://html.spec.whatwg.org/", id="the-rules-for-choosing-a-navigable")
+spec_lookup(url="https://html.spec.whatwg.org/", id="navigating-across-documents")
+```
+
+If you know a keyword but not the exact id, use `spec_search_id` first.
+
+### `spec_search_id`
+
+Search across all elements with an `id` attribute for a substring match. Returns a list of matching ids with their tag and first line of text. Use this to discover anchor IDs when you know a keyword:
+
+```
+spec_search_id(url="https://html.spec.whatwg.org/", query="window-open")
+spec_search_id(url="https://html.spec.whatwg.org/", query="choosing-a-navigable")
+```
+
 ### `spec_section`
 
 Read a full section by anchor ID. Walks flat siblings from the heading to the next same-level heading. Detects algorithm boxes and renders their top-level step structure so you know what's available.
@@ -11,6 +36,8 @@ Read a full section by anchor ID. Walks flat siblings from the heading to the ne
 ```
 spec_section(url="https://html.spec.whatwg.org/", id="session-history-entries")
 ```
+
+Prefer `spec_lookup` over `spec_section` for initial discovery — `spec_lookup` also handles non-heading anchors (dfn elements, algorithm boxes).
 
 ### `spec_algorithm`
 
@@ -46,6 +73,12 @@ spec_html(url="https://html.spec.whatwg.org/", selector="dl#domtokenlist")
 ## Commands
 
 - **`/spec-loaded`** — Lists all spec URLs currently cached in memory.
+
+## Workflow
+
+1. **`spec_search_id`** — Find the exact id by searching a keyword.
+2. **`spec_lookup`** — Read the anchor's content (definition, section, or algorithm).
+3. **`spec_algorithm`** — Drill into an algorithm's numbered steps.
 
 ## Supported Specs
 

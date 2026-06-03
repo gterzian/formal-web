@@ -10,7 +10,8 @@ use ipc_messages::content::{
     EventLoopId, FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
     NavigateRequest, NavigationFetchId, NavigationId, UserNavigationInvolvement, WebviewId,
-    WebviewProviderMessage, WindowTimerKey, iframe_target_name, parse_iframe_target_name,
+    WindowOpenRequest,
+    WebviewProviderMessage, WindowTimerKey, iframe_target_name,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -180,6 +181,19 @@ pub struct AgentCluster {
 pub struct BrowsingContext {
     /// Identifier for <https://html.spec.whatwg.org/multipage/#browsing-context>
     pub id: BrowsingContextId,
+
+    /// <https://html.spec.whatwg.org/multipage/#auxiliary-browsing-context>
+    /// True if this browsing context was created as an auxiliary browsing context
+    /// (e.g., via window.open()).
+    pub is_auxiliary: bool,
+
+    /// <https://html.spec.whatwg.org/multipage/#opener-browsing-context>
+    /// The browsing context that opened this auxiliary browsing context, if any.
+    pub opener_browsing_context: Option<BrowsingContextId>,
+
+    /// <https://html.spec.whatwg.org/multipage/#is-popup>
+    /// Whether this browsing context was requested as a popup.
+    pub is_popup: bool,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#browsing-context-group>
@@ -617,6 +631,27 @@ impl UserAgentState {
 
     /// updating the current
     /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation> marker.
+    fn set_opener_for_browsing_context(
+        &mut self,
+        browsing_context_id: BrowsingContextId,
+        opener_browsing_context_id: BrowsingContextId,
+    ) {
+        // Walk all browsing context groups to find this browsing context and set its opener.
+        for group in self.browsing_context_group_set.members.values_mut() {
+            if let Some(browsing_context) =
+                group.browsing_context_set.get_mut(&browsing_context_id)
+            {
+                browsing_context.opener_browsing_context = Some(opener_browsing_context_id);
+                browsing_context.is_auxiliary = true;
+                return;
+            }
+        }
+        // Also check the top-level browsing context group ids map.
+        if let Some(_group_id) = self.top_level_browsing_context_group_ids.get(&browsing_context_id) {
+            // Only set opener on the actual browsing context object, not on the map key.
+        }
+    }
+
     fn set_navigable_ongoing_navigation(
         &mut self,
         navigable_id: NavigableId,
@@ -849,6 +884,9 @@ pub enum UserAgentCommand {
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,
+    },
+    WindowOpenRequest {
+        request: WindowOpenRequest,
     },
     CreateChildNavigable {
         parent_traversable_id: NavigableId,
@@ -1368,6 +1406,9 @@ impl UserAgentWorker {
                         nesting_level,
                     );
                 }
+                UserAgentCommand::WindowOpenRequest { request } => {
+                    self.handle_window_open(request);
+                }
                 UserAgentCommand::CreateChildNavigable {
                     parent_traversable_id,
                     content_navigable_id,
@@ -1479,11 +1520,8 @@ impl UserAgentWorker {
         &mut self,
         target_name: String,
     ) -> Result<NavigableId, String> {
-        if parse_iframe_target_name(&target_name).is_some() {
-            return Err(format!(
-                "synthetic iframe target {target_name:?} must be materialized by create-a-new-child-navigable"
-            ));
-        }
+        // Note: iframe target names are handled by create-a-new-child-navigable and never
+        // reach this top-level traversable path.
 
         let traversable_id = NavigableId::new();
         let iframe_parent_traversable_id = None;
@@ -1557,6 +1595,9 @@ impl UserAgentWorker {
                     browsing_context_id,
                     BrowsingContext {
                         id: browsing_context_id,
+                        is_auxiliary: false,
+                        opener_browsing_context: None,
+                        is_popup: false,
                     },
                 )]),
                 agent_cluster_map: HashMap::from([(
@@ -1706,6 +1747,9 @@ impl UserAgentWorker {
                 browsing_context_id,
                 BrowsingContext {
                     id: browsing_context_id,
+                    is_auxiliary: false,
+                    opener_browsing_context: None,
+                    is_popup: false,
                 },
             );
 
@@ -1854,6 +1898,9 @@ impl UserAgentWorker {
                     new_browsing_context_id,
                     BrowsingContext {
                         id: new_browsing_context_id,
+                        is_auxiliary: false,
+                        opener_browsing_context: None,
+                        is_popup: false,
                     },
                 )]),
                 agent_cluster_map: HashMap::new(),
@@ -2150,30 +2197,35 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
-    /// Note: This helper continues the algorithm after content has already had a chance to run
-    /// the local `_self` / `_parent` / `_top` steps. The remaining work here is the shared
-    /// target-name lookup and new-top-level branch, plus defensive handling for callers that did
-    /// not provide a preselected navigable id.
-    fn continue_choosing_navigable_after_content_selection(
+    ///
+    /// Spec: given (name, currentNavigable, noopener) → (chosen, windowType).
+    ///
+    /// Note: Content processes resolve the `_self` / `_parent` / `_top` branches before
+    /// sending the navigation request, so the `_self`/`_parent` branch below acts as a
+    /// defensive fallback for browser-UI-originated navigations that bypass content.
+    ///
+    /// Note: iframe child-navigable creation goes through `create-a-new-child-navigable`
+    /// and never reaches this top-level path, so no iframe-target check is needed here.
+    fn choose_navigable(
         &mut self,
         source_navigable_id: NavigableId,
-        target_name: &str,
+        name: &str,
         noopener: bool,
-    ) -> Result<NavigableId, String> {
-        // Note: `normalize_navigation_target_name` folds the `_self` special case into the empty
-        // string before the direct step checks below.
-        let normalized_target_name = normalize_navigation_target_name(target_name);
+    ) -> Result<(NavigableId, String), String> {
+        // Step 1: "Let chosen be null."
+        // Step 2: "Let windowType be 'existing or none'."
+        // Step 3: "Let sandboxingFlagSet be ..."
+        // Note: Sandboxing checks are deferred.
+        let normalized_target_name = normalize_navigation_target_name(name);
 
-        // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
-        // Note: Content-driven callers are expected to resolve this branch locally. This fallback
-        // keeps browser-UI or legacy callers correct when they enter `navigate` without a
-        // preselected navigable id.
+        // Step 4: "If name is the empty string or an ASCII case-insensitive match
+        //          for '_self', then set chosen to currentNavigable."
         if normalized_target_name.is_empty() {
-            return Ok(source_navigable_id);
+            return Ok((source_navigable_id, String::from("existing or none")));
         }
 
-        // Step 5: "Otherwise, if name is an ASCII case-insensitive match for \"_parent\", set chosen to currentNavigable's parent, if any, and currentNavigable otherwise."
-        // Note: Content-driven callers are expected to resolve this branch locally.
+        // Step 5: "Otherwise, if name is an ASCII case-insensitive match for '_parent',
+        //          set chosen to currentNavigable's parent..."
         if normalized_target_name.eq_ignore_ascii_case("_parent") {
             let result = self
                 .state
@@ -2181,42 +2233,47 @@ impl UserAgentWorker {
                 .get(&source_navigable_id)
                 .and_then(|navigable| navigable.parent_navigable_id)
                 .unwrap_or(source_navigable_id);
-            return Ok(result);
+            return Ok((result, String::from("existing or none")));
         }
 
-        // Step 6: "Otherwise, if name is an ASCII case-insensitive match for \"_top\", set chosen to currentNavigable's traversable navigable."
-        // Note: Content-driven callers are expected to resolve this branch locally.
+        // Step 6: "Otherwise, if name is an ASCII case-insensitive match for '_top',
+        //          set chosen to currentNavigable's traversable navigable."
         if normalized_target_name.eq_ignore_ascii_case("_top") {
-            let source_traversable_id = self.traversable_id_for_navigable(source_navigable_id)?;
+            let source_traversable_id =
+                self.traversable_id_for_navigable(source_navigable_id)?;
             let top_level_traversable_id = self
                 .state
                 .top_level_traversable_id(source_traversable_id)
                 .unwrap_or(source_traversable_id);
-            return Ok(top_level_traversable_id);
+            return Ok((top_level_traversable_id, String::from("existing or none")));
+        }
+
+        // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for '_blank'
+        //          and noopener is false, then set chosen to the result of finding a navigable
+        //          by target name given name and currentNavigable."
+        if !normalized_target_name.eq_ignore_ascii_case("_blank") && !noopener {
+            if let Some(chosen) =
+                find_navigable_by_target_name(&self.state, &normalized_target_name)
+            {
+                return Ok((chosen, String::from("existing or none")));
+            }
         }
 
         // Step 8: "If chosen is null, then a new top-level traversable is being requested."
-        if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
-            let new_traversable_id = self.create_new_top_level_traversable(String::new())?;
-            return Ok(new_traversable_id);
-        }
+        let new_traversable_id =
+            self.create_new_top_level_traversable(normalized_target_name.clone())?;
 
-        // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for \"_blank\" and noopener is false, then set chosen to the result of finding a navigable by target name given name and currentNavigable."
-        if let Some(chosen_navigable_id) =
-            find_navigable_by_target_name(&self.state, &normalized_target_name)
-        {
-            return Ok(chosen_navigable_id);
-        }
+        // Step 8 (continued): Determine windowType.
+        //   "If noopener is true, then set windowType to 'new with no opener'.
+        //    Otherwise, set windowType to 'new and unrestricted'."
+        let window_type = if noopener {
+            String::from("new with no opener")
+        } else {
+            String::from("new and unrestricted")
+        };
 
-        if parse_iframe_target_name(&normalized_target_name).is_some() {
-            return Err(format!(
-                "synthetic iframe target {normalized_target_name:?} was not materialized before navigate continued in the user agent"
-            ));
-        }
-
-        // Step 8: "If chosen is null, then a new top-level traversable is being requested."
-        let new_traversable_id = self.create_new_top_level_traversable(normalized_target_name)?;
-        Ok(new_traversable_id)
+        // Step 9: "Return chosen and windowType."
+        Ok((new_traversable_id, window_type))
     }
 
     fn traversable_id_for_navigable(
@@ -2315,13 +2372,20 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#navigate>
     fn handle_navigate(&mut self, request: NavigateRequest) {
         let result: Result<(), String> = (|| {
+            // Navigations that already resolved the target in the content process
+            // carry a preselected navigable id. Otherwise, run the shared
+            // rules-for-choosing-a-navigable continuation (which returns windowType,
+            // but normal navigation ignores it).
             let navigable_id = match request.chosen_navigable_id {
                 Some(chosen_navigable_id) => chosen_navigable_id,
-                None => self.continue_choosing_navigable_after_content_selection(
-                    request.source_navigable_id,
-                    &request.target,
-                    request.noopener,
-                )?,
+                None => {
+                    let (chosen, _window_type) = self.choose_navigable(
+                        request.source_navigable_id,
+                        &request.target,
+                        request.noopener,
+                    )?;
+                    chosen
+                }
             };
             let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
             let navigation_id = request.navigation_id.unwrap_or_else(NavigationId::new);
@@ -2346,6 +2410,118 @@ impl UserAgentWorker {
         })();
         if let Err(error) = result {
             eprintln!("failed to run navigate: {error}");
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/#window-open-steps>
+    /// Continues the window open algorithm from the user-agent side.
+    /// Implements steps 13–18 after the content-side prefix (steps 1–12).
+    fn handle_window_open(&mut self, request: WindowOpenRequest) {
+        let result: Result<(), String> = (|| {
+            // Step 13: "Let targetNavigable and windowType be the result of applying the
+            //           rules for choosing a navigable given target, sourceDocument's
+            //           node navigable, and noopener."
+            let (chosen_navigable_id, window_type) = self.choose_navigable(
+                request.source_navigable_id,
+                &request.target,
+                request.noopener,
+            )?;
+
+            // Step 14: "If targetNavigable is null, then return null."
+            // Note: choose_navigable returns an error if chosen is null,
+            // so this step is implicitly handled.
+
+            let navigable = self
+                .state
+                .navigables
+                .get(&chosen_navigable_id)
+                .ok_or_else(|| format!("window.open: chosen navigable {chosen_navigable_id} not found"))?;
+            let browsing_context_id = navigable.active_browsing_context_id.ok_or_else(|| {
+                format!("window.open: no browsing context for navigable {chosen_navigable_id}")
+            })?;
+
+            // Step 15: "If windowType is either 'new and unrestricted' or
+            //           'new with no opener':"
+            if window_type == "new and unrestricted" || window_type == "new with no opener" {
+                // Step 15.1: "Set targetNavigable's active browsing context's is popup
+                //             to the result of checking if a popup window is requested,
+                //             given tokenizedFeatures."
+                // Note: Popup feature detection from tokenizedFeatures requires parsing
+                // the features_json on the user-agent side. Deferred to follow-up.
+
+                // Step 15.2: "Set up browsing context features for targetNavigable's
+                //             active browsing context given tokenizedFeatures."
+                // Note: Browsing-context feature setup (window dimensions, scrollbars,
+                // etc.) is deferred to follow-up.
+
+                // Step 15.3: "If windowType is 'new and unrestricted':
+                //             15.3.1 Set targetNavigable's active browsing context's
+                //             opener browsing context to sourceDocument's browsing context."
+                if window_type == "new and unrestricted" {
+                    let source_navigable = self
+                        .state
+                        .navigables
+                        .get(&request.source_navigable_id);
+                    if let Some(source_browsing_context_id) = source_navigable
+                        .and_then(|n| n.active_browsing_context_id)
+                    {
+                        self.state.set_opener_for_browsing_context(
+                            browsing_context_id,
+                            source_browsing_context_id,
+                        );
+                        if startup_debug_enabled() {
+                            eprintln!(
+                                "[window-open] set opener: target={:?} source={:?}",
+                                browsing_context_id, source_browsing_context_id
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Step 15.4 / 16.1: "Navigate targetNavigable to urlRecord (if urlRecord is
+            //                    non-null) or to 'about:blank' (otherwise), with referrerPolicy
+            //                    set to referrerPolicy, and with sourceDocument set to
+            //                    sourceDocument."
+            let navigate_url = request
+                .destination_url
+                .clone()
+                .unwrap_or_else(|| String::from("about:blank"));
+            let navigation_id = NavigationId::new();
+            self.navigate(
+                chosen_navigable_id,
+                navigate_url.clone(),
+                UserNavigationInvolvement::Activation,
+                navigation_id,
+            )?;
+
+            // Notify the embedder for top-level navigations.
+            let traversable_id =
+                self.traversable_id_for_navigable(chosen_navigable_id)?;
+            let is_top_level = self
+                .state
+                .navigables
+                .get(&traversable_id)
+                .map(|n| n.parent_navigable_id.is_none())
+                .unwrap_or(true);
+            if is_top_level {
+                self.host.navigation_requested(
+                    WebviewId(traversable_id),
+                    navigate_url,
+                )?;
+            }
+
+            // Step 17: "If noopener is true or windowType is 'new with no opener',
+            //           then return null."
+            // Note: The content-side window_open_steps already returns null in all cases
+            // as a WindowProxy placeholder. Real WindowProxy is a follow-up.
+            // Step 18: "Return targetNavigable's active WindowProxy."
+            // Note: Deferred to follow-up.
+
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("failed to handle window.open: {error}");
         }
     }
 

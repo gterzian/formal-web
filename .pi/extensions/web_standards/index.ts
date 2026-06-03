@@ -102,6 +102,222 @@ export default function (pi: ExtensionAPI) {
     docs.clear();
   });
 
+  // ── spec_lookup ──────────────────────────────────────────────────────────────
+  // Primary entry point for reading a spec: look up an anchor ID and return
+  // its context (section content, algorithm steps when applicable).
+
+  pi.registerTool({
+    name: "spec_lookup",
+    label: "Spec: Lookup ID",
+    description:
+      "Look up a named anchor (dfn, heading, or any element with an id) in a " +
+      "spec and return its rendered content. For definition terms (dfn[id]) this " +
+      "returns the definition text and surrounding context. For section headings " +
+      "(h2[id],h3[id],etc.) this behaves like spec_section and returns the full " +
+      "section content including algorithm boxes. For algorithm boxes this returns " +
+      "the algorithm header and step structure. " +
+      "This is the recommended entry point for navigating a spec — use it to find " +
+      "what a given anchor term refers to, then drill deeper with spec_algorithm " +
+      "for numbered steps. " +
+      "Example URLs: https://html.spec.whatwg.org/, https://dom.spec.whatwg.org/, " +
+      "https://fetch.spec.whatwg.org/, https://webidl.spec.whatwg.org/",
+    promptSnippet: "Look up a spec element by its anchor ID",
+    promptGuidelines: [
+      "Use spec_lookup as the primary entry point for navigating a spec. " +
+      "Pass the URL and the exact id value (e.g. 'window-open-steps' or " +
+      "'the-rules-for-choosing-a-navigable'). The tool returns the element's " +
+      "tag, its rendered content, and for headings it returns the full section. " +
+      "For algorithm boxes (div[data-algorithm]) it returns the step structure. " +
+      "Use spec_search_id first if you need to find which id matches a keyword.",
+    ],
+    parameters: Type.Object({
+      url: Type.String({
+        description: "Full URL of the spec, e.g. https://html.spec.whatwg.org/",
+      }),
+      id: Type.String({
+        description: "The exact id attribute value to look up, e.g. 'window-open-steps' or 'navigate'",
+      }),
+    }),
+    async execute(_toolCallId, { url, id }, signal) {
+      const $ = await getDoc(url, signal);
+      const el = $(`[id="${id}"]`).first();
+      if (!el.length) {
+        return {
+          content: [{ type: "text" as const, text: `No element found with id="${id}".` }],
+          details: {},
+        };
+      }
+
+      const tagName = (el.prop("tagName") as string).toLowerCase();
+      const text = el.text().trim();
+
+      // For section headings, delegate to spec_section behavior.
+      if (/^h[1-6]$/.test(tagName)) {
+        // Re-use the existing section-walking logic by inlining it.
+        const level = parseInt(tagName[1]);
+        const parts: string[] = [text];
+        let sibling = el.next();
+        while (sibling.length) {
+          const t = (sibling.prop("tagName") as string | undefined)?.toLowerCase();
+          if (t && /^h[1-6]$/.test(t) && parseInt(t[1]) <= level) break;
+
+          if (t === "div" && sibling.attr("data-algorithm") !== undefined) {
+            const algoName = sibling.attr("data-algorithm") || "(unnamed)";
+            const $p = sibling.children("p").first();
+            const $ol = sibling.children("ol").first();
+            let algoBlock = `\n── Algorithm: ${algoName} ──\n${$p.text().trim()}`;
+            if ($ol.length) {
+              const totalSteps = countAlgorithmSteps($, $ol);
+              $ol.children("li").each((i, li) => {
+                const $li = $(li);
+                const stepText = getStepTextSimple($, $li);
+                algoBlock += `\n  Step ${i + 1}: ${stepText.slice(0, 200)}`;
+              });
+              if (totalSteps > $ol.children("li").length) {
+                algoBlock += `\n  (${totalSteps} total steps including substeps — use spec_algorithm for full view)`;
+              }
+            }
+            parts.push(algoBlock);
+          } else {
+            const t = sibling.text().trim();
+            if (t) parts.push(t);
+          }
+          sibling = sibling.next();
+        }
+        return {
+          content: [{ type: "text" as const, text: truncate(parts.join("\n\n")) }],
+          details: { url, id, tag: tagName },
+        };
+      }
+
+      // For algorithm boxes, render the structure.
+      if (tagName === "div" && el.attr("data-algorithm") !== undefined) {
+        const algoName = el.attr("data-algorithm") || "(unnamed)";
+        const $p = el.children("p").first();
+        const $ol = el.children("ol").first();
+        let output = `Algorithm: ${algoName}\n${$p.text().trim()}`;
+        if ($ol.length) {
+          const totalSteps = countAlgorithmSteps($, $ol);
+          output += `\n\nSteps (${totalSteps} total):`;
+          $ol.children("li").each((i, li) => {
+            const $li = $(li);
+            const stepText = getStepTextSimple($, $li);
+            output += `\n  Step ${i + 1}: ${stepText.slice(0, 200)}`;
+          });
+          if (totalSteps > $ol.children("li").length) {
+            output += `\n  (use spec_algorithm to read full recursive steps)`;
+          }
+        }
+        return {
+          content: [{ type: "text" as const, text: truncate(output) }],
+          details: { url, id, tag: tagName, algorithm: algoName },
+        };
+      }
+
+      // For definition terms (dfn) or any other element, return the element info.
+      const details: Record<string, string | undefined> = {
+        tag: tagName,
+        id,
+        text: text.slice(0, 2000),
+      };
+      // Also include the parent section heading for context.
+      let parent = el.parent();
+      while (parent.length) {
+        const pt = (parent.prop("tagName") as string).toLowerCase();
+        if (/^h[1-6]$/.test(pt) && parent.attr("id")) {
+          details.parentSection = `${parent.attr("id")}: ${parent.text().trim()}`;
+          break;
+        }
+        // Also check preceding siblings
+        const prevId = parent.prevAll(`[id]`).first();
+        if (prevId.length && /^h[1-6]$/.test((prevId.prop("tagName") as string).toLowerCase())) {
+          details.parentSection = `${prevId.attr("id")}: ${prevId.text().trim()}`;
+          break;
+        }
+        parent = parent.parent();
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: truncate(
+              `Element: <${tagName} id="${id}">` +
+              (details.parentSection ? `\nSection: ${details.parentSection}` : "") +
+              `\n\n${text}`
+            ),
+          },
+        ],
+        details,
+      };
+    },
+  });
+
+  // ── spec_search_id ───────────────────────────────────────────────────────────
+  // Search across all elements with an id attribute, returning matches whose id
+  // contains the given search string.
+
+  pi.registerTool({
+    name: "spec_search_id",
+    label: "Spec: Search IDs",
+    description:
+      "Search a spec for all elements whose id attribute contains a given " +
+      "substring. Returns a list of matches with their tag, id, and first line " +
+      "of text. Use this to discover anchor IDs when you know a keyword but not " +
+      "the exact id. Then use spec_lookup with the exact id to read the content. " +
+      "Example URLs: https://html.spec.whatwg.org/, https://dom.spec.whatwg.org/",
+    promptSnippet: "Search spec IDs that match a keyword",
+    parameters: Type.Object({
+      url: Type.String({
+        description: "Full URL of the spec",
+      }),
+      query: Type.String({
+        description: "Substring to search for in id attributes, e.g. 'navigat' or 'window-open'",
+      }),
+      limit: Type.Optional(
+        Type.Number({
+          description: "Maximum number of results to return (default 30)",
+        })
+      ),
+    }),
+    async execute(_toolCallId, { url, query, limit = 30 }, signal) {
+      const $ = await getDoc(url, signal);
+      const matches: { tag: string; id: string; text: string }[] = [];
+
+      $(`[id]`).each((_, el) => {
+        const $el = $(el);
+        const id = $el.attr("id") || "";
+        if (id.toLowerCase().includes(query.toLowerCase())) {
+          const tag = (el.type === "tag" ? (el as { name: string }).name : "").toLowerCase();
+          const text = $el.text().trim().slice(0, 120);
+          matches.push({ tag, id, text });
+        }
+      });
+
+      if (matches.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `No ids matching "${query}" found.` }],
+          details: {},
+        };
+      }
+
+      const shown = matches.slice(0, limit);
+      const note = matches.length > limit
+        ? `\n[Showing ${limit} of ${matches.length} matches — refine your query for more precise results]`
+        : "";
+
+      const output = shown.map(m => {
+        const line = `#${m.id}\n  <${m.tag}> ${m.text}`;
+        return line;
+      }).join("\n\n");
+
+      return {
+        content: [{ type: "text" as const, text: truncate(output + note) }],
+        details: { url, query, total: matches.length, returned: shown.length },
+      };
+    },
+  });
+
   // ── spec_section ─────────────────────────────────────────────────────────────
   // Reads a section by anchor ID. Walks flat siblings (WHATWG specs have no
   // wrapping <section> elements). Detects algorithm boxes and renders them

@@ -111,6 +111,27 @@ pub enum UserNavigationInvolvement {
     BrowserUi,
 }
 
+/// <https://html.spec.whatwg.org/#window-open-steps>
+/// Content-side prefix of the window open algorithm. The user agent continues
+/// with the rules for choosing a navigable, opener setup, and navigation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowOpenRequest {
+    /// Parsed destination URL (or null to navigate to "about:blank").
+    #[serde(default)]
+    pub destination_url: Option<String>,
+    /// The resolved target string (defaults to "_blank").
+    pub target: String,
+    /// The noopener flag, after considering noreferrer and blob URL checks.
+    pub noopener: bool,
+    /// The referrer policy derived from noreferrer.
+    #[serde(default)]
+    pub referrer_policy: String,
+    /// The tokenized features for popup detection and browsing context setup.
+    pub features_json: String,
+    /// The source navigable that initiated the open.
+    pub source_navigable_id: NavigableId,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigateRequest {
     #[serde(default)]
@@ -712,6 +733,7 @@ pub enum Event {
     WindowTimerCleared(WindowTimerClearRequest),
     CreateChildNavigable(CreateChildNavigableRequest),
     NavigationRequested(NavigateRequest),
+    WindowOpenRequested(WindowOpenRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
     IframeTraversableRemoved(IframeTraversableRemoval),

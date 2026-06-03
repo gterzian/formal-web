@@ -100,8 +100,42 @@ pub(crate) fn register_window_methods(class: &mut ClassBuilder<'_>) -> JsResult<
             js_string!("getComputedStyle"),
             1,
             NativeFunction::from_fn_ptr(get_computed_style_method),
+        )
+        .method(
+            js_string!("open"),
+            0,
+            NativeFunction::from_fn_ptr(open_method),
         );
     Ok(())
+}
+
+fn open_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    // https://html.spec.whatwg.org/#dom-open
+    // The open(url, target, features) method steps are to run
+    // the window open steps with url, target, and features.
+    let url = args
+        .get(0)
+        .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
+        .transpose()?
+        .unwrap_or_default();
+    let target = args
+        .get(1)
+        .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
+        .transpose()?
+        .unwrap_or_default();
+    let features = args
+        .get(2)
+        .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
+        .transpose()?
+        .unwrap_or_default();
+
+    let window_object = current_window_object(this, context);
+    let window = downcast_window(&window_object)?;
+    window.open(&url, &target, &features)
 }
 
 fn request_animation_frame_method(
