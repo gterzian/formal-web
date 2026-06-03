@@ -112,23 +112,21 @@ impl WebviewProvider {
 
     /// Process ALL pending provider messages in one batch.
     ///
-    /// Drains the channel so that burst of PaintFrames (e.g. during iframe viewport
-    /// convergence) are processed together, avoiding one `WebviewProviderSync` + redraw
-    /// per frame.  `RegisterChildNavigableHost` and `NewWebview` messages are still
-    /// processed immediately since they don't participate in the render cascade.
+    /// Processes one message from the pending queue. The caller (`WebviewProviderSync`)
+    /// is dispatched once per enqueued message, so we process exactly one message here.
+    ///
+    /// NOTE: We deliberately do NOT drain additional messages via `try_recv()`. While
+    /// draining would let us batch multiple PaintFrames (e.g. during iframe viewport
+    /// convergence), it creates a hang when the user-agent queues two
+    /// `WebviewProviderSync` events before the embedder processes the first one.
+    /// The first sync drains both messages, leaving the second sync with nothing and
+    /// blocking `recv()` forever. Processing one message per sync avoids this.
     pub fn sync_pending_messages(&mut self) -> Result<(), String> {
-        // Block on the first message (we know at least one is pending because
-        // webview_provider_sync was called).
         let message = self
             .provider_message_receiver
             .recv()
             .map_err(|error| format!("failed to receive webview provider message: {error}"))?;
         self.handle_provider_message(message)?;
-
-        // Drain any additional messages that arrived while we were processing.
-        while let Ok(message) = self.provider_message_receiver.try_recv() {
-            self.handle_provider_message(message)?;
-        }
 
         Ok(())
     }
