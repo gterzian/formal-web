@@ -10,9 +10,9 @@ use url::Url;
 use crate::html::{HTMLElement, HyperlinkElementUtils, navigate};
 
 /// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
-/// Note: This helper runs the content-local prefix of the algorithm so content can resolve
-/// `_self`, `_parent`, and `_top` without a blocking round-trip. The user agent later continues
-/// the remaining target-name and new-top-level branches from the explicit request fields.
+/// Resolves `_self`, `_parent`, and `_top` locally. Returns `None` when the target requires
+/// user-agent action (find-by-target-name across processes, or creating a new top-level
+/// traversable).
 fn choose_navigable_for_hyperlink_activation(
     source_navigable_id: NavigableId,
     parent_navigable_id: Option<NavigableId>,
@@ -28,8 +28,7 @@ fn choose_navigable_for_hyperlink_activation(
     };
 
     // Step 8: "If chosen is null, then a new top-level traversable is being requested."
-    // Note: Content leaves this branch unresolved so the user agent can continue the navigation
-    // entrypoint asynchronously when a new top-level traversable is required.
+    // Content cannot create top-level traversables; the user agent handles this branch.
     if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
         return None;
     }
@@ -50,8 +49,7 @@ fn choose_navigable_for_hyperlink_activation(
     }
 
     // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for \"_blank\" and noopener is false, then set chosen to the result of finding a navigable by target name given name and currentNavigable."
-    // Note: Content does not own the full cross-process target-name registry, so unresolved names
-    // continue in the user agent.
+    // Cross-process target-name lookup requires the user agent's global navigable registry.
     None
 }
 
@@ -127,9 +125,6 @@ impl HTMLAnchorElement {
             noopener,
         );
 
-        // Note: Content sends the locally resolved target selection, when available, so the
-        // user agent can continue `navigate` from the remaining target-name and top-level-creation
-        // branches instead of repeating these local steps or blocking on a reply path.
         navigate(
             event_sender,
             source_navigable_id,

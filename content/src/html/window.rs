@@ -185,19 +185,25 @@ pub(crate) fn window_open_steps(
     let features_json = serde_json::to_string(&remaining_features)
         .unwrap_or_else(|_| String::from("{}"));
 
-    // Steps 13–18 continue in the user agent via the shared navigate IPC.
-    // Step 13 applies the rules for choosing a navigable; the user agent opens
-    // a new tab or window as needed for the target. Steps 15–16 handle opener
-    // setup and navigation, signalled by the non-empty features_json.
-    // Step 17/18 (return value) are resolved on the user-agent side.
+    // Step 13: "Apply the rules for choosing a navigable given name, window's
+    //          navigable, and noopener."
     //
+    // Resolve _self locally; everything else (named targets, _blank, _parent, _top)
+    // is sent unmodified so the user agent continues with find-by-target-name or
+    // creates a new top-level traversable.
+    let chosen_target = if target.eq_ignore_ascii_case("_self") {
+        Some(source_navigable_id)
+    } else {
+        None
+    };
+
     // Per the spec: "If urlRecord is null, then set urlRecord to a URL record
     // representing about:blank." (step 15.3 for new windows, implicit for existing).
     let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));
     if let Err(error) = super::navigate(
         event_sender,
         source_navigable_id,
-        None,
+        chosen_target,
         navigate_url,
         target.to_owned(),
         UserNavigationInvolvement::Activation,

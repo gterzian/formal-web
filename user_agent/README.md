@@ -11,19 +11,20 @@ The `user_agent` crate owns all browser-global coordination: navigables and trav
 - Keep spec-facing algorithms and continuations as named worker methods on the owning type instead of as transport-oriented helper functions.
 - Route browser, embedder, automation, and webview requests through this crate instead of through synchronous cross-thread bridges.
 
-## Window.open continuation
+## Window.open flow
 
-When the content process sends a `WindowOpenRequested` IPC event
-(`user_agent/src/event_loop.rs` forwards it as `UserAgentCommand::WindowOpenRequest`),
-the user agent's `handle_window_open` continues the window open algorithm
-from step 13:
+`window.open()` goes through the shared `navigate` path. The content process
+resolves the easy cases (`_self`) directly and sends a `NavigateRequest` IPC
+with `features_json` set and an optional `chosen_navigable_id`. The user agent:
 
-1. `choose_navigable` (unified rules-for-choosing that returns both the
-   chosen navigable id and the windowType string).
-2. Step 15: For new-traversable windowTypes, sets up the opener
-   relationship (`opener_browsing_context`) on the target browsing
-   context when windowType is "new and unrestricted".
-3. Steps 15.4/16.1: Navigates the target navigable.
+1. When `chosen_navigable_id` is `Some`, uses it directly.
+2. When `chosen_navigable_id` is `None`, runs the remaining rules-for-choosing
+   steps: find-by-target-name (cross-process), or create a new top-level
+   traversable.
+3. Notifies the embedder to open a new tab for new top-level traversables.
+4. Sets up the opener relationship (`opener_browsing_context`) for
+   `"new and unrestricted"` window types (step 15.3 of window-open-steps).
+5. Navigates the target navigable.
 
 WindowProxy return value is a null placeholder on the content side — the
 user agent only performs the navigation and does not need to maintain
