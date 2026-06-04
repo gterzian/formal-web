@@ -47,6 +47,17 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
         return fetch_file_url(&request.url);
     }
 
+    // Handle about:blank locally — return an empty HTML document.
+    // Reqwest cannot construct an HTTP request for about: URLs.
+    if parsed.scheme() == "about" && parsed.path() == "blank" {
+        return Ok(FetchResponse {
+            final_url: String::from("about:blank"),
+            status: 200,
+            content_type: String::from("text/html; charset=utf-8"),
+            body: Vec::new(),
+        });
+    }
+
     let method = Method::from_bytes(request.method.as_bytes())
         .map_err(|error| format!("invalid HTTP method: {error}"))?;
     let mut builder = client.request(method, parsed);
