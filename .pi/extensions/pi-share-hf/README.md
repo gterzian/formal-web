@@ -8,5 +8,6 @@ The original repo did not come with a license at the time it was downloaded, so 
 
 - **Auto-collection on shutdown:** When pi shuts down, the current session is automatically archived to `.pi/collected-sessions/`.
 - **Each session gets its own file:** Every collection (manual or automatic) produces a unique file named `<session-stem>_<timestamp>_<random>.jsonl`, even when collected multiple times against the same pi session file.
-- **Manual collection:** Use `/collect-session` (interactive) or the `collect_session` tool (LLM-accessible) to archive at any time.
+- **Manual collection:** Use `/collect-session` (interactive) to archive at any time.
 - **Upload:** The `upload_session` tool is a stub and not yet implemented.
+- **`collect_session` tool:** Removed — agents must not call this. Auto-collection on shutdown is sufficient.

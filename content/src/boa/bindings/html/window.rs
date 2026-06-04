@@ -12,7 +12,9 @@ use crate::boa::platform_objects::{
 };
 use crate::boa::with_event_target_mut;
 use crate::html::{
-    Location, Window, WindowOrWorkerGlobalScope, window_computed_style_properties_for_element,
+    Location, Window, WindowOrWorkerGlobalScope,
+    safe_passing_of_structured_data::StructuredCloneOptions,
+    window_computed_style_properties_for_element,
 };
 use crate::webidl::{callback_function_value, nullable_value};
 
@@ -105,8 +107,35 @@ pub(crate) fn register_window_methods(class: &mut ClassBuilder<'_>) -> JsResult<
             js_string!("open"),
             0,
             NativeFunction::from_fn_ptr(open_method),
+        )
+        .method(
+            js_string!("structuredClone"),
+            1,
+            NativeFunction::from_fn_ptr(structured_clone_method),
         );
     Ok(())
+}
+
+fn structured_clone_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let window_object = current_window_object(this, context);
+    let window = downcast_window(&window_object)?;
+
+    let value = args.get_or_undefined(0).clone();
+    let options = args.get(1).and_then(parse_structured_clone_options);
+
+    window.structured_clone(value, options, context)
+}
+
+fn parse_structured_clone_options(value: &JsValue) -> Option<StructuredCloneOptions> {
+    let object = value.as_object()?;
+    // Try to get options["transfer"]
+    let _ = object;
+    // For now, we create a simple options check
+    None
 }
 
 fn open_method(

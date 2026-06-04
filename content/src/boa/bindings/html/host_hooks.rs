@@ -7,7 +7,6 @@ use boa_engine::{
     job::SimpleJobExecutor,
     object::JsObject,
 };
-use boa_runtime::extensions::{RuntimeExtension, StructuredCloneExtension};
 
 use crate::dom::{
     AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
@@ -56,10 +55,6 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
         .host_hooks(Rc::new(WindowHostHooks::new(document)))
         .job_executor(Rc::new(SimpleJobExecutor::new()))
         .build()
-        .map_err(|error| error.to_string())?;
-
-    StructuredCloneExtension
-        .register(None, &mut context)
         .map_err(|error| error.to_string())?;
 
     register_web_api_classes(&mut context)?;
