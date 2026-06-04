@@ -7,6 +7,7 @@ mod html_iframe_element;
 mod html_parser;
 mod hyperlink_element_utils;
 mod location;
+pub(crate) mod safe_passing_of_structured_data;
 mod window;
 mod window_or_worker_global_scope;
 

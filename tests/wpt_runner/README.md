@@ -136,6 +136,28 @@ This ensures the runner and component binaries share the same profile.
   results and disable individual tests with TODO reasons.
 - **`tests/formal/meta/`** — Same for formal tests.
 
+### Updating metadata when sub-tests start passing
+
+When a task unlocks new passes within a test file, the metadata for that file
+must be updated so the default run (`cargo run --release -- wpt`) reports
+`unexpected=0`.
+
+**Workflow:**
+
+1. Run the test file in isolation to see which sub-tests still fail:
+   ```bash
+   cargo run --release -- wpt path/to/test.any.js 2>&1
+   ```
+2. Remove `expected:` lines from the test's `.ini` file for sub-tests that
+   now pass.
+3. Add `expected:` lines for any sub-tests that still fail due to
+   infrastructure gaps (e.g. missing platform objects like `Blob`,
+   `MessageChannel`, unsupported `ResizableArrayBuffer`, etc.), with a
+   `# TODO:` comment naming the missing feature.
+4. If all sub-tests now pass, remove the file-level `expected: FAIL` or
+   `disabled:` line entirely so the test counts as `expected PASS`.
+5. Re-run the default suite and confirm `unexpected=0`.
+
 See `tests/wpt/meta/README.md` for the metadata file format.
 
 ## Troubleshooting

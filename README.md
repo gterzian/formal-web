@@ -33,7 +33,7 @@ The project ships four pi coding-agent extensions for repository development:
 
 - [**`pi-share-hf`**](.pi/extensions/pi-share-hf/README.md) — Archives pi coding sessions to `.pi/collected-sessions/` on shutdown. Includes a `collect_session` tool for mid-task checkpoints.
 - [**`browser`**](.pi/extensions/browser/README.md) — Wraps formal-web's CDP server into agent-callable tools (`browser_navigate`, `browser_click`, `browser_screenshot`, etc.) for live interactive debugging.
-- [**`web_standards`**](.pi/extensions/web_standards/README.md) — Lazily loads and caches web standards documents (WHATWG, W3C, etc.) and provides four agent-callable tools (`spec_select`, `spec_section`, `spec_algorithm`, `spec_html`) for reading spec content interactively during development.
+- [**`web_standards`**](.pi/extensions/web_standards/README.md) — Lazily loads and caches web standards documents (WHATWG, W3C, etc.) and provides agent-callable tools (`spec_lookup`, `spec_select`, `spec_html`) for reading spec content interactively during development.
 
 ## Pi session archiving
 

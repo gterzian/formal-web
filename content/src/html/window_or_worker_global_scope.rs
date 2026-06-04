@@ -3,9 +3,23 @@ use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue};
 use crate::html::{GlobalScope, TimerHandler, Window};
 use crate::webidl::Callback;
 
+use crate::html::safe_passing_of_structured_data::{
+    self, StructuredCloneOptions,
+};
+
 /// <https://html.spec.whatwg.org/#windoworworkerglobalscope>
 pub(crate) trait WindowOrWorkerGlobalScope {
     fn global_scope(&self) -> &GlobalScope;
+
+    /// <https://html.spec.whatwg.org/#dom-structuredclone>
+    fn structured_clone(
+        &self,
+        value: JsValue,
+        options: Option<StructuredCloneOptions>,
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
+        safe_passing_of_structured_data::structured_clone(value, options, context)
+    }
 
     /// <https://html.spec.whatwg.org/#dom-settimeout>
     fn set_timeout(

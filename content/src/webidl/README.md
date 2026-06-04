@@ -7,4 +7,4 @@
 - Keep the context-backed adapters for those hooks here so DOM, HTML, and Streams code can delegate instead of reimplementing callback glue locally.
 - Promise helpers here should follow the Web IDL promise algorithms, including `#js-promise-manipulation`, `#a-promise-resolved-with`, `#a-promise-rejected-with`, and `#js-to-promise`.
 - DOM event dispatch and other callback sites should call into this layer instead of calling Boa directly.
-- Use the `web_standards` extension (`spec_section`, `spec_algorithm`) with `https://webidl.spec.whatwg.org/` to read the Web IDL spec.
+- Use the `web_standards` extension (`spec_lookup`) with `https://webidl.spec.whatwg.org/` to read the Web IDL spec.

@@ -6,7 +6,76 @@
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
 - Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns or `debug_assert!` plus safe early returns over sentinel ids.
 - Trigger parser-discovered iframe work from document-load parsing completion.
-- Use the `web_standards` extension (`spec_section`, `spec_algorithm`) with `https://html.spec.whatwg.org/` to read the HTML spec.
+- Use the `web_standards` extension (`spec_lookup`) with `https://html.spec.whatwg.org/` to read the HTML spec.
+
+## Structured clone (`safe_passing_of_structured_data.rs`)
+
+### String round-tripping — use `Vec<u16>`, never `to_std_string_escaped()`
+
+Boa's `JsString::to_std_string_escaped()` is a **display-only** method that
+replaces unpaired surrogates with literal `\uXXXX` escape sequences. Using it
+for serialization corrupts strings like lone surrogates (`\uD800`, `\uDC00`).
+
+**Correct serialization:**
+```rust
+let utf16_units: Vec<u16> = js_string.as_str().to_vec();  // serializable
+```
+
+**Correct deserialization:**
+```rust
+let js_string = JsString::from(&utf16_units[..]);
+```
+
+### RegExp source — `[[OriginalSource]]` vs the escaped getter
+
+The `source` accessor on RegExp applies `EscapeRegExpPattern` (spec 22.2.3.2.5),
+which escapes `/`, `\n`, `\r`, `\u2028`, and `\u2029`. Passing the escaped form
+back to the RegExp constructor produces a different pattern. Always store the
+raw `[[OriginalSource]]`. Since Boa's accessor is `pub(crate)`, reverse the
+escaping with `unescape_regexp_source()`.
+
+### Error "message" — `[[GetOwnProperty]]`, not `[[Get]]`
+
+The spec step for Error serialization (step 17.4) uses `[[GetOwnProperty]]` for
+the "message" property — this checks only own data descriptors, ignores the
+prototype chain, and does not invoke accessors. Using `object.get("message")`
+(which is `[[Get]]`) is wrong. Use the property map directly:
+```rust
+let desc = object.borrow().properties().get(&PropertyKey::from(js_string!("message")));
+let message = match desc {
+    Some(d) if d.is_data_descriptor() => {
+        d.value().map(|v| v.to_string(context).map(|s| s.to_std_string_escaped())).transpose()?
+    }
+    _ => None,
+};
+```
+
+### EnumerableOwnProperties — filter by enumerability
+
+The spec uses `EnumerableOwnProperties(value, "key")`, which returns only
+enumerable own property keys. `own_property_keys()` returns ALL own keys
+(including non-enumerable ones like `length` on arrays). Always check
+enumerability:
+```rust
+let desc = object.borrow().properties().get(&key);
+let enumerable = desc.as_ref().and_then(|d| d.enumerable()).unwrap_or(false);
+```
+
+### Wrapper objects — Boolean/Number/String/BigInt
+
+When serializing, check for `[[BooleanData]]` / `[[NumberData]]` / etc.
+internal slots (steps 7–10). When deserializing, create wrapper *objects*
+with the correct prototype (steps 6–9), not primitive values:
+```rust
+let prototype = context.intrinsics().constructors().boolean().prototype();
+let bool_obj = JsObject::from_proto_and_data(prototype, *b).upcast();
+```
+
+### Error cause — serialize custom data
+
+The spec says "User agents should attach a serialized representation of any
+interesting accompanying data." The `cause` property (ES2022) was added as
+an optional `Box<SerializedRecord>` to the `Error` variant.
 
 ## Content / User-Agent split for navigation algorithms
 

@@ -60,8 +60,7 @@ Plans and temporary task notes go under `scratchpad/`.
 The `.pi/extensions/pi-share-hf/` extension archives pi sessions to `.pi/collected-sessions/`.
 
 - **Auto-collection on shutdown:** When pi exits, the session is automatically saved to a unique file in `.pi/collected-sessions/`. No manual action is needed.
-- **`collect_session` tool** — Available for manual collection mid-task, when you want to checkpoint before a risky operation or before a `/new` session. Does not upload or share session data.
-- **`/collect-session` command** — Interactive equivalent of the above.
+- **`/collect-session` command** — Interactive command to archive the current session at any point.
 - **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
 
 ## pi-browser — CDP Browser Tools
@@ -97,8 +96,8 @@ for detailed documentation.
 The `.pi/extensions/web_standards/` extension lazily loads and caches web standards documents (WHATWG, W3C, etc.) on first use. Provides four tools for the agent to read specs interactively:
 
 - **`spec_select`** — Run CSS selectors against a spec document to discover headings (`h2[id]`), definitions (`dfn[id]`), algorithm boxes (`div[data-algorithm]`), etc.
-- **`spec_section`** — Read a full section by anchor ID. Walks flat siblings from heading to next same-level heading. Detects algorithm boxes and renders their top-level step structure.
-- **`spec_algorithm`** — Read numbered steps from an algorithm box. The HTML uses nested `<ol>` without step numbers; this tool assigns numbers recursively (1, 1.1, 1.1.1, …). Supports `start`/`limit` pagination for long algorithms.
+- **`spec_lookup`** — Look up a named anchor in a spec by its `id` attribute. Returns the element's tag, rendered content, and walks forward siblings to show algorithm boxes (with full recursive step numbering) until the next heading or named definition. This is the primary tool for reading spec content.
+- **`spec_select`** — Run CSS selectors against a spec document to discover headings (`h2[id]`), definitions (`dfn[id]`), algorithm boxes (`div[data-algorithm]`), etc.
 - **`spec_html`** — Return inner HTML of the first matching element. Best for self-contained blocks: tables, definition lists (`dl`), example blocks.
 - **`/spec-loaded` command** — Lists all spec URLs currently cached in memory.
 
@@ -118,7 +117,7 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Describe current architecture and behavior; keep task history out of repository docs.
 - Keep README guidance general and durable; one-off implementation details belong in source or tests, not in repository docs.
 - Use neutral, factual language.
-- Use the `web_standards` extension tools (`spec_section`, `spec_algorithm`, `spec_select`, `spec_html`) to read spec content instead of reading local copies or fetching directly.
+- Use the `web_standards` extension tools (`spec_lookup`, `spec_select`, `spec_html`) to read spec content instead of reading local copies or fetching directly.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
 - The words "runtime" and "sidecar" are forbidden in this repo.
 - **Method doc comments:** A method that implements a spec algorithm should have only the spec link as its doc comment. All explanation, step references, and context belong in `//` comments inside the method body. A `// Note:` below the link is acceptable only for brief continuations of the algorithm that cannot be expressed as body comments. Why? Because the entire thing is a runtime, one that implements the Web, and so neither concept should ever be used to model or document some component of what is basically one big integrated system. No component is more or less of a "sidecar" than any other — each plays a specific role. Instead of reaching for these forbidden words, think about what the thing you want to name does, what its role in the system is, and come up with something descriptive.
@@ -167,4 +166,4 @@ At the end of each task, run the following steps **in order**:
 
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
 
-6. DO NOT collect pi sessions; those are collected automatically on shutdown.
+6. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
