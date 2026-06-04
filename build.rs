@@ -3,8 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const SIDECAR_TARGET_DIR_NAME: &str = "sidecar-prebuild";
-const SIDECAR_BINARIES: [(&str, &str); 2] =
+const PREBUILD_TARGET_DIR_NAME: &str = "sidecar-prebuild";
+const PREBUILD_BINARIES: [(&str, &str); 2] =
     [("content", "formal-web-content"), ("net", "formal-web-net")];
 
 fn main() {
@@ -28,10 +28,10 @@ fn main() {
         println!("cargo:rerun-if-changed={path}");
     }
 
-    prebuild_sidecars().unwrap_or_else(|error| panic!("failed to prebuild sidecars: {error}"));
+    prebuild_binaries().unwrap_or_else(|error| panic!("failed to prebuild binaries: {error}"));
 }
 
-fn prebuild_sidecars() -> Result<(), String> {
+fn prebuild_binaries() -> Result<(), String> {
     let manifest_dir = PathBuf::from(
         env::var("CARGO_MANIFEST_DIR")
             .map_err(|error| format!("missing CARGO_MANIFEST_DIR for build script: {error}"))?,
@@ -41,28 +41,25 @@ fn prebuild_sidecars() -> Result<(), String> {
     let target_root = env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join("target"));
-    let sidecar_target_root = target_root.join(SIDECAR_TARGET_DIR_NAME);
+    let prebuild_target_root = target_root.join(PREBUILD_TARGET_DIR_NAME);
 
-    // Remove stale sidecar-prebuild artifacts that can cause dependency
-    // resolution conflicts (e.g. multiple versions of boa_gc) when cargo
-    // encounters cached build data from a previous run with a different
-    // feature-set or profile.
-    if sidecar_target_root.exists()
-        && let Err(error) = fs::remove_dir_all(&sidecar_target_root)
-    {
-        eprintln!(
-            "[build.rs] warning: failed to remove stale {}: {error}",
-            sidecar_target_root.display()
-        );
-    }
+    // Do NOT wipe the prebuild target directory. Cargo manages its own
+    // cache invalidation and places a `.cargo-lock` file in the target
+    // directory for mutual exclusion. If two concurrent builds share the
+    // same target dir and one removes it, the other sees "No such file or
+    // directory" errors for intermediate compilation artifacts.
+    // Cargo will automatically rebuild stale artifacts when features or
+    // profiles change. If a genuine resolution conflict arises, clean the
+    // two packages with `cargo clean -p content -p net` inside this target
+    // dir instead of a full wipe.
 
     let mut command = Command::new("cargo");
     command.arg("build");
     if profile == "release" {
         command.arg("--release");
     }
-    command.arg("--target-dir").arg(&sidecar_target_root);
-    for (package_name, binary_name) in SIDECAR_BINARIES {
+    command.arg("--target-dir").arg(&prebuild_target_root);
+    for (package_name, binary_name) in PREBUILD_BINARIES {
         command
             .arg("-p")
             .arg(package_name)
@@ -72,15 +69,15 @@ fn prebuild_sidecars() -> Result<(), String> {
     command.current_dir(&manifest_dir);
 
     let status = command.status().map_err(|error| {
-        format!("failed to start cargo build for sidecar binaries in {profile} profile: {error}")
+        format!("failed to start cargo build for prebuild binaries in {profile} profile: {error}")
     })?;
     if !status.success() {
         return Err(format!(
-            "cargo build for sidecar binaries in {profile} profile exited with status {status}"
+            "cargo build for prebuild binaries in {profile} profile exited with status {status}"
         ));
     }
 
-    let sidecar_profile_dir = sidecar_target_root.join(&profile);
+    let prebuild_profile_dir = prebuild_target_root.join(&profile);
     let target_profile_dir = target_root.join(&profile);
     fs::create_dir_all(&target_profile_dir).map_err(|error| {
         format!(
@@ -89,14 +86,14 @@ fn prebuild_sidecars() -> Result<(), String> {
         )
     })?;
 
-    for (_package_name, binary_name) in SIDECAR_BINARIES {
-        copy_sidecar_binary(&sidecar_profile_dir, &target_profile_dir, binary_name)?;
+    for (_package_name, binary_name) in PREBUILD_BINARIES {
+        copy_prebuilt_binary(&prebuild_profile_dir, &target_profile_dir, binary_name)?;
     }
 
     Ok(())
 }
 
-fn copy_sidecar_binary(
+fn copy_prebuilt_binary(
     source_profile_dir: &Path,
     target_profile_dir: &Path,
     binary_name: &str,
@@ -105,7 +102,7 @@ fn copy_sidecar_binary(
     let source_path = source_profile_dir.join(&executable_name);
     if !source_path.is_file() {
         return Err(format!(
-            "expected sidecar executable {} at {}",
+            "expected prebuilt executable {} at {}",
             executable_name,
             source_path.display()
         ));
@@ -114,7 +111,7 @@ fn copy_sidecar_binary(
     let target_path = target_profile_dir.join(&executable_name);
     fs::copy(&source_path, &target_path).map_err(|error| {
         format!(
-            "failed to copy sidecar executable from {} to {}: {error}",
+            "failed to copy prebuilt executable from {} to {}: {error}",
             source_path.display(),
             target_path.display()
         )
@@ -123,14 +120,14 @@ fn copy_sidecar_binary(
     let permissions = fs::metadata(&source_path)
         .map_err(|error| {
             format!(
-                "failed to read sidecar executable metadata for {}: {error}",
+                "failed to read prebuilt executable metadata for {}: {error}",
                 source_path.display()
             )
         })?
         .permissions();
     fs::set_permissions(&target_path, permissions).map_err(|error| {
         format!(
-            "failed to preserve sidecar executable permissions on {}: {error}",
+            "failed to preserve prebuilt executable permissions on {}: {error}",
             target_path.display()
         )
     })?;

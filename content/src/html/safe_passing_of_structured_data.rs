@@ -8,6 +8,13 @@
 //! so they can cross IPC boundaries. The Boa engine integration is confined to the
 //! `structured_serialize_internal` and `structured_deserialize` functions.
 
+// The traits, variants, and fields below that trigger dead_code warnings
+// are intentionally defined as the spec-required extension points for
+// future [Serializable]/[Transferable] platform objects and resizable
+// ArrayBuffer support. All of them will be used once those features are
+// wired up.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use boa_engine::{
@@ -743,7 +750,7 @@ fn structured_deserialize(
         }
         // Step 16: ArrayBufferView.
         SerializedRecord::ArrayBufferView {
-            constructor, buffer_serialized, byte_length, byte_offset, array_length,
+            constructor, buffer_serialized, byte_length, byte_offset, array_length: _,
         } => {
             let deserialized_buffer =
                 structured_deserialize(buffer_serialized, _target_realm, memory, context)?;
