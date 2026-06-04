@@ -13,7 +13,7 @@ use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
 use crate::html::{
-    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
+    CreateDocumentCallback, EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
@@ -35,7 +35,7 @@ use ipc_messages::content::{
     BeforeUnloadCheckId, Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
     ElementClickResult, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent,
-    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
+    EventLoopId, FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FontTransportSender, FrameCompositionMetadata, FrameEmbedSite, FrameId, LoadedDocumentResponse,
     NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult,
     TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
@@ -335,6 +335,7 @@ struct DocumentViewportState {
 
 pub(crate) struct ContentProcess {
     event_sender: IpcSender<ContentEvent>,
+    event_loop_id: EventLoopId,
     local_state: LocalContentStateRef,
     default_viewport: Option<ViewportSnapshot>,
     traversable_viewports: HashMap<NavigableId, DocumentViewportState>,
@@ -346,9 +347,10 @@ pub(crate) struct ContentProcess {
 }
 
 impl ContentProcess {
-    fn new(event_sender: IpcSender<ContentEvent>) -> Self {
+    fn new(event_sender: IpcSender<ContentEvent>, event_loop_id: EventLoopId) -> Self {
         Self {
             event_sender,
+            event_loop_id,
             local_state: Arc::new(Mutex::new(LocalContentState {
                 pending_handlers: HashMap::new(),
             })),
@@ -750,6 +752,11 @@ impl ContentProcess {
         );
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
+
+        // Install the create-document callback and event loop id on the GlobalScope
+        // so that `window.open` can create new documents locally.
+        self.install_create_document_callback(document_id)?;
+
         run_dom_post_connection_steps_for_document(self, document_id)?;
         let content_document = self
             .documents
@@ -833,6 +840,10 @@ impl ContentProcess {
             },
         );
         attach_same_origin_child_document_for_traversable(self, traversable_id)?;
+
+        // Store this ContentProcess as the host on the new document's GlobalScope.
+        let _ = self.install_create_document_callback(document_id);
+
         run_dom_post_connection_steps_for_document(self, document_id)?;
 
         let deferred_fetches = self
@@ -1389,10 +1400,59 @@ impl ContentProcess {
             .map_err(|error| format!("failed to send content shutdown completion: {error}"))
     }
 
+    /// Install the create-document callback and event loop id on a document's `GlobalScope`.
+    /// This enables `window.open` to create new top-level traversable documents locally.
+    fn install_create_document_callback(&self, document_id: DocumentId) -> Result<(), String> {
+        let Some(content_document) = self.documents.get(&document_id) else {
+            return Err(format!("unknown document id: {document_id}"));
+        };
+
+        let event_sender = self.event_sender.clone();
+        let local_state = Arc::clone(&self.local_state);
+
+        let cb: CreateDocumentCallback = Box::new(move |new_traversable_id, new_document_id, _new_parent_id, _new_top_level_id| {
+            let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
+                viewport: None,
+                base_url: None,
+                net_provider: Some(Arc::new(ContentNetProvider {
+                    event_sender: event_sender.clone(),
+                    local_state: Arc::clone(&local_state),
+                    content_document_id: new_document_id,
+                })),
+                shell_provider: Some(Arc::new(ContentShellProvider::new(event_sender.clone()))),
+                html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
+                ..DocumentConfig::default()
+            })));
+            let settings = EnvironmentSettingsObject::new(
+                Rc::clone(&document),
+                Url::parse("about:blank").map_err(|e| e.to_string())?,
+                Some(event_sender.clone()),
+                Some(new_traversable_id),
+                Some(new_document_id),
+            )?;
+            parse_html_into_document(&mut document.borrow_mut(), EMPTY_HTML_DOCUMENT);
+            Ok((settings.context.global_object(), document))
+        });
+
+        crate::boa::platform_objects::with_global_scope(
+            &content_document.settings.context,
+            |global_scope| {
+                global_scope.set_create_document_callback(cb);
+                global_scope.set_event_loop_id(self.event_loop_id);
+                Ok(())
+            },
+        )
+        .map_err(|error| error.to_string())
+    }
+
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     /// Note: The Rust event-loop worker emits these process effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         match command {
+            Command::SetEventLoopId(event_loop_id) => {
+                self.event_loop_id = event_loop_id;
+                Ok(true)
+            }
             Command::SetTraceSender(trace_sender) => {
                 self.set_trace_sender(trace_sender);
                 Ok(true)
@@ -1546,14 +1606,18 @@ pub fn run_content_process(token: String) -> Result<(), String> {
     let (event_sender, event_receiver) =
         ipc::channel::<ContentEvent>().map_err(|error| error.to_string())?;
     let bootstrap = IpcSender::<Bootstrap>::connect(token).map_err(|error| error.to_string())?;
+    // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
+    // Use a placeholder until the real id arrives.
+    let placeholder_id = EventLoopId::from_u128(0);
     bootstrap
         .send(Bootstrap {
             command_sender,
             event_receiver,
+            event_loop_id: placeholder_id,
         })
         .map_err(|error| error.to_string())?;
 
-    let mut process = ContentProcess::new(event_sender);
+    let mut process = ContentProcess::new(event_sender, placeholder_id);
     loop {
         let command = match command_receiver.recv() {
             Ok(command) => command,

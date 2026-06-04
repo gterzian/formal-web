@@ -135,6 +135,7 @@ impl HTMLAnchorElement {
             noopener,
             None,
             None,
+            None,
         )
         .map_err(|error| {
             JsNativeError::typ()

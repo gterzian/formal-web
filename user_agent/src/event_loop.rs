@@ -272,6 +272,10 @@ impl EventLoopWorker {
             pending_task_commands: VecDeque::new(),
         };
 
+        // Send the event loop id to the content process so it can include it in
+        // `new_traversable_info` for window.open.
+        worker.send_command_inner(&ContentCommand::SetEventLoopId(event_loop_id))?;
+
         worker.send_command_inner(&ContentCommand::SetTraceSender(trace_sender))?;
 
         if let Some(snapshot) = worker.host.window_viewport_snapshot() {

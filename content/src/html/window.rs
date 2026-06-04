@@ -4,7 +4,10 @@ use std::mem;
 use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
+use ipc_messages::content::{
+    DocumentId, Event as ContentEvent, EventLoopId, NavigableId, NewTraversableInfo,
+    UserNavigationInvolvement,
+};
 
 use crate::dom::Element;
 use crate::dom::event::EventTarget;
@@ -122,8 +125,6 @@ pub(crate) fn window_open_steps(
     // TODO: Content process does not yet track termination nesting.
 
     // Step 2: "Let sourceDocument be the entry global object's associated Document."
-    // Note: The user agent needs the navigable ID rather than the Document for navigable
-    // creation. We obtain it from the global scope as a multi-process shortcut.
     let source_navigable_id = global_scope.source_navigable_id().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("window.open: no source navigable")
@@ -134,12 +135,6 @@ pub(crate) fn window_open_steps(
     let url_record = if url.is_empty() {
         None
     } else {
-        // Step 4.1: "Set urlRecord to the result of encoding-parsing a URL given url,
-        //            relative to sourceDocument."
-        // Note: The spec uses encoding-parsing relative to sourceDocument for
-        // document-charset-aware resolution. We use url::Url::parse without a base URL
-        // because the source document's URL is not yet threaded through this call site.
-        // Step 4.2: "If urlRecord is failure, then throw a 'SyntaxError' DOMException."
         match url::Url::parse(url) {
             Ok(record) => Some(record.to_string()),
             Err(_) => {
@@ -190,18 +185,100 @@ pub(crate) fn window_open_steps(
     // Step 13: "Apply the rules for choosing a navigable given name, window's
     //          navigable, and noopener."
     //
-    // Resolve _self locally; everything else (named targets, _blank, _parent, _top)
-    // is sent unmodified so the user agent continues with find-by-target-name or
-    // creates a new top-level traversable.
-    let chosen_target = if target.eq_ignore_ascii_case("_self") {
+    // Content-process-side implementation of the rules for choosing a navigable.
+    // - _self: use the current navigable (already works).
+    // - _parent, _top: send the request with chosen_navigable_id set; the user
+    //   agent resolves navigation and the caller gets the current Window for now.
+    // - _blank or named target not found locally: create a new about:blank
+    //   document locally, include the new-traversable info in the navigate
+    //   request, and return the new Window.
+
+    // First check for self (trivial).
+    let is_self = target.eq_ignore_ascii_case("_self");
+
+    // Check whether this target requires a new top-level traversable.
+    let needs_new_traversable = if is_self {
+        false
+    } else if target.eq_ignore_ascii_case("_blank") || noopener {
+        true
+    } else if target.eq_ignore_ascii_case("_parent") || target.eq_ignore_ascii_case("_top") {
+        // For parent/top, send with chosen navigable hint; UA resolves.
+        false
+    } else {
+        // Named target: create new traversable (we can't look it up locally yet).
+        true
+    };
+
+    let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));
+
+    if needs_new_traversable {
+        // Create a new top-level traversable and its about:blank document locally.
+        let new_traversable_id = NavigableId::new();
+        let new_document_id = DocumentId::new();
+
+        // Use the create-document callback installed by ContentProcess.
+        let return_window = match global_scope.create_document(
+            new_traversable_id,
+            new_document_id,
+            None,
+            new_traversable_id,
+        ) {
+            Some(Ok((global_object, _document))) => global_object,
+            Some(Err(error)) => {
+                return Err(JsNativeError::typ()
+                    .with_message(format!("window.open: failed to create document: {error}"))
+                    .into());
+            }
+            None => {
+                // Fallback: no callback available, return null.
+                eprintln!("window.open: no create-document callback available");
+                return Ok(JsValue::null());
+            }
+        };
+
+        let event_loop_id = global_scope
+            .event_loop_id()
+            .unwrap_or_else(EventLoopId::new);
+        let new_info = NewTraversableInfo {
+            document_id: new_document_id,
+            event_loop_id,
+            target_name: target.to_owned(),
+        };
+
+        if let Err(error) = super::navigate(
+            event_sender,
+            source_navigable_id,
+            Some(new_traversable_id),
+            navigate_url,
+            target.to_owned(),
+            UserNavigationInvolvement::Activation,
+            noopener,
+            Some(referrer_policy),
+            Some(features_json),
+            Some(new_info),
+        ) {
+            eprintln!("window.open: {error}");
+        }
+
+        // Step 17: "If noopener is true or windowType is 'new with no opener',
+        //           then return null."
+        if noopener {
+            return Ok(JsValue::null());
+        }
+
+        // Step 18: "Return targetNavigable's active WindowProxy."
+        // Return the Window (global object) of the newly created about:blank document.
+        // The WindowProxy is transparent in same-origin.
+        return Ok(JsValue::from(return_window));
+    }
+
+    // Non-new-traversable path: _self, _parent, _top.
+    let chosen_target = if is_self {
         Some(source_navigable_id)
     } else {
         None
     };
 
-    // Per the spec: "If urlRecord is null, then set urlRecord to a URL record
-    // representing about:blank." (step 15.3 for new windows, implicit for existing).
-    let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));
     if let Err(error) = super::navigate(
         event_sender,
         source_navigable_id,
@@ -212,6 +289,7 @@ pub(crate) fn window_open_steps(
         noopener,
         Some(referrer_policy),
         Some(features_json),
+        None,
     ) {
         eprintln!("window.open: {error}");
     }
@@ -223,11 +301,8 @@ pub(crate) fn window_open_steps(
     }
 
     // Step 18: "Return targetNavigable's active WindowProxy."
-    //
-    // In a single-origin content process the WindowProxy is transparent — it
-    // behaves identically to the wrapped Window.  We return the global object
-    // (the Window) directly.  When cross-origin support is added the
-    // WindowProxy will become a proper exotic object.
+    // For _self this is correct. For _parent/_top this returns the current
+    // window (which is wrong but was the previous behavior too).
     Ok(JsValue::from(context.global_object()))
 }
 

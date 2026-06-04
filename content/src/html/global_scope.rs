@@ -9,11 +9,23 @@ use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey,
-    WindowTimerRequest,
+    DocumentId, Event as ContentEvent, EventLoopId, NavigableId, WindowTimerClearRequest,
+    WindowTimerKey, WindowTimerRequest,
 };
 
 use crate::webidl::Callback;
+
+/// Handle to the `ContentProcess` that owns this document's event loop.
+/// Stored in the `GlobalScope` with `#[unsafe_ignore_trace]` since `ContentProcess`
+/// does not hold any GC-traced values.
+/// Callback type for creating a new empty document locally in the content process.
+/// Used by `window.open` when a new top-level traversable needs to be created.
+pub(crate) type CreateDocumentCallback = Box<dyn Fn(
+    NavigableId,       // traversable_id
+    DocumentId,         // document_id
+    Option<NavigableId>, // parent_traversable_id
+    NavigableId,        // top_level_traversable_id
+) -> Result<(JsObject, Rc<RefCell<BaseDocument>>), String>>;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -147,6 +159,15 @@ pub struct GlobalScope {
     /// Sender for content-to-user-agent IPC events (e.g. navigation requests).
     #[unsafe_ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
+
+    /// Callback to create a new empty document in this content process.
+    /// Installed by `ContentProcess` during document initialization.
+    #[unsafe_ignore_trace]
+    create_document_cb: RefCell<Option<CreateDocumentCallback>>,
+
+    /// The `EventLoopId` of the content process that owns this scope.
+    #[unsafe_ignore_trace]
+    own_event_loop_id: Cell<Option<EventLoopId>>,
 }
 
 impl GlobalScope {
@@ -165,6 +186,8 @@ impl GlobalScope {
             timer_host: RefCell::new(None),
             source_navigable_id: Cell::new(None),
             event_sender: RefCell::new(None),
+            create_document_cb: RefCell::new(None),
+            own_event_loop_id: Cell::new(None),
         }
     }
 
@@ -497,6 +520,29 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#animationframeprovider-cancelanimationframe>
+    pub(crate) fn set_create_document_callback(&self, cb: CreateDocumentCallback) {
+        self.create_document_cb.borrow_mut().replace(cb);
+    }
+
+    pub(crate) fn create_document(
+        &self,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
+        parent_traversable_id: Option<NavigableId>,
+        top_level_traversable_id: NavigableId,
+    ) -> Option<Result<(JsObject, Rc<RefCell<BaseDocument>>), String>> {
+        let cb = self.create_document_cb.borrow();
+        cb.as_ref().map(|f| f(traversable_id, document_id, parent_traversable_id, top_level_traversable_id))
+    }
+
+    pub(crate) fn set_event_loop_id(&self, id: EventLoopId) {
+        self.own_event_loop_id.set(Some(id));
+    }
+
+    pub(crate) fn event_loop_id(&self) -> Option<EventLoopId> {
+        self.own_event_loop_id.get()
+    }
+
     pub(crate) fn cancel_animation_frame(&self, handle: u32) {
         self.animation_frame_callbacks
             .borrow_mut()

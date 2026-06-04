@@ -14,11 +14,12 @@ pub(crate) mod windowproxy;
 
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    Event as ContentEvent, NavigableId, NavigateRequest, NavigationId, UserNavigationInvolvement,
+    Event as ContentEvent, NavigableId, NavigateRequest, NavigationId, NewTraversableInfo,
+    UserNavigationInvolvement,
 };
 
 pub use environment_settings_object::EnvironmentSettingsObject;
-pub(crate) use global_scope::TimerHandler;
+pub(crate) use global_scope::{CreateDocumentCallback, TimerHandler};
 pub use global_scope::{GlobalScope, GlobalScopeKind};
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
@@ -56,6 +57,7 @@ pub(crate) fn navigate(
     noopener: bool,
     referrer_policy: Option<String>,
     features_json: Option<String>,
+    new_traversable_info: Option<NewTraversableInfo>,
 ) -> Result<(), String> {
     let request = NavigateRequest {
         navigation_id: Some(NavigationId::new()),
@@ -67,6 +69,7 @@ pub(crate) fn navigate(
         noopener,
         referrer_policy,
         features_json,
+        new_traversable_info,
     };
     event_sender
         .send(ContentEvent::NavigationRequested(request))
