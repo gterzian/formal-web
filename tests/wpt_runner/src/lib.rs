@@ -1743,16 +1743,8 @@ fn print_test_result(result: &ComparedTestResult) {
 
 fn print_summary(summary: &RunSummary) {
     println!(
-        "Summary: total={} executed={} skipped={} unexpected={} pass={} fail={} timeout={} error={} crash={}",
-        summary.total,
-        summary.executed,
-        summary.skipped,
-        summary.unexpected,
-        summary.passed,
-        summary.failed,
-        summary.timed_out,
-        summary.errors,
-        summary.crashes
+        "Summary: executed={} unexpected={}",
+        summary.executed, summary.unexpected
     );
 }
 
