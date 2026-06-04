@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 
-use boa_engine::{JsData, JsNativeError, JsResult, JsValue};
+use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
@@ -51,11 +51,12 @@ impl Window {
         url: &str,
         target: &str,
         features: &str,
+        context: &mut Context,
     ) -> JsResult<JsValue> {
         let Some(event_sender) = self.global_scope.event_sender() else {
             return Ok(JsValue::null());
         };
-        window_open_steps(url, target, features, &self.global_scope, &event_sender)
+        window_open_steps(context, url, target, features, &self.global_scope, &event_sender)
     }
 }
 
@@ -110,6 +111,7 @@ pub(crate) fn window_computed_style_properties_for_element(
 
 /// <https://html.spec.whatwg.org/#window-open-steps>
 pub(crate) fn window_open_steps(
+    context: &mut Context,
     url: &str,
     target: &str,
     features: &str,
@@ -216,9 +218,17 @@ pub(crate) fn window_open_steps(
 
     // Step 17: "If noopener is true or windowType is 'new with no opener',
     //           then return null."
+    if noopener {
+        return Ok(JsValue::null());
+    }
+
     // Step 18: "Return targetNavigable's active WindowProxy."
-    // For now, return null as a WindowProxy placeholder.
-    Ok(JsValue::null())
+    //
+    // In a single-origin content process the WindowProxy is transparent — it
+    // behaves identically to the wrapped Window.  We return the global object
+    // (the Window) directly.  When cross-origin support is added the
+    // WindowProxy will become a proper exotic object.
+    Ok(JsValue::from(context.global_object()))
 }
 
 /// <https://html.spec.whatwg.org/#get-noopener-for-window-open>

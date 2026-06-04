@@ -10,6 +10,7 @@ mod location;
 pub(crate) mod safe_passing_of_structured_data;
 mod window;
 mod window_or_worker_global_scope;
+pub(crate) mod windowproxy;
 
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{

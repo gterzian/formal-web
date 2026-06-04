@@ -161,7 +161,7 @@ fn open_method(
 
     let window_object = current_window_object(this, context);
     let window = downcast_window(&window_object)?;
-    window.open(&url, &target, &features)
+    window.open(&url, &target, &features, context)
 }
 
 fn request_animation_frame_method(
