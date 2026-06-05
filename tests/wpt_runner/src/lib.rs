@@ -2068,16 +2068,14 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
         RUNNER_BINARY_NAME,
     )];
 
-    // Sidecar binaries (embedder, content, net) are prebuilt by the workspace
-    // build.rs before this function runs.  Only rebuild them if they are missing
-    // from the output directory — this avoids a redundant full build of all
-    // sidecar dependencies (boa_runtime, etc.) into a second target directory,
-    // which was a source of stale-artifact build failures.
-    let sidecar_builds = [
-        (repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME),
-        (repo_root.join("content/Cargo.toml"), "formal-web-content"),
-        (repo_root.join("net/Cargo.toml"), "formal-web-net"),
-    ];
+    // The embedder binary must always be freshly built because build.rs only
+    // prebuilds content and net (not the embedder).  A stale embedder from a
+    // previous run causes the content process to fail at IPC bootstrap (the
+    // content binary itself is prebuilt by build.rs and checked below).
+    let embedder_builds = [(
+        repo_root.join("embedder/Cargo.toml"),
+        BROWSER_BINARY_NAME,
+    )];
 
     for (manifest_path, binary_name) in &runner_builds {
         let isolated_target_dir = prebuild_target_root.join(binary_name);
@@ -2089,6 +2087,27 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
             build_profile,
         )?;
     }
+
+    for (manifest_path, binary_name) in &embedder_builds {
+        let isolated_target_dir = prebuild_target_root.join(binary_name);
+        build_single_binary(
+            manifest_path,
+            binary_name,
+            &isolated_target_dir,
+            &target_profile_dir,
+            build_profile,
+        )?;
+    }
+
+    // Sidecar binaries (content, net) are prebuilt by the workspace
+    // build.rs before this function runs.  Only rebuild them if they are missing
+    // from the output directory — this avoids a redundant full build of all
+    // sidecar dependencies (boa_runtime, etc.) into a second target directory,
+    // which was a source of stale-artifact build failures.
+    let sidecar_builds = [
+        (repo_root.join("content/Cargo.toml"), "formal-web-content"),
+        (repo_root.join("net/Cargo.toml"), "formal-web-net"),
+    ];
 
     for (manifest_path, binary_name) in &sidecar_builds {
         let target_path =
