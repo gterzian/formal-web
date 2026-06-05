@@ -712,7 +712,7 @@ impl BaseDocument {
             .extend_from_slice(&resources_to_deallocate);
         self.custom_widget_nodes.remove(&node_id);
     }
-
+    
     pub fn root_node(&self) -> &Node {
         &self.nodes[0]
     }

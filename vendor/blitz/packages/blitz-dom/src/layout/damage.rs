@@ -399,10 +399,8 @@ impl BaseDocument {
                 .data
                 .downcast_element()
                 .map(|element| {
-                    matches!(
-                        element.name.local.as_ref(),
-                        "img" | "canvas" | "iframe" | "frame"
-                    ) || (cfg!(feature = "svg") && element.name.local.as_ref() == "svg")
+                    matches!(element.name.local.as_ref(), "img" | "canvas" | "iframe" | "frame")
+                        || (cfg!(feature = "svg") && element.name.local.as_ref() == "svg")
                 })
                 .unwrap_or(false);
             node.display_constructed_as = style.clone_display();

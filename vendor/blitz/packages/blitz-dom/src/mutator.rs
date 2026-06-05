@@ -391,7 +391,7 @@ impl DocumentMutator<'_> {
     pub fn remove_custom_widget(&mut self, node_id: usize) {
         self.doc.remove_custom_widget(node_id)
     }
-
+    
     /// Remove the node from it's parent but don't drop it
     pub fn remove_node(&mut self, node_id: usize) {
         let node = &mut self.doc.nodes[node_id];
