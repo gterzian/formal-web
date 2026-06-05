@@ -113,12 +113,12 @@ Documents can be created either by the user agent (for startup, iframes, UA-orig
 
 Both paths converge to the same final state.
 
-## The rules for choosing a navigable (`choose_navigable`)
+## The rules for choosing a navigable (`the_rules_for_choosing_a_navigable`)
 
 Implements <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>.
 Split between content and user agent:
 
-### Content side (`html.rs:choose_navigable`)
+### Content side (`html.rs:the_rules_for_choosing_a_navigable`)
 | Step | What content does |
 |------|-------------------|
 | 1 | Let chosen = null |
@@ -128,7 +128,7 @@ Split between content and user agent:
 | 6 | Named target, not `_blank`, not noopener → cross-process lookup needed (NeedsUserAgentAction) |
 | 7 | Otherwise → new top-level traversable (NeedsUserAgentAction) |
 
-### User agent side (`user_agent.rs:choose_navigable`)
+### User agent side (`user_agent.rs:the_rules_for_choosing_a_navigable`)
 Continues when the content process returned `NeedsUserAgentAction`:
 | Step | What UA does |
 |------|-------------|
@@ -144,7 +144,7 @@ URL parsing, target normalization, feature tokenization, noopener/referrerPolicy
 computation. All local to the source document.
 
 ### Step 13 — apply the rules for choosing a navigable
-Content runs `choose_navigable` (local subset) to resolve `_self`, `_parent`,
+Content runs `the_rules_for_choosing_a_navigable` (local subset) to resolve `_self`, `_parent`,
 `_top`. For `_blank`, named targets, and noopener, it returns `NeedsUserAgentAction`.
 
 ### Step 14 — handle the chosen navigable
@@ -221,13 +221,23 @@ UA-side state. The opener is only used for:
 <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 
 `WindowProxy` is a Rust `JsData` struct wrapping a `JsObject` handle to the
-current Window. For same-origin access the proxy is transparent: `window.open()`
-returns the wrapped Window's JsObject directly.
+current Window.
 
 ### Current implementation
 
-The struct is constructed in `window_open_steps` but the returned JsObject is
-the wrapped Window (same-origin transparency). The struct exists for:
+In `window_open_steps`, a `WindowProxy` wrapping the target Window is
+constructed, then wrapped in a `JsObject` via `JsObject::from_proto_and_data`
+with the Window's prototype. This means:
+- The JavaScript-visible object IS a `WindowProxy` (correct per spec §7.2.1)
+- Same-origin property access falls through the prototype chain to
+  `Window.prototype`, which is functionally equivalent to returning the
+  Window directly (the proxy is transparent per spec §7.2.3 step 3:
+  "If IsPlatformObjectSameOrigin(W) is true, then return OrdinaryGet(W, P)")
+- On navigation, the `window` field on the `WindowProxy` Rust struct can be
+  swapped to point at the new Window without changing the JS-visible proxy
+  identity
+
+The struct exists for:
 - **Future cross-origin support:** Property filtering per HTML spec §7.2.3
   (CrossOriginProperties, CrossOriginGetOwnPropertyHelper, etc.)
 - **Future Window replacement on navigation:** When a cross-document navigation
@@ -243,11 +253,9 @@ The spec defines WindowProxy as an exotic object with overridden internal method
 `[[OwnPropertyKeys]]`). Implementing this requires Boa's `InternalObjectMethods`
 which is currently `pub(crate)` to `boa_engine`.
 
-For the same-origin case, returning the Window JsObject directly is functionally
-correct (the proxy is transparent per spec §7.2.3 step 3: "If
-IsPlatformObjectSameOrigin(W) is true, then return OrdinaryGet(W, P)" which
-delegates to the wrapped Window). Cross-origin filtering and Window replacement
-are deferred.
+For the same-origin case, the prototype-chain approach is functionally correct.
+Cross-origin filtering and custom internal methods are deferred until
+`InternalObjectMethods` is exposed publicly.
 
 See `content/src/webidl/README.md` for the exotic-object pattern and the
 `pub(crate)` visibility limitation.
@@ -257,8 +265,8 @@ See `content/src/webidl/README.md` for the exotic-object pattern and the
 - `content/src/webidl/README.md` — Boa platform object integration, exotic object pattern
 - `content/src/boa/README.md` — Boa Context ownership, bindings
 - `content/README.md` — Content-crate overview
-- `user_agent/src/user_agent.rs` — `create_new_top_level_traversable_from_content`, `create_new_top_level_traversable`, `choose_navigable` (UA side), `setup_opener_for_window_open`
+- `user_agent/src/user_agent.rs` — `create_new_top_level_traversable_from_content`, `create_new_top_level_traversable`, `the_rules_for_choosing_a_navigable` (UA side), `setup_opener_for_window_open`
 - `ipc_messages/src/content.rs` — `NewTraversableInfo`, `CreateEmptyDocument`, `NavigateRequest`
-- `content/src/html.rs` — `choose_navigable` (content side), `navigate`, `ChosenNavigable`
+- `content/src/html.rs` — `the_rules_for_choosing_a_navigable` (content side), `navigate`, `ChosenNavigable`
 - `content/src/html/window.rs` — `Window::open`, `window_open_steps`
 - `content/src/html/global_scope.rs` — `CreateDocumentCallback`, `set_navigable_hierarchy`

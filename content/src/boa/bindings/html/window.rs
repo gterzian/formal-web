@@ -12,7 +12,7 @@ use crate::boa::platform_objects::{
 };
 use crate::boa::with_event_target_mut;
 use crate::html::{
-    Location, Window, WindowOrWorkerGlobalScope,
+    Location, Window, WindowOrWorkerGlobalScope, WindowProxy,
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
@@ -316,6 +316,57 @@ fn get_computed_style_method(
     })?
 }
 
+/// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
+///
+/// Construct a JsObject whose internal data is a `WindowProxy` wrapping the
+/// target Window.
+///
+/// For same-origin access, the WindowProxy is transparent: all internal
+/// methods delegate to the wrapped Window.  The prototype-chain approach
+/// achieves this for the essential operations:
+///
+/// [[GetPrototypeOf]] (https://html.spec.whatwg.org/#windowproxy-getprototypeof)
+///   Step 2: If IsPlatformObjectSameOrigin(W) is true, return OrdinaryGetPrototypeOf(W).
+///   The proxy's prototype is set to W.prototype(), so the JS engine's ordinary
+///   [[GetPrototypeOf]] resolves to W's prototype.
+///
+/// [[Get]] (https://html.spec.whatwg.org/#windowproxy-get)
+///   Step 3: If IsPlatformObjectSameOrigin(W) is true, return OrdinaryGet(this, P, Receiver).
+///   Property lookup falls through the proxy's prototype chain to Window.prototype.
+///   Accessors on Window.prototype receive the proxy as `this`.  The bindings
+///   layer's `current_window_object` unwraps WindowProxy → Window so that
+///   accessors and methods operate on the correct Window.
+///
+/// [[Set]] (https://html.spec.whatwg.org/#windowproxy-set)
+///   Step 3.2: Return OrdinarySet(W, P, V, Receiver).
+///   Property assignment follows the same prototype chain; accessor setters
+///   receive the proxy as `this` and are unwrapped by `current_window_object`.
+///
+/// [[GetOwnProperty]] (https://html.spec.whatwg.org/#windowproxy-getownproperty)
+///   Step 3: If same-origin, return OrdinaryGetOwnProperty(W, P).
+///   W has no own properties on the WindowProxy object itself, so [[GetOwnProperty]]
+///   returns undefined unless W declares an array-index child navigable.
+///
+/// [[Delete]] (https://html.spec.whatwg.org/#windowproxy-delete)
+///   Step 2.2: Return OrdinaryDelete(W, P).
+///
+/// [[OwnPropertyKeys]] (https://html.spec.whatwg.org/#windowproxy-ownpropertykeys)
+///   Step 4: Return concatenation of array-index keys and OrdinaryOwnPropertyKeys(W).
+///
+/// On navigation, the `window` field on the `WindowProxy` Rust struct is
+/// swapped to point at the new Window without changing the proxy object
+/// identity visible to JavaScript.
+///
+/// Cross-origin filtering requires custom `InternalObjectMethods` in the
+/// JsObject's vtable.  This is blocked until Boa exposes `InternalObjectMethods`
+/// fields publicly (see content/src/webidl/README.md).
+pub(crate) fn create_window_proxy(window: JsObject) -> JsValue {
+    let prototype = window.prototype();
+    let proxy = WindowProxy::new(window);
+    let proxy_object = JsObject::from_proto_and_data(prototype, proxy);
+    JsValue::from(proxy_object)
+}
+
 fn location_object(context: &mut Context) -> JsResult<JsObject> {
     if let Some(object) = cached_location_object(context)? {
         return Ok(object);
@@ -328,8 +379,23 @@ fn location_object(context: &mut Context) -> JsResult<JsObject> {
     Ok(object)
 }
 
+/// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
+///
+/// Resolve the Window from a receiver that may be a Window or a WindowProxy.
+/// When accessors on Window.prototype are invoked via a WindowProxy (e.g.
+/// `proxy.onload = ...`), the receiver (`this`) is the WindowProxy JsObject.
+/// This function unwraps WindowProxy to its inner Window so that downcasts
+/// succeed.
 fn current_window_object(this: &JsValue, context: &Context) -> JsObject {
     if let Some(object) = this.as_object() {
+        // If the receiver is a WindowProxy, extract the inner Window.
+        // This handles [[Get]] and [[Set]] delegation: the spec says
+        // OrdinaryGet(W, P, Receiver) / OrdinarySet(W, P, V, Receiver)
+        // where operations happen on W (the Window) even though the
+        // Receiver is the WindowProxy.
+        if let Some(proxy) = object.downcast_ref::<WindowProxy>() {
+            return proxy.window_handle().clone();
+        }
         return object.clone();
     }
 

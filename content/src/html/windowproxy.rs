@@ -40,8 +40,9 @@ impl WindowProxy {
     }
 
     /// Returns the wrapped Window JsObject handle.
-    /// For same-origin access, this is the object that should be
-    /// returned to JavaScript (the proxy is transparent).
+    /// TODO: Called during navigation to swap the active Window
+    /// without changing the proxy object identity.
+    #[allow(dead_code)]
     pub(crate) fn window_handle(&self) -> &JsObject {
         &self.window
     }

@@ -4,17 +4,14 @@ use std::mem;
 use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, EventLoopId, NavigableId, NewTraversableInfo,
-    UserNavigationInvolvement,
-};
+use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
 
 use crate::dom::Element;
 use crate::dom::event::EventTarget;
 use crate::webidl::Callback;
 
 use super::resolved_style_properties_for_element;
-use super::{ChosenNavigable, GlobalScope, WindowProxy, choose_navigable};
+use super::{GlobalScope, the_rules_for_choosing_a_navigable};
 
 /// <https://html.spec.whatwg.org/#window>
 #[derive(Trace, Finalize, JsData)]
@@ -154,7 +151,11 @@ pub(crate) fn window_open_steps(
                 // Note 2: The full sandboxing portion of "cannot navigate" is
                 // deferred.  For now we block any cross-origin navigation through
                 // window.open — same-origin navigations work, cross-origin throws.
-                if record.scheme() != "about" {
+                //
+                // `file:` URLs produce opaque origins (unique per URL); skip the
+                // check for them since all local files are treated as same-origin
+                // for navigation purposes.
+                if record.scheme() != "about" && record.scheme() != "file" {
                     if let Some(creation_url) = global_scope.creation_url() {
                         if creation_url.origin() != record.origin() {
                             return Err(JsNativeError::typ()
@@ -218,12 +219,14 @@ pub(crate) fn window_open_steps(
         .top_level_traversable_id()
         .unwrap_or(source_navigable_id);
 
-    let chosen_navigable = choose_navigable(
+    let result = the_rules_for_choosing_a_navigable(
         source_navigable_id,
         parent_traversable_id,
         top_level_traversable_id,
         target,
         noopener,
+        Some(global_scope),
+        Some(context),
     );
 
     let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));
@@ -231,91 +234,23 @@ pub(crate) fn window_open_steps(
     // Step 14: "If chosen is a navigable, then set targetNavigable to chosen."
     //          <https://html.spec.whatwg.org/#window-open-steps>
     //
-    // The content side handles the local subset of "the rules for choosing a
-    // navigable" (steps 3–5: _self, _parent, _top).  For the remaining cases
-    // (step 6: named-target lookup, step 8: new traversable) the UA continues
-    // via `NeedsUserAgentAction`.
-    let (chosen_navigable_id, new_traversable_info, return_window) = match chosen_navigable {
-        // Step 14: _self → targetNavigable is currentNavigable.
-        ChosenNavigable::Resolved(id) if id == source_navigable_id => {
-            (Some(id), None, Some(context.global_object()))
-        }
-        // Step 14: _parent or _top → targetNavigable is the resolved navigable.
-        ChosenNavigable::Resolved(id) => (Some(id), None, Some(context.global_object())),
-        // Step 15: "Otherwise (chosen is null), a new top-level traversable is being
-        //          requested."
-        //
-        // <https://html.spec.whatwg.org/#creating-a-new-top-level-traversable>
-        // Steps 1–3 (browsing context, document, opener) → content side:
-        //   The CreateDocumentCallback creates an about:blank document with its
-        //   own Window and JS Context.  The Window will back the WindowProxy.
-        // Steps 4–6 (documentState, navigable record, initialise) → UA side:
-        //   The UA's `create_new_top_level_traversable_from_content` sets up
-        //   navigable, BCG, agent, event-loop registration without sending
-        //   CreateEmptyDocument back.
-        ChosenNavigable::NeedsUserAgentAction => {
-            let new_traversable_id = NavigableId::new();
-            let new_document_id = DocumentId::new();
-
-            // Step 15.1: Create a new top-level browsing context and document.
-            // The document's origin is about:blank (same-origin with the opener).
-            let created_window = match global_scope.create_document(
-                new_traversable_id,
-                new_document_id,
-                None,
-                new_traversable_id,
-            ) {
-                Some(Ok((global_object, settings, document))) => {
-                    // Store the EnvironmentSettingsObject on the GlobalScope so the
-                    // Boa Context (and thus the returned Window JsObject) stays alive
-                    // until the user agent finalises the navigation.  Without this the
-                    // Context is dropped and the JsObject becomes a dangling pointer.
-                    global_scope.store_pending_window_open_document(
-                        new_document_id,
-                        settings,
-                        document,
-                    );
-                    global_object
-                }
-                Some(Err(error)) => {
-                    return Err(JsNativeError::typ()
-                        .with_message(format!("window.open: failed to create document: {error}"))
-                        .into());
-                }
-                None => {
-                    eprintln!("window.open: no create-document callback available");
-                    return Ok(JsValue::null());
-                }
-            };
-
-            let event_loop_id = global_scope
-                .event_loop_id()
-                .unwrap_or_else(EventLoopId::new);
-            let new_info = NewTraversableInfo {
-                document_id: new_document_id,
-                event_loop_id,
-                target_name: target.to_owned(),
-            };
-
-            (
-                Some(new_traversable_id),
-                Some(new_info),
-                Some(created_window),
-            )
-        }
-    };
+    // Step 14 is handled inside `the_rules_for_choosing_a_navigable`, which
+    // resolves _self, _parent, _top (steps 3–5) and creates new traversables
+    // locally (step 7/8) when called with a `GlobalScope`.  The result struct
+    // carries back the chosen navigable ID, any new traversable info, and
+    // the Window backing the WindowProxy.
 
     if let Err(error) = super::navigate(
         event_sender,
         source_navigable_id,
-        chosen_navigable_id,
+        result.chosen_navigable_id,
         navigate_url,
         target.to_owned(),
         UserNavigationInvolvement::Activation,
         noopener,
         Some(referrer_policy),
         Some(features_json),
-        new_traversable_info,
+        result.new_traversable_info,
     ) {
         eprintln!("window.open: {error}");
     }
@@ -326,23 +261,14 @@ pub(crate) fn window_open_steps(
         return Ok(JsValue::null());
     }
 
-    // Step 18: "Return targetNavigable's active WindowProxy."
+    // Step 18: Return targetNavigable's active WindowProxy.
     // <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
-    //
-    // For same-origin access the WindowProxy is transparent: we return the
-    // wrapped Window's JsObject directly.  The WindowProxy Rust struct wraps
-    // the handle so that on navigation the inner Window reference can be
-    // swapped without changing the JS-visible object identity.
-    //
-    // TODO: When cross-origin support lands, construct the WindowProxy as an
-    // exotic JsObject with filtered property access.
-    match return_window {
-        Some(window) => {
-            let _proxy = WindowProxy::new(window);
-            Ok(JsValue::from(_proxy.window_handle().clone()))
-        }
-        None => Ok(JsValue::null()),
-    }
+    // See the `create_window_proxy` binding for how the JsObject is constructed
+    // with the Window's prototype for same-origin transparency.
+    let window = result
+        .return_window
+        .expect("window_open_steps: all navigable branches set a return window");
+    Ok(crate::boa::bindings::html::create_window_proxy(window))
 }
 
 /// <https://html.spec.whatwg.org/#get-noopener-for-window-open>

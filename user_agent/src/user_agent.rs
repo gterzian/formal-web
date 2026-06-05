@@ -2378,26 +2378,13 @@ impl UserAgentWorker {
         self.choose_navigable(source_navigable_id, target, noopener)
     }
 
-    /// Set up user-agent state for a new top-level traversable that the content process
-    /// created locally during `window.open`. The content process already created the
-    /// document and JS context; this method creates the user-agent-side navigable state,
-    /// browsing context group, agent, and event-loop registration without sending
-    /// `CreateEmptyDocument` back to content.
-    ///
     /// <https://html.spec.whatwg.org/#creating-a-new-top-level-traversable>
     ///
     /// Content-initiated path: the content process already created the about:blank
-    /// document, Window, and JS Context during `window_open_steps`.  The UA only
-    /// sets up its side (navigable, BCG, agent, event-loop reg, doc state, history).
-    ///
-    /// Compared to the UA-initiated path (`create_new_top_level_traversable`), this
-    /// does NOT allocate document_id or send `CreateEmptyDocument` (content already
-    /// did both).
-    ///
-    /// Spec steps 1–6 of "create a new top-level traversable" are split:
-    ///   Steps 1 (browsing context), 2 (document), 3 (opener) → content
-    ///   Steps 4–6 (documentState, navigable record, initialise) → this function.
-    fn create_new_top_level_traversable_from_content(
+    /// document, Window, and JS Context.  The UA sets up its side (navigable, BCG,
+    /// agent, event-loop reg, doc state, session history) without sending
+    /// `CreateEmptyDocument` back to content.
+    fn creating_a_new_top_level_traversable(
         &mut self,
         traversable_id: NavigableId,
         info: &NewTraversableInfo,
@@ -2407,17 +2394,7 @@ impl UserAgentWorker {
         let event_loop_id = info.event_loop_id;
 
         // Step 4: "Let documentState be a new document state..."
-        // The content process holds the DOM and JS state; the UA records document
-        // metadata in `DocumentState` and links it through `Navigable::active_document_id`.
-
         // Step 5: "Let traversable be a new traversable navigable."
-        // <https://html.spec.whatwg.org/#creating-a-new-top-level-traversable>
-        // Content allocated `traversable_id` (in the window_open_steps
-        // CreateDocumentCallback).  The UA registers the navigable handle
-        // and links it to the content-side event loop.
-        // Note: In the UA-initiated path (`create_new_top_level_traversable`),
-        // step 5 also allocates `traversable_id` on the UA side.  Here the
-        // content process already did the allocation.
         if let Some(entry) = self.state.event_loops.get_mut(&event_loop_id) {
             entry.traversable_ids.insert(traversable_id);
         }
@@ -2495,7 +2472,6 @@ impl UserAgentWorker {
             },
         );
 
-        // DocumentState: UA-side document metadata (linked to the content-side document).
         self.state.documents.insert(
             document_id,
             DocumentState {
@@ -2621,7 +2597,7 @@ impl UserAgentWorker {
                     let traversable_id = request.chosen_navigable_id.ok_or_else(|| {
                         String::from("new_traversable_info without chosen_navigable_id")
                     })?;
-                    self.create_new_top_level_traversable_from_content(traversable_id, new_info)?;
+                    self.creating_a_new_top_level_traversable(traversable_id, new_info)?;
                     (traversable_id, String::from("new and unrestricted"))
                 } else {
                     match request.chosen_navigable_id {

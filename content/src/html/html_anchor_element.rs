@@ -8,7 +8,7 @@ use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationIn
 use url::Url;
 
 use crate::html::{
-    ChosenNavigable, HTMLElement, HyperlinkElementUtils, choose_navigable, navigate,
+    HTMLElement, HyperlinkElementUtils, the_rules_for_choosing_a_navigable, navigate,
 };
 
 /// <https://html.spec.whatwg.org/#htmlanchorelement>
@@ -75,30 +75,27 @@ impl HTMLAnchorElement {
 
         let target = self.target();
         let noopener = self.noopener();
-        let chosen_navigable = choose_navigable(
+        let result = the_rules_for_choosing_a_navigable(
             source_navigable_id,
             parent_navigable_id,
             top_level_navigable_id,
             &target,
             noopener,
+            None,   // no GlobalScope: anchor nav delegates new traversables to UA
+            None,   // no Context: no return window needed
         );
-
-        let chosen_navigable_id = match chosen_navigable {
-            ChosenNavigable::Resolved(id) => Some(id),
-            ChosenNavigable::NeedsUserAgentAction => None,
-        };
 
         navigate(
             event_sender,
             source_navigable_id,
-            chosen_navigable_id,
+            result.chosen_navigable_id,
             destination_url,
             target,
             user_involvement,
             noopener,
             None,
             None,
-            None,
+            result.new_traversable_info,
         )
         .map_err(|error| {
             JsNativeError::typ()
