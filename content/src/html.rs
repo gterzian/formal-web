@@ -40,13 +40,9 @@ pub(crate) use location::LocationError;
 pub use window::Window;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
+pub(crate) use windowproxy::WindowProxy;
 
 /// <https://html.spec.whatwg.org/#navigate>
-/// Shared content-process helper to send a navigation request to the user agent.
-///
-/// Builds a `NavigateRequest` message and sends it via the content-to-user-agent IPC
-/// channel. This is the common call point for hyperlink activation, iframe navigation,
-/// and Location-object navigation.
 pub(crate) fn navigate(
     event_sender: &IpcSender<ContentEvent>,
     source_navigable_id: NavigableId,
@@ -74,4 +70,68 @@ pub(crate) fn navigate(
     event_sender
         .send(ContentEvent::NavigationRequested(request))
         .map_err(|error| format!("failed to send navigation request: {error}"))
+}
+
+/// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChosenNavigable {
+    /// The target navigable was resolved to a known ID.
+    Resolved(NavigableId),
+    /// The target requires the user agent to find or create a navigable.
+    NeedsUserAgentAction,
+}
+
+/// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
+///
+/// Content-side subset.  The UA continues with steps 6–8 when this returns
+/// `NeedsUserAgentAction`.
+///
+///   1. Let chosen be null.
+///   2. Let currentNavigable be sourceNavigable.
+///   3. If name is empty or `_self`, set chosen to currentNavigable.
+///   4. If name is `_parent`, set chosen to parent (or currentNavigable).
+///   5. If name is `_top`, set chosen to traversable.
+///   -- content-side subset ends here; remaining steps run in the UA --
+///   6. Otherwise, if name is not `_blank` and noopener is false,
+///      set chosen to the result of
+///      <https://html.spec.whatwg.org/#finding-a-navigable-by-target-name>.
+///   7. If chosen is null, a new top-level traversable is being requested.
+///   8. Return chosen.
+pub(crate) fn choose_navigable(
+    source_navigable_id: NavigableId,
+    parent_navigable_id: Option<NavigableId>,
+    top_level_navigable_id: NavigableId,
+    target_name: &str,
+    noopener: bool,
+) -> ChosenNavigable {
+    // Step 1: Let chosen be null.
+    let mut chosen: Option<NavigableId> = None;
+
+    // Step 3: Handle empty / _self.
+    if target_name.is_empty() || target_name.eq_ignore_ascii_case("_self") {
+        chosen = Some(source_navigable_id);
+    }
+
+    // Step 4: Handle _parent.
+    if chosen.is_none() && target_name.eq_ignore_ascii_case("_parent") {
+        chosen = Some(parent_navigable_id.unwrap_or(source_navigable_id));
+    }
+
+    // Step 5: Handle _top.
+    if chosen.is_none() && target_name.eq_ignore_ascii_case("_top") {
+        chosen = Some(top_level_navigable_id);
+    }
+
+    // Step 6: Handle named targets (local lookup only — skip if noopener or _blank).
+    if chosen.is_none() && !target_name.eq_ignore_ascii_case("_blank") && !noopener {
+        // Content cannot cross-process lookup; delegate to UA.
+        // TODO: implement local same-process target-name lookup against
+        //       navigable registry.
+    }
+
+    // Step 7: If chosen is still null, a new top-level traversable is needed.
+    match chosen {
+        Some(id) => ChosenNavigable::Resolved(id),
+        None => ChosenNavigable::NeedsUserAgentAction,
+    }
 }

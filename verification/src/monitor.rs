@@ -166,7 +166,10 @@ fn monitored_entry_json(clock: u64, entry: LogEntry) -> Value {
         object.insert(String::from("event"), Value::String(event));
     }
     object.insert(String::from("event_args"), json!(entry.event_args));
-    object.insert(String::from("source_file"), Value::String(entry.source_file));
+    object.insert(
+        String::from("source_file"),
+        Value::String(entry.source_file),
+    );
     object.insert(String::from("source_line"), json!(entry.source_line));
 
     Value::Object(object)

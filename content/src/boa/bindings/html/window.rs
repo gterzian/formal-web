@@ -138,11 +138,7 @@ fn parse_structured_clone_options(value: &JsValue) -> Option<StructuredCloneOpti
     None
 }
 
-fn open_method(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn open_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let url = args
         .get(0)
         .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))

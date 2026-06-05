@@ -8,3 +8,86 @@
 - Promise helpers here should follow the Web IDL promise algorithms, including `#js-promise-manipulation`, `#a-promise-resolved-with`, `#a-promise-rejected-with`, and `#js-to-promise`.
 - DOM event dispatch and other callback sites should call into this layer instead of calling Boa directly.
 - Use the `web_standards` extension (`spec_lookup`) with `https://webidl.spec.whatwg.org/` to read the Web IDL spec.
+
+## Boa integration of platform objects
+
+The content crate defines Rust types that correspond to Web IDL interface types (e.g.
+`Window`, `Document`, `HTMLAnchorElement`). These types implement `boa_engine::JsData`
+(derived via `#[derive(Trace, Finalize, JsData)]`) and are stored inside Boa `JsObject`s
+via `from_proto_and_data()` or `ObjectInitializer::with_native_data_and_proto()`.
+
+The typical pattern for a platform object:
+
+```rust
+#[derive(Trace, Finalize, JsData)]
+pub struct MyInterface {
+    /// Rust carrier state — not JS-visible properties.
+    pub inner: Rc<RefCell<InnerState>>,
+}
+```
+
+The JS-visible properties and methods are registered separately via the `Class` trait
+or `ObjectInitializer`. The Rust struct holds only the backing state.
+
+### Where carrier types live
+
+- **DOM interfaces** (`Document`, `EventTarget`, `Element`, …): `content/src/dom/`
+- **HTML interfaces** (`Window`, `HTMLAnchorElement`, `HTMLIFrameElement`, `Location`, …): `content/src/html/`
+- **Streams interfaces** (`ReadableStream`, `WritableStream`, …): `content/src/streams/`
+- **Boa-class registrations and bindings** (argument conversion, method impls): `content/src/boa/bindings/`
+
+### Exotic objects and custom internal methods
+
+Some Web/HTML spec objects (e.g. `WindowProxy`, `Location`) require exotic internal
+methods — they override `[[Get]]`, `[[Set]]`, `[[GetPrototypeOf]]`, etc. rather than
+using the ordinary object behaviour.
+
+Boa supports exotic objects through `InternalObjectMethods` (a vtable stored on every
+`JsObject`). To create an exotic object:
+
+1. Define a Rust type implementing `JsData` (same as any platform object).
+2. Override `JsData::internal_methods()` to return a static `InternalObjectMethods`
+   with the custom function pointers:
+
+```rust
+impl JsData for MyExotic {
+    fn internal_methods(&self) -> &'static InternalObjectMethods {
+        static METHODS: InternalObjectMethods = InternalObjectMethods {
+            __get__: my_exotic_get,
+            __set__: my_exotic_set,
+            ..ORDINARY_INTERNAL_METHODS
+        };
+        &METHODS
+    }
+}
+```
+
+3. Inside each function, use `obj.downcast_ref::<MyExotic>()` to access the data.
+
+**Current limitation:** `InternalObjectMethods`, `InternalMethodPropertyContext`, and
+the ordinary-function pointers are `pub(crate)` to `boa_engine`. Custom exotic objects
+cannot be implemented from outside the `boa_engine` crate without first exposing these
+types publicly. See `content/src/html/windowproxy.rs` for the current workaround
+(WindowProxy is a Rust-side handle that returns the wrapped Window's JsObject directly).
+
+### The ObjectInitializer pattern
+
+For platform objects that don't need exotic behaviour and just need a prototype chain:
+
+```rust
+let object = ObjectInitializer::with_native_data_and_proto(
+    MyInterface::new(...),
+    prototype,  // e.g. context.intrinsics().constructors().my_interface().prototype()
+    context,
+)
+.property("someProp", js_string!("value"), Attribute::all())
+.build();
+```
+
+See `content/src/boa/bindings/` for concrete examples per interface.
+
+## Related documentation
+
+- `content/README.md` — Content-crate overview
+- `content/src/boa/README.md` — Boa integration specifics (Context ownership, bindings)
+- `content/src/html/README.md` — HTML object carriers, WindowProxy, navigation split

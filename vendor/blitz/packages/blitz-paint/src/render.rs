@@ -775,8 +775,15 @@ impl ElementCx<'_, '_> {
 
             self.fill_embedded_document_background(scene);
 
-            let painter =
-                BlitzDomPainter::new(&sub_doc, scale, width, height, initial_x, initial_y, self.custom_widget_scenes,);
+            let painter = BlitzDomPainter::new(
+                &sub_doc,
+                scale,
+                width,
+                height,
+                initial_x,
+                initial_y,
+                self.custom_widget_scenes,
+            );
             painter.paint_scene(scene);
         }
     }

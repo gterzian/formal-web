@@ -116,9 +116,16 @@ pub enum SerializedRecord {
     /// { [[Type]]: "RegExp", [[OriginalSource]], [[OriginalFlags]] }
     RegExp { source: String, flags: String },
     /// { [[Type]]: "SharedArrayBuffer" }  — raw bytes + metadata
-    SharedArrayBuffer { data: Vec<u8>, agent_cluster: String },
+    SharedArrayBuffer {
+        data: Vec<u8>,
+        agent_cluster: String,
+    },
     /// { [[Type]]: "ArrayBuffer", [[ArrayBufferData]]: dataCopy, [[ArrayBufferByteLength]]: size }
-    ArrayBuffer { data: Vec<u8>, byte_length: u64, max_byte_length: Option<u64> },
+    ArrayBuffer {
+        data: Vec<u8>,
+        byte_length: u64,
+        max_byte_length: Option<u64>,
+    },
     /// { [[Type]]: "ArrayBufferView" }
     /// When [[Constructor]] is "DataView":
     ///   { [[ArrayBufferSerialized]]: bufferSerialized, [[ByteLength]]: byteLength, [[ByteOffset]]: byteOffset }
@@ -137,11 +144,22 @@ pub enum SerializedRecord {
     /// { [[Type]]: "Set" }
     Set(Vec<SerializedRecord>),
     /// { [[Type]]: "Error" }
-    Error { name: String, message: Option<String>, stack: String, cause: Option<Box<SerializedRecord>> },
+    Error {
+        name: String,
+        message: Option<String>,
+        stack: String,
+        cause: Option<Box<SerializedRecord>>,
+    },
     /// { [[Type]]: "Array" }
-    Array { length: u64, properties: Vec<(Vec<u16>, SerializedRecord)> },
+    Array {
+        length: u64,
+        properties: Vec<(Vec<u16>, SerializedRecord)>,
+    },
     /// Platform object implementing [Serializable].
-    PlatformObject { interface_name: String, fields: HashMap<String, SerializedRecord> },
+    PlatformObject {
+        interface_name: String,
+        fields: HashMap<String, SerializedRecord>,
+    },
     /// { [[Type]]: "Object" }
     Object(Vec<(Vec<u16>, SerializedRecord)>),
 }
@@ -180,7 +198,6 @@ impl MemoryMap {
         self.deserialized.insert(addr, object);
     }
 }
-
 
 // ──────────────────────────────────────────────────────────────────────────────
 // DataCloneError helper
@@ -269,9 +286,9 @@ fn structured_serialize_internal(
 
     // Step 6: Let serialized be an uninitialized value.
     // (Implemented via individual return values in each branch below.)
-    let object = value.as_object().ok_or_else(|| {
-        internal_error("unexpected non-object value in serialize")
-    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| internal_error("unexpected non-object value in serialize"))?;
 
     // Step 7: If value has a [[BooleanData]] internal slot, then set serialized to
     //           { [[Type]]: "Boolean", [[BooleanData]]: value.[[BooleanData]] }.
@@ -301,9 +318,9 @@ fn structured_serialize_internal(
     //            { [[Type]]: "Date", [[DateValue]]: value.[[DateValue]] }.
     if let Ok(date) = JsDate::from_object(object.clone()) {
         let time = date.get_time(context)?;
-        let ms = time.as_number().ok_or_else(|| {
-            internal_error("Date.getTime did not return a number")
-        })?;
+        let ms = time
+            .as_number()
+            .ok_or_else(|| internal_error("Date.getTime did not return a number"))?;
         return Ok(SerializedRecord::Date(ms));
     }
 
@@ -416,7 +433,10 @@ fn structured_serialize_internal(
     if let Some(SerializedRecord::Object(props)) = memory.get_serialized_by_addr_mut(addr) {
         *props = properties;
     }
-    Ok(memory.serialized.remove(&addr).expect("entry must exist in memory"))
+    Ok(memory
+        .serialized
+        .remove(&addr)
+        .expect("entry must exist in memory"))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -425,7 +445,10 @@ fn structured_serialize_internal(
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
 /// Step 13.2: non-shared ArrayBuffer.
-fn serialize_array_buffer(buffer: &JsArrayBuffer, context: &mut Context) -> JsResult<SerializedRecord> {
+fn serialize_array_buffer(
+    buffer: &JsArrayBuffer,
+    context: &mut Context,
+) -> JsResult<SerializedRecord> {
     // Step 13.2.1: If IsDetachedBuffer(value) is true, then throw a "DataCloneError" DOMException.
     let data = buffer.data().ok_or_else(|| data_clone_error(context))?;
 
@@ -443,7 +466,11 @@ fn serialize_array_buffer(buffer: &JsArrayBuffer, context: &mut Context) -> JsRe
 
     // Step 13.2.5: Otherwise, set serialized to { [[Type]]: "ArrayBuffer", [[ArrayBufferData]]: dataCopy,
     //                                             [[ArrayBufferByteLength]]: size }.
-    Ok(SerializedRecord::ArrayBuffer { data: data_copy, byte_length: size, max_byte_length: None })
+    Ok(SerializedRecord::ArrayBuffer {
+        data: data_copy,
+        byte_length: size,
+        max_byte_length: None,
+    })
 }
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
@@ -474,7 +501,10 @@ fn serialize_shared_array_buffer(
     // Copy raw bytes for IPC portability.
     let data = sab.to_vec();
     let agent_cluster = String::from("default"); // TODO: use actual agent cluster.
-    Ok(SerializedRecord::SharedArrayBuffer { data, agent_cluster })
+    Ok(SerializedRecord::SharedArrayBuffer {
+        data,
+        agent_cluster,
+    })
 }
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
@@ -500,13 +530,19 @@ fn serialize_dataview(
     //              { [[Type]]: "ArrayBufferView", [[Constructor]]: "DataView",
     //                [[ArrayBufferSerialized]]: bufferSerialized, [[ByteLength]]: value.[[ByteLength]],
     //                [[ByteOffset]]: value.[[ByteOffset]] }.
-    let byte_length = dv_obj.get(js_string!("byteLength"), context)?.to_number(context)? as u64;
-    let byte_offset = dv_obj.get(js_string!("byteOffset"), context)?.to_number(context)? as u64;
+    let byte_length = dv_obj
+        .get(js_string!("byteLength"), context)?
+        .to_number(context)? as u64;
+    let byte_offset = dv_obj
+        .get(js_string!("byteOffset"), context)?
+        .to_number(context)? as u64;
 
     Ok(SerializedRecord::ArrayBufferView {
         constructor: String::from("DataView"),
         buffer_serialized: Box::new(buffer_serialized),
-        byte_length, byte_offset, array_length: None,
+        byte_length,
+        byte_offset,
+        array_length: None,
     })
 }
 
@@ -529,7 +565,9 @@ fn serialize_typed_array(
 
     // Step 14.5 (spec numbering): Otherwise (value does not have a [[DataView]] internal slot):
     //   Step 14.5.1: Assert: value has a [[TypedArrayName]] internal slot.
-    let kind = typed_array.kind().ok_or_else(|| internal_error("TypedArray has no kind"))?;
+    let kind = typed_array
+        .kind()
+        .ok_or_else(|| internal_error("TypedArray has no kind"))?;
     let constructor = typed_array_kind_name(kind);
 
     //   Step 14.5.2: Set serialized to { [[Type]]: "ArrayBufferView", [[Constructor]]: value.[[TypedArrayName]],
@@ -542,7 +580,9 @@ fn serialize_typed_array(
     Ok(SerializedRecord::ArrayBufferView {
         constructor,
         buffer_serialized: Box::new(buffer_serialized),
-        byte_length, byte_offset, array_length: Some(array_length),
+        byte_length,
+        byte_offset,
+        array_length: Some(array_length),
     })
 }
 
@@ -595,7 +635,10 @@ fn serialize_map_contents(
     if let Some(SerializedRecord::Map(entry_list)) = memory.get_serialized_by_addr_mut(addr) {
         *entry_list = entries;
     }
-    Ok(memory.serialized.remove(&addr).expect("Map entry must exist in memory"))
+    Ok(memory
+        .serialized
+        .remove(&addr)
+        .expect("Map entry must exist in memory"))
 }
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
@@ -643,7 +686,10 @@ fn serialize_set_contents(
     if let Some(SerializedRecord::Set(entry_list)) = memory.get_serialized_by_addr_mut(addr) {
         *entry_list = entries;
     }
-    Ok(memory.serialized.remove(&addr).expect("Set entry must exist in memory"))
+    Ok(memory
+        .serialized
+        .remove(&addr)
+        .expect("Set entry must exist in memory"))
 }
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
@@ -667,16 +713,17 @@ fn serialize_error(object: &JsObject, context: &mut Context) -> JsResult<Seriali
     let pk = PropertyKey::from(js_string!("message"));
     let msg_desc = object.borrow().properties().get(&pk);
     let message: Option<String> = match msg_desc {
-        Some(desc) if desc.is_data_descriptor() => {
-            desc.value()
-                .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
-                .transpose()?
-        }
+        Some(desc) if desc.is_data_descriptor() => desc
+            .value()
+            .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
+            .transpose()?,
         _ => None,
     };
 
     // Step 17.6: Let stack be an implementation-defined string that represents value.[[Stack]].
-    let stack = object.get(js_string!("stack"), context).ok()
+    let stack = object
+        .get(js_string!("stack"), context)
+        .ok()
         .and_then(|v| v.to_string(context).ok().map(|s| s.to_std_string_escaped()))
         .unwrap_or_default();
 
@@ -684,20 +731,28 @@ fn serialize_error(object: &JsObject, context: &mut Context) -> JsResult<Seriali
     // Additionally, serialize [[ErrorData]].[[Cause]] per ES2022.
     let pk = PropertyKey::from(js_string!("cause"));
     let cause_desc = object.borrow().properties().get(&pk);
-    let cause = cause_desc.as_ref().and_then(|d| {
-        if d.is_data_descriptor() {
-            let val = d.value()?;
-            // cause is serialized as a sub-serialization. But we don't have
-            // access to the forStorage flag here. Use a fresh memory map for
-            // the self-contained cause value.
-            let mut cause_memory = MemoryMap::default();
-            structured_serialize_internal(val, false, &mut cause_memory, context).ok()
-        } else {
-            None
-        }
-    }).map(Box::new);
+    let cause = cause_desc
+        .as_ref()
+        .and_then(|d| {
+            if d.is_data_descriptor() {
+                let val = d.value()?;
+                // cause is serialized as a sub-serialization. But we don't have
+                // access to the forStorage flag here. Use a fresh memory map for
+                // the self-contained cause value.
+                let mut cause_memory = MemoryMap::default();
+                structured_serialize_internal(val, false, &mut cause_memory, context).ok()
+            } else {
+                None
+            }
+        })
+        .map(Box::new);
 
-    Ok(SerializedRecord::Error { name, message, stack, cause })
+    Ok(SerializedRecord::Error {
+        name,
+        message,
+        stack,
+        cause,
+    })
 }
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
@@ -721,7 +776,10 @@ fn serialize_array(
     let length = array.length(context)? as u64;
 
     // Step 18.3: Set serialized to { [[Type]]: "Array", [[Length]]: valueLen, [[Properties]]: a new empty List }.
-    let serialized = SerializedRecord::Array { length, properties: Vec::new() };
+    let serialized = SerializedRecord::Array {
+        length,
+        properties: Vec::new(),
+    };
 
     // Step 18.4: Set memory[value] to serialized.
     let object = JsObject::from(array.clone());
@@ -752,12 +810,16 @@ fn serialize_array(
         properties.push((key_str, output_value));
     }
 
-    if let Some(SerializedRecord::Array { properties: props, .. }) =
-        memory.get_serialized_by_addr_mut(addr)
+    if let Some(SerializedRecord::Array {
+        properties: props, ..
+    }) = memory.get_serialized_by_addr_mut(addr)
     {
         *props = properties;
     }
-    Ok(memory.serialized.remove(&addr).expect("Array entry must exist in memory"))
+    Ok(memory
+        .serialized
+        .remove(&addr)
+        .expect("Array entry must exist in memory"))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -765,10 +827,7 @@ fn serialize_array(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#structuredserialize>
-pub fn structured_serialize(
-    value: &JsValue,
-    context: &mut Context,
-) -> JsResult<SerializedRecord> {
+pub fn structured_serialize(value: &JsValue, context: &mut Context) -> JsResult<SerializedRecord> {
     let mut memory = MemoryMap::default();
     structured_serialize_internal(value, false, &mut memory, context)
 }
@@ -801,9 +860,16 @@ pub enum TransferDataHolder {
     ///   [[ArrayBufferByteLength]]: byteLength }
     /// or { [[Type]]: "ResizableArrayBuffer", [[ArrayBufferData]]: dataCopy,
     ///   [[ArrayBufferByteLength]]: byteLength, [[ArrayBufferMaxByteLength]]: maxByteLength }
-    ArrayBuffer { data: Vec<u8>, byte_length: u64, max_byte_length: Option<u64> },
+    ArrayBuffer {
+        data: Vec<u8>,
+        byte_length: u64,
+        max_byte_length: Option<u64>,
+    },
     /// A platform object implementing [Transferable].
-    PlatformObject { interface_name: String, fields: HashMap<String, JsValue> },
+    PlatformObject {
+        interface_name: String,
+        fields: HashMap<String, JsValue>,
+    },
 }
 
 /// <https://html.spec.whatwg.org/#structuredserializewithtransfer>
@@ -844,7 +910,10 @@ pub fn structured_serialize_with_transfer(
 
         // Step 2.4: Set memory[transferable] to { [[Type]]: an uninitialized value }.
         let placeholder_addr = std::ptr::from_ref(object.as_ref()).addr();
-        memory.serialized.insert(placeholder_addr, SerializedRecord::Primitive(PrimitiveValue::Undefined));
+        memory.serialized.insert(
+            placeholder_addr,
+            SerializedRecord::Primitive(PrimitiveValue::Undefined),
+        );
     }
 
     // Step 3: Let serialized be ? StructuredSerializeInternal(value, false, memory).
@@ -855,7 +924,9 @@ pub fn structured_serialize_with_transfer(
 
     // Step 5: For each transferable of transferList:
     for transferable in &transfer_list {
-        let object = transferable.as_object().ok_or_else(|| data_clone_error(context))?;
+        let object = transferable
+            .as_object()
+            .ok_or_else(|| data_clone_error(context))?;
         if let Ok(buffer) = JsArrayBuffer::from_object(object.clone()) {
             // Step 5.1: If transferable has an [[ArrayBufferData]] internal slot:
             //   Step 5.1.1: If IsDetachedBuffer(transferable) is true, then throw.
@@ -883,7 +954,10 @@ pub fn structured_serialize_with_transfer(
     }
 
     // Step 6: Return { [[Serialized]]: serialized, [[TransferDataHolders]]: transferDataHolders }.
-    Ok(SerializeWithTransferResult { serialized, transfer_data_holders })
+    Ok(SerializeWithTransferResult {
+        serialized,
+        transfer_data_holders,
+    })
 }
 
 fn is_transferable_platform_object(_object: &JsObject) -> bool {
@@ -982,7 +1056,10 @@ fn structured_deserialize(
         //   whose [[ArrayBufferData]] internal slot value is serialized.[[ArrayBufferData]] and
         //   whose [[ArrayBufferByteLength]] internal slot value is
         //   serialized.[[ArrayBufferByteLength]].
-        SerializedRecord::SharedArrayBuffer { data, agent_cluster } => {
+        SerializedRecord::SharedArrayBuffer {
+            data,
+            agent_cluster,
+        } => {
             let _ = agent_cluster; // TODO: check agent cluster.
             let sab = JsSharedArrayBuffer::new(data.len(), context)?;
             // TODO: Implement proper shared memory data transfer.
@@ -993,7 +1070,11 @@ fn structured_deserialize(
         //            value is serialized.[[ArrayBufferData]], and whose [[ArrayBufferByteLength]]
         //            internal slot value is serialized.[[ArrayBufferByteLength]].
         //   If this throws an exception, catch it, and then throw a "DataCloneError" DOMException.
-        SerializedRecord::ArrayBuffer { data: data_copy, byte_length: _, .. } => {
+        SerializedRecord::ArrayBuffer {
+            data: data_copy,
+            byte_length: _,
+            ..
+        } => {
             let aligned = boa_engine::object::builtins::AlignedVec::from_slice(0, data_copy);
             // Catch any exception from ArrayBuffer creation and re-throw as DataCloneError.
             let buffer = JsArrayBuffer::from_byte_block(aligned, context)
@@ -1010,15 +1091,19 @@ fn structured_deserialize(
 
         // Step 16: Otherwise, if serialized.[[Type]] is "ArrayBufferView":
         SerializedRecord::ArrayBufferView {
-            constructor, buffer_serialized, byte_length, byte_offset, array_length: _,
+            constructor,
+            buffer_serialized,
+            byte_length,
+            byte_offset,
+            array_length: _,
         } => {
             //   Let deserializedArrayBuffer be ?
             //     StructuredDeserialize(serialized.[[ArrayBufferSerialized]], targetRealm, memory).
             let deserialized_buffer =
                 structured_deserialize(buffer_serialized, _target_realm, memory, context)?;
-            let buffer_obj = deserialized_buffer.as_object().ok_or_else(|| {
-                internal_error("deserialized buffer is not an object")
-            })?;
+            let buffer_obj = deserialized_buffer
+                .as_object()
+                .ok_or_else(|| internal_error("deserialized buffer is not an object"))?;
             let buffer = JsArrayBuffer::from_object(buffer_obj.clone())?;
 
             //   If serialized.[[Constructor]] is "DataView", then set value to a new DataView
@@ -1028,7 +1113,10 @@ fn structured_deserialize(
             //   serialized.[[ByteOffset]].
             if constructor == "DataView" {
                 let data_view = JsDataView::from_js_array_buffer(
-                    buffer, Some(*byte_offset), Some(*byte_length), context,
+                    buffer,
+                    Some(*byte_offset),
+                    Some(*byte_length),
+                    context,
                 )?;
                 value = JsValue::from(data_view);
             } else {
@@ -1078,7 +1166,12 @@ fn structured_deserialize(
         }
         // Step 21: Otherwise, if serialized.[[Type]] is "Error":
         //   (see deserialize_error)
-        SerializedRecord::Error { name, message, stack, cause } => {
+        SerializedRecord::Error {
+            name,
+            message,
+            stack,
+            cause,
+        } => {
             value = deserialize_error(name, message, stack, cause, context)?;
         }
         // Step 22: Otherwise (platform object):
@@ -1103,7 +1196,8 @@ fn structured_deserialize(
         match serialized {
             // Step 24.a: If serialized.[[Type]] is "Map":
             SerializedRecord::Map(entries) => {
-                let map = value.as_object()
+                let map = value
+                    .as_object()
                     .and_then(|o| JsMap::from_object(o.clone()).ok())
                     .ok_or_else(|| internal_error("expected Map"))?;
                 for (key_rec, val_rec) in entries {
@@ -1114,7 +1208,8 @@ fn structured_deserialize(
             }
             // Step 24.b: If serialized.[[Type]] is "Set":
             SerializedRecord::Set(entries) => {
-                let set = value.as_object()
+                let set = value
+                    .as_object()
                     .and_then(|o| JsSet::from_object(o.clone()).ok())
                     .ok_or_else(|| internal_error("expected Set"))?;
                 for entry in entries {
@@ -1123,9 +1218,10 @@ fn structured_deserialize(
                 }
             }
             // Step 24.c: If serialized.[[Type]] is "Array" or "Object":
-            SerializedRecord::Array { properties, .. }
-            | SerializedRecord::Object(properties) => {
-                let obj = value.as_object().ok_or_else(|| internal_error("expected object"))?;
+            SerializedRecord::Array { properties, .. } | SerializedRecord::Object(properties) => {
+                let obj = value
+                    .as_object()
+                    .ok_or_else(|| internal_error("expected object"))?;
                 for (key, val_rec) in properties {
                     let dv = structured_deserialize(val_rec, _target_realm, memory, context)?;
                     obj.set(JsString::from(key.as_slice()), dv, true, context)?;
@@ -1266,7 +1362,11 @@ pub fn structured_deserialize_with_transfer(
             //            value is transferDataHolder.[[ArrayBufferData]], and whose
             //            [[ArrayBufferByteLength]] internal slot value is
             //            transferDataHolder.[[ArrayBufferByteLength]].
-            TransferDataHolder::ArrayBuffer { data, byte_length: _, .. } => {
+            TransferDataHolder::ArrayBuffer {
+                data,
+                byte_length: _,
+                ..
+            } => {
                 let aligned = boa_engine::object::builtins::AlignedVec::from_slice(0, data);
                 let buffer = JsArrayBuffer::from_byte_block(aligned, context)
                     .map_err(|_| data_clone_error(context))?;
@@ -1300,7 +1400,10 @@ pub fn structured_deserialize_with_transfer(
     )?;
 
     // Step 5: Return { [[Deserialized]]: deserialized, [[TransferredValues]]: transferredValues }.
-    Ok(DeserializeWithTransferResult { deserialized, transferred_values })
+    Ok(DeserializeWithTransferResult {
+        deserialized,
+        transferred_values,
+    })
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1314,13 +1417,15 @@ pub fn structured_clone(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     // Step 1: Let serialized be ? StructuredSerializeWithTransfer(value, options["transfer"]).
-    let transfer = options.as_ref().and_then(|o| o.transfer.clone()).unwrap_or_default();
+    let transfer = options
+        .as_ref()
+        .and_then(|o| o.transfer.clone())
+        .unwrap_or_default();
     let serialized = structured_serialize_with_transfer(&value, transfer, context)?;
 
     // Step 2: Let deserializeRecord be ? StructuredDeserializeWithTransfer(...).
-    let desc_result = structured_deserialize_with_transfer(
-        &serialized, &JsValue::undefined(), context,
-    )?;
+    let desc_result =
+        structured_deserialize_with_transfer(&serialized, &JsValue::undefined(), context)?;
 
     // Step 3: Return deserializeRecord.[[Deserialized]].
     Ok(desc_result.deserialized)
@@ -1372,8 +1477,8 @@ fn unescape_regexp_source(escaped: &str) -> String {
 
 fn normalize_error_name(name: &str) -> String {
     match name {
-        "Error" | "EvalError" | "RangeError" | "ReferenceError"
-        | "SyntaxError" | "TypeError" | "URIError" => name.to_string(),
+        "Error" | "EvalError" | "RangeError" | "ReferenceError" | "SyntaxError" | "TypeError"
+        | "URIError" => name.to_string(),
         _ => String::from("Error"),
     }
 }
@@ -1395,7 +1500,9 @@ fn typed_array_kind_name(kind: boa_engine::builtins::typed_array::TypedArrayKind
     }
 }
 
-fn parse_typed_array_kind(name: &str) -> JsResult<boa_engine::builtins::typed_array::TypedArrayKind> {
+fn parse_typed_array_kind(
+    name: &str,
+) -> JsResult<boa_engine::builtins::typed_array::TypedArrayKind> {
     use boa_engine::builtins::typed_array::TypedArrayKind;
     match name {
         "Int8Array" => Ok(TypedArrayKind::Int8),

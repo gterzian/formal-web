@@ -91,6 +91,7 @@ impl EnvironmentSettingsObject {
             if let Some(event_sender) = &event_sender {
                 with_global_scope(&context, |global_scope| {
                     global_scope.set_navigation_info(navigable_id, event_sender.clone());
+                    global_scope.set_creation_url(creation_url.clone());
                     Ok(())
                 })
                 .map_err(|error| error.to_string())?;

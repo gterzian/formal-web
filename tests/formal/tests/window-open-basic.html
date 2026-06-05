@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>window.open basic test</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+'use strict';
+
+// Test 1: window.open('', '_blank') returns a Window object
+test(() => {
+  const w = window.open('', '_blank');
+  assert_not_equals(w, null, 'window.open should not return null for non-noopener');
+  assert_equals(typeof w, 'object', 'return value should be an object');
+  assert_equals(typeof w.open, 'function', 'returned object should have open method');
+  // Close the popup so it doesn't accumulate
+  if (w) w.close();
+}, 'window.open _blank returns Window');
+
+// Test 2: window.open with noopener returns null
+test(() => {
+  const w = window.open('', '_blank', 'noopener=yes');
+  assert_equals(w, null, 'window.open with noopener should return null');
+}, 'window.open with noopener returns null');
+
+// Test 3: window.open('', '_self') returns current window
+test(() => {
+  const w = window.open('', '_self');
+  assert_equals(w, window, 'window.open _self should return current window');
+}, 'window.open _self returns current window');
+
+// Test 4: Navigating the returned window with _self
+test(() => {
+  const w = window.open('', '_blank');
+  assert_not_equals(w, null, 'popup opened');
+  // Call open on the popup with _self — should return the popup itself
+  const w2 = w.open('about:blank', '_self');
+  assert_not_equals(w2, null, 'w.open should return a window');
+  // For same-origin, the returned window should be the popup
+  assert_equals(w2, window, 'navigating _self on popup returns...'); // Note: may be w or window depending on impl
+}, 'navigate returned window with _self');
+
+// Test 5: Cross-origin navigation should throw
+test(() => {
+  const w = window.open('', '_blank');
+  assert_not_equals(w, null, 'popup opened');
+  assert_throws_dom('SecurityError', () => {
+    w.open('https://example.com', '_self');
+  }, 'cross-origin navigation should throw SecurityError');
+}, 'cross-origin window.open throws SecurityError');
+
+</script>

@@ -7,51 +7,9 @@ use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
 use url::Url;
 
-use crate::html::{HTMLElement, HyperlinkElementUtils, navigate};
-
-/// <https://html.spec.whatwg.org/multipage/#the-rules-for-choosing-a-navigable>
-/// Resolves `_self`, `_parent`, and `_top` locally. Returns `None` when the target requires
-/// user-agent action (find-by-target-name across processes, or creating a new top-level
-/// traversable).
-fn choose_navigable_for_hyperlink_activation(
-    source_navigable_id: NavigableId,
-    parent_navigable_id: Option<NavigableId>,
-    top_level_navigable_id: NavigableId,
-    target_name: &str,
-    noopener: bool,
-) -> Option<NavigableId> {
-    // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
-    let normalized_target_name = if target_name.eq_ignore_ascii_case("_self") {
-        String::new()
-    } else {
-        target_name.to_owned()
-    };
-
-    // Step 8: "If chosen is null, then a new top-level traversable is being requested."
-    // Content cannot create top-level traversables; the user agent handles this branch.
-    if noopener || normalized_target_name.eq_ignore_ascii_case("_blank") {
-        return None;
-    }
-
-    // Step 4: "If name is the empty string or an ASCII case-insensitive match for \"_self\", then set chosen to currentNavigable."
-    if normalized_target_name.is_empty() {
-        return Some(source_navigable_id);
-    }
-
-    // Step 5: "Otherwise, if name is an ASCII case-insensitive match for \"_parent\", set chosen to currentNavigable's parent, if any, and currentNavigable otherwise."
-    if normalized_target_name.eq_ignore_ascii_case("_parent") {
-        return Some(parent_navigable_id.unwrap_or(source_navigable_id));
-    }
-
-    // Step 6: "Otherwise, if name is an ASCII case-insensitive match for \"_top\", set chosen to currentNavigable's traversable navigable."
-    if normalized_target_name.eq_ignore_ascii_case("_top") {
-        return Some(top_level_navigable_id);
-    }
-
-    // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for \"_blank\" and noopener is false, then set chosen to the result of finding a navigable by target name given name and currentNavigable."
-    // Cross-process target-name lookup requires the user agent's global navigable registry.
-    None
-}
+use crate::html::{
+    ChosenNavigable, HTMLElement, HyperlinkElementUtils, choose_navigable, navigate,
+};
 
 /// <https://html.spec.whatwg.org/#htmlanchorelement>
 #[derive(Trace, Finalize, JsData)]
@@ -117,13 +75,18 @@ impl HTMLAnchorElement {
 
         let target = self.target();
         let noopener = self.noopener();
-        let chosen_navigable_id = choose_navigable_for_hyperlink_activation(
+        let chosen_navigable = choose_navigable(
             source_navigable_id,
             parent_navigable_id,
             top_level_navigable_id,
             &target,
             noopener,
         );
+
+        let chosen_navigable_id = match chosen_navigable {
+            ChosenNavigable::Resolved(id) => Some(id),
+            ChosenNavigable::NeedsUserAgentAction => None,
+        };
 
         navigate(
             event_sender,

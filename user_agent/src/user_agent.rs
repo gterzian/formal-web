@@ -642,8 +642,7 @@ impl UserAgentState {
         //
         // Walk all browsing context groups to find this browsing context and set its opener.
         for group in self.browsing_context_group_set.members.values_mut() {
-            if let Some(browsing_context) =
-                group.browsing_context_set.get_mut(&browsing_context_id)
+            if let Some(browsing_context) = group.browsing_context_set.get_mut(&browsing_context_id)
             {
                 browsing_context.opener_browsing_context = Some(opener_browsing_context_id);
                 browsing_context.is_auxiliary = true;
@@ -651,7 +650,10 @@ impl UserAgentState {
             }
         }
         // Also check the top-level browsing context group ids map.
-        if let Some(_group_id) = self.top_level_browsing_context_group_ids.get(&browsing_context_id) {
+        if let Some(_group_id) = self
+            .top_level_browsing_context_group_ids
+            .get(&browsing_context_id)
+        {
             // Only set opener on the actual browsing context object, not on the map key.
         }
     }
@@ -2382,10 +2384,20 @@ impl UserAgentWorker {
     /// browsing context group, agent, and event-loop registration without sending
     /// `CreateEmptyDocument` back to content.
     ///
-    /// This is the inverse of parts of `create_new_top_level_traversable`: instead of the
-    /// UA creating the document and sending CreateEmptyDocument to content, content created
-    /// the document and includes `new_traversable_info` in the NavigateRequest.
-    fn incorporate_new_traversable(
+    /// <https://html.spec.whatwg.org/#creating-a-new-top-level-traversable>
+    ///
+    /// Content-initiated path: the content process already created the about:blank
+    /// document, Window, and JS Context during `window_open_steps`.  The UA only
+    /// sets up its side (navigable, BCG, agent, event-loop reg, doc state, history).
+    ///
+    /// Compared to the UA-initiated path (`create_new_top_level_traversable`), this
+    /// does NOT allocate document_id or send `CreateEmptyDocument` (content already
+    /// did both).
+    ///
+    /// Spec steps 1–6 of "create a new top-level traversable" are split:
+    ///   Steps 1 (browsing context), 2 (document), 3 (opener) → content
+    ///   Steps 4–6 (documentState, navigable record, initialise) → this function.
+    fn create_new_top_level_traversable_from_content(
         &mut self,
         traversable_id: NavigableId,
         info: &NewTraversableInfo,
@@ -2394,7 +2406,18 @@ impl UserAgentWorker {
         let target_name = &info.target_name;
         let event_loop_id = info.event_loop_id;
 
-        // Register the traversable with the content process's event loop.
+        // Step 4: "Let documentState be a new document state..."
+        // The content process holds the DOM and JS state; the UA records document
+        // metadata in `DocumentState` and links it through `Navigable::active_document_id`.
+
+        // Step 5: "Let traversable be a new traversable navigable."
+        // <https://html.spec.whatwg.org/#creating-a-new-top-level-traversable>
+        // Content allocated `traversable_id` (in the window_open_steps
+        // CreateDocumentCallback).  The UA registers the navigable handle
+        // and links it to the content-side event loop.
+        // Note: In the UA-initiated path (`create_new_top_level_traversable`),
+        // step 5 also allocates `traversable_id` on the UA side.  Here the
+        // content process already did the allocation.
         if let Some(entry) = self.state.event_loops.get_mut(&event_loop_id) {
             entry.traversable_ids.insert(traversable_id);
         }
@@ -2405,7 +2428,7 @@ impl UserAgentWorker {
             .traversable_target_names
             .insert(traversable_id, target_name.clone());
 
-        // Create a new browsing context group and browsing context.
+        // Step 1 (partial): browsing context, BCG, agent cluster — UA-side state.
         let browsing_context_group_id = self.state.browsing_context_group_set.next_group_id();
         let browsing_context_id = BrowsingContextId::new();
         let agent_cluster_id = AgentClusterId::new();
@@ -2448,7 +2471,7 @@ impl UserAgentWorker {
             },
         );
 
-        // Create the navigable state.
+        // Step 6: "Initialize the navigable traversable given documentState."
         self.state.navigables.insert(
             traversable_id,
             Navigable {
@@ -2472,7 +2495,7 @@ impl UserAgentWorker {
             },
         );
 
-        // Create the document state.
+        // DocumentState: UA-side document metadata (linked to the content-side document).
         self.state.documents.insert(
             document_id,
             DocumentState {
@@ -2521,9 +2544,7 @@ impl UserAgentWorker {
                     webview_id: WebviewId(navigable_id),
                 })
                 .map_err(|error| {
-                    format!(
-                        "failed to enqueue webview-provider new-webview message: {error}"
-                    )
+                    format!("failed to enqueue webview-provider new-webview message: {error}")
                 })?;
             self.host.webview_provider_sync()?;
         }
@@ -2574,9 +2595,7 @@ impl UserAgentWorker {
         // Step 16.2: "Set targetBrowsingContext's opener browsing context to
         //            sourceBrowsingContext."
         // Applied when reusing an existing navigable and noopener is false.
-        if window_type != "new and unrestricted"
-            && window_type != "new with no opener"
-            && !noopener
+        if window_type != "new and unrestricted" && window_type != "new with no opener" && !noopener
         {
             let source_navigable = self.state.navigables.get(&source_navigable_id);
             if let Some(source_browsing_context_id) =
@@ -2599,10 +2618,10 @@ impl UserAgentWorker {
 
             let (navigable_id, window_type) =
                 if let Some(ref new_info) = request.new_traversable_info {
-                    let traversable_id = request
-                        .chosen_navigable_id
-                        .ok_or_else(|| String::from("new_traversable_info without chosen_navigable_id"))?;
-                    self.incorporate_new_traversable(traversable_id, new_info)?;
+                    let traversable_id = request.chosen_navigable_id.ok_or_else(|| {
+                        String::from("new_traversable_info without chosen_navigable_id")
+                    })?;
+                    self.create_new_top_level_traversable_from_content(traversable_id, new_info)?;
                     (traversable_id, String::from("new and unrestricted"))
                 } else {
                     match request.chosen_navigable_id {

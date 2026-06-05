@@ -455,7 +455,7 @@ impl ElementData {
         self.special_data = SpecialElementData::None;
         resource_ids
     }
-    
+
     pub fn take_inline_layout(&mut self) -> Option<Box<TextLayout>> {
         std::mem::take(&mut self.inline_layout_data)
     }
