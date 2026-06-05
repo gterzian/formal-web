@@ -140,18 +140,22 @@ At the end of each task, run the following steps **in order**:
    were started during the session. Leftover processes can block ports and
    interfere with subsequent tasks.
 
-2. **Run `cargo clippy`** — Lint the entire workspace and fix any warnings
-   before committing. Run from the project root:
+2. **Run `cargo clippy`** — Lint the workspace (excluding vendor) and fix any
+   warnings before committing. Run from the project root:
 
    ```bash
    rustup run 1.92.0 cargo clippy --workspace --all-targets
    ```
 
    Fix all warnings that appear (patch and vendored warnings can be ignored;
-   focus on code-level warnings).
+   focus on code-level warnings). The `vendor/` directory is excluded from
+   this repository's scope and should not be linted or modified.
 
-3. **Run `cargo fmt`** — Format the entire project before committing. Run
-   from the project root: `cargo fmt`. This covers all crates in the workspace.
+3. **Run `cargo fmt`** — Format the project's code before committing. Run
+   from the project root: `cargo fmt`. This only formats the root package
+   (there is no workspace defined, so `vendor/` sub-crates are not affected).
+   Never run `cargo fmt` with `--all` or from inside a `vendor/` directory,
+   as vendored formatting changes must not be committed.
 
 4. **Spec-mapping review** — Review all changed files for spec documentation
    quality and conceptual fidelity.  For each algorithm implemented:
