@@ -508,7 +508,10 @@ impl EventLoopWorker {
                     request.source_navigable_id, request.destination_url
                 ));
                 self.user_agent_command_sender
-                    .send(UserAgentCommand::Navigate { request })
+                    .send(UserAgentCommand::Navigate {
+                        event_loop_id: Some(self.event_loop_id),
+                        request,
+                    })
                     .map_err(|error| format!("failed to send navigation request: {error}"))?;
             }
 

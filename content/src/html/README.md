@@ -154,7 +154,7 @@ Content runs `the_rules_for_choosing_a_navigable` (local subset) to resolve `_se
   WindowProxy is the current global (wrong if parent/top is a different navigable —
   needs IPC resolution, tracked as a gap).
 - **NeedsUserAgentAction:** Create an about:blank document locally via
-  `CreateDocumentCallback`. This gives us a Window to back the WindowProxy
+  `GlobalScope::create_document`. This gives us a Window to back the WindowProxy
   immediately. Send `NavigateRequest` with `new_traversable_info`.
 
 ### Steps 15–17 (UA side)
@@ -174,7 +174,7 @@ WindowProxy is transparent.
 Content (window_open_steps):             UA (handle_navigate):
   |                                        |
   |-- create about:blank document          |
-  |   (CreateDocumentCallback)             |
+  |   (GlobalScope::create_document)        |
   |-- NavigateRequest {                    |
   |     new_traversable_info: Some(...),   |
   |     chosen_navigable_id: Some(id)      |
@@ -190,8 +190,8 @@ Content (window_open_steps):             UA (handle_navigate):
   |                                        |-- handle navigation (fetch URL)
 ```
 
-The `CreateDocumentCallback` (installed by `ContentProcess::install_create_document_callback`)
-creates the about:blank document, JS Context, and Window. The callback returns
+`GlobalScope::create_document` creates the about:blank document, JS Context, and
+Window directly on the GlobalScope (no callback indirection). The method returns
 the Window's global object which backs the WindowProxy.
 
 The UA's `create_new_top_level_traversable_from_content` is the inverse of
@@ -223,42 +223,94 @@ UA-side state. The opener is only used for:
 `WindowProxy` is a Rust `JsData` struct wrapping a `JsObject` handle to the
 current Window.
 
-### Current implementation
+### Current implementation (stub — not a real WindowProxy)
 
-In `window_open_steps`, a `WindowProxy` wrapping the target Window is
-constructed, then wrapped in a `JsObject` via `JsObject::from_proto_and_data`
-with the Window's prototype. This means:
-- The JavaScript-visible object IS a `WindowProxy` (correct per spec §7.2.1)
-- Same-origin property access falls through the prototype chain to
-  `Window.prototype`, which is functionally equivalent to returning the
-  Window directly (the proxy is transparent per spec §7.2.3 step 3:
-  "If IsPlatformObjectSameOrigin(W) is true, then return OrdinaryGet(W, P)")
-- On navigation, the `window` field on the `WindowProxy` Rust struct can be
-  swapped to point at the new Window without changing the JS-visible proxy
-  identity
+The current `create_window_proxy` is a prototype-chain hack, not a proper
+WindowProxy exotic object.  The function creates a JsObject whose data is a
+`WindowProxy` struct and whose prototype is set to `Window.prototype`.  This
+is NOT a correct WindowProxy — see the known gaps below.
 
-The struct exists for:
-- **Future cross-origin support:** Property filtering per HTML spec §7.2.3
-  (CrossOriginProperties, CrossOriginGetOwnPropertyHelper, etc.)
-- **Future Window replacement on navigation:** When a cross-document navigation
-  replaces the Window, the WindowProxy handle should be updated without changing
-  the JS-visible proxy identity.
+### Known implementation problems
 
-### Exotic object gap
+All of these make the current implementation unsuitable for production use.
 
-The spec defines WindowProxy as an exotic object with overridden internal methods
-(`[[Get]]`, `[[Set]]`, `[[GetPrototypeOf]]`, `[[SetPrototypeOf]]`,
+**1. Prototype chain cannot substitute for [[GetOwnProperty]] delegation.**
+
+The spec says WindowProxy.[[GetOwnProperty]](P) for same-origin must return
+`OrdinaryGetOwnProperty(W, P)` where W is the **Window object itself** (step
+3 of §7.2.3.3).  The prototype-chain trick only delegates lookups to
+`Window.prototype`, not to the Window object.  This means:
+- Own properties of the Window object (registered via
+  `context.register_global_property(...)`, e.g. `document`, `console`) are
+  invisible through the proxy.
+- `window.name`, `window.closed`, `window.length`, and any other Window own
+  properties are invisible.
+- Named properties for child iframes (step 10 of §7.2.3.3: "[[GetOwnProperty]]
+  with property name P" should check for child browsing contexts) are
+  invisible.
+
+Accessors and methods defined via Boa's `ClassBuilder::accessor()` and
+`ClassBuilder::method()` land on `Window.prototype`, so those _happen_ to be
+visible through the proxy (the prototype chain reaches them).  But this is
+accidental and incomplete — the `this`-value inside those accessors is the
+proxy object, not the Window, and only the explicit `current_window_object`
+unwrapping in bindings saves those accessors.
+
+**2. `is_platform_object_same_origin` is hardcoded to `true`.**
+
+The function at `content/src/html/windowproxy.rs:216` unconditionally returns
+`true`.  The content process currently runs a single origin, so cross-origin
+access does not arise during testing.  When multi-origin support is added, the
+WindowProxy will silently leak all cross-origin properties instead of applying
+the restricted CrossOriginProperties table (HTML §7.2.3).
+
+**3. Array-index properties (child navigables) are missing.**
+
+The spec says WindowProxy's [[GetOwnProperty]] and [[OwnPropertyKeys]] must
+include array-index properties for each child navigable (i.e., `window[0]`,
+`window[1]`, ... for named iframes).  Not implemented.
+
+**4. Named property visibility (named child navigables) is missing.**
+
+The spec requires WindowProxy to expose child browsing contexts by their
+`name` attribute as own properties.  Not implemented.
+
+**5. [[OwnPropertyKeys]] does not concatenate array-index keys.**
+
+The spec requires step 4 of §7.2.3.8 to return [array-index keys] + [Window's
+OrdinaryOwnPropertyKeys].  Not implemented.
+
+**6. No exotic internal methods at all.**
+
+The spec defines WindowProxy as an exotic object with overridden
+`[[Get]]`, `[[Set]]`, `[[GetPrototypeOf]]`, `[[SetPrototypeOf]]`,
 `[[IsExtensible]]`, `[[PreventExtensions]]`, `[[GetOwnProperty]]`,
 `[[DefineOwnProperty]]`, `[[HasProperty]]`, `[[Delete]]`,
-`[[OwnPropertyKeys]]`). Implementing this requires Boa's `InternalObjectMethods`
-which is currently `pub(crate)` to `boa_engine`.
-
-For the same-origin case, the prototype-chain approach is functionally correct.
-Cross-origin filtering and custom internal methods are deferred until
-`InternalObjectMethods` is exposed publicly.
+`[[OwnPropertyKeys]]`.  None of these are overridden in the current
+implementation.  The proper implementation requires setting custom
+`InternalObjectMethods` on the JsObject, which Boa exposes as
+`pub(crate)` to `boa_engine`.
 
 See `content/src/webidl/README.md` for the exotic-object pattern and the
 `pub(crate)` visibility limitation.
+
+**7. Navigation window swapping is untested and unused.**
+The `WindowProxy.window` field exists and is documented as "swap the active
+Window without changing the proxy identity", but there is no call site that
+performs this swap.  Cross-document navigation does not update the proxy.
+
+### Status
+
+The WindowProxy implementation is a placeholder.  Fixing it requires:
+1. Boa making `InternalObjectMethods` fields public (or exposing a builder API
+   for custom exotic objects).
+2. Properly implementing each of the 11 overridden internal methods from HTML
+   §7.2.3.
+3. Wiring cross-origin origin checks into `is_platform_object_same_origin`.
+4. Implementing named-property visibility for child browsing contexts (step 10
+   of [[GetOwnProperty]]).
+5. Implementing array-index property visibility for child navigables.
+6. Wiring navigation-time Window replacement into the navigable lifecycle.
 
 ## Related documentation
 
@@ -269,4 +321,4 @@ See `content/src/webidl/README.md` for the exotic-object pattern and the
 - `ipc_messages/src/content.rs` — `NewTraversableInfo`, `CreateEmptyDocument`, `NavigateRequest`
 - `content/src/html.rs` — `the_rules_for_choosing_a_navigable` (content side), `navigate`, `ChosenNavigable`
 - `content/src/html/window.rs` — `Window::open`, `window_open_steps`
-- `content/src/html/global_scope.rs` — `CreateDocumentCallback`, `set_navigable_hierarchy`
+- `content/src/html/global_scope.rs` — `create_document`, `set_navigable_hierarchy`

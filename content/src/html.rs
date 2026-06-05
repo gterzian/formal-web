@@ -15,12 +15,12 @@ pub(crate) mod windowproxy;
 use boa_engine::{Context, object::JsObject};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, EventLoopId, NavigableId, NavigateRequest, NavigationId,
+    DocumentId, Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,
     NewTraversableInfo, UserNavigationInvolvement,
 };
 
 pub use environment_settings_object::EnvironmentSettingsObject;
-pub(crate) use global_scope::{CreateDocumentCallback, TimerHandler};
+pub(crate) use global_scope::TimerHandler;
 pub use global_scope::{GlobalScope, GlobalScopeKind};
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
@@ -92,20 +92,16 @@ pub(crate) struct ChosenNavigableResult {
 
 /// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
 ///
-/// Implements the full algorithm.  The function takes an optional
-/// `GlobalScope` and `Context` — when present (window.open), new-traversable
-/// creation happens locally via `CreateDocumentCallback`.  When absent
-/// (anchor navigation), new traversables are delegated to the UA.
+/// Content-process side of the split algorithm.  Steps 1–7 are content-local
+/// (resolving `_self`, `_parent`, `_top`).  Step 7 (find-by-target-name) is
+/// delegated to the user agent because the content process does not own the
+/// global navigable registry.  Step 8 (new top-level traversable) is handled
+/// either locally (window.open, via `GlobalScope::create_document`) or delegated to
+/// the UA (anchor navigation).
 ///
-///   1. Let chosen be null.
-///   2. Let currentNavigable be sourceNavigable.
-///   3. If name is empty or `_self`, set chosen to currentNavigable.
-///   4. If name is `_parent`, set chosen to parent (or currentNavigable).
-///   5. If name is `_top`, set chosen to traversable.
-///   6. Otherwise, if name is not `_blank` and noopener is false,
-///      set chosen to the result of finding a navigable by target name.
-///   7. If chosen is null, a new top-level traversable is being requested.
-///   8. Return chosen.
+/// Gaps: Step 2 (windowType) and Step 3 (sandboxingFlagSet) are not
+/// implemented.  windowType is always "existing or none" and sandboxing
+/// is not checked.
 pub(crate) fn the_rules_for_choosing_a_navigable(
     source_navigable_id: NavigableId,
     parent_navigable_id: Option<NavigableId>,
@@ -118,63 +114,65 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     // Step 1: Let chosen be null.
     let mut chosen: Option<NavigableId> = None;
 
-    // Step 3: Handle empty / _self.
+    // Note: Step 2 (Let windowType be "existing or none") and Step 3
+    // (sandboxingFlagSet) are not yet implemented.  windowType is
+    // always "existing or none", which is correct for the resolved
+    // cases below; when creating a new traversable windowType should
+    // distinguish "new and unrestricted" vs "new with no opener".
+
+    // Step 4: If name is the empty string or an ASCII case-insensitive match for
+    //         "_self", then set chosen to currentNavigable.
     if target_name.is_empty() || target_name.eq_ignore_ascii_case("_self") {
         chosen = Some(source_navigable_id);
     }
 
-    // Step 4: Handle _parent.
+    // Step 5: Otherwise, if name is an ASCII case-insensitive match for "_parent",
+    //         set chosen to currentNavigable's parent, if any, and currentNavigable
+    //         otherwise.
     if chosen.is_none() && target_name.eq_ignore_ascii_case("_parent") {
         chosen = Some(parent_navigable_id.unwrap_or(source_navigable_id));
     }
 
-    // Step 5: Handle _top.
+    // Step 6: Otherwise, if name is an ASCII case-insensitive match for "_top", set
+    //         chosen to currentNavigable's traversable navigable.
     if chosen.is_none() && target_name.eq_ignore_ascii_case("_top") {
         chosen = Some(top_level_navigable_id);
     }
 
-    // Step 6: Handle named targets (local lookup only — skip if noopener or _blank).
+    // Step 7: Otherwise, if name is not an ASCII case-insensitive match for "_blank"
+    //         and noopener is false, then set chosen to the result of finding a
+    //         navigable by target name given name and currentNavigable.
     if chosen.is_none() && !target_name.eq_ignore_ascii_case("_blank") && !noopener {
         // Content cannot cross-process lookup; delegate to UA.
         // TODO: implement local same-process target-name lookup against
         //       navigable registry.
     }
 
-    // Step 7: If chosen is still null, a new top-level traversable is needed.
-    //
+    // Step 8: If chosen is null, then a new top-level traversable is being requested.
     // <https://html.spec.whatwg.org/#creating-a-new-top-level-traversable>
     let Some(chosen) = chosen else {
         if let (Some(global_scope), Some(_context)) = (global_scope, context) {
-            // window.open path: content creates the about:blank document locally
-            // so the caller can return a WindowProxy immediately.  The UA
-            // continues via `new_traversable_info` in the NavigateRequest.
+            // window.open path: the content process creates the about:blank
+            // document locally so the caller can return a WindowProxy
+            // immediately.  The UA continues via `new_traversable_info` in the
+            // NavigateRequest.
             //
-            // Steps 1–3 (browsing context, document, opener) → content side:
-            //   The CreateDocumentCallback creates an about:blank document with
-            //   its own Window and JS Context.  The Window will back the
-            //   WindowProxy.
-            // Steps 4–6 (documentState, navigable record, initialise) → UA side:
-            //   The UA's `create_new_top_level_traversable_from_content` sets up
-            //   navigable, BCG, agent, event-loop registration without sending
-            //   CreateEmptyDocument back.
+            // `GlobalScope::create_document` creates an about:blank document
+            // with its own Window and JS Context directly (no callback
+            // indirection).  The UA's `create_new_top_level_traversable_from_content`
+            // sets up navigable, BCG, agent, and event-loop registration without
+            // sending CreateEmptyDocument back.
             let new_traversable_id = NavigableId::new();
             let new_document_id = DocumentId::new();
 
-            let created_window = match global_scope.create_document(
+            let (global_object, settings, document) = match global_scope.create_document(
                 new_traversable_id,
                 new_document_id,
                 None,
                 new_traversable_id,
             ) {
-                Some(Ok((global_object, settings, document))) => {
-                    global_scope.store_pending_window_open_document(
-                        new_document_id,
-                        settings,
-                        document,
-                    );
-                    global_object
-                }
-                Some(Err(error)) => {
+                Ok(result) => result,
+                Err(error) => {
                     eprintln!(
                         "the_rules_for_choosing_a_navigable: failed to create document: {error}"
                     );
@@ -184,35 +182,27 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                         return_window: None,
                     };
                 }
-                None => {
-                    eprintln!(
-                        "the_rules_for_choosing_a_navigable: no create-document callback"
-                    );
-                    return ChosenNavigableResult {
-                        chosen_navigable_id: None,
-                        new_traversable_info: None,
-                        return_window: None,
-                    };
-                }
             };
+            global_scope.store_pending_window_open_document(
+                new_document_id,
+                settings,
+                document,
+            );
 
-            let event_loop_id = global_scope
-                .event_loop_id()
-                .unwrap_or_else(EventLoopId::new);
             let new_info = NewTraversableInfo {
                 document_id: new_document_id,
-                event_loop_id,
                 target_name: target_name.to_owned(),
             };
 
             return ChosenNavigableResult {
                 chosen_navigable_id: Some(new_traversable_id),
                 new_traversable_info: Some(new_info),
-                return_window: Some(created_window),
+                return_window: Some(global_object),
             };
         }
 
-        // Anchor-navigation path (or missing callback): delegate to UA.
+        // Anchor-navigation path (or missing callback): chosen stays null,
+        // delegate to UA to create the new traversable.
         return ChosenNavigableResult {
             chosen_navigable_id: None,
             new_traversable_info: None,
@@ -220,11 +210,11 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
         };
     };
 
-    // Step 13 (window.open) / follow-hyperlink: chosen is resolved.
-    // Return the navigable ID. The return_window for _self / _parent / _top
-    // is the source document's global object (correct for _self; _parent and
-    // _top that target a different process are a known gap documented in
-    // content/src/html/README.md).
+    // Step 9: Return chosen and windowType.
+    // Note: windowType is always "existing or none" (Step 2 deferred).
+    // The return_window for _self / _parent / _top is the source document's
+    // global object (correct for _self; _parent and _top that target a
+    // different process are a known gap — see content/src/html/README.md).
     let return_window = context.map(|ctx| ctx.global_object());
     ChosenNavigableResult {
         chosen_navigable_id: Some(chosen),

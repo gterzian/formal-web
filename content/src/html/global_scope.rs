@@ -4,39 +4,18 @@ use std::{
     rc::Rc,
 };
 
-use blitz_dom::BaseDocument;
+use blitz_dom::{BaseDocument, DocumentConfig};
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, EventLoopId, NavigableId, WindowTimerClearRequest,
-    WindowTimerKey, WindowTimerRequest,
+use ipc_messages::{
+    content::{
+        DocumentId, Event as ContentEvent, NavigableId, WindowTimerClearRequest,
+        WindowTimerKey, WindowTimerRequest,
+    },
 };
 
 use crate::webidl::Callback;
-
-/// Callback for creating a new about:blank document locally in the content process.
-/// Installed by `ContentProcess` during document initialization.
-/// Used by `window.open` when a new top-level traversable needs to be created.
-/// Returns the JsObject handle, the EnvironmentSettingsObject (keeps the Boa Context
-/// alive), and the BaseDocument.  The caller MUST store the EnvironmentSettingsObject
-/// somewhere persistent (see `pending_window_open_documents`) — otherwise the Context
-/// is dropped and the JsObject becomes a dangling pointer.
-pub(crate) type CreateDocumentCallback = Box<
-    dyn Fn(
-        NavigableId,         // traversable_id
-        DocumentId,          // document_id
-        Option<NavigableId>, // parent_traversable_id
-        NavigableId,         // top_level_traversable_id
-    ) -> Result<
-        (
-            JsObject,                                 // global_object (Window)
-            super::environment_settings_object::EnvironmentSettingsObject,
-            Rc<RefCell<BaseDocument>>,
-        ),
-        String,
-    >,
->;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -182,11 +161,6 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
 
-    /// Callback to create a new empty document in this content process.
-    /// Installed by `ContentProcess` during document initialization.
-    #[unsafe_ignore_trace]
-    create_document_cb: RefCell<Option<CreateDocumentCallback>>,
-
     /// Pending about:blank documents created by `window.open`.  The
     /// EnvironmentSettingsObject must be kept alive for its Boa Context (and
     /// thus the returned Window JsObject) to remain valid.  When the user
@@ -207,9 +181,6 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     creation_url: RefCell<Option<url::Url>>,
 
-    /// The `EventLoopId` of the content process that owns this scope.
-    #[unsafe_ignore_trace]
-    own_event_loop_id: Cell<Option<EventLoopId>>,
 }
 
 impl GlobalScope {
@@ -230,10 +201,10 @@ impl GlobalScope {
             parent_traversable_id: Cell::new(None),
             top_level_traversable_id: Cell::new(None),
             event_sender: RefCell::new(None),
-            create_document_cb: RefCell::new(None),
+
             pending_window_open_documents: RefCell::new(HashMap::new()),
             creation_url: RefCell::new(None),
-            own_event_loop_id: Cell::new(None),
+
         }
     }
 
@@ -583,36 +554,53 @@ impl GlobalScope {
         }
     }
 
-    /// <https://html.spec.whatwg.org/#animationframeprovider-cancelanimationframe>
-    pub(crate) fn set_create_document_callback(&self, cb: CreateDocumentCallback) {
-        self.create_document_cb.borrow_mut().replace(cb);
-    }
-
+    /// Create a new about:blank document in this content process, with its own
+    /// Boa Context, Window, and GlobalScope.  The caller MUST store the returned
+    /// `EnvironmentSettingsObject` somewhere persistent (see
+    /// `pending_window_open_documents`) — otherwise the Context is dropped and
+    /// the JsObject becomes a dangling pointer.
     pub(crate) fn create_document(
         &self,
-        traversable_id: NavigableId,
-        document_id: DocumentId,
-        parent_traversable_id: Option<NavigableId>,
-        top_level_traversable_id: NavigableId,
-    ) -> Option<
-        Result<
-            (
-                JsObject,
-                super::environment_settings_object::EnvironmentSettingsObject,
-                Rc<RefCell<BaseDocument>>,
-            ),
-            String,
-        >,
+        new_traversable_id: NavigableId,
+        new_document_id: DocumentId,
+        _parent_traversable_id: Option<NavigableId>,
+        _top_level_traversable_id: NavigableId,
+    ) -> Result<
+        (
+            JsObject,
+            super::environment_settings_object::EnvironmentSettingsObject,
+            Rc<RefCell<BaseDocument>>,
+        ),
+        String,
     > {
-        let cb = self.create_document_cb.borrow();
-        cb.as_ref().map(|f| {
-            f(
-                traversable_id,
-                document_id,
-                parent_traversable_id,
-                top_level_traversable_id,
-            )
-        })
+        // Create a bare about:blank document.  No blitz providers needed —
+        // navigation to the destination URL will set those up via the
+        // UA's create-loaded-document path.
+        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
+            viewport: None,
+            base_url: None,
+            net_provider: None,
+            shell_provider: None,
+            html_parser_provider: None,
+            ..DocumentConfig::default()
+        })));
+        let event_sender = self.event_sender();
+        let settings = super::environment_settings_object::EnvironmentSettingsObject::new(
+            Rc::clone(&document),
+            url::Url::parse("about:blank").map_err(|error| error.to_string())?,
+            event_sender,
+            Some(new_traversable_id),
+            Some(new_document_id),
+        )?;
+        crate::html::html_parser::parse_html_into_document(
+            &mut document.borrow_mut(),
+            crate::EMPTY_HTML_DOCUMENT,
+        );
+        Ok((
+            settings.context.global_object(),
+            settings,
+            document,
+        ))
     }
 
     /// Store a pending about:blank document created by `window.open`.
@@ -630,14 +618,6 @@ impl GlobalScope {
     }
 
 
-
-    pub(crate) fn set_event_loop_id(&self, id: EventLoopId) {
-        self.own_event_loop_id.set(Some(id));
-    }
-
-    pub(crate) fn event_loop_id(&self) -> Option<EventLoopId> {
-        self.own_event_loop_id.get()
-    }
 
     pub(crate) fn set_creation_url(&self, url: url::Url) {
         self.creation_url.borrow_mut().replace(url);

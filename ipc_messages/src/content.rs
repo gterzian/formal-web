@@ -160,7 +160,6 @@ pub struct BeforeUnloadResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewTraversableInfo {
     pub document_id: DocumentId,
-    pub event_loop_id: EventLoopId,
     pub target_name: String,
 }
 

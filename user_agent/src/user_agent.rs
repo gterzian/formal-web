@@ -829,7 +829,12 @@ pub enum UserAgentCommand {
     CreateFreshTopLevelTraversable {
         destination_url: String,
     },
+    /// The event loop the content process belongs to.  Required when
+    /// `request.new_traversable_info` is `Some` (window.open creating a new
+    /// traversable).  For existing-navigable navigations the UA looks up
+    /// the event loop from its own state.
     Navigate {
+        event_loop_id: Option<EventLoopId>,
         request: NavigateRequest,
     },
     CompleteBeforeUnload {
@@ -1012,9 +1017,19 @@ impl UserAgent {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate>
-    pub fn start_navigation(&self, request: NavigateRequest) -> Result<(), String> {
+    /// Initiates navigation from outside the content event loop (e.g.
+    /// browser-chrome URL bar, automation).  `event_loop_id` is `None`
+    /// because the event loop is not known at this call site; the UA
+    /// looks it up from navigable state in `handle_navigate`.
+    pub fn start_navigation(
+        &self,
+        request: NavigateRequest,
+    ) -> Result<(), String> {
         self.command_sender
-            .send(UserAgentCommand::Navigate { request })
+            .send(UserAgentCommand::Navigate {
+                event_loop_id: None,
+                request,
+            })
             .map_err(|error| format!("failed to send navigate command: {error}"))
     }
 
@@ -1321,8 +1336,11 @@ impl UserAgentWorker {
                 UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
                     self.create_a_fresh_top_level_traversable(destination_url);
                 }
-                UserAgentCommand::Navigate { request } => {
-                    self.handle_navigate(request);
+                UserAgentCommand::Navigate {
+                    event_loop_id,
+                    request,
+                } => {
+                    self.handle_navigate(event_loop_id, request);
                 }
                 UserAgentCommand::CompleteBeforeUnload { result } => {
                     self.handle_complete_before_unload(result);
@@ -2387,11 +2405,11 @@ impl UserAgentWorker {
     fn creating_a_new_top_level_traversable(
         &mut self,
         traversable_id: NavigableId,
+        event_loop_id: EventLoopId,
         info: &NewTraversableInfo,
     ) -> Result<(), String> {
         let document_id = info.document_id;
         let target_name = &info.target_name;
-        let event_loop_id = info.event_loop_id;
 
         // Step 4: "Let documentState be a new document state..."
         // Step 5: "Let traversable be a new traversable navigable."
@@ -2588,7 +2606,7 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate>
-    fn handle_navigate(&mut self, request: NavigateRequest) {
+    fn handle_navigate(&mut self, event_loop_id: Option<EventLoopId>, request: NavigateRequest) {
         let result: Result<(), String> = (|| {
             let is_window_open = request.features_json.is_some();
 
@@ -2597,7 +2615,12 @@ impl UserAgentWorker {
                     let traversable_id = request.chosen_navigable_id.ok_or_else(|| {
                         String::from("new_traversable_info without chosen_navigable_id")
                     })?;
-                    self.creating_a_new_top_level_traversable(traversable_id, new_info)?;
+                    let event_loop_id = event_loop_id.ok_or_else(|| {
+                        String::from(
+                            "new_traversable_info requires event_loop_id (window.open)",
+                        )
+                    })?;
+                    self.creating_a_new_top_level_traversable(traversable_id, event_loop_id, new_info)?;
                     (traversable_id, String::from("new and unrestricted"))
                 } else {
                     match request.chosen_navigable_id {

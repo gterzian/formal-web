@@ -13,7 +13,7 @@ use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
 use crate::html::{
-    CreateDocumentCallback, EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
+    EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
@@ -753,9 +753,9 @@ impl ContentProcess {
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
 
-        // Install the create-document callback and event loop id on the GlobalScope
-        // so that `window.open` can create new documents locally.
-        self.install_create_document_callback(document_id)?;
+        // Set the navigable hierarchy on the GlobalScope so that `window.open`
+        // can resolve `_parent`/`_top` targets.
+        self.set_navigable_hierarchy_on_global_scope(document_id)?;
 
         run_dom_post_connection_steps_for_document(self, document_id)?;
         let content_document = self
@@ -841,8 +841,9 @@ impl ContentProcess {
         );
         attach_same_origin_child_document_for_traversable(self, traversable_id)?;
 
-        // Store this ContentProcess as the host on the new document's GlobalScope.
-        let _ = self.install_create_document_callback(document_id);
+        // Set the navigable hierarchy on the GlobalScope so that `window.open`
+        // can resolve `_parent`/`_top` targets.
+        let _ = self.set_navigable_hierarchy_on_global_scope(document_id);
 
         run_dom_post_connection_steps_for_document(self, document_id)?;
 
@@ -1400,61 +1401,25 @@ impl ContentProcess {
             .map_err(|error| format!("failed to send content shutdown completion: {error}"))
     }
 
-    /// Install the create-document callback, navigable-tree info, and event loop id
-    /// on a document's `GlobalScope`. This enables `window.open` to create new top-level
-    /// traversable documents locally and to resolve parent/top navigable targets.
-    fn install_create_document_callback(&self, document_id: DocumentId) -> Result<(), String> {
+    /// Set the navigable hierarchy on the GlobalScope so that `window.open`
+    /// can resolve `_parent`/`_top` targets in
+    /// `the_rules_for_choosing_a_navigable`.
+    fn set_navigable_hierarchy_on_global_scope(
+        &self,
+        document_id: DocumentId,
+    ) -> Result<(), String> {
         let Some(content_document) = self.documents.get(&document_id) else {
             return Err(format!("unknown document id: {document_id}"));
         };
-
-        let traversable_id = content_document.traversable_id;
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        let event_sender = self.event_sender.clone();
-        let local_state = Arc::clone(&self.local_state);
-        let event_sender_for_cb = event_sender.clone();
-
-        let cb: CreateDocumentCallback = Box::new(
-            move |new_traversable_id, new_document_id, _new_parent_id, _new_top_level_id| {
-                let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
-                    viewport: None,
-                    base_url: None,
-                    net_provider: Some(Arc::new(ContentNetProvider {
-                        event_sender: event_sender_for_cb.clone(),
-                        local_state: Arc::clone(&local_state),
-                        content_document_id: new_document_id,
-                    })),
-                    shell_provider: Some(Arc::new(ContentShellProvider::new(
-                        event_sender_for_cb.clone(),
-                    ))),
-                    html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
-                    ..DocumentConfig::default()
-                })));
-                let settings = EnvironmentSettingsObject::new(
-                    Rc::clone(&document),
-                    Url::parse("about:blank").map_err(|e| e.to_string())?,
-                    Some(event_sender_for_cb.clone()),
-                    Some(new_traversable_id),
-                    Some(new_document_id),
-                )?;
-                parse_html_into_document(&mut document.borrow_mut(), EMPTY_HTML_DOCUMENT);
-                Ok((
-                    settings.context.global_object(),
-                    settings,
-                    document,
-                ))
-            },
-        );
-
         crate::boa::platform_objects::with_global_scope(
             &content_document.settings.context,
             |global_scope| {
-                global_scope.set_navigation_info(traversable_id, event_sender.clone());
-                global_scope
-                    .set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
-                global_scope.set_create_document_callback(cb);
-                global_scope.set_event_loop_id(self.event_loop_id);
+                global_scope.set_navigable_hierarchy(
+                    parent_traversable_id,
+                    top_level_traversable_id,
+                );
                 Ok(())
             },
         )

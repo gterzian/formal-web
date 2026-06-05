@@ -159,6 +159,16 @@ pub(crate) fn is_cross_origin_property(name: &str) -> bool {
 }
 
 /// <https://html.spec.whatwg.org/#isplatformobjectsameorigin-(-o-)>
+///
+/// Currently hardcoded to `true` because the content process only runs a
+/// single origin.  When multi-origin support is added, this must check
+/// whether the active document of the given Window's browsing context is
+/// same-origin with the active document of the entry settings object's
+/// browsing context.
+///
+/// Hardcoding to `true` means that if cross-origin windows are ever
+/// returned from `window_open_steps`, all their properties will be
+/// silently leaked through the WindowProxy.
 #[allow(dead_code)]
 pub(crate) fn is_platform_object_same_origin(_window: &Window, _context: &Context) -> bool {
     true
