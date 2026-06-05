@@ -17,6 +17,38 @@ function truncate(text: string): string {
   return content + (truncated ? `\n\n[Truncated: ${outputLines}/${totalLines} lines]` : "");
 }
 
+// ── Link extraction ───────────────────────────────────────────────────────────
+// Collects all <a href="..."> elements within a cheerio selection, returning
+// a deduplicated list of { text, href } pairs.
+
+function collectLinks($: CheerioAPI, $root: Cheerio<any>): { text: string; href: string }[] {
+  const seen = new Set<string>();
+  const links: { text: string; href: string }[] = [];
+  $root.find("a[href]").each((_, el) => {
+    const $el = $(el);
+    const href = $el.attr("href")?.trim() || "";
+    if (!href || href.startsWith("#")) return; // skip internal anchors
+    const text = $el.text().trim();
+    if (!text) return;
+    const key = `${href}::${text}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    links.push({ text, href });
+  });
+  return links;
+}
+
+function formatLinkTable(links: { text: string; href: string }[]): string {
+  if (links.length === 0) return "";
+  const maxLen = Math.max(...links.map((l) => l.text.length), "Term".length);
+  const header = `┌─ ${"Term".padEnd(maxLen)} ── ${"Link".padEnd(70)} ─┐`;
+  const sep = `│${"".padEnd(maxLen + 74, "─")}│`;
+  const rows = links.map(
+    (l) => `│ ${l.text.padEnd(maxLen)}  ${l.href.padEnd(70)} │`
+  );
+  return ["", header, ...rows, sep].join("\n");
+}
+
 // ── Algorithm step rendering ──────────────────────────────────────────────────
 // The HTML spec uses nested <ol> elements for algorithm steps. The <li> elements
 // are NOT numbered in the HTML — the browser renders them. We assign numbers
@@ -25,13 +57,21 @@ function truncate(text: string): string {
 function renderAlgorithmSteps(
   $: CheerioAPI,
   $ol: Cheerio<any>,
-  parentNum: string
+  parentNum: string,
+  links: { text: string; href: string }[]
 ): string[] {
   const lines: string[] = [];
   $ol.children("li").each((i, li) => {
     const $li = $(li);
     const num = i + 1;
     const fullNum = parentNum ? `${parentNum}.${num}` : `${num}`;
+
+    // Collect links inside this step before cloning
+    collectLinks($, $li).forEach((l) => {
+      if (!links.some((existing) => existing.href === l.href && existing.text === l.text)) {
+        links.push(l);
+      }
+    });
 
     // Get step text, excluding nested <ol> content and dfn panels.
     const $clone = $li.clone();
@@ -44,7 +84,7 @@ function renderAlgorithmSteps(
     // Recurse into nested <ol>
     const $nestedOl = $li.children("ol");
     if ($nestedOl.length) {
-      const nested = renderAlgorithmSteps($, $nestedOl, fullNum);
+      const nested = renderAlgorithmSteps($, $nestedOl, fullNum, links);
       lines.push(...nested);
     }
   });
@@ -60,6 +100,7 @@ function renderAlgorithmSteps(
 function walkSiblingContent(
   $: CheerioAPI,
   startEl: Cheerio<any>,
+  links: { text: string; href: string }[],
   stopAtLevel?: number
 ): string[] {
   const parts: string[] = [];
@@ -75,6 +116,13 @@ function walkSiblingContent(
     // Stop at the next named dfn (new definition boundary).
     if (t === "dfn" && el.attr("id")) break;
 
+    // Collect links from this sibling
+    collectLinks($, el).forEach((l) => {
+      if (!links.some((existing) => existing.href === l.href && existing.text === l.text)) {
+        links.push(l);
+      }
+    });
+
     if (t === "div" && el.attr("data-algorithm") !== undefined) {
       // Render algorithm box with full recursive step numbering.
       const algoName = el.attr("data-algorithm") || "(unnamed)";
@@ -83,7 +131,7 @@ function walkSiblingContent(
       const header = $p.length ? $p.text().trim() : "";
       let algoBlock = `\n── Algorithm: ${algoName} ──\n${header}`;
       if ($ol.length) {
-        const steps = renderAlgorithmSteps($, $ol, "");
+        const steps = renderAlgorithmSteps($, $ol, "", links);
         algoBlock += "\n" + steps.join("\n");
       }
       parts.push(algoBlock);
@@ -215,15 +263,24 @@ export default function (pi: ExtensionAPI) {
       const tagName = (el.prop("tagName") as string).toLowerCase();
       const text = el.text().trim();
 
+      // Collect links from the target element and all walked siblings
+      const links: { text: string; href: string }[] = [];
+      collectLinks($, el).forEach((l) => {
+        if (!links.some((existing) => existing.href === l.href && existing.text === l.text)) {
+          links.push(l);
+        }
+      });
+
       // For headings: walk siblings stopping at same-or-higher heading.
       if (/^h[1-6]$/.test(tagName)) {
         const level = parseInt(tagName[1]);
-        const parts = [text, ...walkSiblingContent($, el, level)];
+        const parts = [text, ...walkSiblingContent($, el, links, level)];
+        const linkTable = formatLinkTable(links);
         return {
           content: [
             {
               type: "text" as const,
-              text: truncate(parts.join("\n\n")),
+              text: truncate(parts.join("\n\n") + linkTable),
             },
           ],
           details: { url, id, tag: tagName },
@@ -238,19 +295,20 @@ export default function (pi: ExtensionAPI) {
         const header = $p.length ? $p.text().trim() : "";
         let output = `Algorithm: ${algoName}\n${header}`;
         if ($ol.length) {
-          const steps = renderAlgorithmSteps($, $ol, "");
+          const steps = renderAlgorithmSteps($, $ol, "", links);
           if (steps.length) {
             output += "\n" + steps.join("\n");
           }
         }
+        const linkTable = formatLinkTable(links);
         return {
-          content: [{ type: "text" as const, text: truncate(output) }],
+          content: [{ type: "text" as const, text: truncate(output + linkTable) }],
           details: { url, id, tag: tagName, algorithm: algoName },
         };
       }
 
       // For any other element: show the element context, then walk siblings.
-      const siblingParts = walkSiblingContent($, el);
+      const siblingParts = walkSiblingContent($, el, links);
       const parentSection = findParentSectionEl($, el);
       const heading = parentSection
         ? `\nSection: ${parentSection.id}: ${parentSection.text}`
@@ -259,8 +317,9 @@ export default function (pi: ExtensionAPI) {
         `Element: <${tagName} id="${id}">` + heading + `\n\n${text}`,
         ...siblingParts,
       ];
+      const linkTable = formatLinkTable(links);
       return {
-        content: [{ type: "text" as const, text: truncate(parts.join("\n\n")) }],
+        content: [{ type: "text" as const, text: truncate(parts.join("\n\n") + linkTable) }],
         details: { url, id, tag: tagName },
       };
     },

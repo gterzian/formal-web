@@ -234,9 +234,8 @@ fn visible_metrics(image: &RgbaImage, region: RegionBounds) -> VisibleMetrics {
                 non_white_pixels += 1;
             }
 
-            let luma = 0.2126 * f64::from(red)
-                + 0.7152 * f64::from(green)
-                + 0.0722 * f64::from(blue);
+            let luma =
+                0.2126 * f64::from(red) + 0.7152 * f64::from(green) + 0.0722 * f64::from(blue);
             luma_sum += luma;
             luma_sum_squares += luma * luma;
             unique_buckets.insert(color_bucket(red, green, blue));

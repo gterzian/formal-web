@@ -801,7 +801,9 @@ impl WptServeProcess {
             Ok(child) => child,
             Err(error) => {
                 if let Err(error) = fs::remove_dir_all(&temp_dir) {
-                    eprintln!("[wpt-runner] failed to remove temp dir after wptserve start error: {error}");
+                    eprintln!(
+                        "[wpt-runner] failed to remove temp dir after wptserve start error: {error}"
+                    );
                 }
                 return Err(format!("failed to start wptserve: {error}"));
             }
@@ -2008,14 +2010,20 @@ fn runner_executable_path(build_profile: RunnerBuildProfile) -> Result<PathBuf, 
     Ok(repo_root()
         .join("target")
         .join(build_profile.target_dir_name())
-        .join(format!("{RUNNER_BINARY_NAME}{}", std::env::consts::EXE_SUFFIX)))
+        .join(format!(
+            "{RUNNER_BINARY_NAME}{}",
+            std::env::consts::EXE_SUFFIX
+        )))
 }
 
 fn browser_executable_path(build_profile: RunnerBuildProfile) -> PathBuf {
     repo_root()
         .join("target")
         .join(build_profile.target_dir_name())
-        .join(format!("{BROWSER_BINARY_NAME}{}", std::env::consts::EXE_SUFFIX))
+        .join(format!(
+            "{BROWSER_BINARY_NAME}{}",
+            std::env::consts::EXE_SUFFIX
+        ))
 }
 
 fn ensure_browser_executable(build_profile: RunnerBuildProfile) -> Result<PathBuf, String> {
@@ -2047,20 +2055,19 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
 
     // The runner binary must always be freshly built via the isolated target dir,
     // since the wpt-runner crate may not have been compiled for this profile yet.
-    let runner_builds = [
-        (repo_root.join("tests/wpt_runner/Cargo.toml"), RUNNER_BINARY_NAME),
-    ];
+    let runner_builds = [(
+        repo_root.join("tests/wpt_runner/Cargo.toml"),
+        RUNNER_BINARY_NAME,
+    )];
 
-    // Sidecar binaries (embedder, content, net) are prebuilt by the workspace
-    // build.rs before this function runs.  Only rebuild them if they are missing
-    // from the output directory — this avoids a redundant full build of all
-    // sidecar dependencies (boa_runtime, etc.) into a second target directory,
-    // which was a source of stale-artifact build failures.
-    let sidecar_builds = [
-        (repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME),
-        (repo_root.join("content/Cargo.toml"), "formal-web-content"),
-        (repo_root.join("net/Cargo.toml"), "formal-web-net"),
-    ];
+    // The embedder binary must always be freshly built because build.rs only
+    // prebuilds content and net (not the embedder).  A stale embedder from a
+    // previous run causes the content process to fail at IPC bootstrap (the
+    // content binary itself is prebuilt by build.rs and checked below).
+    let embedder_builds = [(
+        repo_root.join("embedder/Cargo.toml"),
+        BROWSER_BINARY_NAME,
+    )];
 
     for (manifest_path, binary_name) in &runner_builds {
         let isolated_target_dir = prebuild_target_root.join(binary_name);
@@ -2073,12 +2080,30 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
         )?;
     }
 
-    for (manifest_path, binary_name) in &sidecar_builds {
-        let target_path = target_profile_dir.join(format!(
-            "{}{}",
+    for (manifest_path, binary_name) in &embedder_builds {
+        let isolated_target_dir = prebuild_target_root.join(binary_name);
+        build_single_binary(
+            manifest_path,
             binary_name,
-            std::env::consts::EXE_SUFFIX
-        ));
+            &isolated_target_dir,
+            &target_profile_dir,
+            build_profile,
+        )?;
+    }
+
+    // Sidecar binaries (content, net) are prebuilt by the workspace
+    // build.rs before this function runs.  Only rebuild them if they are missing
+    // from the output directory — this avoids a redundant full build of all
+    // sidecar dependencies (boa_runtime, etc.) into a second target directory,
+    // which was a source of stale-artifact build failures.
+    let sidecar_builds = [
+        (repo_root.join("content/Cargo.toml"), "formal-web-content"),
+        (repo_root.join("net/Cargo.toml"), "formal-web-net"),
+    ];
+
+    for (manifest_path, binary_name) in &sidecar_builds {
+        let target_path =
+            target_profile_dir.join(format!("{}{}", binary_name, std::env::consts::EXE_SUFFIX));
         if target_path.is_file() {
             // Already placed by build.rs — no need to rebuild.
             continue;
@@ -2250,7 +2275,10 @@ fn cleanup_registered_wptserve_processes() {
 
     for pid in &pids {
         if let Err(error) = terminate_wptserve_process_group(*pid) {
-            eprintln!("[wpt-runner] failed to terminate wptserve process {}: {error}", pid);
+            eprintln!(
+                "[wpt-runner] failed to terminate wptserve process {}: {error}",
+                pid
+            );
         }
     }
 
@@ -2291,12 +2319,7 @@ fn resolve_python_interpreter() -> Result<String, String> {
     }
 
     // 3. Try known-stable minor versions.
-    for candidate in &[
-        "python3.10",
-        "python3.11",
-        "python3.12",
-        "python3.13",
-    ] {
+    for candidate in &["python3.10", "python3.11", "python3.12", "python3.13"] {
         if check_python_works(candidate) {
             return resolve_to_absolute(candidate);
         }
@@ -2339,9 +2362,7 @@ fn resolve_to_absolute(name: &str) -> Result<String, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .map_err(|error| {
-            format!("failed to resolve python path for {name}: {error}")
-        })?;
+        .map_err(|error| format!("failed to resolve python path for {name}: {error}"))?;
 
     if output.status.success() {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();

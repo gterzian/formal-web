@@ -34,11 +34,11 @@ use ipc_messages::content::Command::{
 use ipc_messages::content::{
     BeforeUnloadCheckId, Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
-    ElementClickResult, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent,
+    ElementClickResult, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent, EventLoopId,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FontTransportSender, FrameCompositionMetadata, FrameEmbedSite, FrameId, LoadedDocumentResponse,
-    NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult,
-    TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
+    NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult, TraversableViewport,
+    ViewportSnapshot, WebviewId, WindowTimerKey,
 };
 use std::{
     cell::RefCell,
@@ -335,6 +335,7 @@ struct DocumentViewportState {
 
 pub(crate) struct ContentProcess {
     event_sender: IpcSender<ContentEvent>,
+    event_loop_id: EventLoopId,
     local_state: LocalContentStateRef,
     default_viewport: Option<ViewportSnapshot>,
     traversable_viewports: HashMap<NavigableId, DocumentViewportState>,
@@ -346,9 +347,10 @@ pub(crate) struct ContentProcess {
 }
 
 impl ContentProcess {
-    fn new(event_sender: IpcSender<ContentEvent>) -> Self {
+    fn new(event_sender: IpcSender<ContentEvent>, event_loop_id: EventLoopId) -> Self {
         Self {
             event_sender,
+            event_loop_id,
             local_state: Arc::new(Mutex::new(LocalContentState {
                 pending_handlers: HashMap::new(),
             })),
@@ -750,6 +752,11 @@ impl ContentProcess {
         );
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
+
+        // Set the navigable hierarchy on the GlobalScope so that `window.open`
+        // can resolve `_parent`/`_top` targets.
+        self.set_navigable_hierarchy_on_global_scope(document_id)?;
+
         run_dom_post_connection_steps_for_document(self, document_id)?;
         let content_document = self
             .documents
@@ -833,6 +840,11 @@ impl ContentProcess {
             },
         );
         attach_same_origin_child_document_for_traversable(self, traversable_id)?;
+
+        // Set the navigable hierarchy on the GlobalScope so that `window.open`
+        // can resolve `_parent`/`_top` targets.
+        let _ = self.set_navigable_hierarchy_on_global_scope(document_id);
+
         run_dom_post_connection_steps_for_document(self, document_id)?;
 
         let deferred_fetches = self
@@ -1389,10 +1401,39 @@ impl ContentProcess {
             .map_err(|error| format!("failed to send content shutdown completion: {error}"))
     }
 
+    /// Set the navigable hierarchy on the GlobalScope so that `window.open`
+    /// can resolve `_parent`/`_top` targets in
+    /// `the_rules_for_choosing_a_navigable`.
+    fn set_navigable_hierarchy_on_global_scope(
+        &self,
+        document_id: DocumentId,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get(&document_id) else {
+            return Err(format!("unknown document id: {document_id}"));
+        };
+        let parent_traversable_id = content_document.parent_traversable_id;
+        let top_level_traversable_id = content_document.top_level_traversable_id;
+        crate::boa::platform_objects::with_global_scope(
+            &content_document.settings.context,
+            |global_scope| {
+                global_scope.set_navigable_hierarchy(
+                    parent_traversable_id,
+                    top_level_traversable_id,
+                );
+                Ok(())
+            },
+        )
+        .map_err(|error| error.to_string())
+    }
+
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     /// Note: The Rust event-loop worker emits these process effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         match command {
+            Command::SetEventLoopId(event_loop_id) => {
+                self.event_loop_id = event_loop_id;
+                Ok(true)
+            }
             Command::SetTraceSender(trace_sender) => {
                 self.set_trace_sender(trace_sender);
                 Ok(true)
@@ -1546,14 +1587,18 @@ pub fn run_content_process(token: String) -> Result<(), String> {
     let (event_sender, event_receiver) =
         ipc::channel::<ContentEvent>().map_err(|error| error.to_string())?;
     let bootstrap = IpcSender::<Bootstrap>::connect(token).map_err(|error| error.to_string())?;
+    // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
+    // Use a placeholder until the real id arrives.
+    let placeholder_id = EventLoopId::from_u128(0);
     bootstrap
         .send(Bootstrap {
             command_sender,
             event_receiver,
+            event_loop_id: placeholder_id,
         })
         .map_err(|error| error.to_string())?;
 
-    let mut process = ContentProcess::new(event_sender);
+    let mut process = ContentProcess::new(event_sender, placeholder_id);
     loop {
         let command = match command_receiver.recv() {
             Ok(command) => command,

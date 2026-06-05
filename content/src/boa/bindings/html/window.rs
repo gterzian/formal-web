@@ -12,7 +12,7 @@ use crate::boa::platform_objects::{
 };
 use crate::boa::with_event_target_mut;
 use crate::html::{
-    Location, Window, WindowOrWorkerGlobalScope,
+    Location, Window, WindowOrWorkerGlobalScope, WindowProxy,
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
@@ -138,11 +138,7 @@ fn parse_structured_clone_options(value: &JsValue) -> Option<StructuredCloneOpti
     None
 }
 
-fn open_method(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn open_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let url = args
         .get(0)
         .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
@@ -161,7 +157,7 @@ fn open_method(
 
     let window_object = current_window_object(this, context);
     let window = downcast_window(&window_object)?;
-    window.open(&url, &target, &features)
+    window.open(&url, &target, &features, context)
 }
 
 fn request_animation_frame_method(
@@ -320,6 +316,31 @@ fn get_computed_style_method(
     })?
 }
 
+/// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
+///
+/// Construct a placeholder JsObject whose data is a `WindowProxy` struct.
+///
+/// This is NOT a correct WindowProxy exotic object (see
+/// content/src/html/README.md §WindowProxy for the full gap list).  The
+/// prototype chain is set to `Window.prototype` as a hack so that accessors
+/// and methods (which live on the prototype via `ClassBuilder`) are
+/// reachable and `current_window_object` unwraps the `this`-value.
+///
+/// Known incorrect:
+/// - [[GetOwnProperty]] checks the proxy's own properties (none) instead of
+///   the Window's own properties, so `document`, `console`, and all other
+///   `register_global_property` entries are invisible through the proxy.
+/// - Named child-navigable properties and array-index properties are absent.
+/// - No exotic internal methods at all.
+/// - `is_platform_object_same_origin` is hardcoded to `true`.
+/// - Navigation-time Window replacement is not wired.
+pub(crate) fn create_window_proxy(window: JsObject) -> JsValue {
+    let prototype = window.prototype();
+    let proxy = WindowProxy::new(window);
+    let proxy_object = JsObject::from_proto_and_data(prototype, proxy);
+    JsValue::from(proxy_object)
+}
+
 fn location_object(context: &mut Context) -> JsResult<JsObject> {
     if let Some(object) = cached_location_object(context)? {
         return Ok(object);
@@ -332,8 +353,23 @@ fn location_object(context: &mut Context) -> JsResult<JsObject> {
     Ok(object)
 }
 
+/// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
+///
+/// Resolve the Window from a receiver that may be a Window or a WindowProxy.
+/// When accessors on Window.prototype are invoked via a WindowProxy (e.g.
+/// `proxy.onload = ...`), the receiver (`this`) is the WindowProxy JsObject.
+/// This function unwraps WindowProxy to its inner Window so that downcasts
+/// succeed.
 fn current_window_object(this: &JsValue, context: &Context) -> JsObject {
     if let Some(object) = this.as_object() {
+        // If the receiver is a WindowProxy, extract the inner Window.
+        // This handles [[Get]] and [[Set]] delegation: the spec says
+        // OrdinaryGet(W, P, Receiver) / OrdinarySet(W, P, V, Receiver)
+        // where operations happen on W (the Window) even though the
+        // Receiver is the WindowProxy.
+        if let Some(proxy) = object.downcast_ref::<WindowProxy>() {
+            return proxy.window_handle().clone();
+        }
         return object.clone();
     }
 

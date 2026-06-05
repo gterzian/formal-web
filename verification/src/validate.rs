@@ -195,7 +195,9 @@ pub fn validate_and_print(options: &ValidationOptions) -> Result<bool, String> {
     } else {
         print_human_report(&reports);
     }
-    Ok(!reports.iter().any(|report| report.status == SpecStatus::Fail))
+    Ok(!reports
+        .iter()
+        .any(|report| report.status == SpecStatus::Fail))
 }
 
 fn run(cli: Cli) -> Result<ExitCode, String> {
@@ -245,7 +247,10 @@ fn run_diagnose(args: DiagnoseArgs) -> Result<ExitCode, String> {
     Ok(ExitCode::from(if failed { 1 } else { 0 }))
 }
 
-fn validate_specs(options: &ValidationOptions, failure_context: usize) -> Result<Vec<SpecReport>, String> {
+fn validate_specs(
+    options: &ValidationOptions,
+    failure_context: usize,
+) -> Result<Vec<SpecReport>, String> {
     let selected_specs = select_specs(&options.specs, options.only.as_deref())?;
     let tla2tools = resolve_process_path(&options.tla2tools)?;
 
@@ -288,8 +293,12 @@ fn select_specs(spec_root: &Path, only: Option<&str>) -> Result<Vec<SpecLayout>,
 }
 
 fn discover_specs(spec_root: &Path) -> Result<Vec<SpecLayout>, String> {
-    let entries = fs::read_dir(spec_root)
-        .map_err(|error| format!("failed to read spec directory {}: {error}", spec_root.display()))?;
+    let entries = fs::read_dir(spec_root).map_err(|error| {
+        format!(
+            "failed to read spec directory {}: {error}",
+            spec_root.display()
+        )
+    })?;
     let mut specs = BTreeMap::<String, SpecLayout>::new();
 
     for entry_result in entries {
@@ -327,7 +336,9 @@ fn discover_specs(spec_root: &Path) -> Result<Vec<SpecLayout>, String> {
         }
 
         let name = stem.to_owned();
-        specs.entry(name.clone()).or_insert_with(|| SpecLayout::flat(spec_root, &name));
+        specs
+            .entry(name.clone())
+            .or_insert_with(|| SpecLayout::flat(spec_root, &name));
     }
 
     Ok(specs.into_values().collect())
@@ -411,7 +422,9 @@ fn validate_spec(
         return Ok(SpecReport {
             spec: spec.name.clone(),
             status: SpecStatus::None,
-            message: Some(String::from("no trace file for this spec in the current run")),
+            message: Some(String::from(
+                "no trace file for this spec in the current run",
+            )),
             trace_length: None,
             tlc_diameter: None,
             trace_file: Some(path_string(&trace_file)),
@@ -435,7 +448,11 @@ fn validate_spec(
         message: if matches_trace {
             None
         } else {
-            Some(failure_message(trace_length, tlc_run.diameter, tlc_run.success))
+            Some(failure_message(
+                trace_length,
+                tlc_run.diameter,
+                tlc_run.success,
+            ))
         },
         trace_length: Some(trace_length),
         tlc_diameter: tlc_run.diameter,
@@ -482,7 +499,9 @@ fn run_tlc(
         };
         command.arg("-config").arg(config_name);
     }
-    command.arg(spec.trace_module_name()?).current_dir(&spec_run_dir);
+    command
+        .arg(spec.trace_module_name()?)
+        .current_dir(&spec_run_dir);
 
     let output = command.output().map_err(|error| {
         format!(
@@ -516,8 +535,12 @@ fn prepare_spec_run_dir(spec: &SpecLayout, workspace_root: &Path) -> Result<Path
 }
 
 fn copy_spec_sources(source_dir: &Path, run_dir: &Path) -> Result<(), String> {
-    let entries = fs::read_dir(source_dir)
-        .map_err(|error| format!("failed to read spec source directory {}: {error}", source_dir.display()))?;
+    let entries = fs::read_dir(source_dir).map_err(|error| {
+        format!(
+            "failed to read spec source directory {}: {error}",
+            source_dir.display()
+        )
+    })?;
     for entry_result in entries {
         let entry = entry_result.map_err(|error| {
             format!(
@@ -776,7 +799,11 @@ fn count_trace_entries(path: &Path) -> Result<usize, String> {
     Ok(count)
 }
 
-fn read_trace_window(path: &Path, index: usize, context_size: usize) -> Result<TraceWindow, String> {
+fn read_trace_window(
+    path: &Path,
+    index: usize,
+    context_size: usize,
+) -> Result<TraceWindow, String> {
     let file = File::open(path)
         .map_err(|error| format!("failed to open trace file {}: {error}", path.display()))?;
     let reader = BufReader::new(file);
@@ -869,8 +896,8 @@ fn build_diagnose_report(spec: &SpecLayout, report: SpecReport) -> Result<Diagno
 }
 
 fn trace_spec_mentions_event(path: &Path, event_name: &str) -> Result<bool, String> {
-    let contents =
-        fs::read_to_string(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     Ok(contents.contains(&format!("IsEvent(\"{event_name}\")")))
 }
 
@@ -878,8 +905,8 @@ fn excerpt_around_match(
     path: &Path,
     predicate: impl Fn(&str) -> bool,
 ) -> Result<Option<SpecExcerpt>, String> {
-    let contents =
-        fs::read_to_string(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let lines = contents.lines().collect::<Vec<_>>();
     for (index, line) in lines.iter().enumerate() {
         if !predicate(line) {
@@ -917,7 +944,8 @@ fn parse_only_filter(only: Option<&str>) -> Result<Option<BTreeSet<String>>, Str
 fn parse_tlc_diameter(output: &str) -> Option<usize> {
     for line in output.lines().rev() {
         let lower = line.to_ascii_lowercase();
-        if lower.contains("diameter") || lower.contains("depth of the complete state graph search") {
+        if lower.contains("diameter") || lower.contains("depth of the complete state graph search")
+        {
             if let Some(value) = extract_last_usize(line) {
                 return Some(value);
             }
@@ -968,7 +996,9 @@ fn failure_message(trace_length: usize, diameter: Option<usize>, tlc_success: bo
             "TLC exited unsuccessfully after reaching a diameter of {diameter} for a trace of length {trace_length}"
         ),
         (None, true) => {
-            format!("TLC did not report a state-graph diameter for a trace of length {trace_length}")
+            format!(
+                "TLC did not report a state-graph diameter for a trace of length {trace_length}"
+            )
         }
         (None, false) => {
             String::from("TLC exited unsuccessfully and did not report a state-graph diameter")
@@ -980,10 +1010,18 @@ fn print_human_report(results: &[SpecReport]) {
     for result in results {
         match result.status {
             SpecStatus::Skip => {
-                println!("SKIP {} {}", result.spec, result.message.as_deref().unwrap_or(""));
+                println!(
+                    "SKIP {} {}",
+                    result.spec,
+                    result.message.as_deref().unwrap_or("")
+                );
             }
             SpecStatus::None => {
-                println!("NONE {} {}", result.spec, result.message.as_deref().unwrap_or(""));
+                println!(
+                    "NONE {} {}",
+                    result.spec,
+                    result.message.as_deref().unwrap_or("")
+                );
             }
             SpecStatus::Ok => {
                 println!("CHECK {} ... OK", result.spec);
@@ -1051,6 +1089,9 @@ fn remove_dir_all_if_exists(path: &Path) -> Result<(), String> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("failed to remove directory {}: {error}", path.display())),
+        Err(error) => Err(format!(
+            "failed to remove directory {}: {error}",
+            path.display()
+        )),
     }
 }

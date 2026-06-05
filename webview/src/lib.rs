@@ -172,6 +172,7 @@ impl WebviewProvider {
                     noopener: false,
                     referrer_policy: None,
                     features_json: None,
+                    new_traversable_info: None,
                 })
             }
             None => self.user_agent.start_top_level_traversable(url.to_owned()),

@@ -78,6 +78,9 @@ pub struct TraversableViewport {
 pub struct Bootstrap {
     pub command_sender: IpcSender<Command>,
     pub event_receiver: IpcReceiver<Event>,
+    /// The `EventLoopId` assigned by the user agent for this content process.
+    /// Used by `window.open` to include the correct event loop id in new traversable info.
+    pub event_loop_id: EventLoopId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +133,12 @@ pub struct NavigateRequest {
     /// did not originate from `window.open`. Carried to the user agent for popup detection
     /// and browsing context feature setup.
     pub features_json: Option<String>,
+    /// Information about a new top-level traversable that the content process created
+    /// locally as part of the "rules for choosing a navigable". When `Some`, the user
+    /// agent must set up its navigable, browsing context, and document state without
+    /// sending `CreateEmptyDocument` (content already created the document).
+    #[serde(default)]
+    pub new_traversable_info: Option<NewTraversableInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +155,12 @@ pub struct BeforeUnloadResult {
     pub document_id: DocumentId,
     pub check_id: BeforeUnloadCheckId,
     pub canceled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewTraversableInfo {
+    pub document_id: DocumentId,
+    pub target_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -651,6 +666,7 @@ pub enum WebviewProviderMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetTraceSender(Option<TraceSender>),
+    SetEventLoopId(EventLoopId),
     SetViewport(ViewportSnapshot),
     SetTraversableViewport(TraversableViewport),
     CreateEmptyDocument {

@@ -1,16 +1,18 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     rc::Rc,
 };
 
-use blitz_dom::BaseDocument;
+use blitz_dom::{BaseDocument, DocumentConfig};
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey,
-    WindowTimerRequest,
+use ipc_messages::{
+    content::{
+        DocumentId, Event as ContentEvent, NavigableId, WindowTimerClearRequest,
+        WindowTimerKey, WindowTimerRequest,
+    },
 };
 
 use crate::webidl::Callback;
@@ -144,9 +146,41 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     source_navigable_id: Cell<Option<NavigableId>>,
 
+    /// <https://html.spec.whatwg.org/#parent-navigable>
+    /// The parent of this document's navigable in the navigable tree.
+    /// None indicates a top-level traversable.
+    #[unsafe_ignore_trace]
+    parent_traversable_id: Cell<Option<NavigableId>>,
+
+    /// <https://html.spec.whatwg.org/#traversable-navigable>
+    /// The top-level traversable for this navigable tree.
+    #[unsafe_ignore_trace]
+    top_level_traversable_id: Cell<Option<NavigableId>>,
+
     /// Sender for content-to-user-agent IPC events (e.g. navigation requests).
     #[unsafe_ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
+
+    /// Pending about:blank documents created by `window.open`.  The
+    /// EnvironmentSettingsObject must be kept alive for its Boa Context (and
+    /// thus the returned Window JsObject) to remain valid.  When the user
+    /// agent finalizes the navigation (`CreateLoadedDocument`) the document
+    /// is transferred into `ContentProcess::documents`.
+    #[unsafe_ignore_trace]
+    pending_window_open_documents:
+        RefCell<HashMap<
+            DocumentId,
+            (
+                super::environment_settings_object::EnvironmentSettingsObject,
+                Rc<RefCell<BaseDocument>>,
+            ),
+        >>,
+
+    /// <https://html.spec.whatwg.org/#concept-document-creation-url>
+    /// The creation URL of this window's Document.
+    #[unsafe_ignore_trace]
+    creation_url: RefCell<Option<url::Url>>,
+
 }
 
 impl GlobalScope {
@@ -164,7 +198,13 @@ impl GlobalScope {
             current_timer_nesting_level: Cell::new(None),
             timer_host: RefCell::new(None),
             source_navigable_id: Cell::new(None),
+            parent_traversable_id: Cell::new(None),
+            top_level_traversable_id: Cell::new(None),
             event_sender: RefCell::new(None),
+
+            pending_window_open_documents: RefCell::new(HashMap::new()),
+            creation_url: RefCell::new(None),
+
         }
     }
 
@@ -209,6 +249,24 @@ impl GlobalScope {
     ) {
         self.source_navigable_id.set(Some(source_navigable_id));
         self.event_sender.borrow_mut().replace(event_sender);
+    }
+
+    pub(crate) fn set_navigable_hierarchy(
+        &self,
+        parent_traversable_id: Option<NavigableId>,
+        top_level_traversable_id: NavigableId,
+    ) {
+        self.parent_traversable_id.set(parent_traversable_id);
+        self.top_level_traversable_id
+            .set(Some(top_level_traversable_id));
+    }
+
+    pub(crate) fn parent_traversable_id(&self) -> Option<NavigableId> {
+        self.parent_traversable_id.get()
+    }
+
+    pub(crate) fn top_level_traversable_id(&self) -> Option<NavigableId> {
+        self.top_level_traversable_id.get()
     }
 
     pub(crate) fn source_navigable_id(&self) -> Option<NavigableId> {
@@ -496,7 +554,79 @@ impl GlobalScope {
         }
     }
 
-    /// <https://html.spec.whatwg.org/#animationframeprovider-cancelanimationframe>
+    /// Create a new about:blank document in this content process, with its own
+    /// Boa Context, Window, and GlobalScope.  The caller MUST store the returned
+    /// `EnvironmentSettingsObject` somewhere persistent (see
+    /// `pending_window_open_documents`) — otherwise the Context is dropped and
+    /// the JsObject becomes a dangling pointer.
+    pub(crate) fn create_document(
+        &self,
+        new_traversable_id: NavigableId,
+        new_document_id: DocumentId,
+        _parent_traversable_id: Option<NavigableId>,
+        _top_level_traversable_id: NavigableId,
+    ) -> Result<
+        (
+            JsObject,
+            super::environment_settings_object::EnvironmentSettingsObject,
+            Rc<RefCell<BaseDocument>>,
+        ),
+        String,
+    > {
+        // Create a bare about:blank document.  No blitz providers needed —
+        // navigation to the destination URL will set those up via the
+        // UA's create-loaded-document path.
+        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
+            viewport: None,
+            base_url: None,
+            net_provider: None,
+            shell_provider: None,
+            html_parser_provider: None,
+            ..DocumentConfig::default()
+        })));
+        let event_sender = self.event_sender();
+        let settings = super::environment_settings_object::EnvironmentSettingsObject::new(
+            Rc::clone(&document),
+            url::Url::parse("about:blank").map_err(|error| error.to_string())?,
+            event_sender,
+            Some(new_traversable_id),
+            Some(new_document_id),
+        )?;
+        crate::html::html_parser::parse_html_into_document(
+            &mut document.borrow_mut(),
+            crate::EMPTY_HTML_DOCUMENT,
+        );
+        Ok((
+            settings.context.global_object(),
+            settings,
+            document,
+        ))
+    }
+
+    /// Store a pending about:blank document created by `window.open`.
+    /// Keeps the `EnvironmentSettingsObject` alive so the Boa Context and
+    /// its Window JsObject remain valid until the navigation finalizes.
+    pub(crate) fn store_pending_window_open_document(
+        &self,
+        document_id: DocumentId,
+        settings: super::environment_settings_object::EnvironmentSettingsObject,
+        document: Rc<RefCell<BaseDocument>>,
+    ) {
+        self.pending_window_open_documents
+            .borrow_mut()
+            .insert(document_id, (settings, document));
+    }
+
+
+
+    pub(crate) fn set_creation_url(&self, url: url::Url) {
+        self.creation_url.borrow_mut().replace(url);
+    }
+
+    pub(crate) fn creation_url(&self) -> Option<url::Url> {
+        self.creation_url.borrow().clone()
+    }
+
     pub(crate) fn cancel_animation_frame(&self, handle: u32) {
         self.animation_frame_callbacks
             .borrow_mut()

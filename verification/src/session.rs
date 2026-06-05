@@ -1,5 +1,5 @@
-use std::fs;
 use std::ffi::OsStr;
+use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -117,7 +117,10 @@ fn cleanup_repo_verification_artifacts(repo_root: &Path) -> Result<(), String> {
         repo_root.join("tla-traces"),
         repo_root.join("states"),
         repo_root.join("tla_specs").join("states"),
-        repo_root.join("verification").join("tla_specs").join("states"),
+        repo_root
+            .join("verification")
+            .join("tla_specs")
+            .join("states"),
     ] {
         if let Err(error) = remove_dir_all_if_exists(&path) {
             errors.push(error);
@@ -213,12 +216,8 @@ fn create_session_dir() -> Result<PathBuf, String> {
         .unwrap_or(0);
 
     for attempt in 0..1024u32 {
-        let session_dir = base_dir.join(format!(
-            "pid-{}-{}-{}",
-            process::id(),
-            base_stamp,
-            attempt
-        ));
+        let session_dir =
+            base_dir.join(format!("pid-{}-{}-{}", process::id(), base_stamp, attempt));
         if session_dir.exists() {
             continue;
         }
@@ -241,6 +240,9 @@ fn remove_dir_all_if_exists(path: &Path) -> Result<(), String> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("failed to remove directory {}: {error}", path.display())),
+        Err(error) => Err(format!(
+            "failed to remove directory {}: {error}",
+            path.display()
+        )),
     }
 }

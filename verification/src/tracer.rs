@@ -50,7 +50,10 @@ impl TLATracer {
 
         self.pending_updates.push(VarUpdate {
             variable: variable.into(),
-            path: path.into_iter().map(|component| component.to_string()).collect(),
+            path: path
+                .into_iter()
+                .map(|component| component.to_string())
+                .collect(),
             op: op.into(),
             args: args.into_iter().map(|arg| arg.to_string()).collect(),
         });
@@ -110,7 +113,8 @@ mod tests {
 
     #[test]
     fn enabled_tracer_sends_logged_entry() {
-        let (sender, receiver) = ipc::channel().expect("failed to create verification test channel");
+        let (sender, receiver) =
+            ipc::channel().expect("failed to create verification test channel");
         let mut tracer = TLATracer::new("Navigation", "test", Some(sender));
 
         tracer.notify_change("navigations", ["root"], "set", ["started"]);
@@ -120,7 +124,10 @@ mod tests {
         assert_eq!(entry.spec, "Navigation");
         assert_eq!(entry.producer, "test");
         assert_eq!(entry.event.as_deref(), Some("CreateNavigation"));
-        assert_eq!(entry.event_args, vec![String::from("nk-1"), String::from("nav-1")]);
+        assert_eq!(
+            entry.event_args,
+            vec![String::from("nk-1"), String::from("nav-1")]
+        );
         assert_eq!(entry.updates.len(), 1);
     }
 }

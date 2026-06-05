@@ -272,6 +272,10 @@ impl EventLoopWorker {
             pending_task_commands: VecDeque::new(),
         };
 
+        // Send the event loop id to the content process so it can include it in
+        // `new_traversable_info` for window.open.
+        worker.send_command_inner(&ContentCommand::SetEventLoopId(event_loop_id))?;
+
         worker.send_command_inner(&ContentCommand::SetTraceSender(trace_sender))?;
 
         if let Some(snapshot) = worker.host.window_viewport_snapshot() {
@@ -504,7 +508,10 @@ impl EventLoopWorker {
                     request.source_navigable_id, request.destination_url
                 ));
                 self.user_agent_command_sender
-                    .send(UserAgentCommand::Navigate { request })
+                    .send(UserAgentCommand::Navigate {
+                        event_loop_id: Some(self.event_loop_id),
+                        request,
+                    })
                     .map_err(|error| format!("failed to send navigation request: {error}"))?;
             }
 

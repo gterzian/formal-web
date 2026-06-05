@@ -140,22 +140,47 @@ At the end of each task, run the following steps **in order**:
    were started during the session. Leftover processes can block ports and
    interfere with subsequent tasks.
 
-2. **Run `cargo clippy`** — Lint the entire workspace and fix any warnings
-   before committing. Run from the project root:
+2. **Run `cargo clippy`** — Lint the workspace (excluding vendor) and fix any
+   warnings before committing. Run from the project root:
 
    ```bash
    rustup run 1.92.0 cargo clippy --workspace --all-targets
    ```
 
    Fix all warnings that appear (patch and vendored warnings can be ignored;
-   focus on code-level warnings).
+   focus on code-level warnings). The `vendor/` directory is excluded from
+   this repository's scope and should not be linted or modified.
 
-3. **Run `cargo fmt`** — Format the entire project before committing. Run
-   from the project root: `cargo fmt`. This covers all crates in the workspace.
+3. **Run `cargo fmt`** — Format the project's code before committing. Run
+   from the project root: `cargo fmt`. This only formats the root package
+   (there is no workspace defined, so `vendor/` sub-crates are not affected).
+   Never run `cargo fmt` with `--all` or from inside a `vendor/` directory,
+   as vendored formatting changes must not be committed.
 
-4. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+4. **Spec-mapping review** — Review all changed files for spec documentation
+   quality and conceptual fidelity.  For each algorithm implemented:
+   - Does the code map to the spec algorithm correctly at the conceptual
+     level?  Read the spec algorithm, understand what each step does
+     architecturally (which component owns which state, which side effects
+     happen where), and verify the implementation reflects that split.
+   - Does every step have a `// Step N:` comment quoting the first few
+     words of the spec step?  The comment should make it obvious which
+     spec step the code corresponds to.
+   - Does every function/struct top doc comment have the correct spec anchor
+     URL (`<https://html.spec.whatwg.org/#...>`)?
+   - Are algorithm splits between content and other components (user agent,
+     net, embedder) clearly marked with spec step boundaries and
+     `// Note:` comments explaining why the split exists?
+   - Are `Note:` comments used only for discrepancies between the code and
+     the spec text (never for design notes, implementation plans, or
+     architecture rationales — those belong in the README chain)?
+   - Are dead or `#[allow(dead_code)]` items justified with a `// Note:` or
+     `// TODO:` explaining the gap?
+   Fix any issues found.
 
-5. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
+5. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+
+6. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
    - **Default WPT run** — Runs the Web Platform Tests suite (`tests/wpt/include.ini`) to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
 
      ```bash
@@ -166,4 +191,4 @@ At the end of each task, run the following steps **in order**:
 
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
 
-6. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
+7. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 
-use boa_engine::{JsData, JsNativeError, JsResult, JsValue};
+use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
@@ -10,8 +10,8 @@ use crate::dom::Element;
 use crate::dom::event::EventTarget;
 use crate::webidl::Callback;
 
-use super::GlobalScope;
 use super::resolved_style_properties_for_element;
+use super::{GlobalScope, the_rules_for_choosing_a_navigable};
 
 /// <https://html.spec.whatwg.org/#window>
 #[derive(Trace, Finalize, JsData)]
@@ -51,11 +51,19 @@ impl Window {
         url: &str,
         target: &str,
         features: &str,
+        context: &mut Context,
     ) -> JsResult<JsValue> {
         let Some(event_sender) = self.global_scope.event_sender() else {
             return Ok(JsValue::null());
         };
-        window_open_steps(url, target, features, &self.global_scope, &event_sender)
+        window_open_steps(
+            context,
+            url,
+            target,
+            features,
+            &self.global_scope,
+            &event_sender,
+        )
     }
 }
 
@@ -110,6 +118,7 @@ pub(crate) fn window_computed_style_properties_for_element(
 
 /// <https://html.spec.whatwg.org/#window-open-steps>
 pub(crate) fn window_open_steps(
+    context: &mut Context,
     url: &str,
     target: &str,
     features: &str,
@@ -120,26 +129,46 @@ pub(crate) fn window_open_steps(
     // TODO: Content process does not yet track termination nesting.
 
     // Step 2: "Let sourceDocument be the entry global object's associated Document."
-    // Note: The user agent needs the navigable ID rather than the Document for navigable
-    // creation. We obtain it from the global scope as a multi-process shortcut.
-    let source_navigable_id = global_scope.source_navigable_id().ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("window.open: no source navigable")
-    })?;
+    let source_navigable_id = global_scope
+        .source_navigable_id()
+        .ok_or_else(|| JsNativeError::typ().with_message("window.open: no source navigable"))?;
 
     // Step 3: "Let urlRecord be null."
     // Step 4: "If url is not the empty string:"
     let url_record = if url.is_empty() {
         None
     } else {
-        // Step 4.1: "Set urlRecord to the result of encoding-parsing a URL given url,
-        //            relative to sourceDocument."
-        // Note: The spec uses encoding-parsing relative to sourceDocument for
-        // document-charset-aware resolution. We use url::Url::parse without a base URL
-        // because the source document's URL is not yet threaded through this call site.
-        // Step 4.2: "If urlRecord is failure, then throw a 'SyntaxError' DOMException."
         match url::Url::parse(url) {
-            Ok(record) => Some(record.to_string()),
+            Ok(record) => {
+                // <https://html.spec.whatwg.org/#cannot-navigate>
+                // If the destination URL has a different origin from the source
+                // document, the source cannot navigate the target.
+                //
+                // Note 1: `url::Url::origin()` creates a fresh opaque origin for
+                // `about:` scheme URLs (about:blank inherits its creator's origin
+                // per the HTML spec), so we skip the check for about:blank destinations.
+                //
+                // Note 2: The full sandboxing portion of "cannot navigate" is
+                // deferred.  For now we block any cross-origin navigation through
+                // window.open — same-origin navigations work, cross-origin throws.
+                //
+                // `file:` URLs produce opaque origins (unique per URL); skip the
+                // check for them since all local files are treated as same-origin
+                // for navigation purposes.
+                if record.scheme() != "about" && record.scheme() != "file" {
+                    if let Some(creation_url) = global_scope.creation_url() {
+                        if creation_url.origin() != record.origin() {
+                            return Err(JsNativeError::typ()
+                                .with_message(format!(
+                                    "SecurityError: cross-origin navigation to {} is blocked",
+                                    record
+                                ))
+                                .into());
+                        }
+                    }
+                }
+                Some(record.to_string())
+            }
             Err(_) => {
                 return Err(JsNativeError::typ()
                     .with_message("SyntaxError: failed to parse URL in window.open")
@@ -162,10 +191,7 @@ pub(crate) fn window_open_steps(
         .unwrap_or(false);
 
     // Step 9: "Let noopener be the result of getting noopener for window open..."
-    let noopener = get_noopener_for_window_open(
-        &tokenized_features,
-        url_record.as_deref(),
-    );
+    let noopener = get_noopener_for_window_open(&tokenized_features, url_record.as_deref());
 
     // Step 10: "Remove tokenizedFeatures['noopener'] and tokenizedFeatures['noreferrer']."
     let mut remaining_features = tokenized_features;
@@ -182,43 +208,67 @@ pub(crate) fn window_open_steps(
     };
 
     // Serialize remaining features for the user agent (IPC boundary).
-    let features_json = serde_json::to_string(&remaining_features)
-        .unwrap_or_else(|_| String::from("{}"));
+    let features_json =
+        serde_json::to_string(&remaining_features).unwrap_or_else(|_| String::from("{}"));
 
     // Step 13: "Apply the rules for choosing a navigable given name, window's
     //          navigable, and noopener."
-    //
-    // Resolve _self locally; everything else (named targets, _blank, _parent, _top)
-    // is sent unmodified so the user agent continues with find-by-target-name or
-    // creates a new top-level traversable.
-    let chosen_target = if target.eq_ignore_ascii_case("_self") {
-        Some(source_navigable_id)
-    } else {
-        None
-    };
+    // <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
+    let parent_traversable_id = global_scope.parent_traversable_id();
+    let top_level_traversable_id = global_scope
+        .top_level_traversable_id()
+        .unwrap_or(source_navigable_id);
 
-    // Per the spec: "If urlRecord is null, then set urlRecord to a URL record
-    // representing about:blank." (step 15.3 for new windows, implicit for existing).
+    let result = the_rules_for_choosing_a_navigable(
+        source_navigable_id,
+        parent_traversable_id,
+        top_level_traversable_id,
+        target,
+        noopener,
+        Some(global_scope),
+        Some(context),
+    );
+
     let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));
+
+    // Step 14: "If chosen is a navigable, then set targetNavigable to chosen."
+    //          <https://html.spec.whatwg.org/#window-open-steps>
+    //
+    // Step 14 is handled inside `the_rules_for_choosing_a_navigable`, which
+    // resolves _self, _parent, _top (steps 3–5) and creates new traversables
+    // locally (step 7/8) when called with a `GlobalScope`.  The result struct
+    // carries back the chosen navigable ID, any new traversable info, and
+    // the Window backing the WindowProxy.
+
     if let Err(error) = super::navigate(
         event_sender,
         source_navigable_id,
-        chosen_target,
+        result.chosen_navigable_id,
         navigate_url,
         target.to_owned(),
         UserNavigationInvolvement::Activation,
         noopener,
         Some(referrer_policy),
         Some(features_json),
+        result.new_traversable_info,
     ) {
         eprintln!("window.open: {error}");
     }
 
     // Step 17: "If noopener is true or windowType is 'new with no opener',
     //           then return null."
-    // Step 18: "Return targetNavigable's active WindowProxy."
-    // For now, return null as a WindowProxy placeholder.
-    Ok(JsValue::null())
+    if noopener {
+        return Ok(JsValue::null());
+    }
+
+    // Step 18: Return targetNavigable's active WindowProxy.
+    // <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
+    // Note: `create_window_proxy` is a placeholder, not a real WindowProxy
+    // exotic object.  See content/src/html/README.md §WindowProxy for the gap list.
+    let window = result
+        .return_window
+        .expect("window_open_steps: all navigable branches set a return window");
+    Ok(crate::boa::bindings::html::create_window_proxy(window))
 }
 
 /// <https://html.spec.whatwg.org/#get-noopener-for-window-open>
@@ -315,13 +365,7 @@ fn tokenize_features(features: &str) -> HashMap<String, String> {
 
 /// <https://html.spec.whatwg.org/#feature-separator>
 fn is_feature_separator(c: u8) -> bool {
-    c == b' '
-        || c == b'\t'
-        || c == b'\n'
-        || c == b'\r'
-        || c == b'\x0C'
-        || c == b'='
-        || c == b','
+    c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == b'\x0C' || c == b'=' || c == b','
 }
 
 /// <https://html.spec.whatwg.org/#normalize-feature-name>
@@ -406,5 +450,3 @@ pub(crate) fn check_if_window_feature_is_set(
     // Step 2: "Return defaultValue."
     default_value
 }
-
-
