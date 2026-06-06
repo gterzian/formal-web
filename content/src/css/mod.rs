@@ -8,7 +8,9 @@ use style::context::QuirksMode;
 use style::parser::ParserContext;
 use style::servo_arc::Arc as ServoArc;
 use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
-use style::stylesheets::supports_rule::{Declaration, SupportsCondition, parse_condition_or_declaration};
+use style::stylesheets::supports_rule::{
+    Declaration, SupportsCondition, parse_condition_or_declaration,
+};
 use style::values::Parser;
 use style_traits::ParsingMode;
 
@@ -20,11 +22,23 @@ use style_traits::ParsingMode;
 pub(crate) struct CSS;
 
 impl CSS {
-    /// Returns whether a given CSS property and value pair is supported.
-    ///
-    /// https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext
+    /// <https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext>
     pub(crate) fn supports(property: &str, value: &str) -> bool {
-        // Build a declaration string "property: value" as expected by Declaration::eval().
+        // Step 1: If property is an ASCII case-insensitive match for any defined CSS property
+        //          that the UA supports, or is a custom property name string, and value
+        //          successfully parses according to that property's grammar, return true.
+        // Step 2: Otherwise, return false.
+        //
+        // Note: Stylo's Declaration::eval() implements both steps in one call.  It parses the
+        // declaration string "property: value" by first resolving the property name through
+        // PropertyId::parse (checking ASCII case-insensitive matching against the property
+        // database) and then parsing the value through PropertyDeclaration::parse_into (checking
+        // the value against the property's grammar).  Custom properties (--*) are recognised by
+        // PropertyId::parse and their values parsed as arbitrary tokens.
+        //
+        // The spec notes that no escape or whitespace processing is performed on the property
+        // name: Declaration::eval() reads the raw ident before the colon, so " width" (with a
+        // leading space) won't match any property.
         let declaration_text = format!("{property}: {value}");
         let declaration = Declaration(declaration_text);
         let url_data = UrlExtraData(ServoArc::new(
@@ -34,16 +48,15 @@ impl CSS {
         declaration.eval(&context)
     }
 
-    /// Returns whether a given supports condition string is supported.
-    ///
-    /// https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext
+    /// <https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext>
     pub(crate) fn supports_condition(condition_text: &str) -> bool {
         let url_data = UrlExtraData(ServoArc::new(
             url::Url::parse("about:blank").expect("about:blank is a valid URL"),
         ));
         let context = parser_context_for_supports(&url_data);
 
-        // Step 1: Try parsing as a <supports-condition> directly.
+        // Step 1: If conditionText, parsed and evaluated as a <supports-condition>,
+        //          would return true, return true.
         {
             let mut input = cssparser::ParserInput::new(condition_text);
             let mut parser: Parser = cssparser::Parser::new(&mut input);
@@ -56,7 +69,13 @@ impl CSS {
             }
         }
 
-        // Step 2: Wrap in parentheses and try again.
+        // Step 2: Otherwise, If conditionText, wrapped in parentheses and then parsed and
+        //          evaluated as a <supports-condition>, would return true, return true.
+        //
+        // Note: The spec says to parse the wrapped text as a <supports-condition>, but the
+        // outermost parentheses make the content parseable as either a <supports-condition> or
+        // a <declaration> (e.g. "(color: red)" is a parenthesized declaration).  Stylo's
+        // parse_condition_or_declaration entry point handles both, matching the spec's intent.
         let wrapped = format!("({condition_text})");
         {
             let mut input = cssparser::ParserInput::new(&wrapped);
@@ -77,8 +96,7 @@ impl CSS {
 
 /// Build a `ParserContext` for evaluating `@supports` conditions.
 ///
-/// Uses the given `UrlExtraData` (must outlive the returned context) and
-/// author origin, since no real document context is needed for `CSS.supports()`.
+/// The caller must keep `url_data` alive for the lifetime of the returned context.
 fn parser_context_for_supports(url_data: &UrlExtraData) -> ParserContext<'_> {
     ParserContext::new(
         Origin::Author,

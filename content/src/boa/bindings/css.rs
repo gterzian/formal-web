@@ -13,6 +13,9 @@ use crate::css::CSS;
 ///
 /// https://drafts.csswg.org/css-conditional-3/#the-css-namespace
 pub(crate) fn install_css_namespace(context: &mut Context) -> JsResult<()> {
+    // https://drafts.csswg.org/css-conditional-3/#the-css-namespace
+    // "The CSS namespace holds useful CSS-related functions that do not belong elsewhere."
+    // "partial namespace CSS { ... }"
     let css_object = {
         let mut initializer = ObjectInitializer::new(context);
         initializer.function(
@@ -29,8 +32,13 @@ pub(crate) fn install_css_namespace(context: &mut Context) -> JsResult<()> {
 /// `CSS.supports(property, value)` / `CSS.supports(conditionText)`
 ///
 /// https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext
+///
+/// WebIDL overload resolution selects:
+/// - 2 arguments → `supports(CSSOMString property, CSSOMString value)`
+/// - 1 argument  → `supports(CSSOMString conditionText)`
 fn supports(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
     let result = if args.len() >= 2 {
+        // Invoked as supports(property, value) — WebIDL overload with 2 required arguments.
         let property = args
             .first()
             .and_then(|value| value.as_string())
@@ -47,8 +55,14 @@ fn supports(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResu
         .and_then(|value| value.as_string())
         .map(|s| s.to_std_string_escaped())
     {
+        // Invoked as supports(conditionText) — WebIDL overload with 1 required argument.
         CSS::supports_condition(&condition_text)
     } else {
+        // No arguments or first argument is not a string — per WebIDL, type conversion
+        // converts non-string values, but a missing argument means conditionText is
+        // undefined which converts to "undefined" per ToString.  Return false because
+        // "undefined" is neither a valid property:value declaration nor a valid
+        // <supports-condition>.
         false
     };
 
