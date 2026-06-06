@@ -1,8 +1,8 @@
 use ipc_messages::content::{
-    CreateChildNavigableRequest, DocumentId, Event as ContentEvent, FrameId,
+    DocumentId, Event as ContentEvent, FrameId, NewChildNavigableInfo,
     IframeTraversableRemoval, NavigableId, UserNavigationInvolvement, iframe_target_name,
 };
-use std::{cell::RefCell, collections::HashSet, rc::Rc};
+use std::{cell::RefCell, collections::{HashMap, HashSet}, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::JsData;
@@ -284,6 +284,7 @@ fn navigate_an_iframe_or_frame(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -345,9 +346,10 @@ pub(crate) fn retire_iframe_traversable(
 }
 
 /// <https://html.spec.whatwg.org/#create-a-new-child-navigable>
-/// Note: This function implements the content-process portion of the algorithm. Steps that
-/// require a browsing context, document creation, or session history manipulation are
-/// executed by the user agent after receiving the `CreateChildNavigable` IPC message.
+///
+/// Content-process side of the algorithm. Steps 1-9 are executed locally (including
+/// creating the browsing context and document). Step 10, 12-13 (session history
+/// traversal steps, WebDriver notification) are delegated to the user agent.
 fn create_a_new_child_navigable(
     process: &mut ContentProcess,
     parent_navigable_id: NavigableId,
@@ -372,45 +374,88 @@ fn create_a_new_child_navigable(
     // Step 1: "Let parentNavigable be element's node navigable."
     let parent_navigable = parent_navigable_id;
 
-    // Step 2: "Let group be element's node document's browsing context's top-level browsing
-    // context's group."
-    // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
+    // Step 2: "Let group be element's node document's browsing context's top-level
+    // browsing context's group."
+    // Note: This is the browsing context group of the current content process. We are
+    // already in this group, so we can proceed with document creation directly.
 
     // Step 3: "Let browsingContext and document be the result of creating a new browsing
     // context and document given element's node document, element, and group."
-    // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
+    // <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
+    // Note: We create the document (about:blank) immediately in the content process.
+    // The browsing context is represented by its ID on the UA side. The UA will set up
+    // its BC state when it receives the CreateChildNavigable IPC.
+    let content_navigable = process.allocate_navigable_id()?;
+    let new_document_id = DocumentId::new();
+    let top_level_traversable_id = process
+        .documents
+        .get(&parent_document_id)
+        .map(|doc| doc.top_level_traversable_id)
+        .unwrap_or(parent_navigable);
+
+    // <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
+    // Steps 9-10, 13, 15, 22: Create a new Document, realm, Window, and
+    // environment settings object.  The content-process side handles this;
+    // the UA handles BC allocation, group membership, and session history.
+    let content_frame_id = process.allocate_child_frame_id();
+    let (_global_object, settings, new_document) = crate::html::create_a_new_browsing_context_and_document(
+        &process.event_sender,
+        content_navigable,
+        new_document_id,
+    )?;
+
+    // Register the document in ContentProcess immediately.
+    process.documents.insert(
+        new_document_id,
+        crate::ContentDocument {
+            traversable_id: content_navigable,
+            parent_traversable_id: Some(parent_navigable),
+            top_level_traversable_id,
+            frame_id: content_frame_id,
+            document: new_document,
+            settings,
+            pending_update_the_rendering: false,
+            pending_document_load: None,
+            navigable_container_states: HashMap::new(),
+            viewport_offset_x: 0.0,
+            viewport_offset_y: 0.0,
+        },
+    );
+    process
+        .active_documents_by_traversable
+        .insert(content_navigable, new_document_id);
 
     // Step 4: "Let targetName be null."
-    let mut target_name = None;
-
     // Step 5: "If element has a name content attribute, then set targetName to the value
     // of that attribute."
-    if let Some(content_document) = process.documents.get(&parent_document_id) {
+    let target_name = if let Some(content_document) = process.documents.get(&parent_document_id) {
         let document = content_document.document.borrow();
         if let Some(node) = document.get_node(iframe_node_id)
             && let Some(element) = node.element_data()
             && let Some(name_value) = element.attr(local_name!("name"))
         {
-            target_name = Some(name_value.to_owned());
+            Some(name_value.to_owned())
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
     // Step 6: "Let documentState be a new document state, with document, initiator origin,
     // origin, navigable target name, and about base URL."
-    // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
+    // Note: The document state fields that live in content (document reference, origin) are
+    // already satisfied by the document created above. The UA-side document state (navigable
+    // tree registration, session history) is set up in the CreateChildNavigable handler.
 
     // Step 7: "Let navigable be a new navigable."
-    // Note: Content allocates the stable navigable ID here; the user agent materializes
-    // the navigable object from that ID.
-    let content_navigable = process.allocate_navigable_id()?;
+    // (allocated above as `content_navigable`)
 
     // Step 8: "Initialize the navigable navigable given documentState and parentNavigable."
-    // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
+    // Note: The UA initializes its navigable state upon receiving CreateChildNavigable.
+    // The content side already has the document created and registered.
 
     // Step 9: "Set element's content navigable to navigable."
-    // Note: The content side stores only IDs for the element's content navigable.
-    let content_frame_id = process.allocate_child_frame_id();
-
     if let Some(content_document) = process.documents.get_mut(&parent_document_id) {
         content_document.navigable_container_states.insert(
             iframe_node_id,
@@ -424,30 +469,36 @@ fn create_a_new_child_navigable(
     }
 
     // Step 10: "Let historyEntry be navigable's active session history entry."
-    // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
-
     // Step 11: "Let traversable be parentNavigable's traversable navigable."
-    let parent_traversable_id = parent_navigable;
-
     // Step 12: "Append the following session history traversal steps to traversable."
-    // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
-
     // Step 13: "Invoke WebDriver BiDi navigable created with traversable."
-    // Note: Executed by the user agent upon receiving `CreateChildNavigable`.
-
-    // Note: Notify the user agent to execute Steps 2–8 and 10, 12–13 of
-    // `create a new child navigable`.
-    process
-        .event_sender
-        .send(ContentEvent::CreateChildNavigable(
-            CreateChildNavigableRequest {
-                parent_traversable_id,
-                content_navigable_id: content_navigable,
-                content_frame_id,
-                target_name,
-            },
-        ))
-        .map_err(|error| format!("failed to send create-child-navigable request: {error}"))
+    //
+    // Note: Steps 10, 12-13 are delegated to the UA via the `new_child_navigable`
+    // field on the NavigateRequest. The UA sets up BC, BCG membership, navigable
+    // state, session history entries, event loop registration, and WebDriver
+    // notification. The destination URL is "about:blank" because the document
+    // already exists in the content process; no actual navigation is needed.
+    let parent_traversable_id = parent_navigable;
+    let child_navigable_info = NewChildNavigableInfo {
+        parent_traversable_id,
+        content_navigable_id: content_navigable,
+        content_frame_id,
+        document_id: new_document_id,
+        target_name,
+    };
+    navigate(
+        &process.event_sender,
+        content_navigable,
+        Some(content_navigable),
+        String::from("about:blank"),
+        iframe_target_name(parent_traversable_id, content_navigable, content_frame_id),
+        UserNavigationInvolvement::None,
+        false,
+        None,
+        None,
+        None,
+        Some(child_navigable_info),
+    )
 }
 
 fn navigable_container_for_child_navigable(

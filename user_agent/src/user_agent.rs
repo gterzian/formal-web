@@ -897,12 +897,7 @@ pub enum UserAgentCommand {
         timer_key: WindowTimerKey,
         nesting_level: u32,
     },
-    CreateChildNavigable {
-        parent_traversable_id: NavigableId,
-        content_navigable_id: NavigableId,
-        content_frame_id: FrameId,
-        target_name: Option<String>,
-    },
+
     IframeTraversableRemoved {
         parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
@@ -1429,19 +1424,6 @@ impl UserAgentWorker {
                     );
                 }
 
-                UserAgentCommand::CreateChildNavigable {
-                    parent_traversable_id,
-                    content_navigable_id,
-                    content_frame_id,
-                    target_name,
-                } => {
-                    self.handle_create_child_navigable(
-                        parent_traversable_id,
-                        content_navigable_id,
-                        content_frame_id,
-                        target_name,
-                    );
-                }
                 UserAgentCommand::IframeTraversableRemoved {
                     parent_traversable_id,
                     content_navigable_id,
@@ -1712,6 +1694,7 @@ impl UserAgentWorker {
         parent_navigable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
+        document_id: DocumentId,
         target_name: Option<String>,
     ) -> Result<NavigableId, String> {
         let _requested_target_name = target_name;
@@ -1742,7 +1725,6 @@ impl UserAgentWorker {
             .unwrap_or(parent_browsing_context_id);
         let browsing_context_id = BrowsingContextId::new();
         let traversable_id = content_navigable_id;
-        let document_id = DocumentId::new();
 
         let group_id = self
             .state
@@ -1778,6 +1760,9 @@ impl UserAgentWorker {
             .insert(traversable_id, target_name.clone());
         self.state
             .set_navigable_active_document(traversable_id, document_id);
+        // Note: The content process has already created the document and registered it.
+        // The UA-side document state tracks the navigable-to-document mapping for
+        // navigation and session history purposes.
         self.state.documents.insert(
             document_id,
             DocumentState {
@@ -1840,27 +1825,7 @@ impl UserAgentWorker {
         Ok(traversable_id)
     }
 
-    /// <https://html.spec.whatwg.org/#create-a-new-child-navigable>
-    /// Note: Content runs the local iframe/container work first and then asks the user agent to
-    /// continue the suffix that allocates the stable child navigable and session-history state.
-    fn handle_create_child_navigable(
-        &mut self,
-        parent_traversable_id: NavigableId,
-        content_navigable_id: NavigableId,
-        content_frame_id: FrameId,
-        target_name: Option<String>,
-    ) {
-        let parent_navigable_id = parent_traversable_id;
-        let result = self.create_new_child_navigable(
-            parent_navigable_id,
-            content_navigable_id,
-            content_frame_id,
-            target_name,
-        );
-        if let Err(error) = result {
-            eprintln!("failed to create child navigable: {error}");
-        }
-    }
+
 
     /// <https://html.spec.whatwg.org/multipage/browsers.html#obtain-browsing-context-navigation>
     /// Note: The current model uses the active document URL plus a same-site check as the
@@ -2611,7 +2576,22 @@ impl UserAgentWorker {
             let is_window_open = request.features_json.is_some();
 
             let (navigable_id, window_type) =
-                if let Some(ref new_info) = request.new_traversable_info {
+                // ---- Child navigable creation (iframe) ----
+                if let Some(ref child_info) = request.new_child_navigable {
+                    let child_navigable_id = child_info.content_navigable_id;
+                    self.create_new_child_navigable(
+                        child_info.parent_traversable_id,
+                        child_navigable_id,
+                        child_info.content_frame_id,
+                        child_info.document_id,
+                        child_info.target_name.clone(),
+                    )?;
+                    // Window type for child navigables is "existing or none" because
+                    // they are not top-level and don't require opener setup.
+                    (child_navigable_id, String::from("existing or none"))
+                }
+                // ---- Top-level traversable creation (window.open with opener) ----
+                else if let Some(ref new_info) = request.new_traversable_info {
                     let traversable_id = request.chosen_navigable_id.ok_or_else(|| {
                         String::from("new_traversable_info without chosen_navigable_id")
                     })?;

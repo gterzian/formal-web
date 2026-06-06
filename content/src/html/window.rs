@@ -251,6 +251,7 @@ pub(crate) fn window_open_steps(
         Some(referrer_policy),
         Some(features_json),
         result.new_traversable_info,
+        None,
     ) {
         eprintln!("window.open: {error}");
     }

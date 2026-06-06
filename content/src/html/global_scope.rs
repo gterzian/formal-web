@@ -4,7 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use blitz_dom::{BaseDocument, DocumentConfig};
+use blitz_dom::BaseDocument;
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
@@ -161,13 +161,13 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
 
-    /// Pending about:blank documents created by `window.open`.  The
-    /// EnvironmentSettingsObject must be kept alive for its Boa Context (and
-    /// thus the returned Window JsObject) to remain valid.  When the user
-    /// agent finalizes the navigation (`CreateLoadedDocument`) the document
-    /// is transferred into `ContentProcess::documents`.
+    /// Temporary holding area for about:blank documents created during JS
+    /// callbacks (e.g. window.open). The EnvironmentSettingsObject must be kept
+    /// alive for its Boa Context (and thus the returned Window JsObject) to
+    /// remain valid. These documents are transferred into
+    /// `ContentProcess::documents` immediately after JS execution returns.
     #[unsafe_ignore_trace]
-    pending_window_open_documents:
+    new_traversable_documents:
         RefCell<HashMap<
             DocumentId,
             (
@@ -202,7 +202,7 @@ impl GlobalScope {
             top_level_traversable_id: Cell::new(None),
             event_sender: RefCell::new(None),
 
-            pending_window_open_documents: RefCell::new(HashMap::new()),
+            new_traversable_documents: RefCell::new(HashMap::new()),
             creation_url: RefCell::new(None),
 
         }
@@ -554,10 +554,11 @@ impl GlobalScope {
         }
     }
 
-    /// Create a new about:blank document in this content process, with its own
-    /// Boa Context, Window, and GlobalScope.  The caller MUST store the returned
-    /// `EnvironmentSettingsObject` somewhere persistent (see
-    /// `pending_window_open_documents`) — otherwise the Context is dropped and
+    /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
+    /// Content-process portion of "create a new browsing context and document".
+    /// The caller MUST register the returned `EnvironmentSettingsObject` via
+    /// `register_new_traversable_document` or insert it into
+    /// `ContentProcess::documents` — otherwise the Context is dropped and
     /// the JsObject becomes a dangling pointer.
     pub(crate) fn create_document(
         &self,
@@ -573,48 +574,44 @@ impl GlobalScope {
         ),
         String,
     > {
-        // Create a bare about:blank document.  No blitz providers needed —
-        // navigation to the destination URL will set those up via the
-        // UA's create-loaded-document path.
-        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
-            viewport: None,
-            base_url: None,
-            net_provider: None,
-            shell_provider: None,
-            html_parser_provider: None,
-            ..DocumentConfig::default()
-        })));
         let event_sender = self.event_sender();
-        let settings = super::environment_settings_object::EnvironmentSettingsObject::new(
-            Rc::clone(&document),
-            url::Url::parse("about:blank").map_err(|error| error.to_string())?,
+        let event_sender = event_sender
+            .as_ref()
+            .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
+        crate::html::create_a_new_browsing_context_and_document(
             event_sender,
-            Some(new_traversable_id),
-            Some(new_document_id),
-        )?;
-        crate::html::html_parser::parse_html_into_document(
-            &mut document.borrow_mut(),
-            crate::EMPTY_HTML_DOCUMENT,
-        );
-        Ok((
-            settings.context.global_object(),
-            settings,
-            document,
-        ))
+            new_traversable_id,
+            new_document_id,
+        )
     }
 
-    /// Store a pending about:blank document created by `window.open`.
-    /// Keeps the `EnvironmentSettingsObject` alive so the Boa Context and
-    /// its Window JsObject remain valid until the navigation finalizes.
-    pub(crate) fn store_pending_window_open_document(
+    /// Register a newly-created traversable document temporarily.
+    /// The `EnvironmentSettingsObject` must be kept alive so the Boa Context
+    /// (and its Window JsObject) remain valid. The document is transferred
+    /// into `ContentProcess::documents` immediately after JS execution returns.
+    pub(crate) fn register_new_traversable_document(
         &self,
         document_id: DocumentId,
         settings: super::environment_settings_object::EnvironmentSettingsObject,
         document: Rc<RefCell<BaseDocument>>,
     ) {
-        self.pending_window_open_documents
+        self.new_traversable_documents
             .borrow_mut()
             .insert(document_id, (settings, document));
+    }
+
+    /// Take all temporarily-stored traversable documents out of this GlobalScope,
+    /// for transfer into `ContentProcess::documents`.
+    pub(crate) fn take_new_traversable_documents(
+        &self,
+    ) -> HashMap<
+        DocumentId,
+        (
+            super::environment_settings_object::EnvironmentSettingsObject,
+            Rc<RefCell<BaseDocument>>,
+        ),
+    > {
+        self.new_traversable_documents.take()
     }
 
 

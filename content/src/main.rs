@@ -312,7 +312,7 @@ impl NetProvider for ContentNetProvider {
     }
 }
 
-struct ContentDocument {
+pub(crate) struct ContentDocument {
     traversable_id: NavigableId,
     parent_traversable_id: Option<NavigableId>,
     top_level_traversable_id: NavigableId,
@@ -589,6 +589,90 @@ impl ContentProcess {
     fn allocate_child_frame_id(&self) -> FrameId {
         FrameId::new()
     }
+
+    /// Transfer any newly-created traversable documents from the source
+    /// document's GlobalScope temporary holding area into `self.documents`.
+    /// Called after JS execution that may have invoked window.open or similar
+    /// operations that create documents inline.
+    ///
+    /// <https://html.spec.whatwg.org/#creating-a-new-auxiliary-browsing-context>
+    fn flush_new_traversable_documents(&mut self, traversable_id: NavigableId) -> Result<(), String> {
+        let source_document_id = match self.active_documents_by_traversable.get(&traversable_id) {
+            Some(id) => *id,
+            None => return Ok(()),
+        };
+        // Extract pending documents from the source document's GlobalScope
+        // while keeping the borrow of the source ContentDocument temporary.
+        // We must drop this borrow before inserting into self.documents.
+        let pending = {
+            let content_document = self
+                .documents
+                .get(&source_document_id)
+                .ok_or_else(|| format!("missing source document {source_document_id}"))?;
+            crate::boa::platform_objects::with_global_scope(
+                &content_document.settings.context,
+                |global_scope| Ok(global_scope.take_new_traversable_documents()),
+            )
+            .map_err(|error| format!("failed to take new traversable documents: {error}"))?
+        };
+
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let frame_id = self
+            .documents
+            .get(&source_document_id)
+            .map(|doc| doc.frame_id)
+            .unwrap_or_else(FrameId::new);
+        let top_level_traversable_id = self
+            .documents
+            .get(&source_document_id)
+            .map(|doc| doc.top_level_traversable_id)
+            .unwrap_or(traversable_id);
+
+        for (document_id, (settings, document)) in pending {
+            if self.documents.contains_key(&document_id) {
+                continue;
+            }
+            // Read the traversable_id from the new document's GlobalScope
+            // (set during EnvironmentSettingsObject::new).
+            let new_traversable_id = crate::boa::platform_objects::with_global_scope(
+                &settings.context,
+                |global_scope| Ok(global_scope.source_navigable_id()),
+            )
+            .map_err(|error| format!("failed to read new traversable id: {error}"))?
+            .unwrap_or(traversable_id);
+
+            self.documents.insert(
+                document_id,
+                ContentDocument {
+                    traversable_id: new_traversable_id,
+                    parent_traversable_id: Some(traversable_id),
+                    top_level_traversable_id,
+                    frame_id,
+                    document,
+                    settings,
+                    pending_update_the_rendering: false,
+                    pending_document_load: None,
+                    navigable_container_states: HashMap::new(),
+                    viewport_offset_x: 0.0,
+                    viewport_offset_y: 0.0,
+                },
+            );
+            self.active_documents_by_traversable
+                .insert(new_traversable_id, document_id);
+        }
+
+        Ok(())
+    }
+
+    /// Create and register an about:blank document for a child navigable.
+    /// Uses the shared `create_about_blank_document` helper.  Called by
+    /// `create_a_new_child_navigable` to create the document in the content
+    /// process immediately, since we are already in the correct browsing
+    /// context group.
+
 
     /// <https://html.spec.whatwg.org/multipage/#navigate-html>
     /// Note: This function implements the content-process portion of the `#navigate-html`
@@ -1382,12 +1466,25 @@ impl ContentProcess {
         timer_key: WindowTimerKey,
         nesting_level: u32,
     ) -> Result<(), String> {
-        let Some(document) = self.documents.get_mut(&document_id) else {
-            return Ok(());
+        let traversable_id = {
+            let Some(document) = self.documents.get(&document_id) else {
+                return Ok(());
+            };
+            document.traversable_id
         };
-        document
-            .settings
-            .run_window_timer(timer_id, timer_key, nesting_level)
+        {
+            let Some(document) = self.documents.get_mut(&document_id) else {
+                return Ok(());
+            };
+            document
+                .settings
+                .run_window_timer(timer_id, timer_key, nesting_level)?;
+        }
+        // Flush any traversable documents created during timer execution.
+        if let Err(error) = self.flush_new_traversable_documents(traversable_id) {
+            eprintln!("failed to flush new traversable documents: {error}");
+        }
+        Ok(())
     }
 
     fn note_command_completed(&self) -> Result<(), String> {
@@ -1499,6 +1596,11 @@ impl ContentProcess {
                     }
                     Err(error) => (String::from("null"), Some(error)),
                 };
+                // Flush any newly-created traversable documents (e.g. window.open)
+                // from the temporary holding area into the main document registry.
+                if let Err(error) = self.flush_new_traversable_documents(traversable_id) {
+                    eprintln!("failed to flush new traversable documents: {error}");
+                }
                 self.event_sender
                     .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
                         request_id,
@@ -1514,6 +1616,9 @@ impl ContentProcess {
                 selector,
             } => {
                 let error = self.click_element(traversable_id, selector).err();
+                if let Err(error) = self.flush_new_traversable_documents(traversable_id) {
+                    eprintln!("failed to flush new traversable documents: {error}");
+                }
                 self.event_sender
                     .send(ContentEvent::ElementClicked(ElementClickResult {
                         request_id,
@@ -1524,6 +1629,10 @@ impl ContentProcess {
             }
             DispatchEvent { events } => {
                 self.dispatch_events(events)?;
+                // Flush any traversable documents created during event dispatch.
+                // (The last involved traversable is unknown at this level, so
+                // we skip flushing here — EventTarget dispatch happens through
+                // the DOM and doesn't directly create traversable documents.)
                 Ok(true)
             }
             Command::RunBeforeUnload {

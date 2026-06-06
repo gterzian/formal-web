@@ -96,6 +96,7 @@ impl HTMLAnchorElement {
             None,
             None,
             result.new_traversable_info,
+            None,
         )
         .map_err(|error| {
             JsNativeError::typ()
