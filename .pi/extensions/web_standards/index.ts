@@ -49,6 +49,18 @@ function formatLinkTable(links: { text: string; href: string }[]): string {
   return ["", header, ...rows, sep].join("\n");
 }
 
+// ── Doc style reminder appended to every successful result ──────────────────────
+
+const DOC_REMINDER = `
+
+── Spec Doc Reminder ──
+When implementing from this spec:
+• Prefix each algorithm step with // Step N: <first words of spec step>
+• Top doc comment on implementing functions/structs: spec anchor URL
+• // Note: only for discrepancies between code and spec text
+• Re-read the spec and compare against your code iteratively
+`;
+
 // ── Algorithm step rendering ──────────────────────────────────────────────────
 // The HTML spec uses nested <ol> elements for algorithm steps. The <li> elements
 // are NOT numbered in the HTML — the browser renders them. We assign numbers
@@ -280,7 +292,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text" as const,
-              text: truncate(parts.join("\n\n") + linkTable),
+              text: truncate(parts.join("\n\n") + linkTable + DOC_REMINDER),
             },
           ],
           details: { url, id, tag: tagName },
@@ -302,7 +314,7 @@ export default function (pi: ExtensionAPI) {
         }
         const linkTable = formatLinkTable(links);
         return {
-          content: [{ type: "text" as const, text: truncate(output + linkTable) }],
+          content: [{ type: "text" as const, text: truncate(output + linkTable + DOC_REMINDER) }],
           details: { url, id, tag: tagName, algorithm: algoName },
         };
       }
@@ -319,7 +331,7 @@ export default function (pi: ExtensionAPI) {
       ];
       const linkTable = formatLinkTable(links);
       return {
-        content: [{ type: "text" as const, text: truncate(parts.join("\n\n") + linkTable) }],
+        content: [{ type: "text" as const, text: truncate(parts.join("\n\n") + linkTable + DOC_REMINDER) }],
         details: { url, id, tag: tagName },
       };
     },
@@ -392,7 +404,7 @@ export default function (pi: ExtensionAPI) {
         .join("\n\n");
 
       return {
-        content: [{ type: "text" as const, text: truncate(output + note) }],
+        content: [{ type: "text" as const, text: truncate(output + note + DOC_REMINDER) }],
         details: {
           url,
           query,
