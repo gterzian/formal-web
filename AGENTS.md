@@ -29,6 +29,24 @@ The above should form a chain of readmes, based on the directories where you are
 
 You can also update this documentation chain based on lessons learned from user feedback: update the lowest-level file that owns the rule or pattern, and avoid repeating the same guidance in multiple places.
 
+# Algorithm Implementation
+
+When implementing a spec algorithm, every changed file must satisfy these checks
+before the task is considered done:
+
+1. **Step comments** — Every spec step has a `// Step N:` comment quoting the
+   first few words of the spec step verbatim.  The comment makes it obvious
+   which step the code corresponds to.
+2. **Anchor URLs** — Every function/struct top doc comment has the correct spec
+   anchor URL (`<https://html.spec.whatwg.org/#...>`).
+3. **`// Note:` only for discrepancies** — Notes explain why the code differs
+   from the spec (e.g. steps merged, split across processes, browser-engine
+   specific refactoring).  Design notes, architecture rationales, and
+   implementation plans belong in the README chain, not in `// Note:`.
+
+See the "Spec-mapping review" step under "End-of-Task Flow" for the full
+review checklist.
+
 # Project Structure
 
 The formal-web project implements a web browser from scratch from separate processes coordinated by the user agent. The main `formal-web` binary launches dedicated `formal-web-content` and `formal-web-net` processes from the `content` and `net` packages. The embedder delegates to these processes through the `webview` and `user_agent` layers, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.
@@ -112,7 +130,7 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
   and introduces subtle bugs when renames are inconsistent. Rename incrementally when
   modifying nearby code.
 
-# Documentation Style
+# Spec Fidelity
 
 - Describe current architecture and behavior; keep task history out of repository docs.
 - Keep README guidance general and durable; one-off implementation details belong in source or tests, not in repository docs.
