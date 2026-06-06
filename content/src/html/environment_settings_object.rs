@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::boa::bindings::html::{build_boa_context, wire_interface_prototypes};
 use crate::boa::platform_objects::{store_document_object, with_global_scope};
-use crate::boa::{install_console_namespace, install_document_property};
+use crate::boa::{install_console_namespace, install_css_namespace, install_document_property};
 use crate::dom::{Document, EventDispatchHost};
 use crate::html::TimerHandler;
 use crate::html::Window;
@@ -107,6 +107,7 @@ impl EnvironmentSettingsObject {
         store_document_object(&context, document_object).map_err(|error| error.to_string())?;
         install_document_property(&mut context).map_err(|error| error.to_string())?;
         install_console_namespace(&mut context).map_err(|error| error.to_string())?;
+        install_css_namespace(&mut context).map_err(|error| error.to_string())?;
 
         let global = context.global_object();
         if let Some(window_class) = context.get_global_class::<Window>() {

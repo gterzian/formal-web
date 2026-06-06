@@ -20,6 +20,7 @@ boa_runtime = { path = "../vendor/boa/core/runtime", default-features = false }
 blitz-dom = { path = "../vendor/blitz/packages/blitz-dom", default-features = false, features = ["svg", "system_fonts"] }
 blitz-paint = { path = "../vendor/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
+cssparser = "0.37"
 ipc_messages = { path = "../ipc_messages" }
 data-url = "0.3"
 html5ever = "0.39.0"
@@ -28,6 +29,7 @@ keyboard-types = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 style = { version = "0.17.0", package = "stylo" }
+style_traits = { version = "0.17.0", package = "stylo_traits" }
 url = "2"
 verification = { path = "../verification" }
 xml5ever = "0.39.0"
