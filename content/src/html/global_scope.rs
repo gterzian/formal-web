@@ -4,6 +4,8 @@ use std::{
     rc::Rc,
 };
 
+use super::environment_settings_object::EnvironmentSettingsObject;
+
 use blitz_dom::BaseDocument;
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
@@ -161,19 +163,15 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
 
-    /// Temporary holding area for about:blank documents created during JS
-    /// callbacks (e.g. window.open). The EnvironmentSettingsObject must be kept
-    /// alive for its Boa Context (and thus the returned Window JsObject) to
-    /// remain valid. These documents are transferred into
-    /// `ContentProcess::documents` immediately after JS execution returns.
+    /// Shared registry for newly-created traversable documents (window.open).
+    /// Set by `ContentProcess` before running JS that may trigger
+    /// `the_rules_for_choosing_a_navigable`. Both GlobalScope (to insert)
+    /// and ContentProcess (to retrieve) share the same `Rc`, so no separate
+    /// flush step is needed.
     #[unsafe_ignore_trace]
-    new_traversable_documents:
-        RefCell<HashMap<
-            DocumentId,
-            (
-                super::environment_settings_object::EnvironmentSettingsObject,
-                Rc<RefCell<BaseDocument>>,
-            ),
+    new_document_registry:
+        RefCell<Option<
+            Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
         >>,
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
@@ -202,7 +200,7 @@ impl GlobalScope {
             top_level_traversable_id: Cell::new(None),
             event_sender: RefCell::new(None),
 
-            new_traversable_documents: RefCell::new(HashMap::new()),
+            new_document_registry: RefCell::new(None),
             creation_url: RefCell::new(None),
 
         }
@@ -556,10 +554,9 @@ impl GlobalScope {
 
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
     /// Content-process portion of "create a new browsing context and document".
-    /// The caller MUST register the returned `EnvironmentSettingsObject` via
-    /// `register_new_traversable_document` or insert it into
-    /// `ContentProcess::documents` — otherwise the Context is dropped and
-    /// the JsObject becomes a dangling pointer.
+    /// The caller must store the returned `EnvironmentSettingsObject` in a
+    /// Rust container — if it is dropped the embedded `Context` is dropped
+    /// and the `JsObject` becomes a dangling pointer.
     pub(crate) fn create_document(
         &self,
         new_traversable_id: NavigableId,
@@ -585,33 +582,38 @@ impl GlobalScope {
         )
     }
 
-    /// Register a newly-created traversable document temporarily.
-    /// The `EnvironmentSettingsObject` must be kept alive so the Boa Context
-    /// (and its Window JsObject) remain valid. The document is transferred
-    /// into `ContentProcess::documents` immediately after JS execution returns.
+    /// Set the shared new-document registry that both GlobalScope and
+    /// ContentProcess access.  ContentProcess sets this before running JS
+    /// that may trigger `the_rules_for_choosing_a_navigable`.
+    pub(crate) fn set_new_document_registry(
+        &self,
+        registry: Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
+    ) {
+        *self.new_document_registry.borrow_mut() = Some(registry);
+    }
+
+    /// Clear the shared registry after JS execution completes.
+    pub(crate) fn clear_new_document_registry(&self) {
+        *self.new_document_registry.borrow_mut() = None;
+    }
+
+    /// Register a newly-created traversable document in the shared registry.
+    /// Returns an error if no registry has been set (caller error).
     pub(crate) fn register_new_traversable_document(
         &self,
         document_id: DocumentId,
-        settings: super::environment_settings_object::EnvironmentSettingsObject,
+        settings: EnvironmentSettingsObject,
         document: Rc<RefCell<BaseDocument>>,
-    ) {
-        self.new_traversable_documents
+    ) -> Result<(), String> {
+        let registry = self
+            .new_document_registry
+            .borrow()
+            .clone()
+            .ok_or_else(|| String::from("no new_document_registry set on GlobalScope"))?;
+        registry
             .borrow_mut()
             .insert(document_id, (settings, document));
-    }
-
-    /// Take all temporarily-stored traversable documents out of this GlobalScope,
-    /// for transfer into `ContentProcess::documents`.
-    pub(crate) fn take_new_traversable_documents(
-        &self,
-    ) -> HashMap<
-        DocumentId,
-        (
-            super::environment_settings_object::EnvironmentSettingsObject,
-            Rc<RefCell<BaseDocument>>,
-        ),
-    > {
-        self.new_traversable_documents.take()
+        Ok(())
     }
 
 

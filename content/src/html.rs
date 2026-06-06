@@ -58,10 +58,11 @@ use url::Url;
 /// by the calling algorithm (e.g. `create-a-new-child-navigable`,
 /// `creating-a-new-top-level-traversable`).
 ///
-/// The caller is responsible for keeping the returned `EnvironmentSettingsObject`
-/// alive (registering it in ContentProcess::documents or the GlobalScope
-/// temporary holding area) — otherwise the Boa Context is dropped and
-/// JsObjects become dangling pointers.
+/// The caller must store the returned `EnvironmentSettingsObject` in a Rust
+/// container (e.g. `ContentProcess::documents` or the shared document registry)
+/// — if it is dropped the embedded `Context` is dropped and `JsObject` handles
+/// become dangling pointers. `EnvironmentSettingsObject` is not `Trace`; the
+/// per-Context Boa GC is self-contained and does not trace through it.
 pub(crate) fn create_a_new_browsing_context_and_document(
     event_sender: &IpcSender<ContentEvent>,
     traversable_id: NavigableId,
@@ -259,11 +260,15 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                     };
                 }
             };
-            global_scope.register_new_traversable_document(
+            if let Err(error) = global_scope.register_new_traversable_document(
                 new_document_id,
                 settings,
                 document,
-            );
+            ) {
+                eprintln!(
+                    "the_rules_for_choosing_a_navigable: failed to register document: {error}"
+                );
+            }
 
             let new_info = NewTraversableInfo {
                 document_id: new_document_id,
