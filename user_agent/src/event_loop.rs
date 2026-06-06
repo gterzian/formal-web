@@ -4,7 +4,7 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, ColorScheme as MessageColorScheme,
-    Command as ContentCommand, CreateChildNavigableRequest, ElementClickResult,
+    Command as ContentCommand, ElementClickResult,
     Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
     WebviewProviderMessage,
 };
@@ -482,23 +482,6 @@ impl EventLoopWorker {
                         timer_key: request.timer_key.0,
                     })
                     .map_err(|error| format!("failed to clear window timer: {error}"))?;
-            }
-            ContentEvent::CreateChildNavigable(CreateChildNavigableRequest {
-                parent_traversable_id,
-                content_navigable_id,
-                content_frame_id,
-                target_name,
-            }) => {
-                self.user_agent_command_sender
-                    .send(UserAgentCommand::CreateChildNavigable {
-                        parent_traversable_id,
-                        content_navigable_id,
-                        content_frame_id,
-                        target_name,
-                    })
-                    .map_err(|error| {
-                        format!("failed to send create-child-navigable request: {error}")
-                    })?;
             }
             ContentEvent::NavigationRequested(request) => {
                 // Navigation start leaves the content event loop and reenters the user-agent

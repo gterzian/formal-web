@@ -16,7 +16,7 @@ use boa_engine::{Context, object::JsObject};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
     DocumentId, Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,
-    NewTraversableInfo, UserNavigationInvolvement,
+    NewChildNavigableInfo, NewTraversableInfo, UserNavigationInvolvement,
 };
 
 pub use environment_settings_object::EnvironmentSettingsObject;
@@ -43,6 +43,66 @@ pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
 pub(crate) use windowproxy::WindowProxy;
 
+use blitz_dom::{BaseDocument, DocumentConfig};
+use std::{cell::RefCell, rc::Rc};
+use url::Url;
+
+/// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
+///
+/// Content-process portion of "create a new browsing context and document".
+/// Creates a new Document (type "html", content type "text/html") with the
+/// corresponding Window, realm, and environment settings object.
+///
+/// Steps that require UA-side state (browsing context allocation, group
+/// membership, agent selection, session history) are delegated to the UA
+/// by the calling algorithm (e.g. `create-a-new-child-navigable`,
+/// `creating-a-new-top-level-traversable`).
+///
+/// The caller must store the returned `EnvironmentSettingsObject` in a Rust
+/// container (e.g. `ContentProcess::documents` or the shared document registry)
+/// — if it is dropped the embedded `Context` is dropped and `JsObject` handles
+/// become dangling pointers. `EnvironmentSettingsObject` is not `Trace`; the
+/// per-Context Boa GC is self-contained and does not trace through it.
+pub(crate) fn create_a_new_browsing_context_and_document(
+    event_sender: &IpcSender<ContentEvent>,
+    traversable_id: NavigableId,
+    document_id: DocumentId,
+) -> Result<
+    (
+        JsObject,
+        EnvironmentSettingsObject,
+        Rc<RefCell<BaseDocument>>,
+    ),
+    String,
+> {
+    // Step 15: Create a new Document with type "html", content type "text/html"
+    let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
+        viewport: None,
+        base_url: None,
+        net_provider: None,
+        shell_provider: None,
+        html_parser_provider: None,
+        ..DocumentConfig::default()
+    })));
+    // Steps 9-10, 13: Obtain agent, create realm, set up window environment
+    // settings object (handled inside EnvironmentSettingsObject::new).
+    let settings = EnvironmentSettingsObject::new(
+        Rc::clone(&document),
+        Url::parse("about:blank").map_err(|error| error.to_string())?,
+        Some(event_sender.clone()),
+        Some(traversable_id),
+        Some(document_id),
+    )?;
+    // Step 22: Populate with html/head/body given document.
+    parse_html_into_document(
+        &mut document.borrow_mut(),
+        crate::EMPTY_HTML_DOCUMENT,
+    );
+    // Step 10 (continued): global object is the Window.
+    let global_object = settings.context.global_object();
+    Ok((global_object, settings, document))
+}
+
 /// <https://html.spec.whatwg.org/#navigate>
 pub(crate) fn navigate(
     event_sender: &IpcSender<ContentEvent>,
@@ -55,6 +115,7 @@ pub(crate) fn navigate(
     referrer_policy: Option<String>,
     features_json: Option<String>,
     new_traversable_info: Option<NewTraversableInfo>,
+    new_child_navigable: Option<NewChildNavigableInfo>,
 ) -> Result<(), String> {
     let request = NavigateRequest {
         navigation_id: Some(NavigationId::new()),
@@ -67,6 +128,7 @@ pub(crate) fn navigate(
         referrer_policy,
         features_json,
         new_traversable_info,
+        new_child_navigable,
     };
     event_sender
         .send(ContentEvent::NavigationRequested(request))
@@ -150,18 +212,33 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
 
     // Step 8: If chosen is null, then a new top-level traversable is being requested.
     // <https://html.spec.whatwg.org/#creating-a-new-top-level-traversable>
+    //
+    // Spec branches within Step 8:
+    //   1. Null opener (noopener=true, COOP enforcement, etc.): calls
+    //      `create a new top-level traversable` with null opener, which
+    //      creates a new BCG. Requires UA.
+    //   2. Non-null opener (noopener=false): calls `create a new top-level
+    //      traversable` with the opener BC, which creates an auxiliary BC
+    //      in the same BCG. Document can be created in content.
     let Some(chosen) = chosen else {
+        // ---- Null-opener branch (noopener or equivalent) ----
+        // <https://html.spec.whatwg.org/#creating-a-new-top-level-browsing-context>
+        if noopener {
+            // Delegate to UA: creates a new top-level browsing context
+            // (new BCG) and sends CreateEmptyDocument back.
+            return ChosenNavigableResult {
+                chosen_navigable_id: None,
+                new_traversable_info: None,
+                return_window: None,
+            };
+        }
+
+        // ---- Opener branch (auxiliary BC) ----
+        // <https://html.spec.whatwg.org/#creating-a-new-auxiliary-browsing-context>
         if let (Some(global_scope), Some(_context)) = (global_scope, context) {
-            // window.open path: the content process creates the about:blank
-            // document locally so the caller can return a WindowProxy
-            // immediately.  The UA continues via `new_traversable_info` in the
-            // NavigateRequest.
-            //
-            // `GlobalScope::create_document` creates an about:blank document
-            // with its own Window and JS Context directly (no callback
-            // indirection).  The UA's `create_new_top_level_traversable_from_content`
-            // sets up navigable, BCG, agent, and event-loop registration without
-            // sending CreateEmptyDocument back.
+            // window.open path with opener: create the about:blank document
+            // locally since the new auxiliary BC reuses the opener's BCG.
+            // The UA continues via `new_traversable_info` in NavigateRequest.
             let new_traversable_id = NavigableId::new();
             let new_document_id = DocumentId::new();
 
@@ -183,11 +260,15 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                     };
                 }
             };
-            global_scope.store_pending_window_open_document(
+            if let Err(error) = global_scope.register_new_traversable_document(
                 new_document_id,
                 settings,
                 document,
-            );
+            ) {
+                eprintln!(
+                    "the_rules_for_choosing_a_navigable: failed to register document: {error}"
+                );
+            }
 
             let new_info = NewTraversableInfo {
                 document_id: new_document_id,
@@ -201,8 +282,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
             };
         }
 
-        // Anchor-navigation path (or missing callback): chosen stays null,
-        // delegate to UA to create the new traversable.
+        // Anchor-navigation path (or missing GlobalScope): delegate to UA.
         return ChosenNavigableResult {
             chosen_navigable_id: None,
             new_traversable_info: None,

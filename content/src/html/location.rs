@@ -599,6 +599,7 @@ impl Location {
             None,
             None,
             None,
+            None,
         )
         .map_err(|error| {
             LocationError::NotSupported(format!(

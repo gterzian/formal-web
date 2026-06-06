@@ -114,7 +114,21 @@ pub enum UserNavigationInvolvement {
     BrowserUi,
 }
 
-/// <https://html.spec.whatwg.org/#window-open-steps>
+/// Information for creating a new child navigable (e.g. iframe).
+/// Carried as part of a `NavigateRequest` to fold creation and navigation
+/// into a single IPC message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewChildNavigableInfo {
+    pub parent_traversable_id: NavigableId,
+    pub content_navigable_id: NavigableId,
+    pub content_frame_id: FrameId,
+    /// Document ID for the document that the content process created locally.
+    /// No `CreateEmptyDocument` should be sent for this document.
+    pub document_id: DocumentId,
+    #[serde(default)]
+    pub target_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigateRequest {
     #[serde(default)]
@@ -139,15 +153,13 @@ pub struct NavigateRequest {
     /// sending `CreateEmptyDocument` (content already created the document).
     #[serde(default)]
     pub new_traversable_info: Option<NewTraversableInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateChildNavigableRequest {
-    pub parent_traversable_id: NavigableId,
-    pub content_navigable_id: NavigableId,
-    pub content_frame_id: FrameId,
+    /// Information about a new child navigable that the content process created
+    /// locally. When `Some`, the user agent must set up its navigable, browsing
+    /// context group membership, and document state. The destination_url carries
+    /// the initial navigation URL for the child (about:blank if no navigation is
+    /// needed).
     #[serde(default)]
-    pub target_name: Option<String>,
+    pub new_child_navigable: Option<NewChildNavigableInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -734,7 +746,6 @@ pub enum Event {
     DocumentFetchRequested(FetchRequest),
     WindowTimerRequested(WindowTimerRequest),
     WindowTimerCleared(WindowTimerClearRequest),
-    CreateChildNavigable(CreateChildNavigableRequest),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),

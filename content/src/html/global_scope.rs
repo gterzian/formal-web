@@ -4,7 +4,9 @@ use std::{
     rc::Rc,
 };
 
-use blitz_dom::{BaseDocument, DocumentConfig};
+use super::environment_settings_object::EnvironmentSettingsObject;
+
+use blitz_dom::BaseDocument;
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
@@ -161,19 +163,15 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
 
-    /// Pending about:blank documents created by `window.open`.  The
-    /// EnvironmentSettingsObject must be kept alive for its Boa Context (and
-    /// thus the returned Window JsObject) to remain valid.  When the user
-    /// agent finalizes the navigation (`CreateLoadedDocument`) the document
-    /// is transferred into `ContentProcess::documents`.
+    /// Shared registry for newly-created traversable documents (window.open).
+    /// Set by `ContentProcess` before running JS that may trigger
+    /// `the_rules_for_choosing_a_navigable`. Both GlobalScope (to insert)
+    /// and ContentProcess (to retrieve) share the same `Rc`, so no separate
+    /// flush step is needed.
     #[unsafe_ignore_trace]
-    pending_window_open_documents:
-        RefCell<HashMap<
-            DocumentId,
-            (
-                super::environment_settings_object::EnvironmentSettingsObject,
-                Rc<RefCell<BaseDocument>>,
-            ),
+    new_document_registry:
+        RefCell<Option<
+            Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
         >>,
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
@@ -202,7 +200,7 @@ impl GlobalScope {
             top_level_traversable_id: Cell::new(None),
             event_sender: RefCell::new(None),
 
-            pending_window_open_documents: RefCell::new(HashMap::new()),
+            new_document_registry: RefCell::new(None),
             creation_url: RefCell::new(None),
 
         }
@@ -554,11 +552,11 @@ impl GlobalScope {
         }
     }
 
-    /// Create a new about:blank document in this content process, with its own
-    /// Boa Context, Window, and GlobalScope.  The caller MUST store the returned
-    /// `EnvironmentSettingsObject` somewhere persistent (see
-    /// `pending_window_open_documents`) — otherwise the Context is dropped and
-    /// the JsObject becomes a dangling pointer.
+    /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
+    /// Content-process portion of "create a new browsing context and document".
+    /// The caller must store the returned `EnvironmentSettingsObject` in a
+    /// Rust container — if it is dropped the embedded `Context` is dropped
+    /// and the `JsObject` becomes a dangling pointer.
     pub(crate) fn create_document(
         &self,
         new_traversable_id: NavigableId,
@@ -573,48 +571,49 @@ impl GlobalScope {
         ),
         String,
     > {
-        // Create a bare about:blank document.  No blitz providers needed —
-        // navigation to the destination URL will set those up via the
-        // UA's create-loaded-document path.
-        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
-            viewport: None,
-            base_url: None,
-            net_provider: None,
-            shell_provider: None,
-            html_parser_provider: None,
-            ..DocumentConfig::default()
-        })));
         let event_sender = self.event_sender();
-        let settings = super::environment_settings_object::EnvironmentSettingsObject::new(
-            Rc::clone(&document),
-            url::Url::parse("about:blank").map_err(|error| error.to_string())?,
+        let event_sender = event_sender
+            .as_ref()
+            .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
+        crate::html::create_a_new_browsing_context_and_document(
             event_sender,
-            Some(new_traversable_id),
-            Some(new_document_id),
-        )?;
-        crate::html::html_parser::parse_html_into_document(
-            &mut document.borrow_mut(),
-            crate::EMPTY_HTML_DOCUMENT,
-        );
-        Ok((
-            settings.context.global_object(),
-            settings,
-            document,
-        ))
+            new_traversable_id,
+            new_document_id,
+        )
     }
 
-    /// Store a pending about:blank document created by `window.open`.
-    /// Keeps the `EnvironmentSettingsObject` alive so the Boa Context and
-    /// its Window JsObject remain valid until the navigation finalizes.
-    pub(crate) fn store_pending_window_open_document(
+    /// Set the shared new-document registry that both GlobalScope and
+    /// ContentProcess access.  ContentProcess sets this before running JS
+    /// that may trigger `the_rules_for_choosing_a_navigable`.
+    pub(crate) fn set_new_document_registry(
+        &self,
+        registry: Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
+    ) {
+        *self.new_document_registry.borrow_mut() = Some(registry);
+    }
+
+    /// Clear the shared registry after JS execution completes.
+    pub(crate) fn clear_new_document_registry(&self) {
+        *self.new_document_registry.borrow_mut() = None;
+    }
+
+    /// Register a newly-created traversable document in the shared registry.
+    /// Returns an error if no registry has been set (caller error).
+    pub(crate) fn register_new_traversable_document(
         &self,
         document_id: DocumentId,
-        settings: super::environment_settings_object::EnvironmentSettingsObject,
+        settings: EnvironmentSettingsObject,
         document: Rc<RefCell<BaseDocument>>,
-    ) {
-        self.pending_window_open_documents
+    ) -> Result<(), String> {
+        let registry = self
+            .new_document_registry
+            .borrow()
+            .clone()
+            .ok_or_else(|| String::from("no new_document_registry set on GlobalScope"))?;
+        registry
             .borrow_mut()
             .insert(document_id, (settings, document));
+        Ok(())
     }
 
 
