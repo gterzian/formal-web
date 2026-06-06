@@ -3,6 +3,7 @@
 pub(crate) mod ui_event;
 
 pub mod boa;
+pub mod css;
 pub mod dom;
 pub mod html;
 pub mod infra;

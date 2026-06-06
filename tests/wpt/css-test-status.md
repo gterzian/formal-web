@@ -26,10 +26,10 @@ TIMEOUT, or FAIL occurs at the file level.
 | Metric | Count |
 |--------|-------|
 | Testable CSS testharness files across `vendor/wpt/css/` | ~5,900 |
-| Test files that pass today | ~38  |
-| **Pass rate** | **~0.6 %** |
+| Test files that pass today | ~41  |
+| **Pass rate** | **~0.7 %** |
 
-Of the ~38 passing files, most are `*-invalid.html` parsing tests that verify that
+Of the ~41 passing files, most are `*-invalid.html` parsing tests that verify that
 garbage CSS values are correctly rejected.  A handful are basic structural tests
 (tokenizer whitespace, SVG display handling, CSSOM mutation) that do not depend on
 specific CSS property support.
@@ -73,6 +73,9 @@ only set invalid values on `e.style` and verify the property was not set.
 
 | Test file | What it tests |
 |-----------|---------------|
+| `css/css-conditional/js/CSS-supports-L3.html` | `CSS.supports()` core API (two-arg and one-arg) |
+| `css/css-conditional/js/CSS-supports-L4.html` | `CSS.supports()` with `selector()` function |
+| `css/css-conditional/js/CSS-supports-selector-detecting-invalid-in-logical-combinations.html` | `CSS.supports()` selector invalidation detection |
 | `css/css-syntax/whitespace.html` | CSS tokenizer whitespace handling |
 | `css/css-syntax/unclosed-constructs.html` | Tokenizer unclosed-string/unclosed-url recovery |
 | `css/css-display/display-with-float.html` | Float + display interaction |
@@ -114,16 +117,18 @@ etc. — reports the property as unsupported and fails.
 - Alternatively, change the test infrastructure to not gate on `CSS.supports()`,
   though that would deviate from WPT expectations.
 
-### 2. `CSS` namespace object missing / incomplete
+### 2. `CSS` namespace object partially implemented (`CSS.supports()` done)
 
-**Impact:** Blocks CSSOM and CSS-typed-OM tests.
+**Impact:** CSSOM and CSS-typed-OM tests still blocked by missing worklets and
+CSSOM interfaces.
 
 The `CSS` global namespace object (`CSS.supports()`, `CSS.escape()`,
-`CSS.paintWorklet`, `CSS.layoutWorklet`) is referenced by many tests.  `CSS.escape()`
-is implemented; `CSS.supports()` and the worklet registries are not.
+`CSS.paintWorklet`, `CSS.layoutWorklet`) is referenced by many tests.  
+`CSS.supports()` and `CSS.escape()` are now implemented; `CSS.paintWorklet`,
+`CSS.layoutWorklet` and other members are not.
 
-**What's needed:**
-- `CSS.supports(conditionText)` / `CSS.supports(property, value)`
+**What's still needed:**
+- `CSS.paintWorklet`, `CSS.layoutWorklet`
 
 ### 3. `getComputedStyle()` property-value round-trip incomplete
 
@@ -329,7 +334,7 @@ of a canonicalised string like `"calc(10% + 10px + 1vmin)"`.
 | css-shadow | ~90 | 0 | 0% | Not tested |
 | css-break | ~48 | 0 | 0% | Not tested (reftest-heavy) |
 | css-contain | ~95 | 0 | 0% | Not tested (reftest-heavy) |
-| css-conditional | ~206 | 0 | 0% | Mostly reftests |
+| css-conditional | ~206 | 3 | 1% | `CSS.supports()` API tests pass; container queries and `@supports` CSSOM require CSSStyleSheet, selector-picker features |
 | css-gaps | ~75 | 0 | 0% | Not tested |
 | css-inline | ~58 | 0 | 0% | Not tested |
 | css-logical | ~86 | 0 | 0% | Not tested |
