@@ -25,6 +25,17 @@ Because every spec anchor (heading, dfn, span, `a`) matches an `id` attribute in
 
 Algorithm steps are rendered with recursive step numbers (1, 1.1, 1.1.1, 1.2, 2, …). The HTML spec provides no step numbers in the markup — they are computed from the nested `<ol>` structure.
 
+**Cross-reference table.** When the content contains spec cross-references (terms linked to other sections or specs), a table is appended at the bottom:
+
+```
+┌─ Term           ── Link                                                        ─┐
+│ boolean         https://webidl.spec.whatwg.org/#idl-boolean                     │
+│ CSSOMString     https://drafts.csswg.org/cssom-1/#cssomstring                   │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Each row pairs a term name with the anchor URL where it's defined. You can look up any of these with another `spec_lookup` call — split the URL before `#` as `url=` and after `#` as `id=`, e.g. `spec_lookup(url="https://webidl.spec.whatwg.org/", id="idl-boolean")`. This lets you follow the spec's dependency chain across specs step by step.
+
 ### `spec_search_id` (find ids by keyword)
 
 Search across all elements with an `id` attribute for a substring match. Returns a list of matching ids with their tag and first line of text. Use this to discover anchor IDs when you know a keyword but not the exact id.
