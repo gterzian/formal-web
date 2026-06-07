@@ -609,7 +609,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text" as const,
-              text: truncate(blocks.join("\n\n---\n\n")),
+              text: truncate(blocks.join("\n\n---\n\n") + DOC_REMINDER),
             },
           ],
           details: {
@@ -658,7 +658,7 @@ export default function (pi: ExtensionAPI) {
         `algorithm', not the thing itself.`;
 
       return {
-        content: [{ type: "text" as const, text: truncate(table + usage) }],
+        content: [{ type: "text" as const, text: truncate(table + usage + DOC_REMINDER) }],
         details: {
           url,
           id,
