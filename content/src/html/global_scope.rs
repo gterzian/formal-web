@@ -375,7 +375,7 @@ impl GlobalScope {
         timeout_ms: u32,
         nesting_level: u32,
     ) -> Result<u32, String> {
-        // Note: This helper continues the `timer initialization steps` algorithm at the `GlobalScope`-owned pieces. The mixin carrier already handled the preliminary timeout conversion, clamping, and task setup.
+        // Note: This helper continues the `timer initialization steps` algorithm at the `GlobalScope`-owned pieces. The mixin implementation already handled the preliminary timeout conversion, clamping, and task setup.
 
         // Step 2: "If previousId was given, let id be previousId; otherwise, let id be an implementation-defined integer that is greater than zero and does not already exist in global's map of setTimeout and setInterval IDs."
         let timer_id = previous_id.unwrap_or_else(|| self.next_timer_id());

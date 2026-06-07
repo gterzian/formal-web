@@ -73,7 +73,7 @@ pub(crate) fn window_computed_style_properties_for_element(
     pseudo_elt: Option<&str>,
 ) -> BTreeMap<String, String> {
     // Step 1: "Let doc be elt's node document."
-    // Note: The style resolution helper reads elt's node document through the DOM carrier.
+    // Note: The style resolution helper reads elt's node document through the [Document](https://dom.spec.whatwg.org/#interface-document) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object).
 
     // Step 2: "Let obj be elt."
     let mut obj = Some(elt);
@@ -85,7 +85,7 @@ pub(crate) fn window_computed_style_properties_for_element(
             // Step 3.2 / 3.3: Map invalid, ::slotted(), ::part(), or supported pseudo-element
             // requests to the corresponding pseudo-element object.
             //
-            // Note: The implementation does not yet expose pseudo-element carriers, so any
+            // Note: The implementation does not yet expose pseudo-element platform objects, so any
             // pseudo-element request leaves `obj` null and therefore produces an empty declaration
             // list below.
             obj = None;
@@ -100,7 +100,7 @@ pub(crate) fn window_computed_style_properties_for_element(
     //
     // Note: The implementation represents the connected predicate, but it does not yet model flat
     // tree membership, pseudo-elements, or the browsing-context-container rendering gate. The
-    // populated branch therefore uses the connected element carrier that exists today.
+    // populated branch therefore uses the connected element that exists today.
     if let Some(obj) = obj.filter(|element| element.is_connected()) {
         decls = resolved_style_properties_for_element(obj);
     }

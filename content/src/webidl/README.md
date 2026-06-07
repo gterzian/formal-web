@@ -9,10 +9,23 @@
 - DOM event dispatch and other callback sites should call into this layer instead of calling Boa directly.
 - Use the `web_standards` extension (`spec_lookup`) with `https://webidl.spec.whatwg.org/` to read the Web IDL spec.
 
-## Boa integration of platform objects
+## Boa integration of [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object)
 
 The content crate defines Rust types that correspond to Web IDL interface types (e.g.
-`Window`, `Document`, `HTMLAnchorElement`). These types implement `boa_engine::JsData`
+`Window`, `Document`, `HTMLAnchorElement`). In comments and documentation, refer to these
+as a [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) that implements
+the *named interface* — for example:
+- "a [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) that implements
+  the [Document](https://dom.spec.whatwg.org/#interface-document) interface"
+- "the [Window](https://html.spec.whatwg.org/#window) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)"
+
+The Rust `downcast_ref` operation checks which interface a `JsObject`'s backing data
+implements — this maps to the Web IDL concept of
+[inherited interfaces](https://webidl.spec.whatwg.org/#dfn-inherited-interfaces).
+Prefer phrasing like "check the platform object's inherited interfaces" over
+"downcast the platform object".
+
+These types implement `boa_engine::JsData`
 (derived via `#[derive(Trace, Finalize, JsData)]`) and are stored inside Boa `JsObject`s
 via `from_proto_and_data()` or `ObjectInitializer::with_native_data_and_proto()`.
 
@@ -21,7 +34,7 @@ The typical pattern for a platform object:
 ```rust
 #[derive(Trace, Finalize, JsData)]
 pub struct MyInterface {
-    /// Rust carrier state — not JS-visible properties.
+    /// Rust backing state — not JS-visible properties.
     pub inner: Rc<RefCell<InnerState>>,
 }
 ```
@@ -29,7 +42,7 @@ pub struct MyInterface {
 The JS-visible properties and methods are registered separately via the `Class` trait
 or `ObjectInitializer`. The Rust struct holds only the backing state.
 
-### Where carrier types live
+### Where [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) types live
 
 - **DOM interfaces** (`Document`, `EventTarget`, `Element`, …): `content/src/dom/`
 - **HTML interfaces** (`Window`, `HTMLAnchorElement`, `HTMLIFrameElement`, `Location`, …): `content/src/html/`
@@ -90,4 +103,4 @@ See `content/src/boa/bindings/` for concrete examples per interface.
 
 - `content/README.md` — Content-crate overview
 - `content/src/boa/README.md` — Boa integration specifics (Context ownership, bindings)
-- `content/src/html/README.md` — HTML object carriers, WindowProxy, navigation split
+- `content/src/html/README.md` — HTML platform objects, WindowProxy, navigation split

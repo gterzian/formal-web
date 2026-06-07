@@ -542,7 +542,7 @@ impl Location {
 
         // Step 3: "Assert: this's relevant Document's ancestor origins list is not null."
         // Step 4: "Otherwise, return this's relevant Document's ancestor origins list."
-        // Note: The implementation does not yet expose a document ancestor-origins carrier, so
+        // Note: The implementation does not yet expose a document ancestor-origins list, so
         // this model returns an empty list.
         Ok(Vec::new())
     }

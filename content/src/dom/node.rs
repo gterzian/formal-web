@@ -352,7 +352,7 @@ impl Node {
         }
 
         // Step 2: "If node is a host-including inclusive ancestor of parent, then throw a \"HierarchyRequestError\" DOMException."
-        // Note: The current DOM carrier does not yet model shadow trees, so "host-including inclusive ancestor" reduces to the inclusive ancestor relation in the light tree.
+        // Note: The current DOM implementation does not yet model shadow trees, so "host-including inclusive ancestor" reduces to the inclusive ancestor relation in the light tree.
         if Self::is_inclusive_ancestor(node, parent) {
             return Err(DOMException::hierarchy_request_error());
         }
@@ -378,7 +378,7 @@ impl Node {
         }
 
         // Step 5: "If either node is a Text node and parent is a document, or node is a doctype and parent is not a document, then throw a \"HierarchyRequestError\" DOMException."
-        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentType nodes, so the doctype branch is unreachable here.
+        // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentType nodes, so the doctype branch is unreachable here.
 
         // Step 6: "If parent is a document, and any of the statements below, switched on the interface node implements, are true, then throw a \"HierarchyRequestError\" DOMException."
         if !Self::is_document_node(parent) {
@@ -386,10 +386,10 @@ impl Node {
         }
 
         // Step 6.1: "If node has more than one element child or has a Text node child."
-        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment nodes, so this branch is unreachable here.
+        // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentFragment nodes, so this branch is unreachable here.
 
         // Step 6.2: "Otherwise, if node has one element child and either parent has an element child, child is a doctype, or child is non-null and a doctype is following child."
-        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment or DocumentType nodes, so this branch is unreachable here.
+        // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentFragment or DocumentType nodes, so this branch is unreachable here.
 
         // Step 6.3: "parent has an element child, child is a doctype, or child is non-null and a doctype is following child."
         if Self::node_kind(node) == Some(NodeKind::Element)
@@ -399,10 +399,10 @@ impl Node {
         }
 
         // Step 6.3: "parent has an element child, child is a doctype, or child is non-null and a doctype is following child."
-        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentType nodes, so the doctype branches are unreachable here.
+        // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentType nodes, so the doctype branches are unreachable here.
 
         // Step 6.4: "parent has a doctype child, child is non-null and an element is preceding child, or child is null and parent has an element child."
-        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentType nodes, so this branch is unreachable here.
+        // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentType nodes, so this branch is unreachable here.
 
         Ok(())
     }
@@ -435,16 +435,16 @@ impl Node {
         reference_child_node_id: Option<usize>,
     ) -> Result<(), DOMException> {
         // Step 1: "Let nodes be node's children, if node is a DocumentFragment node; otherwise « node »."
-        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment nodes, so this helper always inserts « node ».
+        // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentFragment nodes, so this helper always inserts « node ».
 
         // Step 2: "Let count be nodes's size."
-        // Note: The current JavaScript-visible DOM carrier inserts one node at a time here, so count is always 1.
+        // Note: The current JavaScript-visible DOM implementation inserts one node at a time here, so count is always 1.
 
         // Step 3: "If count is 0, then return."
-        // Note: The current JavaScript-visible DOM carrier never reaches this helper with an empty insertion set.
+        // Note: The current JavaScript-visible DOM implementation never reaches this helper with an empty insertion set.
 
         // Step 4: "If node is a DocumentFragment node:"
-        // Note: The current JavaScript-visible DOM carrier does not yet expose DocumentFragment nodes, so these substeps are unreachable here.
+        // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentFragment nodes, so these substeps are unreachable here.
 
         // Step 5: "If child is non-null:"
         // Note: The implementation does not yet model live ranges.
@@ -473,19 +473,19 @@ impl Node {
         }
 
         // Step 7.4: "If parent is a shadow host whose shadow root's slot assignment is \"named\" and node is a slottable, then assign a slot for node."
-        // Note: The current DOM carrier does not yet model shadow trees or slot assignment.
+        // Note: The current DOM implementation does not yet model shadow trees or slot assignment.
 
         // Step 7.5: "If parent's root is a shadow root, and parent is a slot whose assigned nodes is the empty list, then run signal a slot change for parent."
-        // Note: The current DOM carrier does not yet model shadow trees or slot assignment.
+        // Note: The current DOM implementation does not yet model shadow trees or slot assignment.
 
         // Step 7.6: "Run assign slottables for a tree with node's root."
-        // Note: The current DOM carrier does not yet model shadow trees or slot assignment.
+        // Note: The current DOM implementation does not yet model shadow trees or slot assignment.
 
         // Step 7.7: "For each shadow-including inclusive descendant inclusiveDescendant of node, in shadow-including tree order:"
         // Note: HTML insertion steps, connected callbacks, and other post-connection work continue in higher-level code paths rather than this low-level tree mutator adapter.
 
         // Step 8: "If suppressObservers is unset, then queue a tree mutation record for parent with nodes, « », previousSibling, and child."
-        // Note: The current DOM carrier does not yet model mutation observers.
+        // Note: The current DOM implementation does not yet model mutation observers.
 
         // Step 9: "Run the children changed steps for parent."
         // Note: The implementation resumes higher-level children-changed consequences outside this low-level tree mutator adapter.

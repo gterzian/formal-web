@@ -5,7 +5,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace};
 
 /// <https://webidl.spec.whatwg.org/#idl-callback-function>
-// Note: The content process reuses this carrier for both callback function and callback interface type values because both Web IDL representations carry a JavaScript object reference plus callback context.
+// Note: The content process reuses `Callback` for both [callback function](https://webidl.spec.whatwg.org/#idl-callback-function) type values and objects implementing a [callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) because both Web IDL representations are a tuple of (object reference, callback context).
 // Note: The callback context remains implicit in the current single-realm content process until callback-realm bookkeeping is modeled explicitly.
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct Callback {
@@ -120,7 +120,7 @@ pub(crate) fn callback_interface_type_value(value: &JsValue) -> JsResult<Callbac
     })?;
 
     // Step 2: "Return the IDL callback interface type value that represents a reference to V, with the incumbent settings object as the callback context."
-    // Note: The shared `Callback` carrier stores the referenced JavaScript object and relies on the current single-realm implementation for the callback-context portion of the value.
+    // Note: The `Callback` stores the referenced [object implementing a callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface); the callback context remains implicit in the current single-realm implementation.
     Ok(Callback::from_object(object.clone()))
 }
 
@@ -138,7 +138,7 @@ pub(crate) fn callback_function_value(value: &JsValue) -> JsResult<Callback> {
     };
 
     // Step 2: "Return the IDL callback function type value that represents a reference to the same object that V represents, with the incumbent settings object as the callback context."
-    // Note: The shared `Callback` carrier stores the referenced JavaScript object and relies on the current single-realm implementation for the callback-context portion of the value.
+    // Note: The `Callback` stores the referenced [object implementing a callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) or callback function; the callback context remains implicit in the current single-realm implementation.
     Ok(Callback::from_object(object.clone()))
 }
 
@@ -147,7 +147,7 @@ pub(crate) fn nullable_value<T>(
     value: &JsValue,
     convert_inner: impl FnOnce(&JsValue) -> JsResult<T>,
 ) -> JsResult<Option<T>> {
-    // Note: The current content process uses this helper for nullable callback interface and nullable callback function conversions, so the Rust carrier models the `null` result as `None` and delegates all non-null inputs to the inner conversion.
+    // Note: The current content process uses this helper for nullable callback interface and nullable callback function conversions, so the Rust struct models the `null` result as `None` and delegates all non-null inputs to the inner conversion.
 
     // Step 1: "If V is not an Object, and the conversion to an IDL value is being performed due to V being assigned to an attribute whose type is a nullable callback function that is annotated with [LegacyTreatNonObjectAsNull], then return the IDL nullable type T? value null."
     // Note: No current content call sites use [LegacyTreatNonObjectAsNull].

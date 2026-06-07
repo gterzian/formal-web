@@ -59,7 +59,7 @@ impl HTMLElement {
     /// <https://html.spec.whatwg.org/#dom-hidden>
     pub(crate) fn hidden(&self) -> bool {
         // Step 1: "Return true if the hidden attribute is in the Hidden State or Until Found State; otherwise false."
-        // Note: The current DOM carrier exposes the attribute as a presence bit, so both states collapse to whether `hidden` is present.
+        // Note: The current DOM implementation exposes the attribute as a presence bit, so both states collapse to whether `hidden` is present.
         self.element.has_attribute("hidden")
     }
 
@@ -122,7 +122,7 @@ pub(crate) fn inline_style_properties_for_element(element: &Element) -> BTreeMap
 /// <https://drafts.csswg.org/cssom/#resolved-values>
 pub(crate) fn resolved_style_properties_for_element(element: &Element) -> BTreeMap<String, String> {
     // This helper materializes the subset of longhand resolved values that the current DOM and
-    // layout carriers can source for Window.getComputedStyle().
+    // layout implementations can source for Window.getComputedStyle().
     let mut properties = inline_style_properties_for_element(element);
     let metrics = element.box_metrics().unwrap_or_default();
 

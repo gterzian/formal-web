@@ -34,7 +34,7 @@ pub(crate) enum ReadableStreamState {
     Errored,
 }
 /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller-from-underlying-source>
-// Note: This carrier stores an underlying source method together with its callback `this` value so the surrounding Streams algorithms can later invoke it through Web IDL callback invocation.
+// Note: This struct stores an underlying source method together with its callback `this` value so the surrounding Streams algorithms can later invoke it through Web IDL callback invocation.
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct SourceMethod {
     this_value: JsObject,
