@@ -1,10 +1,7 @@
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
     object::builtins::JsArray,
-    property::Attribute,
 };
 
 use crate::dom::DOMException;
@@ -20,6 +17,173 @@ struct EntrySettingsObject {
     origin: String,
 }
 
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for Location {
+    const NAME: &'static str = "Location";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "href",
+            getter: get_href,
+            setter: Some(set_href),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "origin",
+            getter: get_origin,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "protocol",
+            getter: get_protocol,
+            setter: Some(set_protocol),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "host",
+            getter: get_host,
+            setter: Some(set_host),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "hostname",
+            getter: get_hostname,
+            setter: Some(set_hostname),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "port",
+            getter: get_port,
+            setter: Some(set_port),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "pathname",
+            getter: get_pathname,
+            setter: Some(set_pathname),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "search",
+            getter: get_search,
+            setter: Some(set_search),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "hash",
+            getter: get_hash,
+            setter: Some(set_hash),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "ancestorOrigins",
+            getter: get_ancestor_origins,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "assign",
+            length: 1,
+            method: assign_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "replace",
+            length: 1,
+            method: replace_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "reload",
+            length: 0,
+            method: reload_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "toString",
+            length: 0,
+            method: to_string_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
+
 impl Class for Location {
     const NAME: &'static str = "Location";
 
@@ -34,94 +198,8 @@ impl Class for Location {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_location_methods(class)
+        register_interface::<Location>(class)
     }
-}
-
-pub(crate) fn register_location_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("href"),
-            Some(NativeFunction::from_fn_ptr(get_href).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_href).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("origin"),
-            Some(NativeFunction::from_fn_ptr(get_origin).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("protocol"),
-            Some(NativeFunction::from_fn_ptr(get_protocol).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_protocol).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("host"),
-            Some(NativeFunction::from_fn_ptr(get_host).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_host).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("hostname"),
-            Some(NativeFunction::from_fn_ptr(get_hostname).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_hostname).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("port"),
-            Some(NativeFunction::from_fn_ptr(get_port).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_port).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("pathname"),
-            Some(NativeFunction::from_fn_ptr(get_pathname).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_pathname).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("search"),
-            Some(NativeFunction::from_fn_ptr(get_search).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_search).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("hash"),
-            Some(NativeFunction::from_fn_ptr(get_hash).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_hash).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("ancestorOrigins"),
-            Some(NativeFunction::from_fn_ptr(get_ancestor_origins).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .method(
-            js_string!("assign"),
-            1,
-            NativeFunction::from_fn_ptr(assign_method),
-        )
-        .method(
-            js_string!("replace"),
-            1,
-            NativeFunction::from_fn_ptr(replace_method),
-        )
-        .method(
-            js_string!("reload"),
-            0,
-            NativeFunction::from_fn_ptr(reload_method),
-        )
-        .method(
-            js_string!("toString"),
-            0,
-            NativeFunction::from_fn_ptr(to_string_method),
-        );
-    Ok(())
 }
 
 fn with_location_ref<R>(this: &JsValue, f: impl FnOnce(&Location) -> R) -> JsResult<R> {

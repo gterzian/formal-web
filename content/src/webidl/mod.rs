@@ -1,3 +1,4 @@
+pub(crate) mod binding;
 mod async_iterable;
 mod callback;
 mod promise;

@@ -13,10 +13,84 @@ use crate::dom::Element;
 use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, inline_style_properties_for_element,
 };
-
-use crate::boa::bindings::dom::{
-    register_element_methods, register_event_target_methods, register_node_methods,
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
 };
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for HTMLElement {
+    const NAME: &'static str = "HTMLElement";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("Element")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "title",
+            getter: get_title,
+            setter: Some(set_title),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "lang",
+            getter: get_lang,
+            setter: Some(set_lang),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "dir",
+            getter: get_dir,
+            setter: Some(set_dir),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "hidden",
+            getter: get_hidden,
+            setter: Some(set_hidden),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "style",
+            getter: get_style,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+    }
+}
+
+// ── Boa Class glue + transitional wrapper ──
 
 impl Class for HTMLElement {
     const NAME: &'static str = "HTMLElement";
@@ -32,10 +106,7 @@ impl Class for HTMLElement {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)?;
-        register_node_methods(class)?;
-        register_element_methods(class)?;
-        register_html_element_methods(class)
+        register_interface::<HTMLElement>(class)
     }
 }
 
@@ -59,42 +130,6 @@ fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -
     Err(JsNativeError::typ()
         .with_message("receiver is not an HTMLElement")
         .into())
-}
-
-pub(crate) fn register_html_element_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("title"),
-            Some(NativeFunction::from_fn_ptr(get_title).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_title).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("lang"),
-            Some(NativeFunction::from_fn_ptr(get_lang).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_lang).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("dir"),
-            Some(NativeFunction::from_fn_ptr(get_dir).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_dir).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("hidden"),
-            Some(NativeFunction::from_fn_ptr(get_hidden).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_hidden).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("style"),
-            Some(NativeFunction::from_fn_ptr(get_style).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        );
-    Ok(())
 }
 
 fn get_title(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {

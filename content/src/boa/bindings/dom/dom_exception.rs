@@ -1,12 +1,59 @@
 use boa_engine::{
     Context, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
-    property::Attribute,
 };
 
 use crate::dom::DOMException;
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
+};
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for DOMException {
+    const NAME: &'static str = "DOMException";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "name",
+            getter: get_name,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "message",
+            getter: get_message,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "code",
+            getter: get_code,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for DOMException {
     const NAME: &'static str = "DOMException";
@@ -40,32 +87,8 @@ impl Class for DOMException {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_dom_exception_methods(class)
+        register_interface::<DOMException>(class)
     }
-}
-
-pub(crate) fn register_dom_exception_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("name"),
-            Some(NativeFunction::from_fn_ptr(get_name).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("message"),
-            Some(NativeFunction::from_fn_ptr(get_message).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("code"),
-            Some(NativeFunction::from_fn_ptr(get_code).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        );
-    Ok(())
 }
 
 fn get_name(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {

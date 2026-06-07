@@ -2,12 +2,171 @@ use boa_engine::{
     Context, JsArgs, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
     js_string,
-    native_function::NativeFunction,
-    property::Attribute,
 };
 
 use crate::boa::with_event_mut;
 use crate::dom::Event;
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for Event {
+    const NAME: &'static str = "Event";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        // §3.7.6: Regular attributes
+        def.add_attribute(AttributeDef {
+            id: "type",
+            getter: get_type,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "target",
+            getter: get_target,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "currentTarget",
+            getter: get_current_target,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "eventPhase",
+            getter: get_event_phase,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "bubbles",
+            getter: get_bubbles,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "cancelable",
+            getter: get_cancelable,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "defaultPrevented",
+            getter: get_default_prevented,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "cancelBubble",
+            getter: get_cancel_bubble,
+            setter: Some(set_cancel_bubble),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "isTrusted",
+            getter: get_is_trusted,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "timeStamp",
+            getter: get_time_stamp,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+
+        // §3.7.7: Regular operations
+        def.add_operation(OperationDef {
+            id: "stopPropagation",
+            length: 0,
+            method: stop_propagation,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "stopImmediatePropagation",
+            length: 0,
+            method: stop_immediate_propagation,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "preventDefault",
+            length: 0,
+            method: prevent_default,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue (will be replaced by register_interface_spec) ──
 
 impl Class for Event {
     const NAME: &'static str = "Event";
@@ -34,89 +193,10 @@ impl Class for Event {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_methods(class)
+        // https://webidl.spec.whatwg.org/#js-interfaces
+        // Use the Web IDL spec-aligned registration for this interface.
+        register_interface::<Event>(class)
     }
-}
-
-pub(crate) fn register_event_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("type"),
-            Some(NativeFunction::from_fn_ptr(get_type).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("target"),
-            Some(NativeFunction::from_fn_ptr(get_target).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("currentTarget"),
-            Some(NativeFunction::from_fn_ptr(get_current_target).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("eventPhase"),
-            Some(NativeFunction::from_fn_ptr(get_event_phase).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("bubbles"),
-            Some(NativeFunction::from_fn_ptr(get_bubbles).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("cancelable"),
-            Some(NativeFunction::from_fn_ptr(get_cancelable).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("defaultPrevented"),
-            Some(NativeFunction::from_fn_ptr(get_default_prevented).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("cancelBubble"),
-            Some(NativeFunction::from_fn_ptr(get_cancel_bubble).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_cancel_bubble).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("isTrusted"),
-            Some(NativeFunction::from_fn_ptr(get_is_trusted).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("timeStamp"),
-            Some(NativeFunction::from_fn_ptr(get_time_stamp).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .method(
-            js_string!("stopPropagation"),
-            0,
-            NativeFunction::from_fn_ptr(stop_propagation),
-        )
-        .method(
-            js_string!("stopImmediatePropagation"),
-            0,
-            NativeFunction::from_fn_ptr(stop_immediate_propagation),
-        )
-        .method(
-            js_string!("preventDefault"),
-            0,
-            NativeFunction::from_fn_ptr(prevent_default),
-        );
-    Ok(())
 }
 
 pub(crate) fn init_flag(init: &JsValue, key: JsString, context: &mut Context) -> JsResult<bool> {

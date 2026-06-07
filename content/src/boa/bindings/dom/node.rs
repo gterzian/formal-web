@@ -4,10 +4,7 @@ use blitz_dom::NodeData;
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
     object::builtins::JsArray,
-    property::Attribute,
 };
 
 use crate::boa::platform_objects::{
@@ -16,8 +13,272 @@ use crate::boa::platform_objects::{
 };
 use crate::dom::{DOMException, Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
+use crate::webidl::binding::{
+    AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
+    register_interface,
+};
 
-use super::event_target::register_event_target_methods;
+impl WebIdlInterface for Node {
+    const NAME: &'static str = "Node";
+    fn parent_name() -> Option<&'static str> {
+        Some("EventTarget")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        use boa_engine::JsValue;
+        // §3.7.5: Constants
+        def.add_constant(ConstantDef {
+            id: "ELEMENT_NODE",
+            value: JsValue::from(1),
+        });
+        def.add_constant(ConstantDef {
+            id: "ATTRIBUTE_NODE",
+            value: JsValue::from(2),
+        });
+        def.add_constant(ConstantDef {
+            id: "TEXT_NODE",
+            value: JsValue::from(3),
+        });
+        def.add_constant(ConstantDef {
+            id: "CDATA_SECTION_NODE",
+            value: JsValue::from(4),
+        });
+        def.add_constant(ConstantDef {
+            id: "ENTITY_REFERENCE_NODE",
+            value: JsValue::from(5),
+        });
+        def.add_constant(ConstantDef {
+            id: "ENTITY_NODE",
+            value: JsValue::from(6),
+        });
+        def.add_constant(ConstantDef {
+            id: "PROCESSING_INSTRUCTION_NODE",
+            value: JsValue::from(7),
+        });
+        def.add_constant(ConstantDef {
+            id: "COMMENT_NODE",
+            value: JsValue::from(8),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_NODE",
+            value: JsValue::from(9),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_TYPE_NODE",
+            value: JsValue::from(10),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_FRAGMENT_NODE",
+            value: JsValue::from(11),
+        });
+        def.add_constant(ConstantDef {
+            id: "NOTATION_NODE",
+            value: JsValue::from(12),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_POSITION_DISCONNECTED",
+            value: JsValue::from(0x01),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_POSITION_PRECEDING",
+            value: JsValue::from(0x02),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_POSITION_FOLLOWING",
+            value: JsValue::from(0x04),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_POSITION_CONTAINS",
+            value: JsValue::from(0x08),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_POSITION_CONTAINED_BY",
+            value: JsValue::from(0x10),
+        });
+        def.add_constant(ConstantDef {
+            id: "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
+            value: JsValue::from(0x20),
+        });
+
+        // §3.7.6: Regular attributes
+        def.add_attribute(AttributeDef {
+            id: "nodeType",
+            getter: get_node_type,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "ownerDocument",
+            getter: get_owner_document,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "parentNode",
+            getter: get_parent_node,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "childNodes",
+            getter: get_child_nodes,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "firstChild",
+            getter: get_first_child,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "lastChild",
+            getter: get_last_child,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "previousSibling",
+            getter: get_previous_sibling,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "nextSibling",
+            getter: get_next_sibling,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "nodeName",
+            getter: get_node_name,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "nodeValue",
+            getter: get_node_value,
+            setter: Some(set_node_value),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "textContent",
+            getter: get_text_content,
+            setter: Some(set_text_content),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+
+        // §3.7.7: Regular operations
+        def.add_operation(OperationDef {
+            id: "hasChildNodes",
+            length: 0,
+            method: has_child_nodes,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "appendChild",
+            length: 1,
+            method: append_child,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "insertBefore",
+            length: 2,
+            method: insert_before,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "removeChild",
+            length: 1,
+            method: remove_child,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "remove",
+            length: 0,
+            method: remove,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue + transitional wrapper ──
 
 impl Class for Node {
     const NAME: &'static str = "Node";
@@ -33,204 +294,14 @@ impl Class for Node {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)?;
-        register_node_methods(class)
+        // Own members only — prototype chain is set by wire_interface_prototypes.
+        register_interface::<Node>(class)
     }
 }
 
-pub(crate) fn register_node_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    let constant_attributes = Attribute::default();
-    class
-        .property(js_string!("ELEMENT_NODE"), 1, constant_attributes)
-        .property(js_string!("ATTRIBUTE_NODE"), 2, constant_attributes)
-        .property(js_string!("TEXT_NODE"), 3, constant_attributes)
-        .property(js_string!("CDATA_SECTION_NODE"), 4, constant_attributes)
-        .property(js_string!("ENTITY_REFERENCE_NODE"), 5, constant_attributes)
-        .property(js_string!("ENTITY_NODE"), 6, constant_attributes)
-        .property(
-            js_string!("PROCESSING_INSTRUCTION_NODE"),
-            7,
-            constant_attributes,
-        )
-        .property(js_string!("COMMENT_NODE"), 8, constant_attributes)
-        .property(js_string!("DOCUMENT_NODE"), 9, constant_attributes)
-        .property(js_string!("DOCUMENT_TYPE_NODE"), 10, constant_attributes)
-        .property(
-            js_string!("DOCUMENT_FRAGMENT_NODE"),
-            11,
-            constant_attributes,
-        )
-        .property(js_string!("NOTATION_NODE"), 12, constant_attributes)
-        .property(
-            js_string!("DOCUMENT_POSITION_DISCONNECTED"),
-            0x01,
-            constant_attributes,
-        )
-        .property(
-            js_string!("DOCUMENT_POSITION_PRECEDING"),
-            0x02,
-            constant_attributes,
-        )
-        .property(
-            js_string!("DOCUMENT_POSITION_FOLLOWING"),
-            0x04,
-            constant_attributes,
-        )
-        .property(
-            js_string!("DOCUMENT_POSITION_CONTAINS"),
-            0x08,
-            constant_attributes,
-        )
-        .property(
-            js_string!("DOCUMENT_POSITION_CONTAINED_BY"),
-            0x10,
-            constant_attributes,
-        )
-        .property(
-            js_string!("DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC"),
-            0x20,
-            constant_attributes,
-        )
-        .static_property(js_string!("ELEMENT_NODE"), 1, constant_attributes)
-        .static_property(js_string!("ATTRIBUTE_NODE"), 2, constant_attributes)
-        .static_property(js_string!("TEXT_NODE"), 3, constant_attributes)
-        .static_property(js_string!("CDATA_SECTION_NODE"), 4, constant_attributes)
-        .static_property(js_string!("ENTITY_REFERENCE_NODE"), 5, constant_attributes)
-        .static_property(js_string!("ENTITY_NODE"), 6, constant_attributes)
-        .static_property(
-            js_string!("PROCESSING_INSTRUCTION_NODE"),
-            7,
-            constant_attributes,
-        )
-        .static_property(js_string!("COMMENT_NODE"), 8, constant_attributes)
-        .static_property(js_string!("DOCUMENT_NODE"), 9, constant_attributes)
-        .static_property(js_string!("DOCUMENT_TYPE_NODE"), 10, constant_attributes)
-        .static_property(
-            js_string!("DOCUMENT_FRAGMENT_NODE"),
-            11,
-            constant_attributes,
-        )
-        .static_property(js_string!("NOTATION_NODE"), 12, constant_attributes)
-        .static_property(
-            js_string!("DOCUMENT_POSITION_DISCONNECTED"),
-            0x01,
-            constant_attributes,
-        )
-        .static_property(
-            js_string!("DOCUMENT_POSITION_PRECEDING"),
-            0x02,
-            constant_attributes,
-        )
-        .static_property(
-            js_string!("DOCUMENT_POSITION_FOLLOWING"),
-            0x04,
-            constant_attributes,
-        )
-        .static_property(
-            js_string!("DOCUMENT_POSITION_CONTAINS"),
-            0x08,
-            constant_attributes,
-        )
-        .static_property(
-            js_string!("DOCUMENT_POSITION_CONTAINED_BY"),
-            0x10,
-            constant_attributes,
-        )
-        .static_property(
-            js_string!("DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC"),
-            0x20,
-            constant_attributes,
-        )
-        .accessor(
-            js_string!("parentNode"),
-            Some(NativeFunction::from_fn_ptr(get_parent_node).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("previousSibling"),
-            Some(NativeFunction::from_fn_ptr(get_previous_sibling).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("nextSibling"),
-            Some(NativeFunction::from_fn_ptr(get_next_sibling).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("firstChild"),
-            Some(NativeFunction::from_fn_ptr(get_first_child).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("lastChild"),
-            Some(NativeFunction::from_fn_ptr(get_last_child).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("textContent"),
-            Some(NativeFunction::from_fn_ptr(get_text_content).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_text_content).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("nodeType"),
-            Some(NativeFunction::from_fn_ptr(get_node_type).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("nodeName"),
-            Some(NativeFunction::from_fn_ptr(get_node_name).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("ownerDocument"),
-            Some(NativeFunction::from_fn_ptr(get_owner_document).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("nodeValue"),
-            Some(NativeFunction::from_fn_ptr(get_node_value).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_node_value).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("childNodes"),
-            Some(NativeFunction::from_fn_ptr(get_child_nodes).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .method(
-            js_string!("appendChild"),
-            1,
-            NativeFunction::from_fn_ptr(append_child),
-        )
-        .method(
-            js_string!("insertBefore"),
-            2,
-            NativeFunction::from_fn_ptr(insert_before),
-        )
-        .method(
-            js_string!("removeChild"),
-            1,
-            NativeFunction::from_fn_ptr(remove_child),
-        )
-        .method(
-            js_string!("hasChildNodes"),
-            0,
-            NativeFunction::from_fn_ptr(has_child_nodes),
-        )
-        .method(js_string!("remove"), 0, NativeFunction::from_fn_ptr(remove));
-    Ok(())
-}
+
+
+// ── Member getters/setters/methods ──
 
 pub(crate) fn with_node_ref<R>(this: &JsValue, f: impl FnOnce(&Node) -> R) -> JsResult<R> {
     let object = this

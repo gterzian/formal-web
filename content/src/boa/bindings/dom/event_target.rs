@@ -5,7 +5,6 @@ use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
     js_string,
-    native_function::NativeFunction,
     object::JsObject,
 };
 
@@ -26,6 +25,45 @@ pub(crate) struct AddEventListenerOptions {
     pub signal: Option<AbortSignal>,
 }
 
+// ── WebIDL interface definition (§3) ──
+
+use crate::webidl::binding::{
+    InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
+
+impl WebIdlInterface for EventTarget {
+    const NAME: &'static str = "EventTarget";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_operation(OperationDef {
+            id: "addEventListener",
+            length: 3,
+            method: add_event_listener,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "removeEventListener",
+            length: 3,
+            method: remove_event_listener,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "dispatchEvent",
+            length: 1,
+            method: dispatch_event,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue + transitional wrapper ──
+
 impl Class for EventTarget {
     const NAME: &'static str = "EventTarget";
 
@@ -38,29 +76,11 @@ impl Class for EventTarget {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)
+        register_interface::<EventTarget>(class)
     }
 }
 
-pub(crate) fn register_event_target_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    class
-        .method(
-            js_string!("addEventListener"),
-            3,
-            NativeFunction::from_fn_ptr(add_event_listener),
-        )
-        .method(
-            js_string!("removeEventListener"),
-            3,
-            NativeFunction::from_fn_ptr(remove_event_listener),
-        )
-        .method(
-            js_string!("dispatchEvent"),
-            1,
-            NativeFunction::from_fn_ptr(dispatch_event),
-        );
-    Ok(())
-}
+
 
 fn add_event_listener(
     this: &JsValue,

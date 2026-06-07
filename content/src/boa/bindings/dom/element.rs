@@ -2,7 +2,6 @@ use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
     js_string,
-    native_function::NativeFunction,
     object::{ObjectInitializer, builtins::JsArray},
     property::Attribute,
 };
@@ -10,8 +9,135 @@ use boa_engine::{
 use crate::boa::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
 
-use super::{event_target::register_event_target_methods, node::register_node_methods};
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for Element {
+    const NAME: &'static str = "Element";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("Node")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        // §3.7.6: Regular attributes
+        def.add_attribute(AttributeDef {
+            id: "id",
+            getter: get_id,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "tagName",
+            getter: get_tag_name,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "innerHTML",
+            getter: get_inner_html,
+            setter: Some(set_inner_html),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+
+        // §3.7.7: Regular operations
+        def.add_operation(OperationDef {
+            id: "querySelector",
+            length: 1,
+            method: query_selector,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "querySelectorAll",
+            length: 1,
+            method: query_selector_all,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "insertAdjacentText",
+            length: 2,
+            method: insert_adjacent_text,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "setAttribute",
+            length: 2,
+            method: set_attribute,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "setAttributeNS",
+            length: 3,
+            method: set_attribute_ns,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "getAttribute",
+            length: 1,
+            method: get_attribute,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "hasAttribute",
+            length: 1,
+            method: has_attribute,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "removeAttribute",
+            length: 1,
+            method: remove_attribute,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "getBoundingClientRect",
+            length: 0,
+            method: get_bounding_client_rect,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue + transitional wrapper ──
 
 impl Class for Element {
     const NAME: &'static str = "Element";
@@ -27,80 +153,11 @@ impl Class for Element {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)?;
-        register_node_methods(class)?;
-        register_element_methods(class)
+        register_interface::<Element>(class)
     }
 }
 
-pub(crate) fn register_element_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("id"),
-            Some(NativeFunction::from_fn_ptr(get_id).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("tagName"),
-            Some(NativeFunction::from_fn_ptr(get_tag_name).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("innerHTML"),
-            Some(NativeFunction::from_fn_ptr(get_inner_html).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_inner_html).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .method(
-            js_string!("querySelector"),
-            1,
-            NativeFunction::from_fn_ptr(query_selector),
-        )
-        .method(
-            js_string!("querySelectorAll"),
-            1,
-            NativeFunction::from_fn_ptr(query_selector_all),
-        )
-        .method(
-            js_string!("insertAdjacentText"),
-            2,
-            NativeFunction::from_fn_ptr(insert_adjacent_text),
-        )
-        .method(
-            js_string!("setAttribute"),
-            2,
-            NativeFunction::from_fn_ptr(set_attribute),
-        )
-        .method(
-            js_string!("setAttributeNS"),
-            3,
-            NativeFunction::from_fn_ptr(set_attribute_ns),
-        )
-        .method(
-            js_string!("getAttribute"),
-            1,
-            NativeFunction::from_fn_ptr(get_attribute),
-        )
-        .method(
-            js_string!("hasAttribute"),
-            1,
-            NativeFunction::from_fn_ptr(has_attribute),
-        )
-        .method(
-            js_string!("removeAttribute"),
-            1,
-            NativeFunction::from_fn_ptr(remove_attribute),
-        )
-        .method(
-            js_string!("getBoundingClientRect"),
-            0,
-            NativeFunction::from_fn_ptr(get_bounding_client_rect),
-        );
-    Ok(())
-}
+
 
 pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R) -> JsResult<R> {
     let object = this

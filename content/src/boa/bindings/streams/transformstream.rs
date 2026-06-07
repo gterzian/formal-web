@@ -1,15 +1,48 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
-    property::Attribute,
+
+};
+
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
 };
 
 use crate::streams::{
     TransformStream, TransformStreamDefaultController, construct_transform_stream,
     with_transform_stream_default_controller_ref, with_transform_stream_ref,
 };
+
+impl WebIdlInterface for TransformStream {
+    const NAME: &'static str = "TransformStream";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "readable",
+            getter: get_readable,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "writable",
+            getter: get_writable,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+    }
+}
 
 impl Class for TransformStream {
     const NAME: &'static str = "TransformStream";
@@ -19,21 +52,50 @@ impl Class for TransformStream {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("readable"),
-                Some(NativeFunction::from_fn_ptr(get_readable).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .accessor(
-                js_string!("writable"),
-                Some(NativeFunction::from_fn_ptr(get_writable).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            );
-        Ok(())
+        register_interface::<TransformStream>(class)
+    }
+}
+
+impl WebIdlInterface for TransformStreamDefaultController {
+    const NAME: &'static str = "TransformStreamDefaultController";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "desiredSize",
+            getter: get_desired_size,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "enqueue",
+            length: 1,
+            method: controller_enqueue,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "error",
+            length: 1,
+            method: controller_error,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "terminate",
+            length: 0,
+            method: controller_terminate,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
     }
 }
 
@@ -51,30 +113,7 @@ impl Class for TransformStreamDefaultController {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("desiredSize"),
-                Some(NativeFunction::from_fn_ptr(get_desired_size).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("enqueue"),
-                1,
-                NativeFunction::from_fn_ptr(controller_enqueue),
-            )
-            .method(
-                js_string!("error"),
-                1,
-                NativeFunction::from_fn_ptr(controller_error),
-            )
-            .method(
-                js_string!("terminate"),
-                0,
-                NativeFunction::from_fn_ptr(controller_terminate),
-            );
-        Ok(())
+        register_interface::<TransformStreamDefaultController>(class)
     }
 }
 

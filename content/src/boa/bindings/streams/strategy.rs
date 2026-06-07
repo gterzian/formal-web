@@ -4,13 +4,47 @@ use boa_engine::{
     js_string,
     native_function::NativeFunction,
     object::FunctionObjectBuilder,
-    property::Attribute,
+};
+
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
 };
 
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, byte_length_size, count_size,
     validate_and_normalize_high_water_mark,
 };
+
+impl WebIdlInterface for ByteLengthQueuingStrategy {
+    const NAME: &'static str = "ByteLengthQueuingStrategy";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "highWaterMark",
+            getter: get_byte_length_high_water_mark,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "size",
+            getter: get_byte_length_size,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+    }
+}
 
 impl Class for ByteLengthQueuingStrategy {
     const NAME: &'static str = "ByteLengthQueuingStrategy";
@@ -28,24 +62,38 @@ impl Class for ByteLengthQueuingStrategy {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("highWaterMark"),
-                Some(
-                    NativeFunction::from_fn_ptr(get_byte_length_high_water_mark)
-                        .to_js_function(&realm),
-                ),
-                None,
-                Attribute::all(),
-            )
-            .accessor(
-                js_string!("size"),
-                Some(NativeFunction::from_fn_ptr(get_byte_length_size).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            );
-        Ok(())
+        register_interface::<ByteLengthQueuingStrategy>(class)
+    }
+}
+
+impl WebIdlInterface for CountQueuingStrategy {
+    const NAME: &'static str = "CountQueuingStrategy";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "highWaterMark",
+            getter: get_count_high_water_mark,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "size",
+            getter: get_count_size,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
     }
 }
 
@@ -65,21 +113,7 @@ impl Class for CountQueuingStrategy {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("highWaterMark"),
-                Some(NativeFunction::from_fn_ptr(get_count_high_water_mark).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .accessor(
-                js_string!("size"),
-                Some(NativeFunction::from_fn_ptr(get_count_size).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            );
-        Ok(())
+        register_interface::<CountQueuingStrategy>(class)
     }
 }
 

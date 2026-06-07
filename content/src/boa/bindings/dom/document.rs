@@ -4,9 +4,7 @@ use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
     js_string,
-    native_function::NativeFunction,
-    object::JsObject,
-    object::builtins::JsArray,
+    object::{JsObject, builtins::JsArray},
     property::Attribute,
 };
 
@@ -15,8 +13,139 @@ use crate::boa::platform_objects::{
     resolve_or_create_text_node_object,
 };
 use crate::dom::Document;
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
 
-use super::{event_target::register_event_target_methods, node::register_node_methods};
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for Document {
+    const NAME: &'static str = "Document";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("Node")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        // §3.7.7: Regular operations
+        def.add_operation(OperationDef {
+            id: "getElementById",
+            length: 1,
+            method: get_element_by_id,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "querySelector",
+            length: 1,
+            method: query_selector,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "querySelectorAll",
+            length: 1,
+            method: query_selector_all,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "getElementsByTagName",
+            length: 1,
+            method: get_elements_by_tag_name,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "createElement",
+            length: 1,
+            method: create_element,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "createElementNS",
+            length: 2,
+            method: create_element_ns,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "createTextNode",
+            length: 1,
+            method: create_text_node,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "createComment",
+            length: 1,
+            method: create_comment,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+
+        // §3.7.6: Regular attributes
+        def.add_attribute(AttributeDef {
+            id: "body",
+            getter: get_body,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "documentElement",
+            getter: get_document_element,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "title",
+            getter: get_title,
+            setter: Some(set_title),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "dir",
+            getter: get_dir,
+            setter: Some(set_dir),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for Document {
     const NAME: &'static str = "Document";
@@ -32,80 +161,8 @@ impl Class for Document {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)?;
-        register_node_methods(class)?;
-        register_document_methods(class)
+        register_interface::<Document>(class)
     }
-}
-
-pub(crate) fn register_document_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .method(
-            js_string!("getElementById"),
-            1,
-            NativeFunction::from_fn_ptr(get_element_by_id),
-        )
-        .method(
-            js_string!("querySelector"),
-            1,
-            NativeFunction::from_fn_ptr(query_selector),
-        )
-        .method(
-            js_string!("querySelectorAll"),
-            1,
-            NativeFunction::from_fn_ptr(query_selector_all),
-        )
-        .method(
-            js_string!("getElementsByTagName"),
-            1,
-            NativeFunction::from_fn_ptr(get_elements_by_tag_name),
-        )
-        .method(
-            js_string!("createElement"),
-            1,
-            NativeFunction::from_fn_ptr(create_element),
-        )
-        .method(
-            js_string!("createElementNS"),
-            2,
-            NativeFunction::from_fn_ptr(create_element_ns),
-        )
-        .method(
-            js_string!("createTextNode"),
-            1,
-            NativeFunction::from_fn_ptr(create_text_node),
-        )
-        .method(
-            js_string!("createComment"),
-            1,
-            NativeFunction::from_fn_ptr(create_comment),
-        )
-        .accessor(
-            js_string!("body"),
-            Some(NativeFunction::from_fn_ptr(get_body).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("documentElement"),
-            Some(NativeFunction::from_fn_ptr(get_document_element).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("title"),
-            Some(NativeFunction::from_fn_ptr(get_title).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_title).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("dir"),
-            Some(NativeFunction::from_fn_ptr(get_dir).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_dir).to_js_function(&realm)),
-            Attribute::all(),
-        );
-    Ok(())
 }
 
 fn with_document<R>(this: &JsValue, f: impl FnOnce(&Document) -> R) -> JsResult<R> {

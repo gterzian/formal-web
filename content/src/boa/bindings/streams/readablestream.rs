@@ -18,6 +18,283 @@ use crate::streams::{
     with_readable_stream_ref,
 };
 use crate::webidl::{create_value_async_iterator, rejected_promise};
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
+
+// ── WebIDL interface definitions (§3) ──
+
+impl WebIdlInterface for ReadableStream {
+    const NAME: &'static str = "ReadableStream";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "locked",
+            getter: get_locked,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "pipeThrough",
+            length: 2,
+            method: pipe_through_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "cancel",
+            length: 1,
+            method: cancel_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "getReader",
+            length: 1,
+            method: get_reader_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "tee",
+            length: 0,
+            method: tee_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+impl WebIdlInterface for ReadableStreamDefaultController {
+    const NAME: &'static str = "ReadableStreamDefaultController";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "desiredSize",
+            getter: get_desired_size,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "close",
+            length: 0,
+            method: close_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "enqueue",
+            length: 1,
+            method: enqueue_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "error",
+            length: 1,
+            method: error_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+impl WebIdlInterface for ReadableByteStreamController {
+    const NAME: &'static str = "ReadableByteStreamController";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "byobRequest",
+            getter: get_byob_request,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "desiredSize",
+            getter: get_byte_desired_size,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "close",
+            length: 0,
+            method: close_byte_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "enqueue",
+            length: 1,
+            method: enqueue_byte_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "error",
+            length: 1,
+            method: error_byte_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+impl WebIdlInterface for ReadableStreamDefaultReader {
+    const NAME: &'static str = "ReadableStreamDefaultReader";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "closed",
+            getter: get_closed,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "cancel",
+            length: 1,
+            method: cancel_reader_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "read",
+            length: 0,
+            method: read_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "releaseLock",
+            length: 0,
+            method: release_lock_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+impl WebIdlInterface for ReadableStreamBYOBReader {
+    const NAME: &'static str = "ReadableStreamBYOBReader";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "closed",
+            getter: get_byob_closed,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "cancel",
+            length: 1,
+            method: cancel_byob_reader_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "read",
+            length: 2,
+            method: read_byob_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "releaseLock",
+            length: 0,
+            method: release_byob_lock_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+impl WebIdlInterface for ReadableStreamBYOBRequest {
+    const NAME: &'static str = "ReadableStreamBYOBRequest";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "view",
+            getter: get_byob_view,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "respond",
+            length: 1,
+            method: respond_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "respondWithNewView",
+            length: 1,
+            method: respond_with_new_view_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for ReadableStream {
     const NAME: &'static str = "ReadableStream";
@@ -31,7 +308,18 @@ impl Class for ReadableStream {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
+        // Standard interface members via spec-aligned registration
+        register_interface::<ReadableStream>(class)?;
+
+        // ── §3.7.7: Static operations (not yet handled by register_interface) ──
+        class.static_method(
+            js_string!("from"),
+            1,
+            NativeFunction::from_fn_ptr(from_static),
+        );
+
+        // ── Async iterator: values() and @@asyncIterator ──
+        // https://streams.spec.whatwg.org/#rs-asynciterator
         let values = FunctionObjectBuilder::new(
             class.context().realm(),
             NativeFunction::from_fn_ptr(values_method),
@@ -40,6 +328,18 @@ impl Class for ReadableStream {
         .length(0)
         .constructor(false)
         .build();
+        class.property(
+            js_string!("values"),
+            values.clone(),
+            Attribute::WRITABLE | Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+        );
+        class.property(
+            JsSymbol::async_iterator(),
+            values,
+            Attribute::WRITABLE | Attribute::CONFIGURABLE,
+        );
+
+        // ── pipeTo with JS wrapper workaround ──
         let pipe_to_native = FunctionObjectBuilder::new(
             class.context().realm(),
             NativeFunction::from_fn_ptr(pipe_to_native_method),
@@ -48,11 +348,6 @@ impl Class for ReadableStream {
         .length(2)
         .constructor(false)
         .build();
-        // WORKAROUND: Wrap the native pipeTo in a JS-visible forwarder.
-        // When external scripts call pipeTo directly, Boa's native-function dispatch
-        // from script context fails with "not a callable function", but wrapping it in
-        // a JS function and using .call() works around the issue. The wrapper returns
-        // the [ReadableStream](https://streams.spec.whatwg.org/#readablestream) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)'s promise unchanged, preserving the platform object-owned semantics.
         let pipe_to_wrapper = {
             class.context().eval(Source::from_bytes(
                 "(function pipeTo() { return ReadableStream.prototype.__formalWebReadableStreamPipeToNative.call(this, arguments[0], arguments[1]); })",
@@ -63,58 +358,17 @@ impl Class for ReadableStream {
                         .with_message("ReadableStream.pipeTo wrapper initialization did not return a function")
                 })?
         };
-        class
-            .static_method(
-                js_string!("from"),
-                1,
-                NativeFunction::from_fn_ptr(from_static),
-            )
-            .accessor(
-                js_string!("locked"),
-                Some(NativeFunction::from_fn_ptr(get_locked).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("pipeThrough"),
-                2,
-                NativeFunction::from_fn_ptr(pipe_through_method),
-            )
-            .method(
-                js_string!("cancel"),
-                1,
-                NativeFunction::from_fn_ptr(cancel_method),
-            )
-            .method(
-                js_string!("getReader"),
-                1,
-                NativeFunction::from_fn_ptr(get_reader_method),
-            )
-            .property(
-                js_string!("__formalWebReadableStreamPipeToNative"),
-                pipe_to_native,
-                Attribute::WRITABLE | Attribute::CONFIGURABLE,
-            )
-            .property(
-                js_string!("pipeTo"),
-                pipe_to_wrapper,
-                Attribute::WRITABLE | Attribute::CONFIGURABLE,
-            )
-            .method(
-                js_string!("tee"),
-                0,
-                NativeFunction::from_fn_ptr(tee_method),
-            )
-            .property(
-                js_string!("values"),
-                values.clone(),
-                Attribute::WRITABLE | Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
-            )
-            .property(
-                JsSymbol::async_iterator(),
-                values,
-                Attribute::WRITABLE | Attribute::CONFIGURABLE,
-            );
+        class.property(
+            js_string!("__formalWebReadableStreamPipeToNative"),
+            pipe_to_native,
+            Attribute::WRITABLE | Attribute::CONFIGURABLE,
+        );
+        class.property(
+            js_string!("pipeTo"),
+            pipe_to_wrapper,
+            Attribute::WRITABLE | Attribute::CONFIGURABLE,
+        );
+
         Ok(())
     }
 }
@@ -133,30 +387,7 @@ impl Class for ReadableStreamDefaultController {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("desiredSize"),
-                Some(NativeFunction::from_fn_ptr(get_desired_size).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("close"),
-                0,
-                NativeFunction::from_fn_ptr(close_method),
-            )
-            .method(
-                js_string!("enqueue"),
-                1,
-                NativeFunction::from_fn_ptr(enqueue_method),
-            )
-            .method(
-                js_string!("error"),
-                1,
-                NativeFunction::from_fn_ptr(error_method),
-            );
-        Ok(())
+        register_interface::<ReadableStreamDefaultController>(class)
     }
 }
 
@@ -174,36 +405,7 @@ impl Class for ReadableByteStreamController {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("byobRequest"),
-                Some(NativeFunction::from_fn_ptr(get_byob_request).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .accessor(
-                js_string!("desiredSize"),
-                Some(NativeFunction::from_fn_ptr(get_byte_desired_size).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("close"),
-                0,
-                NativeFunction::from_fn_ptr(close_byte_method),
-            )
-            .method(
-                js_string!("enqueue"),
-                1,
-                NativeFunction::from_fn_ptr(enqueue_byte_method),
-            )
-            .method(
-                js_string!("error"),
-                1,
-                NativeFunction::from_fn_ptr(error_byte_method),
-            );
-        Ok(())
+        register_interface::<ReadableByteStreamController>(class)
     }
 }
 
@@ -216,30 +418,7 @@ impl Class for ReadableStreamDefaultReader {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("closed"),
-                Some(NativeFunction::from_fn_ptr(get_closed).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("cancel"),
-                1,
-                NativeFunction::from_fn_ptr(cancel_reader_method),
-            )
-            .method(
-                js_string!("read"),
-                0,
-                NativeFunction::from_fn_ptr(read_method),
-            )
-            .method(
-                js_string!("releaseLock"),
-                0,
-                NativeFunction::from_fn_ptr(release_lock_method),
-            );
-        Ok(())
+        register_interface::<ReadableStreamDefaultReader>(class)
     }
 }
 
@@ -252,30 +431,7 @@ impl Class for ReadableStreamBYOBReader {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("closed"),
-                Some(NativeFunction::from_fn_ptr(get_byob_closed).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("cancel"),
-                1,
-                NativeFunction::from_fn_ptr(cancel_byob_reader_method),
-            )
-            .method(
-                js_string!("read"),
-                2,
-                NativeFunction::from_fn_ptr(read_byob_method),
-            )
-            .method(
-                js_string!("releaseLock"),
-                0,
-                NativeFunction::from_fn_ptr(release_byob_lock_method),
-            );
-        Ok(())
+        register_interface::<ReadableStreamBYOBReader>(class)
     }
 }
 
@@ -294,27 +450,11 @@ impl Class for ReadableStreamBYOBRequest {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("view"),
-                Some(NativeFunction::from_fn_ptr(get_byob_view).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("respond"),
-                1,
-                NativeFunction::from_fn_ptr(respond_method),
-            )
-            .method(
-                js_string!("respondWithNewView"),
-                1,
-                NativeFunction::from_fn_ptr(respond_with_new_view_method),
-            );
-        Ok(())
+        register_interface::<ReadableStreamBYOBRequest>(class)
     }
 }
+
+// ── Member getters/setters/methods ──
 
 fn get_locked(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     let stream_object = this.as_object().ok_or_else(|| {

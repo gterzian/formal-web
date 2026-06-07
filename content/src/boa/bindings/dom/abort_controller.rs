@@ -1,15 +1,46 @@
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
-    property::Attribute,
 };
 
 use crate::boa::with_abort_controller_ref;
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
 
 use super::abort_signal::{abort_reason_from_argument, signal_abort_with_context};
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for AbortController {
+    const NAME: &'static str = "AbortController";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "signal",
+            getter: get_signal,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "abort",
+            length: 1,
+            method: abort,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for AbortController {
     const NAME: &'static str = "AbortController";
@@ -24,21 +55,8 @@ impl Class for AbortController {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_abort_controller_methods(class)
+        register_interface::<AbortController>(class)
     }
-}
-
-pub(crate) fn register_abort_controller_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("signal"),
-            Some(NativeFunction::from_fn_ptr(get_signal).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .method(js_string!("abort"), 1, NativeFunction::from_fn_ptr(abort));
-    Ok(())
 }
 
 fn get_signal(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {

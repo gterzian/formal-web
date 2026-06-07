@@ -1,9 +1,6 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
-    property::Attribute,
 };
 
 use crate::streams::{
@@ -12,6 +9,52 @@ use crate::streams::{
     with_writable_stream_default_controller_ref, with_writable_stream_default_writer_ref,
     with_writable_stream_ref,
 };
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
+
+impl WebIdlInterface for WritableStream {
+    const NAME: &'static str = "WritableStream";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "locked",
+            getter: get_locked,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "abort",
+            length: 1,
+            method: abort_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "close",
+            length: 0,
+            method: close_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "getWriter",
+            length: 0,
+            method: get_writer_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
 
 impl Class for WritableStream {
     const NAME: &'static str = "WritableStream";
@@ -25,30 +68,34 @@ impl Class for WritableStream {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("locked"),
-                Some(NativeFunction::from_fn_ptr(get_locked).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("abort"),
-                1,
-                NativeFunction::from_fn_ptr(abort_method),
-            )
-            .method(
-                js_string!("close"),
-                0,
-                NativeFunction::from_fn_ptr(close_method),
-            )
-            .method(
-                js_string!("getWriter"),
-                0,
-                NativeFunction::from_fn_ptr(get_writer_method),
-            );
-        Ok(())
+        register_interface::<WritableStream>(class)
+    }
+}
+
+impl WebIdlInterface for WritableStreamDefaultController {
+    const NAME: &'static str = "WritableStreamDefaultController";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "signal",
+            getter: get_signal,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "error",
+            length: 1,
+            method: error_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
     }
 }
 
@@ -66,20 +113,82 @@ impl Class for WritableStreamDefaultController {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("signal"),
-                Some(NativeFunction::from_fn_ptr(get_signal).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("error"),
-                1,
-                NativeFunction::from_fn_ptr(error_method),
-            );
-        Ok(())
+        register_interface::<WritableStreamDefaultController>(class)
+    }
+}
+
+impl WebIdlInterface for WritableStreamDefaultWriter {
+    const NAME: &'static str = "WritableStreamDefaultWriter";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "closed",
+            getter: get_closed,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "desiredSize",
+            getter: get_desired_size,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "ready",
+            getter: get_ready,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "abort",
+            length: 1,
+            method: abort_writer_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "close",
+            length: 0,
+            method: close_writer_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "releaseLock",
+            length: 0,
+            method: release_lock_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "write",
+            length: 1,
+            method: write_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
     }
 }
 
@@ -92,49 +201,11 @@ impl Class for WritableStreamDefaultWriter {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("closed"),
-                Some(NativeFunction::from_fn_ptr(get_closed).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .accessor(
-                js_string!("desiredSize"),
-                Some(NativeFunction::from_fn_ptr(get_desired_size).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .accessor(
-                js_string!("ready"),
-                Some(NativeFunction::from_fn_ptr(get_ready).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .method(
-                js_string!("abort"),
-                1,
-                NativeFunction::from_fn_ptr(abort_writer_method),
-            )
-            .method(
-                js_string!("close"),
-                0,
-                NativeFunction::from_fn_ptr(close_writer_method),
-            )
-            .method(
-                js_string!("releaseLock"),
-                0,
-                NativeFunction::from_fn_ptr(release_lock_method),
-            )
-            .method(
-                js_string!("write"),
-                1,
-                NativeFunction::from_fn_ptr(write_method),
-            );
-        Ok(())
+        register_interface::<WritableStreamDefaultWriter>(class)
     }
 }
+
+// ── Member getters/setters/methods ──
 
 fn get_locked(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     let stream_object = this.as_object().ok_or_else(|| {

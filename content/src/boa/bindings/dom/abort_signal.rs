@@ -3,7 +3,6 @@ use boa_engine::{
     class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
-    property::Attribute,
 };
 
 use crate::boa::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
@@ -12,8 +11,70 @@ use crate::dom::{
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 use crate::webidl::{callback_function_value, nullable_value};
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
 
-use super::event_target::{ContextEventDispatchHost, register_event_target_methods};
+use super::event_target::ContextEventDispatchHost;
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for AbortSignal {
+    const NAME: &'static str = "AbortSignal";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("EventTarget")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "aborted",
+            getter: get_aborted,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "reason",
+            getter: get_reason,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "onabort",
+            getter: get_onabort,
+            setter: Some(set_onabort),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "throwIfAborted",
+            length: 0,
+            method: throw_if_aborted,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for AbortSignal {
     const NAME: &'static str = "AbortSignal";
@@ -29,53 +90,29 @@ impl Class for AbortSignal {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)?;
-        register_abort_signal_methods(class)
-    }
-}
+        // Own interface members (attributes + operations)
+        register_interface::<AbortSignal>(class)?;
 
-pub(crate) fn register_abort_signal_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .static_method(
-            js_string!("abort"),
-            1,
-            NativeFunction::from_fn_ptr(abort_static),
-        )
-        .static_method(
-            js_string!("timeout"),
-            1,
-            NativeFunction::from_fn_ptr(timeout_static),
-        )
-        .static_method(
-            js_string!("any"),
-            1,
-            NativeFunction::from_fn_ptr(any_static),
-        )
-        .accessor(
-            js_string!("aborted"),
-            Some(NativeFunction::from_fn_ptr(get_aborted).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("reason"),
-            Some(NativeFunction::from_fn_ptr(get_reason).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("onabort"),
-            Some(NativeFunction::from_fn_ptr(get_onabort).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_onabort).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .method(
-            js_string!("throwIfAborted"),
-            0,
-            NativeFunction::from_fn_ptr(throw_if_aborted),
-        );
-    Ok(())
+        // §3.7.7: Static operations (not yet handled by register_interface)
+        class
+            .static_method(
+                js_string!("abort"),
+                1,
+                NativeFunction::from_fn_ptr(abort_static),
+            )
+            .static_method(
+                js_string!("timeout"),
+                1,
+                NativeFunction::from_fn_ptr(timeout_static),
+            )
+            .static_method(
+                js_string!("any"),
+                1,
+                NativeFunction::from_fn_ptr(any_static),
+            );
+
+        Ok(())
+    }
 }
 
 pub(crate) fn abort_reason_from_argument(

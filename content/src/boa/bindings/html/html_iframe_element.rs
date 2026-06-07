@@ -1,20 +1,137 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
-    property::Attribute,
 };
 
 use crate::boa::with_event_target_mut;
 use crate::html::HTMLIFrameElement;
 use crate::webidl::{callback_function_value, nullable_value};
-
-use crate::boa::bindings::dom::{
-    register_element_methods, register_event_target_methods, register_node_methods,
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
 };
 
-use super::html_element::register_html_element_methods;
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for HTMLIFrameElement {
+    const NAME: &'static str = "HTMLIFrameElement";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("HTMLElement")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "src",
+            getter: get_src,
+            setter: Some(set_src),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "srcdoc",
+            getter: get_srcdoc,
+            setter: Some(set_srcdoc),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "name",
+            getter: get_name,
+            setter: Some(set_name),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "width",
+            getter: get_width,
+            setter: Some(set_width),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "height",
+            getter: get_height,
+            setter: Some(set_height),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "contentDocument",
+            getter: get_content_document,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "contentWindow",
+            getter: get_content_window,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "onload",
+            getter: get_onload,
+            setter: Some(set_onload),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "onerror",
+            getter: get_onerror,
+            setter: Some(set_onerror),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for HTMLIFrameElement {
     const NAME: &'static str = "HTMLIFrameElement";
@@ -30,14 +147,9 @@ impl Class for HTMLIFrameElement {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)?;
-        register_node_methods(class)?;
-        register_element_methods(class)?;
-        register_html_element_methods(class)?;
-        register_html_iframe_element_methods(class)
+        register_interface::<HTMLIFrameElement>(class)
     }
 }
-
 fn with_html_iframe_element_ref<R>(
     this: &JsValue,
     f: impl FnOnce(&HTMLIFrameElement) -> R,
@@ -63,67 +175,6 @@ fn with_html_iframe_element_mut<R>(
         .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLIFrameElement"))?;
     Ok(f(&mut html_iframe_element))
 }
-
-fn register_html_iframe_element_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("onload"),
-            Some(NativeFunction::from_fn_ptr(get_onload).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_onload).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("onerror"),
-            Some(NativeFunction::from_fn_ptr(get_onerror).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_onerror).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("src"),
-            Some(NativeFunction::from_fn_ptr(get_src).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_src).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("srcdoc"),
-            Some(NativeFunction::from_fn_ptr(get_srcdoc).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_srcdoc).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("name"),
-            Some(NativeFunction::from_fn_ptr(get_name).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_name).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("width"),
-            Some(NativeFunction::from_fn_ptr(get_width).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_width).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("height"),
-            Some(NativeFunction::from_fn_ptr(get_height).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_height).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("contentDocument"),
-            Some(NativeFunction::from_fn_ptr(get_content_document).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("contentWindow"),
-            Some(NativeFunction::from_fn_ptr(get_content_window).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        );
-    Ok(())
-}
-
 fn get_src(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.src())))
 }

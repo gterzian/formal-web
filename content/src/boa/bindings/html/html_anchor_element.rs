@@ -1,21 +1,91 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
-    property::Attribute,
 };
 
 use crate::html::HTMLAnchorElement;
-
-use crate::boa::bindings::dom::{
-    register_element_methods, register_event_target_methods, register_node_methods,
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
 };
 
-use super::{
-    html_element::register_html_element_methods,
-    hyperlink_element_utils::{document_creation_url, register_hyperlink_element_utils_methods},
-};
+use super::hyperlink_element_utils::document_creation_url;
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for HTMLAnchorElement {
+    const NAME: &'static str = "HTMLAnchorElement";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("HTMLElement")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        // HTMLAnchorElement own attributes
+        def.add_attribute(AttributeDef {
+            id: "href",
+            getter: get_href,
+            setter: Some(set_href),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "target",
+            getter: get_target,
+            setter: Some(set_target),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "download",
+            getter: get_download,
+            setter: Some(set_download),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "rel",
+            getter: get_rel,
+            setter: Some(set_rel),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "referrerPolicy",
+            getter: get_referrer_policy,
+            setter: Some(set_referrer_policy),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for HTMLAnchorElement {
     const NAME: &'static str = "HTMLAnchorElement";
@@ -31,12 +101,10 @@ impl Class for HTMLAnchorElement {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)?;
-        register_node_methods(class)?;
-        register_element_methods(class)?;
-        register_html_element_methods(class)?;
-        register_hyperlink_element_utils_methods(class)?;
-        register_html_anchor_element_methods(class)
+        register_interface::<HTMLAnchorElement>(class)?;
+        // HTMLHyperlinkElementUtils members
+        super::hyperlink_element_utils::register_hyperlink_element_utils_methods(class)?;
+        Ok(())
     }
 }
 
@@ -51,42 +119,6 @@ fn with_html_anchor_element_ref<R>(
         .downcast_ref::<HTMLAnchorElement>()
         .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLAnchorElement"))?;
     Ok(f(&html_anchor_element))
-}
-
-fn register_html_anchor_element_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("href"),
-            Some(NativeFunction::from_fn_ptr(get_href).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_href).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("target"),
-            Some(NativeFunction::from_fn_ptr(get_target).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_target).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("download"),
-            Some(NativeFunction::from_fn_ptr(get_download).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_download).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("rel"),
-            Some(NativeFunction::from_fn_ptr(get_rel).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_rel).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("referrerPolicy"),
-            Some(NativeFunction::from_fn_ptr(get_referrer_policy).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_referrer_policy).to_js_function(&realm)),
-            Attribute::all(),
-        );
-    Ok(())
 }
 
 fn get_href(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

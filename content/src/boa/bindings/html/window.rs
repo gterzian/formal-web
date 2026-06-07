@@ -1,10 +1,7 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
     object::JsObject,
-    property::Attribute,
 };
 
 use crate::boa::platform_objects::{
@@ -17,10 +14,148 @@ use crate::html::{
     window_computed_style_properties_for_element,
 };
 use crate::webidl::{callback_function_value, nullable_value};
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+};
 
-use crate::boa::bindings::dom::{register_event_target_methods, with_element_ref};
+use crate::boa::bindings::dom::with_element_ref;
 
 use super::{hyperlink_element_utils::document_creation_url, style_declaration_object};
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for Window {
+    const NAME: &'static str = "Window";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("EventTarget")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "onload",
+            getter: get_onload,
+            setter: Some(set_onload),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "parent",
+            getter: get_parent,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "top",
+            getter: get_top,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "location",
+            getter: get_location,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_operation(OperationDef {
+            id: "requestAnimationFrame",
+            length: 1,
+            method: request_animation_frame_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "cancelAnimationFrame",
+            length: 1,
+            method: cancel_animation_frame_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "setTimeout",
+            length: 1,
+            method: set_timeout_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "clearTimeout",
+            length: 1,
+            method: clear_timeout_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "setInterval",
+            length: 1,
+            method: set_interval_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "clearInterval",
+            length: 1,
+            method: clear_interval_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "getComputedStyle",
+            length: 1,
+            method: get_computed_style_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "open",
+            length: 0,
+            method: open_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "structuredClone",
+            length: 1,
+            method: structured_clone_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for Window {
     const NAME: &'static str = "Window";
@@ -36,84 +171,8 @@ impl Class for Window {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_target_methods(class)?;
-        register_window_methods(class)
+        register_interface::<Window>(class)
     }
-}
-
-pub(crate) fn register_window_methods(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("onload"),
-            Some(NativeFunction::from_fn_ptr(get_onload).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_onload).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("parent"),
-            Some(NativeFunction::from_fn_ptr(get_parent).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("top"),
-            Some(NativeFunction::from_fn_ptr(get_top).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("location"),
-            Some(NativeFunction::from_fn_ptr(get_location).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .method(
-            js_string!("requestAnimationFrame"),
-            1,
-            NativeFunction::from_fn_ptr(request_animation_frame_method),
-        )
-        .method(
-            js_string!("cancelAnimationFrame"),
-            1,
-            NativeFunction::from_fn_ptr(cancel_animation_frame_method),
-        )
-        .method(
-            js_string!("setTimeout"),
-            1,
-            NativeFunction::from_fn_ptr(set_timeout_method),
-        )
-        .method(
-            js_string!("clearTimeout"),
-            1,
-            NativeFunction::from_fn_ptr(clear_timeout_method),
-        )
-        .method(
-            js_string!("setInterval"),
-            1,
-            NativeFunction::from_fn_ptr(set_interval_method),
-        )
-        .method(
-            js_string!("clearInterval"),
-            1,
-            NativeFunction::from_fn_ptr(clear_interval_method),
-        )
-        .method(
-            js_string!("getComputedStyle"),
-            1,
-            NativeFunction::from_fn_ptr(get_computed_style_method),
-        )
-        .method(
-            js_string!("open"),
-            0,
-            NativeFunction::from_fn_ptr(open_method),
-        )
-        .method(
-            js_string!("structuredClone"),
-            1,
-            NativeFunction::from_fn_ptr(structured_clone_method),
-        );
-    Ok(())
 }
 
 fn structured_clone_method(

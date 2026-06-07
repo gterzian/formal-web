@@ -2,13 +2,53 @@ use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
     class::{Class, ClassBuilder},
     js_string,
-    native_function::NativeFunction,
-    property::Attribute,
 };
 
 use crate::dom::{Event, UIEvent};
+use crate::webidl::binding::{
+    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
+};
 
-use super::event::{init_flag, register_event_methods};
+use super::event::init_flag;
+
+// ── WebIDL interface definition (§3) ──
+
+impl WebIdlInterface for UIEvent {
+    const NAME: &'static str = "UIEvent";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("Event")
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "view",
+            getter: get_view,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "detail",
+            getter: get_detail,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+    }
+}
+
+// ── Boa Class glue ──
 
 impl Class for UIEvent {
     const NAME: &'static str = "UIEvent";
@@ -44,24 +84,12 @@ impl Class for UIEvent {
     }
 
     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_event_methods(class)?;
-        let realm = class.context().realm().clone();
-        class
-            .accessor(
-                js_string!("view"),
-                Some(NativeFunction::from_fn_ptr(get_view).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            )
-            .accessor(
-                js_string!("detail"),
-                Some(NativeFunction::from_fn_ptr(get_detail).to_js_function(&realm)),
-                None,
-                Attribute::all(),
-            );
-        Ok(())
+        // Own members only — Event's members inherited via prototype chain.
+        register_interface::<UIEvent>(class)
     }
 }
+
+// ── Member getters/setters/methods ──
 
 pub(crate) fn with_ui_event_ref<R>(
     this: &boa_engine::object::JsObject,
