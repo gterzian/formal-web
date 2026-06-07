@@ -1,8 +1,8 @@
 # web_standards — Spec Reading Extension
 
-Lazily loads and caches web standards documents (WHATWG, W3C, etc.) so the agent can read spec content interactively during development without fetching the same resource twice. Specs are cached in memory for the lifetime of the pi session and cleared on shutdown.
+Lazily loads and caches web standards documents (WHATWG, W3C, etc.) so the agent can read spec content interactively during development without fetching the same resource twice. Specs are cached in memory for the lifetime of the pi session and cleared on `session_shutdown`.
 
-Two tools — that's all you need.
+Three tools — `spec_lookup`, `spec_ref_links`, and `spec_search_id`.
 
 ## Tools
 
@@ -36,6 +36,45 @@ Algorithm steps are rendered with recursive step numbers (1, 1.1, 1.1.1, 1.2, 2,
 
 Each row pairs a term name with the anchor URL where it's defined. You can look up any of these with another `spec_lookup` call — split the URL before `#` as `url=` and after `#` as `id=`, e.g. `spec_lookup(url="https://webidl.spec.whatwg.org/", id="idl-boolean")`. This lets you follow the spec's dependency chain across specs step by step.
 
+### `spec_ref_links` (find reference links for a concept)
+
+Find all places a concept is referenced throughout a spec. In web standards, every
+definition (`<dfn id="dfn-foo">`) has corresponding reference links
+(`<a id="ref-for-dfn-foo">`, `<a id="ref-for-dfn-foo①">`, …) at each usage site.
+The numbered suffixes (①, ②, … ⑳, and compound variants like ①①) distinguish
+multiple references to the same concept.
+
+```
+spec_ref_links(url="https://webidl.spec.whatwg.org/", id="dfn-platform-object")
+spec_ref_links(url="https://html.spec.whatwg.org/", id="concept-element-attributes")
+```
+
+**List mode** (default) shows a table of all references with their full URL and
+context (enclosing algorithm or section):
+
+```
+┌─ # ── Reference URL                                               ── Context                                     ─┐
+│  1  https://webidl.spec.whatwg.org/#ref-for-dfn-platform-object     algorithm: determine the type of a platform object │
+│  2  https://webidl.spec.whatwg.org/#ref-for-dfn-platform-object①   algorithm: platform object -> legacy platform  │
+│ ...                                                                ...                                               │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Read mode** renders the actual content (algorithm steps or section) at each
+reference location. Pass `read=<index>` (1-based) or `read="all"`:
+
+```
+spec_ref_links(url="https://webidl.spec.whatwg.org/", id="dfn-platform-object", read=1)
+spec_ref_links(url="https://webidl.spec.whatwg.org/", id="dfn-platform-object", read="all")
+```
+
+**Documentation convention.** When documenting code that implements a specific
+algorithm step that references a concept, use the *reference URL*
+(e.g. `#ref-for-dfn-platform-object①`) over the *canonical concept URL*
+(`#dfn-platform-object`). Your code implements "the thing as used in a particular
+algorithm", not the thing itself. The reference URL captures exactly which usage
+site you are implementing.
+
 ### `spec_search_id` (find ids by keyword)
 
 Search across all elements with an `id` attribute for a substring match. Returns a list of matching ids with their tag and first line of text. Use this to discover anchor IDs when you know a keyword but not the exact id.
@@ -50,9 +89,9 @@ Then use `spec_lookup` with the exact id to read the content.
 ## Workflow
 
 1. **`spec_search_id`** — Find the exact id by searching a keyword.
-2. **`spec_lookup`** — Read the anchor's content (definition, section, or algorithm).
-
-That's it.
+2. **`spec_lookup`** — Read an anchor's content (definition, section, or algorithm).
+3. **`spec_ref_links`** — Find every place a concept is referenced.
+4. **`spec_ref_links` + `read`** — Read the specific algorithm that uses the concept.
 
 ## Supported Specs
 
@@ -75,3 +114,5 @@ Any spec that serves a complete, queryable HTML document. Common targets:
 - Fetches with `Accept-Encoding: identity` to avoid gzip issues in the pi runtime's fetch implementation.
 - Algorithm step numbering is computed by walking the nested `<ol>` structure — the HTML spec provides no step numbers in the markup.
 - All downloaded spec HTML stays in memory for the session and is cleared on `session_shutdown`.
+- `spec_ref_links` matches the `ref-for-{id}` prefix on any element; the WHATWG spec uses `<a>` elements with this pattern. Circled-digit suffixes (U+2460–U+2473, compound) distinguish multiple references.
+- URL fragments use `encodeURI` to percent-encode non-ASCII characters (circled digits) for correct browser navigation.
