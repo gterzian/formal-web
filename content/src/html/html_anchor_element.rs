@@ -250,13 +250,13 @@ impl HyperlinkElementUtils for HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#api-for-a-and-area-elements:concept-hyperlink-url-set-2>
     fn set_the_url(&self, document_creation_url: &Url) -> Option<Url> {
         // Step 1: "Set this element's url to null."
-        // Note: The implementation does not persist the associated hyperlink URL, so this method returns the computed URL instead of storing it on the carrier.
+        // Note: The implementation does not persist the associated hyperlink URL, so this method returns the computed URL instead of storing it on the [HTMLAnchorElement](https://html.spec.whatwg.org/#htmlanchorelement) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object).
 
         // Step 2: "If this element's href content attribute is absent, then return."
         let href = self.href_attribute()?;
 
         // Step 3: "Let url be the result of encoding-parsing a URL given this element's href content attribute's value, relative to this element's node document."
-        // Note: The implementation resolves relative URLs against the document creation URL because the document base URL is not yet exposed on the DOM carrier.
+        // Note: The implementation resolves relative URLs against the document creation URL because the document base URL is not yet exposed on the node document's [Document](https://dom.spec.whatwg.org/#interface-document) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object).
         let url = document_creation_url.join(&href).ok();
 
         // Step 4: "If url is not failure, then set this element's url to url."

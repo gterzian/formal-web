@@ -52,7 +52,7 @@ impl Class for ReadableStream {
         // When external scripts call pipeTo directly, Boa's native-function dispatch
         // from script context fails with "not a callable function", but wrapping it in
         // a JS function and using .call() works around the issue. The wrapper returns
-        // the carrier's promise unchanged, preserving the carrier-owned semantics.
+        // the [ReadableStream](https://streams.spec.whatwg.org/#readablestream) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)'s promise unchanged, preserving the platform object-owned semantics.
         let pipe_to_wrapper = {
             class.context().eval(Source::from_bytes(
                 "(function pipeTo() { return ReadableStream.prototype.__formalWebReadableStreamPipeToNative.call(this, arguments[0], arguments[1]); })",

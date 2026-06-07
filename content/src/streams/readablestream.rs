@@ -1012,8 +1012,8 @@ pub(crate) fn construct_readable_stream(
     };
 
     // Step 3: "Perform ! InitializeReadableStream(this)."
-    // Note: Boa attaches the returned native carrier to the newly created wrapper after
-    // `data_constructor` returns.
+    // Note: The backing struct is returned from the data constructor, after which Boa wraps it
+    // in the newly created JsObject.
     stream.initialize_readable_stream();
 
     let strategy = args.get_or_undefined(1).clone();
@@ -2749,7 +2749,7 @@ fn readable_stream_pipe_to(
     // Step 4: "If signal was not given, let signal be undefined."
 
     // Step 5: "Assert: either signal is undefined, or signal implements AbortSignal."
-    // Note: `pipe_to()` and `pipe_through()` normalize the Web IDL carrier to `Option<AbortSignal>` before calling this helper.
+    // Note: `pipe_to()` and `pipe_through()` normalize the `signal` argument to `Option<AbortSignal>` before calling this helper.
 
     // Step 13: "Let promise be a new promise."
     // Note: the promise is allocated before the remaining setup so unexpected internal setup

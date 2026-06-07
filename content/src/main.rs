@@ -895,7 +895,7 @@ impl ContentProcess {
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
         // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
-        // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the DOM carrier and the JavaScript environment settings object.
+        // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the [Document](https://dom.spec.whatwg.org/#interface-document) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) and the JavaScript environment settings object.
         let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
             traversable_id,
             document_id,

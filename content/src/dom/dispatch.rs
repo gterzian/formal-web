@@ -121,7 +121,7 @@ pub(crate) fn fire_event(
 
     // Step 3: "Initialize event's type attribute to e."
     // Step 4: "Initialize any other IDL attributes of event as described in the invocation of this algorithm."
-    // Note: The implementation constructs the `Event` carrier with the final attribute values before dispatch.
+    // Note: The implementation constructs the [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) implementing the [Event](https://dom.spec.whatwg.org/#interface-event) interface with the final attribute values before dispatch.
 
     // Step 5: "Return the result of dispatching event at target, with legacy target override flag set if set."
     dispatch(host, target, &event, legacy_target_override)

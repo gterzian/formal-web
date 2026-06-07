@@ -655,7 +655,7 @@ pub(crate) fn set_up_writable_stream_default_controller(
     reset_controller_queue(&controller);
 
     // Step 6: "Set controller.[[abortController]] to a new AbortController."
-    // The content process stores the exposed AbortSignal carrier directly because the controller getter
+    // The content process stores the exposed [AbortSignal](https://dom.spec.whatwg.org/#interface-AbortSignal) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) directly because the controller getter
     // only needs the signal object.
     controller.set_abort_signal_slot(create_abort_signal(AbortSignal::new(), context)?);
 

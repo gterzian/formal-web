@@ -602,8 +602,8 @@ pub(crate) fn construct_writable_stream(
     }
 
     // Step 5: "Perform ! InitializeWritableStream(this)."
-    // Note: Boa attaches the returned native carrier to the newly created wrapper after
-    // `data_constructor` returns.
+    // Note: The backing struct is returned from the data constructor, after which Boa wraps it
+    // in the newly created JsObject.
     stream.initialize_writable_stream();
 
     // Step 6: "Perform ? SetUpWritableStreamDefaultControllerFromUnderlyingSink(this, underlyingSink, underlyingSinkDict, highWaterMark, sizeAlgorithm)."
