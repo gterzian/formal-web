@@ -363,10 +363,13 @@ fn get_computed_style_method(
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
 /// Create a WindowProxy exotic object wrapping the given Window.
-/// The returned JsObject is a proper exotic object with the 10 overridden
-/// internal methods per HTML §7.2.3.  The prototype is set to
-/// `Window.prototype` so that accessors and methods on the Window
-/// WebIDL interface are reachable through the proxy's prototype chain.
+/// The returned JsObject carries a `WindowProxy` data struct whose
+/// `internal_methods()` override supplies the 10 overridden internal
+/// methods specified by HTML §7.2.3.
+///
+/// The prototype is set to `Window.prototype` so that accessors and
+/// methods on the Window WebIDL interface are reachable through the
+/// proxy's prototype chain.
 pub(crate) fn create_window_proxy(window: JsObject) -> JsValue {
     let prototype = window.prototype();
     let proxy = WindowProxy::new(window);

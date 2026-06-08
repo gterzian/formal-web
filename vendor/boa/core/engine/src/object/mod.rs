@@ -29,19 +29,7 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-pub(crate) mod internal_methods;
-
-/// Re-exported types for implementing exotic objects outside the crate.
-///
-/// These types are needed to construct custom `InternalObjectMethods`
-/// vtables via the builder pattern (see `InternalObjectMethods::ordinary()`
-/// and `InternalMethodsBuilder`).
-pub use internal_methods::{
-    CallValue,
-    InternalMethodCallContext,
-    InternalMethodPropertyContext,
-    InternalObjectMethods,
-};
+pub mod internal_methods;
 
 pub mod builtins;
 mod datatypes;

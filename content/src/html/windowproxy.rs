@@ -14,8 +14,11 @@ use boa_engine::{
     Context, JsData, JsResult, JsValue,
     js_string,
     object::{
-        InternalMethodPropertyContext, InternalObjectMethods,
         JsObject, JsPrototype,
+        internal_methods::{
+            InternalMethodPropertyContext, InternalObjectMethods,
+            ORDINARY_INTERNAL_METHODS,
+        },
     },
     property::{PropertyDescriptor, PropertyKey},
 };
@@ -57,23 +60,24 @@ impl WindowProxy {
 /// behavior per HTML §7.2.3.
 impl JsData for WindowProxy {
     fn internal_methods(&self) -> &'static InternalObjectMethods {
-        static METHODS: InternalObjectMethods = InternalObjectMethods::ordinary()
-            .get_prototype_of(window_proxy_get_prototype_of)
-            .set_prototype_of(window_proxy_set_prototype_of)
-            .is_extensible(window_proxy_is_extensible)
-            .prevent_extensions(window_proxy_prevent_extensions)
-            .get_own_property(window_proxy_get_own_property)
-            .define_own_property(window_proxy_define_own_property)
-            .get(window_proxy_get)
-            .set(window_proxy_set)
-            .delete(window_proxy_delete)
-            .own_property_keys(window_proxy_own_property_keys)
+        static METHODS: InternalObjectMethods = InternalObjectMethods {
+            __get_prototype_of__: window_proxy_get_prototype_of,
+            __set_prototype_of__: window_proxy_set_prototype_of,
+            __is_extensible__: window_proxy_is_extensible,
+            __prevent_extensions__: window_proxy_prevent_extensions,
+            __get_own_property__: window_proxy_get_own_property,
+            __define_own_property__: window_proxy_define_own_property,
+            __get__: window_proxy_get,
+            __set__: window_proxy_set,
+            __delete__: window_proxy_delete,
+            __own_property_keys__: window_proxy_own_property_keys,
             // __has_property__, __try_get__: ordinary — works because
             //   ordinary_has_property calls [[GetOwnProperty]] which we
             //   override to delegate to the Window.
             // __call__, __construct__: ordinary — WindowProxy is neither
             //   callable nor constructable.
-            .build();
+            ..ORDINARY_INTERNAL_METHODS
+        };
         &METHODS
     }
 }
@@ -111,17 +115,16 @@ fn window_proxy_get_prototype_of(
 fn window_proxy_set_prototype_of(
     obj: &JsObject,
     val: JsPrototype,
-    _context: &mut Context,
+    context: &mut Context,
 ) -> JsResult<bool> {
     // Step 1: "Return ! SetImmutablePrototype(this, V)."
     //
     // SetImmutablePrototype ( O, V )
     // https://tc39.es/ecma262/#sec-set-immutable-prototype
     // 1. Let current be ? O.[[GetPrototypeOf]]().
-    //    Use prototype() which reads the stored [[Prototype]] field.
-    //    For WindowProxy this was set to Window.prototype during
-    //    construction, matching what [[GetPrototypeOf]] returns.
-    let current = obj.prototype();
+    //    Must go through the vtable because the WindowProxy overrides
+    //    [[GetPrototypeOf]].
+    let current = obj.__get_prototype_of__(context)?;
 
     // 2. If SameValue(V, current) is true, return true.
     // 3. Return false.
@@ -168,8 +171,6 @@ fn window_proxy_get_own_property(
         // Step 2.1-2.x: child navigable lookup.
         // Note: Child navigable support is not yet implemented
         // (no iframe child tracking in the content process).
-        // Return undefined for now (same-origin fallthrough).
-        //
         // Step 2.5.1: "If IsPlatformObjectSameOrigin(W) is true, then
         //              return undefined."
         return Ok(None);
@@ -177,7 +178,11 @@ fn window_proxy_get_own_property(
 
     // Step 3: "If IsPlatformObjectSameOrigin(W) is true, then return !
     //          OrdinaryGetOwnProperty(W, P)."
-    window.get_own_property_descriptor(key, context)
+    //
+    // Note: Use __get_own_property__ to go through the Window's vtable
+    // (which is ordinary [[GetOwnProperty]]).  We cannot use the public
+    // `get()` method because it returns a value, not a descriptor.
+    window.__get_own_property__(key, context)
 }
 
 // ── [[DefineOwnProperty]] ──
@@ -201,7 +206,7 @@ fn window_proxy_define_own_property(
     }
 
     // Step 2.2: "Return ? OrdinaryDefineOwnProperty(W, P, Desc)."
-    window.define_own_property(key, desc, context)
+    window.__define_own_property__(key, desc, context)
 }
 
 // ── [[Get]] ──
@@ -234,12 +239,12 @@ fn window_proxy_get(
 
     // 1. Assert: IsPropertyKey(P) is true.
     // 2. Let desc be ? O.[[GetOwnProperty]](P).
-    match obj.get_own_property_descriptor(key, context)? {
+    match obj.__get_own_property__(key, context)? {
         None => {
             // 2a. Let parent be ? O.[[GetPrototypeOf]]().
-            if let Some(parent) = obj.prototype() {
+            if let Some(parent) = obj.__get_prototype_of__(context)? {
                 // 2c. Return ? parent.[[Get]](P, Receiver).
-                parent.get_with_receiver(key, receiver, context)
+                parent.__get__(key, receiver, context)
             } else {
                 // 2b. If parent is null, return undefined.
                 Ok(JsValue::undefined())
@@ -296,8 +301,10 @@ fn window_proxy_set(
     // the receiver (the WindowProxy) delegates to the Window, so the
     // new property ends up on the Window as desired.
     //
-    // We use set_with_receiver to pass the original Receiver through.
-    window.set_with_receiver(&key, value, receiver, context)
+    // We use the vtable __set__ directly to pass the original Receiver
+    // through, rather than the public `set()` which hardcodes self as
+    // the receiver.
+    window.__set__(key, value, receiver, context)
 }
 
 // ── [[Delete]] ──
@@ -317,14 +324,14 @@ fn window_proxy_delete(
     // Step 2.1: "If P is an array index property name:"
     if key_to_u32(key).is_some() {
         // Step 2.1.1: "Let desc be ! this.[[GetOwnProperty]](P)."
-        let desc = obj.get_own_property_descriptor(key, context)?;
+        let desc = obj.__get_own_property__(key, context)?;
         // Step 2.1.2: "If desc is undefined, then return true."
         // Step 2.1.3: "Return false."
         return Ok(desc.is_none());
     }
 
     // Step 2.2: "Return ? OrdinaryDelete(W, P)."
-    window.delete_property(key, context)
+    window.__delete__(key, context)
 }
 
 // ── [[OwnPropertyKeys]] ──
@@ -346,7 +353,7 @@ fn window_proxy_own_property_keys(
 
     // Step 4: "If IsPlatformObjectSameOrigin(W) is true, then return the
     //          concatenation of keys and OrdinaryOwnPropertyKeys(W)."
-    let window_keys = window.own_property_keys(context)?;
+    let window_keys = window.__own_property_keys__(context)?;
     keys.extend(window_keys);
 
     Ok(keys)
@@ -386,8 +393,7 @@ fn key_to_u32(key: &PropertyKey) -> Option<u32> {
 
 // ── Cross-origin helper operations ──
 // These implement the abstract operations from HTML spec § 7.2.1.3.
-// They are ready for cross-origin support; the same-origin fast path
-// in the internal methods above bypasses them.
+// They are ready for cross-origin support.
 
 /// <https://html.spec.whatwg.org/#crossoriginproperties-(-o-)>
 #[allow(dead_code)]
