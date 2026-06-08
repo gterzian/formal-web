@@ -25,7 +25,7 @@ pub(crate) mod string;
 
 /// A lightweight wrapper around [`Context`] used in [`InternalObjectMethods`].
 #[derive(Debug)]
-pub(crate) struct InternalMethodPropertyContext<'ctx> {
+pub struct InternalMethodPropertyContext<'ctx> {
     context: &'ctx mut Context,
     slot: Slot,
 }
@@ -71,7 +71,7 @@ impl<'context> From<&'context mut Context> for InternalMethodPropertyContext<'co
 
 /// A lightweight wrapper around [`Context`] used in internal call methods.
 #[derive(Debug)]
-pub(crate) struct InternalMethodCallContext<'ctx> {
+pub struct InternalMethodCallContext<'ctx> {
     context: &'ctx mut Context,
     native_source_info: NativeSourceInfo,
 }
@@ -456,8 +456,9 @@ pub struct InternalObjectMethods {
 /// The return value of an internal method (`[[Call]]` or `[[Construct]]`).
 ///
 /// This is done to avoid recursion.
+#[derive(Debug)]
 #[allow(variant_size_differences)]
-pub(crate) enum CallValue {
+pub enum CallValue {
     /// Calling is ready, the frames have been setup.
     ///
     /// Requires calling [`Context::run()`].
@@ -465,13 +466,17 @@ pub(crate) enum CallValue {
 
     /// Further processing is needed.
     Pending {
+        /// The function pointer to call.
         func: fn(
             &JsObject,
             argument_count: usize,
             context: &mut InternalMethodCallContext<'_>,
         ) -> JsResult<CallValue>,
+        /// The object to call the function on.
         object: JsObject,
+        /// Number of arguments passed.
         argument_count: usize,
+        /// Source info for native calls.
         native_source_info: NativeSourceInfo,
     },
 

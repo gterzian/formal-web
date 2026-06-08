@@ -8,7 +8,7 @@ use crate::js::platform_objects::{
 };
 use crate::js::with_event_target_mut;
 use crate::html::{
-    Location, Window, WindowOrWorkerGlobalScope,
+    Location, Window, WindowOrWorkerGlobalScope, WindowProxy,
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
@@ -362,17 +362,16 @@ fn get_computed_style_method(
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
-/// Create a WindowProxy value wrapping the given Window.
-///
-/// For the current single-origin content process, the WindowProxy is
-/// transparent: the inner Window JsObject is returned directly.
-/// See `content/src/html/windowproxy.rs` for the rationale and the
-/// cross-origin path that will require a proper exotic object.
+/// Create a WindowProxy exotic object wrapping the given Window.
+/// The returned JsObject is a proper exotic object with the 10 overridden
+/// internal methods per HTML §7.2.3.  The prototype is set to
+/// `Window.prototype` so that accessors and methods on the Window
+/// WebIDL interface are reachable through the proxy's prototype chain.
 pub(crate) fn create_window_proxy(window: JsObject) -> JsValue {
-    // Same-origin fast path: return the Window directly.
-    // The WindowProxy exotic object will be needed when cross-origin
-    // Window access is implemented.
-    JsValue::from(window)
+    let prototype = window.prototype();
+    let proxy = WindowProxy::new(window);
+    let proxy_object = JsObject::from_proto_and_data(prototype, proxy);
+    JsValue::from(proxy_object)
 }
 
 fn location_object(context: &mut Context) -> JsResult<JsObject> {
@@ -389,17 +388,21 @@ fn location_object(context: &mut Context) -> JsResult<JsObject> {
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
-/// Resolve the Window from a receiver that may be a Window, a WindowProxy
-/// JsObject, or any other value.
-///
-/// For the current transparent-proxy implementation, the receiver is always
-/// the Window JsObject itself (no WindowProxy JsObjects are created).
-/// This function exists for forward-compatibility: when a proper exotic
-/// WindowProxy is introduced, it will unwrap the proxy to its inner Window.
+/// Resolve the Window from a receiver that may be a Window or a WindowProxy.
+/// When accessors on Window.prototype are invoked via a WindowProxy (e.g.
+/// `proxy.onload = ...`), the receiver (`this`) is the WindowProxy JsObject.
+/// This function unwraps WindowProxy to its inner Window so that downcasts
+/// succeed.
 fn current_window_object(this: &JsValue, context: &Context) -> JsObject {
     if let Some(object) = this.as_object() {
-        // Forward-compatibility: when a proper exotic WindowProxy is
-        // introduced, unwrap it here via downcast_ref::<WindowProxy>.
+        // If the receiver is a WindowProxy, extract the inner Window.
+        // This handles [[Get]] and [[Set]] delegation: the spec says
+        // OrdinaryGet(W, P, Receiver) / OrdinarySet(W, P, V, Receiver)
+        // where operations happen on W (the Window) even though the
+        // Receiver is the WindowProxy.
+        if let Some(proxy) = object.downcast_ref::<WindowProxy>() {
+            return proxy.window_handle().clone();
+        }
         return object.clone();
     }
 

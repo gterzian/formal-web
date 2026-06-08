@@ -264,8 +264,6 @@ pub(crate) fn window_open_steps(
 
     // Step 18: Return targetNavigable's active WindowProxy.
     // <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
-    // Note: `create_window_proxy` is a placeholder, not a real WindowProxy
-    // exotic object.  See content/src/html/README.md §WindowProxy for the gap list.
     let window = result
         .return_window
         .expect("window_open_steps: all navigable branches set a return window");
