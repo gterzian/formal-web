@@ -1,7 +1,8 @@
 use boa_engine::{
-    Context, JsResult, JsValue,
+    Context, JsObject, JsResult, JsValue,
     js_string,
     native_function::NativeFunction,
+    property::PropertyDescriptor,
 };
 
 /// Describes a single operation (method) on an interface.
@@ -32,11 +33,10 @@ pub(crate) struct OperationDef {
     pub promise_type: bool,
 }
 
-/// Define the regular operations on the target (interface prototype object).
-///
-/// https://webidl.spec.whatwg.org/#define-the-regular-operations
+/// <https://webidl.spec.whatwg.org/#define-the-regular-operations>
 pub(crate) fn define_regular_operations(
-    target: &mut boa_engine::class::ClassBuilder<'_>,
+    proto: &JsObject,
+    context: &mut Context,
     operations: &[OperationDef],
 ) -> JsResult<()> {
     // Step 1: "Let operations be the list of regular operations that are
@@ -50,36 +50,54 @@ pub(crate) fn define_regular_operations(
 
     // Step 3: "Define the operations operations of definition on target
     //          given realm."
-    define_operations_on_target(target, &regular)
+    define_operations_on_target(proto, context, &regular)
 }
 
-/// Define the static operations on the target (interface object).
+/// Define the static operations on the interface object.
 ///
 /// https://webidl.spec.whatwg.org/#define-the-static-operations
 pub(crate) fn define_static_operations(
-    _target: &mut boa_engine::class::ClassBuilder<'_>,
+    _constructor: &JsObject,
+    _context: &mut Context,
     _operations: &[OperationDef],
 ) -> JsResult<()> {
     Ok(())
 }
 
-/// Define the operations on target per the Web IDL spec.
-///
-/// https://webidl.spec.whatwg.org/#define-the-operations
+/// <https://webidl.spec.whatwg.org/#define-the-operations>
 fn define_operations_on_target(
-    target: &mut boa_engine::class::ClassBuilder<'_>,
+    proto: &JsObject,
+    context: &mut Context,
     operations: &[&OperationDef],
 ) -> JsResult<()> {
+    let realm = context.realm().clone();
+
+    // Step 1: "For each operation op of operations:"
     for op in operations {
+        // Step 1.1: "If op is not exposed in realm, then continue."
+        // Note: Exposure checks are not yet implemented.
+
         // Step 1.2: "Let method be the result of creating an operation
         //            function given op, definition, and realm."
-        let method = NativeFunction::from_fn_ptr(op.method);
+        let method = NativeFunction::from_fn_ptr(op.method).to_js_function(&realm);
+
+        // Step 1.3: "Let modifiable be false if op is unforgeable
+        //            and true otherwise."
+        let modifiable = !op.unforgeable;
 
         // Step 1.4: "Let desc be the PropertyDescriptor{[[Value]]: method,
         //            [[Writable]]: modifiable, [[Enumerable]]: true,
         //            [[Configurable]]: modifiable}."
+        let desc = PropertyDescriptor::builder()
+            .value(method)
+            .writable(modifiable)
+            .enumerable(true)
+            .configurable(modifiable)
+            .build();
+
+        // Step 1.5: "Let id be op's identifier."
         // Step 1.6: "Perform ! DefinePropertyOrThrow(target, id, desc)."
-        target.method(js_string!(op.id), op.length, method);
+        proto.define_property_or_throw(js_string!(op.id), desc, context)?;
     }
 
     Ok(())

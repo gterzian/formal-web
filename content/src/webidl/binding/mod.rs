@@ -30,11 +30,11 @@
 ///   with the interface's attributes, operations, and constants.
 /// - An optional `create_platform_object` for constructible interfaces.
 ///
-/// The `register_interface` function (called from a `Class::init` impl)
-/// then applies the spec algorithms to create the JavaScript bindings.
+/// The `register_interface_spec` function then applies the spec algorithms
+/// to create the JavaScript bindings.
 ///
 /// ```ignore
-/// // In boa/bindings/dom/event.rs:
+/// // In js/bindings/dom/event.rs:
 /// impl WebIdlInterface for Event {
 ///     const NAME: &'static str = "Event";
 ///     fn parent_name() -> Option<&'static str> { Some("EventTarget") }
@@ -63,11 +63,8 @@
 ///     }
 /// }
 ///
-/// impl Class for Event {
-///     fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-///         register_interface::<Event>(class)
-///     }
-/// }
+/// // In the host hooks setup:
+/// register_interface_spec::<Event>(&mut context)?;
 /// ```
 
 mod attribute;
