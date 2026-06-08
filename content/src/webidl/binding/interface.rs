@@ -366,6 +366,12 @@ where
         // §3.7.5: Constants on the constructor too
         super::constant::define_constants(&f_obj, context, &def.constants)?;
 
+        // Step 14: "Define the static attributes of interface I on F given realm."
+        super::attribute::define_static_attributes(&f_obj, context, &def.attributes)?;
+
+        // Step 15: "Define the static operations of interface I on F given realm."
+        super::operation::define_static_operations(&f_obj, context, &def.operations)?;
+
         f_obj
     };
 

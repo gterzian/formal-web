@@ -75,6 +75,15 @@ impl WebIdlInterface for ReadableStream {
             unforgeable: false,
             promise_type: false,
         });
+        // https://streams.spec.whatwg.org/#readablestream-static-methods
+        def.add_operation(OperationDef {
+            id: "from",
+            length: 1,
+            method: from_static,
+            static_: true,
+            unforgeable: false,
+            promise_type: false,
+        });
     }
 }
 

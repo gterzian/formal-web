@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsResult, JsValue, Source,
+    Context, Source,
     context::{ContextBuilder, HostHooks, intrinsics::Intrinsics},
     job::SimpleJobExecutor,
     js_string,
@@ -26,16 +26,14 @@ use crate::streams::{
     WritableStreamDefaultController, WritableStreamDefaultWriter,
 };
 use crate::webidl::binding::{
-    get_registry_constructor, get_registry_prototype, initialize_registry,
+    get_registry_prototype, initialize_registry,
     register_interface_spec, wire_registry_prototype,
 };
 use super::hyperlink_element_utils;
-use super::super::dom::abort_signal::{
-    abort_static as abort_signal_abort, any_static as abort_signal_any,
-    timeout_static as abort_signal_timeout,
-};
+// Note: AbortSignal static methods (abort, timeout, any) are registered via
+// static operations in `AbortSignal::define_members`.
 use super::super::streams::readablestream::{
-    from_static as readable_stream_from, pipe_to_native_method,
+    pipe_to_native_method,
     values_method,
 };
 
@@ -129,46 +127,9 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
         .map_err(|error| error.to_string())?;
     }
 
-    // AbortSignal: static methods abort(), timeout(), any() (§AbortSignal)
-    if let Some(ctor) = get_registry_constructor::<AbortSignal>(&context) {
-        let realm = context.realm().clone();
-        let mut define_static = |name: &str, func: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>|
-            -> Result<(), String>
-        {
-            let method = NativeFunction::from_fn_ptr(func).to_js_function(&realm);
-            let desc = PropertyDescriptor::builder()
-                .value(method)
-                .writable(true)
-                .enumerable(false)
-                .configurable(true)
-                .build();
-            ctor.define_property_or_throw(js_string!(name), desc, &mut context)
-                .map(|_defined| ())
-                .map_err(|error| error.to_string())
-        };
-        define_static("abort", abort_signal_abort)?;
-        define_static("timeout", abort_signal_timeout)?;
-        define_static("any", abort_signal_any)?;
-    }
-
-    // ReadableStream: static method from(), async iterator, pipeTo (§ReadableStream)
-    if let Some(rs_ctor) = get_registry_constructor::<ReadableStream>(&context) {
-        let realm = context.realm().clone();
-
-        // Static method from()
-        {
-            let method = NativeFunction::from_fn_ptr(readable_stream_from).to_js_function(&realm);
-            let desc = PropertyDescriptor::builder()
-                .value(method)
-                .writable(true)
-                .enumerable(false)
-                .configurable(true)
-                .build();
-            rs_ctor.define_property_or_throw(js_string!("from"), desc, &mut context)
-                .map(|_| ())
-                .map_err(|error| error.to_string())?;
-        }
-    }
+    // ReadableStream: async iterator, pipeTo (§ReadableStream)
+    // Note: Static methods (ReadableStream.from(), AbortSignal.abort(), etc.) are
+    // registered automatically by `register_interface_spec` via static operations.
 
     if let Some(rs_proto) = get_registry_prototype::<ReadableStream>(&context) {
         let realm = context.realm().clone();

@@ -70,6 +70,31 @@ impl WebIdlInterface for AbortSignal {
             unforgeable: false,
             promise_type: false,
         });
+        // https://dom.spec.whatwg.org/#AbortSignal-static-members
+        def.add_operation(OperationDef {
+            id: "abort",
+            length: 1,
+            method: abort_static,
+            static_: true,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "timeout",
+            length: 1,
+            method: timeout_static,
+            static_: true,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "any",
+            length: 1,
+            method: any_static,
+            static_: true,
+            unforgeable: false,
+            promise_type: false,
+        });
     }
 }
 

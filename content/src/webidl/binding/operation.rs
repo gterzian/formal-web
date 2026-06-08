@@ -53,15 +53,24 @@ pub(crate) fn define_regular_operations(
     define_operations_on_target(proto, context, &regular)
 }
 
-/// Define the static operations on the interface object.
-///
-/// https://webidl.spec.whatwg.org/#define-the-static-operations
+/// <https://webidl.spec.whatwg.org/#define-the-static-operations>
 pub(crate) fn define_static_operations(
-    _constructor: &JsObject,
-    _context: &mut Context,
-    _operations: &[OperationDef],
+    constructor: &JsObject,
+    context: &mut Context,
+    operations: &[OperationDef],
 ) -> JsResult<()> {
-    Ok(())
+    // Step 1: "Let operations be the list of static operations that are
+    //          members of definition."
+    let static_ops: Vec<&OperationDef> = operations
+        .iter()
+        .filter(|o| o.static_)
+        .collect();
+
+    // Step 2: "Define the operations operations of definition on target
+    //          given realm."
+    // Note: This reuses the same algorithm as `define_operations_on_target`
+    // but with the constructor as the target.
+    define_operations_on_target(constructor, context, &static_ops)
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-operations>

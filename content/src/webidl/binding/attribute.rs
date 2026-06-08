@@ -65,15 +65,24 @@ pub(crate) fn define_regular_attributes(
     define_attributes_on_target(proto, context, &regular)
 }
 
-/// Define the static attributes on the interface object.
-///
-/// https://webidl.spec.whatwg.org/#define-the-static-attributes
+/// <https://webidl.spec.whatwg.org/#define-the-static-attributes>
 pub(crate) fn define_static_attributes(
-    _constructor: &JsObject,
-    _context: &mut Context,
-    _attributes: &[AttributeDef],
+    constructor: &JsObject,
+    context: &mut Context,
+    attributes: &[AttributeDef],
 ) -> JsResult<()> {
-    Ok(())
+    // Step 1: "Let attributes be the list of static attributes that are
+    //          members of definition."
+    let static_attrs: Vec<&AttributeDef> = attributes
+        .iter()
+        .filter(|a| a.static_)
+        .collect();
+
+    // Step 2: "Define the attributes attributes of definition on target
+    //          given realm."
+    // Note: This reuses the same algorithm as `define_attributes_on_target`
+    // but with the constructor as the target.
+    define_attributes_on_target(constructor, context, &static_attrs)
 }
 
 /// Define the unforgeable regular attributes on the target.
