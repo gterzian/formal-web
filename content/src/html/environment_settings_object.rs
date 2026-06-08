@@ -2,17 +2,18 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsResult, JsValue, Source, class::Class, js_string, object::JsObject,
+    Context, JsError, JsResult, JsValue, Source, js_string, object::JsObject,
     property::Attribute,
 };
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
-use crate::boa::bindings::html::{build_boa_context, wire_interface_prototypes};
-use crate::boa::platform_objects::{store_document_object, with_global_scope};
-use crate::boa::{install_console_namespace, install_css_namespace, install_document_property};
-use crate::dom::{Document, EventDispatchHost};
+use crate::js::bindings::html::build_boa_context;
+use crate::js::platform_objects::{store_document_object, with_global_scope};
+use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
+use crate::dom::{Document, Event, EventDispatchHost};
+use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 use crate::html::TimerHandler;
 use crate::html::Window;
 
@@ -73,10 +74,6 @@ impl EnvironmentSettingsObject {
         // GlobalScope during build().
         let mut context = build_boa_context(Rc::clone(&document))?;
 
-        // Wire up prototype chains (Window → EventTarget, etc.) before any
-        // objects are created.
-        wire_interface_prototypes(&mut context);
-
         // Install timer host and navigation info on the GlobalScope through the
         // safe boa API (with_global_scope — traverses the GC heap to reach the
         // Window's GlobalScope).
@@ -98,7 +95,7 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let document_object = Class::from_data(
+        let document_object = create_interface_instance::<Document>(
             Document::new(document.clone(), creation_url.clone()),
             &mut context,
         )
@@ -110,8 +107,8 @@ impl EnvironmentSettingsObject {
         install_css_namespace(&mut context).map_err(|error| error.to_string())?;
 
         let global = context.global_object();
-        if let Some(window_class) = context.get_global_class::<Window>() {
-            global.set_prototype(Some(window_class.prototype()));
+        if let Some(window_proto) = get_registry_prototype::<Window>(&context) {
+            global.set_prototype(Some(window_proto));
         }
         context
             .register_global_property(js_string!("window"), global.clone(), Attribute::all())
@@ -172,7 +169,7 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
-        let callbacks = crate::boa::platform_objects::take_animation_frame_callbacks(&self.context)
+        let callbacks = crate::js::platform_objects::take_animation_frame_callbacks(&self.context)
             .map_err(|error| error.to_string())?;
 
         for callback in callbacks {
@@ -336,11 +333,11 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
 
 impl EventDispatchHost for EnvironmentSettingsObject {
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
-        Class::from_data(event, &mut self.context)
+        create_interface_instance::<Event>(event, &mut self.context)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
-        crate::boa::platform_objects::document_object(&self.context)
+        crate::js::platform_objects::document_object(&self.context)
     }
 
     fn global_object(&mut self) -> JsObject {
@@ -348,7 +345,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        crate::boa::platform_objects::resolve_element_object(node_id, &mut self.context)
+        crate::js::platform_objects::resolve_element_object(node_id, &mut self.context)
     }
 
     fn resolve_existing_node_object(
@@ -356,7 +353,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> JsResult<JsObject> {
-        crate::boa::platform_objects::object_for_existing_node(document, node_id, &mut self.context)
+        crate::js::platform_objects::object_for_existing_node(document, node_id, &mut self.context)
     }
 
     fn current_time_millis(&self) -> f64 {

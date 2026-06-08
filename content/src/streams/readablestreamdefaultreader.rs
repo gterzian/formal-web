@@ -3,11 +3,11 @@ use std::mem;
 use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
-    class::Class,
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
+use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise};
 
 use super::readablestream::{readable_stream_cancel, with_readable_stream_ref};
@@ -380,7 +380,7 @@ pub(crate) fn acquire_readable_stream_default_reader(
 }
 fn create_readable_stream_default_reader(context: &mut Context) -> JsResult<JsObject> {
     let reader = ReadableStreamDefaultReader::new();
-    let reader_object: JsObject = ReadableStreamDefaultReader::from_data(reader, context)?.into();
+    let reader_object: JsObject = create_interface_instance::<ReadableStreamDefaultReader>(reader, context)?.into();
     Ok(reader_object)
 }
 pub(crate) fn with_readable_stream_default_reader_ref<R>(

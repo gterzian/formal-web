@@ -1,0 +1,285 @@
+use std::{cell::RefCell, rc::Rc};
+
+use blitz_dom::BaseDocument;
+use boa_engine::{
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
+    js_string,
+    object::JsObject,
+};
+
+use crate::js::platform_objects::{
+    document_object, object_for_existing_node, resolve_element_object,
+};
+use crate::js::with_event_target_mut;
+use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
+use crate::webidl::{
+    Callback, ContextCallbackHost, EcmascriptHost, callback_interface_type_value, nullable_value,
+};
+
+#[derive(Clone)]
+pub(crate) struct AddEventListenerOptions {
+    pub capture: bool,
+    pub once: bool,
+    pub passive: Option<bool>,
+    pub signal: Option<AbortSignal>,
+}
+
+// ── WebIDL interface definition (§3) ──
+
+use crate::webidl::bindings::{
+    create_interface_instance,
+
+    InterfaceDefinition, OperationDef, WebIdlInterface,
+};
+
+impl WebIdlInterface for EventTarget {
+    const NAME: &'static str = "EventTarget";
+
+    fn create_platform_object(
+        _new_target: &JsValue,
+        _args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        Ok(EventTarget::default())
+    }
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_operation(OperationDef {
+            id: "addEventListener",
+            length: 3,
+            method: add_event_listener,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "removeEventListener",
+            length: 3,
+            method: remove_event_listener,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            id: "dispatchEvent",
+            length: 1,
+            method: dispatch_event,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+    }
+}
+
+
+fn add_event_listener(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let event_target = current_event_target_object(this, context);
+    let type_ = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let options = flatten_more(args.get_or_undefined(2), context)?;
+    let callback = nullable_value(args.get_or_undefined(1), callback_interface_type_value)?;
+    let receiver = JsValue::from(event_target.clone());
+
+    with_event_target_mut(&receiver, |target| {
+        target.add_event_listener(
+            &event_target,
+            type_,
+            callback,
+            options.capture,
+            options.once,
+            options.passive,
+            options.signal,
+        )
+    })??;
+
+    Ok(JsValue::undefined())
+}
+
+fn remove_event_listener(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let event_target = current_event_target_object(this, context);
+    let type_ = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let Some(callback) = nullable_value(args.get_or_undefined(1), callback_interface_type_value)?
+    else {
+        return Ok(JsValue::undefined());
+    };
+    let capture = flatten(args.get_or_undefined(2), context)?;
+    let receiver = JsValue::from(event_target);
+
+    with_event_target_mut(&receiver, |target| {
+        target.remove_event_listener_entry(&type_, &callback, capture);
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let target = current_event_target_object(this, context);
+    let event = args
+        .get_or_undefined(0)
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let canceled = dispatch_event_with_context(&target, &event, context)?;
+    Ok(JsValue::from(!canceled))
+}
+
+fn dispatch_event_with_context(
+    target: &JsObject,
+    event: &JsObject,
+    context: &mut Context,
+) -> JsResult<bool> {
+    let mut host = ContextEventDispatchHost::new(context);
+    dispatch(&mut host, target, event, false)
+}
+
+/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+// Note: This helper keeps the DOM-specific event object and target resolution for `dispatch`, while delegating generic ECMAScript callback operations to the shared Web IDL `ContextCallbackHost`.
+pub(crate) struct ContextEventDispatchHost<'a> {
+    callback_host: ContextCallbackHost<'a>,
+}
+
+impl<'a> ContextEventDispatchHost<'a> {
+    pub(crate) fn new(context: &'a mut Context) -> Self {
+        Self {
+            callback_host: ContextCallbackHost::new(context, "event listener"),
+        }
+    }
+}
+
+impl EcmascriptHost for ContextEventDispatchHost<'_> {
+    fn context(&mut self) -> &mut Context {
+        self.callback_host.context()
+    }
+
+    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
+        self.callback_host.get(object, property)
+    }
+
+    fn is_callable(&self, value: &JsValue) -> bool {
+        self.callback_host.is_callable(value)
+    }
+
+    fn call(
+        &mut self,
+        callable: &JsObject,
+        this_arg: &JsValue,
+        args: &[JsValue],
+    ) -> JsResult<JsValue> {
+        self.callback_host.call(callable, this_arg, args)
+    }
+
+    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
+        self.callback_host.perform_a_microtask_checkpoint()
+    }
+
+    fn report_exception(&mut self, error: JsError, _callback: &Callback) {
+        self.callback_host.report_exception(error, _callback)
+    }
+}
+
+impl EventDispatchHost for ContextEventDispatchHost<'_> {
+    fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
+        create_interface_instance::<Event>(event, self.callback_host.context())
+    }
+
+    fn document_object(&mut self) -> JsResult<JsObject> {
+        document_object(self.callback_host.context())
+    }
+
+    fn global_object(&mut self) -> JsObject {
+        self.callback_host.context().global_object()
+    }
+
+    fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
+        resolve_element_object(node_id, self.callback_host.context())
+    }
+
+    fn resolve_existing_node_object(
+        &mut self,
+        document: Rc<RefCell<BaseDocument>>,
+        node_id: usize,
+    ) -> JsResult<JsObject> {
+        object_for_existing_node(document, node_id, self.callback_host.context())
+    }
+
+    fn current_time_millis(&self) -> f64 {
+        0.0
+    }
+}
+
+fn current_event_target_object(this: &JsValue, context: &Context) -> JsObject {
+    if let Some(object) = this.as_object() {
+        return object.clone();
+    }
+
+    context.global_object()
+}
+
+pub(crate) fn flatten(options: &JsValue, context: &mut Context) -> JsResult<bool> {
+    if let Some(boolean) = options.as_boolean() {
+        return Ok(boolean);
+    }
+    let Some(object) = options.as_object() else {
+        return Ok(false);
+    };
+    Ok(object.get(js_string!("capture"), context)?.to_boolean())
+}
+
+pub(crate) fn flatten_more(
+    options: &JsValue,
+    context: &mut Context,
+) -> JsResult<AddEventListenerOptions> {
+    let capture = flatten(options, context)?;
+    let Some(object) = options.as_object() else {
+        return Ok(AddEventListenerOptions {
+            capture,
+            once: false,
+            passive: None,
+            signal: None,
+        });
+    };
+    let once = object.get(js_string!("once"), context)?.to_boolean();
+    let passive = {
+        if !object.has_property(js_string!("passive"), context)? {
+            None
+        } else {
+            let value = object.get(js_string!("passive"), context)?;
+            Some(value.to_boolean())
+        }
+    };
+    let signal = if !object.has_property(js_string!("signal"), context)? {
+        None
+    } else {
+        let value = object.get(js_string!("signal"), context)?;
+        let signal = value.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("addEventListener signal must be an AbortSignal")
+        })?;
+        Some(
+            signal
+                .downcast_ref::<AbortSignal>()
+                .map(|signal| signal.clone())
+                .ok_or_else(|| {
+                    JsNativeError::typ()
+                        .with_message("addEventListener signal must be an AbortSignal")
+                })?,
+        )
+    };
+    Ok(AddEventListenerOptions {
+        capture,
+        once,
+        passive,
+        signal,
+    })
+}

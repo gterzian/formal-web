@@ -269,7 +269,7 @@ pub(crate) fn window_open_steps(
     let window = result
         .return_window
         .expect("window_open_steps: all navigable branches set a return window");
-    Ok(crate::boa::bindings::html::create_window_proxy(window))
+    Ok(crate::js::bindings::html::create_window_proxy(window))
 }
 
 /// <https://html.spec.whatwg.org/#get-noopener-for-window-open>

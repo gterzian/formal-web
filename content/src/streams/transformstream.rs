@@ -3,7 +3,6 @@ use std::{cell::Cell, rc::Rc};
 use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
-    class::Class,
     job::PromiseJob,
     js_string,
     native_function::NativeFunction,
@@ -12,6 +11,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
+use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{promise_from_value, rejected_promise, resolved_promise};
 
 use super::readablestream::create_readable_stream;
@@ -1214,7 +1214,7 @@ fn create_transform_stream_default_controller(
 ) -> JsResult<(TransformStreamDefaultController, JsObject)> {
     let controller = TransformStreamDefaultController::new();
     let controller_object: JsObject =
-        TransformStreamDefaultController::from_data(controller.clone(), context)?.into();
+        create_interface_instance::<TransformStreamDefaultController>(controller.clone(), context)?.into();
     Ok((controller, controller_object))
 }
 

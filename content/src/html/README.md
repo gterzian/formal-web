@@ -315,7 +315,7 @@ The WindowProxy implementation is a placeholder.  Fixing it requires:
 ## Related documentation
 
 - `content/src/webidl/README.md` — Boa platform object integration, exotic object pattern
-- `content/src/boa/README.md` — Boa Context ownership, bindings
+- `content/src/js/README.md` — Boa integration specifics (Context ownership, bindings)
 - `content/README.md` — Content-crate overview
 - `user_agent/src/user_agent.rs` — `create_new_top_level_traversable_from_content`, `create_new_top_level_traversable`, `the_rules_for_choosing_a_navigable` (UA side), `setup_opener_for_window_open`
 - `ipc_messages/src/content.rs` — `NewTraversableInfo`, `CreateEmptyDocument`, `NavigateRequest`

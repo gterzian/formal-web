@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use boa_engine::{
     Context, JsBigInt, JsError, JsNativeError, JsResult, JsString, JsValue, JsVariant,
     builtins::error::{Error, ErrorKind},
-    class::Class,
     js_string,
     object::{
         JsObject,
@@ -33,6 +32,7 @@ use boa_engine::{
 };
 
 use crate::dom::DOMException;
+use crate::webidl::bindings::create_interface_instance;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Traits for platform objects (bridge layer)
@@ -205,7 +205,7 @@ impl MemoryMap {
 
 fn data_clone_error(context: &mut Context) -> JsError {
     JsError::from_opaque(JsValue::from(
-        DOMException::from_data(
+        create_interface_instance::<DOMException>(
             DOMException::new(
                 String::from("The object could not be cloned."),
                 String::from("DataCloneError"),

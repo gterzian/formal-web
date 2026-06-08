@@ -10,7 +10,6 @@ use boa_engine::{
         iterable::create_iter_result_object,
         promise::{PromiseState, ResolvingFunctions},
     },
-    class::Class,
     js_string,
     native_function::NativeFunction,
     object::{
@@ -21,9 +20,10 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
 
-use crate::boa::with_abort_signal_ref;
+use crate::js::with_abort_signal_ref;
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
+use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{
     error_to_rejection_reason, mark_promise_as_handled, promise_from_completion,
     promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
@@ -1094,7 +1094,7 @@ pub(crate) fn create_readable_stream(
     // Step 6: "Let controller be a new ReadableStreamDefaultController."
     let controller = super::ReadableStreamDefaultController::new();
     let controller_object =
-        super::ReadableStreamDefaultController::from_data(controller.clone(), context)?;
+        create_interface_instance::<super::ReadableStreamDefaultController>(controller.clone(), context)?;
 
     // Step 7: "Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm)."
     set_up_readable_stream_default_controller(
@@ -1114,7 +1114,7 @@ pub(crate) fn create_readable_stream(
 }
 fn create_readable_stream_object(context: &mut Context) -> JsResult<(ReadableStream, JsObject)> {
     let stream = ReadableStream::new();
-    let stream_object: JsObject = ReadableStream::from_data(stream.clone(), context)?.into();
+    let stream_object: JsObject = create_interface_instance::<ReadableStream>(stream.clone(), context)?.into();
     Ok((stream, stream_object))
 }
 
@@ -1133,7 +1133,7 @@ fn create_readable_byte_stream(
 
     // Step 3: "Let controller be a new ReadableByteStreamController."
     let controller = ReadableByteStreamController::new();
-    let controller_object = ReadableByteStreamController::from_data(controller.clone(), context)?;
+    let controller_object = create_interface_instance::<ReadableByteStreamController>(controller.clone(), context)?;
 
     // Step 4: "Perform ? SetUpReadableByteStreamController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, 0, undefined)."
     super::set_up_readable_byte_stream_controller(

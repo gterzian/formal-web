@@ -47,6 +47,8 @@ pub(crate) fn promise_from_value(value: JsValue, context: &mut Context) -> JsRes
     Ok(JsPromise::resolve(value, context)?.into())
 }
 
+/// <https://webidl.spec.whatwg.org/#js-to-promise>
+///
 /// Converts a completion result into a `Promise`, rejecting it when the completion throws.
 pub(crate) fn promise_from_completion(
     completion: JsResult<JsValue>,
@@ -58,12 +60,10 @@ pub(crate) fn promise_from_completion(
     })
 }
 
-/// Creates a rejected promise from a `JsError`, using the Web IDL coercion rules.
+/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
 ///
-/// When an internal Rust error must be surfaced as a promise rejection, this helper
-/// ensures the error is converted to a JS exception object following Web IDL's
-/// error-to-rejection-reason mapping. Falls back to a TypeError with a generic message
-/// if conversion fails.
+/// Creates a rejected promise from a `JsError`, using the Web IDL coercion rules.
+/// Falls back to a TypeError with a generic message if conversion fails.
 pub(crate) fn rejected_promise_from_error(error: JsError, context: &mut Context) -> JsObject {
     rejected_promise(error_to_rejection_reason(error, context), context).unwrap_or_else(|_| {
         let (promise, resolvers) = JsPromise::new_pending(context);
@@ -80,11 +80,11 @@ pub(crate) fn rejected_promise_from_error(error: JsError, context: &mut Context)
     })
 }
 
-/// Converts a Rust `JsError` into a JS rejection reason following Web IDL rules.
+/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
 ///
-/// Per https://webidl.spec.whatwg.org/#a-promise-rejected-with, a rejection reason must be
-/// a JS value, not an internal error. This helper unwraps opaque error values or converts
-/// Rust-internal exceptions into serializable JS exceptions.
+/// Converts a Rust `JsError` into a JS rejection reason.
+/// Unwraps opaque error values or converts Rust-internal exceptions into serializable
+/// JS exceptions.
 pub(crate) fn error_to_rejection_reason(error: JsError, context: &mut Context) -> JsValue {
     if let Some(reason) = error.as_opaque().cloned() {
         return reason;
@@ -101,13 +101,10 @@ pub(crate) fn error_to_rejection_reason(error: JsError, context: &mut Context) -
     }
 }
 
-/// Chains a promise to return `undefined` when settled.
+/// <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>
 ///
-/// Implements the pattern described in: https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled
+/// Chains a promise to return `undefined` when settled.  Implements the pattern:
 /// "React to promise with a fulfillment step that returns undefined."
-///
-/// Used when a promise-returning operation needs to propagate the promise's settlement
-/// (and suppress its value/reason), as in many stream pipe-through scenarios.
 pub(crate) fn transform_promise_to_undefined(
     promise_object: &JsObject,
     context: &mut Context,
@@ -119,11 +116,9 @@ pub(crate) fn transform_promise_to_undefined(
         .into())
 }
 
-/// Marks a promise as "handled" to suppress unhandled-rejection warnings.
+/// <https://webidl.spec.whatwg.org/#mark-a-promise-as-handled>
 ///
-/// Called when a spec algorithm attaches an internal reaction to a promise but doesn't
-/// expose that promise to user code, preventing spurious unhandled rejection warnings.
-/// Adds an inert catch handler through Boa's native promise hooks.
+/// Marks a promise as "handled" to suppress unhandled-rejection warnings.
 pub(crate) fn mark_promise_as_handled(
     promise_object: &JsObject,
     context: &mut Context,

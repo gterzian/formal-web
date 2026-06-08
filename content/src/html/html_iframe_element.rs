@@ -597,7 +597,7 @@ fn run_iframe_load_event_steps(
     // Step 3: "If childDocument has its mute iframe load flag set, then return."
     // TODO: Implement document mute iframe load flag tracking.
 
-    let iframe_object = crate::boa::platform_objects::resolve_element_object(
+    let iframe_object = crate::js::platform_objects::resolve_element_object(
         iframe_node_id,
         &mut content_document.settings.context,
     )
