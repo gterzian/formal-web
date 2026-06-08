@@ -58,16 +58,21 @@ using the ordinary object behaviour.
 Boa supports exotic objects through `InternalObjectMethods` (a vtable stored on every
 `JsObject`). To create an exotic object:
 
-1. Define a Rust type implementing `JsData` (same as any platform object).
-2. Override `JsData::internal_methods()` to return a static `InternalObjectMethods`
+1. Define a Rust type implementing `JsData` by deriving `#[derive(Trace, Finalize)]`
+   and implementing `JsData` manually.
+2. Override `JsData::internal_methods()` to return a `static InternalObjectMethods`
    with the custom function pointers:
 
 ```rust
+#[derive(Trace, Finalize)]
+pub struct MyExotic { ... }
+
 impl JsData for MyExotic {
     fn internal_methods(&self) -> &'static InternalObjectMethods {
         static METHODS: InternalObjectMethods = InternalObjectMethods {
             __get__: my_exotic_get,
             __set__: my_exotic_set,
+            __delete__: my_exotic_delete,
             ..ORDINARY_INTERNAL_METHODS
         };
         &METHODS
@@ -76,12 +81,31 @@ impl JsData for MyExotic {
 ```
 
 3. Inside each function, use `obj.downcast_ref::<MyExotic>()` to access the data.
+4. Delegate to the inner object using the **public** `JsObject` methods
+   (`get()`, `set()`, `prototype()`, `own_property_keys()`, etc.) or,
+   when no existing public method covers the exact operation, add a **new
+   public wrapper** in `vendor/boa/core/engine/src/object/operations.rs`.
+   See `content/src/js/README.md` for the full methodology.
 
-**Current limitation:** `InternalObjectMethods`, `InternalMethodPropertyContext`, and
-the ordinary-function pointers are `pub(crate)` to `boa_engine`. Custom exotic objects
-cannot be implemented from outside the `boa_engine` crate without first exposing these
-types publicly. See `content/src/html/windowproxy.rs` for the current workaround
-(WindowProxy is a Rust-side handle that returns the wrapped Window's JsObject directly).
+The `content` crate uses this pattern for `WindowProxy` — see
+`content/src/html/windowproxy.rs`.
+
+**Rejected approach:** Changing `pub(crate)` to `pub` on existing internal
+functions, types, or dispatch methods (`__get__`, `__set__`, etc.) in
+`vendor/boa/`. This breaks encapsulation and creates maintenance burden.
+
+**Note:** `#[derive(JsData)]` cannot be used when manually overriding
+`internal_methods()` because the derive macro generates a conflicting
+implementation. Use `#[derive(Trace, Finalize)]` and implement `JsData` by hand.
+
+**Visibility note:** When implementing exotic objects, **do not modify**
+`vendor/boa/` to make internal APIs public. Instead, use only what boa
+already exposes publicly. See `content/src/js/README.md` ("Working with
+vendored boa: use spec links, not visibility changes") for the correct
+methodology: read the spec's ECMAScript link references, search `vendor/boa/`
+for those spec links to find the corresponding implementation, then use the
+already-public wrapper methods or add new public wrappers without changing
+existing visibility boundaries.
 
 ### The ObjectInitializer pattern
 

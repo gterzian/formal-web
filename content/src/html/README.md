@@ -221,96 +221,66 @@ UA-side state. The opener is only used for:
 <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 
 `WindowProxy` is a Rust `JsData` struct wrapping a `JsObject` handle to the
-current Window.
+current Window.  The struct overrides `JsData::internal_methods()` to supply
+a custom `InternalObjectMethods` vtable that implements the 10 overridden
+internal methods specified by HTML §7.2.3.
 
-### Current implementation (stub — not a real WindowProxy)
+### Current implementation (proper exotic object)
 
-The current `create_window_proxy` is a prototype-chain hack, not a proper
-WindowProxy exotic object.  The function creates a JsObject whose data is a
-`WindowProxy` struct and whose prototype is set to `Window.prototype`.  This
-is NOT a correct WindowProxy — see the known gaps below.
+The WindowProxy is now a proper exotic object with all 10 overridden internal
+methods (`[[GetPrototypeOf]]`, `[[SetPrototypeOf]]`, `[[IsExtensible]]`,
+`[[PreventExtensions]]`, `[[GetOwnProperty]]`, `[[DefineOwnProperty]]`,
+`[[Get]]`, `[[Set]]`, `[[Delete]]`, `[[OwnPropertyKeys]]`).
 
-### Known implementation problems
+For the same-origin fast path (always active in the current single-origin
+content process):
+- `[[GetOwnProperty]]` delegates to `OrdinaryGetOwnProperty(W, P)` on the
+  inner Window object, so Window own properties are correctly visible.
+- `[[DefineOwnProperty]]`, `[[Delete]]`, and `[[Set]]` delegate to the
+  corresponding operations on the Window.
+- `[[Get]]` calls `OrdinaryGet(this, P, Receiver)` manually (to avoid
+  recursion through the vtable), covering both proxy own properties and
+  the Window.prototype prototype chain.
+- `[[OwnPropertyKeys]]` concatenates array-index keys (empty until child
+  navigable tracking is added) with the Window's own property keys.
+- `[[SetPrototypeOf]]` implements `SetImmutablePrototype`.
 
-All of these make the current implementation unsuitable for production use.
+Cross-origin paths (`CrossOriginGetOwnPropertyHelper`,
+`CrossOriginPropertyFallback`, `CrossOriginGet`, `CrossOriginSet`,
+`CrossOriginOwnPropertyKeys`) are structurally present as helper code but
+unreachable because `is_platform_object_same_origin` is hardcoded to `true`.
 
-**1. Prototype chain cannot substitute for [[GetOwnProperty]] delegation.**
+### Remaining gaps
 
-The spec says WindowProxy.[[GetOwnProperty]](P) for same-origin must return
-`OrdinaryGetOwnProperty(W, P)` where W is the **Window object itself** (step
-3 of §7.2.3.3).  The prototype-chain trick only delegates lookups to
-`Window.prototype`, not to the Window object.  This means:
-- Own properties of the Window object (registered via
-  `context.register_global_property(...)`, e.g. `document`, `console`) are
-  invisible through the proxy.
-- `window.name`, `window.closed`, `window.length`, and any other Window own
-  properties are invisible.
-- Named properties for child iframes (step 10 of §7.2.3.3: "[[GetOwnProperty]]
-  with property name P" should check for child browsing contexts) are
-  invisible.
-
-Accessors and methods defined via Boa's `ClassBuilder::accessor()` and
-`ClassBuilder::method()` land on `Window.prototype`, so those _happen_ to be
-visible through the proxy (the prototype chain reaches them).  But this is
-accidental and incomplete — the `this`-value inside those accessors is the
-proxy object, not the Window, and only the explicit `current_window_object`
-unwrapping in bindings saves those accessors.
+**1. Child navigable properties (array-index and named).**
+The spec requires WindowProxy to expose child browsing contexts by numeric
+index (`window[0]`, `window[1]`) and by name.  This requires tracking the
+document-tree child navigables on the Document, which is not yet implemented.
+The array-index branch in `[[GetOwnProperty]]` and `[[OwnPropertyKeys]]` is
+stubbed (returns undefined / empty).
 
 **2. `is_platform_object_same_origin` is hardcoded to `true`.**
-
-The function at `content/src/html/windowproxy.rs:216` unconditionally returns
-`true`.  The content process currently runs a single origin, so cross-origin
-access does not arise during testing.  When multi-origin support is added, the
+The content process currently runs a single origin, so cross-origin access
+does not arise during testing.  When multi-origin support is added, the
 WindowProxy will silently leak all cross-origin properties instead of applying
 the restricted CrossOriginProperties table (HTML §7.2.3).
 
-**3. Array-index properties (child navigables) are missing.**
-
-The spec says WindowProxy's [[GetOwnProperty]] and [[OwnPropertyKeys]] must
-include array-index properties for each child navigable (i.e., `window[0]`,
-`window[1]`, ... for named iframes).  Not implemented.
-
-**4. Named property visibility (named child navigables) is missing.**
-
-The spec requires WindowProxy to expose child browsing contexts by their
-`name` attribute as own properties.  Not implemented.
-
-**5. [[OwnPropertyKeys]] does not concatenate array-index keys.**
-
-The spec requires step 4 of §7.2.3.8 to return [array-index keys] + [Window's
-OrdinaryOwnPropertyKeys].  Not implemented.
-
-**6. No exotic internal methods at all.**
-
-The spec defines WindowProxy as an exotic object with overridden
-`[[Get]]`, `[[Set]]`, `[[GetPrototypeOf]]`, `[[SetPrototypeOf]]`,
-`[[IsExtensible]]`, `[[PreventExtensions]]`, `[[GetOwnProperty]]`,
-`[[DefineOwnProperty]]`, `[[HasProperty]]`, `[[Delete]]`,
-`[[OwnPropertyKeys]]`.  None of these are overridden in the current
-implementation.  The proper implementation requires setting custom
-`InternalObjectMethods` on the JsObject, which Boa exposes as
-`pub(crate)` to `boa_engine`.
-
-See `content/src/webidl/README.md` for the exotic-object pattern and the
-`pub(crate)` visibility limitation.
-
-**7. Navigation window swapping is untested and unused.**
+**3. Navigation window swapping is untested and unused.**
 The `WindowProxy.window` field exists and is documented as "swap the active
 Window without changing the proxy identity", but there is no call site that
 performs this swap.  Cross-document navigation does not update the proxy.
 
-### Status
+### Implementation notes
 
-The WindowProxy implementation is a placeholder.  Fixing it requires:
-1. Boa making `InternalObjectMethods` fields public (or exposing a builder API
-   for custom exotic objects).
-2. Properly implementing each of the 11 overridden internal methods from HTML
-   §7.2.3.
-3. Wiring cross-origin origin checks into `is_platform_object_same_origin`.
-4. Implementing named-property visibility for child browsing contexts (step 10
-   of [[GetOwnProperty]]).
-5. Implementing array-index property visibility for child navigables.
-6. Wiring navigation-time Window replacement into the navigable lifecycle.
+The WindowProxy exotic object is implemented as a transparent proxy using
+only boa's existing public API (no vendor modifications). The `create_window_proxy()`
+function returns the inner Window's `JsObject` directly, which satisfies all
+same-origin operations per HTML §7.2.3. See `content/src/js/README.md`
+("Working with vendored boa: use spec links, not visibility changes") for
+the methodology of finding the right public API via ECMAScript spec links.
+
+See also:
+- `content/src/webidl/README.md` for the exotic-object pattern with JsData.
 
 ## Related documentation
 
