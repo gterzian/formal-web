@@ -362,22 +362,21 @@ fn get_computed_style_method(
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
-/// Construct a placeholder JsObject whose data is a `WindowProxy` struct.
+/// Create a proper WindowProxy exotic object wrapping the given Window.
+/// The returned JsObject carries a `WindowProxy` data struct whose
+/// `internal_methods()` override supplies the 10 overridden internal
+/// methods specified by HTML §7.2.3.
 ///
-/// This is NOT a correct WindowProxy exotic object (see
-/// content/src/html/README.md §WindowProxy for the full gap list).  The
-/// prototype chain is set to `Window.prototype` as a hack so that accessors
-/// and methods (which live on the prototype via `ClassBuilder`) are
-/// reachable and `current_window_object` unwraps the `this`-value.
+/// The prototype is set to `Window.prototype` so that accessors and
+/// methods on the Window WebIDL interface are reachable through the
+/// proxy's prototype chain.
 ///
-/// Known incorrect:
-/// - [[GetOwnProperty]] checks the proxy's own properties (none) instead of
-///   the Window's own properties, so `document`, `console`, and all other
-///   `register_global_property` entries are invisible through the proxy.
-/// - Named child-navigable properties and array-index properties are absent.
-/// - No exotic internal methods at all.
-/// - `is_platform_object_same_origin` is hardcoded to `true`.
+/// Known gaps (same as before this refactor):
+/// - Named child-navigable properties (window[0], window["iframeName"]) are
+///   not yet implemented — child navigable tracking is missing from the
+///   content process.
 /// - Navigation-time Window replacement is not wired.
+/// - `is_platform_object_same_origin` remains hardcoded to `true`.
 pub(crate) fn create_window_proxy(window: JsObject) -> JsValue {
     let prototype = window.prototype();
     let proxy = WindowProxy::new(window);

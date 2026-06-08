@@ -58,16 +58,21 @@ using the ordinary object behaviour.
 Boa supports exotic objects through `InternalObjectMethods` (a vtable stored on every
 `JsObject`). To create an exotic object:
 
-1. Define a Rust type implementing `JsData` (same as any platform object).
-2. Override `JsData::internal_methods()` to return a static `InternalObjectMethods`
+1. Define a Rust type implementing `JsData` by deriving `#[derive(Trace, Finalize)]`
+   and implementing `JsData` manually.
+2. Override `JsData::internal_methods()` to return a `static InternalObjectMethods`
    with the custom function pointers:
 
 ```rust
+#[derive(Trace, Finalize)]
+pub struct MyExotic { ... }
+
 impl JsData for MyExotic {
     fn internal_methods(&self) -> &'static InternalObjectMethods {
         static METHODS: InternalObjectMethods = InternalObjectMethods {
             __get__: my_exotic_get,
             __set__: my_exotic_set,
+            __delete__: my_exotic_delete,
             ..ORDINARY_INTERNAL_METHODS
         };
         &METHODS
@@ -76,12 +81,20 @@ impl JsData for MyExotic {
 ```
 
 3. Inside each function, use `obj.downcast_ref::<MyExotic>()` to access the data.
+4. Call the inner object's `__xxx__` methods directly (now public) to delegate
+   to its ordinary internal methods.
 
-**Current limitation:** `InternalObjectMethods`, `InternalMethodPropertyContext`, and
-the ordinary-function pointers are `pub(crate)` to `boa_engine`. Custom exotic objects
-cannot be implemented from outside the `boa_engine` crate without first exposing these
-types publicly. See `content/src/html/windowproxy.rs` for the current workaround
-(WindowProxy is a Rust-side handle that returns the wrapped Window's JsObject directly).
+The `content` crate uses this pattern for `WindowProxy` — see
+`content/src/html/windowproxy.rs`.
+
+**Note:** `#[derive(JsData)]` cannot be used when manually overriding
+`internal_methods()` because the derive macro generates a conflicting
+implementation. Use `#[derive(Trace, Finalize)]` and implement `JsData` by hand.
+
+**Visibility note:** This required making `InternalObjectMethods`,
+`InternalMethodPropertyContext`, `InternalMethodCallContext`, `CallValue`,
+and `ORDINARY_INTERNAL_METHODS` publicly visible from the vendored boa engine
+crate, along with all `__xxx__` dispatch methods on `JsObject`.
 
 ### The ObjectInitializer pattern
 
