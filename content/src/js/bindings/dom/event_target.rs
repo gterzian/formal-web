@@ -189,7 +189,7 @@ impl EcmascriptHost for ContextEventDispatchHost<'_> {
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        crate::webidl::binding::create_interface_instance_ctx::<Event>(event, self.callback_host.context())
+        crate::webidl::binding::create_interface_instance::<Event>(event, self.callback_host.context())
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

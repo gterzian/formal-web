@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use boa_engine::{Context, JsData, JsObject};
 use boa_gc::{Finalize, Trace};
 
-use crate::js::JsEngine;
-
 use super::interface::WebIdlInterface;
 
 /// An entry in the interface registry.
@@ -95,7 +93,7 @@ pub(crate) fn get_prototype_from_host_defined<T: 'static>(
 pub(crate) fn wire_prototype<TChild: 'static, TParent: 'static>(
     context: &mut Context,
 ) {
-    if let Some(mut registry) = context.remove_data::<InterfaceRegistry>() {
+    if let Some(registry) = context.remove_data::<InterfaceRegistry>() {
         let child_proto = registry.get_prototype::<TChild>().cloned();
         let parent_proto = registry.get_prototype::<TParent>().cloned();
         if let (Some(child), Some(parent)) = (child_proto, parent_proto) {
@@ -103,45 +101,4 @@ pub(crate) fn wire_prototype<TChild: 'static, TParent: 'static>(
         }
         context.insert_data(*registry);
     }
-}
-
-// ── JsEngine-based helpers (for future code that uses the trait) ──
-
-/// JsEngine variant: get a constructor from the HostDefined registry.
-pub(crate) fn get_constructor_from_host_defined_engine<T: 'static>(
-    engine: &impl JsEngine,
-) -> Option<JsObject> {
-    engine
-        .get_data::<InterfaceRegistry>()
-        .and_then(|r| r.get_constructor::<T>())
-        .cloned()
-}
-
-/// JsEngine variant: ensure the interface registry exists.
-pub(crate) fn initialize_engine(engine: &mut impl JsEngine) {
-    if engine.get_data::<InterfaceRegistry>().is_none() {
-        engine.insert_data(InterfaceRegistry::new());
-    }
-}
-
-/// JsEngine variant: register an interface in the HostDefined registry.
-pub(crate) fn register_in_host_defined_engine<T: WebIdlInterface + 'static>(
-    engine: &mut impl JsEngine,
-    prototype: JsObject,
-    constructor: JsObject,
-) {
-    if let Some(mut registry) = engine.remove_data::<InterfaceRegistry>() {
-        registry.register::<T>(prototype, constructor);
-        engine.insert_data(*registry);
-    }
-}
-
-/// JsEngine variant: get a prototype from the HostDefined registry.
-pub(crate) fn get_prototype_from_host_defined_engine<T: 'static>(
-    engine: &impl JsEngine,
-) -> Option<JsObject> {
-    engine
-        .get_data::<InterfaceRegistry>()
-        .and_then(|r| r.get_prototype::<T>())
-        .cloned()
 }

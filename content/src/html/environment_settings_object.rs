@@ -94,7 +94,7 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let document_object = crate::webidl::binding::create_interface_instance_ctx::<Document>(
+        let document_object = crate::webidl::binding::create_interface_instance::<Document>(
             Document::new(document.clone(), creation_url.clone()),
             &mut context,
         )
@@ -332,7 +332,7 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
 
 impl EventDispatchHost for EnvironmentSettingsObject {
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
-        crate::webidl::binding::create_interface_instance_ctx::<Event>(event, &mut self.context)
+        crate::webidl::binding::create_interface_instance::<Event>(event, &mut self.context)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

@@ -76,14 +76,12 @@ pub(crate) mod registry;
 pub(crate) use attribute::AttributeDef;
 pub(crate) use constant::ConstantDef;
 pub(crate) use interface::{
-    create_interface_instance, create_interface_instance_ctx,
-    InterfaceDefinition, register_interface_spec, WebIdlInterface,
+    create_interface_instance, InterfaceDefinition,
+    register_interface_spec, WebIdlInterface,
 };
 pub(crate) use operation::OperationDef;
 pub(crate) use registry::{
     get_constructor_from_host_defined as get_registry_constructor,
     get_prototype_from_host_defined as get_registry_prototype,
-    initialize as initialize_registry,
-    register_in_host_defined as register_in_registry,
-    wire_prototype as wire_registry_prototype,
+    initialize as initialize_registry, wire_prototype as wire_registry_prototype,
 };

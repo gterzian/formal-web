@@ -239,7 +239,7 @@ fn insert_adjacent_text(
     with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
         |error| {
             JsError::from_opaque(JsValue::from(
-                crate::webidl::binding::create_interface_instance_ctx::<DOMException>(error, context)
+                crate::webidl::binding::create_interface_instance::<DOMException>(error, context)
                     .expect("DOMException construction should not fail"),
             ))
         },

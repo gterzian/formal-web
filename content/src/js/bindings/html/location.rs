@@ -217,7 +217,7 @@ fn location_error_to_js_error(error: LocationError, context: &mut Context) -> Js
 
 fn dom_exception_error(exception: DOMException, context: &mut Context) -> JsError {
     JsError::from_opaque(JsValue::from(
-        crate::webidl::binding::create_interface_instance_ctx::<DOMException>(exception, context)
+        crate::webidl::binding::create_interface_instance::<DOMException>(exception, context)
             .expect("DOMException construction should not fail"),
     ))
 }

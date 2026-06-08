@@ -7,8 +7,6 @@ use boa_engine::{
     property::PropertyDescriptor,
 };
 
-use crate::js::JsEngine;
-
 use super::attribute::AttributeDef;
 use super::constant::ConstantDef;
 use super::operation::OperationDef;
@@ -336,7 +334,7 @@ where
                 let proto = resolve_instance_prototype(new_target, ctx);
                 let instance = match proto {
                     Some(p) => JsObject::from_proto_and_data(Some(p), obj),
-                    None => create_interface_instance_ctx(obj, ctx)?,
+                    None => create_interface_instance(obj, ctx)?,
                 };
                 Ok(JsValue::from(instance))
             }),
@@ -415,21 +413,7 @@ fn create_default_constructor_steps<T: WebIdlInterface>() -> NativeFunction {
 ///
 /// ECMAScript → Boa: `MakeBasicObject(« [[Prototype]], … »)` →
 /// `JsObject::from_proto_and_data(prototype, data)`
-pub(crate) fn create_interface_instance<T>(data: T, engine: &mut impl JsEngine) -> JsResult<JsObject>
-where
-    T: NativeObject + 'static,
-{
-    let prototype = super::registry::get_prototype_from_host_defined_engine::<T>(engine)
-        .ok_or_else(|| {
-            JsError::from(JsNativeError::typ()
-                .with_message(format!("interface not registered: {}", std::any::type_name::<T>())))
-        })?;
-    Ok(JsObject::from_proto_and_data(Some(prototype), data))
-}
-
-/// Context-based variant for use inside legacy `js/bindings/` code and
-/// NativeFunction closures that receive `&mut Context`.
-pub(crate) fn create_interface_instance_ctx<T>(data: T, context: &mut Context) -> JsResult<JsObject>
+pub(crate) fn create_interface_instance<T>(data: T, context: &mut Context) -> JsResult<JsObject>
 where
     T: NativeObject + 'static,
 {
@@ -454,9 +438,9 @@ where
 /// Both algorithms say:
 /// "Let jsValue be the this value, if it is not null or undefined, or realm's
 /// global object otherwise."
-pub(crate) fn resolve_this_value(this: &JsValue, engine: &impl JsEngine) -> JsResult<JsValue> {
+pub(crate) fn resolve_this_value(this: &JsValue, context: &Context) -> JsResult<JsValue> {
     if this.is_null_or_undefined() {
-        return Ok(JsValue::from(engine.global_object()));
+        return Ok(JsValue::from(context.global_object()));
     }
 
     Ok(this.clone())

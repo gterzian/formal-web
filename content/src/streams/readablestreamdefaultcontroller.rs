@@ -742,7 +742,7 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
     let controller_object =
-        crate::webidl::binding::create_interface_instance_ctx::<ReadableStreamDefaultController>(controller.clone(), context)?;
+        crate::webidl::binding::create_interface_instance::<ReadableStreamDefaultController>(controller.clone(), context)?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
