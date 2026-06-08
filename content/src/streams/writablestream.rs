@@ -12,6 +12,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
+use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::resolved_promise;
 
 use super::{
@@ -649,7 +650,7 @@ pub(crate) fn create_writable_stream(
 }
 fn create_writable_stream_object(context: &mut Context) -> JsResult<(WritableStream, JsObject)> {
     let stream = WritableStream::new();
-    let stream_object: JsObject = crate::webidl::binding::create_interface_instance::<WritableStream>(stream.clone(), context)?.into();
+    let stream_object: JsObject = create_interface_instance::<WritableStream>(stream.clone(), context)?.into();
     Ok((stream, stream_object))
 }
 

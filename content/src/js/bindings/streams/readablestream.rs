@@ -13,7 +13,7 @@ use crate::streams::{
     with_readable_stream_ref,
 };
 use crate::webidl::{create_value_async_iterator, rejected_promise};
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 

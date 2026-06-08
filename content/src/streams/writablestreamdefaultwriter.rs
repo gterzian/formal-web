@@ -5,6 +5,7 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
+use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 
 use super::{
@@ -395,7 +396,7 @@ pub(crate) fn acquire_writable_stream_default_writer(
 }
 fn create_writable_stream_default_writer(context: &mut Context) -> JsResult<JsObject> {
     let writer = WritableStreamDefaultWriter::new();
-    let writer_object: JsObject = crate::webidl::binding::create_interface_instance::<WritableStreamDefaultWriter>(writer, context)?.into();
+    let writer_object: JsObject = create_interface_instance::<WritableStreamDefaultWriter>(writer, context)?.into();
     Ok(writer_object)
 }
 pub(crate) fn with_writable_stream_default_writer_ref<R>(

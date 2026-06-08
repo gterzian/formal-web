@@ -5,7 +5,7 @@ use boa_engine::{
 use crate::js::with_event_target_mut;
 use crate::html::HTMLIFrameElement;
 use crate::webidl::{callback_function_value, nullable_value};
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 

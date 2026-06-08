@@ -13,6 +13,7 @@ use crate::js::bindings::html::build_boa_context;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
 use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
 use crate::dom::{Document, Event, EventDispatchHost};
+use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 use crate::html::TimerHandler;
 use crate::html::Window;
 
@@ -94,7 +95,7 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let document_object = crate::webidl::binding::create_interface_instance::<Document>(
+        let document_object = create_interface_instance::<Document>(
             Document::new(document.clone(), creation_url.clone()),
             &mut context,
         )
@@ -106,7 +107,7 @@ impl EnvironmentSettingsObject {
         install_css_namespace(&mut context).map_err(|error| error.to_string())?;
 
         let global = context.global_object();
-        if let Some(window_proto) = crate::webidl::binding::get_registry_prototype::<Window>(&context) {
+        if let Some(window_proto) = get_registry_prototype::<Window>(&context) {
             global.set_prototype(Some(window_proto));
         }
         context
@@ -332,7 +333,7 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
 
 impl EventDispatchHost for EnvironmentSettingsObject {
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
-        crate::webidl::binding::create_interface_instance::<Event>(event, &mut self.context)
+        create_interface_instance::<Event>(event, &mut self.context)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

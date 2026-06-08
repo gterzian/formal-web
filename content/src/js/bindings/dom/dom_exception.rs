@@ -3,7 +3,7 @@ use boa_engine::{
 };
 
 use crate::dom::DOMException;
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 

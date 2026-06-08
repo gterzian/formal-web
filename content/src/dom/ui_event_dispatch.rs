@@ -8,6 +8,7 @@ use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::{Callback, ContextCallbackHost, EcmascriptHost};
+use crate::webidl::bindings::create_interface_instance;
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -396,7 +397,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         let time_stamp = self.settings.current_time_millis();
         let view = Some(self.settings.context.global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
-        let event_object = crate::webidl::binding::create_interface_instance::<JsUiEvent>(ui_event, &mut self.settings.context)
+        let event_object = create_interface_instance::<JsUiEvent>(ui_event, &mut self.settings.context)
             .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
             eprintln!("failed to dispatch UI event through JavaScript listeners: {error}");

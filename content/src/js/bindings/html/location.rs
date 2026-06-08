@@ -16,7 +16,9 @@ struct EntrySettingsObject {
     origin: String,
 }
 
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
+    create_interface_instance,
+
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
@@ -217,7 +219,7 @@ fn location_error_to_js_error(error: LocationError, context: &mut Context) -> Js
 
 fn dom_exception_error(exception: DOMException, context: &mut Context) -> JsError {
     JsError::from_opaque(JsValue::from(
-        crate::webidl::binding::create_interface_instance::<DOMException>(exception, context)
+        create_interface_instance::<DOMException>(exception, context)
             .expect("DOMException construction should not fail"),
     ))
 }

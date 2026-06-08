@@ -13,7 +13,9 @@ use crate::html::{
     window_computed_style_properties_for_element,
 };
 use crate::webidl::{callback_function_value, nullable_value};
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
+    create_interface_instance,
+
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
@@ -390,7 +392,7 @@ fn location_object(context: &mut Context) -> JsResult<JsObject> {
 
     let url = document_creation_url(context)?;
     let window = context.global_object();
-    let object = crate::webidl::binding::create_interface_instance::<Location>(Location::new(url, window), context)?;
+    let object = create_interface_instance::<Location>(Location::new(url, window), context)?;
     store_location_object(context, object.clone())?;
     Ok(object)
 }

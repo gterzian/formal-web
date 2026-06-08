@@ -282,10 +282,10 @@ pub(crate) fn create_interface_object<T: WebIdlInterface>(
     // Note: Constants are defined by `register_interface_spec` after this function.
 
     // Step 14: "Define the static attributes of interface I on F given realm."
-    // Note: Static attributes are not yet implemented.
+    // Note: Static attributes are defined by `register_interface_spec` after this function.
 
     // Step 15: "Define the static operations of interface I on F given realm."
-    // Note: Static operations are not yet implemented.
+    // Note: Static operations are defined by `register_interface_spec` after this function.
 
     // Step 16: "Return F."
     // Note: The caller (register_interface_spec) also wires proto.constructor = F.

@@ -4,7 +4,7 @@ use boa_engine::{
 };
 
 use crate::dom::{Event, UIEvent};
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 

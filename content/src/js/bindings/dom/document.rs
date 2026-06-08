@@ -12,7 +12,7 @@ use crate::js::platform_objects::{
     resolve_or_create_text_node_object,
 };
 use crate::dom::Document;
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 

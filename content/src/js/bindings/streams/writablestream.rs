@@ -8,7 +8,7 @@ use crate::streams::{
     with_writable_stream_default_controller_ref, with_writable_stream_default_writer_ref,
     with_writable_stream_ref,
 };
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 

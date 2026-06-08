@@ -10,7 +10,9 @@ use crate::dom::{
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 use crate::webidl::{callback_function_value, nullable_value};
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
+    create_interface_instance,
+
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
@@ -114,7 +116,7 @@ pub(crate) fn abort_reason_from_argument(
 }
 
 pub(crate) fn timeout_reason(context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(crate::webidl::binding::create_interface_instance::<DOMException>(
+    Ok(JsValue::from(create_interface_instance::<DOMException>(
         DOMException::timeout_error(),
         context,
     )?))
@@ -268,7 +270,7 @@ fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Ve
 }
 
 fn abort_error_value(context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(crate::webidl::binding::create_interface_instance::<DOMException>(
+    Ok(JsValue::from(create_interface_instance::<DOMException>(
         DOMException::abort_error(),
         context,
     )?))

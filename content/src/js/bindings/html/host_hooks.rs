@@ -25,7 +25,7 @@ use crate::streams::{
     ReadableStreamDefaultReader, TransformStream, TransformStreamDefaultController, WritableStream,
     WritableStreamDefaultController, WritableStreamDefaultWriter,
 };
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     get_registry_prototype, initialize_registry,
     register_interface_spec, wire_registry_prototype,
 };

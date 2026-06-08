@@ -5,7 +5,7 @@ use boa_engine::{
     object::FunctionObjectBuilder,
 };
 
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 

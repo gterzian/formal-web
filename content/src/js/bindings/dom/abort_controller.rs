@@ -4,7 +4,7 @@ use boa_engine::{
 
 use crate::js::with_abort_controller_ref;
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 

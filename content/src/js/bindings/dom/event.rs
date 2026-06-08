@@ -5,7 +5,7 @@ use boa_engine::{
 
 use crate::js::with_event_mut;
 use crate::dom::Event;
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 

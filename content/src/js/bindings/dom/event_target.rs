@@ -26,7 +26,9 @@ pub(crate) struct AddEventListenerOptions {
 
 // ── WebIDL interface definition (§3) ──
 
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
+    create_interface_instance,
+
     InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
@@ -189,7 +191,7 @@ impl EcmascriptHost for ContextEventDispatchHost<'_> {
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        crate::webidl::binding::create_interface_instance::<Event>(event, self.callback_host.context())
+        create_interface_instance::<Event>(event, self.callback_host.context())
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

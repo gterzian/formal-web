@@ -15,6 +15,7 @@ use crate::{
     js::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
     dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
     streams::SizeAlgorithm,
+    webidl::bindings::create_interface_instance,
     webidl::{
         Callback, ContextCallbackHost, EcmascriptHost, promise_from_value, rejected_promise,
         resolved_promise,
@@ -578,7 +579,7 @@ impl EcmascriptHost for ContextEventDispatchHost<'_> {
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        crate::webidl::binding::create_interface_instance::<Event>(event, self.callback_host.context())
+        create_interface_instance::<Event>(event, self.callback_host.context())
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
@@ -611,7 +612,7 @@ pub(crate) fn create_writable_stream_default_controller(
 ) -> JsResult<(WritableStreamDefaultController, JsObject)> {
     let controller = WritableStreamDefaultController::new();
     let controller_object: JsObject =
-        crate::webidl::binding::create_interface_instance::<WritableStreamDefaultController>(controller.clone(), context)?.into();
+        create_interface_instance::<WritableStreamDefaultController>(controller.clone(), context)?.into();
     Ok((controller, controller_object))
 }
 

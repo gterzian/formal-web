@@ -2,7 +2,7 @@ use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
 };
 
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 

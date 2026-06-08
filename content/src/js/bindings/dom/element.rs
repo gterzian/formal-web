@@ -8,7 +8,9 @@ use boa_engine::{
 use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
+    create_interface_instance,
+
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
@@ -239,7 +241,7 @@ fn insert_adjacent_text(
     with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
         |error| {
             JsError::from_opaque(JsValue::from(
-                crate::webidl::binding::create_interface_instance::<DOMException>(error, context)
+                create_interface_instance::<DOMException>(error, context)
                     .expect("DOMException construction should not fail"),
             ))
         },

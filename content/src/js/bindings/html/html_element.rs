@@ -12,7 +12,7 @@ use crate::dom::Element;
 use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, inline_style_properties_for_element,
 };
-use crate::webidl::binding::{
+use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 
