@@ -25,7 +25,7 @@ pub(crate) mod string;
 
 /// A lightweight wrapper around [`Context`] used in [`InternalObjectMethods`].
 #[derive(Debug)]
-pub struct InternalMethodPropertyContext<'ctx> {
+pub(crate) struct InternalMethodPropertyContext<'ctx> {
     context: &'ctx mut Context,
     slot: Slot,
 }
@@ -71,7 +71,7 @@ impl<'context> From<&'context mut Context> for InternalMethodPropertyContext<'co
 
 /// A lightweight wrapper around [`Context`] used in internal call methods.
 #[derive(Debug)]
-pub struct InternalMethodCallContext<'ctx> {
+pub(crate) struct InternalMethodCallContext<'ctx> {
     context: &'ctx mut Context,
     native_source_info: NativeSourceInfo,
 }
@@ -143,7 +143,7 @@ impl JsObject {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-getprototypeof
     #[track_caller]
-    pub fn __get_prototype_of__(&self, context: &mut Context) -> JsResult<JsPrototype> {
+    pub(crate) fn __get_prototype_of__(&self, context: &mut Context) -> JsResult<JsPrototype> {
         (self.vtable().__get_prototype_of__)(self, context)
     }
 
@@ -155,7 +155,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-setprototypeof-v
-    pub fn __set_prototype_of__(
+    pub(crate) fn __set_prototype_of__(
         &self,
         val: JsPrototype,
         context: &mut Context,
@@ -171,7 +171,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-isextensible
-    pub fn __is_extensible__(&self, context: &mut Context) -> JsResult<bool> {
+    pub(crate) fn __is_extensible__(&self, context: &mut Context) -> JsResult<bool> {
         (self.vtable().__is_extensible__)(self, context)
     }
 
@@ -183,7 +183,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-preventextensions
-    pub fn __prevent_extensions__(&self, context: &mut Context) -> JsResult<bool> {
+    pub(crate) fn __prevent_extensions__(&self, context: &mut Context) -> JsResult<bool> {
         (self.vtable().__prevent_extensions__)(self, context)
     }
 
@@ -195,7 +195,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-getownproperty-p
-    pub fn __get_own_property__(
+    pub(crate) fn __get_own_property__(
         &self,
         key: &PropertyKey,
         context: &mut InternalMethodPropertyContext<'_>,
@@ -211,7 +211,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-defineownproperty-p-desc
-    pub fn __define_own_property__(
+    pub(crate) fn __define_own_property__(
         &self,
         key: &PropertyKey,
         desc: PropertyDescriptor,
@@ -228,7 +228,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-hasproperty-p
-    pub fn __has_property__(
+    pub(crate) fn __has_property__(
         &self,
         key: &PropertyKey,
         context: &mut InternalMethodPropertyContext<'_>,
@@ -246,7 +246,7 @@ impl JsObject {
     ///
     /// [spec0]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-hasproperty-p
     /// [spec1]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-get-p-receiver
-    pub fn __try_get__(
+    pub(crate) fn __try_get__(
         &self,
         key: &PropertyKey,
         receiver: JsValue,
@@ -263,7 +263,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-get-p-receiver
-    pub fn __get__(
+    pub(crate) fn __get__(
         &self,
         key: &PropertyKey,
         receiver: JsValue,
@@ -280,7 +280,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-set-p-v-receiver
-    pub fn __set__(
+    pub(crate) fn __set__(
         &self,
         key: PropertyKey,
         value: JsValue,
@@ -298,7 +298,7 @@ impl JsObject {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-delete-p
-    pub fn __delete__(
+    pub(crate) fn __delete__(
         &self,
         key: &PropertyKey,
         context: &mut InternalMethodPropertyContext<'_>,
@@ -315,7 +315,7 @@ impl JsObject {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-ownpropertykeys
     #[track_caller]
-    pub fn __own_property_keys__(
+    pub(crate) fn __own_property_keys__(
         &self,
         context: &mut Context,
     ) -> JsResult<Vec<PropertyKey>> {
@@ -333,7 +333,7 @@ impl JsObject {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ecmascript-function-objects-call-thisargument-argumentslist
     #[track_caller]
-    pub fn __call__(&self, argument_count: usize) -> CallValue {
+    pub(crate) fn __call__(&self, argument_count: usize) -> CallValue {
         CallValue::Pending {
             func: self.vtable().__call__,
             object: self.clone(),
@@ -353,7 +353,7 @@ impl JsObject {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-ecmascript-function-objects-construct-argumentslist-newtarget
     #[track_caller]
-    pub fn __construct__(&self, argument_count: usize) -> CallValue {
+    pub(crate) fn __construct__(&self, argument_count: usize) -> CallValue {
         CallValue::Pending {
             func: self.vtable().__construct__,
             object: self.clone(),
@@ -374,7 +374,7 @@ impl JsObject {
 /// Then, reference this static in the creation phase of an `ObjectData`.
 ///
 /// E.g. `ObjectData::string`
-pub const ORDINARY_INTERNAL_METHODS: InternalObjectMethods = InternalObjectMethods {
+pub(crate) const ORDINARY_INTERNAL_METHODS: InternalObjectMethods = InternalObjectMethods {
     __get_prototype_of__: ordinary_get_prototype_of,
     __set_prototype_of__: ordinary_set_prototype_of,
     __is_extensible__: ordinary_is_extensible,
@@ -401,52 +401,52 @@ pub const ORDINARY_INTERNAL_METHODS: InternalObjectMethods = InternalObjectMetho
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::type_complexity, clippy::struct_field_names)]
 pub struct InternalObjectMethods {
-    pub __get_prototype_of__: fn(&JsObject, &mut Context) -> JsResult<JsPrototype>,
-    pub __set_prototype_of__: fn(&JsObject, JsPrototype, &mut Context) -> JsResult<bool>,
-    pub __is_extensible__: fn(&JsObject, &mut Context) -> JsResult<bool>,
-    pub __prevent_extensions__: fn(&JsObject, &mut Context) -> JsResult<bool>,
-    pub __get_own_property__: fn(
+    pub(crate) __get_prototype_of__: fn(&JsObject, &mut Context) -> JsResult<JsPrototype>,
+    pub(crate) __set_prototype_of__: fn(&JsObject, JsPrototype, &mut Context) -> JsResult<bool>,
+    pub(crate) __is_extensible__: fn(&JsObject, &mut Context) -> JsResult<bool>,
+    pub(crate) __prevent_extensions__: fn(&JsObject, &mut Context) -> JsResult<bool>,
+    pub(crate) __get_own_property__: fn(
         &JsObject,
         &PropertyKey,
         &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<Option<PropertyDescriptor>>,
-    pub __define_own_property__: fn(
+    pub(crate) __define_own_property__: fn(
         &JsObject,
         &PropertyKey,
         PropertyDescriptor,
         &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<bool>,
-    pub __has_property__:
+    pub(crate) __has_property__:
         fn(&JsObject, &PropertyKey, &mut InternalMethodPropertyContext<'_>) -> JsResult<bool>,
-    pub __get__: fn(
+    pub(crate) __get__: fn(
         &JsObject,
         &PropertyKey,
         JsValue,
         &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<JsValue>,
-    pub __try_get__: fn(
+    pub(crate) __try_get__: fn(
         &JsObject,
         &PropertyKey,
         JsValue,
         &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<Option<JsValue>>,
-    pub __set__: fn(
+    pub(crate) __set__: fn(
         &JsObject,
         PropertyKey,
         JsValue,
         JsValue,
         &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<bool>,
-    pub __delete__:
+    pub(crate) __delete__:
         fn(&JsObject, &PropertyKey, &mut InternalMethodPropertyContext<'_>) -> JsResult<bool>,
-    pub __own_property_keys__:
+    pub(crate) __own_property_keys__:
         fn(&JsObject, context: &mut Context) -> JsResult<Vec<PropertyKey>>,
-    pub __call__: fn(
+    pub(crate) __call__: fn(
         &JsObject,
         argument_count: usize,
         context: &mut InternalMethodCallContext<'_>,
     ) -> JsResult<CallValue>,
-    pub __construct__: fn(
+    pub(crate) __construct__: fn(
         &JsObject,
         argument_count: usize,
         context: &mut InternalMethodCallContext<'_>,
@@ -457,7 +457,7 @@ pub struct InternalObjectMethods {
 ///
 /// This is done to avoid recursion.
 #[allow(variant_size_differences)]
-pub enum CallValue {
+pub(crate) enum CallValue {
     /// Calling is ready, the frames have been setup.
     ///
     /// Requires calling [`Context::run()`].

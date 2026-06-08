@@ -41,6 +41,11 @@ pub(crate) use location::LocationError;
 pub use window::Window;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
+// Kept for future WindowProxy exotic-object implementation.
+// Currently unused because the transparent proxy returns the Window
+// directly (same-origin fast path).  Will be used when cross-origin
+// WindowProxy exotic objects are implemented.
+#[allow(unused_imports)]
 pub(crate) use windowproxy::WindowProxy;
 
 use blitz_dom::{BaseDocument, DocumentConfig};

@@ -272,16 +272,12 @@ performs this swap.  Cross-document navigation does not update the proxy.
 
 ### Implementation notes
 
-To implement proper exotic objects from outside the `boa_engine` crate, the
-following vendored boa types were made public:
-- `boa_engine::object::internal_methods::InternalObjectMethods`
-- `boa_engine::object::internal_methods::ORDINARY_INTERNAL_METHODS`
-- `boa_engine::object::internal_methods::InternalMethodPropertyContext`
-- `boa_engine::object::internal_methods::InternalMethodCallContext`
-- `boa_engine::object::internal_methods::CallValue`
-- All `__xxx__` dispatch methods on `JsObject`
-- `JsObject::get_with_receiver` (for [[Get]] with custom receiver)
-- `JsObject::get_own_property_descriptor` (for raw [[GetOwnProperty]])
+The WindowProxy exotic object is implemented as a transparent proxy using
+only boa's existing public API (no vendor modifications). The `create_window_proxy()`
+function returns the inner Window's `JsObject` directly, which satisfies all
+same-origin operations per HTML §7.2.3. See `content/src/js/README.md`
+("Working with vendored boa: use spec links, not visibility changes") for
+the methodology of finding the right public API via ECMAScript spec links.
 
 See also:
 - `content/src/webidl/README.md` for the exotic-object pattern with JsData.

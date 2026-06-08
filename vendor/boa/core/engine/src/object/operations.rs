@@ -404,20 +404,6 @@ impl JsObject {
         Ok(desc.is_some())
     }
 
-    /// [[GetOwnProperty]] returning the raw descriptor.
-    ///
-    /// Returns `None` if the property does not exist as an own property.
-    pub fn get_own_property_descriptor(
-        &self,
-        key: &PropertyKey,
-        context: &mut Context,
-    ) -> JsResult<Option<PropertyDescriptor>> {
-        self.__get_own_property__(
-            key,
-            &mut InternalMethodPropertyContext::new(context),
-        )
-    }
-
     /// Get all the keys of the properties of this object.
     ///
     /// More information:
