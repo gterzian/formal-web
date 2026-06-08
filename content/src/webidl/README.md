@@ -47,7 +47,7 @@ or `ObjectInitializer`. The Rust struct holds only the backing state.
 - **DOM interfaces** (`Document`, `EventTarget`, `Element`, …): `content/src/dom/`
 - **HTML interfaces** (`Window`, `HTMLAnchorElement`, `HTMLIFrameElement`, `Location`, …): `content/src/html/`
 - **Streams interfaces** (`ReadableStream`, `WritableStream`, …): `content/src/streams/`
-- **Boa-class registrations and bindings** (argument conversion, method impls): `content/src/boa/bindings/`
+- **Boa-class registrations and bindings** (argument conversion, method impls): `content/src/js/bindings/`
 
 ### Exotic objects and custom internal methods
 
@@ -97,10 +97,10 @@ let object = ObjectInitializer::with_native_data_and_proto(
 .build();
 ```
 
-See `content/src/boa/bindings/` for concrete examples per interface.
+See `content/src/js/bindings/` for concrete examples per interface.
 
 ## Related documentation
 
 - `content/README.md` — Content-crate overview
-- `content/src/boa/README.md` — Boa integration specifics (Context ownership, bindings)
+- `content/src/js/README.md` — Boa integration specifics (Context ownership, bindings)
 - `content/src/html/README.md` — HTML platform objects, WindowProxy, navigation split

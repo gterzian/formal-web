@@ -7,10 +7,10 @@ use boa_engine::{
     object::JsObject,
 };
 
-use crate::boa::platform_objects::{
+use crate::js::platform_objects::{
     document_object, object_for_existing_node, resolve_element_object,
 };
-use crate::boa::with_event_target_mut;
+use crate::js::with_event_target_mut;
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::webidl::{
     Callback, ContextCallbackHost, EcmascriptHost, callback_interface_type_value, nullable_value,

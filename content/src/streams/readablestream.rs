@@ -20,7 +20,7 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
 
-use crate::boa::with_abort_signal_ref;
+use crate::js::with_abort_signal_ref;
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::{

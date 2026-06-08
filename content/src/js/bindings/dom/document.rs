@@ -7,7 +7,7 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::boa::platform_objects::{
+use crate::js::platform_objects::{
     document_object, invalidate_cached_node_ids, resolve_element_object,
     resolve_or_create_text_node_object,
 };

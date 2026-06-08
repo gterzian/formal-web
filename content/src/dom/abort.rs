@@ -5,7 +5,7 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
-use crate::boa::with_event_target_mut;
+use crate::js::with_event_target_mut;
 use crate::streams::PipeToState;
 use crate::webidl::{Callback, EcmascriptHost};
 

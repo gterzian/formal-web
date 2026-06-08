@@ -12,7 +12,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::{
-    boa::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
+    js::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
     dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
     streams::SizeAlgorithm,
     webidl::{

@@ -6,7 +6,7 @@ use boa_engine::{
     object::builtins::JsArray,
 };
 
-use crate::boa::platform_objects::{
+use crate::js::platform_objects::{
     collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
     object_for_existing_node,
 };

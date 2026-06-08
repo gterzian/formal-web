@@ -5,7 +5,7 @@ use boa_engine::{
     property::Attribute,
 };
 
-use crate::boa::platform_objects::invalidate_cached_node_ids;
+use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 use crate::webidl::binding::{
@@ -196,7 +196,7 @@ fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .map_err(|error| JsNativeError::syntax().with_message(error))?;
     match node_id {
         Some(node_id) => {
-            Ok(crate::boa::platform_objects::resolve_element_object(node_id, context)?.into())
+            Ok(crate::js::platform_objects::resolve_element_object(node_id, context)?.into())
         }
         None => Ok(JsValue::null()),
     }
@@ -216,7 +216,7 @@ fn query_selector_all(
     let values = node_ids
         .into_iter()
         .map(|node_id| {
-            crate::boa::platform_objects::resolve_element_object(node_id, context)
+            crate::js::platform_objects::resolve_element_object(node_id, context)
                 .map(JsValue::from)
         })
         .collect::<JsResult<Vec<_>>>()?;

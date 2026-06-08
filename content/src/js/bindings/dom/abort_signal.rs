@@ -4,7 +4,7 @@ use boa_engine::{
     native_function::NativeFunction,
 };
 
-use crate::boa::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
+use crate::js::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
 use crate::dom::{
     AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal, signal_abort,
 };

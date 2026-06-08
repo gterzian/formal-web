@@ -2,7 +2,7 @@ use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
 };
 
-use crate::boa::with_event_target_mut;
+use crate::js::with_event_target_mut;
 use crate::html::HTMLIFrameElement;
 use crate::webidl::{callback_function_value, nullable_value};
 use crate::webidl::binding::{

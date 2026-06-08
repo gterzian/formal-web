@@ -2,7 +2,7 @@
 #[path = "../../embedder/src/ui_event.rs"]
 pub(crate) mod ui_event;
 
-pub mod boa;
+pub mod js;
 pub mod css;
 pub mod dom;
 pub mod html;
@@ -611,7 +611,7 @@ impl ContentProcess {
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
         let registry = Rc::clone(&self.new_document_registry);
-        crate::boa::platform_objects::with_global_scope(
+        crate::js::platform_objects::with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.set_new_document_registry(registry);
@@ -632,7 +632,7 @@ impl ContentProcess {
             .documents
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        crate::boa::platform_objects::with_global_scope(
+        crate::js::platform_objects::with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.clear_new_document_registry();
@@ -661,7 +661,7 @@ impl ContentProcess {
                 continue;
             }
             // Read the traversable_id from the new document's own GlobalScope.
-            let new_traversable_id = crate::boa::platform_objects::with_global_scope(
+            let new_traversable_id = crate::js::platform_objects::with_global_scope(
                 &settings.context,
                 |global_scope| Ok(global_scope.source_navigable_id()),
             )
@@ -1559,7 +1559,7 @@ impl ContentProcess {
         };
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        crate::boa::platform_objects::with_global_scope(
+        crate::js::platform_objects::with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.set_navigable_hierarchy(

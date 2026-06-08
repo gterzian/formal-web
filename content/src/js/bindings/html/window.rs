@@ -3,10 +3,10 @@ use boa_engine::{
     object::JsObject,
 };
 
-use crate::boa::platform_objects::{
+use crate::js::platform_objects::{
     location_object as cached_location_object, store_location_object,
 };
-use crate::boa::with_event_target_mut;
+use crate::js::with_event_target_mut;
 use crate::html::{
     Location, Window, WindowOrWorkerGlobalScope, WindowProxy,
     safe_passing_of_structured_data::StructuredCloneOptions,
@@ -17,7 +17,7 @@ use crate::webidl::binding::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
-use crate::boa::bindings::dom::with_element_ref;
+use crate::js::bindings::dom::with_element_ref;
 
 use super::{hyperlink_element_utils::document_creation_url, style_declaration_object};
 

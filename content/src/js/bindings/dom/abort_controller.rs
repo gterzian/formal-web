@@ -2,7 +2,7 @@ use boa_engine::{
     Context, JsNativeError, JsResult, JsValue,
 };
 
-use crate::boa::with_abort_controller_ref;
+use crate::js::with_abort_controller_ref;
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};
 use crate::webidl::binding::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,

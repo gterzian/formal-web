@@ -9,9 +9,9 @@ use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
-use crate::boa::bindings::html::build_boa_context;
-use crate::boa::platform_objects::{store_document_object, with_global_scope};
-use crate::boa::{install_console_namespace, install_css_namespace, install_document_property};
+use crate::js::bindings::html::build_boa_context;
+use crate::js::platform_objects::{store_document_object, with_global_scope};
+use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
 use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::TimerHandler;
 use crate::html::Window;
@@ -168,7 +168,7 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
-        let callbacks = crate::boa::platform_objects::take_animation_frame_callbacks(&self.context)
+        let callbacks = crate::js::platform_objects::take_animation_frame_callbacks(&self.context)
             .map_err(|error| error.to_string())?;
 
         for callback in callbacks {
@@ -336,7 +336,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
-        crate::boa::platform_objects::document_object(&self.context)
+        crate::js::platform_objects::document_object(&self.context)
     }
 
     fn global_object(&mut self) -> JsObject {
@@ -344,7 +344,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        crate::boa::platform_objects::resolve_element_object(node_id, &mut self.context)
+        crate::js::platform_objects::resolve_element_object(node_id, &mut self.context)
     }
 
     fn resolve_existing_node_object(
@@ -352,7 +352,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> JsResult<JsObject> {
-        crate::boa::platform_objects::object_for_existing_node(document, node_id, &mut self.context)
+        crate::js::platform_objects::object_for_existing_node(document, node_id, &mut self.context)
     }
 
     fn current_time_millis(&self) -> f64 {
