@@ -1,6 +1,5 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
-    class::{Class, ClassBuilder},
 };
 
 use crate::streams::{
@@ -10,11 +9,19 @@ use crate::streams::{
     with_writable_stream_ref,
 };
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 impl WebIdlInterface for WritableStream {
     const NAME: &'static str = "WritableStream";
+
+    fn create_platform_object(
+        new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        construct_writable_stream(new_target, args, context)
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -56,22 +63,6 @@ impl WebIdlInterface for WritableStream {
     }
 }
 
-impl Class for WritableStream {
-    const NAME: &'static str = "WritableStream";
-
-    fn data_constructor(
-        new_target: &JsValue,
-        args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        construct_writable_stream(new_target, args, context)
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<WritableStream>(class)
-    }
-}
-
 impl WebIdlInterface for WritableStreamDefaultController {
     const NAME: &'static str = "WritableStreamDefaultController";
 
@@ -99,26 +90,16 @@ impl WebIdlInterface for WritableStreamDefaultController {
     }
 }
 
-impl Class for WritableStreamDefaultController {
-    const NAME: &'static str = "WritableStreamDefaultController";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<WritableStreamDefaultController>(class)
-    }
-}
-
 impl WebIdlInterface for WritableStreamDefaultWriter {
     const NAME: &'static str = "WritableStreamDefaultWriter";
+
+    fn create_platform_object(
+        this: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        construct_writable_stream_default_writer(this, args, context)
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -189,19 +170,6 @@ impl WebIdlInterface for WritableStreamDefaultWriter {
             unforgeable: false,
             promise_type: false,
         });
-    }
-}
-
-impl Class for WritableStreamDefaultWriter {
-    const NAME: &'static str = "WritableStreamDefaultWriter";
-    const LENGTH: usize = 1;
-
-    fn data_constructor(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Self> {
-        construct_writable_stream_default_writer(this, args, context)
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<WritableStreamDefaultWriter>(class)
     }
 }
 

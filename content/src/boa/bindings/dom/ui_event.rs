@@ -1,12 +1,11 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
-    class::{Class, ClassBuilder},
     js_string,
 };
 
 use crate::dom::{Event, UIEvent};
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 
 use super::event::init_flag;
@@ -20,42 +19,8 @@ impl WebIdlInterface for UIEvent {
         Some("Event")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
-        def.add_attribute(AttributeDef {
-            id: "view",
-            getter: get_view,
-            setter: None,
-            static_: false,
-            unforgeable: false,
-            promise_type: false,
-            legacy_lenient_this: false,
-            replaceable: false,
-            put_forwards: None,
-            legacy_lenient_setter: false,
-        });
-        def.add_attribute(AttributeDef {
-            id: "detail",
-            getter: get_detail,
-            setter: None,
-            static_: false,
-            unforgeable: false,
-            promise_type: false,
-            legacy_lenient_this: false,
-            replaceable: false,
-            put_forwards: None,
-            legacy_lenient_setter: false,
-        });
-    }
-}
-
-// ── Boa Class glue ──
-
-impl Class for UIEvent {
-    const NAME: &'static str = "UIEvent";
-    const LENGTH: usize = 1;
-
-    fn data_constructor(
-        _this: &JsValue,
+    fn create_platform_object(
+        _new_target: &JsValue,
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
@@ -83,9 +48,31 @@ impl Class for UIEvent {
         })
     }
 
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        // Own members only — Event's members inherited via prototype chain.
-        register_interface::<UIEvent>(class)
+    fn define_members(def: &mut InterfaceDefinition) {
+        def.add_attribute(AttributeDef {
+            id: "view",
+            getter: get_view,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "detail",
+            getter: get_detail,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
     }
 }
 

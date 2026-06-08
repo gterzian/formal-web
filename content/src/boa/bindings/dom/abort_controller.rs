@@ -1,12 +1,11 @@
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue,
-    class::{Class, ClassBuilder},
 };
 
 use crate::boa::with_abort_controller_ref;
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 use super::abort_signal::{abort_reason_from_argument, signal_abort_with_context};
@@ -15,6 +14,15 @@ use super::abort_signal::{abort_reason_from_argument, signal_abort_with_context}
 
 impl WebIdlInterface for AbortController {
     const NAME: &'static str = "AbortController";
+
+    fn create_platform_object(
+        _new_target: &JsValue,
+        _args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let signal = create_abort_signal(AbortSignal::new(), context)?;
+        Ok(AbortController::new(signal))
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -37,25 +45,6 @@ impl WebIdlInterface for AbortController {
             unforgeable: false,
             promise_type: false,
         });
-    }
-}
-
-// ── Boa Class glue ──
-
-impl Class for AbortController {
-    const NAME: &'static str = "AbortController";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        let signal = create_abort_signal(AbortSignal::new(), context)?;
-        Ok(AbortController::new(signal))
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<AbortController>(class)
     }
 }
 

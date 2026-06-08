@@ -1,6 +1,6 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, class::ClassBuilder, js_string,
-    native_function::NativeFunction, property::Attribute,
+    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, js_string,
+    native_function::NativeFunction, object::JsObject, property::PropertyDescriptor,
 };
 use url::Url;
 
@@ -33,71 +33,47 @@ fn with_hyperlink_element_utils_ref<R>(
         .into())
 }
 
-pub(crate) fn register_hyperlink_element_utils_methods(
-    class: &mut ClassBuilder<'_>,
+/// Register HTMLHyperlinkElementUtils members directly on an interface prototype.
+///
+/// This is the prototype-based equivalent of `register_hyperlink_element_utils_methods`,
+/// for use with the new `register_interface_spec` binding layer that creates prototypes
+/// via `JsObject::from_proto_and_data` instead of via `ClassBuilder`.
+pub(crate) fn register_hyperlink_element_utils_on_prototype(
+    proto: &JsObject,
+    context: &mut Context,
 ) -> JsResult<()> {
-    let realm = class.context().realm().clone();
-    class
-        .accessor(
-            js_string!("origin"),
-            Some(NativeFunction::from_fn_ptr(get_origin).to_js_function(&realm)),
-            None,
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("protocol"),
-            Some(NativeFunction::from_fn_ptr(get_protocol).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_protocol).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("username"),
-            Some(NativeFunction::from_fn_ptr(get_username).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_username).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("password"),
-            Some(NativeFunction::from_fn_ptr(get_password).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_password).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("host"),
-            Some(NativeFunction::from_fn_ptr(get_host).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_host).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("hostname"),
-            Some(NativeFunction::from_fn_ptr(get_hostname).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_hostname).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("port"),
-            Some(NativeFunction::from_fn_ptr(get_port).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_port).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("pathname"),
-            Some(NativeFunction::from_fn_ptr(get_pathname).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_pathname).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("search"),
-            Some(NativeFunction::from_fn_ptr(get_search).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_search).to_js_function(&realm)),
-            Attribute::all(),
-        )
-        .accessor(
-            js_string!("hash"),
-            Some(NativeFunction::from_fn_ptr(get_hash).to_js_function(&realm)),
-            Some(NativeFunction::from_fn_ptr(set_hash).to_js_function(&realm)),
-            Attribute::all(),
-        );
+    let realm = context.realm().clone();
+    link_property(proto, context, &realm, "origin", get_origin, None)?;
+    link_property(proto, context, &realm, "protocol", get_protocol, Some(set_protocol))?;
+    link_property(proto, context, &realm, "username", get_username, Some(set_username))?;
+    link_property(proto, context, &realm, "password", get_password, Some(set_password))?;
+    link_property(proto, context, &realm, "host", get_host, Some(set_host))?;
+    link_property(proto, context, &realm, "hostname", get_hostname, Some(set_hostname))?;
+    link_property(proto, context, &realm, "port", get_port, Some(set_port))?;
+    link_property(proto, context, &realm, "pathname", get_pathname, Some(set_pathname))?;
+    link_property(proto, context, &realm, "search", get_search, Some(set_search))?;
+    link_property(proto, context, &realm, "hash", get_hash, Some(set_hash))?;
+    Ok(())
+}
+
+fn link_property(
+    proto: &JsObject,
+    context: &mut Context,
+    realm: &boa_engine::realm::Realm,
+    name: &str,
+    getter: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+    setter: Option<fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>>,
+) -> JsResult<()> {
+    let get = NativeFunction::from_fn_ptr(getter).to_js_function(realm);
+    let mut desc = PropertyDescriptor::builder()
+        .get(get)
+        .enumerable(true)
+        .configurable(true);
+    if let Some(setter_fn) = setter {
+        let set = NativeFunction::from_fn_ptr(setter_fn).to_js_function(realm);
+        desc = desc.set(set);
+    }
+    proto.define_property_or_throw(js_string!(name), desc.build(), context)?;
     Ok(())
 }
 

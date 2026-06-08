@@ -1,6 +1,5 @@
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
     object::builtins::JsArray,
 };
 
@@ -18,7 +17,7 @@ struct EntrySettingsObject {
 }
 
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──
@@ -179,26 +178,6 @@ impl WebIdlInterface for Location {
             unforgeable: false,
             promise_type: false,
         });
-    }
-}
-
-// ── Boa Class glue ──
-
-impl Class for Location {
-    const NAME: &'static str = "Location";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<Location>(class)
     }
 }
 

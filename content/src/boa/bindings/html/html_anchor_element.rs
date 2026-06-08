@@ -1,11 +1,10 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
 };
 
 use crate::html::HTMLAnchorElement;
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 
 use super::hyperlink_element_utils::document_creation_url;
@@ -82,29 +81,6 @@ impl WebIdlInterface for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
 
-    }
-}
-
-// ── Boa Class glue ──
-
-impl Class for HTMLAnchorElement {
-    const NAME: &'static str = "HTMLAnchorElement";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<HTMLAnchorElement>(class)?;
-        // HTMLHyperlinkElementUtils members
-        super::hyperlink_element_utils::register_hyperlink_element_utils_methods(class)?;
-        Ok(())
     }
 }
 

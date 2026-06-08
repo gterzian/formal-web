@@ -34,6 +34,7 @@ impl WebIdlInterface for EventTarget {
     const NAME: &'static str = "EventTarget";
 
     fn create_platform_object(
+        _new_target: &JsValue,
         _args: &[JsValue],
         _context: &mut Context,
     ) -> JsResult<Self> {

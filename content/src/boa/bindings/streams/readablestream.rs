@@ -1,11 +1,6 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue, Source,
-    class::{Class, ClassBuilder},
-    js_string,
-    native_function::NativeFunction,
-    object::{FunctionObjectBuilder, JsObject},
-    property::Attribute,
-    symbol::JsSymbol,
+    Context, JsArgs, JsNativeError, JsResult, JsValue,
+    object::JsObject,
 };
 
 use crate::streams::{
@@ -19,13 +14,21 @@ use crate::streams::{
 };
 use crate::webidl::{create_value_async_iterator, rejected_promise};
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 // ── WebIDL interface definitions (§3) ──
 
 impl WebIdlInterface for ReadableStream {
     const NAME: &'static str = "ReadableStream";
+
+    fn create_platform_object(
+        new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        construct_readable_stream(new_target, args, context)
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -176,6 +179,14 @@ impl WebIdlInterface for ReadableByteStreamController {
 impl WebIdlInterface for ReadableStreamDefaultReader {
     const NAME: &'static str = "ReadableStreamDefaultReader";
 
+    fn create_platform_object(
+        this: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        construct_readable_stream_default_reader(this, args, context)
+    }
+
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
             id: "closed",
@@ -218,6 +229,14 @@ impl WebIdlInterface for ReadableStreamDefaultReader {
 
 impl WebIdlInterface for ReadableStreamBYOBReader {
     const NAME: &'static str = "ReadableStreamBYOBReader";
+
+    fn create_platform_object(
+        this: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        construct_readable_stream_byob_reader(this, args, context)
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -294,166 +313,6 @@ impl WebIdlInterface for ReadableStreamBYOBRequest {
     }
 }
 
-// ── Boa Class glue ──
-
-impl Class for ReadableStream {
-    const NAME: &'static str = "ReadableStream";
-
-    fn data_constructor(
-        new_target: &JsValue,
-        args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        construct_readable_stream(new_target, args, context)
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        // Standard interface members via spec-aligned registration
-        register_interface::<ReadableStream>(class)?;
-
-        // ── §3.7.7: Static operations (not yet handled by register_interface) ──
-        class.static_method(
-            js_string!("from"),
-            1,
-            NativeFunction::from_fn_ptr(from_static),
-        );
-
-        // ── Async iterator: values() and @@asyncIterator ──
-        // https://streams.spec.whatwg.org/#rs-asynciterator
-        let values = FunctionObjectBuilder::new(
-            class.context().realm(),
-            NativeFunction::from_fn_ptr(values_method),
-        )
-        .name(js_string!("values"))
-        .length(0)
-        .constructor(false)
-        .build();
-        class.property(
-            js_string!("values"),
-            values.clone(),
-            Attribute::WRITABLE | Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
-        );
-        class.property(
-            JsSymbol::async_iterator(),
-            values,
-            Attribute::WRITABLE | Attribute::CONFIGURABLE,
-        );
-
-        // ── pipeTo with JS wrapper workaround ──
-        let pipe_to_native = FunctionObjectBuilder::new(
-            class.context().realm(),
-            NativeFunction::from_fn_ptr(pipe_to_native_method),
-        )
-        .name(js_string!("pipeTo"))
-        .length(2)
-        .constructor(false)
-        .build();
-        let pipe_to_wrapper = {
-            class.context().eval(Source::from_bytes(
-                "(function pipeTo() { return ReadableStream.prototype.__formalWebReadableStreamPipeToNative.call(this, arguments[0], arguments[1]); })",
-            ))?
-                .as_object()
-                .ok_or_else(|| {
-                    JsNativeError::typ()
-                        .with_message("ReadableStream.pipeTo wrapper initialization did not return a function")
-                })?
-        };
-        class.property(
-            js_string!("__formalWebReadableStreamPipeToNative"),
-            pipe_to_native,
-            Attribute::WRITABLE | Attribute::CONFIGURABLE,
-        );
-        class.property(
-            js_string!("pipeTo"),
-            pipe_to_wrapper,
-            Attribute::WRITABLE | Attribute::CONFIGURABLE,
-        );
-
-        Ok(())
-    }
-}
-
-impl Class for ReadableStreamDefaultController {
-    const NAME: &'static str = "ReadableStreamDefaultController";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<ReadableStreamDefaultController>(class)
-    }
-}
-
-impl Class for ReadableByteStreamController {
-    const NAME: &'static str = "ReadableByteStreamController";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<ReadableByteStreamController>(class)
-    }
-}
-
-impl Class for ReadableStreamDefaultReader {
-    const NAME: &'static str = "ReadableStreamDefaultReader";
-    const LENGTH: usize = 1;
-
-    fn data_constructor(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Self> {
-        construct_readable_stream_default_reader(this, args, context)
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<ReadableStreamDefaultReader>(class)
-    }
-}
-
-impl Class for ReadableStreamBYOBReader {
-    const NAME: &'static str = "ReadableStreamBYOBReader";
-    const LENGTH: usize = 1;
-
-    fn data_constructor(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Self> {
-        construct_readable_stream_byob_reader(this, args, context)
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<ReadableStreamBYOBReader>(class)
-    }
-}
-
-impl Class for ReadableStreamBYOBRequest {
-    const NAME: &'static str = "ReadableStreamBYOBRequest";
-    const LENGTH: usize = 2;
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<ReadableStreamBYOBRequest>(class)
-    }
-}
-
 // ── Member getters/setters/methods ──
 
 fn get_locked(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
@@ -518,7 +377,7 @@ fn pipe_to_operation(
     Ok(stream.pipe_to(args.get_or_undefined(0), args.get_or_undefined(1), context))
 }
 
-fn pipe_to_native_method(
+pub(crate) fn pipe_to_native_method(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -540,7 +399,7 @@ fn tee_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     stream.tee(context)
 }
 
-fn values_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn values_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let stream_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("ReadableStream receiver is not an object")
     })?;
@@ -551,7 +410,7 @@ fn values_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     Ok(JsValue::from(iterator))
 }
 
-fn from_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn from_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(readable_stream_from_iterable(
         args.get_or_undefined(0).clone(),
         context,

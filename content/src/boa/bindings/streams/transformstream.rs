@@ -1,11 +1,9 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
-    class::{Class, ClassBuilder},
-
 };
 
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 use crate::streams::{
@@ -15,6 +13,14 @@ use crate::streams::{
 
 impl WebIdlInterface for TransformStream {
     const NAME: &'static str = "TransformStream";
+
+    fn create_platform_object(
+        this: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        construct_transform_stream(this, args, context)
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -41,18 +47,6 @@ impl WebIdlInterface for TransformStream {
             put_forwards: None,
             legacy_lenient_setter: false,
         });
-    }
-}
-
-impl Class for TransformStream {
-    const NAME: &'static str = "TransformStream";
-
-    fn data_constructor(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Self> {
-        construct_transform_stream(this, args, context)
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<TransformStream>(class)
     }
 }
 
@@ -96,24 +90,6 @@ impl WebIdlInterface for TransformStreamDefaultController {
             unforgeable: false,
             promise_type: false,
         });
-    }
-}
-
-impl Class for TransformStreamDefaultController {
-    const NAME: &'static str = "TransformStreamDefaultController";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<TransformStreamDefaultController>(class)
     }
 }
 

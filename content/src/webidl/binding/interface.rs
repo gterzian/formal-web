@@ -7,14 +7,9 @@ use boa_engine::{
     property::PropertyDescriptor,
 };
 
-use super::attribute::{
-    AttributeDef, define_regular_attributes, define_static_attributes,
-    define_unforgeable_regular_attributes,
-};
-use super::constant::{ConstantDef, define_constants};
-use super::operation::{
-    OperationDef, define_regular_operations, define_static_operations,
-};
+use super::attribute::AttributeDef;
+use super::constant::ConstantDef;
+use super::operation::OperationDef;
 
 /// A buildable definition of an interface's members, collected by
 /// `WebIdlInterface::define_members`.
@@ -101,7 +96,11 @@ pub(crate) trait WebIdlInterface: 'static {
     /// Create an instance of the platform object.
     ///
     /// https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface
+    ///
+    /// `new_target` is the `new.target` value from the constructor call
+    /// (§3.7.1 step 1.2), or `undefined` if called as a function.
     fn create_platform_object(
+        _new_target: &JsValue,
         _args: &[JsValue],
         _context: &mut Context,
     ) -> JsResult<Self>
@@ -314,14 +313,23 @@ where
     }
 
     // ── §3.7.1: Create interface object (constructor) ──
-    // Constructor steps: calls create_platform_object to get the Rust struct,
-    // then wraps it in a JsObject via create_interface_instance.
+    // https://webidl.spec.whatwg.org/#create-an-interface-object
+    //
+    // §3.8: "internally create a new object implementing the interface"
+    //   Step: "Let prototype be ? Get(newTarget, "prototype")."
+    // Boa's native_function_construct passes new.target as the first parameter
+    // (this_val), not the ECMAScript this.
     let constructor = {
         let f = FunctionObjectBuilder::new(
             &realm,
-            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], ctx: &mut Context| {
-                let obj = T::create_platform_object(args, ctx)?;
-                let instance = create_interface_instance(obj, ctx)?;
+            NativeFunction::from_fn_ptr(|new_target: &JsValue, args: &[JsValue], ctx: &mut Context| {
+                let obj = T::create_platform_object(new_target, args, ctx)?;
+                // §3.8 step: Get(newTarget, "prototype")
+                let proto = resolve_instance_prototype(new_target, ctx);
+                let instance = match proto {
+                    Some(p) => JsObject::from_proto_and_data(Some(p), obj),
+                    None => create_interface_instance(obj, ctx)?,
+                };
                 Ok(JsValue::from(instance))
             }),
         )
@@ -380,6 +388,18 @@ where
     Ok(())
 }
 
+/// Resolve the instance prototype per §3.8 step "Get(newTarget, "prototype")".
+///
+/// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+fn resolve_instance_prototype(
+    new_target: &JsValue,
+    context: &mut Context,
+) -> Option<JsObject> {
+    let nt = new_target.as_object()?;
+    let proto_val = nt.get(js_string!("prototype"), context).ok()?;
+    proto_val.as_object().map(|o| o.clone())
+}
+
 /// Default constructor steps per §3.7.1 step 1.
 fn create_default_constructor_steps<T: WebIdlInterface>() -> NativeFunction {
     NativeFunction::from_fn_ptr(|_this, _args, _context| {
@@ -405,44 +425,6 @@ where
                 .with_message(format!("interface not registered: {}", std::any::type_name::<T>())))
         })?;
     Ok(JsObject::from_proto_and_data(Some(prototype), data))
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-//  Legacy: Registration via ClassBuilder (for incremental migration)
-// ─────────────────────────────────────────────────────────────────────────
-
-/// Register a Web IDL interface using the existing ClassBuilder system.
-///
-/// This is the compatibility path for incremental migration.  Once all
-/// platform objects are migrated, this function should be replaced by
-/// `register_interface_spec`.
-pub(crate) fn register_interface<T: WebIdlInterface>(
-    class: &mut boa_engine::class::ClassBuilder<'_>,
-) -> JsResult<()> {
-    let mut def = InterfaceDefinition::new();
-    T::define_members(&mut def);
-
-    let realm = class.context().realm().clone();
-
-    // ── §3.7.5: Define the constants ──
-    define_constants(class, &def.constants);
-
-    // ── §3.7.6: Define the regular attributes ──
-    define_regular_attributes(class, &realm, &def.attributes)?;
-
-    // ── §3.7.6: Define the static attributes ──
-    define_static_attributes(class, &realm, &def.attributes)?;
-
-    // ── §3.7.6: Define the unforgeable regular attributes ──
-    define_unforgeable_regular_attributes(class, &realm, &def.attributes)?;
-
-    // ── §3.7.7: Define the regular operations ──
-    define_regular_operations(class, &def.operations)?;
-
-    // ── §3.7.7: Define the static operations ──
-    define_static_operations(class, &def.operations)?;
-
-    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────

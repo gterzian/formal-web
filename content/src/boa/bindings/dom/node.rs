@@ -3,7 +3,6 @@ use std::rc::Rc;
 use blitz_dom::NodeData;
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
     object::builtins::JsArray,
 };
 
@@ -15,7 +14,6 @@ use crate::dom::{DOMException, Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 use crate::webidl::binding::{
     AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-    register_interface,
 };
 
 impl WebIdlInterface for Node {
@@ -277,28 +275,6 @@ impl WebIdlInterface for Node {
         });
     }
 }
-
-// ── Boa Class glue + transitional wrapper ──
-
-impl Class for Node {
-    const NAME: &'static str = "Node";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        // Own members only — prototype chain is set by wire_interface_prototypes.
-        register_interface::<Node>(class)
-    }
-}
-
 
 
 // ── Member getters/setters/methods ──

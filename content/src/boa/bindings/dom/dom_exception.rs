@@ -13,6 +13,7 @@ impl WebIdlInterface for DOMException {
     const NAME: &'static str = "DOMException";
 
     fn create_platform_object(
+        _new_target: &JsValue,
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {

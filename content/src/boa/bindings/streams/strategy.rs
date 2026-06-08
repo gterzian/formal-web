@@ -1,13 +1,12 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
-    class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
     object::FunctionObjectBuilder,
 };
 
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 
 use crate::streams::{
@@ -17,6 +16,17 @@ use crate::streams::{
 
 impl WebIdlInterface for ByteLengthQueuingStrategy {
     const NAME: &'static str = "ByteLengthQueuingStrategy";
+
+    fn create_platform_object(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let init = args.get_or_undefined(0).to_object(context)?;
+        let high_water_mark = init.get(js_string!("highWaterMark"), context)?;
+        let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, context)?;
+        Ok(ByteLengthQueuingStrategy::new(high_water_mark))
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -46,28 +56,19 @@ impl WebIdlInterface for ByteLengthQueuingStrategy {
     }
 }
 
-impl Class for ByteLengthQueuingStrategy {
-    const NAME: &'static str = "ByteLengthQueuingStrategy";
-    const LENGTH: usize = 1;
+impl WebIdlInterface for CountQueuingStrategy {
+    const NAME: &'static str = "CountQueuingStrategy";
 
-    fn data_constructor(
-        _this: &JsValue,
+    fn create_platform_object(
+        _new_target: &JsValue,
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
         let init = args.get_or_undefined(0).to_object(context)?;
         let high_water_mark = init.get(js_string!("highWaterMark"), context)?;
         let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, context)?;
-        Ok(ByteLengthQueuingStrategy::new(high_water_mark))
+        Ok(CountQueuingStrategy::new(high_water_mark))
     }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<ByteLengthQueuingStrategy>(class)
-    }
-}
-
-impl WebIdlInterface for CountQueuingStrategy {
-    const NAME: &'static str = "CountQueuingStrategy";
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -94,26 +95,6 @@ impl WebIdlInterface for CountQueuingStrategy {
             put_forwards: None,
             legacy_lenient_setter: false,
         });
-    }
-}
-
-impl Class for CountQueuingStrategy {
-    const NAME: &'static str = "CountQueuingStrategy";
-    const LENGTH: usize = 1;
-
-    fn data_constructor(
-        _this: &JsValue,
-        args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        let init = args.get_or_undefined(0).to_object(context)?;
-        let high_water_mark = init.get(js_string!("highWaterMark"), context)?;
-        let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, context)?;
-        Ok(CountQueuingStrategy::new(high_water_mark))
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<CountQueuingStrategy>(class)
     }
 }
 

@@ -2,7 +2,6 @@ use std::rc::Rc;
 
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
     js_string,
     object::{JsObject, builtins::JsArray},
     property::Attribute,
@@ -14,7 +13,7 @@ use crate::boa::platform_objects::{
 };
 use crate::dom::Document;
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──
@@ -142,26 +141,6 @@ impl WebIdlInterface for Document {
             put_forwards: None,
             legacy_lenient_setter: false,
         });
-    }
-}
-
-// ── Boa Class glue ──
-
-impl Class for Document {
-    const NAME: &'static str = "Document";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<Document>(class)
     }
 }
 

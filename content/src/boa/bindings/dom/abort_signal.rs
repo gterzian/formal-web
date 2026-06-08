@@ -1,6 +1,5 @@
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
 };
@@ -12,7 +11,7 @@ use crate::dom::{
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 use crate::webidl::{callback_function_value, nullable_value};
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 use super::event_target::ContextEventDispatchHost;
@@ -74,47 +73,6 @@ impl WebIdlInterface for AbortSignal {
     }
 }
 
-// ── Boa Class glue ──
-
-impl Class for AbortSignal {
-    const NAME: &'static str = "AbortSignal";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        // Own interface members (attributes + operations)
-        register_interface::<AbortSignal>(class)?;
-
-        // §3.7.7: Static operations (not yet handled by register_interface)
-        class
-            .static_method(
-                js_string!("abort"),
-                1,
-                NativeFunction::from_fn_ptr(abort_static),
-            )
-            .static_method(
-                js_string!("timeout"),
-                1,
-                NativeFunction::from_fn_ptr(timeout_static),
-            )
-            .static_method(
-                js_string!("any"),
-                1,
-                NativeFunction::from_fn_ptr(any_static),
-            );
-
-        Ok(())
-    }
-}
-
 pub(crate) fn abort_reason_from_argument(
     argument: Option<&JsValue>,
     context: &mut Context,
@@ -146,13 +104,13 @@ pub(crate) fn signal_abort_with_context(
     signal_abort(&mut host, signal, reason)
 }
 
-fn abort_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn abort_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let reason = abort_reason_from_argument(args.get(0), context)?;
     let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), context)?;
     Ok(JsValue::from(signal.object()?))
 }
 
-fn timeout_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn timeout_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let milliseconds = args.get_or_undefined(0).to_length(context)?;
     let signal = create_abort_signal(AbortSignal::new(), context)?;
     let callback = NativeFunction::from_copy_closure_with_captures(
@@ -181,7 +139,7 @@ fn timeout_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     Ok(JsValue::from(signal.object()?))
 }
 
-fn any_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn any_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let signals = sequence_abort_signals(args.get_or_undefined(0), context)?;
     let result_signal = create_abort_signal(AbortSignal::new(), context)?;
     initialize_dependent_abort_signal(&result_signal, &signals)?;

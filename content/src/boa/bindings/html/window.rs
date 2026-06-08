@@ -1,6 +1,5 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsValue,
-    class::{Class, ClassBuilder},
     object::JsObject,
 };
 
@@ -15,7 +14,7 @@ use crate::html::{
 };
 use crate::webidl::{callback_function_value, nullable_value};
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 use crate::boa::bindings::dom::with_element_ref;
@@ -29,6 +28,10 @@ impl WebIdlInterface for Window {
 
     fn parent_name() -> Option<&'static str> {
         Some("EventTarget")
+    }
+
+    fn is_global() -> bool {
+        true
     }
 
     fn define_members(def: &mut InterfaceDefinition) {
@@ -152,26 +155,6 @@ impl WebIdlInterface for Window {
             unforgeable: false,
             promise_type: false,
         });
-    }
-}
-
-// ── Boa Class glue ──
-
-impl Class for Window {
-    const NAME: &'static str = "Window";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<Window>(class)
     }
 }
 

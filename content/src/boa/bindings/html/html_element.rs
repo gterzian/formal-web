@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
     js_string,
     native_function::NativeFunction,
     object::{JsObject, ObjectInitializer},
@@ -14,7 +13,7 @@ use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, inline_style_properties_for_element,
 };
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──
@@ -87,26 +86,6 @@ impl WebIdlInterface for HTMLElement {
             put_forwards: None,
             legacy_lenient_setter: false,
         });
-    }
-}
-
-// ── Boa Class glue + transitional wrapper ──
-
-impl Class for HTMLElement {
-    const NAME: &'static str = "HTMLElement";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<HTMLElement>(class)
     }
 }
 

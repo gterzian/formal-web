@@ -1,6 +1,5 @@
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
     js_string,
     object::{ObjectInitializer, builtins::JsArray},
     property::Attribute,
@@ -10,7 +9,7 @@ use crate::boa::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──
@@ -136,27 +135,6 @@ impl WebIdlInterface for Element {
         });
     }
 }
-
-// ── Boa Class glue + transitional wrapper ──
-
-impl Class for Element {
-    const NAME: &'static str = "Element";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<Element>(class)
-    }
-}
-
 
 
 pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R) -> JsResult<R> {

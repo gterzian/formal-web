@@ -1,13 +1,12 @@
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
 };
 
 use crate::boa::with_event_target_mut;
 use crate::html::HTMLIFrameElement;
 use crate::webidl::{callback_function_value, nullable_value};
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──
@@ -131,25 +130,6 @@ impl WebIdlInterface for HTMLIFrameElement {
     }
 }
 
-// ── Boa Class glue ──
-
-impl Class for HTMLIFrameElement {
-    const NAME: &'static str = "HTMLIFrameElement";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<HTMLIFrameElement>(class)
-    }
-}
 fn with_html_iframe_element_ref<R>(
     this: &JsValue,
     f: impl FnOnce(&HTMLIFrameElement) -> R,

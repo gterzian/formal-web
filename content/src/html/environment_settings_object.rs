@@ -106,8 +106,8 @@ impl EnvironmentSettingsObject {
         install_css_namespace(&mut context).map_err(|error| error.to_string())?;
 
         let global = context.global_object();
-        if let Some(window_class) = context.get_global_class::<Window>() {
-            global.set_prototype(Some(window_class.prototype()));
+        if let Some(window_proto) = crate::webidl::binding::get_registry_prototype::<Window>(&context) {
+            global.set_prototype(Some(window_proto));
         }
         context
             .register_global_property(js_string!("window"), global.clone(), Attribute::all())

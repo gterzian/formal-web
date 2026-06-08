@@ -48,6 +48,16 @@ impl InterfaceRegistry {
     }
 }
 
+/// Get a constructor from the HostDefined registry.
+pub(crate) fn get_constructor_from_host_defined<T: 'static>(
+    context: &Context,
+) -> Option<JsObject> {
+    context
+        .get_data::<InterfaceRegistry>()
+        .and_then(|r| r.get_constructor::<T>())
+        .cloned()
+}
+
 /// Ensure the interface registry exists on the context.
 pub(crate) fn initialize(context: &mut Context) {
     if context.get_data::<InterfaceRegistry>().is_none() {

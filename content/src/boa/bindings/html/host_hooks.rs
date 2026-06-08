@@ -2,10 +2,14 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context,
+    Context, JsResult, JsValue, Source,
     context::{ContextBuilder, HostHooks, intrinsics::Intrinsics},
     job::SimpleJobExecutor,
-    object::JsObject,
+    js_string,
+    native_function::NativeFunction,
+    object::{FunctionObjectBuilder, JsObject},
+    property::PropertyDescriptor,
+    symbol::JsSymbol,
 };
 
 use crate::dom::{
@@ -22,8 +26,17 @@ use crate::streams::{
     WritableStreamDefaultController, WritableStreamDefaultWriter,
 };
 use crate::webidl::binding::{
-    get_registry_prototype, initialize_registry, register_interface_spec,
-    wire_registry_prototype,
+    get_registry_constructor, get_registry_prototype, initialize_registry,
+    register_interface_spec, wire_registry_prototype,
+};
+use super::hyperlink_element_utils;
+use super::super::dom::abort_signal::{
+    abort_static as abort_signal_abort, any_static as abort_signal_any,
+    timeout_static as abort_signal_timeout,
+};
+use super::super::streams::readablestream::{
+    from_static as readable_stream_from, pipe_to_native_method,
+    values_method,
 };
 
 pub(crate) struct WindowHostHooks {
@@ -105,6 +118,131 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
     wire_registry_prototype::<HTMLAnchorElement, HTMLElement>(&mut context);
     wire_registry_prototype::<HTMLIFrameElement, HTMLElement>(&mut context);
     wire_registry_prototype::<Window, EventTarget>(&mut context);
+
+    // ── Post-registration wiring ──
+
+    // HTMLAnchorElement: HTMLHyperlinkElementUtils members (§HTMLHyperlinkElementUtils)
+    if let Some(proto) = get_registry_prototype::<HTMLAnchorElement>(&context) {
+        hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(
+            &proto, &mut context,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    // AbortSignal: static methods abort(), timeout(), any() (§AbortSignal)
+    if let Some(ctor) = get_registry_constructor::<AbortSignal>(&context) {
+        let realm = context.realm().clone();
+        let mut define_static = |name: &str, func: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>|
+            -> Result<(), String>
+        {
+            let method = NativeFunction::from_fn_ptr(func).to_js_function(&realm);
+            let desc = PropertyDescriptor::builder()
+                .value(method)
+                .writable(true)
+                .enumerable(false)
+                .configurable(true)
+                .build();
+            ctor.define_property_or_throw(js_string!(name), desc, &mut context)
+                .map(|_defined| ())
+                .map_err(|error| error.to_string())
+        };
+        define_static("abort", abort_signal_abort)?;
+        define_static("timeout", abort_signal_timeout)?;
+        define_static("any", abort_signal_any)?;
+    }
+
+    // ReadableStream: static method from(), async iterator, pipeTo (§ReadableStream)
+    if let Some(rs_ctor) = get_registry_constructor::<ReadableStream>(&context) {
+        let realm = context.realm().clone();
+
+        // Static method from()
+        {
+            let method = NativeFunction::from_fn_ptr(readable_stream_from).to_js_function(&realm);
+            let desc = PropertyDescriptor::builder()
+                .value(method)
+                .writable(true)
+                .enumerable(false)
+                .configurable(true)
+                .build();
+            rs_ctor.define_property_or_throw(js_string!("from"), desc, &mut context)
+                .map(|_| ())
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
+    if let Some(rs_proto) = get_registry_prototype::<ReadableStream>(&context) {
+        let realm = context.realm().clone();
+
+        // values() and @@asyncIterator
+        let values_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(values_method),
+        )
+        .name(js_string!("values"))
+        .length(0)
+        .constructor(false)
+        .build();
+
+        let values_desc = PropertyDescriptor::builder()
+            .value(values_fn.clone())
+            .writable(true)
+            .enumerable(true)
+            .configurable(true)
+            .build();
+        rs_proto.define_property_or_throw(js_string!("values"), values_desc, &mut context)
+            .map(|_| ())
+            .map_err(|error| error.to_string())?;
+
+        let symbol_desc = PropertyDescriptor::builder()
+            .value(values_fn)
+            .writable(true)
+            .configurable(true)
+            .build();
+        rs_proto.define_property_or_throw(JsSymbol::async_iterator(), symbol_desc, &mut context)
+            .map(|_| ())
+            .map_err(|error| error.to_string())?;
+
+        // pipeTo with JS wrapper workaround
+        let pipe_to_native_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(pipe_to_native_method),
+        )
+        .name(js_string!("pipeTo"))
+        .length(2)
+        .constructor(false)
+        .build();
+
+        let native_desc = PropertyDescriptor::builder()
+            .value(pipe_to_native_fn)
+            .writable(true)
+            .configurable(true)
+            .build();
+        rs_proto.define_property_or_throw(
+            js_string!("__formalWebReadableStreamPipeToNative"),
+            native_desc,
+            &mut context,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())?;
+
+        let pipe_to_wrapper = context.eval(Source::from_bytes(
+            "(function pipeTo() { return ReadableStream.prototype.__formalWebReadableStreamPipeToNative.call(this, arguments[0], arguments[1]); })",
+        ))
+        .map_err(|error| error.to_string())?
+            .as_object()
+            .ok_or_else(|| {
+                String::from("ReadableStream.pipeTo wrapper initialization did not return a function")
+            })?.clone();
+
+        let pipe_to_desc = PropertyDescriptor::builder()
+            .value(pipe_to_wrapper)
+            .writable(true)
+            .configurable(true)
+            .build();
+        rs_proto.define_property_or_throw(js_string!("pipeTo"), pipe_to_desc, &mut context)
+            .map(|_| ())
+            .map_err(|error| error.to_string())?;
+    }
 
     Ok(context)
 }

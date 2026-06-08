@@ -209,3 +209,9 @@ At the end of each task, run the following steps **in order**:
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
 
 7. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
+
+
+# Forbidden commands
+
+- Do not use Git except for reading history.
+- Do not use scripts to edit source code.
