@@ -126,10 +126,10 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
             .unwrap_or(0);
 
         match kind {
-            3 => crate::webidl::binding::create_interface_instance::<HTMLIFrameElement>(HTMLIFrameElement::new(document, node_id), context)?,
-            2 => crate::webidl::binding::create_interface_instance::<HTMLAnchorElement>(HTMLAnchorElement::new(document, node_id), context)?,
-            1 => crate::webidl::binding::create_interface_instance::<HTMLElement>(HTMLElement::new(document, node_id), context)?,
-            _ => crate::webidl::binding::create_interface_instance::<Element>(Element::new(document, node_id), context)?,
+            3 => crate::webidl::binding::create_interface_instance_ctx::<HTMLIFrameElement>(HTMLIFrameElement::new(document, node_id), context)?,
+            2 => crate::webidl::binding::create_interface_instance_ctx::<HTMLAnchorElement>(HTMLAnchorElement::new(document, node_id), context)?,
+            1 => crate::webidl::binding::create_interface_instance_ctx::<HTMLElement>(HTMLElement::new(document, node_id), context)?,
+            _ => crate::webidl::binding::create_interface_instance_ctx::<Element>(Element::new(document, node_id), context)?,
         }
     };
     cache_node_object(context, node_id, object.clone())?;
@@ -145,7 +145,7 @@ pub(crate) fn resolve_or_create_text_node_object(
         return Ok(object);
     }
 
-    let object = crate::webidl::binding::create_interface_instance::<Node>(Node::new(document, node_id), context)?;
+    let object = crate::webidl::binding::create_interface_instance_ctx::<Node>(Node::new(document, node_id), context)?;
     cache_node_object(context, node_id, object.clone())?;
     Ok(object)
 }

@@ -1213,7 +1213,7 @@ fn create_transform_stream_default_controller(
 ) -> JsResult<(TransformStreamDefaultController, JsObject)> {
     let controller = TransformStreamDefaultController::new();
     let controller_object: JsObject =
-        crate::webidl::binding::create_interface_instance::<TransformStreamDefaultController>(controller.clone(), context)?.into();
+        crate::webidl::binding::create_interface_instance_ctx::<TransformStreamDefaultController>(controller.clone(), context)?.into();
     Ok((controller, controller_object))
 }
 

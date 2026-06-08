@@ -1093,7 +1093,7 @@ pub(crate) fn create_readable_stream(
     // Step 6: "Let controller be a new ReadableStreamDefaultController."
     let controller = super::ReadableStreamDefaultController::new();
     let controller_object =
-        crate::webidl::binding::create_interface_instance::<super::ReadableStreamDefaultController>(controller.clone(), context)?;
+        crate::webidl::binding::create_interface_instance_ctx::<super::ReadableStreamDefaultController>(controller.clone(), context)?;
 
     // Step 7: "Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm)."
     set_up_readable_stream_default_controller(
@@ -1113,7 +1113,7 @@ pub(crate) fn create_readable_stream(
 }
 fn create_readable_stream_object(context: &mut Context) -> JsResult<(ReadableStream, JsObject)> {
     let stream = ReadableStream::new();
-    let stream_object: JsObject = crate::webidl::binding::create_interface_instance::<ReadableStream>(stream.clone(), context)?.into();
+    let stream_object: JsObject = crate::webidl::binding::create_interface_instance_ctx::<ReadableStream>(stream.clone(), context)?.into();
     Ok((stream, stream_object))
 }
 
@@ -1132,7 +1132,7 @@ fn create_readable_byte_stream(
 
     // Step 3: "Let controller be a new ReadableByteStreamController."
     let controller = ReadableByteStreamController::new();
-    let controller_object = crate::webidl::binding::create_interface_instance::<ReadableByteStreamController>(controller.clone(), context)?;
+    let controller_object = crate::webidl::binding::create_interface_instance_ctx::<ReadableByteStreamController>(controller.clone(), context)?;
 
     // Step 4: "Perform ? SetUpReadableByteStreamController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, 0, undefined)."
     super::set_up_readable_byte_stream_controller(

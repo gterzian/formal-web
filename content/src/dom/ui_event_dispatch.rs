@@ -396,7 +396,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         let time_stamp = self.settings.current_time_millis();
         let view = Some(self.settings.context.global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
-        let event_object = crate::webidl::binding::create_interface_instance::<JsUiEvent>(ui_event, &mut self.settings.context)
+        let event_object = crate::webidl::binding::create_interface_instance_ctx::<JsUiEvent>(ui_event, &mut self.settings.context)
             .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
             eprintln!("failed to dispatch UI event through JavaScript listeners: {error}");

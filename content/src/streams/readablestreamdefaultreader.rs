@@ -379,7 +379,7 @@ pub(crate) fn acquire_readable_stream_default_reader(
 }
 fn create_readable_stream_default_reader(context: &mut Context) -> JsResult<JsObject> {
     let reader = ReadableStreamDefaultReader::new();
-    let reader_object: JsObject = crate::webidl::binding::create_interface_instance::<ReadableStreamDefaultReader>(reader, context)?.into();
+    let reader_object: JsObject = crate::webidl::binding::create_interface_instance_ctx::<ReadableStreamDefaultReader>(reader, context)?.into();
     Ok(reader_object)
 }
 pub(crate) fn with_readable_stream_default_reader_ref<R>(

@@ -390,7 +390,7 @@ fn location_object(context: &mut Context) -> JsResult<JsObject> {
 
     let url = document_creation_url(context)?;
     let window = context.global_object();
-    let object = crate::webidl::binding::create_interface_instance::<Location>(Location::new(url, window), context)?;
+    let object = crate::webidl::binding::create_interface_instance_ctx::<Location>(Location::new(url, window), context)?;
     store_location_object(context, object.clone())?;
     Ok(object)
 }
