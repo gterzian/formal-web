@@ -2,17 +2,17 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsResult, JsValue, Source, class::Class, js_string, object::JsObject,
+    Context, JsError, JsResult, JsValue, Source, js_string, object::JsObject,
     property::Attribute,
 };
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
-use crate::boa::bindings::html::{build_boa_context, wire_interface_prototypes};
+use crate::boa::bindings::html::build_boa_context;
 use crate::boa::platform_objects::{store_document_object, with_global_scope};
 use crate::boa::{install_console_namespace, install_css_namespace, install_document_property};
-use crate::dom::{Document, EventDispatchHost};
+use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::TimerHandler;
 use crate::html::Window;
 
@@ -73,10 +73,6 @@ impl EnvironmentSettingsObject {
         // GlobalScope during build().
         let mut context = build_boa_context(Rc::clone(&document))?;
 
-        // Wire up prototype chains (Window → EventTarget, etc.) before any
-        // objects are created.
-        wire_interface_prototypes(&mut context);
-
         // Install timer host and navigation info on the GlobalScope through the
         // safe boa API (with_global_scope — traverses the GC heap to reach the
         // Window's GlobalScope).
@@ -98,7 +94,7 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let document_object = Class::from_data(
+        let document_object = crate::webidl::binding::create_interface_instance::<Document>(
             Document::new(document.clone(), creation_url.clone()),
             &mut context,
         )
@@ -336,7 +332,7 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
 
 impl EventDispatchHost for EnvironmentSettingsObject {
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
-        Class::from_data(event, &mut self.context)
+        crate::webidl::binding::create_interface_instance::<Event>(event, &mut self.context)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

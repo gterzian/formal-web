@@ -21,11 +21,12 @@ use crate::streams::{
     ReadableStreamDefaultReader, TransformStream, TransformStreamDefaultController, WritableStream,
     WritableStreamDefaultController, WritableStreamDefaultWriter,
 };
+use crate::webidl::binding::{
+    get_registry_prototype, initialize_registry, register_interface_spec,
+    wire_registry_prototype,
+};
 
-/// <https://html.spec.whatwg.org/#global-object>
-/// Boa host hooks that create the Window as the realm's global object.
 pub(crate) struct WindowHostHooks {
-    /// The base document that the Window's GlobalScope wraps.
     document: Rc<RefCell<BaseDocument>>,
 }
 
@@ -47,9 +48,6 @@ impl HostHooks for WindowHostHooks {
     }
 }
 
-/// Build a boa `Context` pre-configured with a Window global object and all
-/// registered Web API classes. Returns the context so the caller can capture
-/// a pointer to the GlobalScope inside the Window for direct access.
 pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
     let mut context = ContextBuilder::new()
         .host_hooks(Rc::new(WindowHostHooks::new(document)))
@@ -57,85 +55,56 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
         .build()
         .map_err(|error| error.to_string())?;
 
-    register_web_api_classes(&mut context)?;
+    initialize_registry(&mut context);
 
-    Ok(context)
-}
-
-/// Register all Web API classes with the boa context.
-fn register_web_api_classes(context: &mut Context) -> Result<(), String> {
-    macro_rules! register {
-        ($cls:ty) => {
-            context
-                .register_global_class::<$cls>()
+    macro_rules! reg {
+        ($ty:ty) => {
+            register_interface_spec::<$ty>(&mut context)
                 .map_err(|error| error.to_string())?;
         };
     }
 
-    register!(EventTarget);
-    register!(DOMException);
-    register!(Event);
-    register!(UIEvent);
-    register!(AbortSignal);
-    register!(AbortController);
-    register!(Node);
-    register!(Document);
-    register!(Element);
-    register!(HTMLElement);
-    register!(HTMLAnchorElement);
-    register!(HTMLIFrameElement);
-    register!(Window);
-    register!(Location);
-    register!(ByteLengthQueuingStrategy);
-    register!(CountQueuingStrategy);
-    register!(ReadableStream);
-    register!(ReadableStreamDefaultController);
-    register!(ReadableByteStreamController);
-    register!(ReadableStreamDefaultReader);
-    register!(ReadableStreamBYOBReader);
-    register!(ReadableStreamBYOBRequest);
-    register!(WritableStream);
-    register!(WritableStreamDefaultController);
-    register!(WritableStreamDefaultWriter);
-    register!(TransformStream);
-    register!(TransformStreamDefaultController);
+    reg!(EventTarget);
+    reg!(DOMException);
+    reg!(Event);
+    reg!(UIEvent);
+    reg!(AbortSignal);
+    reg!(AbortController);
+    reg!(Node);
+    reg!(Document);
+    reg!(Element);
+    reg!(HTMLElement);
+    reg!(HTMLAnchorElement);
+    reg!(HTMLIFrameElement);
+    reg!(Window);
+    reg!(Location);
+    reg!(ByteLengthQueuingStrategy);
+    reg!(CountQueuingStrategy);
+    reg!(ReadableStream);
+    reg!(ReadableStreamDefaultController);
+    reg!(ReadableByteStreamController);
+    reg!(ReadableStreamDefaultReader);
+    reg!(ReadableStreamBYOBReader);
+    reg!(ReadableStreamBYOBRequest);
+    reg!(WritableStream);
+    reg!(WritableStreamDefaultController);
+    reg!(WritableStreamDefaultWriter);
+    reg!(TransformStream);
+    reg!(TransformStreamDefaultController);
 
-    Ok(())
-}
-
-/// Install the `document` and `window` properties on the global object.
-/// Wire up the prototype chain for all registered Web API classes.
-/// Must be called after the context is built but before any objects are created,
-/// so that inheritance (e.g. Window → EventTarget) works correctly.
-pub(crate) fn wire_interface_prototypes(context: &mut Context) {
-    use boa_engine::class::Class;
-
-    fn set_registered_interface_prototype<Child: Class, Parent: Class>(context: &mut Context) {
-        let Some(child) = context.get_global_class::<Child>() else {
-            return;
-        };
-        let Some(parent) = context.get_global_class::<Parent>() else {
-            return;
-        };
-        child.prototype().set_prototype(Some(parent.prototype()));
-        child
-            .constructor()
-            .set_prototype(Some(parent.constructor()));
+    if let Some(de_proto) = get_registry_prototype::<DOMException>(&context) {
+        de_proto.set_prototype(Some(context.intrinsics().constructors().error().prototype()));
     }
 
-    if let Some(dom_exception) = context.get_global_class::<DOMException>() {
-        dom_exception.prototype().set_prototype(Some(
-            context.intrinsics().constructors().error().prototype(),
-        ));
-    }
+    wire_registry_prototype::<UIEvent, Event>(&mut context);
+    wire_registry_prototype::<AbortSignal, EventTarget>(&mut context);
+    wire_registry_prototype::<Node, EventTarget>(&mut context);
+    wire_registry_prototype::<Document, Node>(&mut context);
+    wire_registry_prototype::<Element, Node>(&mut context);
+    wire_registry_prototype::<HTMLElement, Element>(&mut context);
+    wire_registry_prototype::<HTMLAnchorElement, HTMLElement>(&mut context);
+    wire_registry_prototype::<HTMLIFrameElement, HTMLElement>(&mut context);
+    wire_registry_prototype::<Window, EventTarget>(&mut context);
 
-    set_registered_interface_prototype::<UIEvent, Event>(context);
-    set_registered_interface_prototype::<AbortSignal, EventTarget>(context);
-    set_registered_interface_prototype::<Window, EventTarget>(context);
-    set_registered_interface_prototype::<Node, EventTarget>(context);
-    set_registered_interface_prototype::<Document, Node>(context);
-    set_registered_interface_prototype::<Element, Node>(context);
-    set_registered_interface_prototype::<HTMLElement, Element>(context);
-    set_registered_interface_prototype::<HTMLAnchorElement, HTMLElement>(context);
-    set_registered_interface_prototype::<HTMLIFrameElement, HTMLElement>(context);
+    Ok(context)
 }

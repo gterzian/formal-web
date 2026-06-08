@@ -542,7 +542,7 @@ fn appendable_node(value: &JsValue) -> JsResult<Node> {
 
 fn dom_exception_error(exception: DOMException, context: &mut Context) -> JsError {
     JsError::from_opaque(JsValue::from(
-        DOMException::from_data(exception, context)
+        crate::webidl::binding::create_interface_instance::<DOMException>(exception, context)
             .expect("DOMException construction should not fail"),
     ))
 }

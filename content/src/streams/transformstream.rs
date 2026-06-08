@@ -3,7 +3,6 @@ use std::{cell::Cell, rc::Rc};
 use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
-    class::Class,
     job::PromiseJob,
     js_string,
     native_function::NativeFunction,
@@ -1214,7 +1213,7 @@ fn create_transform_stream_default_controller(
 ) -> JsResult<(TransformStreamDefaultController, JsObject)> {
     let controller = TransformStreamDefaultController::new();
     let controller_object: JsObject =
-        TransformStreamDefaultController::from_data(controller.clone(), context)?.into();
+        crate::webidl::binding::create_interface_instance::<TransformStreamDefaultController>(controller.clone(), context)?.into();
     Ok((controller, controller_object))
 }
 

@@ -1,6 +1,6 @@
 use boa_engine::{
     Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions, class::Class, object::JsObject,
+    builtins::promise::ResolvingFunctions, object::JsObject,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -186,7 +186,7 @@ pub(crate) fn acquire_readable_stream_byob_reader(
 
 fn create_readable_stream_byob_reader(context: &mut Context) -> JsResult<JsObject> {
     let reader = ReadableStreamBYOBReader::new();
-    let reader_object: JsObject = ReadableStreamBYOBReader::from_data(reader, context)?.into();
+    let reader_object: JsObject = crate::webidl::binding::create_interface_instance::<ReadableStreamBYOBReader>(reader, context)?.into();
     Ok(reader_object)
 }
 

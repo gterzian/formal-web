@@ -1,17 +1,41 @@
 use boa_engine::{
     Context, JsNativeError, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
 };
 
 use crate::dom::DOMException;
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──
 
 impl WebIdlInterface for DOMException {
     const NAME: &'static str = "DOMException";
+
+    fn create_platform_object(
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let message = args
+            .get(0)
+            .map(|value| {
+                value
+                    .to_string(context)
+                    .map(|value| value.to_std_string_escaped())
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let name = args
+            .get(1)
+            .map(|value| {
+                value
+                    .to_string(context)
+                    .map(|value| value.to_std_string_escaped())
+            })
+            .transpose()?
+            .unwrap_or_else(|| String::from("Error"));
+        Ok(DOMException::new(message, name))
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_attribute(AttributeDef {
@@ -50,44 +74,6 @@ impl WebIdlInterface for DOMException {
             put_forwards: None,
             legacy_lenient_setter: false,
         });
-    }
-}
-
-// ── Boa Class glue ──
-
-impl Class for DOMException {
-    const NAME: &'static str = "DOMException";
-    const LENGTH: usize = 2;
-
-    fn data_constructor(
-        _this: &JsValue,
-        args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        let message = args
-            .get(0)
-            .map(|value| {
-                value
-                    .to_string(context)
-                    .map(|value| value.to_std_string_escaped())
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let name = args
-            .get(1)
-            .map(|value| {
-                value
-                    .to_string(context)
-                    .map(|value| value.to_std_string_escaped())
-            })
-            .transpose()?
-            .unwrap_or_else(|| String::from("Error"));
-
-        Ok(DOMException::new(message, name))
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<DOMException>(class)
     }
 }
 

@@ -1,9 +1,9 @@
 use boa_engine::{
-    Context, JsNativeError, JsObject, JsResult, JsValue,
+    Context, JsError, JsNativeError, JsObject, JsResult, JsValue,
     builtins::object::OrdinaryObject,
     js_string,
     native_function::NativeFunction,
-    object::{FunctionObjectBuilder, builtins::JsFunction},
+    object::{FunctionObjectBuilder, NativeObject, builtins::JsFunction},
     property::PropertyDescriptor,
 };
 
@@ -251,24 +251,124 @@ pub(crate) fn create_interface_object<T: WebIdlInterface>(
 /// Register a Web IDL interface using spec-aligned object creation.
 ///
 /// Directly creates the interface object (§3.7.1) and interface prototype
-/// object (§3.7.3) using:
-/// - `FunctionObjectBuilder` → `CreateBuiltinFunction`
-/// - `JsObject::from_proto_and_data(proto, OrdinaryObject)` → `OrdinaryObjectCreate`
-/// - `JsObject::define_property_or_throw` → `DefinePropertyOrThrow`
+/// Register an interface using ECMAScript primitives, storing
+/// prototype and constructor in the HostDefined registry.
 ///
-/// Then defines the interface name on the global object per
-/// "define the global property references" (step 3.1.3).
-pub(crate) fn register_interface_spec<T: WebIdlInterface>(
-    context: &mut Context,
-) -> JsResult<()> {
-    // §3.7.1: Create interface object (constructor function)
-    let interface_obj = create_interface_object::<T>(context)?;
+/// Creates the interface prototype object (§3.7.3) via
+/// `OrdinaryObjectCreate`, defines members on it (§3.7.5–3.7.7),
+/// creates the constructor (§3.7.1) via `CreateBuiltinFunction`,
+/// wires `F.prototype = proto`, and stores both in the registry.
+pub(crate) fn register_interface_spec<T>(context: &mut Context) -> JsResult<()>
+where
+    T: WebIdlInterface + NativeObject,
+{
+    let realm = context.realm().clone();
 
-    // "define the global property references", Step 3.1.3:
-    // "Perform DefineMethodProperty(target, id, interfaceObject, false)."
-    // ≡ DefinePropertyOrThrow(global, id, PropertyDescriptor{...})
+    // ── §3.7.3: Create interface prototype object ──
+    let proto = JsObject::from_proto_and_data(
+        Some(context.intrinsics().constructors().object().prototype()),
+        OrdinaryObject,
+    );
+
+    // Define members on the prototype per §3.7.6, §3.7.7, §3.7.5
+    let mut def = InterfaceDefinition::new();
+    T::define_members(&mut def);
+
+    for attr in &def.attributes {
+        if attr.static_ || attr.unforgeable {
+            continue;
+        }
+        let getter = NativeFunction::from_fn_ptr(attr.getter).to_js_function(&realm);
+        let mut desc = PropertyDescriptor::builder()
+            .get(getter)
+            .enumerable(true)
+            .configurable(!attr.unforgeable);
+        if let Some(setter_fn) = attr.setter {
+            let setter = NativeFunction::from_fn_ptr(setter_fn).to_js_function(&realm);
+            desc = desc.set(setter);
+        }
+        proto.define_property_or_throw(js_string!(attr.id), desc.build(), context)?;
+    }
+    for op in &def.operations {
+        if op.static_ || op.unforgeable {
+            continue;
+        }
+        let method = NativeFunction::from_fn_ptr(op.method).to_js_function(&realm);
+        let desc = PropertyDescriptor::builder()
+            .value(method)
+            .writable(true)
+            .enumerable(true)
+            .configurable(true)
+            .build();
+        proto.define_property_or_throw(js_string!(op.id), desc, context)?;
+    }
+    for const_ in &def.constants {
+        let const_desc = PropertyDescriptor::builder()
+            .value(const_.value.clone())
+            .writable(false)
+            .enumerable(true)
+            .configurable(false)
+            .build();
+        // §3.7.5: Constants on interface prototype object
+        proto.define_property_or_throw(js_string!(const_.id), const_desc, context)?;
+    }
+
+    // ── §3.7.1: Create interface object (constructor) ──
+    // Constructor steps: calls create_platform_object to get the Rust struct,
+    // then wraps it in a JsObject via create_interface_instance.
+    let constructor = {
+        let f = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(|_this: &JsValue, args: &[JsValue], ctx: &mut Context| {
+                let obj = T::create_platform_object(args, ctx)?;
+                let instance = create_interface_instance(obj, ctx)?;
+                Ok(JsValue::from(instance))
+            }),
+        )
+        .name(T::NAME)
+        .length(1)
+        .constructor(true)
+        .build();
+        let f_obj: JsObject = f.clone().into();
+
+        // Wire F.prototype = proto
+        let proto_desc = PropertyDescriptor::builder()
+            .value(proto.clone())
+            .writable(false)
+            .enumerable(false)
+            .configurable(false)
+            .build();
+        f_obj.define_property_or_throw(js_string!("prototype"), proto_desc, context)?;
+
+        // Wire proto.constructor = F
+        let ctor_desc = PropertyDescriptor::builder()
+            .value(f_obj.clone())
+            .writable(true)
+            .enumerable(false)
+            .configurable(true)
+            .build();
+        proto.define_property_or_throw(js_string!("constructor"), ctor_desc, context)?;
+
+        // §3.7.5: Constants on the constructor too
+        for const_ in &def.constants {
+            let const_desc = PropertyDescriptor::builder()
+                .value(const_.value.clone())
+                .writable(false)
+                .enumerable(true)
+                .configurable(false)
+                .build();
+            f_obj.define_property_or_throw(js_string!(const_.id), const_desc, context)?;
+        }
+
+        f_obj
+    };
+
+    // Store in HostDefined registry
+    super::registry::register_in_host_defined::<T>(context, proto, constructor.clone());
+
+    // Define on global object
     let desc = PropertyDescriptor::builder()
-        .value(interface_obj)
+        .value(constructor)
         .writable(true)
         .enumerable(false)
         .configurable(true)
@@ -283,12 +383,28 @@ pub(crate) fn register_interface_spec<T: WebIdlInterface>(
 /// Default constructor steps per §3.7.1 step 1.
 fn create_default_constructor_steps<T: WebIdlInterface>() -> NativeFunction {
     NativeFunction::from_fn_ptr(|_this, _args, _context| {
-        // Step 1.1: "If I was not declared with a constructor operation,
-        //            then throw a TypeError."
         Err(JsNativeError::typ()
             .with_message("Illegal constructor")
             .into())
     })
+}
+
+/// Create a JsObject instance of interface T from Rust data.
+///
+/// https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface
+///
+/// ECMAScript → Boa: `MakeBasicObject(« [[Prototype]], … »)` →
+/// `JsObject::from_proto_and_data(prototype, data)`
+pub(crate) fn create_interface_instance<T>(data: T, context: &mut Context) -> JsResult<JsObject>
+where
+    T: NativeObject + 'static,
+{
+    let prototype = super::registry::get_prototype_from_host_defined::<T>(context)
+        .ok_or_else(|| {
+            JsError::from(JsNativeError::typ()
+                .with_message(format!("interface not registered: {}", std::any::type_name::<T>())))
+        })?;
+    Ok(JsObject::from_proto_and_data(Some(prototype), data))
 }
 
 // ─────────────────────────────────────────────────────────────────────────

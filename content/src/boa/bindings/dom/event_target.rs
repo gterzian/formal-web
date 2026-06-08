@@ -3,7 +3,6 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    class::{Class, ClassBuilder},
     js_string,
     object::JsObject,
 };
@@ -28,11 +27,18 @@ pub(crate) struct AddEventListenerOptions {
 // ── WebIDL interface definition (§3) ──
 
 use crate::webidl::binding::{
-    InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 impl WebIdlInterface for EventTarget {
     const NAME: &'static str = "EventTarget";
+
+    fn create_platform_object(
+        _args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        Ok(EventTarget::default())
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         def.add_operation(OperationDef {
@@ -61,25 +67,6 @@ impl WebIdlInterface for EventTarget {
         });
     }
 }
-
-// ── Boa Class glue + transitional wrapper ──
-
-impl Class for EventTarget {
-    const NAME: &'static str = "EventTarget";
-
-    fn data_constructor(
-        _this: &JsValue,
-        _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
-        Ok(EventTarget::default())
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        register_interface::<EventTarget>(class)
-    }
-}
-
 
 
 fn add_event_listener(
@@ -201,7 +188,7 @@ impl EcmascriptHost for ContextEventDispatchHost<'_> {
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        Event::from_data(event, self.callback_host.context())
+        crate::webidl::binding::create_interface_instance::<Event>(event, self.callback_host.context())
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

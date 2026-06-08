@@ -6,7 +6,6 @@ use std::{
 use blitz_dom::BaseDocument;
 use boa_engine::{
     Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
-    class::Class,
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
@@ -579,7 +578,7 @@ impl EcmascriptHost for ContextEventDispatchHost<'_> {
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        Event::from_data(event, self.callback_host.context())
+        crate::webidl::binding::create_interface_instance::<Event>(event, self.callback_host.context())
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
@@ -612,7 +611,7 @@ pub(crate) fn create_writable_stream_default_controller(
 ) -> JsResult<(WritableStreamDefaultController, JsObject)> {
     let controller = WritableStreamDefaultController::new();
     let controller_object: JsObject =
-        WritableStreamDefaultController::from_data(controller.clone(), context)?.into();
+        crate::webidl::binding::create_interface_instance::<WritableStreamDefaultController>(controller.clone(), context)?.into();
     Ok((controller, controller_object))
 }
 

@@ -1,19 +1,37 @@
 use boa_engine::{
     Context, JsArgs, JsResult, JsString, JsValue,
-    class::{Class, ClassBuilder},
     js_string,
 };
 
 use crate::boa::with_event_mut;
 use crate::dom::Event;
 use crate::webidl::binding::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, register_interface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──
 
 impl WebIdlInterface for Event {
     const NAME: &'static str = "Event";
+
+    fn create_platform_object(
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let type_ = args
+            .get_or_undefined(0)
+            .to_string(context)?
+            .to_std_string_escaped();
+        let init = args.get_or_undefined(1);
+        Ok(Event::new(
+            type_,
+            init_flag(init, js_string!("bubbles"), context)?,
+            init_flag(init, js_string!("cancelable"), context)?,
+            init_flag(init, js_string!("composed"), context)?,
+            false,
+            0.0,
+        ))
+    }
 
     fn define_members(def: &mut InterfaceDefinition) {
         // §3.7.6: Regular attributes
@@ -163,39 +181,6 @@ impl WebIdlInterface for Event {
             unforgeable: false,
             promise_type: false,
         });
-    }
-}
-
-// ── Boa Class glue (will be replaced by register_interface_spec) ──
-
-impl Class for Event {
-    const NAME: &'static str = "Event";
-    const LENGTH: usize = 1;
-
-    fn data_constructor(
-        _this: &JsValue,
-        args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        let type_ = args
-            .get_or_undefined(0)
-            .to_string(context)?
-            .to_std_string_escaped();
-        let init = args.get_or_undefined(1);
-        Ok(Event::new(
-            type_,
-            init_flag(init, js_string!("bubbles"), context)?,
-            init_flag(init, js_string!("cancelable"), context)?,
-            init_flag(init, js_string!("composed"), context)?,
-            false,
-            0.0,
-        ))
-    }
-
-    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
-        // https://webidl.spec.whatwg.org/#js-interfaces
-        // Use the Web IDL spec-aligned registration for this interface.
-        register_interface::<Event>(class)
     }
 }
 

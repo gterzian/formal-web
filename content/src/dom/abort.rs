@@ -1,7 +1,7 @@
 use std::{mem, ptr};
 
 use boa_engine::{
-    Context, JsData, JsNativeError, JsResult, JsValue, class::Class, object::JsObject,
+    Context, JsData, JsNativeError, JsResult, JsValue, object::JsObject,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -309,7 +309,7 @@ pub(crate) fn create_abort_signal(
     signal: AbortSignal,
     context: &mut Context,
 ) -> JsResult<AbortSignal> {
-    let signal_object = AbortSignal::from_data(signal.clone(), context)?;
+    let signal_object = crate::webidl::binding::create_interface_instance::<AbortSignal>(signal.clone(), context)?;
     signal.set_reflector(signal_object);
     Ok(signal)
 }
@@ -321,7 +321,7 @@ pub(crate) fn signal_abort(
     reason: JsValue,
 ) -> JsResult<()> {
     let reason = if reason.is_undefined() {
-        JsValue::from(DOMException::from_data(
+        JsValue::from(crate::webidl::binding::create_interface_instance::<DOMException>(
             DOMException::abort_error(),
             host.context(),
         )?)
