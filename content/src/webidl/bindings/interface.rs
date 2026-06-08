@@ -239,13 +239,16 @@ pub(crate) fn create_interface_object<T: WebIdlInterface>(
     let _unforgeables = JsObject::from_proto_and_data(None, OrdinaryObject);
 
     // Step 5: "Define the unforgeable regular operations of I on unforgeables, given realm."
-    // Note: Unforgeable operations are not yet defined on the unforgeables object.
-
     // Step 6: "Define the unforgeable regular attributes of I on unforgeables, given realm."
-    // Note: Unforgeable attributes are not yet defined on the unforgeables object.
+    // Note: These would call `define_unforgeable_regular_operations` and
+    // `define_unforgeable_regular_attributes` on `_unforgeables`.  However,
+    // Boa's FunctionObjectBuilder does not expose the [[Unforgeables]] slot
+    // on the constructed function, and no interface currently has unforgeable
+    // members, so this is deferred.
 
     // Step 7: "Set F.[[Unforgeables]] to unforgeables."
-    // Note: The [[Unforgeables]] slot is set implicitly by FunctionObjectBuilder.
+    // Note: Cannot set [[Unforgeables]] via FunctionObjectBuilder.  Instance
+    // construction would need to copy unforgeable properties from this slot.
 
     // Step 8: "Let length be 0."
     // Step 9: "If I was declared with a constructor operation, then ... Set length to the
@@ -452,9 +455,14 @@ pub(crate) fn resolve_this_value(this: &JsValue, context: &Context) -> JsResult<
     Ok(this.clone())
 }
 
-/// Define global property references per the Web IDL spec.
+/// <https://webidl.spec.whatwg.org/#define-the-global-property-references>
 ///
-/// https://webidl.spec.whatwg.org/#define-the-global-property-references
+/// Note: The full algorithm (collect all interfaces, sort by inheritance,
+/// create interface objects, define them on the global object) is split
+/// across per-interface `register_interface_spec` calls in the current
+/// implementation.  Each call defines its own constructor on the global
+/// object directly.  This function is a no-op because the work is already
+/// distributed across the individual registrations.
 pub(crate) fn define_global_property_references(_context: &mut Context) -> JsResult<()> {
     Ok(())
 }

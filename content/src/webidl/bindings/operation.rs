@@ -53,6 +53,24 @@ pub(crate) fn define_regular_operations(
     define_operations_on_target(proto, context, &regular)
 }
 
+/// <https://webidl.spec.whatwg.org/#define-the-unforgeable-regular-operations>
+pub(crate) fn define_unforgeable_regular_operations(
+    proto: &JsObject,
+    context: &mut Context,
+    operations: &[OperationDef],
+) -> JsResult<()> {
+    // Step 1: "Let operations be the list of unforgeable regular operations
+    //          that are members of definition."
+    let unforgeable: Vec<&OperationDef> = operations
+        .iter()
+        .filter(|o| o.unforgeable && !o.static_)
+        .collect();
+
+    // Step 2: "Define the operations operations of definition on target
+    //          given realm."
+    define_operations_on_target(proto, context, &unforgeable)
+}
+
 /// <https://webidl.spec.whatwg.org/#define-the-static-operations>
 pub(crate) fn define_static_operations(
     constructor: &JsObject,

@@ -85,15 +85,22 @@ pub(crate) fn define_static_attributes(
     define_attributes_on_target(constructor, context, &static_attrs)
 }
 
-/// Define the unforgeable regular attributes on the target.
-///
-/// https://webidl.spec.whatwg.org/#define-the-unforgeable-regular-attributes
+/// <https://webidl.spec.whatwg.org/#define-the-unforgeable-regular-attributes>
 pub(crate) fn define_unforgeable_regular_attributes(
-    _proto: &JsObject,
-    _context: &mut Context,
-    _attributes: &[AttributeDef],
+    proto: &JsObject,
+    context: &mut Context,
+    attributes: &[AttributeDef],
 ) -> JsResult<()> {
-    Ok(())
+    // Step 1: "Let attributes be the list of unforgeable regular attributes
+    //          that are members of definition."
+    let unforgeable: Vec<&AttributeDef> = attributes
+        .iter()
+        .filter(|a| a.unforgeable && !a.static_)
+        .collect();
+
+    // Step 2: "Define the attributes attributes of definition on target
+    //          given realm."
+    define_attributes_on_target(proto, context, &unforgeable)
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-attributes>
