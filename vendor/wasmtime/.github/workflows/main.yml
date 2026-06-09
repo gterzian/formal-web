@@ -1,0 +1,1530 @@
+name: CI
+on:
+  # Run CI for PRs to `main` and to release branches.
+  #
+  # Note that PRs to `main` will run a subset of tests and PRs to the
+  # `release-*` branches will run full CI.
+  pull_request:
+    branches:
+    - main
+    - 'release-*'
+
+  # This is the CI that runs for PRs-to-merge.
+  merge_group:
+
+  push:
+    branches:
+    # Right now merge queues can't be used with wildcards in branch protections
+    # so full CI runs both on PRs to release branches as well as merges to
+    # release branches. Note that the merge to a release branch may produce a
+    # tag at the end of CI if successful and the tag will trigger the artifact
+    # uploads as well as publication to crates.io.
+    - 'release-*'
+
+  # Allow manually triggering this request via a button or another workflow.
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+# Cancel any in-flight jobs for the same PR/branch so there's only one active
+# at a time
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}2
+  cancel-in-progress: true
+
+jobs:
+  # Check Code style quickly by running `rustfmt` over all code
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: rustup component add rustfmt
+    - run: cargo fmt --all -- --check
+
+  # Quick JS formatting/linting checks for the little bits of JS we have for the
+  # `wasmtime explore` UI.
+  check_js:
+    name: Check JS
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - run: npm install
+      working-directory: ./crates/explorer
+    - run: npm run lint
+      working-directory: ./crates/explorer
+    - run: npm run fmt-check
+      working-directory: ./crates/explorer
+
+  # Check Code style quickly by running `clang-format` over all the C/C++ code
+  #
+  # Note that `wasmtime-platform.h` is excluded here as it's auto-generated.
+  clangformat:
+    name: Clang format
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - run: |
+        git ls-files '*.h' '*.c' '*.cpp' '*.hh' '*.cc' | \
+          grep -v wasmtime-platform.h | \
+          grep -v wasm.h | \
+          xargs clang-format-18 --dry-run --Werror --verbose
+    # Make sure our `clangformat.sh` helper script keeps running and stays
+    # in-sync with the previous check.
+    - run: crates/c-api/clangformat.sh
+    - run: git diff --exit-code
+
+  # Lint dependency graph for security advisories, duplicate versions, and
+  # incompatible licences
+  cargo_deny:
+    name: Cargo deny
+    needs: determine
+    if: needs.determine.outputs.audit
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - uses: ./.github/actions/cargo-install
+      with:
+        crate: cargo-deny
+        version: 0.18.2
+    - run: cargo deny check bans licenses
+
+  # Ensure dependencies are vetted. See https://mozilla.github.io/cargo-vet/
+  #
+  # Note that this step, on PRs only, is allowed to fail. This is then followed
+  # up with the `cargo_vet_failure_for_prs` step below. The intention is to
+  # avoid causing this check to fail PRs while still enabling it to fail the
+  # merge queue checks. That way PRs can enter the merge queue when this step is
+  # failing if `main` has picked up `cargo vet` entries in the meantime for the
+  # failures.
+  cargo_vet:
+    name: Cargo vet
+    needs: determine
+    if: github.repository == 'bytecodealliance/wasmtime' && needs.determine.outputs.audit
+    runs-on: ubuntu-latest
+    outputs:
+      outcome: ${{ steps.vet.outcome }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - uses: ./.github/actions/cargo-install
+      with:
+        crate: cargo-vet
+        version: 0.10.2
+    - id: vet
+      run: cargo vet --locked
+      continue-on-error: ${{ github.event_name == 'pull_request' }}
+
+    # Double-check that if versions are bumped that `cargo vet` still works.
+    # This is intended to weed out mistakes such as #9115 from happening again.
+    - run: rustc scripts/publish.rs && ./publish bump-patch && cargo vet
+      name: Ensure `cargo vet` works if versions are bumped
+
+  cargo_vet_failure_for_prs:
+    name: Cargo vet failed on a Pull Request
+    needs:
+    - determine
+    - cargo_vet
+    if: |
+      needs.determine.outputs.audit
+      && github.event_name == 'pull_request'
+      && needs.cargo_vet.outputs.outcome == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+    # NB: this message ideally would link back to the previous step, but I'm not
+    # sure how to easily do that.
+    - run: |
+        echo 'failed to run "cargo vet", see previous `Cargo vet` step'
+        echo 'exiting with a nonzero status now to alert PR authors'
+        echo 'note, though, that this PR can still enter the merge queue'
+        echo ''
+        echo 'See https://docs.wasmtime.dev/contributing-coding-guidelines.html#cargo-vet-for-contributors'
+        echo 'for more information about the vetting process for Wasmtime'
+        exit 1
+
+  # This job is a dependency of many of the jobs below. This calculates what's
+  # actually being run for this workflow. For example:
+  #
+  # * Pushes to branches, which is currently both pushes to merge queue branches
+  #   as well as release branches, perform full CI.
+  # * PRs to release branches (not `main`) run full CI.
+  # * PRs to `main` will only run a few smoke tests above plus some elements of
+  #   the test matrix. The test matrix here is determined dynamically by the
+  #   `./ci/build-test-matrix.js` script given the commits that happened and
+  #   the files modified.
+  determine:
+    name: Determine CI jobs to run
+    runs-on: ubuntu-latest
+    outputs:
+      run-full: ${{ steps.calculate.outputs.run-full }}
+      test-matrix: ${{ steps.calculate.outputs.test-matrix }}
+      build-matrix: ${{ steps.calculate.outputs.build-matrix }}
+      test-capi: ${{ steps.calculate.outputs.test-capi }}
+      test-nightly: ${{ steps.calculate.outputs.test-nightly }}
+      test-miri: ${{ steps.calculate.outputs.test-miri }}
+      audit: ${{ steps.calculate.outputs.audit }}
+      preview1-adapter: ${{ steps.calculate.outputs.preview1-adapter }}
+      run-dwarf: ${{ steps.calculate.outputs.run-dwarf }}
+      platform-checks: ${{ steps.calculate.outputs.platform-checks }}
+      test-gc-zeal: ${{ steps.calculate.outputs.test-gc-zeal }}
+    steps:
+    - uses: actions/checkout@v6
+    - id: calculate
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        touch commits.log names.log
+        # Note that CI doesn't run on pushes to `main`, only pushes to merge
+        # queue branches and release branches, so this only runs full CI in
+        # those locations.
+        if [ "${{ github.event_name }}" != "pull_request" ]; then
+          run_full=true
+        else
+          pr=${{ github.event.number }}
+          gh pr view $pr --json commits | tee commits.log
+          gh pr diff $pr --name-only | tee names.log || echo "failed to get files"
+          if [ "${{ github.base_ref }}" != "main" ]; then
+            run_full=true
+          elif grep -q 'prtest:full' commits.log; then
+            run_full=true
+          elif grep -q 'prtest:debug' commits.log; then
+            echo run-dwarf=true >> $GITHUB_OUTPUT
+          elif grep -q 'prtest:platform-checks' commits.log; then
+            echo platform-checks=true >> $GITHUB_OUTPUT
+          elif grep -q 'prtest:miri' commits.log; then
+            echo test-miri=true >> $GITHUB_OUTPUT
+          elif grep -q 'prtest:capi' commits.log; then
+            echo test-capi=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q crates.c-api names.log; then
+            echo test-capi=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q fuzz names.log; then
+            echo test-nightly=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q sys.custom names.log; then
+            echo test-nightly=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q Cargo.lock names.log; then
+            echo audit=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q supply-chain names.log; then
+            echo audit=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q component-adapter names.log; then
+            echo preview1-adapter=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q debug names.log; then
+            echo run-dwarf=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q pulley names.log; then
+            echo test-nightly=true >> $GITHUB_OUTPUT
+          fi
+          if grep -q gc names.log; then
+            echo test-gc-zeal=true >> $GITHUB_OUTPUT
+          fi
+        fi
+        matrix="$(node ./ci/build-test-matrix.js ./commits.log ./names.log $run_full)"
+        echo "test-matrix={\"include\":$(echo $matrix)}" >> $GITHUB_OUTPUT
+        echo "$matrix"
+
+        matrix="$(node ./ci/build-build-matrix.js)"
+        echo "build-matrix={\"include\":$(echo $matrix)}" >> $GITHUB_OUTPUT
+
+        if [ "$run_full" = "true" ]; then
+            echo run-full=true >> $GITHUB_OUTPUT
+            echo test-capi=true >> $GITHUB_OUTPUT
+            echo test-nightly=true >> $GITHUB_OUTPUT
+            echo test-miri=true >> $GITHUB_OUTPUT
+            echo test-gc-zeal=true >> $GITHUB_OUTPUT
+            echo audit=true >> $GITHUB_OUTPUT
+            echo preview1-adapter=true >> $GITHUB_OUTPUT
+            echo run-dwarf=true >> $GITHUB_OUTPUT
+            echo platform-checks=true >> $GITHUB_OUTPUT
+        fi
+
+  # Build all documentation of Wasmtime, including the C API documentation,
+  # mdbook documentation, etc. This produces a `gh-pages` artifact which is what
+  # gets uploaded to the `gh-pages` branch later on.
+  doc:
+    needs: determine
+    if: needs.determine.outputs.run-full
+    name: Doc build
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -Dwarnings --cfg docsrs
+      OPENVINO_SKIP_LINKING: 1
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+      with:
+        toolchain: wasmtime-ci-pinned-nightly
+
+    # Build C API documentation
+    - run: |
+        curl --retry 5 --retry-all-errors -o doxygen.tar.gz -L https://github.com/doxygen/doxygen/releases/download/Release_1_9_3/doxygen-1.9.3.linux.bin.tar.gz
+        tar xzf doxygen.tar.gz
+        rm doxygen.tar.gz
+    - run: echo "`pwd`/doxygen-1.9.3/bin" >> $GITHUB_PATH
+    - run: cmake -S crates/c-api -B target/c-api
+    - run: cmake --build target/c-api --target doc
+
+    # install mdbook, build the docs, and test the docs
+    - uses: ./.github/actions/cargo-install
+      with:
+        crate: mdbook
+        version: 0.4.37
+    - uses: ./.github/actions/cargo-install
+      with:
+        crate: mdbook-langtabs
+        version: 0.1.1
+    - run: (cd docs && mdbook build)
+
+    # Build Rust API documentation.
+    #
+    # Enable extra features in crates as well to ensure they're documented
+    - run: |
+        cargo doc --no-deps --workspace \
+          --exclude wasmtime-cli \
+          --exclude test-programs \
+          --exclude cranelift-codegen-meta \
+          --exclude wasmtime-wasi-nn \
+          --exclude wasmtime-fuzzing \
+          --exclude wasm-spec-interpreter \
+          --exclude calculator \
+          --all-features
+    - run: cargo doc --package cranelift-codegen-meta --document-private-items
+
+    # Assemble the documentation, and always upload it as an artifact for
+    # inspection on PRs and such.
+    - run: |
+        mv docs/book gh-pages
+        mv crates/c-api/html gh-pages/c-api
+        mv target/doc gh-pages/api
+        tar czf gh-pages.tar.gz gh-pages
+    - uses: actions/upload-artifact@v6
+      with:
+        name: gh-pages
+        path: gh-pages.tar.gz
+
+  # Checks of various feature combinations and whether things compile. The goal
+  # here isn't to run tests, mostly just serve as a double-check that Rust code
+  # compiles and is likely to work everywhere else.
+  micro_checks:
+    name: Check ${{matrix.name}}
+    strategy:
+      fail-fast: ${{ github.event_name != 'pull_request' }}
+      matrix:
+        include:
+          - name: wasmtime
+            checks: |
+              -p wasmtime --no-default-features
+              -p wasmtime --no-default-features --features wat
+              -p wasmtime --no-default-features --features profiling
+              -p wasmtime --no-default-features --features cache
+              -p wasmtime --no-default-features --features async
+              -p wasmtime --no-default-features --features std
+              -p wasmtime --no-default-features --features pooling-allocator
+              -p wasmtime --no-default-features --features cranelift
+              -p wasmtime --no-default-features --features component-model
+              -p wasmtime --no-default-features --features component-model-async
+              -p wasmtime --no-default-features --features runtime,component-model
+              -p wasmtime --no-default-features --features cranelift,wat,async,std,cache
+              -p wasmtime --no-default-features --features winch
+              -p wasmtime --no-default-features --features wmemcheck
+              -p wasmtime --no-default-features --features wmemcheck,cranelift,runtime
+              -p wasmtime --no-default-features --features demangle
+              -p wasmtime --no-default-features --features addr2line
+              -p wasmtime --no-default-features --features gc
+              -p wasmtime --no-default-features --features runtime,gc
+              -p wasmtime --no-default-features --features cranelift,gc
+              -p wasmtime --no-default-features --features gc-drc
+              -p wasmtime --no-default-features --features runtime,gc-drc
+              -p wasmtime --no-default-features --features cranelift,gc-drc
+              -p wasmtime --no-default-features --features gc-null
+              -p wasmtime --no-default-features --features runtime,gc-null
+              -p wasmtime --no-default-features --features cranelift,gc-null
+              -p wasmtime --no-default-features --features gc-copying
+              -p wasmtime --no-default-features --features runtime,gc-copying
+              -p wasmtime --no-default-features --features cranelift,gc-copying
+              -p wasmtime --no-default-features --features runtime
+              -p wasmtime --no-default-features --features threads
+              -p wasmtime --no-default-features --features runtime,threads
+              -p wasmtime --no-default-features --features cranelift,threads
+              -p wasmtime --no-default-features --features stack-switching
+              -p wasmtime --no-default-features --features cranelift,stack-switching
+              -p wasmtime --no-default-features --features runtime,stack-switching
+              -p wasmtime --no-default-features --features debug
+              -p wasmtime --no-default-features --features debug,gc
+              -p wasmtime --no-default-features --features runtime,cache
+              -p wasmtime --features incremental-cache
+              -p wasmtime --features profile-pulley
+              -p wasmtime --all-features
+
+          - name: wasmtime-fiber
+            checks: |
+              -p wasmtime-internal-fiber --no-default-features
+              -p wasmtime-internal-fiber --no-default-features --features std
+              -p wasmtime-internal-fiber --all-features
+
+          - name: wasmtime-cli
+            checks: |
+              -p wasmtime-cli --no-default-features
+              -p wasmtime-cli --no-default-features --features pooling-allocator
+              -p wasmtime-cli --no-default-features --features run
+              -p wasmtime-cli --no-default-features --features run,component-model
+              -p wasmtime-cli --no-default-features --features run,pooling-allocator
+              -p wasmtime-cli --no-default-features --features compile
+              -p wasmtime-cli --no-default-features --features compile,cranelift
+              -p wasmtime-cli --no-default-features --features compile,cranelift,component-model
+              -p wasmtime-cli --no-default-features --features objdump
+              -p wasmtime-cli --no-default-features --features wizer
+              -p wasmtime-cli --no-default-features --features gdbstub
+              -p wasmtime-cli --all-features
+              -p wasmtime-cli --features component-model
+
+          - name: cranelift-codegen
+            checks: |
+              -p cranelift-codegen --benches
+              -p cranelift-codegen --no-default-features --features std,unwind,pulley
+
+          - name: cranelift-entity
+            checks: |
+              -p cranelift-entity --no-default-features
+              -p cranelift-entity --no-default-features --features enable-serde
+
+          - name: wasmtime-bench-api
+            checks: |
+              -p wasmtime-bench-api
+
+          - name: wasmtime-c-api
+            checks: |
+              -p wasmtime-c-api --no-default-features
+              -p wasmtime-c-api --no-default-features --features wat
+              -p wasmtime-c-api --no-default-features --features wasi
+              -p wasmtime-c-api --no-default-features --features gc
+
+          - name: wasmtime-wasi-http
+            checks: |
+              -p wasmtime-wasi-http --no-default-features
+              -p wasmtime-wasi-http --no-default-features --features p2
+              -p wasmtime-wasi-http --no-default-features --features p3
+              -p wasmtime-wasi-http --no-default-features --features p2,component-model-async
+              -p wasmtime-wasi-http --no-default-features --features p3,component-model-async
+              -p wasmtime-wasi-http --no-default-features --features p3 --all-targets
+
+          - name: wasmtime-wasi
+            checks: |
+              -p wasmtime-wasi --no-default-features
+              -p wasmtime-wasi --no-default-features --features p0
+              -p wasmtime-wasi --no-default-features --features p1
+              -p wasmtime-wasi --no-default-features --features p2
+              -p wasmtime-wasi --no-default-features --features p3
+
+          - name: wasmtime-wasi-tls
+            checks: |
+              -p wasmtime-wasi-tls --no-default-features
+              -p wasmtime-wasi-tls --no-default-features --features p2
+              -p wasmtime-wasi-tls --no-default-features --features p3
+              -p wasmtime-wasi-tls --no-default-features --features rustls
+              -p wasmtime-wasi-tls --no-default-features --features nativetls
+              -p wasmtime-wasi-tls --no-default-features --features openssl
+
+          - name: wasmtime-wizer
+            checks: |
+              -p wasmtime-wizer --no-default-features
+              -p wasmtime-wizer --no-default-features --features wasmtime
+              -p wasmtime-wizer --no-default-features --features wasmprinter
+              -p wasmtime-wizer --no-default-features --features component-model
+              -p wasmtime-wizer --no-default-features --features rayon
+              -p wasmtime-wizer --no-default-features --all-features
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+
+    # Run the check.
+    - run: |
+        checks=$(cat <<END
+        ${{ matrix.checks }}
+        END
+        )
+        echo "$checks" | xargs -I CHECK sh -c 'echo "=== cargo check CHECK ==="; cargo check CHECK'
+
+  special_tests:
+    name: One-off special tests
+    runs-on: ubuntu-latest
+    needs: determine
+    if: needs.determine.outputs.run-full
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: cargo test -p wasmtime-internal-fiber --no-default-features
+    - run: cargo test -p cranelift-tools --test logged-filetests
+
+  # Check that Clippy lints are passing.
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NDK_VERSION: 2.12.2
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+
+    - run: rustup component add clippy
+    - run: cargo clippy --workspace --all-targets --features p3,component-model-async
+
+  # Verify that the workspace compiles cleanly under the MSRV toolchain.
+  #
+  # The excludes mirror `ci/run-tests.py` so that crates which require
+  # nightly toolchains or external dependencies (OCaml, SMT solvers) are
+  # skipped.
+  msrv_check:
+    name: MSRV check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+      with:
+        toolchain: msrv
+    - run: |
+        # wasi-preview1-component-adapter has mutually-exclusive features
+        # (command/reactor/proxy) that compile-error under --all-features.
+        # It's a wasm32-only artifact built separately by
+        # ci/build-wasi-preview1-component-adapter.sh against
+        # wasm32-unknown-unknown, not user-facing on the host toolchain,
+        # so MSRV doesn't apply.
+        cargo check --workspace --all-targets --all-features --locked \
+          --exclude test-programs \
+          --exclude wasmtime-wasi-nn \
+          --exclude wasmtime-wasi-tls \
+          --exclude wasmtime-fuzzing \
+          --exclude wasm-spec-interpreter \
+          --exclude veri_engine \
+          --exclude calculator \
+          --exclude wasi-preview1-component-adapter
+
+  # Similar to `micro_checks` but where we need to install some more state
+  # (e.g. Android NDK) and we haven't factored support for those things out into
+  # a parallel jobs yet.
+  monolith_checks:
+    name: Monolith Checks
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NDK_VERSION: 2.12.2
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+
+    # Check that wasmtime compiles with panic=abort since there's some `#[cfg]`
+    # for specifically panic=abort there.
+    - run: cargo check -p wasmtime
+      env:
+        RUSTFLAGS: -Cpanic=abort
+
+    # Check a few builds of the cranelift backend
+    # - only x86 backend support,
+    # - only arm64 backend support,
+    # - no debug_assertions.
+    - run: cargo check --manifest-path=./cranelift/Cargo.toml --bin clif-util --no-default-features --features=cranelift-codegen/arm64
+    - run: cargo check --manifest-path=./cranelift/Cargo.toml --bin clif-util --no-default-features --features=cranelift-codegen/x86
+    - run: cargo check --manifest-path=./cranelift/Cargo.toml --bin clif-util
+      env:
+        CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: false
+
+    # Re-vendor all WIT files and ensure that they're all up-to-date by ensuring
+    # that there's no git changes.
+    - name: Install wkg
+      run: |
+        curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+        cargo binstall --no-confirm wkg@0.15.0
+    - name: Re-vendor WIT
+      run: ./ci/vendor-wit.sh
+    - run: git diff --exit-code
+
+    # Re-vendor the C API and make sure it's up-to-date.
+    - name: Re-vendor C API
+      run: ./ci/vendor-c-api-headers.sh
+    - run: git diff --exit-code
+
+  # Various checks that Wasmtime builds for a variety of platforms. Each
+  # platform may not include the entire dependency tree and maybe just a few
+  # features here and there, see the `include` matrix for more details.
+  platform_checks:
+    needs: determine
+    if: needs.determine.outputs.platform-checks
+    name: "Platform: ${{ matrix.target }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: ${{ github.event_name != 'pull_request' }}
+      matrix:
+        include:
+        - target: x86_64-unknown-freebsd
+          os: ubuntu-latest
+          test: cargo check
+        - target: aarch64-pc-windows-msvc
+          os: windows-latest
+          test: cargo check
+        # While we're here testing a windows target also test a feature'd build
+        # on Windows. Note that this isn't covered by `micro_checks` above since
+        # that's for unix platforms, not Windows, so include a small check here
+        # which isn't the full `micro_checks` matrix but hopefully enough bang
+        # for our buck.
+        - target: i686-pc-windows-msvc
+          os: windows-latest
+          test: cargo check && cargo build -p wasmtime --no-default-features --features runtime
+        # This is used for general compatibility with `#![no_std]` targets and a
+        # variety of crates are tested here.
+        - target: x86_64-unknown-none
+          os: ubuntu-latest
+          test: >
+            cargo check -p wasmtime --no-default-features --features runtime,component-model &&
+            cargo check -p wasmtime --no-default-features --features runtime,gc,component-model-async,pulley,debug,debug-builtins,demangle,anyhow &&
+            cargo check -p cranelift-control --no-default-features &&
+            cargo check -p cranelift-assembler-x64 --lib &&
+            cargo check -p cranelift-codegen --no-default-features --features x86,arm64,riscv64 &&
+            cargo check -p cranelift-frontend --no-default-features &&
+            cargo check -p pulley-interpreter --features encode,decode,disas,interp &&
+            cargo check -p wasmtime-wasi-io --no-default-features
+        # Use `cross` for illumos to have a C compiler/linker available.
+        - target: x86_64-unknown-illumos
+          os: ubuntu-latest
+          cross: true
+          test: cross build
+        - target: wasm32-wasip1
+          os: ubuntu-latest
+          test: cargo build --no-default-features --features compile,cranelift,all-arch
+        - target: aarch64-apple-ios
+          os: macos-latest
+          test: cargo build
+          env:
+            IPHONEOS_DEPLOYMENT_TARGET: 13.0
+        # Test that when Cranelift has no support for an architecture, even a
+        # 64-bit one, that Wasmtime still compiles. Note that this is also
+        # intended to test various fallbacks in the codebase where we have no
+        # support at all for a particular architecture. In theory if someone
+        # adds powerpc64 support to Wasmtime this should get switched to some
+        # other architecture.
+        - target: powerpc64le-unknown-linux-gnu
+          os: ubuntu-latest
+          test: cargo build
+          apt_packages: gcc-powerpc64le-linux-gnu
+          env:
+            CARGO_TARGET_POWERPC64LE_UNKNOWN_LINUX_GNU_LINKER: powerpc64le-linux-gnu-gcc
+        # A no_std target without 64-bit atomics
+        - target: riscv32imac-unknown-none-elf
+          os: ubuntu-latest
+          test: cargo check -p wasmtime --no-default-features --features runtime,gc,component-model,async
+    env: ${{ matrix.env || fromJSON('{}') }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: rustup target add ${{ matrix.target }}
+    - name: Install cross
+      run: |
+        curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+        cargo binstall --no-confirm cross
+      if: ${{ matrix.cross }}
+    - uses: ./.github/actions/apt-get-install
+      if: ${{ matrix.apt_packages }}
+      with:
+        packages: ${{ matrix.apt_packages }}
+    - run: ${{ matrix.test }}
+      env:
+        CARGO_BUILD_TARGET: ${{ matrix.target }}
+
+  # Run tests that require a nightly compiler, such as building fuzz targets.
+  test_nightly:
+    needs: determine
+    if: needs.determine.outputs.test-nightly
+    name: Nightly tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+      with:
+        # This is pinned to match the version of Rust used on OSS-Fuzz to build
+        # Wasmtime. Do not change this `toolchain` version.
+        toolchain: wasmtime-ci-oss-fuzz-pin
+
+    # Check that `pulley-interpreter` works with tail calls enabled.
+    - run: cargo test -p pulley-interpreter --all-features
+      env:
+        RUSTFLAGS: "--cfg pulley_tail_calls"
+    - run: cargo check -p pulley-interpreter --all-features
+      env:
+        RUSTFLAGS: "--cfg pulley_disable_interp_simd"
+    - run: cargo test -p pulley-interpreter --all-features --release
+      env:
+        RUSTFLAGS: "--cfg pulley_assume_llvm_makes_tail_calls"
+
+    # Run OOM tests with `Arc::try_new` usage enabled.
+    - run: cargo test -p wasmtime-fuzzing --test oom
+      env:
+        RUSTFLAGS: "--cfg arc_try_new"
+
+    # Smoke test the coverage script.
+    - run: rustup target add wasm32-unknown-unknown
+    - run: rustup component add llvm-tools
+    - run: ./scripts/coverage.rs --test wast gc
+    - run: test -d report/
+    - run: test -f report/index.html
+
+    # Ensure that fuzzers still build.
+    #
+    # Install the OCaml packages necessary for fuzz targets that use the
+    # `wasm-spec-interpreter`.
+    - uses: ./.github/actions/cargo-install
+      with:
+        crate: cargo-fuzz
+        version: 0.13.1
+    - uses: ./.github/actions/apt-get-install
+      with:
+        packages: ocaml-nox ocamlbuild ocaml-findlib libzarith-ocaml-dev
+    - run: cargo fetch
+      working-directory: ./fuzz
+    - run: cargo fuzz check --dev
+    - run: cargo fuzz check --dev --fuzz-dir ./cranelift/isle/fuzz
+    - run: cargo fuzz check --dev --fuzz-dir ./crates/environ/fuzz --features component-model
+    - run: cargo fuzz check --dev --fuzz-dir ./cranelift/assembler-x64/fuzz
+    - run: cargo fuzz check --dev --fuzz-dir ./crates/wizer/fuzz
+
+  # Run GC-related tests with `cfg(gc_zeal)` set
+  gc_zeal:
+    needs: determine
+    if: needs.determine.outputs.test-gc-zeal
+    name: GC Zeal Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - name: Run GC tests with cfg(gc_zeal) enabled
+      env:
+        WASMTIME_TEST_GC_KEYWORDS: "gc drc any eq struct array i31 extern exn ref rec"
+        RUSTFLAGS: "--cfg gc_zeal"
+      run: |
+        set -e
+
+        cargo test --test all -- $WASMTIME_TEST_GC_KEYWORDS
+
+        # The wast test runner will read `WASMTIME_TEST_GC_KEYWORDS` on its own.
+        cargo test --test wast
+
+  # Perform all tests of the c-api
+  test_capi:
+    needs: determine
+    name: Test C-API ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    if: needs.determine.outputs.test-capi
+
+    strategy:
+      fail-fast: ${{ github.event_name != 'pull_request' }}
+      matrix:
+        include:
+          # This configuration will build C/C++ tests, examples, and Rust tests.
+          # Everything is linked against the C shared library to speed up
+          # linking, and this is intended to be the "main set of tests".
+          #
+          # Run this on windows/mac/linux
+          - os: ubuntu-24.04
+            # Only run the "plugins" example on Linux
+            flags: -DBUILD_SHARED_LIBS=ON -DBUILD_TESTS=ON -DBUILD_RUST_EXAMPLES=ON -DBUILD_RUST_PLUGINS_EXAMPLE=ON
+            name: Linux
+          - os: macos-15
+            flags: -DBUILD_SHARED_LIBS=ON -DBUILD_TESTS=ON -DBUILD_RUST_EXAMPLES=ON
+            name: macOS
+          - os: windows-2025
+            # Note that dynamic linking is disabled here because I don't want to
+            # have to deal with figuring out how to get `wasmtime.dll` onto
+            # `PATH` for various tests.
+            flags: -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTS=ON -DBUILD_RUST_EXAMPLES=ON
+            name: Windows
+
+          # This tests using static linking for examples but skips building the
+          # Rust examples as well as C/C++ tests. Intended to be a faster build
+          # which mostly just tests static linking.
+          - os: ubuntu-24.04
+            flags: -DBUILD_SHARED_LIBS=OFF -DBUILD_RUST_EXAMPLES=OFF
+            name: Linux (static linking)
+
+          # Run tests with ASAN for leak checking primarily.
+          - os: ubuntu-24.04
+            flags: -DCMAKE_C_FLAGS=-fsanitize=address -DCMAKE_CXX_FLAGS=-fsanitize=address -DBUILD_SHARED_LIBS=ON -DBUILD_TESTS=ON
+            name: Linux (ASAN)
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: rustup target add wasm32-wasip2
+
+    - uses: ./.github/actions/install-plugins-prerequisites
+      if: runner.os == 'Linux'
+
+    - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+    # An ode to MinGW: man you're a pain to work around sometimes
+    - run: rm /usr/bin/link
+      if: runner.os == 'Windows'
+
+    - run: cmake -G Ninja -Sexamples -DCMAKE_BUILD_TYPE=Debug -Bexamples/build ${{ matrix.flags }}
+    - run: ninja -C examples/build
+    - run: ninja -C examples/build test
+      env:
+        CTEST_OUTPUT_ON_FAILURE: 1
+        CTEST_PARALLEL_LEVEL: 4
+
+  # Perform all tests (debug mode) for `wasmtime`.
+  #
+  # Note that the full matrix for what may run here is defined within
+  # `./ci/build-test-matrix.js` and the execution of the `determine` step will
+  # calculate whether the tests are actually run as part of PRs and such.
+  test:
+    needs: determine
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    env:
+      QEMU_BUILD_VERSION: 10.0.3
+      SDE_BUILD_VERSION: 9.58.0-2025-06-16
+    strategy:
+      fail-fast: ${{ github.event_name != 'pull_request' }}
+      matrix: ${{ fromJson(needs.determine.outputs.test-matrix) }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+      with:
+        toolchain: ${{ matrix.rust }}
+
+    # Install targets in order to build various tests throughout the repo
+    - run: rustup target add wasm32-wasip1 wasm32-unknown-unknown wasm32-wasip2 ${{ matrix.target }}
+    - run: echo CARGO_BUILD_TARGET=${{ matrix.target }} >> $GITHUB_ENV
+      if: matrix.target != ''
+
+    # Fix an ICE for now in gcc when compiling zstd with debuginfo (??)
+    - run: echo CFLAGS=-g0 >> $GITHUB_ENV
+      if: matrix.target == 'x86_64-pc-windows-gnu'
+
+    # Update binutils if MinGW due to https://github.com/rust-lang/rust/issues/112368
+    - run: C:/msys64/usr/bin/pacman.exe -S --needed mingw-w64-x86_64-gcc --noconfirm
+      if: matrix.target == 'x86_64-pc-windows-gnu'
+    - shell: pwsh
+      run: echo "C:\msys64\mingw64\bin" >> $Env:GITHUB_PATH
+      if: matrix.target == 'x86_64-pc-windows-gnu'
+
+    - run: cargo fetch --locked
+
+    - uses: ./.github/actions/apt-get-install
+      name: Install cross-compilation tools
+      if: matrix.gcc_package != ''
+      with:
+        packages: ${{ matrix.gcc_package }}
+
+    # Configure Cargo for cross compilation and tell it how it can run
+    # cross executables
+    - name: Configure cross-compilation tools
+      run: |
+        upcase=$(echo ${{ matrix.target }} | awk '{ print toupper($0) }' | sed 's/-/_/g')
+        echo CARGO_TARGET_${upcase}_LINKER=${{ matrix.gcc }} >> $GITHUB_ENV
+      if: matrix.gcc != ''
+
+    - uses: actions/cache@v5
+      with:
+        path: ${{ runner.tool_cache }}/qemu
+        key: qemu-${{ matrix.target }}-${{ env.QEMU_BUILD_VERSION }}-patchcpuinfo
+      if: matrix.qemu != ''
+
+    - uses: actions/cache@v5
+      with:
+        path: ${{ runner.tool_cache }}/sde
+        key: sde-${{ env.SDE_BUILD_VERSION }}
+      if: matrix.sde != ''
+
+    - name: Install qemu
+      run: |
+        set -ex
+
+        upcase=$(echo ${{ matrix.target }} | awk '{ print toupper($0) }' | sed 's/-/_/g')
+        echo CARGO_TARGET_${upcase}_RUNNER=${{ runner.tool_cache }}/qemu/bin/${{ matrix.qemu }} >> $GITHUB_ENV
+
+        # QEMU emulation is not always the speediest, so total testing time
+        # goes down if we build the libs in release mode when running tests.
+        echo CARGO_PROFILE_DEV_OPT_LEVEL=2 >> $GITHUB_ENV
+
+        # See comments in the source for why we enable this during QEMU
+        # emulation.
+        echo WASMTIME_TEST_NO_HOG_MEMORY=1 >> $GITHUB_ENV
+
+        # See if qemu is already in the cache
+        if [ -f ${{ runner.tool_cache }}/qemu/built ]; then
+          exit 0
+        fi
+
+        # Install build dependencies of QEMU itself.
+        sudo apt-get install -y libglib2.0-dev ninja-build
+
+        # Download and build qemu from source since the most recent release is
+        # way faster at arm emulation than the current version github actions'
+        # ubuntu image uses. Disable as much as we can to get it to build
+        # quickly.
+        curl --retry 5 --retry-all-errors -o qemu.tar.xz https://download.qemu.org/qemu-$QEMU_BUILD_VERSION.tar.xz
+        tar xJf qemu.tar.xz
+        rm qemu.tar.xz
+        cd qemu-$QEMU_BUILD_VERSION
+        ./configure --target-list=${{ matrix.qemu_target }} --prefix=${{ runner.tool_cache}}/qemu --disable-tools --disable-slirp --disable-fdt --disable-capstone --disable-docs
+        ninja -C build install
+        touch ${{ runner.tool_cache }}/qemu/built
+      if: matrix.qemu != ''
+
+    - name: Install Intel SDE
+      run: |
+        set -ex
+
+        # Set up SDE as runner for x86_64 targets
+        echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=${{ runner.tool_cache }}/sde/sde64 -future --" >> $GITHUB_ENV
+
+        # SDE emulation is very slow, so use release mode for better performance
+        echo CARGO_PROFILE_DEV_OPT_LEVEL=2 >> $GITHUB_ENV
+
+        # Enable environment variable to indicate SDE is being used
+        echo WASMTIME_TEST_SDE=1 >> $GITHUB_ENV
+
+        # Generic variable for skipping tests that are problematic under SDE (performance, compatibility, etc.)
+        echo WASMTIME_TEST_NO_SDE=1 >> $GITHUB_ENV
+
+        # Similar to QEMU, reduce memory usage during SDE emulation
+        echo WASMTIME_TEST_NO_HOG_MEMORY=1 >> $GITHUB_ENV
+
+        # See if SDE is already in the cache
+        if [ -f ${{ runner.tool_cache }}/sde/sde64 ]; then
+          exit 0
+        fi
+
+        curl --retry 5 --retry-all-errors -o sde.tar.xz \
+          https://downloadmirror.intel.com/859732/sde-external-${{ env.SDE_BUILD_VERSION }}-lin.tar.xz
+
+        mkdir -p ${{ runner.tool_cache }}/sde
+        tar xJf sde.tar.xz --strip-components=1 -C ${{ runner.tool_cache }}/sde
+        rm sde.tar.xz
+
+        chmod +x ${{ runner.tool_cache }}/sde/sde64
+      if: matrix.sde != ''
+
+    - name: Configure ASAN
+      run: |
+        echo CARGO_PROFILE_DEV_OPT_LEVEL=2 >> $GITHUB_ENV
+        echo CARGO_PROFILE_TEST_OPT_LEVEL=2 >> $GITHUB_ENV
+        echo RUSTFLAGS=-Zsanitizer=address >> $GITHUB_ENV
+        echo RUSTDOCFLAGS="-Zsanitizer=address -Copt-level=2 -Ccodegen-units=16" >> $GITHUB_ENV
+      if: ${{ contains(matrix.name, 'ASAN') }}
+
+    # Record some CPU details; this is helpful information if tests fail due
+    # to CPU-specific features.
+    - name: CPU information
+      run: lscpu
+      if: runner.os == 'Linux'
+    - name: CPU information
+      run: sysctl hw
+      if: runner.os == 'macOS'
+    - name: CPU information
+      run: Get-WmiObject Win32_Processor
+      shell: pwsh
+      if: runner.os == 'Windows'
+
+    # Since MPK (PKU) is not present on some GitHub runners, we check if it is
+    # available before force-enabling it. This occasional testing is better than
+    # none at all; ideally we would test in a system-mode QEMU VM.
+    - name: Force-run with MPK enabled, if available
+      if: ${{ contains(matrix.name, 'MPK') }}
+      run: |
+        if cargo run -q -p wasmtime-internal-core --example mpk-available; then
+          echo "::notice::This CI run will force-enable MPK; this ensures tests conditioned with the \`WASMTIME_TEST_FORCE_MPK\` environment variable will run with MPK-protected memory pool stripes."
+          echo WASMTIME_TEST_FORCE_MPK=1 >> $GITHUB_ENV
+        else
+          echo "::warning::This CI run will not test MPK; it has been detected as not available on this machine."
+        fi
+
+    # Install VTune, see `cli_tests::profile_with_vtune`.
+    - name: Install VTune
+      if: matrix.filter == 'linux-x64' && contains(matrix.bucket, 'wasmtime-cli')
+      uses: abrown/install-vtune-action@v3
+
+    # Build and test all features.
+    #
+    # Note that this uses a different shell, notably not `bash` on Windows. In
+    # the past `bash` would add more items to `PATH` on Windows which would
+    # interfere and cause the `gcc.exe` executable to fail and exit with 1 and
+    # no output. It's believed that `bash` adds things like `/usr/bin` to PATH
+    # which is the wrong DLL or something like that.
+    - run: python3 ./ci/run-tests.py --locked ${{ matrix.bucket }}
+      if: runner.os == 'Windows'
+      shell: pwsh
+    - run: python3 ./ci/run-tests.py --locked ${{ matrix.bucket }}
+      if: runner.os != 'Windows'
+
+  # Test `wasmtime-wasi-nn` in its own job, as not all of its backends are
+  # compatible with all targets, and each must be tested separately anyways.
+  test_wasi_nn:
+    strategy:
+      matrix:
+        feature: ["openvino", "onnx-download"]
+        os: ["ubuntu-24.04", "windows-2025"]
+        include:
+          - os: windows-2025
+            feature: winml
+    name: Test wasi-nn (${{ matrix.feature }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: determine
+    if: needs.determine.outputs.run-full
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+
+    # Install OpenVINO
+    - uses: abrown/install-openvino-action@v10
+      if: runner.arch == 'X64'
+
+    # Install WinML for testing wasi-nn WinML backend. WinML is only available
+    # on Windows clients and Windows Server with desktop experience enabled.
+    # GitHub Actions Window Server image doesn't have desktop experience
+    # enabled, so we download the standalone library from ONNX Runtime project.
+    - uses: nuget/setup-nuget@v2
+      if: (runner.os == 'Windows') && (matrix.feature == 'winml')
+    - run: nuget install Microsoft.AI.MachineLearning
+      if: (runner.os == 'Windows') && (matrix.feature == 'winml')
+
+    # Install Rust targets.
+    - run: rustup target add wasm32-wasip1 wasm32-wasip2
+
+    # Run the tests!
+    - run: cargo test -p wasmtime-wasi-nn --features ${{ matrix.feature }}
+
+  # Test `wasmtime-wasi-tls` in its own job, as not all of its providers are
+  # compatible with all targets. The primary culprit is the OpenSSL dependency,
+  # which is not easily available on all platforms.
+  #
+  # The Windows base image has OpenSSL installed by default, but not in a way
+  # that is automatically discoverable by `openssl-sys`. We need to configure
+  # the OPENSSL_DIR & OPENSSL_LIB_DIR paths manually.
+  # Additionally, the GH actions Windows image does not ship with a CA cert
+  # bundle, so we use the one from cUrl.
+  test_wasi_tls:
+    name: Test wasi-tls
+    needs: determine
+    if: needs.determine.outputs.run-full
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - name: Configure OpenSSL (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        mkdir "C:\Program Files\OpenSSL\certs"
+        $sslCertFile = "C:\Program Files\OpenSSL\certs\cacert.pem"
+        $opensslDir = "C:\Program Files\OpenSSL"
+        $opensslLibDir = "C:\Program Files\OpenSSL\lib\VC\x64\MD"
+        curl.exe -o $sslCertFile https://curl.se/ca/cacert.pem
+        "SSL_CERT_FILE=$sslCertFile" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "OPENSSL_DIR=$opensslDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "OPENSSL_LIB_DIR=$opensslLibDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+    - run: cargo test -p wasmtime-wasi-tls --all-features
+
+  # Test the `wasmtime-fuzzing` crate. Split out from the main tests because
+  # `--all-features` brings in OCaml, which is a pain to get setup for all
+  # targets.
+  test_fuzzing:
+    needs: determine
+    if: needs.determine.outputs.run-full
+    name: Test wasmtime-fuzzing
+    runs-on: 'ubuntu-latest'
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+
+    # Run the tests
+    - run: |
+        cargo test -p wasmtime-fuzzing -p wasm-spec-interpreter
+
+  # Test debug (DWARF) related functionality.
+  test_debug_dwarf:
+    needs: determine
+    if: needs.determine.outputs.run-dwarf
+    name: Test DWARF debugging
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: |
+        rustup target add wasm32-wasip2 wasm32-wasip1 wasm32-unknown-unknown
+        cd /tmp
+        curl --retry 5 --retry-all-errors -OL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/wasi-sdk-30.0-x86_64-linux.tar.gz
+        tar -xzf wasi-sdk-30.0-x86_64-linux.tar.gz
+        mv wasi-sdk-30.0-x86_64-linux wasi-sdk
+    - uses: ./.github/actions/apt-get-install
+      with:
+        packages: gdb lldb-18 llvm
+    - run: |
+        # workaround for https://bugs.launchpad.net/ubuntu/+source/llvm-defaults/+bug/1972855
+        sudo mkdir -p /usr/lib/local/lib/python3.10/dist-packages/lldb
+        sudo ln -s /usr/lib/llvm-15/lib/python3.10/dist-packages/lldb/* /usr/lib/python3/dist-packages/lldb/
+        # Only testing release since it is more likely to expose issues with our low-level symbol handling.
+        cargo test --release --test all -- --ignored --test-threads 1 native_debug::
+      env:
+        LLDB: lldb-18
+        WASI_SDK_PATH: /tmp/wasi-sdk
+
+  # Test guest-debug (gdbstub) functionality with LLDB.
+  # Requires wasi-sdk >= 32 for LLDB with the Wasm remote-debug plugin.
+  test_guest_debug:
+    needs: determine
+    if: needs.determine.outputs.run-dwarf
+    name: Test guest debugging
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: |
+        rustup target add wasm32-wasip2 wasm32-wasip1 wasm32-unknown-unknown
+        cd /tmp
+        curl --retry 5 --retry-all-errors -OL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-x86_64-linux.tar.gz
+        tar -xzf wasi-sdk-32.0-x86_64-linux.tar.gz
+        mv wasi-sdk-32.0-x86_64-linux wasi-sdk
+    - run: |
+        cargo test --features gdbstub --test all -- --ignored --test-threads 1 guest_debug::
+      env:
+        LLDB: /tmp/wasi-sdk/bin/lldb
+        WASI_SDK_PATH: /tmp/wasi-sdk
+
+  build-preview1-component-adapter:
+    name: Build wasi-preview1-component-adapter
+    needs: determine
+    if: needs.determine.outputs.preview1-adapter
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+      contents: write
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: rustup target add wasm32-wasip2 wasm32-wasip1 wasm32-unknown-unknown
+
+    - name: Install wasm-tools
+      run: |
+        curl --retry 5 --retry-all-errors -o wasm-tools.tar.gz -L https://github.com/bytecodealliance/wasm-tools/releases/download/wasm-tools-1.0.27/wasm-tools-1.0.27-x86_64-linux.tar.gz
+        tar xfz wasm-tools.tar.gz
+        rm wasm-tools.tar.gz
+        echo `pwd`/wasm-tools-1.0.27-x86_64-linux >> $GITHUB_PATH
+
+    - run: ./ci/build-wasi-preview1-component-adapter.sh
+      env:
+        VERSION: ${{ github.sha }}
+
+    - uses: actions/upload-artifact@v6
+      with:
+        name: bins-wasi-preview1-component-adapter
+        path: target/wasm32-unknown-unknown/release/wasi_snapshot_preview1.*.wasm
+
+  build-preview1-component-adapter-provider:
+    name: Build wasi-preview1-component-adapter-provider
+    needs: build-preview1-component-adapter
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - uses: ./.github/actions/build-adapter-provider
+      with:
+        run-id: ${{ github.run_id }}
+
+  # Verify the "min platform" example still works.
+  test-min-platform-example:
+    name: Test the min-platform example
+    needs: determine
+    if: needs.determine.outputs.run-full
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - uses: ./.github/actions/cargo-install
+      with:
+        crate: cbindgen
+        version: 0.29.0
+    - run: rustup target add x86_64-unknown-none
+    - run: rustup target add wasm32-wasip2
+    - run: ./build.sh x86_64-unknown-none
+      working-directory: ./examples/min-platform
+
+    # Afterwards make sure the generated header file is up to date by ensuring
+    # that the regeneration process didn't change anything in-tree.
+    - run: git diff --exit-code
+
+    # Test some other feature combinations
+    - run: ./build.sh x86_64-unknown-none
+      working-directory: ./examples/min-platform
+      env:
+        WASMTIME_SIGNALS_BASED_TRAPS: 1
+
+    - run: ./build.sh x86_64-unknown-none
+      working-directory: ./examples/min-platform
+      env:
+        WASMTIME_SIGNALS_BASED_TRAPS: 1
+        MIN_PLATFORM_TEST_DISABLE_WASI: 1
+
+    # Add the `wasmtime-platform.h` file as a release artifact
+    - uses: actions/upload-artifact@v6
+      with:
+        name: wasmtime-platform-header
+        path: examples/min-platform/embedding/wasmtime-platform.h
+
+  bench:
+    needs: determine
+    if: needs.determine.outputs.run-full
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: rustup target add wasm32-wasip2 wasm32-wasip1
+    - run: cargo test --benches --release
+
+  # Verify that cranelift's code generation is deterministic
+  meta_deterministic_check:
+    needs: determine
+    if: needs.determine.outputs.run-full
+    name: Meta deterministic check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: cd cranelift/codegen && cargo build --features all-arch
+    - run: ci/ensure_deterministic_build.sh
+
+  verify-publish:
+    needs: determine
+    if: github.repository == 'bytecodealliance/wasmtime' && needs.determine.outputs.run-full
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+    - run: |
+        cd ${{ runner.tool_cache }}
+        curl --retry 5 --retry-all-errors -L -o sccache.tar.gz \
+          https://github.com/mozilla/sccache/releases/download/0.2.13/sccache-0.2.13-x86_64-unknown-linux-musl.tar.gz
+        tar xzf sccache.tar.gz
+        rm sccache.tar.gz
+        echo "`pwd`/sccache-0.2.13-x86_64-unknown-linux-musl" >> $GITHUB_PATH
+        echo RUSTC_WRAPPER=sccache >> $GITHUB_ENV
+    - run: rustc scripts/publish.rs
+    # Make sure the tree is publish-able as-is
+    - run: ./publish verify
+    # Make sure we can bump version numbers for the next release
+    - run: ./publish bump
+
+  # Run a subset of tests under MIRI on CI to help check the `unsafe` code in
+  # Wasmtime to make sure it's at least not obviously incorrect for basic usage.
+  # Note that this doesn't run the full test suite since MIRI can't actually run
+  # WebAssembly itself at this time (aka it doesn't support a JIT). There are a
+  # number of annotations throughout the code which gates some tests on MIRI not
+  # being run.
+  #
+  # Note that `cargo nextest` is used here additionally to get parallel test
+  # execution by default to help cut down on the time in CI.
+  miri:
+    strategy:
+      matrix:
+        include:
+          - crate: "wasmtime --features component-model-bytes,component-model-async"
+          - crate: "wasmtime-cli"
+          - crate: "wasmtime-environ --all-features"
+          - crate: "pulley-interpreter --all-features"
+          - crate: "wasmtime-internal-core"
+          - crate: "wasmtime-internal-core --all-features"
+          - script: ./ci/miri-provenance-test.sh
+          - script: ./ci/miri-wast.sh ./tests/spec_testsuite/table.wast
+          - script: "./ci/miri-wast.sh ./tests/spec_testsuite/struct.wast -Ccollector=null"
+          - script: "./ci/miri-wast.sh ./tests/spec_testsuite/struct.wast -Ccollector=copying"
+          - script: "./ci/miri-wast.sh ./tests/spec_testsuite/struct.wast -Ccollector=drc"
+    needs: determine
+    if: needs.determine.outputs.test-miri && github.repository == 'bytecodealliance/wasmtime'
+    name: Miri
+    runs-on: ubuntu-latest
+    env:
+      MIRIFLAGS: -Zmiri-permissive-provenance
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+    - uses: ./.github/actions/install-rust
+      with:
+        toolchain: wasmtime-ci-pinned-nightly
+    - run: rustup component add rust-src miri
+    - uses: ./.github/actions/cargo-install
+      with:
+        crate: cargo-nextest
+        version: 0.9.133
+    - run: |
+        cargo miri nextest run -j4 --no-fail-fast -p ${{ matrix.crate }}
+      if: ${{ matrix.crate }}
+    - run: ${{ matrix.script }}
+      if: ${{ matrix.script }}
+
+  # Perform release builds of `wasmtime` and `libwasmtime.so`. Builds a variety
+  # of platforms and architectures and then uploads the release artifacts to
+  # this workflow run's list of artifacts.
+  #
+  # Note that the full matrix is computed by `ci/build-build-matrix.js`.
+  build:
+    needs: determine
+    if: needs.determine.outputs.run-full
+    name: Release build for ${{ matrix.build }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: ${{ github.event_name != 'pull_request' }}
+      matrix: ${{ fromJson(needs.determine.outputs.build-matrix) }}
+    env: ${{ matrix.env || fromJSON('{}') }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+
+    # Build the docker image here, before it's built below, to have
+    # finer-grained control over caching. The way this is set up is that the
+    # build in this step is picked up by the later step automatically, and if
+    # this one's buggy the next one will just take a bit longer.
+    #
+    # The goal here is to hit the network less because apt-get servers tend
+    # to be relatively flaky...
+    - uses: ./.github/actions/docker-build-cached
+      if: ${{ matrix.env.DOCKER_IMAGE }}
+      with:
+        context: ci/docker
+        file: ${{ matrix.env.DOCKER_IMAGE }}
+        cache_key_prefix: docker-${{ matrix.target }}
+
+    - uses: ./.github/actions/install-ninja
+      if: '${{ !matrix.env.DOCKER_IMAGE }}'
+
+    - uses: ./.github/actions/install-rust
+      with:
+        toolchain: ${{ matrix.rust }}
+    - run: |
+        rustup component add rust-src
+        rustup target add ${{ matrix.target }}
+
+    # On one builder produce the source tarball since there's no need to produce
+    # it everywhere
+    - run: ./ci/build-src-tarball.sh
+      if: matrix.build == 'x86_64-linux'
+
+    - uses: ./.github/actions/android-ndk
+      if: contains(matrix.target, 'android')
+      with:
+        target: ${{ matrix.target }}
+
+    - run: ./ci/build-release-artifacts.sh "${{ matrix.build }}" "${{ matrix.target }}"
+
+    # Assemble release artifacts appropriate for this platform, then upload them
+    # unconditionally to this workflow's files so we have a copy of them.
+    - run: ./ci/build-tarballs.sh "${{ matrix.build }}" "${{ matrix.target }}"
+
+    - uses: actions/upload-artifact@v6
+      with:
+        name: bins-${{ matrix.build }}
+        path: dist
+
+  # This is a "join node" which depends on all prior workflows. The merge queue,
+  # for example, gates on this to ensure that everything has executed
+  # successfully.
+  #
+  # Note that this is required currently for odd reasons with github. Notably
+  # the set of checks to enter the merge queue and leave the merge queue must
+  # be the same which means that the "build" step for example shows as skipped
+  # for PRs but expands to many different steps for merge-queue-based PRs. That
+  # means that for that step there's no single name to gate on, so it's required
+  # to have a "join" node here which joins everything.
+  #
+  # Note that this currently always runs to always report a status, even on
+  # cancellation and even if dependency steps fail. Each dependency tries to
+  # cancel the whole run if it fails, so if a test matrix entry fails, for
+  # example, it cancels the build matrix entries too. This step then tries to
+  # fail on cancellation to ensure that the dependency failures are propagated
+  # correctly.
+  ci-status:
+    name: Record the result of testing and building steps
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - test_capi
+      - test_debug_dwarf
+      - test_fuzzing
+      - test_wasi_nn
+      - test_nightly
+      - build
+      - rustfmt
+      - clangformat
+      - cargo_deny
+      - cargo_vet
+      - doc
+      - micro_checks
+      - special_tests
+      - test_wasi_tls
+      - clippy
+      - msrv_check
+      - monolith_checks
+      - platform_checks
+      - bench
+      - meta_deterministic_check
+      - verify-publish
+      - determine
+      - miri
+      - build-preview1-component-adapter
+      - build-preview1-component-adapter-provider
+      - test-min-platform-example
+      - check_js
+      - gc_zeal
+    if: always()
+    steps:
+    # Calculate the exit status of the whole CI workflow.
+    # If all dependent jobs were successful, this exits with 0 (and the
+    # outcome job continues successfully). If a some dependent job has
+    # failed, this exits with 1.
+    - name: calculate the correct exit status
+      run: jq --exit-status 'all(.result == "success" or .result == "skipped")' <<< '${{ toJson(needs) }}'
+
+  # The purpose of this jobs is to watch for changes on the `release-*`
+  # branches of this repository and look for the term
+  # "automatically-tag-and-release-this-commit" within merged PRs/commits. Once
+  # that term is found the current version of `Cargo.toml`, the `wasmtime-cli`
+  # Cargo.toml, is created as a tag and the tag is pushed to the repo.
+  # Currently the tag is created through the GitHub API with an access token to
+  # ensure that CI is further triggered for the tag itself which performs the
+  # full release process.
+  #
+  # Note that this depends on the `ci-status` step above which is the "join"
+  # point of this workflow for when everything succeeds. the purpose of that is
+  # so that the tag is only created after the aftifacts have been uploaded for
+  # this workflow as the `publish-artifacts.yml` workflow will download these
+  # artifacts and then publish them to the tag.
+  push-tag:
+    runs-on: ubuntu-latest
+    needs: ci-status
+    if: |
+      always()
+      && needs.ci-status.result == 'success'
+      && github.event_name == 'push'
+      && startsWith(github.ref, 'refs/heads/release-')
+      && github.repository == 'bytecodealliance/wasmtime'
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+        fetch-depth: 0
+    - name: Test if tag is needed
+      run: |
+        git log ${{ github.event.before }}...${{ github.event.after }} | tee main.log
+        version=$(grep '^version =' Cargo.toml | head -n 1 | sed 's/.*"\(.*\)"/\1/')
+        echo "version: $version"
+        echo "version=$version" >> $GITHUB_OUTPUT
+        echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        if grep -q "automatically-tag-and-release-this-commit" main.log; then
+          echo push-tag
+          echo "push_tag=yes" >> $GITHUB_OUTPUT
+        else
+          echo no-push-tag
+          echo "push_tag=no" >> $GITHUB_OUTPUT
+        fi
+      id: tag
+    - name: Push the tag
+      run: |
+        git_refs_url=$(jq .repository.git_refs_url $GITHUB_EVENT_PATH | tr -d '"' | sed 's/{\/sha}//g')
+        curl -iX POST $git_refs_url \
+          -H "Authorization: token ${{ secrets.PERSONAL_ACCESS_TOKEN }}" \
+          -d @- << EOF
+        {
+          "ref": "refs/tags/v${{ steps.tag.outputs.version }}",
+          "sha": "${{ steps.tag.outputs.sha }}"
+        }
+        EOF
+      if: steps.tag.outputs.push_tag == 'yes'
+
+  # File an issue on the repo if this run failed and was triggered via
+  # `workflow_dispatch`, which mostly means that
+  # `.github/workflows/trigger-release-branch-ci.yml` will file issues on
+  # failure so we get to see a notification when a build fails for a historical
+  # release branch.
+  file-issue-on-error:
+    name: File an issue if this build failed and was cron-triggered
+    runs-on: ubuntu-latest
+    needs: ci-status
+    if: |
+      always()
+      && needs.ci-status.result != 'success'
+      && github.event_name == 'workflow_dispatch'
+    permissions:
+      issues: write
+    steps:
+    - uses: actions/github-script@v8
+      with:
+        script: |
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `Failed CI build for ${context.ref}`,
+            body: `See https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+          })

@@ -1,0 +1,225 @@
+test compile precise-output
+target x86_64 sse41
+
+function %fma_f32(f32, f32, f32) -> f32 {
+block0(v0: f32, v1: f32, v2: f32):
+    v3 = fma v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   load_ext_name %FmaF32+0, %rsi
+;   call    *%rsi
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movabsq $0, %rsi ; reloc_external Abs8 %FmaF32 0
+;   callq *%rsi
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %fma_f64(f64, f64, f64) -> f64 {
+block0(v0: f64, v1: f64, v2: f64):
+    v3 = fma v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   load_ext_name %FmaF64+0, %rsi
+;   call    *%rsi
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movabsq $0, %rsi ; reloc_external Abs8 %FmaF64 0
+;   callq *%rsi
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %fma_f32x4(f32x4, f32x4, f32x4) -> f32x4 {
+block0(v0: f32x4, v1: f32x4, v2: f32x4):
+    v3 = fma v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x60, %rsp
+; block0:
+;   movdqu %xmm0, <offset:1>+(%rsp)
+;   movdqu %xmm1, <offset:1>+0x10(%rsp)
+;   movdqu %xmm2, <offset:1>+0x20(%rsp)
+;   load_ext_name %FmaF32+0, %rsi
+;   call    *%rsi
+;   movdqu <offset:1>+(%rsp), %xmm1
+;   movdqu %xmm0, <offset:1>+0x50(%rsp)
+;   pshufd $0x1, %xmm1, %xmm0
+;   movdqu <offset:1>+0x10(%rsp), %xmm1
+;   pshufd $0x1, %xmm1, %xmm1
+;   movdqu <offset:1>+0x20(%rsp), %xmm2
+;   pshufd $0x1, %xmm2, %xmm2
+;   load_ext_name %FmaF32+0, %rax
+;   call    *%rax
+;   movdqu <offset:1>+(%rsp), %xmm1
+;   movdqu %xmm0, <offset:1>+0x30(%rsp)
+;   pshufd $0x2, %xmm1, %xmm0
+;   movdqu <offset:1>+0x10(%rsp), %xmm1
+;   pshufd $0x2, %xmm1, %xmm1
+;   movdqu <offset:1>+0x20(%rsp), %xmm2
+;   pshufd $0x2, %xmm2, %xmm2
+;   load_ext_name %FmaF32+0, %rax
+;   call    *%rax
+;   movdqu <offset:1>+(%rsp), %xmm1
+;   movdqu %xmm0, <offset:1>+0x40(%rsp)
+;   pshufd $0x3, %xmm1, %xmm0
+;   movdqu <offset:1>+0x10(%rsp), %xmm1
+;   pshufd $0x3, %xmm1, %xmm1
+;   movdqu <offset:1>+0x20(%rsp), %xmm2
+;   pshufd $0x3, %xmm2, %xmm2
+;   load_ext_name %FmaF32+0, %rax
+;   call    *%rax
+;   movdqa %xmm0, %xmm2
+;   movdqu <offset:1>+0x30(%rsp), %xmm1
+;   movdqu <offset:1>+0x50(%rsp), %xmm0
+;   insertps $0x10, %xmm1, %xmm0
+;   movdqu <offset:1>+0x40(%rsp), %xmm1
+;   insertps $0x20, %xmm1, %xmm0
+;   movdqa %xmm2, %xmm4
+;   insertps $0x30, %xmm4, %xmm0
+;   addq $0x60, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x60, %rsp
+; block1: ; offset 0x8
+;   movdqu %xmm0, (%rsp)
+;   movdqu %xmm1, 0x10(%rsp)
+;   movdqu %xmm2, 0x20(%rsp)
+;   movabsq $0, %rsi ; reloc_external Abs8 %FmaF32 0
+;   callq *%rsi
+;   movdqu (%rsp), %xmm1
+;   movdqu %xmm0, 0x50(%rsp)
+;   pshufd $1, %xmm1, %xmm0
+;   movdqu 0x10(%rsp), %xmm1
+;   pshufd $1, %xmm1, %xmm1
+;   movdqu 0x20(%rsp), %xmm2
+;   pshufd $1, %xmm2, %xmm2
+;   movabsq $0, %rax ; reloc_external Abs8 %FmaF32 0
+;   callq *%rax
+;   movdqu (%rsp), %xmm1
+;   movdqu %xmm0, 0x30(%rsp)
+;   pshufd $2, %xmm1, %xmm0
+;   movdqu 0x10(%rsp), %xmm1
+;   pshufd $2, %xmm1, %xmm1
+;   movdqu 0x20(%rsp), %xmm2
+;   pshufd $2, %xmm2, %xmm2
+;   movabsq $0, %rax ; reloc_external Abs8 %FmaF32 0
+;   callq *%rax
+;   movdqu (%rsp), %xmm1
+;   movdqu %xmm0, 0x40(%rsp)
+;   pshufd $3, %xmm1, %xmm0
+;   movdqu 0x10(%rsp), %xmm1
+;   pshufd $3, %xmm1, %xmm1
+;   movdqu 0x20(%rsp), %xmm2
+;   pshufd $3, %xmm2, %xmm2
+;   movabsq $0, %rax ; reloc_external Abs8 %FmaF32 0
+;   callq *%rax
+;   movdqa %xmm0, %xmm2
+;   movdqu 0x30(%rsp), %xmm1
+;   movdqu 0x50(%rsp), %xmm0
+;   insertps $0x10, %xmm1, %xmm0
+;   movdqu 0x40(%rsp), %xmm1
+;   insertps $0x20, %xmm1, %xmm0
+;   movdqa %xmm2, %xmm4
+;   insertps $0x30, %xmm4, %xmm0
+;   addq $0x60, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %fma_f64x2(f64x2, f64x2, f64x2) -> f64x2 {
+block0(v0: f64x2, v1: f64x2, v2: f64x2):
+    v3 = fma v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x40, %rsp
+; block0:
+;   movdqu %xmm0, <offset:1>+(%rsp)
+;   movdqu %xmm1, <offset:1>+0x10(%rsp)
+;   movdqu %xmm2, <offset:1>+0x20(%rsp)
+;   load_ext_name %FmaF64+0, %rsi
+;   call    *%rsi
+;   movdqu %xmm0, <offset:1>+0x30(%rsp)
+;   movdqu <offset:1>+(%rsp), %xmm0
+;   pshufd $0xee, %xmm0, %xmm0
+;   movdqu <offset:1>+0x10(%rsp), %xmm1
+;   pshufd $0xee, %xmm1, %xmm1
+;   movdqu <offset:1>+0x20(%rsp), %xmm2
+;   pshufd $0xee, %xmm2, %xmm2
+;   load_ext_name %FmaF64+0, %rax
+;   call    *%rax
+;   movdqa %xmm0, %xmm1
+;   movdqu <offset:1>+0x30(%rsp), %xmm0
+;   movlhps %xmm1, %xmm0
+;   addq $0x40, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x40, %rsp
+; block1: ; offset 0x8
+;   movdqu %xmm0, (%rsp)
+;   movdqu %xmm1, 0x10(%rsp)
+;   movdqu %xmm2, 0x20(%rsp)
+;   movabsq $0, %rsi ; reloc_external Abs8 %FmaF64 0
+;   callq *%rsi
+;   movdqu %xmm0, 0x30(%rsp)
+;   movdqu (%rsp), %xmm0
+;   pshufd $0xee, %xmm0, %xmm0
+;   movdqu 0x10(%rsp), %xmm1
+;   pshufd $0xee, %xmm1, %xmm1
+;   movdqu 0x20(%rsp), %xmm2
+;   pshufd $0xee, %xmm2, %xmm2
+;   movabsq $0, %rax ; reloc_external Abs8 %FmaF64 0
+;   callq *%rax
+;   movdqa %xmm0, %xmm1
+;   movdqu 0x30(%rsp), %xmm0
+;   movlhps %xmm1, %xmm0
+;   addq $0x40, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+

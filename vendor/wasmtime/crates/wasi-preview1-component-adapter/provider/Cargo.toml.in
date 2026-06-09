@@ -1,0 +1,24 @@
+[package]
+name = "wasi-preview1-component-adapter-provider"
+version.workspace = true
+authors.workspace = true
+description = "Embedded wasi-preview1-component-adapter binaries"
+license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/bytecodealliance/wasmtime"
+documentation = "https://docs.rs/wasi-preview1-component-adapter-provider/"
+categories = ["wasm"]
+keywords = ["webassembly", "wasm"]
+
+# NB: this is intentionally smaller than the workspace as this crate is just a
+# few `include_bytes!` so can have a more conservative version than the rest of
+# the workspace.
+rust-version = "1.60.0"
+edition = '2021'
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]

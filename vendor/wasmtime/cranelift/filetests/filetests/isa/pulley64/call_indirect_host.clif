@@ -1,0 +1,23 @@
+test compile precise-output
+target pulley64
+
+function %call_indirect_host() {
+  fn0 = u10:0() system_v
+block0:
+  call fn0()
+  return
+}
+
+; VCode:
+;   push_frame
+; block0:
+;   indirect_call_host CallInfo { dest: User(userextname0), uses: [], defs: [], clobbers: PRegSet { bits: [65535, 4294967295, 4294967295, 0] }, callee_conv: SystemV, caller_conv: Fast, callee_pop_size: 0, try_call_info: None, patchable: false }
+;   pop_frame
+;   ret
+;
+; Disassembled:
+; push_frame
+; call_indirect_host 0
+; pop_frame
+; ret
+

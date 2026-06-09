@@ -1,0 +1,197 @@
+test compile precise-output
+set enable_llvm_abi_extensions=true
+target x86_64
+
+
+function %clz(i128) -> i128 {
+block0(v0: i128):
+    v1 = clz v0
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq $0xffffffffffffffff, %r8
+;   bsrq %rsi, %rsi
+;   cmoveq %r8, %rsi
+;   movl $0x3f, %r10d
+;   subq %rsi, %r10
+;   movq $0xffffffffffffffff, %rax
+;   bsrq %rdi, %rcx
+;   cmoveq %rax, %rcx
+;   movl $0x3f, %eax
+;   subq %rcx, %rax
+;   addq $0x40, %rax
+;   cmpq $0x40, %r10
+;   cmovneq %r10, %rax
+;   uninit  %rdx
+;   xorq %rdx, %rdx
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq $18446744073709551615, %r8
+;   bsrq %rsi, %rsi
+;   cmoveq %r8, %rsi
+;   movl $0x3f, %r10d
+;   subq %rsi, %r10
+;   movq $18446744073709551615, %rax
+;   bsrq %rdi, %rcx
+;   cmoveq %rax, %rcx
+;   movl $0x3f, %eax
+;   subq %rcx, %rax
+;   addq $0x40, %rax
+;   cmpq $0x40, %r10
+;   cmovneq %r10, %rax
+;   xorq %rdx, %rdx
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %clz(i64) -> i64 {
+block0(v0: i64):
+    v1 = clz v0
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq $0xffffffffffffffff, %rdx
+;   bsrq %rdi, %rsi
+;   cmoveq %rdx, %rsi
+;   movl $0x3f, %eax
+;   subq %rsi, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq $18446744073709551615, %rdx
+;   bsrq %rdi, %rsi
+;   cmoveq %rdx, %rsi
+;   movl $0x3f, %eax
+;   subq %rsi, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %clz(i32) -> i32 {
+block0(v0: i32):
+    v1 = clz v0
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq $0xffffffffffffffff, %rdx
+;   bsrl %edi, %esi
+;   cmovel %edx, %esi
+;   movl $0x1f, %eax
+;   subl %esi, %eax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq $18446744073709551615, %rdx
+;   bsrl %edi, %esi
+;   cmovel %edx, %esi
+;   movl $0x1f, %eax
+;   subl %esi, %eax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %clz(i16) -> i16 {
+block0(v0: i16):
+    v1 = clz v0
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movzwq %di, %rdx
+;   movq $0xffffffffffffffff, %rsi
+;   bsrq %rdx, %rdi
+;   cmoveq %rsi, %rdi
+;   movl $0x3f, %eax
+;   subq %rdi, %rax
+;   subq $0x30, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movzwq %di, %rdx
+;   movq $18446744073709551615, %rsi
+;   bsrq %rdx, %rdi
+;   cmoveq %rsi, %rdi
+;   movl $0x3f, %eax
+;   subq %rdi, %rax
+;   subq $0x30, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %clz(i8) -> i8 {
+block0(v0: i8):
+    v1 = clz v0
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movzbq %dil, %rdx
+;   movq $0xffffffffffffffff, %rsi
+;   bsrq %rdx, %rdi
+;   cmoveq %rsi, %rdi
+;   movl $0x3f, %eax
+;   subq %rdi, %rax
+;   subq $0x38, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movzbq %dil, %rdx
+;   movq $18446744073709551615, %rsi
+;   bsrq %rdx, %rdi
+;   cmoveq %rsi, %rdi
+;   movl $0x3f, %eax
+;   subq %rdi, %rax
+;   subq $0x38, %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+

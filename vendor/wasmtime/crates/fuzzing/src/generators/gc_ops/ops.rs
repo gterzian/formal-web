@@ -1,0 +1,1234 @@
+//! Operations for the `gc` operations.
+
+use crate::generators::gc_ops::types::StackType;
+use crate::generators::gc_ops::{
+    limits::GcOpsLimits,
+    types::{CompositeType, RecGroupId, TypeId, Types},
+};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use wasm_encoder::{
+    CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+    GlobalSection, ImportSection, Instruction, Module, RefType, TableSection, TableType,
+    TypeSection, ValType,
+};
+
+/// The base offsets and indices for various Wasm entities within
+/// their index spaces in the the encoded Wasm binary.
+#[derive(Clone, Copy)]
+struct WasmEncodingBases {
+    struct_type_base: u32,
+    typed_first_func_index: u32,
+    struct_local_idx: u32,
+    eq_local_idx: u32,
+    typed_local_base: u32,
+    struct_global_idx: u32,
+    eq_global_idx: u32,
+    typed_global_base: u32,
+    struct_table_idx: u32,
+    eq_table_idx: u32,
+    typed_table_base: u32,
+}
+
+/// A description of a Wasm module that makes a series of `externref` table
+/// operations.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct GcOps {
+    pub(crate) limits: GcOpsLimits,
+    pub(crate) ops: Vec<GcOp>,
+    pub(crate) types: Types,
+}
+
+impl GcOps {
+    /// Serialize this module into a Wasm binary.
+    ///
+    /// The module requires several function imports. See this function's
+    /// implementation for their exact types.
+    ///
+    /// The single export of the module is a function "run" that takes
+    /// `self.num_params` parameters of type `externref`.
+    ///
+    /// The "run" function does not terminate; you should run it with limited
+    /// fuel. It also is not guaranteed to avoid traps: it may access
+    /// out-of-bounds of the table.
+    pub fn to_wasm_binary(&mut self) -> Vec<u8> {
+        let mut encoding_order_grouped = Vec::with_capacity(self.types.rec_groups.len());
+        self.fixup(&mut encoding_order_grouped);
+
+        let mut module = Module::new();
+
+        // Encode the types for all functions that we are using.
+        let mut types = TypeSection::new();
+
+        // 0: "gc"
+        types.ty().function(
+            vec![],
+            // Return a bunch of stuff from `gc` so that we exercise GCing when
+            // there is return pointer space allocated on the stack. This is
+            // especially important because the x64 backend currently
+            // dynamically adjusts the stack pointer for each call that uses
+            // return pointers rather than statically allocating space in the
+            // stack frame.
+            vec![ValType::EXTERNREF, ValType::EXTERNREF, ValType::EXTERNREF],
+        );
+
+        // 1: "run"
+        let mut params: Vec<ValType> =
+            Vec::with_capacity(usize::try_from(self.limits.num_params).unwrap());
+        for _i in 0..self.limits.num_params {
+            params.push(ValType::EXTERNREF);
+        }
+        let params_len = u32::try_from(params.len()).unwrap();
+        let results = vec![];
+        types.ty().function(params, results);
+
+        // 2: `take_refs`
+        types.ty().function(
+            vec![ValType::EXTERNREF, ValType::EXTERNREF, ValType::EXTERNREF],
+            vec![],
+        );
+
+        // 3: `make_refs`
+        types.ty().function(
+            vec![],
+            vec![ValType::EXTERNREF, ValType::EXTERNREF, ValType::EXTERNREF],
+        );
+
+        // 4: `take_struct`
+        types.ty().function(
+            vec![ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Struct,
+                },
+            })],
+            vec![],
+        );
+
+        // 5: `take_eq`
+        types.ty().function(
+            vec![ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Eq,
+                },
+            })],
+            vec![],
+        );
+
+        let struct_type_base: u32 = types.len();
+
+        // Build the type-id-to-wasm-index map from the pre-computed
+        // encoding order (rec groups in topo order, members sorted by
+        // supertype-first within each group).
+        let mut type_ids_to_index: BTreeMap<TypeId, u32> = BTreeMap::new();
+        let mut next_idx = struct_type_base;
+        for (_, members) in &encoding_order_grouped {
+            for &tid in members {
+                type_ids_to_index.insert(tid, next_idx);
+                next_idx += 1;
+            }
+        }
+
+        let encode_ty_id = |ty_id: &TypeId| -> wasm_encoder::SubType {
+            let def = &self.types.type_defs[ty_id];
+            match &def.composite_type {
+                CompositeType::Struct(st) => {
+                    let fields: Box<[wasm_encoder::FieldType]> = st
+                        .fields
+                        .iter()
+                        .map(|f| wasm_encoder::FieldType {
+                            element_type: f.field_type.to_storage_type(),
+                            mutable: f.mutable,
+                        })
+                        .collect();
+                    wasm_encoder::SubType {
+                        is_final: def.is_final,
+                        supertype_idx: def.supertype.map(|st| type_ids_to_index[&st]),
+                        composite_type: wasm_encoder::CompositeType {
+                            inner: wasm_encoder::CompositeInnerType::Struct(
+                                wasm_encoder::StructType { fields },
+                            ),
+                            shared: false,
+                            describes: None,
+                            descriptor: None,
+                        },
+                    }
+                }
+            }
+        };
+
+        let mut struct_count = 0;
+
+        // Emit rec groups in the pre-computed order.
+        for (_, group_members) in &encoding_order_grouped {
+            let members: Vec<wasm_encoder::SubType> =
+                group_members.iter().map(encode_ty_id).collect();
+            types.ty().rec(members);
+            struct_count += u32::try_from(group_members.len()).unwrap();
+        }
+
+        let typed_fn_type_base: u32 = struct_type_base + struct_count;
+
+        for i in 0..struct_count {
+            let concrete = struct_type_base + i;
+            types.ty().function(
+                vec![ValType::Ref(RefType {
+                    nullable: true,
+                    heap_type: wasm_encoder::HeapType::Concrete(concrete),
+                })],
+                vec![],
+            );
+        }
+
+        // Import the GC function.
+        let mut imports = ImportSection::new();
+        imports.import("", "gc", EntityType::Function(0));
+        imports.import("", "take_refs", EntityType::Function(2));
+        imports.import("", "make_refs", EntityType::Function(3));
+        imports.import("", "take_struct", EntityType::Function(4));
+        imports.import("", "take_eq", EntityType::Function(5));
+
+        // For each of our concrete struct types, define a function
+        // import that takes an argument of that concrete type.
+        let typed_first_func_index: u32 = imports.len();
+
+        for i in 0..struct_count {
+            let ty_idx = typed_fn_type_base + i;
+            let name = format!("take_struct_{}", struct_type_base + i);
+            imports.import("", &name, EntityType::Function(ty_idx));
+        }
+
+        // Define our table.
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::EXTERNREF,
+            minimum: u64::from(self.limits.table_size),
+            maximum: None,
+            table64: false,
+            shared: false,
+        });
+
+        let struct_table_idx = tables.len();
+        tables.table(TableType {
+            element_type: RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Struct,
+                },
+            },
+            minimum: u64::from(self.limits.table_size),
+            maximum: None,
+            table64: false,
+            shared: false,
+        });
+
+        let eq_table_idx = tables.len();
+        tables.table(TableType {
+            element_type: RefType::EQREF,
+            minimum: u64::from(self.limits.table_size),
+            maximum: None,
+            table64: false,
+            shared: false,
+        });
+
+        let typed_table_base = tables.len();
+        for i in 0..struct_count {
+            let concrete = struct_type_base + i;
+            tables.table(TableType {
+                element_type: RefType {
+                    nullable: true,
+                    heap_type: wasm_encoder::HeapType::Concrete(concrete),
+                },
+                minimum: u64::from(self.limits.table_size),
+                maximum: None,
+                table64: false,
+                shared: false,
+            });
+        }
+
+        // Define our globals.
+        let mut globals = GlobalSection::new();
+        for _ in 0..self.limits.num_globals {
+            globals.global(
+                wasm_encoder::GlobalType {
+                    val_type: wasm_encoder::ValType::EXTERNREF,
+                    mutable: true,
+                    shared: false,
+                },
+                &ConstExpr::ref_null(wasm_encoder::HeapType::EXTERN),
+            );
+        }
+
+        // Add exactly one (ref.null struct) global.
+        let struct_global_idx = globals.len();
+        globals.global(
+            wasm_encoder::GlobalType {
+                val_type: ValType::Ref(RefType {
+                    nullable: true,
+                    heap_type: wasm_encoder::HeapType::Abstract {
+                        shared: false,
+                        ty: wasm_encoder::AbstractHeapType::Struct,
+                    },
+                }),
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::ref_null(wasm_encoder::HeapType::Abstract {
+                shared: false,
+                ty: wasm_encoder::AbstractHeapType::Struct,
+            }),
+        );
+
+        // Add exactly one (ref.null eq) global.
+        let eq_global_idx = globals.len();
+        globals.global(
+            wasm_encoder::GlobalType {
+                val_type: ValType::Ref(RefType::EQREF),
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::ref_null(wasm_encoder::HeapType::Abstract {
+                shared: false,
+                ty: wasm_encoder::AbstractHeapType::Eq,
+            }),
+        );
+
+        // Add one typed (ref <type>) global per struct type.
+        let typed_global_base = globals.len();
+        for i in 0..struct_count {
+            let concrete = struct_type_base + i;
+            globals.global(
+                wasm_encoder::GlobalType {
+                    val_type: ValType::Ref(RefType {
+                        nullable: true,
+                        heap_type: wasm_encoder::HeapType::Concrete(concrete),
+                    }),
+                    mutable: true,
+                    shared: false,
+                },
+                &ConstExpr::ref_null(wasm_encoder::HeapType::Concrete(concrete)),
+            );
+        }
+
+        // Define the "run" function export.
+        let mut functions = FunctionSection::new();
+        let mut exports = ExportSection::new();
+
+        let run_defined_idx = functions.len();
+        functions.function(1);
+        let run_func_index = imports.len() + run_defined_idx;
+        exports.export("run", ExportKind::Func, run_func_index);
+
+        // Give ourselves one scratch local that we can use in various `GcOp`
+        // implementations.
+        let mut local_decls: Vec<(u32, ValType)> = vec![(1, ValType::EXTERNREF)];
+
+        let scratch_local = params_len;
+        let struct_local_idx = scratch_local + 1;
+        local_decls.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Struct,
+                },
+            }),
+        ));
+
+        let eq_local_idx = struct_local_idx + 1;
+        local_decls.push((1, ValType::Ref(RefType::EQREF)));
+
+        let typed_local_base: u32 = eq_local_idx + 1;
+        for i in 0..struct_count {
+            let concrete = struct_type_base + i;
+            local_decls.push((
+                1,
+                ValType::Ref(RefType {
+                    nullable: true,
+                    heap_type: wasm_encoder::HeapType::Concrete(concrete),
+                }),
+            ));
+        }
+
+        let storage_bases = WasmEncodingBases {
+            struct_type_base,
+            typed_first_func_index,
+            struct_local_idx,
+            eq_local_idx,
+            typed_local_base,
+            struct_global_idx,
+            eq_global_idx,
+            typed_global_base,
+            struct_table_idx,
+            eq_table_idx,
+            typed_table_base,
+        };
+
+        // Build a flat encoding order for field lookups during encoding.
+        let encoding_order: Vec<TypeId> = encoding_order_grouped
+            .iter()
+            .flat_map(|(_, members)| members.iter().copied())
+            .collect();
+
+        let mut func = Function::new(local_decls);
+        func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
+        for op in &self.ops {
+            op.encode(
+                &mut func,
+                scratch_local,
+                storage_bases,
+                &self.types,
+                &encoding_order,
+            );
+        }
+        func.instruction(&Instruction::Br(0));
+        func.instruction(&Instruction::End);
+        func.instruction(&Instruction::End);
+
+        let mut code = CodeSection::new();
+        code.function(&func);
+
+        module
+            .section(&types)
+            .section(&imports)
+            .section(&functions)
+            .section(&tables)
+            .section(&globals)
+            .section(&exports)
+            .section(&code);
+
+        module.finish()
+    }
+
+    /// Fixes this test case such that it becomes valid.
+    ///
+    /// This is necessary because a random mutation (e.g. removing an op in the
+    /// middle of our sequence) might have made it so that subsequent ops won't
+    /// have their expected operand types on the Wasm stack
+    /// anymore. Furthermore, because we serialize and deserialize test cases,
+    /// and libFuzzer will occasionally mutate those serialized bytes directly,
+    /// rather than use one of our custom mutations, we have no guarantee that
+    /// pre-mutation test cases are even valid! Therefore, we always call this
+    /// method before translating this "AST"-style representation into a raw
+    /// Wasm binary.
+    pub fn fixup(&mut self, encoding_order_grouped: &mut Vec<(RecGroupId, Vec<TypeId>)>) {
+        self.limits.fixup();
+        self.types.fixup(&self.limits, encoding_order_grouped);
+        let encoding_order: Vec<TypeId> = encoding_order_grouped
+            .iter()
+            .flat_map(|(_, members)| members.iter().copied())
+            .collect();
+
+        let mut new_ops = Vec::with_capacity(self.ops.len());
+        let mut stack: Vec<StackType> = Vec::new();
+        let num_types = u32::try_from(self.types.type_defs.len()).unwrap();
+
+        let mut operand_types = Vec::new();
+        for op in &self.ops {
+            let Some(op) = op.fixup(&self.limits, num_types) else {
+                continue;
+            };
+            let op = StackType::fixup_cast(op, &self.types, &encoding_order);
+
+            debug_assert!(operand_types.is_empty());
+            op.operand_types(&mut operand_types);
+            for ty in operand_types.drain(..) {
+                StackType::fixup(
+                    ty,
+                    &mut stack,
+                    &mut new_ops,
+                    num_types,
+                    &self.types,
+                    &encoding_order,
+                );
+            }
+
+            // Finally, emit the op itself (updates stack abstractly)
+            let mut result_types = Vec::new();
+            StackType::emit(op, &mut stack, &mut new_ops, num_types, &mut result_types);
+        }
+
+        // Drop any remaining values on the operand stack.
+        for _ in 0..stack.len() {
+            new_ops.push(GcOp::Drop);
+        }
+
+        log::trace!("ops after fixup: {new_ops:#?}");
+        self.ops = new_ops;
+    }
+
+    /// Attempts to remove the last opcode from the sequence.
+    ///
+    /// Returns `true` if an opcode was successfully removed, or `false` if the
+    /// list was already empty.
+    pub fn pop(&mut self) -> bool {
+        self.ops.pop().is_some()
+    }
+}
+
+macro_rules! for_each_gc_op {
+    ( $mac:ident ) => {
+        $mac! {
+            #[operands([])]
+            #[results([ExternRef, ExternRef, ExternRef])]
+            Gc,
+
+            #[operands([])]
+            #[results([ExternRef, ExternRef, ExternRef])]
+            MakeRefs,
+
+            #[operands([Some(ExternRef), Some(ExternRef), Some(ExternRef)])]
+            #[results([])]
+            TakeRefs,
+
+            #[operands([])]
+            #[results([ExternRef])]
+            #[fixup(|limits, _num_types| {
+                // Add one to make sure that out-of-bounds table accesses are
+                // possible, but still rare.
+                elem_index = elem_index % (limits.table_size + 1);
+            })]
+            TableGet { elem_index: u32 },
+
+            #[operands([Some(ExternRef)])]
+            #[results([])]
+            #[fixup(|limits, _num_types| {
+                // Add one to make sure that out-of-bounds table accesses are
+                // possible, but still rare.
+                elem_index = elem_index % (limits.table_size + 1);
+            })]
+            TableSet { elem_index: u32 },
+
+            #[operands([])]
+            #[results([ExternRef])]
+            #[fixup(|limits, _num_types| {
+                global_index = global_index.checked_rem(limits.num_globals)?;
+            })]
+            GlobalGet { global_index:  u32 },
+
+            #[operands([Some(ExternRef)])]
+            #[results([])]
+            #[fixup(|limits, _num_types| {
+                global_index = global_index.checked_rem(limits.num_globals)?;
+            })]
+            GlobalSet { global_index: u32 },
+
+            #[operands([])]
+            #[results([ExternRef])]
+            #[fixup(|limits, _num_types| {
+                local_index = local_index.checked_rem(limits.num_params)?;
+            })]
+            LocalGet { local_index: u32 },
+
+            #[operands([Some(ExternRef)])]
+            #[results([])]
+            #[fixup(|limits, _num_types| {
+                local_index = local_index.checked_rem(limits.num_params)?;
+            })]
+            LocalSet { local_index: u32 },
+
+            #[operands([])]
+            #[results([Struct(Some(type_index))])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            StructNew { type_index: u32 },
+
+            #[operands([Some(Struct(None))])]
+            #[results([])]
+            TakeStructCall,
+
+            #[operands([Some(Struct(Some(type_index)))])]
+            #[results([])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            TakeTypedStructCall { type_index: u32 },
+
+            #[operands([Some(Struct(None))])]
+            #[results([])]
+            StructLocalSet,
+
+            #[operands([])]
+            #[results([Struct(None)])]
+            StructLocalGet,
+
+            #[operands([Some(Struct(Some(type_index)))])]
+            #[results([])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            TypedStructLocalSet { type_index: u32 },
+
+            #[operands([])]
+            #[results([Struct(Some(type_index))])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            TypedStructLocalGet { type_index: u32 },
+
+            #[operands([Some(Struct(None))])]
+            #[results([])]
+            StructGlobalSet,
+
+            #[operands([])]
+            #[results([Struct(None)])]
+            StructGlobalGet,
+
+            #[operands([Some(Struct(Some(type_index)))])]
+            #[results([])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            TypedStructGlobalSet { type_index: u32 },
+
+            #[operands([])]
+            #[results([Struct(Some(type_index))])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            TypedStructGlobalGet { type_index: u32 },
+
+            #[operands([Some(Struct(None))])]
+            #[results([])]
+            #[fixup(|limits, _num_types| {
+                // Add one to make sure that out-of-bounds table accesses are
+                // possible, but still rare.
+                elem_index = elem_index % (limits.table_size + 1);
+            })]
+            StructTableSet { elem_index: u32 },
+
+            #[operands([])]
+            #[results([Struct(None)])]
+            #[fixup(|limits, _num_types| {
+                // Add one to make sure that out-of-bounds table accesses are
+                // possible, but still rare.
+                elem_index = elem_index % (limits.table_size + 1);
+            })]
+            StructTableGet { elem_index: u32 },
+
+            #[operands([Some(Struct(Some(type_index)))])]
+            #[results([])]
+            #[fixup(|limits, num_types| {
+                // Add one to make sure that out-of-bounds table accesses are
+                // possible, but still rare.
+                elem_index = elem_index % (limits.table_size + 1);
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            TypedStructTableSet { elem_index: u32, type_index: u32 },
+
+            #[operands([])]
+            #[results([Struct(Some(type_index))])]
+            #[fixup(|limits, num_types| {
+                // Add one to make sure that out-of-bounds table accesses are
+                // possible, but still rare.
+                elem_index = elem_index % (limits.table_size + 1);
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            TypedStructTableGet { elem_index: u32, type_index: u32 },
+
+            #[operands([None])]
+            #[results([])]
+            Drop,
+
+            #[operands([])]
+            #[results([ExternRef])]
+            NullExtern,
+
+            #[operands([])]
+            #[results([Struct(None)])]
+            NullStruct,
+
+            #[operands([])]
+            #[results([Eq])]
+            NullEq,
+
+            #[operands([Some(Eq)])]
+            #[results([])]
+            TakeEqCall,
+
+            #[operands([Some(Eq)])]
+            #[results([])]
+            EqLocalSet,
+
+            #[operands([])]
+            #[results([Eq])]
+            EqLocalGet,
+
+            #[operands([Some(Eq)])]
+            #[results([])]
+            EqGlobalSet,
+
+            #[operands([])]
+            #[results([Eq])]
+            EqGlobalGet,
+
+            #[operands([Some(Eq)])]
+            #[results([])]
+            #[fixup(|limits, _num_types| {
+                // Add one to make sure that out-of-bounds table accesses are
+                // possible, but still rare.
+                elem_index = elem_index % (limits.table_size + 1);
+            })]
+            EqTableSet { elem_index: u32 },
+
+            #[operands([])]
+            #[results([Eq])]
+            #[fixup(|limits, _num_types| {
+                // Add one to make sure that out-of-bounds table accesses are
+                // possible, but still rare.
+                elem_index = elem_index % (limits.table_size + 1);
+            })]
+            EqTableGet { elem_index: u32 },
+
+            #[operands([])]
+            #[results([Struct(Some(type_index))])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            NullTypedStruct { type_index: u32 },
+
+            #[operands([Some(Struct(Some(sub_type_index)))])]
+            #[results([Struct(Some(super_type_index))])]
+            #[fixup(|_limits, num_types| {
+                sub_type_index = sub_type_index.checked_rem(num_types)?;
+                super_type_index = super_type_index.checked_rem(num_types)?;
+            })]
+            RefCastUpward { sub_type_index: u32, super_type_index: u32 },
+
+            #[operands([Some(Struct(Some(super_type_index)))])]
+            #[results([Struct(Some(sub_type_index))])]
+            #[fixup(|_limits, num_types| {
+                sub_type_index = sub_type_index.checked_rem(num_types)?;
+                super_type_index = super_type_index.checked_rem(num_types)?;
+            })]
+            RefCastDownward { sub_type_index: u32, super_type_index: u32 },
+
+            #[operands([Some(Struct(Some(type_index)))])]
+            #[results([])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            StructGet { type_index: u32, field_index: u32 },
+
+            #[operands([Some(Struct(Some(type_index)))])]
+            #[results([])]
+            #[fixup(|_limits, num_types| {
+                type_index = type_index.checked_rem(num_types)?;
+            })]
+            StructSet { type_index: u32, field_index: u32 },
+        }
+    };
+}
+
+macro_rules! define_gc_op_variants {
+    (
+        $(
+            $( #[$attr:meta] )*
+            $op:ident $( { $( $field:ident : $field_ty:ty ),* } )? ,
+        )*
+    ) => {
+        /// The operations that can be performed by the `gc` function.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+        #[allow(missing_docs, reason = "self-describing")]
+        pub enum GcOp {
+            $(
+                $op $( { $( $field : $field_ty ),* } )? ,
+            )*
+        }
+    };
+}
+for_each_gc_op!(define_gc_op_variants);
+
+macro_rules! define_op_names {
+    (
+        $(
+            $( #[$attr:meta] )*
+            $op:ident $( { $( $field:ident : $field_ty:ty ),* } )? ,
+        )*
+    ) => {
+        #[cfg(test)]
+        pub(crate) const OP_NAMES: &[&str] = &[
+            $(stringify!($op)),*
+        ];
+    }
+}
+for_each_gc_op!(define_op_names);
+
+impl GcOp {
+    #[cfg(test)]
+    pub(crate) fn name(&self) -> &'static str {
+        macro_rules! define_gc_op_name {
+            (
+                $(
+                    $( #[$attr:meta] )*
+                    $op:ident $( { $( $field:ident : $field_ty:ty ),* } )? ,
+                )*
+            ) => {
+                match self {
+                    $(
+                        Self::$op $( { $($field: _),* } )? => stringify!($op),
+                    )*
+                }
+            };
+        }
+        for_each_gc_op!(define_gc_op_name)
+    }
+
+    pub(crate) fn operand_types(&self, out: &mut Vec<Option<StackType>>) {
+        macro_rules! define_gc_op_operand_types {
+            (
+                $(
+                    #[operands($operands:expr)]
+                    $( #[$attr:meta] )*
+                    $op:ident $( { $( $field:ident : $field_ty:ty ),* } )? ,
+                )*
+            ) => {{
+                use StackType::*;
+                match self {
+                    $(
+                        Self::$op $( { $($field),* } )? => {
+                            $(
+                                $(
+                                    #[allow(unused, reason = "macro code")]
+                                    let $field = *$field;
+                                )*
+                            )?
+                            let operands: [Option<StackType>; _] = $operands;
+                            out.extend(operands);
+                        }
+                    )*
+                }
+            }};
+        }
+        for_each_gc_op!(define_gc_op_operand_types)
+    }
+
+    pub(crate) fn result_types(&self, out: &mut Vec<StackType>) {
+        macro_rules! define_gc_op_result_types {
+            (
+                $(
+                    #[operands($operands:expr)]
+                    #[results($results:expr)]
+                    $( #[$attr:meta] )*
+                    $op:ident $( { $( $field:ident : $field_ty:ty ),* } )? ,
+                )*
+            ) => {{
+                use StackType::*;
+                match self {
+                    $(
+                        Self::$op $( { $($field),* } )? => {
+                            $(
+                                $(
+                                    #[allow(unused, reason = "macro code")]
+                                    let $field = *$field;
+                                )*
+                            )?
+                            let results: [StackType; _] = $results;
+                            out.extend(results);
+                        }
+                    )*
+                }
+            }};
+        }
+        for_each_gc_op!(define_gc_op_result_types)
+    }
+
+    pub(crate) fn fixup(&self, limits: &GcOpsLimits, num_types: u32) -> Option<Self> {
+        macro_rules! define_gc_op_fixup {
+            (
+                $(
+                    #[operands($operands:expr)]
+                    #[results($results:expr)]
+                    $( #[fixup(|$limits:ident, $num_types:ident| $fixup:expr)] )?
+                    $op:ident $( { $( $field:ident : $field_ty:ty ),* } )? ,
+                )*
+            ) => {{
+                match self {
+                    $(
+                        Self::$op $( { $($field),* } )? => {
+                            $(
+                                $(
+                                    #[allow(unused_mut, unused_assignments, reason = "macro code")]
+                                    let mut $field = *$field;
+                                )*
+                                let $limits = limits;
+                                let $num_types = num_types;
+                                $fixup;
+                            )?
+                            Some(Self::$op $( { $( $field ),* } )? )
+                        }
+                    )*
+                }
+            }};
+        }
+        for_each_gc_op!(define_gc_op_fixup)
+    }
+
+    pub(crate) fn generate(ctx: &mut mutatis::Context) -> mutatis::Result<GcOp> {
+        macro_rules! define_gc_op_generate {
+            (
+                $(
+                    $( #[$attr:meta] )*
+                    $op:ident $( { $( $field:ident : $field_ty:ty ),* } )? ,
+                )*
+            ) => {{
+                let choices: &[fn(&mut mutatis::Context) -> mutatis::Result<GcOp>] = &[
+                    $(
+                        |_ctx| Ok(GcOp::$op $( {
+                            $(
+                                $field: {
+                                    let mut mutator = <$field_ty as mutatis::DefaultMutate>::DefaultMutate::default();
+                                    mutatis::Generate::<$field_ty>::generate(&mut mutator, _ctx)?
+                                }
+                            ),*
+                        } )? ),
+                    )*
+                ];
+
+                let f = *ctx.rng()
+                    .choose(choices)
+                    .unwrap();
+                (f)(ctx)
+            }};
+        }
+        for_each_gc_op!(define_gc_op_generate)
+    }
+
+    fn encode(
+        &self,
+        func: &mut Function,
+        scratch_local: u32,
+        encoding_bases: WasmEncodingBases,
+        types: &Types,
+        encoding_order: &[TypeId],
+    ) {
+        let gc_func_idx = 0;
+        let take_refs_func_idx = 1;
+        let make_refs_func_idx = 2;
+        let take_structref_idx = 3;
+        let take_eqref_idx = 4;
+
+        match *self {
+            Self::Gc => {
+                func.instruction(&Instruction::Call(gc_func_idx));
+            }
+            Self::MakeRefs => {
+                func.instruction(&Instruction::Call(make_refs_func_idx));
+            }
+            Self::TakeRefs => {
+                func.instruction(&Instruction::Call(take_refs_func_idx));
+            }
+            Self::TableGet { elem_index: x } => {
+                func.instruction(&Instruction::I32Const(x.cast_signed()));
+                func.instruction(&Instruction::TableGet(0));
+            }
+            Self::TableSet { elem_index: x } => {
+                func.instruction(&Instruction::LocalSet(scratch_local));
+                func.instruction(&Instruction::I32Const(x.cast_signed()));
+                func.instruction(&Instruction::LocalGet(scratch_local));
+                func.instruction(&Instruction::TableSet(0));
+            }
+            Self::GlobalGet { global_index: x } => {
+                func.instruction(&Instruction::GlobalGet(x));
+            }
+            Self::GlobalSet { global_index: x } => {
+                func.instruction(&Instruction::GlobalSet(x));
+            }
+            Self::LocalGet { local_index: x } => {
+                func.instruction(&Instruction::LocalGet(x));
+            }
+            Self::LocalSet { local_index: x } => {
+                func.instruction(&Instruction::LocalSet(x));
+            }
+            Self::Drop => {
+                func.instruction(&Instruction::Drop);
+            }
+            Self::NullExtern => {
+                func.instruction(&Instruction::RefNull(wasm_encoder::HeapType::EXTERN));
+            }
+            Self::NullStruct => {
+                func.instruction(&Instruction::RefNull(wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Struct,
+                }));
+            }
+            Self::NullEq => {
+                func.instruction(&Instruction::RefNull(wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Eq,
+                }));
+            }
+            Self::TakeEqCall => {
+                func.instruction(&Instruction::Call(take_eqref_idx));
+            }
+            Self::EqLocalGet => {
+                func.instruction(&Instruction::LocalGet(encoding_bases.eq_local_idx));
+            }
+            Self::EqLocalSet => {
+                func.instruction(&Instruction::LocalSet(encoding_bases.eq_local_idx));
+            }
+            Self::EqGlobalGet => {
+                func.instruction(&Instruction::GlobalGet(encoding_bases.eq_global_idx));
+            }
+            Self::EqGlobalSet => {
+                func.instruction(&Instruction::GlobalSet(encoding_bases.eq_global_idx));
+            }
+            Self::EqTableGet { elem_index } => {
+                func.instruction(&Instruction::I32Const(elem_index.cast_signed()));
+                func.instruction(&Instruction::TableGet(encoding_bases.eq_table_idx));
+            }
+            Self::EqTableSet { elem_index } => {
+                // Use eq_local_idx (eqref) to temporarily store the value before table.set.
+                func.instruction(&Instruction::LocalSet(encoding_bases.eq_local_idx));
+                func.instruction(&Instruction::I32Const(elem_index.cast_signed()));
+                func.instruction(&Instruction::LocalGet(encoding_bases.eq_local_idx));
+                func.instruction(&Instruction::TableSet(encoding_bases.eq_table_idx));
+            }
+            Self::NullTypedStruct { type_index } => {
+                func.instruction(&Instruction::RefNull(wasm_encoder::HeapType::Concrete(
+                    encoding_bases.struct_type_base + type_index,
+                )));
+            }
+            Self::StructNew { type_index: x } => {
+                if let Some(tid) = encoding_order.get(usize::try_from(x).unwrap()) {
+                    if let Some(def) = types.type_defs.get(tid) {
+                        let CompositeType::Struct(ref st) = def.composite_type;
+                        for field in &st.fields {
+                            field.field_type.emit_default_const(func);
+                        }
+                    }
+                }
+                func.instruction(&Instruction::StructNew(encoding_bases.struct_type_base + x));
+            }
+            Self::TakeStructCall => {
+                func.instruction(&Instruction::Call(take_structref_idx));
+            }
+            Self::TakeTypedStructCall { type_index: x } => {
+                let f = encoding_bases.typed_first_func_index + x;
+                func.instruction(&Instruction::Call(f));
+            }
+            Self::StructLocalGet => {
+                func.instruction(&Instruction::LocalGet(encoding_bases.struct_local_idx));
+            }
+            Self::TypedStructLocalGet { type_index: x } => {
+                func.instruction(&Instruction::LocalGet(encoding_bases.typed_local_base + x));
+            }
+            Self::StructLocalSet => {
+                func.instruction(&Instruction::LocalSet(encoding_bases.struct_local_idx));
+            }
+            Self::TypedStructLocalSet { type_index: x } => {
+                func.instruction(&Instruction::LocalSet(encoding_bases.typed_local_base + x));
+            }
+            Self::StructGlobalGet => {
+                func.instruction(&Instruction::GlobalGet(encoding_bases.struct_global_idx));
+            }
+            Self::TypedStructGlobalGet { type_index: x } => {
+                func.instruction(&Instruction::GlobalGet(
+                    encoding_bases.typed_global_base + x,
+                ));
+            }
+            Self::StructGlobalSet => {
+                func.instruction(&Instruction::GlobalSet(encoding_bases.struct_global_idx));
+            }
+            Self::TypedStructGlobalSet { type_index: x } => {
+                func.instruction(&Instruction::GlobalSet(
+                    encoding_bases.typed_global_base + x,
+                ));
+            }
+            Self::StructTableGet { elem_index } => {
+                func.instruction(&Instruction::I32Const(elem_index.cast_signed()));
+                func.instruction(&Instruction::TableGet(encoding_bases.struct_table_idx));
+            }
+            Self::TypedStructTableGet {
+                elem_index,
+                type_index,
+            } => {
+                func.instruction(&Instruction::I32Const(elem_index.cast_signed()));
+                func.instruction(&Instruction::TableGet(
+                    encoding_bases.typed_table_base + type_index,
+                ));
+            }
+            Self::StructTableSet { elem_index } => {
+                // Use struct_local_idx (anyref) to temporarily store the value before table.set
+                func.instruction(&Instruction::LocalSet(encoding_bases.struct_local_idx));
+                func.instruction(&Instruction::I32Const(elem_index.cast_signed()));
+                func.instruction(&Instruction::LocalGet(encoding_bases.struct_local_idx));
+                func.instruction(&Instruction::TableSet(encoding_bases.struct_table_idx));
+            }
+            Self::TypedStructTableSet {
+                elem_index,
+                type_index,
+            } => {
+                func.instruction(&Instruction::LocalSet(
+                    encoding_bases.typed_local_base + type_index,
+                ));
+                func.instruction(&Instruction::I32Const(elem_index.cast_signed()));
+                func.instruction(&Instruction::LocalGet(
+                    encoding_bases.typed_local_base + type_index,
+                ));
+                func.instruction(&Instruction::TableSet(
+                    encoding_bases.typed_table_base + type_index,
+                ));
+            }
+            Self::RefCastUpward {
+                sub_type_index: _,
+                super_type_index,
+            } => {
+                // The value on the stack is already the subtype, so this
+                // cast always succeeds.
+                let heap_type = wasm_encoder::HeapType::Concrete(
+                    encoding_bases.struct_type_base + super_type_index,
+                );
+                func.instruction(&Instruction::RefCastNullable(heap_type));
+            }
+            Self::RefCastDownward {
+                sub_type_index,
+                super_type_index,
+            } => {
+                // Fallible downcast that never traps:
+                //
+                //   local.tee $my_temp
+                //   ;; Test if the downcast will succeed.
+                //   ref.test ...
+                //   if (result (ref null $my_sub))
+                //     ;; The downcast will succeed, do a downcast-or-trap
+                //     ;; operation which we know will not trap.
+                //     local.get $my_temp
+                //     ref.cast ...
+                //   else
+                //     ;; The downcast would fail, so just create a null
+                //     ;; reference instead.
+                //     ref.null ...
+                //   end
+                let sub_wasm_type = encoding_bases.struct_type_base + sub_type_index;
+                let sub_heap_type = wasm_encoder::HeapType::Concrete(sub_wasm_type);
+                let temp_local = encoding_bases.typed_local_base + super_type_index;
+
+                // Tee the supertype value into a temp local (saves and
+                // leaves the value on the stack for ref.test).
+                func.instruction(&Instruction::LocalTee(temp_local));
+
+                // Test if the downcast will succeed.
+                func.instruction(&Instruction::RefTestNullable(sub_heap_type));
+
+                // if (result (ref null $sub_type))
+                func.instruction(&Instruction::If(wasm_encoder::BlockType::Result(
+                    ValType::Ref(RefType {
+                        nullable: true,
+                        heap_type: sub_heap_type,
+                    }),
+                )));
+
+                // The downcast will succeed; do the cast.
+                func.instruction(&Instruction::LocalGet(temp_local));
+                func.instruction(&Instruction::RefCastNullable(sub_heap_type));
+
+                func.instruction(&Instruction::Else);
+
+                // The downcast would fail; produce null instead.
+                func.instruction(&Instruction::RefNull(sub_heap_type));
+
+                func.instruction(&Instruction::End);
+            }
+            Self::StructGet {
+                type_index,
+                field_index,
+            } => {
+                let wasm_type = encoding_bases.struct_type_base + type_index;
+                let fields = encoding_order
+                    .get(usize::try_from(type_index).unwrap())
+                    .and_then(|tid| types.type_defs.get(tid))
+                    .map(|def| {
+                        let CompositeType::Struct(ref st) = def.composite_type;
+                        &st.fields[..]
+                    });
+
+                match fields {
+                    Some(fields) if !fields.is_empty() => {
+                        let typed_local = encoding_bases.typed_local_base + type_index;
+                        // Guard against null: save ref, check, skip if null.
+                        func.instruction(&Instruction::LocalTee(typed_local));
+                        func.instruction(&Instruction::RefIsNull);
+                        func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+                        func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::LocalGet(typed_local));
+                        let idx = field_index % u32::try_from(fields.len()).unwrap();
+                        if fields[usize::try_from(idx).unwrap()].field_type.is_packed() {
+                            func.instruction(&Instruction::StructGetS {
+                                struct_type_index: wasm_type,
+                                field_index: idx,
+                            });
+                        } else {
+                            func.instruction(&Instruction::StructGet {
+                                struct_type_index: wasm_type,
+                                field_index: idx,
+                            });
+                        }
+                        // Drop the result — field values are not tracked
+                        // on the abstract stack.
+                        func.instruction(&Instruction::Drop);
+                        func.instruction(&Instruction::End);
+                    }
+                    _ => {
+                        func.instruction(&Instruction::Drop);
+                    }
+                }
+            }
+            Self::StructSet {
+                type_index,
+                field_index,
+            } => {
+                let wasm_type = encoding_bases.struct_type_base + type_index;
+                let fields = encoding_order
+                    .get(usize::try_from(type_index).unwrap())
+                    .and_then(|tid| types.type_defs.get(tid))
+                    .map(|def| {
+                        let CompositeType::Struct(ref st) = def.composite_type;
+                        &st.fields[..]
+                    });
+
+                match fields {
+                    Some(fields) if !fields.is_empty() => {
+                        let len = fields.len();
+                        let start = (usize::try_from(field_index).unwrap()) % len;
+                        let mutable_field = (0..len)
+                            .map(|offset| (start + offset) % len)
+                            .find(|&i| fields[i].mutable);
+
+                        match mutable_field {
+                            Some(idx) => {
+                                let typed_local = encoding_bases.typed_local_base + type_index;
+
+                                // Wasm stack: [struct_ref]
+                                func.instruction(&Instruction::LocalTee(typed_local));
+                                func.instruction(&Instruction::RefIsNull);
+                                func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+                                func.instruction(&Instruction::Else);
+                                func.instruction(&Instruction::LocalGet(typed_local));
+                                fields[idx].field_type.emit_default_const(func);
+                                let idx = u32::try_from(idx).unwrap();
+                                func.instruction(&Instruction::StructSet {
+                                    struct_type_index: wasm_type,
+                                    field_index: idx,
+                                });
+                                func.instruction(&Instruction::End);
+                            }
+                            None => {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        }
+                    }
+                    _ => {
+                        func.instruction(&Instruction::Drop);
+                    }
+                }
+            }
+        }
+    }
+}

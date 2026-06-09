@@ -1,0 +1,19 @@
+name: 'Install ninja'
+description: 'Install ninja'
+
+runs:
+  using: composite
+  steps:
+    - name: Install ninja (macOS)
+      run: brew install ninja
+      if: runner.os == 'macOS'
+      shell: bash
+    - name: Install ninja (Windows)
+      run: choco install ninja
+      if: runner.os == 'Windows'
+      shell: bash
+    - name: Install ninja (Linux)
+      if: runner.os == 'Linux'
+      uses: ./.github/actions/apt-get-install
+      with:
+        packages: ninja-build

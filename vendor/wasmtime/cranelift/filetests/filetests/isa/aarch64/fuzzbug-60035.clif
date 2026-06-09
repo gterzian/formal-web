@@ -1,0 +1,42 @@
+test compile precise-output
+target aarch64
+
+function u1:6() system_v {
+    sig0 = () tail
+    fn0 = u1:7 sig0
+
+block0:
+    v5 = func_addr.i64 fn0
+    call_indirect sig0, v5()
+    call_indirect sig0, v5()
+    return
+}
+
+; VCode:
+;   stp fp, lr, [sp, #-16]!
+;   mov fp, sp
+;   str x19, [sp, #-16]!
+; block0:
+;   load_ext_name_far x19, User(userextname0)+0
+;   blr x19
+;   blr x19
+;   ldr x19, [sp], #16
+;   ldp fp, lr, [sp], #16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stp x29, x30, [sp, #-0x10]!
+;   mov x29, sp
+;   str x19, [sp, #-0x10]!
+; block1: ; offset 0xc
+;   ldr x19, #0x14
+;   b #0x1c
+;   udf #0 ; reloc_external Abs8 u1:7 0
+;   udf #0
+;   blr x19
+;   blr x19
+;   ldr x19, [sp], #0x10
+;   ldp x29, x30, [sp], #0x10
+;   ret
+

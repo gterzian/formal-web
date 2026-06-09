@@ -1,0 +1,253 @@
+test compile precise-output
+target aarch64
+
+function %call_preserve_all_abi(i64) system_v {
+    sig0 = (i64, i64, i64, i64) preserve_all
+block0(v0: i64):
+    call_indirect sig0, v0(v0, v0, v0, v0)
+    call_indirect sig0, v0(v0, v0, v0, v0)
+    return
+}
+
+; VCode:
+;   stp fp, lr, [sp, #-16]!
+;   mov fp, sp
+; block0:
+;   mov x3, x0
+;   mov x1, x3
+;   mov x2, x3
+;   blr x3
+;   blr x3
+;   ldp fp, lr, [sp], #16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stp x29, x30, [sp, #-0x10]!
+;   mov x29, sp
+; block1: ; offset 0x8
+;   mov x3, x0
+;   mov x1, x3
+;   mov x2, x3
+;   blr x3
+;   blr x3
+;   ldp x29, x30, [sp], #0x10
+;   ret
+
+function %preserve_all_abi_trampoline(i64) preserve_all {
+    fn0 = %libcall(i64) system_v
+block0(v0: i64):
+    call fn0(v0)
+    return
+}
+
+; VCode:
+;   stp fp, lr, [sp, #-16]!
+;   mov fp, sp
+;   stp x16, x17, [sp, #-16]!
+;   stp x14, x15, [sp, #-16]!
+;   stp x12, x13, [sp, #-16]!
+;   stp x10, x11, [sp, #-16]!
+;   stp x8, x9, [sp, #-16]!
+;   stp x6, x7, [sp, #-16]!
+;   stp x4, x5, [sp, #-16]!
+;   stp x2, x3, [sp, #-16]!
+;   stp x0, x1, [sp, #-16]!
+;   str q31, [sp, #-16]!
+;   str q30, [sp, #-16]!
+;   str q29, [sp, #-16]!
+;   str q28, [sp, #-16]!
+;   str q27, [sp, #-16]!
+;   str q26, [sp, #-16]!
+;   str q25, [sp, #-16]!
+;   str q24, [sp, #-16]!
+;   str q23, [sp, #-16]!
+;   str q22, [sp, #-16]!
+;   str q21, [sp, #-16]!
+;   str q20, [sp, #-16]!
+;   str q19, [sp, #-16]!
+;   str q18, [sp, #-16]!
+;   str q17, [sp, #-16]!
+;   str q16, [sp, #-16]!
+;   str q15, [sp, #-16]!
+;   str q14, [sp, #-16]!
+;   str q13, [sp, #-16]!
+;   str q12, [sp, #-16]!
+;   str q11, [sp, #-16]!
+;   str q10, [sp, #-16]!
+;   str q9, [sp, #-16]!
+;   str q8, [sp, #-16]!
+;   str q7, [sp, #-16]!
+;   str q6, [sp, #-16]!
+;   str q5, [sp, #-16]!
+;   str q4, [sp, #-16]!
+;   str q3, [sp, #-16]!
+;   str q2, [sp, #-16]!
+;   str q1, [sp, #-16]!
+;   str q0, [sp, #-16]!
+; block0:
+;   load_ext_name_far x2, TestCase(%libcall)+0
+;   blr x2
+;   ldr q0, [sp], #16
+;   ldr q1, [sp], #16
+;   ldr q2, [sp], #16
+;   ldr q3, [sp], #16
+;   ldr q4, [sp], #16
+;   ldr q5, [sp], #16
+;   ldr q6, [sp], #16
+;   ldr q7, [sp], #16
+;   ldr q8, [sp], #16
+;   ldr q9, [sp], #16
+;   ldr q10, [sp], #16
+;   ldr q11, [sp], #16
+;   ldr q12, [sp], #16
+;   ldr q13, [sp], #16
+;   ldr q14, [sp], #16
+;   ldr q15, [sp], #16
+;   ldr q16, [sp], #16
+;   ldr q17, [sp], #16
+;   ldr q18, [sp], #16
+;   ldr q19, [sp], #16
+;   ldr q20, [sp], #16
+;   ldr q21, [sp], #16
+;   ldr q22, [sp], #16
+;   ldr q23, [sp], #16
+;   ldr q24, [sp], #16
+;   ldr q25, [sp], #16
+;   ldr q26, [sp], #16
+;   ldr q27, [sp], #16
+;   ldr q28, [sp], #16
+;   ldr q29, [sp], #16
+;   ldr q30, [sp], #16
+;   ldr q31, [sp], #16
+;   ldp x0, x1, [sp], #16
+;   ldp x2, x3, [sp], #16
+;   ldp x4, x5, [sp], #16
+;   ldp x6, x7, [sp], #16
+;   ldp x8, x9, [sp], #16
+;   ldp x10, x11, [sp], #16
+;   ldp x12, x13, [sp], #16
+;   ldp x14, x15, [sp], #16
+;   ldp x16, x17, [sp], #16
+;   ldp fp, lr, [sp], #16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stp x29, x30, [sp, #-0x10]!
+;   mov x29, sp
+;   stp x16, x17, [sp, #-0x10]!
+;   stp x14, x15, [sp, #-0x10]!
+;   stp x12, x13, [sp, #-0x10]!
+;   stp x10, x11, [sp, #-0x10]!
+;   stp x8, x9, [sp, #-0x10]!
+;   stp x6, x7, [sp, #-0x10]!
+;   stp x4, x5, [sp, #-0x10]!
+;   stp x2, x3, [sp, #-0x10]!
+;   stp x0, x1, [sp, #-0x10]!
+;   str q31, [sp, #-0x10]!
+;   str q30, [sp, #-0x10]!
+;   str q29, [sp, #-0x10]!
+;   str q28, [sp, #-0x10]!
+;   str q27, [sp, #-0x10]!
+;   str q26, [sp, #-0x10]!
+;   str q25, [sp, #-0x10]!
+;   str q24, [sp, #-0x10]!
+;   str q23, [sp, #-0x10]!
+;   str q22, [sp, #-0x10]!
+;   str q21, [sp, #-0x10]!
+;   str q20, [sp, #-0x10]!
+;   str q19, [sp, #-0x10]!
+;   str q18, [sp, #-0x10]!
+;   str q17, [sp, #-0x10]!
+;   str q16, [sp, #-0x10]!
+;   str q15, [sp, #-0x10]!
+;   str q14, [sp, #-0x10]!
+;   str q13, [sp, #-0x10]!
+;   str q12, [sp, #-0x10]!
+;   str q11, [sp, #-0x10]!
+;   str q10, [sp, #-0x10]!
+;   str q9, [sp, #-0x10]!
+;   str q8, [sp, #-0x10]!
+;   str q7, [sp, #-0x10]!
+;   str q6, [sp, #-0x10]!
+;   str q5, [sp, #-0x10]!
+;   str q4, [sp, #-0x10]!
+;   str q3, [sp, #-0x10]!
+;   str q2, [sp, #-0x10]!
+;   str q1, [sp, #-0x10]!
+;   str q0, [sp, #-0x10]!
+; block1: ; offset 0xac
+;   ldr x2, #0xb4
+;   b #0xbc
+;   udf #0 ; reloc_external Abs8 %libcall 0
+;   udf #0
+;   blr x2
+;   ldr q0, [sp], #0x10
+;   ldr q1, [sp], #0x10
+;   ldr q2, [sp], #0x10
+;   ldr q3, [sp], #0x10
+;   ldr q4, [sp], #0x10
+;   ldr q5, [sp], #0x10
+;   ldr q6, [sp], #0x10
+;   ldr q7, [sp], #0x10
+;   ldr q8, [sp], #0x10
+;   ldr q9, [sp], #0x10
+;   ldr q10, [sp], #0x10
+;   ldr q11, [sp], #0x10
+;   ldr q12, [sp], #0x10
+;   ldr q13, [sp], #0x10
+;   ldr q14, [sp], #0x10
+;   ldr q15, [sp], #0x10
+;   ldr q16, [sp], #0x10
+;   ldr q17, [sp], #0x10
+;   ldr q18, [sp], #0x10
+;   ldr q19, [sp], #0x10
+;   ldr q20, [sp], #0x10
+;   ldr q21, [sp], #0x10
+;   ldr q22, [sp], #0x10
+;   ldr q23, [sp], #0x10
+;   ldr q24, [sp], #0x10
+;   ldr q25, [sp], #0x10
+;   ldr q26, [sp], #0x10
+;   ldr q27, [sp], #0x10
+;   ldr q28, [sp], #0x10
+;   ldr q29, [sp], #0x10
+;   ldr q30, [sp], #0x10
+;   ldr q31, [sp], #0x10
+;   ldp x0, x1, [sp], #0x10
+;   ldp x2, x3, [sp], #0x10
+;   ldp x4, x5, [sp], #0x10
+;   ldp x6, x7, [sp], #0x10
+;   ldp x8, x9, [sp], #0x10
+;   ldp x10, x11, [sp], #0x10
+;   ldp x12, x13, [sp], #0x10
+;   ldp x14, x15, [sp], #0x10
+;   ldp x16, x17, [sp], #0x10
+;   ldp x29, x30, [sp], #0x10
+;   ret
+
+function %preserve_all_call(i64) system_v {
+  fn0 = colocated %f(i64) preserve_all
+block0(v0: i64):
+  call fn0(v0)
+  return
+}
+
+; VCode:
+;   stp fp, lr, [sp, #-16]!
+;   mov fp, sp
+; block0:
+;   bl 0
+;   ldp fp, lr, [sp], #16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stp x29, x30, [sp, #-0x10]!
+;   mov x29, sp
+; block1: ; offset 0x8
+;   bl #8 ; reloc_external Call %f 0
+;   ldp x29, x30, [sp], #0x10
+;   ret
+
