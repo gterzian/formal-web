@@ -1,0 +1,106 @@
+# Cross Compiling
+
+When contributing to Wasmtime and Cranelift you may run into issues that only
+reproduce on a different architecture from your development machine. Luckily,
+`cargo` makes cross compilation and running tests under [QEMU] pretty easy.
+
+[QEMU]: https://www.qemu.org/
+
+This guide will assume you are on an x86-64 with Ubuntu/Debian as your OS. The
+basic approach (with commands, paths, and package names appropriately tweaked)
+applies to other Linux distributions as well.
+
+On Windows you can install build tools for AArch64 Windows, but targeting
+platforms like Linux or macOS is not easy. While toolchains exist for targeting
+non-Windows platforms you'll have to hunt yourself to find the right one.
+
+On macOS you can install, through Xcode, toolchains for iOS but the main
+`x86_64-apple-darwin` is really the only easy target to install. You'll need to
+hunt for toolchains if you want to compile for Linux or Windows.
+
+## Install Rust Targets
+
+First, use `rustup` to install Rust targets for the other architectures that
+Wasmtime and Cranelift support:
+
+```console
+rustup target add \
+    s390x-unknown-linux-gnu \
+    riscv64gc-unknown-linux-gnu \
+    aarch64-unknown-linux-gnu
+```
+
+## Install GCC Cross-Compilation Toolchains
+
+Next, you'll need to install a `gcc` for each cross-compilation target to serve
+as a linker for `rustc`.
+
+```console
+sudo apt install \
+    gcc-s390x-linux-gnu \
+    gcc-riscv64-linux-gnu \
+    gcc-aarch64-linux-gnu
+```
+
+## Install `qemu`
+
+You will also need to install `qemu` to emulate the cross-compilation targets.
+
+```console
+sudo apt install qemu-user
+```
+
+## Configure Cargo
+
+The final bit to get out of the way is to configure `cargo` to use the
+appropriate `gcc` and `qemu` when cross-compiling and running tests for other
+architectures.
+
+You will need to set `CARGO_TARGET_<triple>_RUNNER` and `CARGO_TARGET_<triple>_LINKER` for the target.
+
+* aarch64:
+
+```console
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER='qemu-aarch64 -L /usr/aarch64-linux-gnu -E LD_LIBRARY_PATH=/usr/aarch64-linux-gnu/lib -E WASMTIME_TEST_NO_HOG_MEMORY=1'
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER='aarch64-linux-gnu-gcc'
+```
+
+* riscv64:
+
+```console
+export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_RUNNER='qemu-riscv64 -L /usr/riscv64-linux-gnu -E LD_LIBRARY_PATH=/usr/riscv64-linux-gnu/lib -E WASMTIME_TEST_NO_HOG_MEMORY=1'
+export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER='riscv64-linux-gnu-gcc'
+```
+
+* s390x:
+
+```console
+export CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_RUNNER='qemu-s390x -L /usr/s390x-linux-gnu -E LD_LIBRARY_PATH=/usr/s390x-linux-gnu/lib -E WASMTIME_TEST_NO_HOG_MEMORY=1'
+export CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_LINKER='s390x-linux-gnu-gcc'
+```
+
+## Cross-Compile Tests and Run Them!
+
+Now you can use `cargo build`, `cargo run`, and `cargo test` as you normally
+would for any crate inside the Wasmtime repository, just add the appropriate
+`--target` flag!
+
+A few examples:
+
+* Build the `wasmtime` binary for `aarch64`:
+
+  ```console
+  cargo build --target aarch64-unknown-linux-gnu
+  ```
+
+* Run the tests under `riscv` emulation:
+
+  ```console
+  cargo test --target riscv64gc-unknown-linux-gnu
+  ```
+
+* Run the `wasmtime` binary under `s390x` emulation:
+
+  ```console
+  cargo run --target s390x-unknown-linux-gnu -- compile example.wasm
+  ```

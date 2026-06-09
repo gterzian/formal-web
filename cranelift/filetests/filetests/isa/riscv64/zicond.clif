@@ -1,0 +1,185 @@
+test compile precise-output
+set unwind_info=false
+target riscv64 has_zicond
+
+
+function %select_zero(i64, i64) -> i64 {
+block0(v0: i64, v1: i64):
+  v2 = iconst.i64 0
+  v3 = select.i64 v0, v1, v2
+  return v3
+}
+
+; VCode:
+; block0:
+;   czero.eqz a0,a1,a0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   .byte 0x33, 0xd5, 0xa5, 0x0e
+;   ret
+
+function %select_zero_icmp_neq(i64, i64) -> i64 {
+block0(v0: i64, v1: i64):
+  v2 = iconst.i64 0
+  v3 = icmp.i64 ne v0, v2
+  v4 = select.i64 v3, v1, v2
+  return v4
+}
+
+; VCode:
+; block0:
+;   czero.eqz a0,a1,a0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   .byte 0x33, 0xd5, 0xa5, 0x0e
+;   ret
+
+function %select_zero_icmp_neq_reverse(i64, i64) -> i64 {
+block0(v0: i64, v1: i64):
+  v2 = iconst.i64 0
+  v3 = icmp.i64 ne v2, v0
+  v4 = select.i64 v3, v2, v1
+  return v4
+}
+
+; VCode:
+; block0:
+;   czero.nez a0,a1,a0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   .byte 0x33, 0xf5, 0xa5, 0x0e
+;   ret
+
+function %select_zero_icmp_eqz(i64, i64) -> i64 {
+block0(v0: i64, v1: i64):
+  v2 = iconst.i64 0
+  v3 = icmp.i64 eq v0, v2
+  v4 = select.i64 v3, v1, v2
+  return v4
+}
+
+; VCode:
+; block0:
+;   czero.nez a0,a1,a0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   .byte 0x33, 0xf5, 0xa5, 0x0e
+;   ret
+
+
+function %select_zero_icmp_eqz_reverse(i64, i64) -> i64 {
+block0(v0: i64, v1: i64):
+  v2 = iconst.i64 0
+  v3 = icmp.i64 eq v2, v0
+  v4 = select.i64 v3, v2, v1
+  return v4
+}
+
+; VCode:
+; block0:
+;   czero.eqz a0,a1,a0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   .byte 0x33, 0xd5, 0xa5, 0x0e
+;   ret
+
+
+function %select_icmp_eq_zero(i64, i64, i64) -> i64 {
+block0(v0: i64, v1: i64, v2: i64):
+  v3 = iconst.i64 0
+  v4 = icmp.i64 eq v0, v3
+  v5 = select.i64 v4, v1, v2
+  return v5
+}
+
+; VCode:
+; block0:
+;   czero.nez a1,a1,a0
+;   czero.eqz a0,a2,a0
+;   or a0,a1,a0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   .byte 0xb3, 0xf5, 0xa5, 0x0e
+;   .byte 0x33, 0x55, 0xa6, 0x0e
+;   or a0, a1, a0
+;   ret
+
+function %select_icmp_ne_zero(i64, i64, i64) -> i64 {
+block0(v0: i64, v1: i64, v2: i64):
+  v3 = iconst.i64 0
+  v4 = icmp.i64 ne v0, v3
+  v5 = select.i64 v4, v1, v2
+  return v5
+}
+
+; VCode:
+; block0:
+;   czero.eqz a1,a1,a0
+;   czero.nez a0,a2,a0
+;   or a0,a1,a0
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   .byte 0xb3, 0xd5, 0xa5, 0x0e
+;   .byte 0x33, 0x75, 0xa6, 0x0e
+;   or a0, a1, a0
+;   ret
+
+function %select_icmp_sle(i64, i64, i64, i64) -> i64 {
+block0(v0: i64, v1: i64, v2: i64, v3: i64):
+  v4 = icmp.i64 slt v0, v1
+  v5 = select.i64 v4, v2, v3
+  return v5
+}
+
+; VCode:
+; block0:
+;   slt a1,a0,a1
+;   czero.eqz a0,a2,a1
+;   czero.nez a1,a3,a1
+;   or a0,a0,a1
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   slt a1, a0, a1
+;   .byte 0x33, 0x55, 0xb6, 0x0e
+;   .byte 0xb3, 0xf5, 0xb6, 0x0e
+;   or a0, a0, a1
+;   ret
+
+;; This can trigger a stack overflow with if the rules don't prevent
+;; this situation.
+function %check_rule_stack_overflow(i64, i64, i64) -> i64 {
+block0(v0: i64, v1: i64, v2: i64):
+  v3 = iconst.i64 0
+  v4 = icmp.i64 ne v3, v3
+  v5 = select.i64 v4, v3, v3
+  return v5
+}
+
+; VCode:
+; block0:
+;   li a0,0
+;   czero.nez a0,a0,zero
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   mv a0, zero
+;   .byte 0x33, 0x75, 0x05, 0x0e
+;   ret
+

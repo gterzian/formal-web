@@ -1,0 +1,46 @@
+* {
+  margin: 0;
+  padding: 0;
+}
+
+.hbox {
+  display: flex;
+  flex-direction: row;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+}
+
+.highlight {
+  white-space: pre;
+  font-family: monospace;
+}
+.hovered {
+}
+.light-text {
+  color: #eeeeee;
+}
+.dark-text {
+  color: #101010;
+}
+
+#wat {
+  flex: 1;
+  height: 100%;
+  overflow: scroll;
+}
+
+#clif {
+  flex: 1;
+  height: 100%;
+  overflow: scroll;
+}
+
+#asm {
+  flex: 1;
+  height: 100%;
+  overflow: scroll;
+}

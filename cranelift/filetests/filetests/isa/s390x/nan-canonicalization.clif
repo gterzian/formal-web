@@ -1,0 +1,125 @@
+test compile precise-output
+set enable_nan_canonicalization=true 
+target s390x
+
+function %f0(f32x4, f32x4) -> f32x4 {
+block0(v0: f32x4, v1: f32x4):
+	v2 = fadd v0, v1
+	return v2
+}
+
+; VCode:
+; block0:
+;   vfasb %v16, %v24, %v25
+;   larl %r1, [const(0)] ; vlef %v17, 0(%r1), 0
+;   vrepf %v17, %v17, 0
+;   vfchesb %v7, %v16, %v16
+;   vfchesb %v18, %v16, %v16
+;   vno %v18, %v7, %v18
+;   vsel %v24, %v17, %v16, %v18
+;   br %r14
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   vfasb %v16, %v24, %v25
+;   larl %r1, 0x38
+;   vlef %v17, 0(%r1), 0
+;   vrepf %v17, %v17, 0
+;   vfchesb %v7, %v16, %v16
+;   vfchesb %v18, %v16, %v16
+;   vno %v18, %v7, %v18
+;   vsel %v24, %v17, %v16, %v18
+;   br %r14
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   su %f12, 0
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+
+function %f1(f64, f64) -> f64 {
+block0(v0: f64, v1: f64):
+	v2 = fadd v0, v1
+	return v2
+}
+
+; VCode:
+; block0:
+;   wfadb %v17, %f0, %f2
+;   larl %r1, [const(0)] ; vleg %v16, 0(%r1), 0
+;   vgbm %v18, 0
+;   vpdi %v16, %v16, %v18, 0
+;   vgbm %v18, 0
+;   vpdi %v17, %v17, %v18, 0
+;   vfchedb %v18, %v17, %v17
+;   vfchedb %v19, %v17, %v17
+;   vno %v18, %v18, %v19
+;   vsel %v16, %v16, %v17, %v18
+;   vrepg %v0, %v16, 0
+;   br %r14
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   wfadb %v17, %f0, %f2
+;   larl %r1, 0x50
+;   vleg %v16, 0(%r1), 0
+;   vzero %v18
+;   vpdi %v16, %v16, %v18, 0
+;   vzero %v18
+;   vpdi %v17, %v17, %v18, 0
+;   vfchedb %v18, %v17, %v17
+;   vfchedb %v19, %v17, %v17
+;   vno %v18, %v18, %v19
+;   vsel %v16, %v16, %v17, %v18
+;   vrepg %v0, %v16, 0
+;   br %r14
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   su %f15, 0(%r8)
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+
+function %f1(f32, f32) -> f32 {
+block0(v0: f32, v1: f32):
+	v2 = fadd v0, v1
+	return v2
+}
+
+; VCode:
+; block0:
+;   wfasb %v17, %f0, %f2
+;   larl %r1, [const(0)] ; vlef %v16, 0(%r1), 0
+;   vgbm %v18, 61440
+;   vn %v16, %v16, %v18
+;   vgbm %v18, 61440
+;   vn %v17, %v17, %v18
+;   vfchesb %v18, %v17, %v17
+;   vfchesb %v19, %v17, %v17
+;   vno %v18, %v18, %v19
+;   vsel %v16, %v16, %v17, %v18
+;   vrepf %v0, %v16, 0
+;   br %r14
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   wfasb %v17, %f0, %f2
+;   larl %r1, 0x50
+;   vlef %v16, 0(%r1), 0
+;   vgbm %v18, 0xf000
+;   vn %v16, %v16, %v18
+;   vgbm %v18, 0xf000
+;   vn %v17, %v17, %v18
+;   vfchesb %v18, %v17, %v17
+;   vfchesb %v19, %v17, %v17
+;   vno %v18, %v18, %v19
+;   vsel %v16, %v16, %v17, %v18
+;   vrepf %v0, %v16, 0
+;   br %r14
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   su %f12, 0
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+

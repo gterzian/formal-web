@@ -1,0 +1,23 @@
+test compile precise-output
+target pulley32
+
+function %ret_stack() -> i32 {
+    ss0 = explicit_slot 4
+block0():
+    v0 = stack_addr.i32 ss0
+    return v0
+}
+
+; VCode:
+;   push_frame_save 16, {}
+; block0:
+;   x0 = load_addr Slot(0)
+;   pop_frame_restore 16, {}
+;   ret
+;
+; Disassembled:
+; push_frame_save 16, 
+; xmov x0, sp
+; pop_frame_restore 16, 
+; ret
+
