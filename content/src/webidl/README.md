@@ -47,7 +47,14 @@ or `ObjectInitializer`. The Rust struct holds only the backing state.
 - **DOM interfaces** (`Document`, `EventTarget`, `Element`, …): `content/src/dom/`
 - **HTML interfaces** (`Window`, `HTMLAnchorElement`, `HTMLIFrameElement`, `Location`, …): `content/src/html/`
 - **Streams interfaces** (`ReadableStream`, `WritableStream`, …): `content/src/streams/`
-- **Boa-class registrations and bindings** (argument conversion, method impls): `content/src/js/bindings/`
+- **All Web IDL JavaScript bindings** (argument conversion, method impls,
+  namespace/interface registration): **`content/src/js/bindings/`** — this is
+  the single location.  Never put JS engine binding code in subdirectories
+  alongside the platform object types (e.g. `wasm/`, `dom/`, `html/`).
+  The binding layer uses `WebIdlInterface`, `WebIdlNamespace`,
+  `register_interface_spec`, `register_namespace_spec`, and the other
+  helpers from `content/src/webidl/bindings/` instead of calling Boa
+  directly.
 
 ### Exotic objects and custom internal methods
 

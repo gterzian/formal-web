@@ -10,6 +10,7 @@ exposed to web content.  Uses the vendored `wasmtime` crate
 
 - **`WebAssembly` namespace** installed on the global object with `validate`,
   `compile`, and `instantiate` (bytes overload) functions.
+  *Binding location:* `content/src/js/bindings/wasm/`
 - **`WebAssembly.validate(bytes)`** — synchronous compilation check via
   `wasmtime::Module::new`.  Returns `true`/`false`.
 - **`WebAssembly.compile(bytes)`** — async compilation.  Creates a pending
@@ -79,14 +80,37 @@ implementations but have no JS-visible constructors or methods yet:
 ### Module layout
 
 - `mod.rs` — crate-level re-exports.
-- `namespace.rs` — `install_wasm_namespace()`, namespace-level functions
-  (`validate`, `compile`, `instantiate`), error-type registration,
-  type-constructor registration, byte-extraction helpers, promise
-  resolution/rejection helpers.
 - `thread.rs` — `WasmThread` (background compilation thread management),
   `WasmRequest`, `WasmResult`.
 - `types.rs` — Rust data types for JS-visible wasm objects (`WasmModule`,
   `WasmInstance`, etc.) with `JsData` implementations.
+
+### JS bindings (Web IDL → JavaScript engine)
+
+The WebAssembly API's JS-facing registration (namespace, type constructors,
+operations) lives under the common bindings directory:
+
+**`content/src/js/bindings/wasm/`**
+
+This follows the project convention: all Web IDL bindings — whether for DOM,
+HTML, Streams, or WebAssembly — go in `content/src/js/bindings/` and use the
+Web IDL bindings infrastructure (`register_namespace_spec`, `WebIdlNamespace`,
+`WebIdlInterface`, etc.) instead of calling into Boa directly.
+
+- The `WasmNamespace` marker type implements `WebIdlNamespace`, registering
+  operations (`validate`, `compile`, `instantiate`) and the `JSTag` attribute
+  via `register_namespace_spec`.
+- Error types (`CompileError`, `LinkError`, `RuntimeError`) and the `Module`
+  type constructor are added as post-registration steps; they will migrate to
+  `WebIdlInterface` with `[LegacyNamespace=WebAssembly]` when the infra
+  supports it.
+- Promise resolution helpers (`resolve_compile_promise`,
+  `reject_compile_promise`) live alongside the binding code since they create
+  the `Module` objects whose prototype comes from the registered binding.
+
+**Do not create new JS bindings in `content/src/wasm/`.**  All future Web IDL
+interfaces (Instance, Memory, Table, Global, Tag, Exported Function) should be
+implemented as `WebIdlInterface` impls in `content/src/js/bindings/wasm/`.
 
 ### Async compile flow
 

@@ -12,10 +12,16 @@ state.
   callback state so repeated lookups reuse the same `JsObject` identity.
 - `html_parser.rs` bridges html5ever parsing to Blitz mutations, records
   parser errors, and collects parser-discovered classic scripts.
-- `content/src/js/bindings` should convert arguments, check [inherited
+- **`content/src/js/bindings/` is the single home for all Web IDL
+  JavaScript bindings** — DOM, HTML, Streams, WebAssembly, CSS, or any
+  other spec.  Each binding uses the Web IDL bindings infrastructure
+  (`WebIdlInterface`, `WebIdlNamespace`, `register_interface_spec`,
+  `register_namespace_spec`, etc.) instead of calling into Boa directly.
+  Stateful algorithms belong on the owning platform object type
+  (DOM, HTML, Streams), not in the binding layer.
+- The binding code should convert arguments, check [inherited
   interfaces](https://webidl.spec.whatwg.org/#dfn-inherited-interfaces) to
-  identify the platform object's type, and delegate; stateful algorithms
-  belong on the owning DOM, HTML, or Streams platform object type.
+  identify the platform object's type, and delegate to the platform object.
 - Run microtask checkpoints at task boundaries rather than after every
   Rust-to-JavaScript callback.
 - Document process structs against HTML concepts such as
