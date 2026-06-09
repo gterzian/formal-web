@@ -32,6 +32,8 @@ style = { version = "0.17.0", package = "stylo" }
 style_traits = { version = "0.17.0", package = "stylo_traits" }
 url = "2"
 verification = { path = "../verification" }
+wasmtime = { path = "../vendor/wasmtime/crates/wasmtime", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
+crossbeam-channel = "0.5"
 xml5ever = "0.39.0"
 
 [patch.crates-io]

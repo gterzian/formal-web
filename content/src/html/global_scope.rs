@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
+    vec::Vec,
 };
 
 use super::environment_settings_object::EnvironmentSettingsObject;
@@ -17,6 +18,8 @@ use ipc_messages::{
     },
 };
 
+
+
 use crate::webidl::Callback;
 
 fn timer_debug_enabled() -> bool {
@@ -27,6 +30,45 @@ fn log_timer_debug(message: impl AsRef<str>) {
     if timer_debug_enabled() {
         eprintln!("[timer-debug][global] {}", message.as_ref());
     }
+}
+
+/// The lifecycle state of a pending request.
+#[derive(Debug, Clone, PartialEq, Eq, Trace, Finalize)]
+pub enum PendingState {
+    /// Just created, waiting for the content process to submit it.
+    Pending,
+    /// Sent to the background thread, waiting for completion.
+    Processing,
+}
+
+/// <https://www.w3.org/TR/wasm-js-api/#asynchronously-compile-a-webassembly-module>
+///
+/// A pending WebAssembly request stored on the GlobalScope during JS execution.
+/// The request stays in this Vec throughout its lifecycle — the state field
+/// tracks progress.  The content process mutates the state when submitting to
+/// the background thread and when resolving/rejecting the promise.
+#[derive(Trace, Finalize)]
+pub enum PendingRequest {
+    /// A WebAssembly module compilation or instantiate-byte request.
+    WasmCompile {
+        /// Stable copy of the buffer bytes.
+        #[unsafe_ignore_trace]
+        bytes: Vec<u8>,
+        /// The request id, correlating with the background thread's result.
+        #[unsafe_ignore_trace]
+        request_id: u64,
+        /// True if this came from `instantiate(bytes, ...)`, false for `compile(bytes, ...)`.
+        is_instantiate: bool,
+        /// The JS promise to resolve/reject when compilation completes.
+        promise: boa_engine::object::JsObject,
+        /// The resolve/reject functions for the promise.
+        resolvers: boa_engine::builtins::promise::ResolvingFunctions,
+        /// Current lifecycle state.
+        ///
+        /// PendingState is a simple Copy enum, safe to ignore trace on.
+        #[unsafe_ignore_trace]
+        state: PendingState,
+    },
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
@@ -179,6 +221,15 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     creation_url: RefCell<Option<url::Url>>,
 
+    /// Generic queue of pending async requests created during JS execution.
+    /// Populated by native JS functions (e.g. WebAssembly.compile) and drained
+    /// by the content process after JS execution completes.
+    pending_requests: GcRefCell<Vec<PendingRequest>>,
+
+    /// A counter for generating unique request IDs for async wasm operations.
+    #[unsafe_ignore_trace]
+    pending_wasm_request_id_counter: std::cell::Cell<u64>,
+
 }
 
 impl GlobalScope {
@@ -202,6 +253,8 @@ impl GlobalScope {
 
             new_document_registry: RefCell::new(None),
             creation_url: RefCell::new(None),
+            pending_requests: GcRefCell::new(Vec::new()),
+            pending_wasm_request_id_counter: std::cell::Cell::new(0),
 
         }
     }
@@ -650,5 +703,71 @@ impl GlobalScope {
             taken.push(callbacks.remove(index).callback.clone());
         }
         taken
+    }
+
+    /// Push a pending async request onto this document's queue.
+    ///
+    /// Called by native JS functions (e.g. `WebAssembly.compile()`) during JS
+    /// execution.  The content process drains these requests after each command.
+    pub(crate) fn push_pending_request(&self, request: PendingRequest) {
+        self.pending_requests.borrow_mut().push(request);
+    }
+
+    /// Allocate a unique request ID for a pending wasm operation.
+    pub(crate) fn next_wasm_request_id(&self) -> u64 {
+        let id = self.pending_wasm_request_id_counter.get();
+        self.pending_wasm_request_id_counter.set(id.wrapping_add(1));
+        id
+    }
+
+    /// Mark all Pending wasm requests as Processing and return their
+    /// bytes + request_ids.  Called by the content process.
+    pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
+        let mut requests = self.pending_requests.borrow_mut();
+        let mut batches = Vec::new();
+        #[allow(irrefutable_let_patterns)]
+        for request in requests.iter_mut() {
+            // PendingRequest currently only has one variant (WasmCompile).
+            // When more variants are added, this if-let becomes refutable.
+            let PendingRequest::WasmCompile {
+                bytes,
+                request_id,
+                state,
+                ..
+            } = request;
+            if *state == PendingState::Pending {
+                *state = PendingState::Processing;
+                batches.push((*request_id, bytes.clone()));
+            }
+        }
+        batches
+    }
+
+    /// Remove and return the promise + resolvers for a completed request.
+    /// Clones the values since `PendingRequest` derives `Drop` (via `Trace`)
+    /// and field moves are not allowed.
+    pub(crate) fn consume_wasm_request(
+        &self,
+        request_id: u64,
+    ) -> Option<(
+        boa_engine::object::JsObject,
+        boa_engine::builtins::promise::ResolvingFunctions,
+    )> {
+        let mut requests = self.pending_requests.borrow_mut();
+        let idx = requests.iter().position(|r| match r {
+            PendingRequest::WasmCompile {
+                request_id: rid, ..
+            } => *rid == request_id,
+        })?;
+        let request = &requests[idx];
+        let result = match request {
+            PendingRequest::WasmCompile {
+                promise,
+                resolvers,
+                ..
+            } => Some((promise.clone(), resolvers.clone())),
+        };
+        requests.swap_remove(idx);
+        result
     }
 }

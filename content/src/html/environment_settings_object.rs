@@ -291,6 +291,32 @@ impl EnvironmentSettingsObject {
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
         self.context.run_jobs().map_err(|error| error.to_string())
     }
+
+    /// Take all pending wasm batches (bytes + request_id) from the GlobalScope.
+    /// Marks them as Processing.
+    pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
+        use crate::html::Window;
+        let global = self.context.global_object();
+        if let Some(window) = global.downcast_ref::<Window>() {
+            window.global_scope.take_pending_wasm_batches()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Remove and return the promise + resolvers for a completed wasm request.
+    pub(crate) fn consume_wasm_request(
+        &self,
+        request_id: u64,
+    ) -> Option<(
+        boa_engine::object::JsObject,
+        boa_engine::builtins::promise::ResolvingFunctions,
+    )> {
+        use crate::html::Window;
+        let global = self.context.global_object();
+        let window = global.downcast_ref::<Window>()?;
+        window.global_scope.consume_wasm_request(request_id)
+    }
 }
 
 impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {

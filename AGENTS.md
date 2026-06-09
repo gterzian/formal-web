@@ -57,19 +57,19 @@ Plans and temporary task notes go under `scratchpad/`.
 
 ## Commands
 
-- `rustup toolchain install 1.92.0` — installs the pinned Rust toolchain.
-- `rustup run 1.92.0 cargo check` — type-checks the workspace.
-- `rustup run 1.92.0 cargo run --release` — default windowed embedder.
-- `rustup run 1.92.0 cargo run --release -- --headless` — headless mode.
-- `rustup run 1.92.0 cargo run --release -- --verify` — with trace recording and shutdown-time TLA+ validation.
-- `rustup run 1.92.0 cargo run --release -- webdriver --headless` — WebDriver server.
-- `rustup run 1.92.0 cargo run --release -- cdp --headless` — CDP server.
-- `rustup run 1.92.0 cargo run --release -- webdriver --headless --cdp-port 9222` — WebDriver and CDP together.
-- `rustup run 1.92.0 cargo run --release -- wpt` — runs the default WPT and local formal test selection.
-- `rustup run 1.92.0 cargo run --release -- wpt formal/load-event-fires.html` — runs one selected test.
+- `rustup toolchain install 1.94.0` — installs the pinned Rust toolchain.
+- `rustup run 1.94.0 cargo check` — type-checks the workspace.
+- `rustup run 1.94.0 cargo run --release` — default windowed embedder.
+- `rustup run 1.94.0 cargo run --release -- --headless` — headless mode.
+- `rustup run 1.94.0 cargo run --release -- --verify` — with trace recording and shutdown-time TLA+ validation.
+- `rustup run 1.94.0 cargo run --release -- webdriver --headless` — WebDriver server.
+- `rustup run 1.94.0 cargo run --release -- cdp --headless` — CDP server.
+- `rustup run 1.94.0 cargo run --release -- webdriver --headless --cdp-port 9222` — WebDriver and CDP together.
+- `rustup run 1.94.0 cargo run --release -- wpt` — runs the default WPT and local formal test selection.
+- `rustup run 1.94.0 cargo run --release -- wpt formal/load-event-fires.html` — runs one selected test.
 - `./verification/verify-navigation.sh` — headless navigation workflow validated against the TLA+ `Navigation` spec.
 - `./verification/verify-rendering.sh` — headless screenshot-based rendering verification (startup artifact + cross-origin iframe).
-- `rustup run 1.92.0 cargo run -- validate-tla --logs /path/to/logs --json` — validates a saved trace log directory.
+- `rustup run 1.94.0 cargo run -- validate-tla --logs /path/to/logs --json` — validates a saved trace log directory.
 
 # Local Extensions
 
@@ -161,7 +161,7 @@ At the end of each task, run the following steps **in order**:
    warnings before committing. Run from the project root:
 
    ```bash
-   rustup run 1.92.0 cargo clippy --workspace --all-targets
+   rustup run 1.94.0 cargo clippy --workspace --all-targets
    ```
 
    Fix all warnings that appear (patch and vendored warnings can be ignored;
@@ -201,7 +201,7 @@ At the end of each task, run the following steps **in order**:
    - **Default WPT run** — Runs the Web Platform Tests suite (`tests/wpt/include.ini`) to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
 
      ```bash
-     rustup run 1.92.0 cargo run --release -- wpt
+     rustup run 1.94.0 cargo run --release -- wpt
      ```
 
      The WPT runner requires a working Python 3 with a functioning `ssl` module and `venv` support. If the run fails with a Python-related error, check `tests/wpt_runner/README.md` for debugging guidance.

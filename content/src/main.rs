@@ -8,6 +8,7 @@ pub mod dom;
 pub mod html;
 pub mod infra;
 pub mod streams;
+pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{
@@ -352,6 +353,13 @@ pub(crate) struct ContentProcess {
     new_document_registry: Rc<
         RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>,
     >,
+
+    /// Background wasm compilation thread.
+    wasm_thread: crate::wasm::WasmThread,
+
+    /// Pending wasm compilation requests waiting for background results.
+    /// Maps request_id → document_id.
+    pending_wasm_requests: HashMap<u64, DocumentId>,
 }
 
 impl ContentProcess {
@@ -370,6 +378,10 @@ impl ContentProcess {
             font_sender: FontTransportSender::default(),
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
+            wasm_thread: crate::wasm::WasmThread::new(
+                wasmtime::Engine::default(),
+            ),
+            pending_wasm_requests: HashMap::new(),
         }
     }
 
@@ -1572,9 +1584,123 @@ impl ContentProcess {
         .map_err(|error| error.to_string())
     }
 
+    /// Drain pending WebAssembly requests from all documents and submit them
+    /// to the background compilation thread.
+    fn drain_all_pending_wasm_requests(&mut self) {
+        let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+
+        for document_id in document_ids {
+            let Some(content_document) = self.documents.get_mut(&document_id) else {
+                continue;
+            };
+
+            let batches = content_document.settings.take_pending_wasm_batches();
+            for (request_id, bytes) in batches {
+                self.pending_wasm_requests.insert(request_id, document_id);
+                self.wasm_thread.submit_compile(bytes);
+            }
+        }
+    }
+
+    /// Process completed wasm compilation results from the background thread.
+    fn process_wasm_results(&mut self) {
+        let Some(result_rx) = self.wasm_thread.result_receiver() else {
+            return;
+        };
+
+        let completed: Vec<(u64, crate::wasm::WasmResult)> = {
+            let mut results = Vec::new();
+            while let Ok(result) = result_rx.try_recv() {
+                let request_id = match &result {
+                    crate::wasm::WasmResult::Compiled { request_id, .. }
+                    | crate::wasm::WasmResult::CompileError { request_id, .. } => *request_id,
+                };
+                results.push((request_id, result));
+            }
+            results
+        };
+
+        for (request_id, result) in completed {
+            let Some(&document_id) = self.pending_wasm_requests.get(&request_id) else {
+                eprintln!("wasm: no pending request found for id {}", request_id);
+                continue;
+            };
+
+            let Some(content_document) = self.documents.get_mut(&document_id) else {
+                eprintln!("wasm: document {} not found", document_id);
+                self.pending_wasm_requests.remove(&request_id);
+                continue;
+            };
+
+            let Some((_promise, resolvers)) =
+                content_document.settings.consume_wasm_request(request_id)
+            else {
+                eprintln!(
+                    "wasm: request {} not found on document {}",
+                    request_id, document_id
+                );
+                self.pending_wasm_requests.remove(&request_id);
+                continue;
+            };
+
+            match result {
+                crate::wasm::WasmResult::Compiled {
+                    request_id: _,
+                    module,
+                } => {
+                    if let Err(error) = crate::wasm::namespace::resolve_compile_promise(
+                        &resolvers,
+                        module,
+                        Vec::new(),
+                        &mut content_document.settings.context,
+                    ) {
+                        eprintln!("wasm: failed to resolve compile promise: {error}");
+                    }
+                }
+                crate::wasm::WasmResult::CompileError {
+                    request_id: _,
+                    message,
+                } => {
+                    if let Err(error) = crate::wasm::namespace::reject_compile_promise(
+                        &resolvers,
+                        message,
+                        &mut content_document.settings.context,
+                    ) {
+                        eprintln!("wasm: failed to reject compile promise: {error}");
+                    }
+                }
+            }
+
+            self.pending_wasm_requests.remove(&request_id);
+        }
+
+        // Flush microtasks (promise .then() handlers) after resolving/rejecting.
+        for document in self.documents.values_mut() {
+            if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
+                eprintln!("wasm: microtask checkpoint failed: {error}");
+            }
+        }
+    }
+
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     /// Note: The Rust event-loop worker emits these process effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
+        // Before processing a new command, drain any pending WebAssembly
+        // requests and process completed compilation results.
+        self.drain_all_pending_wasm_requests();
+        self.process_wasm_results();
+
+        let result = self.handle_command_inner(command);
+
+        // After every command, drain any pending WebAssembly requests and
+        // process completed compilation results.
+        self.drain_all_pending_wasm_requests();
+        self.process_wasm_results();
+
+        result
+    }
+
+    fn handle_command_inner(&mut self, command: Command) -> Result<bool, String> {
         match command {
             Command::SetEventLoopId(event_loop_id) => {
                 self.event_loop_id = event_loop_id;
