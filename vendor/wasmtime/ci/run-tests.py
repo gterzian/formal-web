@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+
+# Excludes:
+#
+# - test-programs: just programs used in tests.
+#
+# - wasmtime-wasi-nn: mutually-exclusive features that aren't available for all
+#   targets, needs its own CI job.
+#
+# - wasmtime-wasi-tls: the openssl dependency does not play nice with
+#   cross compilation. This crate is tested in a separate CI job.
+#
+# - wasmtime-fuzzing: enabling all features brings in OCaml which is a pain to
+#   configure for all targets, so it has its own CI job.
+#
+# - wasm-spec-interpreter: brings in OCaml which is a pain to configure for all
+#   targets, tested as part of the wastime-fuzzing CI job.
+#
+# - calculator (under examples/wasip2-plugins): an example that's tested separately.
+#
+# - veri_engine: requires an SMT solver (z3)
+
+import subprocess
+import sys
+
+args = ['cargo', 'test', '--workspace', '--all-features']
+args.append('--exclude=test-programs')
+args.append('--exclude=wasmtime-wasi-nn')
+args.append('--exclude=wasmtime-wasi-tls')
+args.append('--exclude=wasmtime-fuzzing')
+args.append('--exclude=wasm-spec-interpreter')
+args.append('--exclude=veri_engine')
+args.append('--exclude=calculator')
+args.extend(sys.argv[1:])
+
+result = subprocess.run(args)
+sys.exit(result.returncode)

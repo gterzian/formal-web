@@ -1,0 +1,260 @@
+test compile precise-output
+set enable_multi_ret_implicit_sret
+set unwind_info=false
+target riscv64 has_v
+
+function %select_i64x2(i64, i64x2, i64x2) -> i64x2 {
+block0(v0: i64, v1: i64x2, v2: i64x2):
+    v3 = select v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   addi sp,sp,-16
+;   sd ra,8(sp)
+;   sd fp,0(sp)
+;   mv fp,sp
+; block0:
+;   vle8.v v8,-32(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   vle8.v v9,-16(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   select v8,v8,v9##condition=(a1 ne zero)
+;   vse8.v v8,0(a0) #avl=16, #vtype=(e8, m1, ta, ma)
+;   ld ra,8(sp)
+;   ld fp,0(sp)
+;   addi sp,sp,16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   addi sp, sp, -0x10
+;   sd ra, 8(sp)
+;   sd s0, 0(sp)
+;   mv s0, sp
+; block1: ; offset 0x10
+;   .byte 0x57, 0x70, 0x08, 0xcc
+;   addi t6, sp, 0x10
+;   .byte 0x07, 0x84, 0x0f, 0x02
+;   addi t6, sp, 0x20
+;   .byte 0x87, 0x84, 0x0f, 0x02
+;   bnez a1, 8
+;   .byte 0x57, 0x34, 0x90, 0x9e
+;   .byte 0x27, 0x04, 0x05, 0x02
+;   ld ra, 8(sp)
+;   ld s0, 0(sp)
+;   addi sp, sp, 0x10
+;   ret
+
+function %select_i32x4(i32, i32x4, i32x4) -> i32x4 {
+block0(v0: i32, v1: i32x4, v2: i32x4):
+    v3 = select v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   addi sp,sp,-16
+;   sd ra,8(sp)
+;   sd fp,0(sp)
+;   mv fp,sp
+; block0:
+;   vle8.v v8,-32(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   vle8.v v9,-16(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   sext.w a1,a1
+;   select v9,v8,v9##condition=(a1 ne zero)
+;   vse8.v v9,0(a0) #avl=16, #vtype=(e8, m1, ta, ma)
+;   ld ra,8(sp)
+;   ld fp,0(sp)
+;   addi sp,sp,16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   addi sp, sp, -0x10
+;   sd ra, 8(sp)
+;   sd s0, 0(sp)
+;   mv s0, sp
+; block1: ; offset 0x10
+;   .byte 0x57, 0x70, 0x08, 0xcc
+;   addi t6, sp, 0x10
+;   .byte 0x07, 0x84, 0x0f, 0x02
+;   addi t6, sp, 0x20
+;   .byte 0x87, 0x84, 0x0f, 0x02
+;   sext.w a1, a1
+;   beqz a1, 8
+;   .byte 0xd7, 0x34, 0x80, 0x9e
+;   .byte 0xa7, 0x04, 0x05, 0x02
+;   ld ra, 8(sp)
+;   ld s0, 0(sp)
+;   addi sp, sp, 0x10
+;   ret
+
+function %select_i16x8(i16, i16x8, i16x8) -> i16x8 {
+block0(v0: i16, v1: i16x8, v2: i16x8):
+    v3 = select v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   addi sp,sp,-16
+;   sd ra,8(sp)
+;   sd fp,0(sp)
+;   mv fp,sp
+; block0:
+;   vle8.v v8,-32(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   vle8.v v9,-16(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   slli a1,a1,48
+;   srai a1,a1,48
+;   select v11,v8,v9##condition=(a1 ne zero)
+;   vse8.v v11,0(a0) #avl=16, #vtype=(e8, m1, ta, ma)
+;   ld ra,8(sp)
+;   ld fp,0(sp)
+;   addi sp,sp,16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   addi sp, sp, -0x10
+;   sd ra, 8(sp)
+;   sd s0, 0(sp)
+;   mv s0, sp
+; block1: ; offset 0x10
+;   .byte 0x57, 0x70, 0x08, 0xcc
+;   addi t6, sp, 0x10
+;   .byte 0x07, 0x84, 0x0f, 0x02
+;   addi t6, sp, 0x20
+;   .byte 0x87, 0x84, 0x0f, 0x02
+;   slli a1, a1, 0x30
+;   srai a1, a1, 0x30
+;   .byte 0xd7, 0x35, 0x80, 0x9e
+;   bnez a1, 8
+;   .byte 0xd7, 0x35, 0x90, 0x9e
+;   .byte 0xa7, 0x05, 0x05, 0x02
+;   ld ra, 8(sp)
+;   ld s0, 0(sp)
+;   addi sp, sp, 0x10
+;   ret
+
+function %select_i8x16(i8, i8x16, i8x16) -> i8x16 {
+block0(v0: i8, v1: i8x16, v2: i8x16):
+    v3 = select v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   addi sp,sp,-16
+;   sd ra,8(sp)
+;   sd fp,0(sp)
+;   mv fp,sp
+; block0:
+;   vle8.v v8,-32(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   vle8.v v9,-16(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   andi a1,a1,255
+;   select v9,v8,v9##condition=(a1 ne zero)
+;   vse8.v v9,0(a0) #avl=16, #vtype=(e8, m1, ta, ma)
+;   ld ra,8(sp)
+;   ld fp,0(sp)
+;   addi sp,sp,16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   addi sp, sp, -0x10
+;   sd ra, 8(sp)
+;   sd s0, 0(sp)
+;   mv s0, sp
+; block1: ; offset 0x10
+;   .byte 0x57, 0x70, 0x08, 0xcc
+;   addi t6, sp, 0x10
+;   .byte 0x07, 0x84, 0x0f, 0x02
+;   addi t6, sp, 0x20
+;   .byte 0x87, 0x84, 0x0f, 0x02
+;   andi a1, a1, 0xff
+;   beqz a1, 8
+;   .byte 0xd7, 0x34, 0x80, 0x9e
+;   .byte 0xa7, 0x04, 0x05, 0x02
+;   ld ra, 8(sp)
+;   ld s0, 0(sp)
+;   addi sp, sp, 0x10
+;   ret
+
+function %select_f64x2(i64, f64x2, f64x2) -> f64x2 {
+block0(v0: i64, v1: f64x2, v2: f64x2):
+    v3 = select v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   addi sp,sp,-16
+;   sd ra,8(sp)
+;   sd fp,0(sp)
+;   mv fp,sp
+; block0:
+;   vle8.v v8,-32(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   vle8.v v9,-16(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   select v8,v8,v9##condition=(a1 ne zero)
+;   vse8.v v8,0(a0) #avl=16, #vtype=(e8, m1, ta, ma)
+;   ld ra,8(sp)
+;   ld fp,0(sp)
+;   addi sp,sp,16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   addi sp, sp, -0x10
+;   sd ra, 8(sp)
+;   sd s0, 0(sp)
+;   mv s0, sp
+; block1: ; offset 0x10
+;   .byte 0x57, 0x70, 0x08, 0xcc
+;   addi t6, sp, 0x10
+;   .byte 0x07, 0x84, 0x0f, 0x02
+;   addi t6, sp, 0x20
+;   .byte 0x87, 0x84, 0x0f, 0x02
+;   bnez a1, 8
+;   .byte 0x57, 0x34, 0x90, 0x9e
+;   .byte 0x27, 0x04, 0x05, 0x02
+;   ld ra, 8(sp)
+;   ld s0, 0(sp)
+;   addi sp, sp, 0x10
+;   ret
+
+function %select_f32x4(i64, f32x4, f32x4) -> f32x4 {
+block0(v0: i64, v1: f32x4, v2: f32x4):
+    v3 = select v0, v1, v2
+    return v3
+}
+
+; VCode:
+;   addi sp,sp,-16
+;   sd ra,8(sp)
+;   sd fp,0(sp)
+;   mv fp,sp
+; block0:
+;   vle8.v v8,-32(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   vle8.v v9,-16(incoming_arg) #avl=16, #vtype=(e8, m1, ta, ma)
+;   select v8,v8,v9##condition=(a1 ne zero)
+;   vse8.v v8,0(a0) #avl=16, #vtype=(e8, m1, ta, ma)
+;   ld ra,8(sp)
+;   ld fp,0(sp)
+;   addi sp,sp,16
+;   ret
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   addi sp, sp, -0x10
+;   sd ra, 8(sp)
+;   sd s0, 0(sp)
+;   mv s0, sp
+; block1: ; offset 0x10
+;   .byte 0x57, 0x70, 0x08, 0xcc
+;   addi t6, sp, 0x10
+;   .byte 0x07, 0x84, 0x0f, 0x02
+;   addi t6, sp, 0x20
+;   .byte 0x87, 0x84, 0x0f, 0x02
+;   bnez a1, 8
+;   .byte 0x57, 0x34, 0x90, 0x9e
+;   .byte 0x27, 0x04, 0x05, 0x02
+;   ld ra, 8(sp)
+;   ld s0, 0(sp)
+;   addi sp, sp, 0x10
+;   ret
+

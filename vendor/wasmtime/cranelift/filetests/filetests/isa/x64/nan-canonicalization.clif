@@ -1,0 +1,143 @@
+test compile precise-output
+set enable_nan_canonicalization=true 
+target x86_64
+
+function %f0(f32x4, f32x4) -> f32x4 {
+block0(v0: f32x4, v1: f32x4):
+	v2 = fadd v0, v1
+	return v2
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   addps %xmm1, %xmm0
+;   movdqa %xmm0, %xmm1
+;   movl $0x7fc00000, %r9d
+;   movd %r9d, %xmm5
+;   shufps $0x0, %xmm5, %xmm5
+;   cmpunordps %xmm1, %xmm0
+;   andps %xmm0, %xmm5
+;   andnps %xmm1, %xmm0
+;   orps %xmm5, %xmm0
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   addps %xmm1, %xmm0
+;   movdqa %xmm0, %xmm1
+;   movl $0x7fc00000, %r9d
+;   movd %r9d, %xmm5
+;   shufps $0, %xmm5, %xmm5
+;   cmpunordps %xmm1, %xmm0
+;   andps %xmm0, %xmm5
+;   andnps %xmm1, %xmm0
+;   orps %xmm5, %xmm0
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %f1(f64, f64) -> f64 {
+block0(v0: f64, v1: f64):
+	v2 = fadd v0, v1
+	return v2
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   addsd %xmm1, %xmm0
+;   movabsq $0x7ff8000000000000, %rax
+;   movq %rax, %xmm1
+;   uninit  %xmm6
+;   xorpd %xmm6, %xmm6
+;   movsd %xmm1, %xmm6
+;   uninit  %xmm1
+;   xorpd %xmm1, %xmm1
+;   movsd %xmm0, %xmm1
+;   movdqa %xmm1, %xmm0
+;   cmpunordpd %xmm1, %xmm0
+;   andpd %xmm0, %xmm6
+;   andnpd %xmm1, %xmm0
+;   orpd %xmm6, %xmm0
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   addsd %xmm1, %xmm0
+;   movabsq $0x7ff8000000000000, %rax
+;   movq %rax, %xmm1
+;   xorpd %xmm6, %xmm6
+;   movsd %xmm1, %xmm6
+;   xorpd %xmm1, %xmm1
+;   movsd %xmm0, %xmm1
+;   movdqa %xmm1, %xmm0
+;   cmpunordpd %xmm1, %xmm0
+;   andpd %xmm0, %xmm6
+;   andnpd %xmm1, %xmm0
+;   orpd %xmm6, %xmm0
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %f1(f32, f32) -> f32 {
+block0(v0: f32, v1: f32):
+	v2 = fadd v0, v1
+	return v2
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   addss %xmm1, %xmm0
+;   movl $0x7fc00000, %eax
+;   movd %eax, %xmm1
+;   uninit  %xmm6
+;   xorps %xmm6, %xmm6
+;   movss %xmm1, %xmm6
+;   uninit  %xmm1
+;   xorps %xmm1, %xmm1
+;   movss %xmm0, %xmm1
+;   movdqa %xmm1, %xmm0
+;   cmpunordps %xmm1, %xmm0
+;   andps %xmm0, %xmm6
+;   andnps %xmm1, %xmm0
+;   orps %xmm6, %xmm0
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   addss %xmm1, %xmm0
+;   movl $0x7fc00000, %eax
+;   movd %eax, %xmm1
+;   xorps %xmm6, %xmm6
+;   movss %xmm1, %xmm6
+;   xorps %xmm1, %xmm1
+;   movss %xmm0, %xmm1
+;   movdqa %xmm1, %xmm0
+;   cmpunordps %xmm1, %xmm0
+;   andps %xmm0, %xmm6
+;   andnps %xmm1, %xmm0
+;   orps %xmm6, %xmm0
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+

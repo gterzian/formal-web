@@ -1,0 +1,276 @@
+test compile precise-output
+set enable_multi_ret_implicit_sret
+target s390x
+
+function %caller_be_to_be(i128) -> i128 {
+    fn0 = %callee_be(i128) -> i128
+
+block0(v0: i128):
+    v1 = call fn0(v0)
+    return v1
+}
+
+; VCode:
+;   stmg %r8, %r15, 64(%r15)
+;   aghi %r15, -208
+; block0:
+;   lgr %r8, %r2
+;   vl %v1, 0(%r3)
+;   la %r3, 160(%r15)
+;   vst %v1, 0(%r3)
+;   la %r2, 176(%r15)
+;   bras %r1, 12 ; data %callee_be + 0 ; lg %r4, 0(%r1)
+;   basr %r14, %r4 ; vl %v1, 176(%r15) ; vst %v1, 192(%r15)
+;   lgr %r2, %r8
+;   vl %v16, 192(%r15)
+;   vst %v16, 0(%r2)
+;   lmg %r8, %r15, 272(%r15)
+;   br %r14
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stmg %r8, %r15, 0x40(%r15)
+;   aghi %r15, -0xd0
+; block1: ; offset 0xa
+;   lgr %r8, %r2
+;   vl %v1, 0(%r3)
+;   la %r3, 0xa0(%r15)
+;   vst %v1, 0(%r3)
+;   la %r2, 0xb0(%r15)
+;   bras %r1, 0x2e
+;   .byte 0x00, 0x00 ; reloc_external Abs8 %callee_be 0
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   lg %r4, 0(%r1)
+;   basr %r14, %r4
+;   vl %v1, 0xb0(%r15)
+;   vst %v1, 0xc0(%r15)
+;   lgr %r2, %r8
+;   vl %v16, 0xc0(%r15)
+;   vst %v16, 0(%r2)
+;   lmg %r8, %r15, 0x110(%r15)
+;   br %r14
+
+function %caller_be_to_le(i128) -> i128 {
+    fn0 = %callee_le(i128) -> i128 tail
+
+block0(v0: i128):
+    v1 = call fn0(v0)
+    return v1
+}
+
+; VCode:
+;   stmg %r6, %r15, 48(%r15)
+;   aghi %r15, -256
+;   std %f8, 192(%r15)
+;   std %f9, 200(%r15)
+;   std %f10, 208(%r15)
+;   std %f11, 216(%r15)
+;   std %f12, 224(%r15)
+;   std %f13, 232(%r15)
+;   std %f14, 240(%r15)
+;   std %f15, 248(%r15)
+; block0:
+;   lgr %r8, %r2
+;   vl %v1, 0(%r3)
+;   aghi %r15, -176
+;   la %r3, 160(%r15)
+;   vst %v1, 0(%r3)
+;   la %r2, 336(%r15)
+;   bras %r1, 12 ; data %callee_le + 0 ; lg %r4, 0(%r1)
+;   basr %r14, %r4 ; callee_pop_size 176 ; vl %v1, 160(%r15) ; vst %v1, 176(%r15)
+;   lgr %r2, %r8
+;   vl %v16, 176(%r15)
+;   vst %v16, 0(%r2)
+;   ld %f8, 192(%r15)
+;   ld %f9, 200(%r15)
+;   ld %f10, 208(%r15)
+;   ld %f11, 216(%r15)
+;   ld %f12, 224(%r15)
+;   ld %f13, 232(%r15)
+;   ld %f14, 240(%r15)
+;   ld %f15, 248(%r15)
+;   lmg %r6, %r15, 304(%r15)
+;   br %r14
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stmg %r6, %r15, 0x30(%r15)
+;   aghi %r15, -0x100
+;   std %f8, 0xc0(%r15)
+;   std %f9, 0xc8(%r15)
+;   std %f10, 0xd0(%r15)
+;   std %f11, 0xd8(%r15)
+;   std %f12, 0xe0(%r15)
+;   std %f13, 0xe8(%r15)
+;   std %f14, 0xf0(%r15)
+;   std %f15, 0xf8(%r15)
+; block1: ; offset 0x2a
+;   lgr %r8, %r2
+;   vl %v1, 0(%r3)
+;   aghi %r15, -0xb0
+;   la %r3, 0xa0(%r15)
+;   vst %v1, 0(%r3)
+;   la %r2, 0x150(%r15)
+;   bras %r1, 0x52
+;   .byte 0x00, 0x00 ; reloc_external Abs8 %callee_le 0
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   lg %r4, 0(%r1)
+;   basr %r14, %r4
+;   vl %v1, 0xa0(%r15)
+;   vst %v1, 0xb0(%r15)
+;   lgr %r2, %r8
+;   vl %v16, 0xb0(%r15)
+;   vst %v16, 0(%r2)
+;   ld %f8, 0xc0(%r15)
+;   ld %f9, 0xc8(%r15)
+;   ld %f10, 0xd0(%r15)
+;   ld %f11, 0xd8(%r15)
+;   ld %f12, 0xe0(%r15)
+;   ld %f13, 0xe8(%r15)
+;   ld %f14, 0xf0(%r15)
+;   ld %f15, 0xf8(%r15)
+;   lmg %r6, %r15, 0x130(%r15)
+;   br %r14
+
+function %caller_le_to_be(i128) -> i128 tail {
+    fn0 = %callee_be(i128) -> i128
+
+block0(v0: i128):
+    v1 = call fn0(v0)
+    return v1
+}
+
+; VCode:
+;   stmg %r14, %r15, 288(%r15)
+;   aghi %r15, -272
+;   std %f8, 208(%r15)
+;   std %f9, 216(%r15)
+;   std %f10, 224(%r15)
+;   std %f11, 232(%r15)
+;   std %f12, 240(%r15)
+;   std %f13, 248(%r15)
+;   std %f14, 256(%r15)
+;   std %f15, 264(%r15)
+; block0:
+;   lgr %r6, %r2
+;   vl %v1, 0(%r3)
+;   la %r3, 160(%r15)
+;   vst %v1, 0(%r3)
+;   la %r2, 176(%r15)
+;   bras %r1, 12 ; data %callee_be + 0 ; lg %r4, 0(%r1)
+;   basr %r14, %r4 ; vl %v1, 176(%r15) ; vst %v1, 192(%r15)
+;   lgr %r2, %r6
+;   vl %v16, 192(%r15)
+;   vst %v16, 0(%r2)
+;   ld %f8, 208(%r15)
+;   ld %f9, 216(%r15)
+;   ld %f10, 224(%r15)
+;   ld %f11, 232(%r15)
+;   ld %f12, 240(%r15)
+;   ld %f13, 248(%r15)
+;   ld %f14, 256(%r15)
+;   ld %f15, 264(%r15)
+;   aghi %r15, 448
+;   lmg %r14, %r14, 112(%r15)
+;   br %r14
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stmg %r14, %r15, 0x120(%r15)
+;   aghi %r15, -0x110
+;   std %f8, 0xd0(%r15)
+;   std %f9, 0xd8(%r15)
+;   std %f10, 0xe0(%r15)
+;   std %f11, 0xe8(%r15)
+;   std %f12, 0xf0(%r15)
+;   std %f13, 0xf8(%r15)
+;   std %f14, 0x100(%r15)
+;   std %f15, 0x108(%r15)
+; block1: ; offset 0x2a
+;   lgr %r6, %r2
+;   vl %v1, 0(%r3)
+;   la %r3, 0xa0(%r15)
+;   vst %v1, 0(%r3)
+;   la %r2, 0xb0(%r15)
+;   bras %r1, 0x4e
+;   .byte 0x00, 0x00 ; reloc_external Abs8 %callee_be 0
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   lg %r4, 0(%r1)
+;   basr %r14, %r4
+;   vl %v1, 0xb0(%r15)
+;   vst %v1, 0xc0(%r15)
+;   lgr %r2, %r6
+;   vl %v16, 0xc0(%r15)
+;   vst %v16, 0(%r2)
+;   ld %f8, 0xd0(%r15)
+;   ld %f9, 0xd8(%r15)
+;   ld %f10, 0xe0(%r15)
+;   ld %f11, 0xe8(%r15)
+;   ld %f12, 0xf0(%r15)
+;   ld %f13, 0xf8(%r15)
+;   ld %f14, 0x100(%r15)
+;   ld %f15, 0x108(%r15)
+;   aghi %r15, 0x1c0
+;   lmg %r14, %r14, 0x70(%r15)
+;   br %r14
+
+function %caller_le_to_le(i128) -> i128 tail {
+    fn0 = %callee_le(i128) -> i128 tail
+
+block0(v0: i128):
+    v1 = call fn0(v0)
+    return v1
+}
+
+; VCode:
+;   stmg %r8, %r15, 240(%r15)
+;   aghi %r15, -192
+; block0:
+;   lgr %r8, %r2
+;   vl %v1, 0(%r3)
+;   aghi %r15, -176
+;   la %r3, 160(%r15)
+;   vst %v1, 0(%r3)
+;   la %r2, 336(%r15)
+;   bras %r1, 12 ; data %callee_le + 0 ; lg %r4, 0(%r1)
+;   basr %r14, %r4 ; callee_pop_size 176 ; vl %v1, 160(%r15) ; vst %v1, 176(%r15)
+;   lgr %r2, %r8
+;   vl %v16, 176(%r15)
+;   vst %v16, 0(%r2)
+;   aghi %r15, 368
+;   lmg %r8, %r14, 64(%r15)
+;   br %r14
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   stmg %r8, %r15, 0xf0(%r15)
+;   aghi %r15, -0xc0
+; block1: ; offset 0xa
+;   lgr %r8, %r2
+;   vl %v1, 0(%r3)
+;   aghi %r15, -0xb0
+;   la %r3, 0xa0(%r15)
+;   vst %v1, 0(%r3)
+;   la %r2, 0x150(%r15)
+;   bras %r1, 0x32
+;   .byte 0x00, 0x00 ; reloc_external Abs8 %callee_le 0
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   .byte 0x00, 0x00
+;   lg %r4, 0(%r1)
+;   basr %r14, %r4
+;   vl %v1, 0xa0(%r15)
+;   vst %v1, 0xb0(%r15)
+;   lgr %r2, %r8
+;   vl %v16, 0xb0(%r15)
+;   vst %v16, 0(%r2)
+;   aghi %r15, 0x170
+;   lmg %r8, %r14, 0x40(%r15)
+;   br %r14
+

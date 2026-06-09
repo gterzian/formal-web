@@ -1,0 +1,21 @@
+name: Run cargo-audit
+on:
+  schedule:
+    - cron: '0 0 * * *'
+jobs:
+  security_audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: ./.github/actions/cargo-install
+        with:
+          crate: cargo-audit
+          version: 0.22.1
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+        # This seems to hit rate limits about 50% of the time, unclear why, but
+        # emailing us once every few days is not the most useful thing.
+        continue-on-error: true

@@ -1,0 +1,249 @@
+test compile precise-output
+target x86_64
+
+function u0:0(i64 sarg(64)) -> i8 system_v {
+block0(v0: i64):
+    v1 = load.i8 v0
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   leaq <offset:0>+-0x40(%rbp), %rax
+;   movzbq (%rax), %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   leaq 0x10(%rbp), %rax
+;   movzbq (%rax), %rax ; trap: heap_oob
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function u0:1(i64 sarg(64), i64) -> i8 system_v {
+block0(v0: i64, v1: i64):
+    v2 = load.i8 v1
+	v3 = load.i8 v0
+	v4 = iadd.i8 v2, v3
+    return v4
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   leaq <offset:0>+-0x40(%rbp), %rcx
+;   movzbq (%rdi), %rax
+;   movzbq (%rcx), %rsi
+;   addl %esi, %eax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   leaq 0x10(%rbp), %rcx
+;   movzbq (%rdi), %rax ; trap: heap_oob
+;   movzbq (%rcx), %rsi ; trap: heap_oob
+;   addl %esi, %eax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function u0:2(i64) -> i8 system_v {
+fn1 = colocated u0:0(i64 sarg(64)) -> i8 system_v
+
+block0(v0: i64):
+    v1 = call fn1(v0)
+    return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x40, %rsp
+; block0:
+;   movq %rdi, %rsi
+;   leaq (%rsp), %rdi
+;   movl $0x40, %edx
+;   load_ext_name %Memcpy+0, %r8
+;   call    *%r8
+;   call    User(userextname0)
+;   addq $0x40, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x40, %rsp
+; block1: ; offset 0x8
+;   movq %rdi, %rsi
+;   leaq (%rsp), %rdi
+;   movl $0x40, %edx
+;   movabsq $0, %r8 ; reloc_external Abs8 %Memcpy 0
+;   callq *%r8
+;   callq 0x26 ; reloc_external CallPCRel4 u0:0 -4
+;   addq $0x40, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function u0:3(i64, i64) -> i8 system_v {
+fn1 = colocated u0:0(i64, i64 sarg(64)) -> i8 system_v
+
+block0(v0: i64, v1: i64):
+    v2 = call fn1(v0, v1)
+    return v2
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x50, %rsp
+;   movq %r12, 0x40(%rsp)
+; block0:
+;   movq %rdi, %r12
+;   leaq (%rsp), %rdi
+;   movl $0x40, %edx
+;   load_ext_name %Memcpy+0, %r8
+;   call    *%r8
+;   movq %r12, %rdi
+;   call    User(userextname0)
+;   movq 0x40(%rsp), %r12
+;   addq $0x50, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x50, %rsp
+;   movq %r12, 0x40(%rsp)
+; block1: ; offset 0xd
+;   movq %rdi, %r12
+;   leaq (%rsp), %rdi
+;   movl $0x40, %edx
+;   movabsq $0, %r8 ; reloc_external Abs8 %Memcpy 0
+;   callq *%r8
+;   movq %r12, %rdi
+;   callq 0x2e ; reloc_external CallPCRel4 u0:0 -4
+;   movq 0x40(%rsp), %r12
+;   addq $0x50, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function u0:4(i64 sarg(128), i64 sarg(64)) -> i8 system_v {
+block0(v0: i64, v1: i64):
+    v2 = load.i8 v0
+    v3 = load.i8 v1
+    v4 = iadd.i8 v2, v3
+    return v4
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   leaq <offset:0>+-0xc0(%rbp), %rax
+;   leaq <offset:0>+-0x40(%rbp), %rdx
+;   movzbq (%rax), %rax
+;   movzbq (%rdx), %rsi
+;   addl %esi, %eax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   leaq 0x10(%rbp), %rax
+;   leaq 0x90(%rbp), %rdx
+;   movzbq (%rax), %rax ; trap: heap_oob
+;   movzbq (%rdx), %rsi ; trap: heap_oob
+;   addl %esi, %eax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function u0:5(i64, i64, i64) -> i8 system_v {
+fn1 = colocated u0:0(i64, i64 sarg(128), i64 sarg(64)) -> i8 system_v
+
+block0(v0: i64, v1: i64, v2: i64):
+    v3 = call fn1(v0, v1, v2)
+    return v3
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0xd0, %rsp
+;   movq %r12, 0xc0(%rsp)
+;   movq %r15, 0xc8(%rsp)
+; block0:
+;   movq %rdi, %r12
+;   movq %rdx, %r15
+;   leaq (%rsp), %rdi
+;   movl $0x80, %edx
+;   load_ext_name %Memcpy+0, %r9
+;   call    *%r9
+;   leaq 0x80(%rsp), %rdi
+;   movl $0x40, %edx
+;   load_ext_name %Memcpy+0, %rax
+;   movq %r15, %rsi
+;   call    *%rax
+;   movq %r12, %rdi
+;   call    User(userextname0)
+;   movq 0xc0(%rsp), %r12
+;   movq 0xc8(%rsp), %r15
+;   addq $0xd0, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0xd0, %rsp
+;   movq %r12, 0xc0(%rsp)
+;   movq %r15, 0xc8(%rsp)
+; block1: ; offset 0x1b
+;   movq %rdi, %r12
+;   movq %rdx, %r15
+;   leaq (%rsp), %rdi
+;   movl $0x80, %edx
+;   movabsq $0, %r9 ; reloc_external Abs8 %Memcpy 0
+;   callq *%r9
+;   leaq 0x80(%rsp), %rdi
+;   movl $0x40, %edx
+;   movabsq $0, %rax ; reloc_external Abs8 %Memcpy 0
+;   movq %r15, %rsi
+;   callq *%rax
+;   movq %r12, %rdi
+;   callq 0x5b ; reloc_external CallPCRel4 u0:0 -4
+;   movq 0xc0(%rsp), %r12
+;   movq 0xc8(%rsp), %r15
+;   addq $0xd0, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
