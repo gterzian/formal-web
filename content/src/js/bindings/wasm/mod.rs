@@ -1,46 +1,119 @@
+//! WebAssembly namespace binding.
+//!
+//! <https://www.w3.org/TR/wasm-js-api/#webassembly-namespace>
+//!
+//! Implements the `WebAssembly` namespace using the Web IDL bindings
+//! infrastructure.  The namespace object is registered on the global
+//! object with its operations (`validate`, `compile`, `instantiate`)
+//! and the `JSTag` readonly attribute.
+//!
+//! **Error types** (`CompileError`, `LinkError`, `RuntimeError`) and
+//! **type constructors** (`Module`, `Instance`, etc.) are added to the
+//! namespace after registration, using the underlying Boa APIs directly
+//! until those types are migrated to the Web IDL interface infra.
+
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue,
     js_string,
     native_function::NativeFunction,
-    object::{JsObject, ObjectInitializer, builtins::{JsArrayBuffer, JsPromise, JsTypedArray, JsUint8Array}},
-    property::Attribute,
+    object::{JsObject, builtins::{JsArrayBuffer, JsPromise, JsTypedArray, JsUint8Array}},
 };
 
 use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::types::WasmModule;
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_namespace_spec};
 
-/// <https://www.w3.org/TR/wasm-js-api/#webassembly-namespace>
+// ── Namespace type ──
+
+/// Marker type for the `WebAssembly` namespace.
+struct WasmNamespace;
+
+impl WebIdlNamespace for WasmNamespace {
+    const NAME: &'static str = "WebAssembly";
+
+    fn define_members(def: &mut InterfaceDefinition) {
+        // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-validate>
+        def.add_operation(OperationDef {
+            id: "validate",
+            length: 1,
+            method: validate_fn,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+
+        // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-compile>
+        def.add_operation(OperationDef {
+            id: "compile",
+            length: 1,
+            method: compile_fn,
+            static_: false,
+            unforgeable: false,
+            promise_type: true,
+        });
+
+        // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate>
+        def.add_operation(OperationDef {
+            id: "instantiate",
+            length: 1,
+            method: instantiate_fn,
+            static_: false,
+            unforgeable: false,
+            promise_type: true,
+        });
+
+        // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-jstag>
+        def.add_attribute(AttributeDef {
+            id: "JSTag",
+            getter: get_jstag,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+    }
+}
+
+// ── Installation entry point ──
+
+/// Install the `WebAssembly` namespace on the global object.
 ///
-/// Install the `WebAssembly` namespace object on the global object.
+/// <https://www.w3.org/TR/wasm-js-api/#webassembly-namespace>
 pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
-    let mut namespace_init = ObjectInitializer::new(context);
+    // Step: Register the namespace via the Web IDL bindings infra.
+    register_namespace_spec::<WasmNamespace>(context)?;
 
-    namespace_init.function(
-        NativeFunction::from_fn_ptr(validate_fn),
-        js_string!("validate"),
-        1,
-    );
-    namespace_init.function(
-        NativeFunction::from_fn_ptr(compile_fn),
-        js_string!("compile"),
-        1,
-    );
-    namespace_init.function(
-        NativeFunction::from_fn_ptr(instantiate_fn),
-        js_string!("instantiate"),
-        1,
-    );
+    // ── Post-registration: Error types and type constructors ──
+    // These are added directly onto the namespace object using Boa
+    // because the Web IDL interface infrastructure does not yet
+    // support `[LegacyNamespace=WebAssembly]`.  As each type (Module,
+    // Instance, etc.) is migrated to `WebIdlInterface`, the constructor
+    // will be slotted into the namespace instead of the global object.
 
-    let namespace = namespace_init.build();
+    let ns_value = context
+        .global_object()
+        .get(js_string!("WebAssembly"), context)?;
+    let Some(namespace) = ns_value.as_object() else {
+        return Err(JsNativeError::error()
+            .with_message("WebAssembly namespace not found after registration")
+            .into());
+    };
+    let namespace = namespace.clone();
 
-    // Register error types
+    // Register error types: CompileError, LinkError, RuntimeError
     register_error_types(&namespace, context)?;
 
-    // Register type constructors (Module and Instance stubs)
+    // Register type constructors (Module, Instance stubs)
     register_module_type(&namespace, context)?;
 
-    context.register_global_property(js_string!("WebAssembly"), namespace, Attribute::all())
+    Ok(())
 }
+
+// ── Error type registration ──
 
 fn register_error_types(namespace: &JsObject, context: &mut Context) -> JsResult<()> {
     let error_names = [
@@ -119,6 +192,8 @@ fn compile_error_ctor(
         .call(&JsValue::undefined(), &[JsValue::from(js_string!(message.as_str()))], context)?;
     Ok(error)
 }
+
+// ── Namespace operations ──
 
 /// <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-validate>
 fn validate_fn(
@@ -202,7 +277,7 @@ fn instantiate_fn(
         let global = context.global_object();
         let window = global.downcast_ref::<Window>().ok_or_else(|| {
             JsNativeError::error().with_message("wasm: global object is not a Window")
-    })?;
+        })?;
         let global_scope = &window.global_scope;
 
         let request_id = global_scope.next_wasm_request_id();
@@ -227,7 +302,18 @@ fn instantiate_fn(
     }
 }
 
-// ── Helpers ──
+/// <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-jstag>
+fn get_jstag(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    Err(JsNativeError::error()
+        .with_message("WebAssembly.JSTag: not yet implemented")
+        .into())
+}
+
+// ── Argument conversion helpers ──
 
 fn get_stable_bytes(value: &JsValue, context: &mut Context) -> JsResult<Vec<u8>> {
     let object = value.as_object().ok_or_else(|| {
@@ -236,7 +322,6 @@ fn get_stable_bytes(value: &JsValue, context: &mut Context) -> JsResult<Vec<u8>>
     })?;
 
     // Try as typed array first (Uint8Array, etc.).
-    // Use indexed access on the object itself (typed arrays support [[Get]]).
     if let Ok(typed_array) = JsTypedArray::from_object(object.clone()) {
         let length = typed_array.length(context)?;
         let mut bytes = vec![0u8; length];
@@ -288,7 +373,7 @@ fn is_buffer_source(value: &JsValue, _context: &mut Context) -> bool {
         || JsTypedArray::from_object(object.clone()).is_ok()
 }
 
-// ── Promise resolution helpers (for future async use) ──
+// ── Promise resolution helpers ──
 
 /// Get the WebAssembly.Module.prototype from the context's global object.
 fn get_module_prototype(context: &mut Context) -> Option<JsObject> {
@@ -361,7 +446,7 @@ pub(crate) fn reject_compile_promise(
     Ok(())
 }
 
-// ── Type registration helpers ──
+// ── Module type (temporary: directly registered on the namespace) ──
 
 /// Helper: create a constructor function with the given prototype.
 fn register_constructor(

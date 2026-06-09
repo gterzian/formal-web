@@ -466,3 +466,61 @@ pub(crate) fn resolve_this_value(this: &JsValue, context: &Context) -> JsResult<
 pub(crate) fn define_global_property_references(_context: &mut Context) -> JsResult<()> {
     Ok(())
 }
+
+/// Trait for Web IDL namespace objects.
+///
+/// https://webidl.spec.whatwg.org/#namespace
+///
+/// A namespace is a plain object with attributes and operations.
+/// Unlike interfaces, namespaces have no constructor or prototype
+/// chain for instances — they are singleton objects registered on
+/// the global object.
+pub(crate) trait WebIdlNamespace: 'static {
+    /// The namespace identifier as used in IDL.
+    const NAME: &'static str;
+
+    /// Define the namespace members (attributes, operations).
+    fn define_members(def: &mut InterfaceDefinition)
+    where
+        Self: Sized;
+}
+
+/// <https://webidl.spec.whatwg.org/#create-a-namespace-object>
+///
+/// Registers a Web IDL namespace on the global object.
+/// Follows the "create a namespace object" algorithm:
+/// Step 1: "Let namespaceObject be OrdinaryObjectCreate(
+///         realm.[[Intrinsics]].[[%Object.prototype%]])."
+/// Step 2: "Define the regular attributes of namespace on
+///         namespaceObject given realm."
+/// Step 3: "Define the regular operations of namespace on
+///         namespaceObject given realm."
+/// Step 6: "Return namespaceObject."
+///
+/// Note: Step 4 (constants) and Step 5 ([LegacyNamespace] interfaces)
+/// are not yet implemented.  Post-registration wiring of error types
+/// and type constructors replaces Step 5 for the WebAssembly namespace.
+pub(crate) fn register_namespace_spec<T: WebIdlNamespace>(context: &mut Context) -> JsResult<()> {
+    let namespace = JsObject::from_proto_and_data(
+        Some(context.intrinsics().constructors().object().prototype()),
+        OrdinaryObject,
+    );
+
+    let mut def = InterfaceDefinition::new();
+    T::define_members(&mut def);
+
+    super::attribute::define_regular_attributes(&namespace, context, &def.attributes)?;
+    super::operation::define_regular_operations(&namespace, context, &def.operations)?;
+
+    let desc = PropertyDescriptor::builder()
+        .value(namespace)
+        .writable(true)
+        .enumerable(false)
+        .configurable(true)
+        .build();
+    context
+        .global_object()
+        .define_property_or_throw(js_string!(T::NAME), desc, context)?;
+
+    Ok(())
+}

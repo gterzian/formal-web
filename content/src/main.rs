@@ -1648,7 +1648,7 @@ impl ContentProcess {
                     request_id: _,
                     module,
                 } => {
-                    if let Err(error) = crate::wasm::namespace::resolve_compile_promise(
+                    if let Err(error) = crate::js::bindings::wasm::resolve_compile_promise(
                         &resolvers,
                         module,
                         Vec::new(),
@@ -1661,7 +1661,7 @@ impl ContentProcess {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = crate::wasm::namespace::reject_compile_promise(
+                    if let Err(error) = crate::js::bindings::wasm::reject_compile_promise(
                         &resolvers,
                         message,
                         &mut content_document.settings.context,
