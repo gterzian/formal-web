@@ -19,10 +19,10 @@ use boa_engine::{
 
 use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::{
-    get_stable_bytes, is_buffer_source, register_wasm_error_types,
-    register_wasm_instance_type, register_wasm_module_type,
-    validate_wasm_module, WasmModule,
+    register_wasm_error_types, register_wasm_instance_type,
+    register_wasm_module_type, validate_wasm_module, WasmModule,
 };
+use crate::webidl::{get_stable_bytes, is_buffer_source};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_namespace_spec,
 };
