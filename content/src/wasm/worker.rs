@@ -51,8 +51,8 @@ pub(crate) enum WasmResult {
     Instantiated {
         /// The request id that this result corresponds to.
         request_id: u64,
-        /// The wasmtime store (shared via Arc).
-        store: Arc<Store<()>>,
+        /// The wasmtime store, wrapped in Mutex for safe shared access.
+        store: Arc<Mutex<Store<()>>>,
         /// The wasmtime instance.
         instance: WasmtimeInstance,
     },
@@ -210,7 +210,7 @@ impl WasmWorker {
                     let result = WasmtimeInstance::new(&mut store, &module, &[]);
                     match result {
                         Ok(instance) => {
-                            let store = Arc::new(store);
+                            let store = Arc::new(Mutex::new(store));
                             Self::push_result(
                                 &results,
                                 &signal_sender,

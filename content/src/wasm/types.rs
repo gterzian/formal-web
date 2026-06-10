@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use boa_engine::{JsObject, object::JsData};
 use boa_gc::{Finalize, Trace};
@@ -34,9 +34,8 @@ impl WasmModule {
 /// A WebAssembly instance, stored as data on a JS Instance object.
 ///
 /// The `store` field holds the wasmtime store that the instance was created
-/// from.  It is shared with exported function wrappers so that calling a
-/// wasm export routes through the store.  `wasmtime::Store<()>` is
-/// `Send + Sync`, so `Arc` suffices for cross-thread sharing.
+/// from, wrapped in `Arc<Mutex<...>>` so that exported-function closures
+/// on the main thread and the background worker can safely access it.
 ///
 /// Note: The `wasmtime::Instance` field is redundant with `store.data()`
 /// but kept for ergonomic access to the handle.
@@ -44,10 +43,10 @@ impl WasmModule {
 pub(crate) struct WasmInstance {
     /// The exports object created from the instance's exports.
     pub(crate) exports: JsObject,
-    /// Shared reference to the store, used by exported-function wrappers.
+    /// Shared (main + worker), mutex-protected store.
     #[unsafe_ignore_trace]
     #[allow(dead_code)]
-    pub(crate) store: Arc<Store<()>>,
+    pub(crate) store: Arc<Mutex<Store<()>>>,
     /// The wasmtime instance handle.
     #[unsafe_ignore_trace]
     #[allow(dead_code)]
@@ -59,7 +58,7 @@ impl JsData for WasmInstance {}
 impl WasmInstance {
     pub(crate) fn new(
         exports: JsObject,
-        store: Arc<Store<()>>,
+        store: Arc<Mutex<Store<()>>>,
         instance: wasmtime::Instance,
     ) -> Self {
         Self {

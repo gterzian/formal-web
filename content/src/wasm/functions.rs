@@ -8,7 +8,7 @@
 //! namespace has and wire them up via `register_namespace_spec`; this module
 //! implements *what those members do*.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use boa_engine::{
     Context, JsNativeError, JsObject, JsResult, JsValue,
@@ -543,13 +543,15 @@ pub(crate) fn get_wasm_jstag(
 pub(crate) fn resolve_instantiate_promise(
     module: &wasmtime::Module,
     instance: &WasmtimeInstance,
-    store: &Arc<Store<()>>,
+    store: &Arc<Mutex<Store<()>>>,
     resolvers: &boa_engine::builtins::promise::ResolvingFunctions,
     context: &mut Context,
 ) -> JsResult<()> {
     // Step 6.2: "Let instanceObject be a new Instance."
     // Step 6.3: "Initialize instanceObject from module and instance."
-    let exports = create_exports_object(module, instance, store, context)?;
+    let mut store_guard = store.lock().unwrap();
+    let exports = create_exports_object(module, instance, &mut *store_guard, store, context)?;
+    drop(store_guard);
 
     let instance_proto = get_wasm_instance_prototype(context)
         .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
@@ -576,7 +578,8 @@ pub(crate) fn resolve_instantiate_promise(
 pub(crate) fn create_exports_object(
     module: &wasmtime::Module,
     instance: &WasmtimeInstance,
-    store: &Arc<Store<()>>,
+    store: &mut Store<()>,
+    store_arc: &Arc<Mutex<Store<()>>>,
     context: &mut Context,
 ) -> JsResult<JsObject> {
     // Step 1: "Let exportsObject be ! OrdinaryObjectCreate(null)."
@@ -589,15 +592,7 @@ pub(crate) fn create_exports_object(
         let _extern_type = export.ty();
 
         // Step 3-4: "Let externval be instance_export(instance, name)."
-        let extern_val = {
-            // Borrow the Arc's Store via a temporary store handle.
-            // `instance.get_export` needs `impl AsContextMut` which
-            // `&mut Store<()>` satisfies.
-            // SAFETY: `Arc::as_ptr` gives a raw pointer we only use through
-            // the safe Store API that the Arc owns.
-            let mut store_ref = unsafe { &mut *(Arc::as_ptr(store) as *mut Store<()>) };
-            instance.get_export(&mut store_ref, name)
-        };
+        let extern_val = instance.get_export(&mut *store, name);
 
         let Some(extern_val) = extern_val else {
             continue;
@@ -606,7 +601,7 @@ pub(crate) fn create_exports_object(
         let value = match extern_val {
             // Step 5: func functype → create Exported Function
             wasmtime::Extern::Func(func) => {
-                create_exported_function_wrapper(func, Arc::clone(store), context)?
+                create_exported_function_wrapper(func, Arc::clone(store_arc), context)?
             }
             // Steps 6-9: memory, global, table, tag — not yet implemented
             _ => JsValue::undefined(),
@@ -633,23 +628,19 @@ pub(crate) fn create_exports_object(
 /// to `wasmtime::Val`, calls `func.call`, and converts results back.
 fn create_exported_function_wrapper(
     func: wasmtime::Func,
-    store: Arc<Store<()>>,
+    store: Arc<Mutex<Store<()>>>,
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // SAFETY: The closure captures `Arc<Store<()>>` and `wasmtime::Func`.
-    // Neither type contains Boa GC pointers, so `from_closure` is safe.
+    // SAFETY: The closure captures `Arc<Mutex<Store<()>>>` and
+    // `wasmtime::Func`.  Neither type contains Boa GC pointers,
+    // so `from_closure` is safe.
     let js_func = unsafe {
         NativeFunction::from_closure(
             move |_this: &JsValue, args: &[JsValue], context: &mut Context| -> JsResult<JsValue> {
-                // SAFETY: `Arc::as_ptr` gives a raw pointer; we know the
-                // `Arc` is alive because the closure (and hence the
-                // `WasmInstance` that owns another clone) keeps it alive.
-                // The store is Send + Sync per the wasmtime docs.
-                let mut store_ref =
-                    &mut *(Arc::as_ptr(&store) as *mut Store<()>);
+                let mut store_guard = store.lock().unwrap();
 
                 // Get the function type to determine parameter structure.
-                let func_type = func.ty(&store_ref);
+                let func_type = func.ty(&*store_guard);
 
                 // Convert JS args to wasm params.
                 let params: Vec<wasmtime::Val> = func_type
@@ -665,7 +656,7 @@ fn create_exported_function_wrapper(
                 let mut results = vec![wasmtime::Val::I32(0); func_type.results().len()];
 
                 // Call the wasm function.
-                func.call(&mut store_ref, &params, &mut results).map_err(|error| {
+                func.call(&mut *store_guard, &params, &mut results).map_err(|error| {
                     JsNativeError::error()
                         .with_message(format!("wasm trap: {}", error))
                 })?;
@@ -748,7 +739,7 @@ pub(crate) fn get_wasm_instance_prototype(context: &mut Context) -> Option<JsObj
         .and_then(|p| p.as_object().map(|o| o.clone()))
 }
 
-/// <https://webassembly.github.io/spec/js-api/#create-an-exports-object>
+/// <https://webassembly.github.io/spec/js-api/#dom-instance>
 ///
 /// Register the `WebAssembly.Instance` interface on the namespace,
 /// with the readonly `exports` attribute.
