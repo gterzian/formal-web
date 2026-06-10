@@ -27,6 +27,28 @@ use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_namespace_spec,
 };
 
+/// Create a TypeError and pass it to the promise's reject function.
+fn create_and_reject_type_error(
+    resolvers: &boa_engine::builtins::promise::ResolvingFunctions,
+    message: &str,
+    context: &mut Context,
+) -> JsResult<()> {
+    let ctor = context
+        .intrinsics()
+        .constructors()
+        .type_error()
+        .constructor();
+    let error = ctor.call(
+        &JsValue::undefined(),
+        &[js_string!(message).into()],
+        context,
+    )?;
+    resolvers
+        .reject
+        .call(&JsValue::undefined(), &[error], context)?;
+    Ok(())
+}
+
 // ── Namespace type ──
 
 /// Marker type for the `WebAssembly` namespace.
@@ -160,16 +182,47 @@ fn validate_fn(
 /// GlobalScope.  The content process drains pending requests on the next
 /// event-loop iteration, submits the bytes to the background compilation
 /// worker, and resolves/rejects the promise when the result arrives.
+///
+/// Note: This function must never throw synchronously for promise-type
+/// operations.  Argument validation errors are caught and converted to
+/// promise rejections.
 fn compile_fn(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // Step 1: "Let stableBytes be a copy of the bytes held by the buffer bytes."
-    let bytes_value = args.first().ok_or_else(|| {
-        JsNativeError::typ().with_message("WebAssembly.compile: missing argument")
-    })?;
-    let stable_bytes = get_stable_bytes(bytes_value, context)?;
+    // Step: "Let promise be a new promise."
+    let (promise, resolvers) = JsPromise::new_pending(context);
+    let promise_obj: JsObject = promise.clone().into();
+
+    // Validate arguments; on error reject the promise instead of throwing.
+    let bytes_value = match args.first() {
+        Some(v) => v,
+        None => {
+            if let Err(error) = create_and_reject_type_error(
+                &resolvers,
+                "WebAssembly.compile: missing argument",
+                context,
+            ) {
+                eprintln!("wasm: failed to reject compile promise: {error}");
+            }
+            return Ok(promise.into());
+        }
+    };
+
+    let stable_bytes = match get_stable_bytes(bytes_value, context) {
+        Ok(b) => b,
+        Err(_) => {
+            if let Err(error) = create_and_reject_type_error(
+                &resolvers,
+                "WebAssembly.compile: invalid argument",
+                context,
+            ) {
+                eprintln!("wasm: failed to reject compile promise: {error}");
+            }
+            return Ok(promise.into());
+        }
+    };
 
     // Get the GlobalScope through the Window.
     let global = context.global_object();
@@ -178,15 +231,8 @@ fn compile_fn(
     })?;
     let global_scope = &window.global_scope;
 
-    // Allocate a request id for correlating the result.
     let request_id = global_scope.next_wasm_request_id();
 
-    // Step: "Let promise be a new promise."
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    let promise_obj: JsObject = promise.clone().into();
-
-    // Push the pending request onto the GlobalScope.  The content process
-    // will drain this after JS execution and submit to the background worker.
     global_scope.push_pending_request(PendingRequest::WasmCompile {
         bytes: stable_bytes,
         request_id,

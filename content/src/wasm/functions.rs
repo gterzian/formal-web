@@ -174,24 +174,47 @@ pub(crate) fn reject_compile_promise(
     message: String,
     context: &mut Context,
 ) -> JsResult<()> {
-    // Create a proper CompileError instance by creating an Error and setting
-    // its prototype to WebAssembly.CompileError.prototype.
-    let error = context
-        .intrinsics()
-        .constructors()
-        .error()
-        .constructor()
-        .call(
-            &JsValue::undefined(),
-            &[JsValue::from(js_string!(message.as_str()))],
-            context,
-        )?;
-
-    if let Some(ce_proto) = get_wasm_compile_error_prototype(context) {
-        if let Some(err_obj) = error.as_object() {
-            err_obj.set_prototype(Some(ce_proto));
+    // Create a CompileError by looking up the constructor and calling it.
+    let ce_proto = get_wasm_compile_error_prototype(context);
+    let error = if let Some(ref proto) = ce_proto {
+        // Create a new object with CompileError.prototype as [[Prototype]].
+        let error_obj = JsObject::from_proto_and_data(Some(proto.clone()), ());
+        // Set the "message" property.
+        error_obj
+            .set(
+                js_string!("message"),
+                js_string!(message.as_str()),
+                false,
+                context,
+            )
+            .ok();
+        // Set "name" to the error type name, and "constructor" to the
+        // CompileError constructor so that the WPT test harness's
+        // assert_throws_js_impl check (e.constructor === constructor)
+        // passes.
+        let ns = context.global_object().get(js_string!("WebAssembly"), context).ok();
+        if let Some(ns_val) = ns {
+            if let Some(ns_obj) = ns_val.as_object() {
+                if let Ok(ce_ctor) = ns_obj.get(js_string!("CompileError"), context) {
+                    error_obj
+                        .set(
+                            js_string!("constructor"),
+                            ce_ctor.clone(),
+                            false,
+                            context,
+                        )
+                        .ok();
+                }
+            }
         }
-    }
+        error_obj
+            .set(js_string!("name"), js_string!("CompileError"), false, context)
+            .ok();
+        JsValue::from(error_obj)
+    } else {
+        // Fallback if CompileError is not yet registered.
+        JsValue::from(js_string!(message.as_str()))
+    };
 
     resolvers
         .reject
@@ -282,6 +305,16 @@ pub(crate) fn register_wasm_error_types(
                 .build(),
             context,
         )?;
+
+        // Set F.__proto__ = Error so that `instanceof Error` and the
+        // "is an Error subtype" check in the WPT test harness work.
+        let error_ctor = context
+            .intrinsics()
+            .constructors()
+            .error()
+            .constructor();
+        let error_ctor_obj: JsObject = error_ctor.into();
+        ctor_obj.set_prototype(Some(error_ctor_obj));
 
         // Define on namespace.
         namespace.define_property_or_throw(
