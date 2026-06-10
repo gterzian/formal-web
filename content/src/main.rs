@@ -28,6 +28,7 @@ use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
+use ipc_channel::router::RouterProxy;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
@@ -357,13 +358,19 @@ pub(crate) struct ContentProcess {
     /// Background wasm compilation thread.
     wasm_worker: crate::wasm::WasmWorker,
 
-    /// Pending wasm compilation requests waiting for background results.
+    /// Pending wasm requests waiting for background results.
     /// Maps request_id → document_id.
     pending_wasm_requests: HashMap<u64, DocumentId>,
+    /// Modules from instantiate requests, needed for exports creation.
+    pending_wasm_modules: HashMap<u64, wasmtime::Module>,
 }
 
 impl ContentProcess {
-    fn new(event_sender: IpcSender<ContentEvent>, event_loop_id: EventLoopId) -> Self {
+    fn new(
+        event_sender: IpcSender<ContentEvent>,
+        wasm_signal_sender: crossbeam_channel::Sender<()>,
+        event_loop_id: EventLoopId,
+    ) -> Self {
         Self {
             event_sender,
             event_loop_id,
@@ -380,8 +387,10 @@ impl ContentProcess {
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             wasm_worker: crate::wasm::WasmWorker::new(
                 wasmtime::Engine::default(),
+                wasm_signal_sender,
             ),
             pending_wasm_requests: HashMap::new(),
+            pending_wasm_modules: HashMap::new(),
         }
     }
 
@@ -1585,9 +1594,7 @@ impl ContentProcess {
     }
 
     /// Drain pending WebAssembly requests from all documents and submit
-    /// compile requests to the background worker.  Instantiate requests
-    /// are processed directly on this thread (the spec queues a task,
-    /// which runs on the event loop).
+    /// them to the background worker.
     fn drain_all_pending_wasm_requests(&mut self) {
         let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
 
@@ -1596,104 +1603,44 @@ impl ContentProcess {
                 continue;
             };
 
+            // Submit compile batches.
             let batches = content_document.settings.take_pending_wasm_batches();
             for (request_id, bytes) in batches {
                 self.pending_wasm_requests.insert(request_id, document_id);
                 self.wasm_worker.submit_compile(bytes);
             }
-        }
-    }
 
-    /// Process pending wasm instantiate requests directly on the main thread.
-    ///
-    /// <https://webassembly.github.io/spec/js-api/#asynchronously-instantiate-a-webassembly-module>
-    ///
-    /// The spec algorithm queues a task to perform instantiation, which runs
-    /// on the event loop.  We process these during our event-loop iteration.
-    fn process_pending_wasm_instantiates(&mut self) {
-        let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
-
-        for document_id in document_ids {
-            let Some(content_document) = self.documents.get_mut(&document_id) else {
-                continue;
-            };
-
+            // Submit instantiate requests.
             let instantiates =
                 content_document.settings.take_pending_wasm_instantiates();
-
-            for (request_id, module, import_object) in instantiates {
+            for (request_id, module, _import_object) in instantiates {
                 self.pending_wasm_requests.insert(request_id, document_id);
-
-                // Run the synchronous instantiation steps (Steps 5-6.3 of
-                // "asynchronously instantiate a WebAssembly module").
-                let result = crate::wasm::instantiate_wasm_module_on_main_thread(
-                    module,
-                    &import_object,
-                    &mut content_document.settings.context,
-                );
-
-                let Some((_promise, resolvers)) =
-                    content_document.settings.consume_wasm_request(request_id)
-                else {
-                    eprintln!(
-                        "wasm: instantiate request {} not found on document {}",
-                        request_id, document_id
-                    );
-                    self.pending_wasm_requests.remove(&request_id);
-                    continue;
-                };
-
-                match result {
-                    Ok(instance_object) => {
-                        // Step 6.4: "Resolve promise with instanceObject."
-                        if let Err(error) = resolvers.resolve.call(
-                            &boa_engine::JsValue::undefined(),
-                            &[instance_object.into()],
-                            &mut content_document.settings.context,
-                        ) {
-                            eprintln!("wasm: failed to resolve instantiate promise: {error}");
-                        }
-                    }
-                    Err(error) => {
-                        // If instantiation throws, reject the promise.
-                        if let Err(reject_error) = crate::wasm::reject_compile_promise(
-                            &resolvers,
-                            error.to_string(),
-                            &mut content_document.settings.context,
-                        ) {
-                            eprintln!("wasm: failed to reject instantiate promise: {reject_error}");
-                        }
-                    }
-                }
-
-                self.pending_wasm_requests.remove(&request_id);
-            }
-        }
-
-        // Flush microtasks (promise .then() handlers) after resolving.
-        for document in self.documents.values_mut() {
-            if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
-                eprintln!("wasm: microtask checkpoint failed: {error}");
+                self.pending_wasm_modules.insert(request_id, module.clone());
+                self.wasm_worker.submit_instantiate(module);
             }
         }
     }
 
-    /// Process completed wasm compilation results from the background thread.
-    fn process_wasm_results(&mut self) {
-        let Some(result_rx) = self.wasm_worker.result_receiver() else {
-            return;
-        };
-
+    /// Drain completed wasm results from the shared queue.
+    /// Called both at the end of `handle_command` and when the dedicated
+    /// IPC signal fires.
+    fn drain_wasm_results(&mut self) {
         let completed: Vec<(u64, crate::wasm::WasmResult)> = {
-            let mut results = Vec::new();
-            while let Ok(result) = result_rx.try_recv() {
-                let request_id = match &result {
-                    crate::wasm::WasmResult::Compiled { request_id, .. }
-                    | crate::wasm::WasmResult::CompileError { request_id, .. } => *request_id,
-                };
-                results.push((request_id, result));
-            }
+            let results = self.wasm_worker.drain_results();
             results
+                .into_iter()
+                .map(|result| {
+                    let request_id = match &result {
+                        crate::wasm::WasmResult::Compiled { request_id, .. }
+                        | crate::wasm::WasmResult::CompileError { request_id, .. }
+                        | crate::wasm::WasmResult::Instantiated { request_id, .. }
+                        | crate::wasm::WasmResult::InstantiateError { request_id, .. } => {
+                            *request_id
+                        }
+                    };
+                    (request_id, result)
+                })
+                .collect()
         };
 
         for (request_id, result) in completed {
@@ -1745,6 +1692,39 @@ impl ContentProcess {
                         eprintln!("wasm: failed to reject compile promise: {error}");
                     }
                 }
+                crate::wasm::WasmResult::Instantiated {
+                    request_id: _,
+                    store,
+                    instance,
+                } => {
+                    let module = self.pending_wasm_modules.remove(&request_id);
+                    let Some(module) = module else {
+                        eprintln!("wasm: no module found for instantiate request {}", request_id);
+                        self.pending_wasm_requests.remove(&request_id);
+                        continue;
+                    };
+                    if let Err(error) = crate::wasm::resolve_instantiate_promise(
+                        &module,
+                        &instance,
+                        &store,
+                        &resolvers,
+                        &mut content_document.settings.context,
+                    ) {
+                        eprintln!("wasm: failed to resolve instantiate promise: {error}");
+                    }
+                }
+                crate::wasm::WasmResult::InstantiateError {
+                    request_id: _,
+                    message,
+                } => {
+                    if let Err(error) = crate::wasm::reject_compile_promise(
+                        &resolvers,
+                        message,
+                        &mut content_document.settings.context,
+                    ) {
+                        eprintln!("wasm: failed to reject instantiate promise: {error}");
+                    }
+                }
             }
 
             self.pending_wasm_requests.remove(&request_id);
@@ -1761,19 +1741,12 @@ impl ContentProcess {
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     /// Note: The Rust event-loop worker emits these process effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
-        // Before processing a new command, drain any pending WebAssembly
-        // requests and process completed compilation results.
-        self.drain_all_pending_wasm_requests();
-        self.process_pending_wasm_instantiates();
-        self.process_wasm_results();
-
         let result = self.handle_command_inner(command);
 
         // After every command, drain any pending WebAssembly requests and
-        // process completed compilation results.
+        // process completed results from the shared queue.
         self.drain_all_pending_wasm_requests();
-        self.process_pending_wasm_instantiates();
-        self.process_wasm_results();
+        self.drain_wasm_results();
 
         result
     }
@@ -1952,40 +1925,53 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?;
 
-    let mut process = ContentProcess::new(event_sender, placeholder_id);
+    // Set up a crossbeam channel for the wasm worker to signal results.
+    let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
+
+    let mut process = ContentProcess::new(event_sender, wasm_signal_sender, placeholder_id);
+
+    // Route the command IPC through the router to get a crossbeam receiver.
+    let router = RouterProxy::new();
+    let cmd_rx =
+        router.route_ipc_receiver_to_new_crossbeam_receiver(command_receiver);
+
     loop {
-        let command = match command_receiver.recv() {
-            Ok(command) => command,
-            Err(_error) => break,
-        };
-        let notify_event_loop = matches!(
-            &command,
-            CreateEmptyDocument { .. }
-                | CreateLoadedDocument { .. }
-                | DestroyDocument { .. }
-                | DispatchEvent { .. }
-                | Command::RunBeforeUnload { .. }
-                | UpdateTheRendering { .. }
-                | RunWindowTimer { .. }
-                | CompleteDocumentFetch { .. }
-                | FailDocumentFetch { .. }
-        );
-        match process.handle_command(command) {
-            Ok(true) => {
-                if notify_event_loop {
-                    if let Err(error) = process.note_command_completed() {
-                        eprintln!("content error: {error}");
+        crossbeam_channel::select! {
+            recv(cmd_rx) -> cmd => {
+                match cmd {
+                    Ok(command) => {
+                        let notify = matches!(
+                            &command,
+                            CreateEmptyDocument { .. }
+                                | CreateLoadedDocument { .. }
+                                | DestroyDocument { .. }
+                                | DispatchEvent { .. }
+                                | Command::RunBeforeUnload { .. }
+                                | UpdateTheRendering { .. }
+                                | RunWindowTimer { .. }
+                                | CompleteDocumentFetch { .. }
+                                | FailDocumentFetch { .. }
+                        );
+                        match process.handle_command(command) {
+                            Ok(true) => {
+                                if notify {
+                                    let _ = process.note_command_completed();
+                                }
+                            }
+                            Ok(false) => break,
+                            Err(error) => {
+                                eprintln!("content error: {error}");
+                                if notify {
+                                    let _ = process.note_command_completed();
+                                }
+                            }
+                        }
                     }
+                    Err(_) => break,
                 }
             }
-            Ok(false) => break,
-            Err(error) => {
-                eprintln!("content error: {error}");
-                if notify_event_loop {
-                    if let Err(error) = process.note_command_completed() {
-                        eprintln!("content error: {error}");
-                    }
-                }
+            recv(wasm_rx) -> _ => {
+                process.drain_wasm_results();
             }
         }
     }
