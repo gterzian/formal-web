@@ -87,8 +87,6 @@ pub(crate) struct WasmWorker {
     handle: Option<JoinHandle<()>>,
     /// The shared wasmtime engine (Send + Sync).
     engine: wasmtime::Engine,
-    /// Next request id.
-    next_request_id: u64,
 }
 
 impl WasmWorker {
@@ -99,14 +97,7 @@ impl WasmWorker {
             signal_sender: Some(signal_sender),
             handle: None,
             engine,
-            next_request_id: 0,
         }
-    }
-
-    pub(crate) fn next_request_id(&mut self) -> u64 {
-        let id = self.next_request_id;
-        self.next_request_id += 1;
-        id
     }
 
     /// Drain all available results from the shared queue.
@@ -116,28 +107,27 @@ impl WasmWorker {
         queue.drain(..).collect()
     }
 
-    /// Submit a compilation request.
-    pub(crate) fn submit_compile(&mut self, bytes: Vec<u8>) -> u64 {
-        let request_id = self.next_request_id();
+    /// Submit a compilation request with a given request_id.
+    /// The caller (drain_all_pending_wasm_requests) owns the request_id from
+    /// the document's counter and stores it in pending_wasm_requests.  The
+    /// worker uses this same ID so the result can be matched back.
+    pub(crate) fn submit_compile(&mut self, bytes: Vec<u8>, request_id: u64) {
         self.ensure_worker_started();
         if let Some(sender) = &self.request_sender {
             if let Err(error) = sender.send(WasmRequest::Compile { request_id, bytes }) {
                 eprintln!("wasm: failed to send compile request: {error}");
             }
         }
-        request_id
     }
 
     /// Submit an instantiation request for a previously-compiled module.
-    pub(crate) fn submit_instantiate(&mut self, module: Module) -> u64 {
-        let request_id = self.next_request_id();
+    pub(crate) fn submit_instantiate(&mut self, module: Module, request_id: u64) {
         self.ensure_worker_started();
         if let Some(sender) = &self.request_sender {
             if let Err(error) = sender.send(WasmRequest::Instantiate { request_id, module }) {
                 eprintln!("wasm: failed to send instantiate request: {error}");
             }
         }
-        request_id
     }
 
     /// Start the background worker if it hasn't been started yet.

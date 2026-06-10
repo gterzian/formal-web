@@ -1616,7 +1616,7 @@ impl ContentProcess {
             let batches = content_document.settings.take_pending_wasm_batches();
             for (request_id, bytes) in batches {
                 self.pending_wasm_requests.insert(request_id, document_id);
-                self.wasm_worker.submit_compile(bytes);
+                self.wasm_worker.submit_compile(bytes, request_id);
             }
 
             // Submit instantiate requests.
@@ -1625,7 +1625,7 @@ impl ContentProcess {
             for (request_id, module, _import_object) in instantiates {
                 self.pending_wasm_requests.insert(request_id, document_id);
                 self.pending_wasm_modules.insert(request_id, module.clone());
-                self.wasm_worker.submit_instantiate(module);
+                self.wasm_worker.submit_instantiate(module, request_id);
             }
         }
     }
