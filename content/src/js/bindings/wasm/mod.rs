@@ -1,16 +1,20 @@
 //! WebAssembly namespace binding.
 //!
-//! <https://www.w3.org/TR/wasm-js-api/#webassembly-namespace>
+//! <https://webassembly.github.io/spec/js-api/#webassembly-namespace>
 //!
 //! Defines the `WebAssembly` namespace's Web IDL members (which operations
-//! and attributes exist) and installs the namespace plus post-registration
-//! types (CompileError, Module) on the global object.
+//! and attributes exist) and installs the namespace, its [LegacyNamespace]
+//! interfaces (Module, Instance), and error types (CompileError, etc.) on
+//! the global object.
 //!
-//! **This is a thin binding layer only.**  Spec-mapped implementations of
-//! the namespace operations, the Module interface, and error-type setup
-//! live in `content/src/wasm/functions.rs`.  Functions here convert
-//! JavaScript arguments, interact with content-process state (global
-//! scope, pending requests), and delegate to the domain layer.
+//! This is the bindings layer — all JS-object creation, promise management,
+//! and WebIdlInterface impls live here.  Domain logic (validate, compile)
+//! is in `content/src/wasm/`.
+
+mod interfaces;
+pub(crate) use interfaces::{
+    reject_compile_promise, resolve_compile_promise, resolve_instantiate_promise,
+};
 
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue, js_string,
@@ -18,12 +22,10 @@ use boa_engine::{
 };
 
 use crate::html::{PendingRequest, PendingState, Window};
-use crate::wasm::{
-    register_wasm_error_types, register_wasm_instance_type,
-    register_wasm_module_type, validate_wasm_module, WasmModule,
-};
+use crate::wasm::{validate_wasm_module, WasmInstance, WasmModule};
 use crate::webidl::{get_stable_bytes, is_buffer_source};
 use crate::webidl::bindings::{
+    register_interface_spec,
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_namespace_spec,
 };
 
@@ -95,7 +97,7 @@ impl WebIdlNamespace for WasmNamespace {
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-jstag>
         def.add_attribute(AttributeDef {
             id: "JSTag",
-            getter: crate::wasm::get_wasm_jstag,
+            getter: interfaces::get_wasm_jstag,
             setter: None,
             static_: false,
             unforgeable: false,
@@ -110,26 +112,31 @@ impl WebIdlNamespace for WasmNamespace {
 
 // ── Installation entry point ──
 
-/// Install the `WebAssembly` namespace on the global object.
-///
-/// <https://www.w3.org/TR/wasm-js-api/#webassembly-namespace>
-///
-/// 1. Register the namespace object with its operations via
-///    `register_namespace_spec` (Web IDL binding infrastructure).
-/// 2. Add error types (CompileError, LinkError, RuntimeError) as
-///    `Error` subclasses on the namespace.
-/// 3. Add the `Module` type constructor with static methods on the
-///    namespace.
-///
-/// These are separate post-registration steps because
-/// `[LegacyNamespace=WebAssembly]` is not yet supported by the Web IDL
-/// interface registration infrastructure.  As each type (Module, Instance,
-/// etc.) is migrated to `WebIdlInterface`, the constructor will be slotted
-/// into the namespace by `register_namespace_spec` automatically.
+/// <https://webassembly.github.io/spec/js-api/#webassembly-namespace>
 pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
-    // Step: Register the namespace via the Web IDL bindings infra.
+    // Step 1: "Let namespaceObject be OrdinaryObjectCreate(...)."
+    // Step 2-3: Define regular attributes and operations.
     register_namespace_spec::<WasmNamespace>(context)?;
 
+    // §3.13.1 step 5: Define [LegacyNamespace] interfaces on the namespace.
+    // Module and Instance are registered via register_interface_spec which
+    // checks legacy_namespace() and places them on the WebAssembly namespace.
+    register_interface_spec::<WasmModule>(context)?;
+    register_interface_spec::<WasmInstance>(context)?;
+
+    // Register error types (CompileError, LinkError, RuntimeError) —
+    // these are Error subclasses that need special prototype chain setup.
+    // https://webassembly.github.io/spec/js-api/#error-objects
+    interfaces::register_wasm_error_types(
+        &resolve_wasm_namespace(context)?,
+        context,
+    )?;
+
+    Ok(())
+}
+
+/// Resolve the `WebAssembly` namespace object from the global object.
+fn resolve_wasm_namespace(context: &mut Context) -> JsResult<JsObject> {
     let ns_value = context
         .global_object()
         .get(js_string!("WebAssembly"), context)?;
@@ -138,25 +145,12 @@ pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
             .with_message("WebAssembly namespace not found after registration")
             .into());
     };
-    let namespace = namespace.clone();
-
-    // Register error types: CompileError, LinkError, RuntimeError
-    register_wasm_error_types(&namespace, context)?;
-
-    // Register type constructors (Module with static methods)
-    register_wasm_module_type(&namespace, context)?;
-
-    // Register Instance type with exports attribute
-    register_wasm_instance_type(&namespace, context)?;
-
-    Ok(())
+    Ok(namespace.clone())
 }
 
 // ── Namespace operation bindings ──
 
-/// <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-validate>
-///
-/// Steps 1-6: Extract stable bytes, validate synchronously, return boolean.
+/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-validate>
 fn validate_fn(
     _this: &JsValue,
     args: &[JsValue],
@@ -172,20 +166,7 @@ fn validate_fn(
     Ok(JsValue::new(validate_wasm_module(&stable_bytes)))
 }
 
-/// <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-compile>
-///
-/// Step 1: "Let stableBytes be a copy of the bytes held by the buffer bytes."
-/// Step 2: "Asynchronously compile a WebAssembly module from stableBytes using
-///          options and return the result."
-///
-/// The async compilation is kicked off by pushing a pending request onto the
-/// GlobalScope.  The content process drains pending requests on the next
-/// event-loop iteration, submits the bytes to the background compilation
-/// worker, and resolves/rejects the promise when the result arrives.
-///
-/// Note: This function must never throw synchronously for promise-type
-/// operations.  Argument validation errors are caught and converted to
-/// promise rejections.
+/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-compile>
 fn compile_fn(
     _this: &JsValue,
     args: &[JsValue],
@@ -224,7 +205,13 @@ fn compile_fn(
         }
     };
 
-    // Get the GlobalScope through the Window.
+    // Note: The async compilation is kicked off by pushing a pending request
+    // onto the GlobalScope.  The content process drains pending requests on
+    // the next event-loop iteration, submits the bytes to the background
+    // compilation worker, and resolves/rejects the promise when the result
+    // arrives.  This function must never throw synchronously for promise-type
+    // operations — argument validation errors are caught above and converted
+    // to promise rejections.
     let global = context.global_object();
     let window = global.downcast_ref::<Window>().ok_or_else(|| {
         JsNativeError::error().with_message("wasm: global object is not a Window")
@@ -246,18 +233,7 @@ fn compile_fn(
     Ok(promise.into())
 }
 
-/// <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate>
-///
-/// Two overloads:
-///   1. `instantiate(bytes, importObject)`:
-///      Step 1: "Let stableBytes be a copy of the bytes held by the buffer bytes."
-///      Step 2: "Asynchronously compile a WebAssembly module from stableBytes..."
-///      Step 3: "Instantiate promiseOfModule with imports importObject..."
-///
-///   2. `instantiate(moduleObject, importObject)`:
-///      <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate-moduleobject-importobject>
-///      "Asynchronously instantiate the WebAssembly module moduleObject importing
-///       importObject, and return the result."
+/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate>
 fn instantiate_fn(
     _this: &JsValue,
     args: &[JsValue],

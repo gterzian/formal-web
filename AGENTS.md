@@ -31,14 +31,28 @@ You can also update this documentation chain based on lessons learned from user 
 
 # Algorithm Implementation
 
-When implementing a spec algorithm, every changed file must satisfy these checks
-before the task is considered done:
+## Three-layer architecture
 
-1. **Step comments** — Every spec step has a `// Step N:` comment quoting the
-   first few words of the spec step verbatim.  The comment makes it obvious
-   which step the code corresponds to.
-2. **Anchor URLs** — Every function/struct top doc comment has the correct spec
-   anchor URL (`<https://html.spec.whatwg.org/#...>`).
+Every Web-exposed feature (DOM, HTML, Streams, WebAssembly) follows the same
+three-layer split.  See **`content/src/js/bindings/README.md`** for the
+definitive breakdown with examples and common mistakes.
+
+| Layer | Location | Signature convention |
+|---|---|---|
+| **Domain** | `content/src/<domain>/` | Methods return Rust types — no `JsValue`, no `boa_engine` |
+| **Web IDL bindings infra** | `content/src/webidl/bindings/` | Generic traits — NOT domain-specific |
+| **JS bindings glue** | `content/src/js/bindings/<domain>/` | `fn(this, args, ctx) -> JsResult<JsValue>` — downcast, call domain, wrap |
+
+When implementing a spec algorithm, every changed file must satisfy these checks
+before the task is considered done.  See `content/src/js/bindings/README.md`
+for the definitive spec-annotation reference with examples and common mistakes.
+
+1. **Step comments** — Every spec step has a `// Step N:` comment inside the
+   function body quoting the **exact spec step text verbatim** — not an
+   abbreviation or summary.  Step numbering must match the spec exactly.
+2. **Anchor URLs** — Every function/struct top doc comment has **only** the
+   correct spec anchor URL (`<https://html.spec.whatwg.org/#...>`).  No
+   description, no step summary, no prose.
 3. **`// Note:` only for discrepancies** — Notes explain why the code differs
    from the spec (e.g. steps merged, split across processes, browser-engine
    specific refactoring).  Design notes, architecture rationales, and
@@ -174,20 +188,27 @@ At the end of each task, run the following steps **in order**:
    Never run `cargo fmt` with `--all` or from inside a `vendor/` directory,
    as vendored formatting changes must not be committed.
 
-4. **Spec-mapping review** — Review all changed files for spec documentation
-   quality and conceptual fidelity.  For each algorithm implemented:
+4. **Spec-mapping review** — First, **re-read the documentation chain**
+   (`content/src/js/bindings/README.md`, `AGENTS.md` Algorithm Implementation
+   section, `content/README.md`, and any domain-specific READMEs) to
+   re-familiarize yourself with the exact rules for anchor URLs, step
+   comments, Note conventions, and the three-layer architecture (domain
+   method vs JS binding function).  Then review all changed files in that
+   light.  For each algorithm implemented:
    - Does the code map to the spec algorithm correctly at the conceptual
      level?  Read the spec algorithm, understand what each step does
      architecturally (which component owns which state, which side effects
      happen where), and verify the implementation reflects that split.
-   - Does every step have a `// Step N:` comment quoting the first few
-     words of the spec step?  The comment should make it obvious which
-     spec step the code corresponds to.
-   - Does every function/struct top doc comment have the correct spec anchor
-     URL (`<https://html.spec.whatwg.org/#...>`)?
-   - Are algorithm splits between content and other components (user agent,
-     net, embedder) clearly marked with spec step boundaries and
-     `// Note:` comments explaining why the split exists?
+   - Is the algorithm in the right layer?  Domain methods (returning Rust
+     types) go in `content/src/<domain>/`.  JS binding functions (thin
+     downcast-call-wrap) go in `content/src/js/bindings/<domain>/`.  Only
+     domain methods get spec annotations — binding functions have none.
+   - Does every domain method have `// Step N:` comments quoting the
+     **exact spec step text verbatim** (not an abbreviation)?  Step
+     numbering must match the spec exactly.
+   - Does every domain method/function top doc comment have **only** the
+     spec anchor URL (`<https://html.spec.whatwg.org/#...>`)?  No
+     description, no step summary, no prose.
    - Are `Note:` comments used only for discrepancies between the code and
      the spec text (never for design notes, implementation plans, or
      architecture rationales — those belong in the README chain)?
@@ -195,7 +216,7 @@ At the end of each task, run the following steps **in order**:
      `// TODO:` explaining the gap?
    Fix any issues found.
 
-5. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+5. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
 
 6. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
    - **Default WPT run** — Runs the Web Platform Tests suite (`tests/wpt/include.ini`) to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
@@ -208,7 +229,9 @@ At the end of each task, run the following steps **in order**:
 
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
 
-7. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
+7. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+
+8. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
 
 
 # Forbidden commands

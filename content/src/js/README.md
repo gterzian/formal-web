@@ -22,15 +22,18 @@ state.
   - Uses the Web IDL bindings infrastructure (`WebIdlInterface`,
     `WebIdlNamespace`, `register_interface_spec`, `register_namespace_spec`,
     etc.) from `content/src/webidl/bindings/` instead of calling Boa directly.
-- **Spec algorithms and interface implementations do NOT go in
-  bindings.**  Spec-mapped code belongs in the owning domain directory
-  (`content/src/dom/`, `content/src/html/`, `content/src/streams/`,
-  `content/src/wasm/`).  The bindings layer calls into domain functions;
-  it does not reimplement them.
-- The binding code should convert arguments, check [inherited
+- **Domain logic belongs in the domain directory; JS-interop code belongs
+  in the bindings.**  Pure Rust/wasmtime logic goes in the owning domain
+  directory (`content/src/dom/`, `content/src/html/`, `content/src/streams/`,
+  `content/src/wasm/`).  `WebIdlInterface` implementations, promise
+  resolution, object construction, and any code returning `JsValue` goes in
+  `content/src/js/bindings/`.  The binding code converts arguments, checks
+  [inherited
   interfaces](https://webidl.spec.whatwg.org/#dfn-inherited-interfaces) to
-  identify the platform object's type, and delegate to the platform object
-  or domain function.
+  identify the platform object's type, and delegates to domain functions.
+- **Domain code must not depend on `boa_engine` or return `JsValue`.**
+  The domain layer returns Rust types; the bindings layer converts to JS
+  values as late as possible.
 - Run microtask checkpoints at task boundaries rather than after every
   Rust-to-JavaScript callback.
 - Document process structs against HTML concepts such as

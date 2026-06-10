@@ -1091,6 +1091,15 @@ impl ContentProcess {
                 eprintln!("failed to clear window timers during document teardown: {error}");
             }
         }
+        // Clean up any pending wasm requests for this document so that
+        // worker results arriving after destruction are not misattributed,
+        // and to avoid orphaned promise entries.
+        // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
+        self.pending_wasm_requests.retain(|_request_id, doc_id| *doc_id != document_id);
+        self.pending_wasm_modules.retain(|request_id, _module| {
+            !self.pending_wasm_requests.contains_key(request_id)
+                || self.pending_wasm_requests.get(request_id) != Some(&document_id)
+        });
         let mut local_state = self
             .local_state
             .lock()
@@ -1645,7 +1654,9 @@ impl ContentProcess {
 
         for (request_id, result) in completed {
             let Some(&document_id) = self.pending_wasm_requests.get(&request_id) else {
-                eprintln!("wasm: no pending request found for id {}", request_id);
+                // This is expected when a document is destroyed before the
+                // worker finishes — the destroy_document cleanup removes the
+                // entry, and the worker's result arrives safely discarded.
                 continue;
             };
 
@@ -1671,7 +1682,7 @@ impl ContentProcess {
                     request_id: _,
                     module,
                 } => {
-                    if let Err(error) = crate::wasm::resolve_compile_promise(
+                    if let Err(error) = crate::js::bindings::wasm::resolve_compile_promise(
                         &resolvers,
                         module,
                         Vec::new(),
@@ -1684,7 +1695,7 @@ impl ContentProcess {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = crate::wasm::reject_compile_promise(
+                    if let Err(error) = crate::js::bindings::wasm::reject_compile_promise(
                         &resolvers,
                         message,
                         &mut content_document.settings.context,
@@ -1703,7 +1714,7 @@ impl ContentProcess {
                         self.pending_wasm_requests.remove(&request_id);
                         continue;
                     };
-                    if let Err(error) = crate::wasm::resolve_instantiate_promise(
+                    if let Err(error) = crate::js::bindings::wasm::resolve_instantiate_promise(
                         &module,
                         &instance,
                         &store,
@@ -1717,7 +1728,7 @@ impl ContentProcess {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = crate::wasm::reject_compile_promise(
+                    if let Err(error) = crate::js::bindings::wasm::reject_compile_promise(
                         &resolvers,
                         message,
                         &mut content_document.settings.context,
@@ -1971,10 +1982,15 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                 }
             }
             recv(wasm_rx) -> _ => {
+                process.drain_all_pending_wasm_requests();
                 process.drain_wasm_results();
             }
         }
     }
+
+    // Final drain on shutdown — the worker may have results queued that
+    // were never processed because the event loop exited.
+    process.drain_wasm_results();
 
     Ok(())
 }

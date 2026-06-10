@@ -22,19 +22,25 @@ exposed to web content.  Uses the vendored `wasmtime` crate
 
 ### Domain vs binding separation
 
-Spec algorithms and interface implementations live **in this directory**
-(`content/src/wasm/`), not in the bindings layer.  The bindings file at
-`content/src/js/bindings/wasm/mod.rs` is intentionally thin:
+The **domain layer** (`content/src/wasm/`) operates on Rust/wasmtime types
+only — no `JsValue`, no `Context`.  All JS-interop code lives in
+**`content/src/js/bindings/wasm/`**:
 
 | Layer | Location | Responsibility |
 |---|---|---|
-| **Domain** | `content/src/wasm/` | Implements spec algorithms (validate, compile), interface methods (Module constructor, exports), error type registration, buffer source conversion, promise resolution |
-| **Binding** | `content/src/js/bindings/wasm/` | Defines *which* Web IDL members the namespace has (`WebIdlNamespace` impl), installs the namespace via `register_namespace_spec`, provides thin JS→Rust wrappers that handle `this` binding, argument extraction, and content-process state (global scope, pending request queue) |
+| **Domain** | `content/src/wasm/functions.rs` | Pure Rust logic: `validate_wasm_module(&[u8]) -> bool`, JS↔wasm value converters |
+| **Types** | `content/src/wasm/types.rs` | Rust data types with `JsData` (`WasmModule`, `WasmInstance`, etc.) |
+| **Worker** | `content/src/wasm/worker.rs` | Background compilation worker management |
+| **Bindings** | `content/src/js/bindings/wasm/interfaces.rs` | `WebIdlInterface` impls, promise resolution/rejection, exports-object creation, prototype lookups, error-type registration — everything returning `JsValue`/`JsObject` |
+| **Bindings** | `content/src/js/bindings/wasm/mod.rs` | `WasmNamespace` impl, `install_wasm_namespace`, namespace operation bindings (`validate_fn`, `compile_fn`, `instantiate_fn`) |
 
-This split follows the project convention: every spec domain
-(streams, DOM, HTML, WebAssembly) keeps its interface implementations
-in its own directory, while `content/src/js/bindings/` holds only the
-Web IDL binding definitions that register members with the JS engine.
+This split ensures that domain code can be reasoned about without any
+JavaScript engine knowledge.  Bindings are where Rust values become
+`JsValue` — as late as possible.
+
+**Do not put `WebIdlInterface` implementations, `JsObject` construction,
+`Context` usage, or any code returning `JsValue` in `content/src/wasm/`.**
+Those belong in `content/src/js/bindings/wasm/`.
 
 ### JS bindings (Web IDL → JavaScript engine)
 
@@ -51,20 +57,16 @@ Web IDL bindings infrastructure (`register_namespace_spec`, `WebIdlNamespace`,
 - The `WasmNamespace` marker type implements `WebIdlNamespace`, registering
   operations (`validate`, `compile`, `instantiate`) and the `JSTag` attribute
   via `register_namespace_spec`.
-- Error types (`CompileError`, `LinkError`, `RuntimeError`) and the `Module`
-  type constructor are added as post-registration steps; they will migrate to
-  `WebIdlInterface` with `[LegacyNamespace=WebAssembly]` when the infra
-  supports it.
-- Promise resolution helpers (`resolve_compile_promise`,
-  `reject_compile_promise`) live in `content/src/wasm/functions.rs` since they
-  implement spec algorithm steps.  The bindings file calls them after receiving
-  compilation results from the background worker.
+- Error types (`CompileError`, `LinkError`, `RuntimeError`) and the
+  `[LegacyNamespace=WebAssembly]` interfaces (`Module`, `Instance`) use
+  the `WebIdlInterface` trait with `legacy_namespace()` and are registered
+  via `register_interface_spec` in `content/src/js/bindings/wasm/interfaces.rs`.
 
-**Do not create new JS bindings or interface implementations in
-`content/src/wasm/`.**  All future Web IDL interfaces (Instance, Memory, Table,
-Global, Tag, Exported Function) should follow this split: spec-algorithm
-implementations in `content/src/wasm/` (new file or extended `functions.rs`),
-Web IDL binding definitions in `content/src/js/bindings/wasm/`.
+**All JS-interop code goes in `content/src/js/bindings/wasm/`, not in
+`content/src/wasm/`.**  Domain code in `content/src/wasm/` returns Rust
+values (`bool`, `wasmtime::Module`, `WasmModule`).  Bindings code in
+`content/src/js/bindings/wasm/` wraps those in `JsValue`/`JsObject`, resolves
+promises, and implements `WebIdlInterface`.
 
 ## Current Status
 

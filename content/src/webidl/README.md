@@ -49,38 +49,32 @@ or `ObjectInitializer`. The Rust struct holds only the backing state.
 - **Streams interfaces** (`ReadableStream`, `WritableStream`, …): `content/src/streams/`
 - **WebAssembly domains** (`WasmModule`, compilation worker, …): `content/src/wasm/`
 
-### Where bindings live
+### Three-layer architecture
 
-**All Web IDL JavaScript bindings** go in `content/src/js/bindings/` — this is
-single location.  Each subdirectory under `content/src/js/bindings/` (e.g.
-`dom/`, `html/`, `streams/`, `wasm/`) contains a thin binding layer that:
+Every Web-exposed feature follows a three-layer split:
 
-1. Implements `WebIdlInterface` or `WebIdlNamespace` to define *which members*
-   the interface or namespace exposes.
-2. Provides getter/setter/method functions that convert JS arguments and
-   delegate to domain-level implementations.
-3. Uses `register_interface_spec` / `register_namespace_spec` plus helpers
-   from `content/src/webidl/bindings/` instead of calling Boa directly.
+1. **Domain** (`content/src/<domain>/`) — Rust struct + spec-algorithm methods returning Rust types.
+2. **Web IDL bindings infra** (`content/src/webidl/bindings/`) — generic traits
+   (`WebIdlInterface`, `WebIdlNamespace`, `OperationDef`, etc.). Not domain-specific.
+3. **JS bindings glue** (`content/src/js/bindings/<domain>/`) — `WebIdlInterface` impl,
+   thin function pointers that downcast, call domain methods, wrap in `JsValue`.
 
-**Spec algorithms and interface method implementations do NOT go in
-`content/src/js/bindings/`.**  They belong in the domain's own directory:
+See `content/src/js/bindings/README.md` for the definitive description.
 
-| Domain | Spec implementations | Binding registration |
-|---|---|---|
-| Streams | `content/src/streams/` | `content/src/js/bindings/streams/` |
-| HTML | `content/src/html/` | `content/src/js/bindings/html/` |
-| WebAssembly | `content/src/wasm/` (e.g. `functions.rs`) | `content/src/js/bindings/wasm/` |
-| DOM | `content/src/dom/` | `content/src/js/bindings/dom/` |
+**What belongs where:**
 
-The binding code in `content/src/js/bindings/` calls into domain
-functions — if a function implements a spec algorithm or manipulates
-platform object state, it lives in the domain directory, not in bindings.
+| What | Where |
+|---|---|
+| Rust struct definition (`WasmModule`), JsData derive | `content/src/<domain>/types.rs` |
+| Spec-algorithm methods returning Rust types (`export_descriptors() → Vec<…>`) | `content/src/<domain>/functions.rs` — `impl WasmModule` |
+| `WebIdlInterface` impl (`define_members`, `create_platform_object`) | `content/src/js/bindings/<domain>/` |
+| Thin JsValue-wrapping function pointers (`fn(this, args, ctx) → JsResult<JsValue>`) | `content/src/js/bindings/<domain>/` |
+| `WebIdlInterface` trait, `register_interface_spec`, `OperationDef`, `AttributeDef` | `content/src/webidl/bindings/` (generic — no domain logic) |
 
-**The Web IDL bindings infrastructure** (`WebIdlInterface`,
-`WebIdlNamespace`, `register_interface_spec`, `register_namespace_spec`,
-and helpers) lives in `content/src/webidl/bindings/`.  Every binding in
-`content/src/js/bindings/` must use this infrastructure instead of
-calling Boa's native APIs directly.
+**Never add domain-specific code to `content/src/webidl/bindings/`.**
+Use the trait methods (`legacy_namespace()`, `constructor_length()`) to
+customize behaviour.  Never add an `impl WebIdlInterface` outside of
+`content/src/js/bindings/`.
 
 ### Exotic objects and custom internal methods
 

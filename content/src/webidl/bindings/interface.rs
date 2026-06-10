@@ -78,6 +78,21 @@ pub(crate) trait WebIdlInterface: 'static {
         false
     }
 
+    /// Whether this interface is declared with [LegacyNamespace].
+    /// If set, the interface object will be defined as a property of the
+    /// named namespace object rather than on the global object.
+    ///
+    /// https://webidl.spec.whatwg.org/#LegacyNamespace
+    fn legacy_namespace() -> Option<&'static str> {
+        None
+    }
+
+    /// The `length` of the constructor function.
+    /// Returns 0 by default (no declared constructor operation).
+    fn constructor_length() -> usize {
+        0
+    }
+
     /// Whether this interface supports named properties.
     fn supports_named_properties() -> bool {
         false
@@ -303,6 +318,8 @@ pub(crate) fn create_interface_object<T: WebIdlInterface>(
 /// defines members on it (§3.7.5–3.7.7), creates the constructor (§3.7.1) via
 /// `CreateBuiltinFunction`, wires `F.prototype = proto`, stores both in the
 /// registry, and defines the constructor on the global object.
+/// <https://webidl.spec.whatwg.org/#create-an-interface-object>
+/// <https://webidl.spec.whatwg.org/#create-an-interface-prototype-object>
 pub(crate) fn register_interface_spec<T>(context: &mut Context) -> JsResult<()>
 where
     T: WebIdlInterface + NativeObject,
@@ -343,7 +360,7 @@ where
             }),
         )
         .name(T::NAME)
-        .length(1)
+        .length(T::constructor_length())
         .constructor(true)
         .build();
         let f_obj: JsObject = f.clone().into();
@@ -381,16 +398,31 @@ where
     // Store in HostDefined registry
     super::registry::register_in_host_defined::<T>(context, proto, constructor.clone());
 
-    // Define on global object
+    // §3.13.1 Namespace object, Step 5: If the interface has the
+    // [LegacyNamespace] extended attribute, define the interface object
+    // on the namespace instead of the global object.
+    // https://webidl.spec.whatwg.org/#create-a-namespace-object
     let desc = PropertyDescriptor::builder()
         .value(constructor)
         .writable(true)
         .enumerable(false)
         .configurable(true)
         .build();
-    context
-        .global_object()
-        .define_property_or_throw(js_string!(T::NAME), desc, context)?;
+    if let Some(ns_name) = T::legacy_namespace() {
+        let ns_val = context
+            .global_object()
+            .get(js_string!(ns_name), context)?;
+        let ns_obj = ns_val
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message(format!(
+                "interface {}: namespace '{}' not found", T::NAME, ns_name
+            )))?;
+        ns_obj.define_property_or_throw(js_string!(T::NAME), desc, context)?;
+    } else {
+        context
+            .global_object()
+            .define_property_or_throw(js_string!(T::NAME), desc, context)?;
+    }
 
     Ok(())
 }
@@ -456,13 +488,12 @@ pub(crate) fn resolve_this_value(this: &JsValue, context: &Context) -> JsResult<
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-global-property-references>
-///
-/// Note: The full algorithm (collect all interfaces, sort by inheritance,
-/// create interface objects, define them on the global object) is split
-/// across per-interface `register_interface_spec` calls in the current
-/// implementation.  Each call defines its own constructor on the global
-/// object directly.  This function is a no-op because the work is already
-/// distributed across the individual registrations.
+// Note: The full algorithm (collect all interfaces, sort by inheritance,
+// create interface objects, define them on the global object) is split
+// across per-interface `register_interface_spec` calls in the current
+// implementation.  Each call defines its own constructor on the global
+// object directly.  This function is a no-op because the work is already
+// distributed across the individual registrations.
 pub(crate) fn define_global_property_references(_context: &mut Context) -> JsResult<()> {
     Ok(())
 }
@@ -486,21 +517,9 @@ pub(crate) trait WebIdlNamespace: 'static {
 }
 
 /// <https://webidl.spec.whatwg.org/#create-a-namespace-object>
-///
-/// Registers a Web IDL namespace on the global object.
-/// Follows the "create a namespace object" algorithm:
-/// Step 1: "Let namespaceObject be OrdinaryObjectCreate(
-///         realm.[[Intrinsics]].[[%Object.prototype%]])."
-/// Step 2: "Define the regular attributes of namespace on
-///         namespaceObject given realm."
-/// Step 3: "Define the regular operations of namespace on
-///         namespaceObject given realm."
-/// Step 6: "Return namespaceObject."
-///
-/// Note: Step 4 (constants) and Step 5 ([LegacyNamespace] interfaces)
-/// are not yet implemented.  Post-registration wiring of error types
-/// and type constructors replaces Step 5 for the WebAssembly namespace.
 pub(crate) fn register_namespace_spec<T: WebIdlNamespace>(context: &mut Context) -> JsResult<()> {
+    // Step 1: "Let namespaceObject be OrdinaryObjectCreate(
+    //         realm.[[Intrinsics]].[[%Object.prototype%]])."
     let namespace = JsObject::from_proto_and_data(
         Some(context.intrinsics().constructors().object().prototype()),
         OrdinaryObject,
@@ -509,9 +528,18 @@ pub(crate) fn register_namespace_spec<T: WebIdlNamespace>(context: &mut Context)
     let mut def = InterfaceDefinition::new();
     T::define_members(&mut def);
 
+    // Step 2: "Define the regular attributes of namespace on
+    //         namespaceObject given realm."
     super::attribute::define_regular_attributes(&namespace, context, &def.attributes)?;
+    // Step 3: "Define the regular operations of namespace on
+    //         namespaceObject given realm."
     super::operation::define_regular_operations(&namespace, context, &def.operations)?;
+    // Note: Step 4 (define constants) and Step 5 ([LegacyNamespace] interfaces)
+    // are not yet implemented.  [LegacyNamespace] interfaces are registered
+    // separately via `register_interface_spec`, which places them on the
+    // namespace when `T::legacy_namespace()` returns Some(...).
 
+    // Step 6: "Return namespaceObject."
     let desc = PropertyDescriptor::builder()
         .value(namespace)
         .writable(true)
