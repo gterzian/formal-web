@@ -4,20 +4,81 @@ Implements the [`WebAssembly`](https://www.w3.org/TR/wasm-js-api/) namespace
 exposed to web content.  Uses the vendored `wasmtime` crate
 (`vendor/wasmtime/`) as the underlying WebAssembly engine.
 
+## Architecture
+
+### Module layout
+
+- `mod.rs` — crate-level re-exports.
+- `types.rs` — Rust data types for JS-visible wasm objects (`WasmModule`,
+  `WasmInstance`, etc.) with `JsData` implementations.
+- `worker.rs` — `WasmWorker` (background compilation worker management),
+  `WasmRequest`, `WasmResult`.
+- `functions.rs` — spec-mapped implementations of all wasm namespace
+  operations and interface methods (validate, compile, instantiate,
+  Module constructor, error type registration, promise resolution, buffer
+  source conversion).  This is the **domain layer** — it implements the
+  WebAssembly spec algorithms without being concerned with how members
+  are registered or wired to the JS engine.
+
+### Domain vs binding separation
+
+Spec algorithms and interface implementations live **in this directory**
+(`content/src/wasm/`), not in the bindings layer.  The bindings file at
+`content/src/js/bindings/wasm/mod.rs` is intentionally thin:
+
+| Layer | Location | Responsibility |
+|---|---|---|
+| **Domain** | `content/src/wasm/` | Implements spec algorithms (validate, compile), interface methods (Module constructor, exports), error type registration, buffer source conversion, promise resolution |
+| **Binding** | `content/src/js/bindings/wasm/` | Defines *which* Web IDL members the namespace has (`WebIdlNamespace` impl), installs the namespace via `register_namespace_spec`, provides thin JS→Rust wrappers that handle `this` binding, argument extraction, and content-process state (global scope, pending request queue) |
+
+This split follows the project convention: every spec domain
+(streams, DOM, HTML, WebAssembly) keeps its interface implementations
+in its own directory, while `content/src/js/bindings/` holds only the
+Web IDL binding definitions that register members with the JS engine.
+
+### JS bindings (Web IDL → JavaScript engine)
+
+The WebAssembly API's JS-facing registration (namespace, type constructors,
+operations) lives under the common bindings directory:
+
+**`content/src/js/bindings/wasm/`**
+
+This follows the project convention: all Web IDL bindings — whether for DOM,
+HTML, Streams, or WebAssembly — go in `content/src/js/bindings/` and use the
+Web IDL bindings infrastructure (`register_namespace_spec`, `WebIdlNamespace`,
+`WebIdlInterface`, etc.) instead of calling into Boa directly.
+
+- The `WasmNamespace` marker type implements `WebIdlNamespace`, registering
+  operations (`validate`, `compile`, `instantiate`) and the `JSTag` attribute
+  via `register_namespace_spec`.
+- Error types (`CompileError`, `LinkError`, `RuntimeError`) and the `Module`
+  type constructor are added as post-registration steps; they will migrate to
+  `WebIdlInterface` with `[LegacyNamespace=WebAssembly]` when the infra
+  supports it.
+- Promise resolution helpers (`resolve_compile_promise`,
+  `reject_compile_promise`) live in `content/src/wasm/functions.rs` since they
+  implement spec algorithm steps.  The bindings file calls them after receiving
+  compilation results from the background worker.
+
+**Do not create new JS bindings or interface implementations in
+`content/src/wasm/`.**  All future Web IDL interfaces (Instance, Memory, Table,
+Global, Tag, Exported Function) should follow this split: spec-algorithm
+implementations in `content/src/wasm/` (new file or extended `functions.rs`),
+Web IDL binding definitions in `content/src/js/bindings/wasm/`.
+
 ## Current Status
 
 ### Working
 
 - **`WebAssembly` namespace** installed on the global object with `validate`,
   `compile`, and `instantiate` (bytes overload) functions.
-  *Binding location:* `content/src/js/bindings/wasm/`
 - **`WebAssembly.validate(bytes)`** — synchronous compilation check via
   `wasmtime::Module::new`.  Returns `true`/`false`.
 - **`WebAssembly.compile(bytes)`** — async compilation.  Creates a pending
   promise, pushes a `PendingRequest` onto the document's `GlobalScope`,
   and returns the promise.  On the next event-loop iteration the content
   process drains the request queue, submits the bytes to the background
-  compilation thread, and when the result arrives, resolves the promise
+  compilation worker, and when the result arrives, resolves the promise
   with a `WebAssembly.Module` object (prototype-chained correctly) or
   rejects with `WebAssembly.CompileError`.
 - **`WebAssembly.Module`** — constructor that compiles synchronously.
@@ -25,10 +86,10 @@ exposed to web content.  Uses the vendored `wasmtime` crate
   descriptors `{ name, kind }`.
 - **Error types** — `CompileError`, `LinkError`, `RuntimeError` registered
   as subclasses of `Error` on the namespace.
-- **Background compilation thread** — lazily started on first compile
+- **Background compilation worker** — lazily started on first compile
   request.  Uses `crossbeam_channel::unbounded()` for request/result
   message passing between the content-process main thread and the
-  compiler thread.
+  compiler worker.
 - **PendingRequest infrastructure** — generic `PendingRequest` enum on
   `GlobalScope` with a `PendingState` lifecycle (`Pending → Processing →
   removed on completion`).  The content process drains requests and
@@ -75,43 +136,6 @@ implementations but have no JS-visible constructors or methods yet:
 - **Host Functions** — providing JS functions as wasm imports.
 - **`WebAssembly` JSTag** — the `JSTag` readonly attribute.
 
-## Architecture
-
-### Module layout
-
-- `mod.rs` — crate-level re-exports.
-- `thread.rs` — `WasmThread` (background compilation thread management),
-  `WasmRequest`, `WasmResult`.
-- `types.rs` — Rust data types for JS-visible wasm objects (`WasmModule`,
-  `WasmInstance`, etc.) with `JsData` implementations.
-
-### JS bindings (Web IDL → JavaScript engine)
-
-The WebAssembly API's JS-facing registration (namespace, type constructors,
-operations) lives under the common bindings directory:
-
-**`content/src/js/bindings/wasm/`**
-
-This follows the project convention: all Web IDL bindings — whether for DOM,
-HTML, Streams, or WebAssembly — go in `content/src/js/bindings/` and use the
-Web IDL bindings infrastructure (`register_namespace_spec`, `WebIdlNamespace`,
-`WebIdlInterface`, etc.) instead of calling into Boa directly.
-
-- The `WasmNamespace` marker type implements `WebIdlNamespace`, registering
-  operations (`validate`, `compile`, `instantiate`) and the `JSTag` attribute
-  via `register_namespace_spec`.
-- Error types (`CompileError`, `LinkError`, `RuntimeError`) and the `Module`
-  type constructor are added as post-registration steps; they will migrate to
-  `WebIdlInterface` with `[LegacyNamespace=WebAssembly]` when the infra
-  supports it.
-- Promise resolution helpers (`resolve_compile_promise`,
-  `reject_compile_promise`) live alongside the binding code since they create
-  the `Module` objects whose prototype comes from the registered binding.
-
-**Do not create new JS bindings in `content/src/wasm/`.**  All future Web IDL
-interfaces (Instance, Memory, Table, Global, Tag, Exported Function) should be
-implemented as `WebIdlInterface` impls in `content/src/js/bindings/wasm/`.
-
 ### Async compile flow
 
 ```
@@ -126,15 +150,15 @@ ContentProcess (before/after each command via handle_command):
   │
   ├─ drain_all_pending_wasm_requests()
   │   └─ iterates documents → take_pending_wasm_batches()
-  │       → submits (request_id, bytes) to WasmThread
+  │       → submits (request_id, bytes) to WasmWorker
   │       → stores document_id in pending_wasm_requests map
   │
   └─ process_wasm_results()
-      └─ try_recv() on WasmThread result channel
+      └─ try_recv() on WasmWorker result channel
           → resolve_compile_promise() or reject_compile_promise()
           → flushes microtasks via perform_a_microtask_checkpoint()
 
-Background thread (WasmThread):
+Background worker (WasmWorker):
   │
   ├─ receives WasmRequest::Compile { request_id, bytes }
   ├─ compiles with wasmtime::Module::new(&engine, &bytes)
@@ -146,4 +170,4 @@ Background thread (WasmThread):
 
 - `wasmtime` crate (vendored) — core WebAssembly compilation.
 - `crossbeam-channel` — message passing between main thread and
-  background compilation thread.
+  background compilation worker.
