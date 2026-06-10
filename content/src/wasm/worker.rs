@@ -3,11 +3,11 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use wasmtime::Module;
 
-/// <https://www.w3.org/TR/wasm-js-api/#asynchronously-compile-a-webassembly-module>
-///
-/// Requests sent to the background wasm compilation thread.
+/// Requests sent to the background wasm compilation worker.
 #[derive(Debug)]
 pub(crate) enum WasmRequest {
+    /// <https://www.w3.org/TR/wasm-js-api/#asynchronously-compile-a-webassembly-module>
+    ///
     /// Compile a WebAssembly module from the given bytes.
     Compile {
         /// Unique request id for correlating the result.
@@ -15,13 +15,11 @@ pub(crate) enum WasmRequest {
         /// A copy of the bytes held by the buffer (stable bytes per spec step 1).
         bytes: Vec<u8>,
     },
-    /// Shutdown the background thread.
+    /// Shutdown the background worker.
     Shutdown,
 }
 
-/// <https://www.w3.org/TR/wasm-js-api/#asynchronously-compile-a-webassembly-module>
-///
-/// Results sent back from the background wasm compilation thread to the main thread.
+/// Results sent back from the background wasm compilation worker to the main thread.
 #[derive(Debug)]
 pub(crate) enum WasmResult {
     /// A module was compiled successfully.
@@ -42,21 +40,21 @@ pub(crate) enum WasmResult {
 
 /// <https://www.w3.org/TR/wasm-js-api/#associated-store>
 ///
-/// Manages a background thread for WebAssembly compilation.
+/// Manages a background worker thread for WebAssembly compilation.
 /// Module compilation is the expensive part of the wasm pipeline and can run
 /// in parallel with other content-process work.
 ///
 /// Note: The wasmtime `Engine` is shared between the main thread and the
-/// background thread because it is `Send + Sync`.  The `Store` (associated
+/// background worker because it is `Send + Sync`.  The `Store` (associated
 /// store per agent) lives on the main thread and handles instantiation,
 /// memory access, and other synchronous wasm operations.
-pub(crate) struct WasmThread {
-    /// Channel for sending compilation requests to the background thread.
-    /// `None` until the background thread has been started.
+pub(crate) struct WasmWorker {
+    /// Channel for sending compilation requests to the background worker.
+    /// `None` until the background worker has been started.
     request_sender: Option<Sender<WasmRequest>>,
-    /// Channel for receiving compilation results from the background thread.
+    /// Channel for receiving compilation results from the background worker.
     result_receiver: Option<Receiver<WasmResult>>,
-    /// The thread handle, joined on drop.
+    /// The worker thread handle, joined on drop.
     handle: Option<JoinHandle<()>>,
     /// The shared wasmtime engine (Send + Sync).
     engine: wasmtime::Engine,
@@ -64,10 +62,10 @@ pub(crate) struct WasmThread {
     next_request_id: u64,
 }
 
-impl WasmThread {
-    /// Create a new wasm background compilation thread handle.
+impl WasmWorker {
+    /// Create a new wasm background compilation worker handle.
     ///
-    /// The thread is lazily initialized — it is only spawned when the first
+    /// The worker is lazily initialized — it is only spawned when the first
     /// compilation request is sent.  Until then `result_receiver()` returns
     /// `None`.
     pub(crate) fn new(engine: wasmtime::Engine) -> Self {
@@ -93,28 +91,28 @@ impl WasmThread {
         &self.engine
     }
 
-    /// Send a compilation request to the background thread.
+    /// Send a compilation request to the background worker.
     ///
-    /// Starts the background thread if it has not been started yet.
+    /// Starts the background worker if it has not been started yet.
     /// Returns the unique request id assigned to this compilation request.
     pub(crate) fn submit_compile(&mut self, bytes: Vec<u8>) -> u64 {
         let request_id = self.next_request_id();
-        self.ensure_thread_started();
+        self.ensure_worker_started();
         if let Some(sender) = &self.request_sender {
             if let Err(error) = sender.send(WasmRequest::Compile { request_id, bytes }) {
-                eprintln!("wasm: failed to send compile request to background thread: {error}");
+                eprintln!("wasm: failed to send compile request to background worker: {error}");
             }
         }
         request_id
     }
 
-    /// Get the receiver for wasm compilation results, if the thread has been started.
+    /// Get the receiver for wasm compilation results, if the worker has been started.
     pub(crate) fn result_receiver(&self) -> Option<&Receiver<WasmResult>> {
         self.result_receiver.as_ref()
     }
 
-    /// Start the background thread if it hasn't been started yet.
-    fn ensure_thread_started(&mut self) {
+    /// Start the background worker if it hasn't been started yet.
+    fn ensure_worker_started(&mut self) {
         if self.request_sender.is_some() {
             return;
         }
@@ -127,17 +125,17 @@ impl WasmThread {
         let handle = thread::Builder::new()
             .name("wasm-compiler".to_string())
             .spawn(move || {
-                Self::background_thread_loop(engine, request_receiver, result_sender);
+                Self::worker_loop(engine, request_receiver, result_sender);
             })
-            .expect("failed to spawn wasm compilation thread");
+            .expect("failed to spawn wasm compilation worker");
 
         self.request_sender = Some(request_sender);
         self.result_receiver = Some(result_receiver);
         self.handle = Some(handle);
     }
 
-    /// The main loop for the background compilation thread.
-    fn background_thread_loop(
+    /// The main loop for the background compilation worker.
+    fn worker_loop(
         engine: wasmtime::Engine,
         request_receiver: Receiver<WasmRequest>,
         result_sender: Sender<WasmResult>,
@@ -176,10 +174,16 @@ impl WasmThread {
     }
 }
 
-impl Drop for WasmThread {
+impl Drop for WasmWorker {
     fn drop(&mut self) {
+        // Signal the worker to shut down and wait for it to finish.
         if let Some(sender) = &self.request_sender {
             let _ = sender.send(WasmRequest::Shutdown);
+        }
+        if let Some(handle) = self.handle.take() {
+            if let Err(error) = handle.join() {
+                eprintln!("wasm: failed to join compilation worker: {error:?}");
+            }
         }
     }
 }

@@ -355,7 +355,7 @@ pub(crate) struct ContentProcess {
     >,
 
     /// Background wasm compilation thread.
-    wasm_thread: crate::wasm::WasmThread,
+    wasm_worker: crate::wasm::WasmWorker,
 
     /// Pending wasm compilation requests waiting for background results.
     /// Maps request_id → document_id.
@@ -378,7 +378,7 @@ impl ContentProcess {
             font_sender: FontTransportSender::default(),
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
-            wasm_thread: crate::wasm::WasmThread::new(
+            wasm_worker: crate::wasm::WasmWorker::new(
                 wasmtime::Engine::default(),
             ),
             pending_wasm_requests: HashMap::new(),
@@ -1597,14 +1597,14 @@ impl ContentProcess {
             let batches = content_document.settings.take_pending_wasm_batches();
             for (request_id, bytes) in batches {
                 self.pending_wasm_requests.insert(request_id, document_id);
-                self.wasm_thread.submit_compile(bytes);
+                self.wasm_worker.submit_compile(bytes);
             }
         }
     }
 
     /// Process completed wasm compilation results from the background thread.
     fn process_wasm_results(&mut self) {
-        let Some(result_rx) = self.wasm_thread.result_receiver() else {
+        let Some(result_rx) = self.wasm_worker.result_receiver() else {
             return;
         };
 

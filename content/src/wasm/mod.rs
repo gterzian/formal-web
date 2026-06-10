@@ -1,4 +1,4 @@
-pub(crate) mod thread;
 pub(crate) mod types;
+pub(crate) mod worker;
 
-pub(crate) use thread::{WasmResult, WasmThread};
+pub(crate) use worker::{WasmResult, WasmWorker};
