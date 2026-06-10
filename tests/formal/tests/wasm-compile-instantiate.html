@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebAssembly compile + instantiate + exports</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+</head>
+<body>
+<script>
+// Minimal wasm module: (module (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))
+const WASM_ADD = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
+  0x03, 0x02, 0x01, 0x00,
+  0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
+  0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b,
+]);
+
+// Module with no exports (empty module)
+const WASM_EMPTY = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+]);
+
+promise_test(async () => {
+  const module = await WebAssembly.compile(WASM_ADD);
+  assert_true(module instanceof WebAssembly.Module,
+              "compile returns a Module");
+}, "WebAssembly.compile returns a Module");
+
+promise_test(async () => {
+  const module = await WebAssembly.compile(WASM_ADD);
+  const instance = await WebAssembly.instantiate(module);
+  assert_true(instance instanceof WebAssembly.Instance,
+              "instantiate returns an Instance");
+  assert_true(instance.exports !== undefined,
+              "instance has exports");
+  assert_equals(typeof instance.exports.add, "function",
+                "exports.add is a function");
+}, "WebAssembly.instantiate(module) with exported function");
+
+promise_test(async () => {
+  const module = await WebAssembly.compile(WASM_ADD);
+  const instance = await WebAssembly.instantiate(module);
+  const result = instance.exports.add(2, 3);
+  assert_equals(result, 5, "add(2, 3) === 5");
+}, "Exported wasm function returns correct value");
+
+promise_test(async () => {
+  const module = await WebAssembly.compile(WASM_EMPTY);
+  const instance = await WebAssembly.instantiate(module);
+  assert_true(instance instanceof WebAssembly.Instance,
+              "empty module instantiates");
+}, "Empty module compiles and instantiates");
+
+test(() => {
+  assert_true(WebAssembly.validate(WASM_ADD),
+              "validate returns true for valid wasm");
+  assert_false(WebAssembly.validate(new Uint8Array([0, 0, 0, 0])),
+               "validate returns false for invalid wasm");
+}, "WebAssembly.validate");
+</script>
+</body>
+</html>

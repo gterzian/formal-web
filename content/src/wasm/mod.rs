@@ -9,4 +9,4 @@ pub(crate) use functions::{
     resolve_instantiate_promise, validate_wasm_module,
 };
 pub(crate) use types::WasmModule;
-pub(crate) use worker::{WasmRequest, WasmResult, WasmWorker};
+pub(crate) use worker::{WasmResult, WasmWorker};

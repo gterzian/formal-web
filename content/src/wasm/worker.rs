@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Sender, unbounded};
 use wasmtime::{Instance as WasmtimeInstance, Module, Store};
 
 /// Requests sent to the background wasm worker.

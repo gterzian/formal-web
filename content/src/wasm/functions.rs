@@ -613,7 +613,7 @@ fn create_exported_function_wrapper(
                 // `WasmInstance` that owns another clone) keeps it alive.
                 // The store is Send + Sync per the wasmtime docs.
                 let mut store_ref =
-                    unsafe { &mut *(Arc::as_ptr(&store) as *mut Store<()>) };
+                    &mut *(Arc::as_ptr(&store) as *mut Store<()>);
 
                 // Get the function type to determine parameter structure.
                 let func_type = func.ty(&store_ref);
