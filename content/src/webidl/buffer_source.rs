@@ -2,7 +2,7 @@
 
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue,
-    object::{JsObject, builtins::JsTypedArray},
+    object::builtins::JsTypedArray,
     object::builtins::JsArrayBuffer,
 };
 

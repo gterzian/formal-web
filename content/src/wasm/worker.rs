@@ -8,7 +8,7 @@ use wasmtime::{Instance as WasmtimeInstance, Module, Store};
 /// Requests sent to the background wasm worker.
 #[derive(Debug)]
 pub(crate) enum WasmRequest {
-    /// <https://www.w3.org/TR/wasm-js-api/#asynchronously-compile-a-webassembly-module>
+    /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
     ///
     /// Compile a WebAssembly module from the given bytes.
     Compile {

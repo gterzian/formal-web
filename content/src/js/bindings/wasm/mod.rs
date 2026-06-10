@@ -11,9 +11,6 @@
 //! glue.  All implementation logic lives in `content/src/wasm/namespace.rs`.
 
 mod interfaces;
-pub(crate) use interfaces::{
-    reject_compile_promise, resolve_compile_promise, resolve_instantiate_promise,
-};
 
 use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
 use crate::wasm::{

@@ -182,7 +182,8 @@ ContentProcess (before/after each command via handle_command):
   └─ drain_wasm_results()
       └─ tries recv() on WasmWorker result channel
           → consume_wasm_request() looks up resolvers separately
-          → resolve_compile_promise() or reject_compile_promise()
+          → compile_continuation() or compile_rejection() for Compiled/CompileError
+          → instantiate_continuation() or compile_rejection() for Instantiated/InstantiateError
           → flushes microtasks via perform_a_microtask_checkpoint()
 
 Background worker (WasmWorker):
