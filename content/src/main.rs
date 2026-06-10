@@ -1584,8 +1584,10 @@ impl ContentProcess {
         .map_err(|error| error.to_string())
     }
 
-    /// Drain pending WebAssembly requests from all documents and submit them
-    /// to the background compilation thread.
+    /// Drain pending WebAssembly requests from all documents and submit
+    /// compile requests to the background worker.  Instantiate requests
+    /// are processed directly on this thread (the spec queues a task,
+    /// which runs on the event loop).
     fn drain_all_pending_wasm_requests(&mut self) {
         let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
 
@@ -1598,6 +1600,80 @@ impl ContentProcess {
             for (request_id, bytes) in batches {
                 self.pending_wasm_requests.insert(request_id, document_id);
                 self.wasm_worker.submit_compile(bytes);
+            }
+        }
+    }
+
+    /// Process pending wasm instantiate requests directly on the main thread.
+    ///
+    /// <https://webassembly.github.io/spec/js-api/#asynchronously-instantiate-a-webassembly-module>
+    ///
+    /// The spec algorithm queues a task to perform instantiation, which runs
+    /// on the event loop.  We process these during our event-loop iteration.
+    fn process_pending_wasm_instantiates(&mut self) {
+        let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+
+        for document_id in document_ids {
+            let Some(content_document) = self.documents.get_mut(&document_id) else {
+                continue;
+            };
+
+            let instantiates =
+                content_document.settings.take_pending_wasm_instantiates();
+
+            for (request_id, module, import_object) in instantiates {
+                self.pending_wasm_requests.insert(request_id, document_id);
+
+                // Run the synchronous instantiation steps (Steps 5-6.3 of
+                // "asynchronously instantiate a WebAssembly module").
+                let result = crate::wasm::instantiate_wasm_module_on_main_thread(
+                    module,
+                    &import_object,
+                    &mut content_document.settings.context,
+                );
+
+                let Some((_promise, resolvers)) =
+                    content_document.settings.consume_wasm_request(request_id)
+                else {
+                    eprintln!(
+                        "wasm: instantiate request {} not found on document {}",
+                        request_id, document_id
+                    );
+                    self.pending_wasm_requests.remove(&request_id);
+                    continue;
+                };
+
+                match result {
+                    Ok(instance_object) => {
+                        // Step 6.4: "Resolve promise with instanceObject."
+                        if let Err(error) = resolvers.resolve.call(
+                            &boa_engine::JsValue::undefined(),
+                            &[instance_object.into()],
+                            &mut content_document.settings.context,
+                        ) {
+                            eprintln!("wasm: failed to resolve instantiate promise: {error}");
+                        }
+                    }
+                    Err(error) => {
+                        // If instantiation throws, reject the promise.
+                        if let Err(reject_error) = crate::wasm::reject_compile_promise(
+                            &resolvers,
+                            error.to_string(),
+                            &mut content_document.settings.context,
+                        ) {
+                            eprintln!("wasm: failed to reject instantiate promise: {reject_error}");
+                        }
+                    }
+                }
+
+                self.pending_wasm_requests.remove(&request_id);
+            }
+        }
+
+        // Flush microtasks (promise .then() handlers) after resolving.
+        for document in self.documents.values_mut() {
+            if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
+                eprintln!("wasm: microtask checkpoint failed: {error}");
             }
         }
     }
@@ -1688,6 +1764,7 @@ impl ContentProcess {
         // Before processing a new command, drain any pending WebAssembly
         // requests and process completed compilation results.
         self.drain_all_pending_wasm_requests();
+        self.process_pending_wasm_instantiates();
         self.process_wasm_results();
 
         let result = self.handle_command_inner(command);
@@ -1695,6 +1772,7 @@ impl ContentProcess {
         // After every command, drain any pending WebAssembly requests and
         // process completed compilation results.
         self.drain_all_pending_wasm_requests();
+        self.process_pending_wasm_instantiates();
         self.process_wasm_results();
 
         result

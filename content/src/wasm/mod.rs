@@ -3,8 +3,11 @@ pub(crate) mod types;
 pub(crate) mod worker;
 
 pub(crate) use functions::{
-    get_stable_bytes, get_wasm_jstag, is_buffer_source, register_wasm_error_types,
+    get_stable_bytes, get_wasm_jstag,
+    instantiate_wasm_module_on_main_thread, is_buffer_source,
+    register_wasm_error_types, register_wasm_instance_type,
     register_wasm_module_type, reject_compile_promise, resolve_compile_promise,
     validate_wasm_module,
 };
+pub(crate) use types::WasmModule;
 pub(crate) use worker::{WasmResult, WasmWorker};

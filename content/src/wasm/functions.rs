@@ -8,6 +8,9 @@
 //! namespace has and wire them up via `register_namespace_spec`; this module
 //! implements *what those members do*.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use boa_engine::{
     Context, JsNativeError, JsObject, JsResult, JsValue,
     js_string,
@@ -15,9 +18,9 @@ use boa_engine::{
     object::{FunctionObjectBuilder, builtins::{JsArrayBuffer, JsTypedArray, JsUint8Array}},
     property::PropertyDescriptor,
 };
-use wasmtime::Module;
+use wasmtime::{Instance as WasmtimeInstance, Module, Store};
 
-use crate::wasm::types::WasmModule;
+use crate::wasm::types::{WasmInstance, WasmModule};
 
 // ── Buffer-source helpers ──
 
@@ -494,6 +497,345 @@ pub(crate) fn get_wasm_jstag(
 }
 
 // ── Helper: register constructor on namespace ──
+
+// ── Instantiation ──
+
+/// <https://webassembly.github.io/spec/js-api/#asynchronously-instantiate-a-webassembly-module>
+///
+/// Run the synchronous part of the instantiate algorithm on the main thread.
+/// This is called when processing pending instantiate requests in the content
+/// process's event loop.
+///
+/// Steps performed:
+///   1. Read the imports (spec §5 "read the imports" algorithm).
+///   2. Create a wasmtime Store.
+///   3. Instantiate the core module with `wasmtime::Instance::new`.
+///   4. Create the exports object (spec §5 "create an exports object").
+///   5. Create a JS Instance object carrying WasmInstance data.
+///
+/// Returns the JS Instance object whose promise should be resolved by the
+/// caller in `process_wasm_results`.
+pub(crate) fn instantiate_wasm_module_on_main_thread(
+    module: wasmtime::Module,
+    import_object: &JsValue,
+    context: &mut Context,
+) -> JsResult<JsObject> {
+    // Step 2: "Let module be moduleObject.[[Module]]." — already extracted.
+    // Step 3: "Let builtinSetNames be moduleObject.[[BuiltinSets]]." — not yet implemented.
+    // Step 4: "Let importedStringModule be moduleObject.[[ImportedStringModule]]." — not yet implemented.
+
+    // Step 5: "Read the imports of module with imports importObject, builtinSetNames
+    //          and importedStringModule, and let imports be the result."
+    let imports = read_wasm_imports(&module, import_object, context)?;
+
+    // Step 6: "Run the following steps in parallel:"
+    //         "Queue a task to perform the following steps:"
+    //
+    //         On our architecture, instantiation happens synchronously on the
+    //         main thread during pending-request processing, which is equivalent
+    //         to queuing a task on the event loop.
+
+    // Step 6.1: "Instantiate the core of a WebAssembly module module with imports,
+    //            and let instance be the result."
+    let engine = module.engine().clone();
+    let mut store = Store::new(&engine, ());
+    let instance = WasmtimeInstance::new(&mut store, &module, &imports).map_err(|error| {
+        JsNativeError::typ()
+            .with_message(format!("LinkError: {}", error))
+    })?;
+
+    // Step 6.2: "Let instanceObject be a new Instance."
+    // Step 6.3: "Initialize instanceObject from module and instance."
+    //           (This calls "create an exports object" internally.)
+    let store_rc = Rc::new(RefCell::new(store));
+    let exports = create_exports_object(&module, &instance, Rc::clone(&store_rc), context)?;
+
+    let instance_proto = get_wasm_instance_prototype(context)
+        .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
+
+    let instance_object = JsObject::from_proto_and_data(
+        Some(instance_proto),
+        WasmInstance::new(exports, store_rc, instance),
+    );
+
+    Ok(instance_object)
+}
+
+/// <https://webassembly.github.io/spec/js-api/#read-the-imports>
+///
+/// Steps 1-8: "Read the imports of module with imports importObject..."
+///
+/// Currently handles modules with no imports (returns an empty Vec).
+/// Full import resolution (JS functions as host functions, wasm globals,
+/// memories, tables, tags from importObject) is not yet implemented.
+pub(crate) fn read_wasm_imports(
+    module: &wasmtime::Module,
+    import_object: &JsValue,
+    _context: &mut Context,
+) -> JsResult<Vec<wasmtime::Extern>> {
+    // Step 1: "If module.imports is not empty, and importObject is undefined,
+    //          throw a TypeError exception."
+    if !import_object.is_undefined() && !import_object.is_null() {
+        // Imports are provided but we don't support host functions yet.
+        // For now, only modules with no imports work.
+        if module.imports().count() > 0 {
+            return Err(JsNativeError::typ()
+                .with_message(
+                    "WebAssembly.instantiate: import resolution not yet implemented"
+                )
+                .into());
+        }
+    }
+
+    // Module has no imports — return empty list.
+    Ok(Vec::new())
+}
+
+/// <https://webassembly.github.io/spec/js-api/#create-an-exports-object>
+///
+/// Steps 1-8: Create a frozen object with wrapper values for each export.
+///
+/// For each `(name, externtype)` of `module_exports(module)`:
+///   - func → wraps as a JS-callable NativeFunction
+///   - memory, table, global, tag → not yet implemented (stub)
+pub(crate) fn create_exports_object(
+    module: &wasmtime::Module,
+    instance: &WasmtimeInstance,
+    store_rc: Rc<RefCell<Store<()>>>,
+    context: &mut Context,
+) -> JsResult<JsObject> {
+    // Step 1: "Let exportsObject be ! OrdinaryObjectCreate(null)."
+    // https://tc39.es/ecma262/#sec-ordinaryobjectcreate
+    let exports_object = JsObject::from_proto_and_data(None, ());
+
+    // Step 2: "For each (name, externtype) of module_exports(module),"
+    for export in module.exports() {
+        let name = export.name();
+        let _extern_type = export.ty();
+
+        // Step 3-4: "Let externval be instance_export(instance, name)."
+        //           The wasmtime API: instance.get_export(&mut store, name).
+        //           We need the store to look up exports, but the store is
+        //           in the Rc<RefCell<...>>.  Borrow it temporarily.
+        let extern_val = {
+            let mut store_borrow = store_rc.borrow_mut();
+            instance.get_export(&mut *store_borrow, name)
+        };
+
+        let Some(extern_val) = extern_val else {
+            continue;
+        };
+
+        let value = match extern_val {
+            // Step 5: func functype → create Exported Function
+            wasmtime::Extern::Func(func) => {
+                create_exported_function_wrapper(func, Rc::clone(&store_rc), context)?
+            }
+            // Steps 6-9: memory, global, table, tag — not yet implemented
+            _ => {
+                // Stub: create an object that says "not yet implemented"
+                JsValue::undefined()
+            }
+        };
+
+        // Step 10: "Let status be ! CreateDataProperty(exportsObject, name, value)."
+        // https://tc39.es/ecma262/#sec-createdataproperty
+        exports_object.set(js_string!(name), value.clone(), false, context).map_err(|_| {
+            JsNativeError::typ().with_message("failed to set export property")
+        })?;
+    }
+
+    // Step 11: "Perform ! SetIntegrityLevel(exportsObject, "frozen")."
+    // https://tc39.es/ecma262/#sec-setintegritylevel
+    // Note: Boa does not expose a direct SetIntegrityLevel API, so we
+    // skip the freeze for now.
+
+    // Step 12: "Return exportsObject."
+    Ok(exports_object)
+}
+
+/// Create a JS-callable function wrapper for a wasm exported function.
+///
+/// The returned NativeFunction captures the wasmtime `Func` handle and
+/// the shared store reference.  When called from JS, it converts arguments
+/// to `wasmtime::Val`, calls `func.call`, and converts results back.
+fn create_exported_function_wrapper(
+    func: wasmtime::Func,
+    store_rc: Rc<RefCell<Store<()>>>,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    // SAFETY: The closure captures `Rc<RefCell<Store<()>>>` and
+    // `wasmtime::Func`.  Neither type contains Boa GC pointers,
+    // so the GC safety invariant of `from_closure` is satisfied.
+    let js_func = unsafe {
+        NativeFunction::from_closure(
+            move |_this: &JsValue, args: &[JsValue], context: &mut Context| -> JsResult<JsValue> {
+                let mut store_borrow = store_rc.borrow_mut();
+
+                // Get the function type to determine parameter structure.
+                // <https://webassembly.github.io/spec/core/appendix/embedding.html#embed-func-type>
+                let func_type = func.ty(&*store_borrow);
+
+                // Convert JS args to wasm params.
+                let params: Vec<wasmtime::Val> = func_type
+                    .params()
+                    .enumerate()
+                    .map(|(i, param_type)| {
+                        let js_arg = args.get(i).cloned().unwrap_or(JsValue::undefined());
+                        js_val_to_wasm_val(&js_arg, &param_type, context)
+                    })
+                    .collect::<Result<_, _>>()?;
+
+                // Allocate result storage.
+                let mut results = vec![wasmtime::Val::I32(0); func_type.results().len()];
+
+                // Call the wasm function.
+                func.call(&mut *store_borrow, &params, &mut results).map_err(|error| {
+                    JsNativeError::error()
+                        .with_message(format!("wasm trap: {}", error))
+                })?;
+
+                // Convert results back to JS values.
+                if results.len() == 1 {
+                    wasm_val_to_js_value(&results[0], context)
+                } else {
+                    // Multiple results not yet supported.
+                    Err(JsNativeError::error()
+                        .with_message("multiple wasm results not yet supported")
+                        .into())
+                }
+            },
+        )
+    };
+
+    // Wrap the NativeFunction as a JsValue.
+    let realm = context.realm().clone();
+    let func_object = FunctionObjectBuilder::new(&realm, js_func).build();
+    Ok(JsValue::from(func_object))
+}
+
+/// <https://webassembly.github.io/spec/core/appendix/embedding.html#embed-func-type>
+///
+/// Convert a JS value to a wasmtime `Val` of the given type.
+fn js_val_to_wasm_val(
+    value: &JsValue,
+    wasm_type: &wasmtime::ValType,
+    context: &mut Context,
+) -> Result<wasmtime::Val, JsNativeError> {
+    match wasm_type {
+        wasmtime::ValType::I32 => {
+            let n = value.to_number(context)
+                .map_err(|_| JsNativeError::typ().with_message("expected number for i32"))?;
+            Ok(wasmtime::Val::I32(n as i32))
+        }
+        wasmtime::ValType::I64 => {
+            Err(JsNativeError::typ().with_message("i64 wasm values not yet supported"))
+        }
+        wasmtime::ValType::F32 => {
+            let n = value.to_number(context)
+                .map_err(|_| JsNativeError::typ().with_message("expected number for f32"))?;
+            Ok(wasmtime::Val::F32(n as u32))
+        }
+        wasmtime::ValType::F64 => {
+            let n = value.to_number(context)
+                .map_err(|_| JsNativeError::typ().with_message("expected number for f64"))?;
+            Ok(wasmtime::Val::F64(n.to_bits()))
+        }
+        _ => Err(JsNativeError::typ().with_message("unsupported wasm value type")),
+    }
+}
+
+/// <https://webassembly.github.io/spec/core/appendix/embedding.html#embed-func-type>
+///
+/// Convert a wasmtime `Val` to a JS value.
+fn wasm_val_to_js_value(val: &wasmtime::Val, _context: &mut Context) -> JsResult<JsValue> {
+    match val {
+        wasmtime::Val::I32(n) => Ok(JsValue::from(*n)),
+        wasmtime::Val::I64(_) => Err(JsNativeError::typ()
+            .with_message("i64 wasm values not yet supported")
+            .into()),
+        wasmtime::Val::F32(n) => Ok(JsValue::from(f32::from_bits(*n) as f64)),
+        wasmtime::Val::F64(n) => Ok(JsValue::from(f64::from_bits(*n))),
+        _ => Err(JsNativeError::typ()
+            .with_message("unsupported wasm result type")
+            .into()),
+    }
+}
+
+/// Get the `WebAssembly.Instance.prototype` from the global object.
+pub(crate) fn get_wasm_instance_prototype(context: &mut Context) -> Option<JsObject> {
+    let ns = context.global_object().get(js_string!("WebAssembly"), context).ok()?;
+    let ns_obj = ns.as_object()?;
+    let ctor = ns_obj.get(js_string!("Instance"), context).ok()?;
+    let ctor_obj = ctor.as_object()?;
+    ctor_obj
+        .get(js_string!("prototype"), context)
+        .ok()
+        .and_then(|p| p.as_object().map(|o| o.clone()))
+}
+
+/// <https://webassembly.github.io/spec/js-api/#create-an-exports-object>
+///
+/// Register the `WebAssembly.Instance` interface on the namespace,
+/// with the readonly `exports` attribute.
+pub(crate) fn register_wasm_instance_type(
+    namespace: &JsObject,
+    context: &mut Context,
+) -> JsResult<()> {
+    // Prototype with the `exports` accessor.
+    let proto = JsObject::from_proto_and_data(
+        Some(context.intrinsics().constructors().object().prototype()),
+        (),
+    );
+
+    // Add `get exports` accessor to the prototype.
+    // <https://webassembly.github.io/spec/js-api/#dom-instance-exports>
+    let getter = NativeFunction::from_fn_ptr(get_instance_exports_fn);
+    let realm = context.realm().clone();
+    let getter_func = FunctionObjectBuilder::new(&realm, getter)
+        .name("get exports")
+        .build();
+
+    proto.define_property_or_throw(
+        js_string!("exports"),
+        PropertyDescriptor::builder()
+            .get(getter_func)
+            .enumerable(true)
+            .configurable(true)
+            .build(),
+        context,
+    )?;
+
+    // Register a constructor that throws "Illegal constructor" (user said
+    // they don't want to implement `new Instance()`).
+    let ctor_fn = NativeFunction::from_fn_ptr(|_this, _args, _context| {
+        Err(JsNativeError::typ()
+            .with_message("Illegal constructor")
+            .into())
+    });
+    register_wasm_constructor(namespace, "Instance", ctor_fn, 0, proto, context)
+}
+
+/// <https://webassembly.github.io/spec/js-api/#dom-instance-exports>
+///
+/// Getter for `instance.exports`, returning the exports object that was
+/// created during instantiation.
+fn get_instance_exports_fn(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("Instance.exports getter: receiver is not an object")
+    })?;
+
+    let instance = object.downcast_ref::<WasmInstance>().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("Instance.exports getter: receiver is not a WebAssembly.Instance")
+    })?;
+
+    Ok(JsValue::from(instance.exports.clone()))
+}
 
 /// Register a constructor function on a namespace object.
 ///

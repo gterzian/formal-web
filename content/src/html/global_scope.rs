@@ -69,6 +69,28 @@ pub enum PendingRequest {
         #[unsafe_ignore_trace]
         state: PendingState,
     },
+
+    /// <https://www.w3.org/TR/wasm-js-api/#asynchronously-instantiate-a-webassembly-module>
+    ///
+    /// An instantiate(moduleObject, importObject) request.
+    /// The module is already compiled — this only needs instantiation.
+    WasmInstantiate {
+        /// The previously compiled wasm module.
+        #[unsafe_ignore_trace]
+        module: wasmtime::Module,
+        /// The JS importObject passed by the caller, or undefined.
+        import_object: boa_engine::JsValue,
+        /// The request id, correlating with the content-process's processing.
+        #[unsafe_ignore_trace]
+        request_id: u64,
+        /// The JS promise to resolve/reject when instantiation completes.
+        promise: boa_engine::object::JsObject,
+        /// The resolve/reject functions for the promise.
+        resolvers: boa_engine::builtins::promise::ResolvingFunctions,
+        /// Current lifecycle state.
+        #[unsafe_ignore_trace]
+        state: PendingState,
+    },
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
@@ -720,27 +742,51 @@ impl GlobalScope {
         id
     }
 
-    /// Mark all Pending wasm requests as Processing and return their
-    /// bytes + request_ids.  Called by the content process.
+    /// Mark all compile-type pending wasm requests as Processing and return
+    /// their bytes + request_ids.  Called by the content process.
     pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
         let mut requests = self.pending_requests.borrow_mut();
         let mut batches = Vec::new();
-        #[allow(irrefutable_let_patterns)]
         for request in requests.iter_mut() {
-            // PendingRequest currently only has one variant (WasmCompile).
-            // When more variants are added, this if-let becomes refutable.
-            let PendingRequest::WasmCompile {
+            if let PendingRequest::WasmCompile {
                 bytes,
                 request_id,
                 state,
                 ..
-            } = request;
-            if *state == PendingState::Pending {
-                *state = PendingState::Processing;
-                batches.push((*request_id, bytes.clone()));
+            } = request
+            {
+                if *state == PendingState::Pending {
+                    *state = PendingState::Processing;
+                    batches.push((*request_id, bytes.clone()));
+                }
             }
         }
         batches
+    }
+
+    /// Mark all instantiate-type pending wasm requests as Processing and
+    /// return their module + request_id.  Called by the content process.
+    pub(crate) fn take_pending_wasm_instantiates(
+        &self,
+    ) -> Vec<(u64, wasmtime::Module, boa_engine::JsValue)> {
+        let mut requests = self.pending_requests.borrow_mut();
+        let mut instantiates = Vec::new();
+        for request in requests.iter_mut() {
+            if let PendingRequest::WasmInstantiate {
+                module,
+                import_object,
+                request_id,
+                state,
+                ..
+            } = request
+            {
+                if *state == PendingState::Pending {
+                    *state = PendingState::Processing;
+                    instantiates.push((*request_id, module.clone(), import_object.clone()));
+                }
+            }
+        }
+        instantiates
     }
 
     /// Remove and return the promise + resolvers for a completed request.
@@ -758,10 +804,18 @@ impl GlobalScope {
             PendingRequest::WasmCompile {
                 request_id: rid, ..
             } => *rid == request_id,
+            PendingRequest::WasmInstantiate {
+                request_id: rid, ..
+            } => *rid == request_id,
         })?;
         let request = &requests[idx];
         let result = match request {
             PendingRequest::WasmCompile {
+                promise,
+                resolvers,
+                ..
+            } => Some((promise.clone(), resolvers.clone())),
+            PendingRequest::WasmInstantiate {
                 promise,
                 resolvers,
                 ..

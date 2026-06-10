@@ -13,14 +13,15 @@
 //! scope, pending requests), and delegate to the domain layer.
 
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue,
+    Context, JsNativeError, JsResult, JsValue, js_string,
     object::{JsObject, builtins::JsPromise},
 };
 
 use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::{
     get_stable_bytes, is_buffer_source, register_wasm_error_types,
-    register_wasm_module_type, validate_wasm_module,
+    register_wasm_instance_type, register_wasm_module_type,
+    validate_wasm_module, WasmModule,
 };
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_namespace_spec,
@@ -123,10 +124,11 @@ pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
     // Register type constructors (Module with static methods)
     register_wasm_module_type(&namespace, context)?;
 
+    // Register Instance type with exports attribute
+    register_wasm_instance_type(&namespace, context)?;
+
     Ok(())
 }
-
-use boa_engine::js_string;
 
 // ── Namespace operation bindings ──
 
@@ -200,12 +202,16 @@ fn compile_fn(
 
 /// <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate>
 ///
-/// Step 1: "Let stableBytes be a copy of the bytes held by the buffer bytes."
-/// Step 2: "Asynchronously compile a WebAssembly module from stableBytes using
-///          options and let promiseOfModule be the result."
-/// Step 3: "Instantiate promiseOfModule with imports importObject and return the result."
+/// Two overloads:
+///   1. `instantiate(bytes, importObject)`:
+///      Step 1: "Let stableBytes be a copy of the bytes held by the buffer bytes."
+///      Step 2: "Asynchronously compile a WebAssembly module from stableBytes..."
+///      Step 3: "Instantiate promiseOfModule with imports importObject..."
 ///
-/// Currently only handles the bytes overload (no import object support yet).
+///   2. `instantiate(moduleObject, importObject)`:
+///      <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate-moduleobject-importobject>
+///      "Asynchronously instantiate the WebAssembly module moduleObject importing
+///       importObject, and return the result."
 fn instantiate_fn(
     _this: &JsValue,
     args: &[JsValue],
@@ -215,34 +221,88 @@ fn instantiate_fn(
         JsNativeError::typ().with_message("WebAssembly.instantiate: missing argument")
     })?;
 
+    // Check if first argument is a buffer source (bytes overload)
+    // or a Module object (module-object overload).
     if is_buffer_source(first, context) {
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate-bytes>
-        let stable_bytes = get_stable_bytes(first, context)?;
-
-        let global = context.global_object();
-        let window = global.downcast_ref::<Window>().ok_or_else(|| {
-            JsNativeError::error().with_message("wasm: global object is not a Window")
-        })?;
-        let global_scope = &window.global_scope;
-
-        let request_id = global_scope.next_wasm_request_id();
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        let promise_obj: JsObject = promise.clone().into();
-
-        global_scope.push_pending_request(PendingRequest::WasmCompile {
-            bytes: stable_bytes,
-            request_id,
-            is_instantiate: true,
-            promise: promise_obj,
-            resolvers,
-            state: PendingState::Pending,
-        });
-
-        return Ok(promise.into());
+        return instantiate_bytes_overload(first, args.get(1), context);
     }
 
-    // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate-module>
-    Err(JsNativeError::error()
-        .with_message("WebAssembly.instantiate(moduleObject): not yet implemented")
-        .into())
+    // <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate-moduleobject-importobject>
+    //
+    // Step: "Let module be moduleObject.[[Module]]."
+    let module_object = first.as_object().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("WebAssembly.instantiate: first argument must be a buffer source or Module")
+    })?;
+
+    let wasm_module = module_object.downcast_ref::<WasmModule>().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("WebAssembly.instantiate: first argument does not implement the Module interface")
+    })?;
+
+    // The importObject is the second argument (optional).
+    let import_object = args.get(1).cloned().unwrap_or(JsValue::undefined());
+
+    // Create a promise and push a pending instantiate request.
+    let global = context.global_object();
+    let window = global.downcast_ref::<Window>().ok_or_else(|| {
+        JsNativeError::error().with_message("wasm: global object is not a Window")
+    })?;
+    let global_scope = &window.global_scope;
+
+    let request_id = global_scope.next_wasm_request_id();
+    let (promise, resolvers) = JsPromise::new_pending(context);
+    let promise_obj: JsObject = promise.clone().into();
+
+    global_scope.push_pending_request(PendingRequest::WasmInstantiate {
+        module: wasm_module.module.clone(),
+        import_object,
+        request_id,
+        promise: promise_obj,
+        resolvers,
+        state: PendingState::Pending,
+    });
+
+    Ok(promise.into())
+}
+
+/// Handle the bytes overload of `instantiate`.
+///
+/// <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate-bytes>
+///
+/// Step 1: "Let stableBytes be a copy..."
+/// Step 2: "Asynchronously compile a WebAssembly module..."
+/// Step 3: "Instantiate promiseOfModule with imports importObject..."
+///
+/// For now, this follows the same compile-only path as `compile()` and
+/// full instantiation is deferred until the compile-and-then-instantiate
+/// flow is wired through the background worker.
+fn instantiate_bytes_overload(
+    bytes_value: &JsValue,
+    _import_object: Option<&JsValue>,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let stable_bytes = get_stable_bytes(bytes_value, context)?;
+
+    let global = context.global_object();
+    let window = global.downcast_ref::<Window>().ok_or_else(|| {
+        JsNativeError::error().with_message("wasm: global object is not a Window")
+    })?;
+    let global_scope = &window.global_scope;
+
+    let request_id = global_scope.next_wasm_request_id();
+    let (promise, resolvers) = JsPromise::new_pending(context);
+    let promise_obj: JsObject = promise.clone().into();
+
+    global_scope.push_pending_request(PendingRequest::WasmCompile {
+        bytes: stable_bytes,
+        request_id,
+        is_instantiate: true,
+        promise: promise_obj,
+        resolvers,
+        state: PendingState::Pending,
+    });
+
+    Ok(promise.into())
 }

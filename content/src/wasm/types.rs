@@ -1,5 +1,9 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use boa_engine::{JsObject, object::JsData};
 use boa_gc::{Finalize, Trace};
+use wasmtime::Store;
 
 /// <https://www.w3.org/TR/wasm-js-api/#module-objects>
 ///
@@ -29,19 +33,48 @@ impl WasmModule {
 /// <https://www.w3.org/TR/wasm-js-api/#instance-objects>
 ///
 /// A WebAssembly instance, stored as data on a JS Instance object.
+///
+/// The `store` field holds the wasmtime store that the instance was created
+/// from.  It is shared with exported function wrappers so that calling a
+/// wasm export routes through the store.  The `Rc<RefCell<...>>` pattern
+/// is safe here because:
+///
+/// - The store is always accessed on the content process's main thread.
+/// - Exported function closures reference the `Rc` handle only.
+/// - The `unsafe_ignore_trace` annotation is correct: the `Rc` and `RefCell`
+///   don't contain any Boa GC pointers.
+///
+/// Note: The `wasmtime::Instance` field is redundant with `store.data()`
+/// but kept for ergonomic access to the handle.
 #[derive(Trace, Finalize)]
-#[allow(dead_code)]
 pub(crate) struct WasmInstance {
     /// The exports object created from the instance's exports.
     pub(crate) exports: JsObject,
+    /// Shared reference to the store, used by exported-function wrappers.
+    /// Read by exported function closures that hold a clone of the `Rc`.
+    #[unsafe_ignore_trace]
+    #[allow(dead_code)]
+    pub(crate) store: Rc<RefCell<Store<()>>>,
+    /// The wasmtime instance handle.
+    /// Kept alongside the store for completeness; not read directly.
+    #[unsafe_ignore_trace]
+    #[allow(dead_code)]
+    pub(crate) instance: wasmtime::Instance,
 }
 
 impl JsData for WasmInstance {}
 
 impl WasmInstance {
-    #[allow(dead_code)]
-    pub(crate) fn new(exports: JsObject) -> Self {
-        Self { exports }
+    pub(crate) fn new(
+        exports: JsObject,
+        store: Rc<RefCell<Store<()>>>,
+        instance: wasmtime::Instance,
+    ) -> Self {
+        Self {
+            exports,
+            store,
+            instance,
+        }
     }
 }
 
