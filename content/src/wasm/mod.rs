@@ -1,4 +1,5 @@
 pub(crate) mod functions;
+pub(crate) mod namespace;
 pub(crate) mod types;
 pub(crate) mod worker;
 

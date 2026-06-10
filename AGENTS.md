@@ -39,9 +39,9 @@ definitive breakdown with examples and common mistakes.
 
 | Layer | Location | Signature convention |
 |---|---|---|
-| **Domain** | `content/src/<domain>/` | Methods return Rust types — no `JsValue`, no `boa_engine` |
+| **Domain** | `content/src/<domain>/` | Methods implement spec algorithms. May import some Boa types when the algorithm requires it (e.g., `Context` for promise creation). |
 | **Web IDL bindings infra** | `content/src/webidl/bindings/` | Generic traits — NOT domain-specific |
-| **JS bindings glue** | `content/src/js/bindings/<domain>/` | `fn(this, args, ctx) -> JsResult<JsValue>` — downcast, call domain, wrap |
+| **JS bindings glue** | `content/src/js/bindings/<domain>/` | `fn(this, args, ctx) -> JsResult<JsValue>` — thin: extract JS args, call domain, wrap |
 
 When implementing a spec algorithm, every changed file must satisfy these checks
 before the task is considered done.  See `content/src/js/bindings/README.md`
@@ -199,10 +199,11 @@ At the end of each task, run the following steps **in order**:
      level?  Read the spec algorithm, understand what each step does
      architecturally (which component owns which state, which side effects
      happen where), and verify the implementation reflects that split.
-   - Is the algorithm in the right layer?  Domain methods (returning Rust
-     types) go in `content/src/<domain>/`.  JS binding functions (thin
-     downcast-call-wrap) go in `content/src/js/bindings/<domain>/`.  Only
-     domain methods get spec annotations — binding functions have none.
+   - Is the algorithm in the right layer?  Domain implementations go in
+     `content/src/<domain>/`.  JS binding functions (thin arg-extraction +
+     delegation) go in `content/src/js/bindings/<domain>/`.  Only domain
+     functions get spec annotations — binding functions have none (they are
+     plumbing, not algorithm steps).
    - Does every domain method have `// Step N:` comments quoting the
      **exact spec step text verbatim** (not an abbreviation)?  Step
      numbering must match the spec exactly.

@@ -10,9 +10,9 @@ From inside out:
 
 | Layer | Location | What it contains | Signature convention |
 |---|---|---|---|
-| **Domain** | `content/src/<domain>/` | Rust struct + spec-algorithm methods. Domain code never imports `boa_engine` or returns `JsValue`/`JsObject`. | methods return Rust types: `fn export_descriptors(&self) -> Vec<(String, &str)>` |
+| **Domain** | `content/src/<domain>/` | Rust struct + spec-algorithm methods and functions. Domain code implements the algorithm — it may import Boa types when needed (e.g., `Context` for promise creation). Prefer `crate::webidl` helpers over raw Boa calls when possible. | `fn domain_method(&self) -> RustType` for pure-computation methods; `fn namespace_op(ctx, arg) -> JsResult<JsValue>` for promise-returning namespace functions |
 | **Web IDL bindings infra** | `content/src/webidl/bindings/` | Generic traits (`WebIdlInterface`, `WebIdlNamespace`), registration (`register_interface_spec`), and member definitions (`OperationDef`, `AttributeDef`). NOT domain-specific. | `register_interface_spec::<T>(context)` |
-| **JS bindings glue** | `content/src/js/bindings/<domain>/` | `WebIdlInterface` impl + thin function pointers that downcast `this`, call domain methods, wrap results in `JsValue`. | `fn binding_fn(this, args, ctx) -> JsResult<JsValue>` |
+| **JS bindings glue** | `content/src/js/bindings/<domain>/` | `WebIdlInterface` impl + thin function pointers that extract JS arguments, call domain functions, and wrap results. | `fn binding_fn(this, args, ctx) -> JsResult<JsValue>` — must be thin, no algorithm logic |
 
 ### Rules of thumb
 
@@ -99,10 +99,44 @@ fn module_exports_binding(
 
 | Mistake | Why it's wrong |
 |---|---|
-| Putting `JsObject::downcast_ref` or `JsValue`-returning code in the domain layer | Domain code should be pure Rust logic, testable without a JS engine |
-| Putting spec-algorithm logic (iterating wasm exports, computing descriptors) in the JS bindings glue | The binding should be a thin call → wrap; the algorithm lives on the domain struct |
+| Putting `WebIdlInterface` impls or `WebIdlNamespace` impls in the domain layer | Those register members (which members exist) — domain code implements *what members do* |
+| Putting spec-algorithm logic (iterating wasm exports, computing descriptors, creating promises) in the JS bindings glue | The binding should be a thin call → wrap; the algorithm lives in the domain layer |
 | Using `FunctionObjectBuilder` or Boa-native APIs directly in JS bindings | Use `WebIdlInterface`, `OperationDef`, `register_interface_spec` from `content/src/webidl/bindings/` instead |
 | Adding domain-specific conditionals to `content/src/webidl/bindings/` | The infra must stay generic; use the trait methods (`legacy_namespace()`, `constructor_length()`) to customize |
+
+### Concrete example: WebAssembly.namespace operations (promise-returning)
+
+Namespace operations like `WebAssembly.compile()` follow a slightly different
+pattern because they return promises.  The key principle is the same: the
+bindings convert JS arguments to Rust types (via `content/src/webidl/` helpers),
+then call the domain function which does the rest.
+
+```
+Spec says:  compile(bytes)
+              → Let stableBytes be a copy of the bytes held by the buffer bytes.
+              → Asynchronously compile a WebAssembly module from stableBytes
+                using options and return the result.
+
+Bindings (arg extraction + webidl conversion):
+  content/src/js/bindings/wasm/mod.rs
+  fn compile_fn(this, args, ctx) -> JsResult<JsValue> {
+      let val = args.first()?;
+      let bytes: Vec<u8> = get_stable_bytes(val, ctx)?;   // webidl helper
+      crate::wasm::namespace::compile_fn(bytes, ctx)       // domain call
+  }
+
+Domain (algorithm):
+  content/src/wasm/namespace.rs
+  fn compile_fn(bytes: Vec<u8>, ctx) -> JsResult<JsValue> {
+      let (promise, resolvers) = new_pending_promise(ctx); // webidl helper
+      // ... push pending request, store resolvers ...
+      Ok(JsValue::from(promise))
+  }
+```
+
+The domain function receives `Vec<u8>` (not `&JsValue`) because the JsValue→Rust
+type conversion is the bindings' job.  `get_stable_bytes` from `content/src/webidl/`
+implements the Web IDL "get a copy of the buffer source" algorithm.
 
 ### Concrete example: WebAssembly.Module.exports
 

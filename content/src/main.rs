@@ -1622,7 +1622,7 @@ impl ContentProcess {
             // Submit instantiate requests.
             let instantiates =
                 content_document.settings.take_pending_wasm_instantiates();
-            for (request_id, module, _import_object) in instantiates {
+            for (request_id, module) in instantiates {
                 self.pending_wasm_requests.insert(request_id, document_id);
                 self.pending_wasm_modules.insert(request_id, module.clone());
                 self.wasm_worker.submit_instantiate(module, request_id);

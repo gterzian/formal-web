@@ -85,7 +85,7 @@ impl WebIdlInterface for WasmModule {
         let bytes_value = args.first().ok_or_else(|| {
             JsNativeError::typ().with_message("Module constructor: missing argument")
         })?;
-        let stable_bytes = crate::webidl::get_stable_bytes(bytes_value, context)?;
+        let stable_bytes = crate::webidl::get_a_copy_of_the_buffer_source(bytes_value, context)?;
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
             JsNativeError::typ()

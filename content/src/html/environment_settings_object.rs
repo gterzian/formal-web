@@ -304,11 +304,9 @@ impl EnvironmentSettingsObject {
         }
     }
 
-    /// Take all pending wasm instantiate requests (module + import_object + request_id)
+    /// Take all pending wasm instantiate requests (module + request_id)
     /// from the GlobalScope.  Marks them as Processing.
-    pub(crate) fn take_pending_wasm_instantiates(
-        &self,
-    ) -> Vec<(u64, wasmtime::Module, boa_engine::JsValue)> {
+    pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
         use crate::html::Window;
         let global = self.context.global_object();
         if let Some(window) = global.downcast_ref::<Window>() {

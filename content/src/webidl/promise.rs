@@ -1,5 +1,6 @@
 use boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsValue,
+    builtins::promise::ResolvingFunctions,
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
@@ -17,6 +18,17 @@ use boa_engine::{
 ///
 /// Call sites should use these helpers when converting Rust-side exceptions to promise
 /// rejections or when implementing spec operations that need to return settled promises.
+
+/// Creates a new pending promise.
+///
+/// Implements: https://webidl.spec.whatwg.org/#a-new-promise
+/// Step 1: "Let promise be a new promise."
+pub(crate) fn new_pending_promise(
+    context: &mut Context,
+) -> (JsObject, ResolvingFunctions) {
+    let (promise, resolvers) = JsPromise::new_pending(context);
+    (promise.into(), resolvers)
+}
 
 /// Creates a promise already resolved with the given value.
 ///

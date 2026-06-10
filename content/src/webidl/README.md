@@ -150,6 +150,29 @@ let object = ObjectInitializer::with_native_data_and_proto(
 
 See `content/src/js/bindings/` for concrete examples per interface.
 
+## Buffer source types
+
+<https://webidl.spec.whatwg.org/#js-buffer-source-types>
+
+The Web IDL buffer source types (`ArrayBuffer`, `ArrayBufferView`, `BufferSource`)
+have specific conversion algorithms implemented in `buffer_source.rs`.
+
+| Function | Spec algorithm | Purpose |
+|---|---|---|
+| `get_a_copy_of_the_buffer_source` | [#dfn-get-buffer-source-copy](https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy) | Extract bytes from an `ArrayBuffer` or typed array |
+| `convert_js_value_to_idl_array_buffer` | [#js-arraybuffer](https://webidl.spec.whatwg.org/#js-arraybuffer) | Convert a JS value to an IDL `ArrayBuffer`, rejecting `SharedArrayBuffer` |
+| `is_buffer_source` | [#dfn-buffer-source-type](https://webidl.spec.whatwg.org/#dfn-buffer-source-type) | Check whether a JS value is a buffer source type |
+
+The `get_a_copy_of_the_buffer_source` function is called by the bindings layer (e.g.
+`content/src/js/bindings/wasm/mod.rs`) to convert JS values into Rust `Vec<u8>`
+before passing them to domain functions.  Domain functions receive clean Rust types,
+never raw `JsValue`.
+
+Both `get_a_copy_of_the_buffer_source` and `convert_js_value_to_idl_array_buffer`
+enforce that `SharedArrayBuffer` is rejected (the `[AllowShared]` constraint) and
+note where `IsFixedLengthArrayBuffer` / `[AllowResizable]` checks are skipped due to
+Boa's API surface.
+
 ## Related documentation
 
 - `content/README.md` — Content-crate overview

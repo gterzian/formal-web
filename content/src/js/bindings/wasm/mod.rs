@@ -7,49 +7,21 @@
 //! interfaces (Module, Instance), and error types (CompileError, etc.) on
 //! the global object.
 //!
-//! This is the bindings layer — all JS-object creation, promise management,
-//! and WebIdlInterface impls live here.  Domain logic (validate, compile)
-//! is in `content/src/wasm/`.
+//! This is the bindings layer — the argument-extraction and result-wrapping
+//! glue.  All implementation logic lives in `content/src/wasm/namespace.rs`.
 
 mod interfaces;
 pub(crate) use interfaces::{
     reject_compile_promise, resolve_compile_promise, resolve_instantiate_promise,
 };
 
-use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue, js_string,
-    object::{JsObject, builtins::JsPromise},
-};
-
-use crate::html::{PendingRequest, PendingState, Window};
-use crate::wasm::{validate_wasm_module, WasmInstance, WasmModule};
-use crate::webidl::{get_stable_bytes, is_buffer_source};
+use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
+use crate::wasm::{WasmInstance, WasmModule};
+use crate::webidl::{get_a_copy_of_the_buffer_source, is_buffer_source};
 use crate::webidl::bindings::{
     register_interface_spec,
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_namespace_spec,
 };
-
-/// Create a TypeError and pass it to the promise's reject function.
-fn create_and_reject_type_error(
-    resolvers: &boa_engine::builtins::promise::ResolvingFunctions,
-    message: &str,
-    context: &mut Context,
-) -> JsResult<()> {
-    let ctor = context
-        .intrinsics()
-        .constructors()
-        .type_error()
-        .constructor();
-    let error = ctor.call(
-        &JsValue::undefined(),
-        &[js_string!(message).into()],
-        context,
-    )?;
-    resolvers
-        .reject
-        .call(&JsValue::undefined(), &[error], context)?;
-    Ok(())
-}
 
 // ── Namespace type ──
 
@@ -119,13 +91,10 @@ pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
     register_namespace_spec::<WasmNamespace>(context)?;
 
     // §3.13.1 step 5: Define [LegacyNamespace] interfaces on the namespace.
-    // Module and Instance are registered via register_interface_spec which
-    // checks legacy_namespace() and places them on the WebAssembly namespace.
     register_interface_spec::<WasmModule>(context)?;
     register_interface_spec::<WasmInstance>(context)?;
 
-    // Register error types (CompileError, LinkError, RuntimeError) —
-    // these are Error subclasses that need special prototype chain setup.
+    // Register error types (CompileError, LinkError, RuntimeError).
     // https://webassembly.github.io/spec/js-api/#error-objects
     interfaces::register_wasm_error_types(
         &resolve_wasm_namespace(context)?,
@@ -149,6 +118,10 @@ fn resolve_wasm_namespace(context: &mut Context) -> JsResult<JsObject> {
 }
 
 // ── Namespace operation bindings ──
+//
+// Each binding function is a thin wrapper: extract JS arguments,
+// call the corresponding domain function in `content/src/wasm/namespace.rs`,
+// and wrap the result.
 
 fn validate_fn(
     _this: &JsValue,
@@ -158,8 +131,8 @@ fn validate_fn(
     let bytes_value = args.first().ok_or_else(|| {
         JsNativeError::typ().with_message("WebAssembly.validate: missing argument")
     })?;
-    let stable_bytes = get_stable_bytes(bytes_value, context)?;
-    Ok(JsValue::new(validate_wasm_module(&stable_bytes)))
+    let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, context)?;
+    Ok(JsValue::new(crate::wasm::validate_wasm_module(&stable_bytes)))
 }
 
 fn compile_fn(
@@ -167,60 +140,11 @@ fn compile_fn(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    let promise_obj: JsObject = promise.clone().into();
-
-    let bytes_value = match args.first() {
-        Some(v) => v,
-        None => {
-            if let Err(error) = create_and_reject_type_error(
-                &resolvers,
-                "WebAssembly.compile: missing argument",
-                context,
-            ) {
-                eprintln!("wasm: failed to reject compile promise: {error}");
-            }
-            return Ok(promise.into());
-        }
-    };
-
-    let stable_bytes = match get_stable_bytes(bytes_value, context) {
-        Ok(b) => b,
-        Err(_) => {
-            if let Err(error) = create_and_reject_type_error(
-                &resolvers,
-                "WebAssembly.compile: invalid argument",
-                context,
-            ) {
-                eprintln!("wasm: failed to reject compile promise: {error}");
-            }
-            return Ok(promise.into());
-        }
-    };
-
-    // Note: The async compilation is kicked off by pushing a pending request
-    // onto the GlobalScope.  The content process drains pending requests on
-    // the next event-loop iteration, submits the bytes to the background
-    // compilation worker, and resolves/rejects the promise when the result
-    // arrives.
-    let global = context.global_object();
-    let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("wasm: global object is not a Window")
+    let bytes_value = args.first().ok_or_else(|| {
+        JsNativeError::typ().with_message("WebAssembly.compile: missing argument")
     })?;
-    let global_scope = &window.global_scope;
-
-    let request_id = global_scope.next_wasm_request_id();
-
-    global_scope.push_pending_request(PendingRequest::WasmCompile {
-        bytes: stable_bytes,
-        request_id,
-        is_instantiate: false,
-        promise: promise_obj,
-        resolvers,
-        state: PendingState::Pending,
-    });
-
-    Ok(promise.into())
+    let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, context)?;
+    crate::wasm::namespace::asynchronously_compile_a_webassembly_module(stable_bytes, context)
 }
 
 fn instantiate_fn(
@@ -232,74 +156,19 @@ fn instantiate_fn(
         JsNativeError::typ().with_message("WebAssembly.instantiate: missing argument")
     })?;
 
-    // Check if first argument is a buffer source (bytes overload)
-    // or a Module object (module-object overload).
+    // Dispatch to the right overload based on the first argument's type.
     if is_buffer_source(first, context) {
-        // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate-bytes>
-        return instantiate_bytes_overload(first, args.get(1), context);
+        let stable_bytes = get_a_copy_of_the_buffer_source(first, context)?;
+        return crate::wasm::namespace::instantiate_bytes(stable_bytes, context);
     }
 
     let module_object = first.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("WebAssembly.instantiate: first argument must be a buffer source or Module")
     })?;
-
     let wasm_module = module_object.downcast_ref::<WasmModule>().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("WebAssembly.instantiate: first argument does not implement the Module interface")
     })?;
-
-    // The importObject is the second argument (optional).
-    let import_object = args.get(1).cloned().unwrap_or(JsValue::undefined());
-
-    // Create a promise and push a pending instantiate request.
-    let global = context.global_object();
-    let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("wasm: global object is not a Window")
-    })?;
-    let global_scope = &window.global_scope;
-
-    let request_id = global_scope.next_wasm_request_id();
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    let promise_obj: JsObject = promise.clone().into();
-
-    global_scope.push_pending_request(PendingRequest::WasmInstantiate {
-        module: wasm_module.module.clone(),
-        import_object,
-        request_id,
-        promise: promise_obj,
-        resolvers,
-        state: PendingState::Pending,
-    });
-
-    Ok(promise.into())
-}
-
-fn instantiate_bytes_overload(
-    bytes_value: &JsValue,
-    _import_object: Option<&JsValue>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let stable_bytes = get_stable_bytes(bytes_value, context)?;
-
-    let global = context.global_object();
-    let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("wasm: global object is not a Window")
-    })?;
-    let global_scope = &window.global_scope;
-
-    let request_id = global_scope.next_wasm_request_id();
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    let promise_obj: JsObject = promise.clone().into();
-
-    global_scope.push_pending_request(PendingRequest::WasmCompile {
-        bytes: stable_bytes,
-        request_id,
-        is_instantiate: true,
-        promise: promise_obj,
-        resolvers,
-        state: PendingState::Pending,
-    });
-
-    Ok(promise.into())
+    crate::wasm::namespace::asynchronously_instantiate_a_webassembly_module(&*wasm_module, context)
 }

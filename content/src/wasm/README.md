@@ -13,34 +13,50 @@ exposed to web content.  Uses the vendored `wasmtime` crate
   `WasmInstance`, etc.) with `JsData` implementations.
 - `worker.rs` — `WasmWorker` (background compilation worker management),
   `WasmRequest`, `WasmResult`.
-- `functions.rs` — spec-mapped implementations of all wasm namespace
-  operations and interface methods (validate, compile, instantiate,
-  Module constructor, error type registration, promise resolution, buffer
-  source conversion).  This is the **domain layer** — it implements the
-  WebAssembly spec algorithms without being concerned with how members
-  are registered or wired to the JS engine.
+- `functions.rs` — Spec-mapped implementations for stateless helpers
+  (validate, JS↔wasm value converters, export descriptors, instance export
+  list).  These are pure Rust logic working on `wasmtime` types.
+- `namespace.rs` — Spec-mapped implementations for the `WebAssembly`
+  namespace operations (`compile`, `instantiate`).  These functions
+  receive already-converted Rust types (`Vec<u8>` for buffer sources,
+  `&WasmModule` for module objects) — the JsValue→Rust conversion
+  happens in the bindings layer via `content/src/webidl/` helpers.
+  They orchestrate the async flow: create promises via
+  `crate::webidl::new_pending_promise`, push pending requests onto
+  `GlobalScope`, and return the JS promise.
 
 ### Domain vs binding separation
 
-The **domain layer** (`content/src/wasm/`) operates on Rust/wasmtime types
-only — no `JsValue`, no `Context`.  All JS-interop code lives in
-**`content/src/js/bindings/wasm/`**:
+The **domain layer** (`content/src/wasm/`) implements the spec algorithms.
+It may import Boa types (`Context`, `JsValue`) when the algorithm
+requires it (e.g., creating promises).  The **bindings layer**
+(`content/src/js/bindings/wasm/`) is the thin outermost wrapper — it
+extracts JS arguments, calls the domain function, and transforms the
+return value into `JsResult<JsValue>`.
 
 | Layer | Location | Responsibility |
 |---|---|---|
-| **Domain** | `content/src/wasm/functions.rs` | Pure Rust logic: `validate_wasm_module(&[u8]) -> bool`, JS↔wasm value converters |
+| **Domain helpers** | `content/src/wasm/functions.rs` | Pure Rust logic: `validate_wasm_module(&[u8]) -> bool`, JS↔wasm value converters, export descriptors |
+| **Namespace operations** | `content/src/wasm/namespace.rs` | Spec-mapped `compile`, `instantiate` (bytes + module overloads) — promise creation, pending-request push, result-wrapping |
 | **Types** | `content/src/wasm/types.rs` | Rust data types with `JsData` (`WasmModule`, `WasmInstance`, etc.) |
 | **Worker** | `content/src/wasm/worker.rs` | Background compilation worker management |
-| **Bindings** | `content/src/js/bindings/wasm/interfaces.rs` | `WebIdlInterface` impls, promise resolution/rejection, exports-object creation, prototype lookups, error-type registration — everything returning `JsValue`/`JsObject` |
-| **Bindings** | `content/src/js/bindings/wasm/mod.rs` | `WasmNamespace` impl, `install_wasm_namespace`, namespace operation bindings (`validate_fn`, `compile_fn`, `instantiate_fn`) |
+| **Bindings** | `content/src/js/bindings/wasm/interfaces.rs` | `WebIdlInterface` impls, promise resolution/rejection, exports-object creation, prototype lookups, error-type registration |
+| **Bindings** | `content/src/js/bindings/wasm/mod.rs` | `WasmNamespace` impl + thin binding functions — arg extraction → domain call → result wrap |
 
-This split ensures that domain code can be reasoned about without any
-JavaScript engine knowledge.  Bindings are where Rust values become
-`JsValue` — as late as possible.
+This split keeps spec-mapped algorithm code in the domain layer while
+keeping the binding functions ignorant of the algorithm details.  A
+binding function should consist of little more than:
+
+```rust
+fn binding_fn(_this, args, context) -> JsResult<JsValue> {
+    let arg = args.first().ok_or_else(|| /* TypeError */)?;
+    domain_fn(arg, context)  // returns JsResult<JsValue>
+}
+```
 
 **Do not put `WebIdlInterface` implementations, `JsObject` construction,
-`Context` usage, or any code returning `JsValue` in `content/src/wasm/`.**
-Those belong in `content/src/js/bindings/wasm/`.
+or `WebIdlNamespace` impls in `content/src/wasm/`.**  Those belong in
+`content/src/js/bindings/wasm/`.
 
 ### JS bindings (Web IDL → JavaScript engine)
 
@@ -73,16 +89,17 @@ promises, and implements `WebIdlInterface`.
 ### Working
 
 - **`WebAssembly` namespace** installed on the global object with `validate`,
-  `compile`, and `instantiate` (bytes overload) functions.
+  `compile`, and `instantiate` (bytes + module-object overloads).
 - **`WebAssembly.validate(bytes)`** — synchronous compilation check via
   `wasmtime::Module::new`.  Returns `true`/`false`.
-- **`WebAssembly.compile(bytes)`** — async compilation.  Creates a pending
-  promise, pushes a `PendingRequest` onto the document's `GlobalScope`,
-  and returns the promise.  On the next event-loop iteration the content
-  process drains the request queue, submits the bytes to the background
-  compilation worker, and when the result arrives, resolves the promise
-  with a `WebAssembly.Module` object (prototype-chained correctly) or
-  rejects with `WebAssembly.CompileError`.
+- **`WebAssembly.compile(bytes)`** — async compilation (see flow diagram
+  below).  The domain function in `content/src/wasm/namespace.rs` creates
+  the promise, pushes a `PendingRequest` onto the document's `GlobalScope`,
+  and returns the promise.  The bindings layer only extracts the JS argument.
+- **`WebAssembly.instantiate(moduleObject)`** — async instantiation of a
+  previously-compiled module (empty imports).
+- **`WebAssembly.instantiate(bytes)`** — bytes overload: compiles then
+  instantiates.
 - **`WebAssembly.Module`** — constructor that compiles synchronously.
   Static method `exports(moduleObject)` returns an array of export
   descriptors `{ name, kind }`.
@@ -92,11 +109,12 @@ promises, and implements `WebIdlInterface`.
   request.  Uses `crossbeam_channel::unbounded()` for request/result
   message passing between the content-process main thread and the
   compiler worker.
-- **PendingRequest infrastructure** — generic `PendingRequest` enum on
-  `GlobalScope` with a `PendingState` lifecycle (`Pending → Processing →
-  removed on completion`).  The content process drains requests and
-  processes results before and after every command, with a microtask
-  checkpoint to flush promise `.then()` handlers.
+- **PendingRequest infrastructure** — `PendingRequest::WasmCompile` and
+  `PendingRequest::WasmInstantiate` on `GlobalScope`, with a `PendingState`
+  lifecycle (`Pending → Processing → removed on completion`).  JS-typed
+  data (promise, resolvers) is stored separately in
+  `GlobalScope.pending_wasm_resolvers` so that domain code can construct
+  `PendingRequest` without importing `boa_engine`.
 - **WPT test**: `wasm/jsapi/constructor/compile.any.js` enabled in
   `tests/wpt/include.ini`.
 
@@ -143,9 +161,15 @@ implementations but have no JS-visible constructors or methods yet:
 ```
 JS: WebAssembly.compile(buffer)
   │
-  ├─ compile_fn() creates JsPromise + ResolvingFunctions
-  ├─ pushes PendingRequest { bytes, promise, resolvers, state: Pending }
-  │  onto GlobalScope.pending_requests
+  ├─ [bindings] compile_fn() extracts bytes value from args,
+  │   converts JsValue → Vec<u8> via get_stable_bytes() (webidl)
+  │
+  ├─ [domain] namespace::compile_fn(stable_bytes, context):
+  │   ├─ new_pending_promise()  (via crate::webidl)
+  │   ├─ store resolvers in GlobalScope.pending_wasm_resolvers
+  │   ├─ push PendingRequest::WasmCompile { bytes, request_id }
+  │   │  onto GlobalScope.pending_requests
+  │   └─ return promise JsValue
   └─ returns promise to JS
 
 ContentProcess (before/after each command via handle_command):
@@ -155,8 +179,9 @@ ContentProcess (before/after each command via handle_command):
   │       → submits (request_id, bytes) to WasmWorker
   │       → stores document_id in pending_wasm_requests map
   │
-  └─ process_wasm_results()
-      └─ try_recv() on WasmWorker result channel
+  └─ drain_wasm_results()
+      └─ tries recv() on WasmWorker result channel
+          → consume_wasm_request() looks up resolvers separately
           → resolve_compile_promise() or reject_compile_promise()
           → flushes microtasks via perform_a_microtask_checkpoint()
 
