@@ -72,7 +72,7 @@ pub(crate) fn asynchronously_instantiate_a_webassembly_module(
     Ok(JsValue::from(promise))
 }
 
-/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-compile>
+/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate>
 pub(crate) fn instantiate_bytes(
     stable_bytes: Vec<u8>,
     context: &mut Context,

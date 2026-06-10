@@ -211,7 +211,11 @@ At the end of each task, run the following steps **in order**:
      numbering must match the spec exactly.
    - Does every domain method/function top doc comment have **only** the
      spec anchor URL (`<https://html.spec.whatwg.org/#...>`)?  No
-     description, no step summary, no prose.
+     description, no step summary, no prose, no "Implements the spec
+     algorithm" boilerplate.
+   - Are binding function bodies free of fully qualified paths like
+     `crate::wasm::namespace::fn_name(...)`?  Import with `use` at the
+     top and call unqualified.
    - Are `Note:` comments used only for discrepancies between the code and
      the spec text (never for design notes, implementation plans, or
      architecture rationales — those belong in the README chain)?
