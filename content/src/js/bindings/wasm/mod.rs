@@ -16,7 +16,14 @@ pub(crate) use interfaces::{
 };
 
 use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
-use crate::wasm::{WasmInstance, WasmModule};
+use crate::wasm::{
+    WasmInstance, WasmModule, validate_wasm_module,
+    namespace::{
+        asynchronously_compile_a_webassembly_module,
+        asynchronously_instantiate_a_webassembly_module,
+        instantiate_bytes,
+    },
+};
 use crate::webidl::{get_a_copy_of_the_buffer_source, is_buffer_source};
 use crate::webidl::bindings::{
     register_interface_spec,
@@ -132,7 +139,7 @@ fn validate_fn(
         JsNativeError::typ().with_message("WebAssembly.validate: missing argument")
     })?;
     let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, context)?;
-    Ok(JsValue::new(crate::wasm::validate_wasm_module(&stable_bytes)))
+    Ok(JsValue::new(validate_wasm_module(&stable_bytes)))
 }
 
 fn compile_fn(
@@ -144,7 +151,7 @@ fn compile_fn(
         JsNativeError::typ().with_message("WebAssembly.compile: missing argument")
     })?;
     let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, context)?;
-    crate::wasm::namespace::asynchronously_compile_a_webassembly_module(stable_bytes, context)
+    asynchronously_compile_a_webassembly_module(stable_bytes, context)
 }
 
 fn instantiate_fn(
@@ -159,7 +166,7 @@ fn instantiate_fn(
     // Dispatch to the right overload based on the first argument's type.
     if is_buffer_source(first, context) {
         let stable_bytes = get_a_copy_of_the_buffer_source(first, context)?;
-        return crate::wasm::namespace::instantiate_bytes(stable_bytes, context);
+        return instantiate_bytes(stable_bytes, context);
     }
 
     let module_object = first.as_object().ok_or_else(|| {
@@ -170,5 +177,5 @@ fn instantiate_fn(
         JsNativeError::typ()
             .with_message("WebAssembly.instantiate: first argument does not implement the Module interface")
     })?;
-    crate::wasm::namespace::asynchronously_instantiate_a_webassembly_module(&*wasm_module, context)
+    asynchronously_instantiate_a_webassembly_module(&*wasm_module, context)
 }

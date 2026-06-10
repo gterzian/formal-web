@@ -38,6 +38,11 @@ From inside out:
 4. **`WebIdlInterface` impls define *which members* an interface exposes.**
    Domain methods implement *what those members do*.
 
+5. **Never use fully qualified paths in binding function bodies.**  Import
+   domain functions with `use` at the top of the file and call them
+   unqualified.  `crate::wasm::namespace::compile_fn(bytes, ctx)` is wrong;
+   `compile_fn(bytes, ctx)` is right.
+
 ### Spec step annotation rules
 
 Only the **domain method** (the one that implements the spec algorithm) gets

@@ -138,6 +138,8 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
   code. A variable called `state` is always clearer than `s`.
 - Exception: closure parameters in iterator chains (`.map(|x| ...)`) where the type is obvious
   from context. But even there, prefer short but meaningful names like `tab` over `t`.
+- **Never use fully qualified paths** like `crate::wasm::namespace::compile_fn(...)` in
+  binding function bodies. Import with `use` at the top of the file and call unqualified.
 - Do not bulk-rename existing code with scripts — it creates merge conflicts, breaks history,
   and introduces subtle bugs when renames are inconsistent. Rename incrementally when
   modifying nearby code.
