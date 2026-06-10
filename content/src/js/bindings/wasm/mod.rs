@@ -150,33 +150,26 @@ fn resolve_wasm_namespace(context: &mut Context) -> JsResult<JsObject> {
 
 // ── Namespace operation bindings ──
 
-/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-validate>
 fn validate_fn(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // Step 1: "Let stableBytes be a copy of the bytes held by the buffer bytes."
     let bytes_value = args.first().ok_or_else(|| {
         JsNativeError::typ().with_message("WebAssembly.validate: missing argument")
     })?;
     let stable_bytes = get_stable_bytes(bytes_value, context)?;
-
-    // Steps 2-6: Compile, check errors, return true/false.
     Ok(JsValue::new(validate_wasm_module(&stable_bytes)))
 }
 
-/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-compile>
 fn compile_fn(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // Step: "Let promise be a new promise."
     let (promise, resolvers) = JsPromise::new_pending(context);
     let promise_obj: JsObject = promise.clone().into();
 
-    // Validate arguments; on error reject the promise instead of throwing.
     let bytes_value = match args.first() {
         Some(v) => v,
         None => {
@@ -209,9 +202,7 @@ fn compile_fn(
     // onto the GlobalScope.  The content process drains pending requests on
     // the next event-loop iteration, submits the bytes to the background
     // compilation worker, and resolves/rejects the promise when the result
-    // arrives.  This function must never throw synchronously for promise-type
-    // operations — argument validation errors are caught above and converted
-    // to promise rejections.
+    // arrives.
     let global = context.global_object();
     let window = global.downcast_ref::<Window>().ok_or_else(|| {
         JsNativeError::error().with_message("wasm: global object is not a Window")
@@ -229,11 +220,9 @@ fn compile_fn(
         state: PendingState::Pending,
     });
 
-    // Step: "Return promise."
     Ok(promise.into())
 }
 
-/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate>
 fn instantiate_fn(
     _this: &JsValue,
     args: &[JsValue],
@@ -250,9 +239,6 @@ fn instantiate_fn(
         return instantiate_bytes_overload(first, args.get(1), context);
     }
 
-    // <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate-moduleobject-importobject>
-    //
-    // Step: "Let module be moduleObject.[[Module]]."
     let module_object = first.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("WebAssembly.instantiate: first argument must be a buffer source or Module")
@@ -289,17 +275,6 @@ fn instantiate_fn(
     Ok(promise.into())
 }
 
-/// Handle the bytes overload of `instantiate`.
-///
-/// <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate-bytes>
-///
-/// Step 1: "Let stableBytes be a copy..."
-/// Step 2: "Asynchronously compile a WebAssembly module..."
-/// Step 3: "Instantiate promiseOfModule with imports importObject..."
-///
-/// For now, this follows the same compile-only path as `compile()` and
-/// full instantiation is deferred until the compile-and-then-instantiate
-/// flow is wired through the background worker.
 fn instantiate_bytes_overload(
     bytes_value: &JsValue,
     _import_object: Option<&JsValue>,

@@ -82,19 +82,15 @@ impl WebIdlInterface for WasmModule {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
-        // Step 1: "Let stableBytes be a copy of the bytes held by the buffer bytes."
         let bytes_value = args.first().ok_or_else(|| {
             JsNativeError::typ().with_message("Module constructor: missing argument")
         })?;
         let stable_bytes = crate::webidl::get_stable_bytes(bytes_value, context)?;
-        // Step 2: "Compile the WebAssembly module stableBytes and store the result as module."
-        // Step 3: "If module is error, throw a CompileError exception."
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
             JsNativeError::typ()
                 .with_message(format!("CompileError: {}", error))
         })?;
-        // Steps 7-8: "Set this.[[Module]] to module."  "Set this.[[Bytes]] to stableBytes."
         // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
         Ok(WasmModule::new(module, stable_bytes))
     }
@@ -215,7 +211,6 @@ pub(crate) fn get_wasm_instance_prototype(context: &mut Context) -> Option<JsObj
 
 // Promise resolution
 
-/// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 pub(crate) fn resolve_compile_promise(
     resolvers: &boa_engine::builtins::promise::ResolvingFunctions,
     module: wasmtime::Module,
@@ -228,14 +223,12 @@ pub(crate) fn resolve_compile_promise(
         Some(module_proto),
         WasmModule::new(module, bytes),
     );
-    // Step: "Resolve promise with moduleObject."
     resolvers
         .resolve
         .call(&JsValue::undefined(), &[module_object.into()], context)?;
     Ok(())
 }
 
-/// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 pub(crate) fn reject_compile_promise(
     resolvers: &boa_engine::builtins::promise::ResolvingFunctions,
     message: String,
@@ -270,7 +263,6 @@ pub(crate) fn reject_compile_promise(
     Ok(())
 }
 
-/// <https://webassembly.github.io/spec/js-api/#asynchronously-instantiate-a-webassembly-module>
 pub(crate) fn resolve_instantiate_promise(
     module: &Module,
     instance: &WasmtimeInstance,
@@ -287,7 +279,6 @@ pub(crate) fn resolve_instantiate_promise(
         Some(instance_proto),
         WasmInstance::new(exports, Arc::clone(store), *instance),
     );
-    // Step: "Resolve promise with instanceObject."
     resolvers
         .resolve
         .call(&JsValue::undefined(), &[instance_object.into()], context)?;
@@ -296,7 +287,6 @@ pub(crate) fn resolve_instantiate_promise(
 
 // Exports object creation
 
-/// <https://webassembly.github.io/spec/js-api/#create-an-exports-object>
 pub(crate) fn create_exports_object(
     module: &Module,
     instance: &WasmtimeInstance,
@@ -304,9 +294,7 @@ pub(crate) fn create_exports_object(
     store_arc: &Arc<Mutex<Store<()>>>,
     context: &mut Context,
 ) -> JsResult<JsObject> {
-    // Step 1: "Let exportsObject be ! OrdinaryObjectCreate(null)."
     let exports_object = JsObject::from_proto_and_data(None, ());
-    // Step 2: "For each (name, externtype) of module_exports(module),"
     let export_list = instance_export_list(module, instance, store);
     // Note: Only exported functions are implemented.  For memory, table,
     // global, and tag exports the current implementation returns undefined.
@@ -317,14 +305,11 @@ pub(crate) fn create_exports_object(
             }
             _ => JsValue::undefined(),
         };
-        // Step: "Let status be ! CreateDataProperty(exportsObject, name, value)."
         exports_object
             .set(js_string!(name.as_str()), value, false, context)
             .map_err(|_| JsNativeError::typ().with_message("failed to set export property"))?;
     }
-    // Step: "Perform ! SetIntegrityLevel(exportsObject, "frozen")."
     // Note: Boa does not expose SetIntegrityLevel directly; skip for now.
-    // Step: "Return exportsObject."
     Ok(exports_object)
 }
 
@@ -368,7 +353,6 @@ fn create_exported_function_wrapper(
 
 // Error types
 
-/// <https://webassembly.github.io/spec/js-api/#error-objects>
 pub(crate) fn register_wasm_error_types(
     namespace: &JsObject,
     context: &mut Context,
@@ -445,7 +429,6 @@ pub(crate) fn register_wasm_error_types(
 
 // JSTag getter
 
-/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-jstag>
 pub(crate) fn get_wasm_jstag(
     _this: &JsValue,
     _args: &[JsValue],
