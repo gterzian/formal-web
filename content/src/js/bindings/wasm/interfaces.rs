@@ -180,20 +180,46 @@ pub(crate) fn register_wasm_error_types(
     // spec. Each constructor delegates to the built-in Error constructor.
     let error_names = ["CompileError", "LinkError", "RuntimeError"];
     for name in &error_names {
-        let ctor_fn = NativeFunction::from_fn_ptr(move |_new_target, args, ctx| {
-            let message = args
-                .first()
-                .and_then(|v| v.as_string())
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
-            let error = ctx
-                .intrinsics()
-                .constructors()
-                .error()
-                .constructor()
-                .call(&JsValue::undefined(), &[JsValue::from(js_string!(message.as_str()))], ctx)?;
-            Ok(error)
-        });
+        // Create the prototype object before the constructor function so the
+        // closure can capture it.  This ensures instanceof checks work even
+        // when the constructor is called without `new`.
+        let proto = JsObject::from_proto_and_data(
+            Some(context.intrinsics().constructors().error().prototype()),
+            (),
+        );
+        let ctor_fn = {
+            let name_str = *name;
+            // SAFETY: The closure is 'static — no borrowed data captured.
+            unsafe {
+                NativeFunction::from_closure(
+                    move |_new_target: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
+                        let message = args
+                            .first()
+                            .and_then(|v| v.as_string())
+                            .map(|s| s.to_std_string_escaped())
+                            .unwrap_or_default();
+                        // Create an Error via the built-in Error constructor.
+                        let error = ctx
+                            .intrinsics()
+                            .constructors()
+                            .error()
+                            .constructor()
+                            .call(&JsValue::undefined(), &[JsValue::from(js_string!(message.as_str()))], ctx)?;
+                        // Set name to the error type name (CompileError, etc.)
+                        // so the error is recognized by name-based checks.
+                        if let Some(obj) = error.as_object() {
+                            let _ = obj.set(
+                                js_string!("name"),
+                                JsValue::from(js_string!(name_str)),
+                                false,
+                                ctx,
+                            );
+                        }
+                        Ok(error)
+                    },
+                )
+            }
+        };
         let realm = context.realm().clone();
         let ctor = FunctionObjectBuilder::new(&realm, ctor_fn)
             .name(*name)
@@ -201,10 +227,6 @@ pub(crate) fn register_wasm_error_types(
             .constructor(true)
             .build();
         let ctor_obj: JsObject = ctor.into();
-        let proto = JsObject::from_proto_and_data(
-            Some(context.intrinsics().constructors().error().prototype()),
-            (),
-        );
         let writable_config = PropertyDescriptor::builder()
             .writable(true)
             .configurable(true)
