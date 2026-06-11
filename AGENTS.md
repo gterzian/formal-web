@@ -29,6 +29,18 @@ The above should form a chain of readmes, based on the directories where you are
 
 You can also update this documentation chain based on lessons learned from user feedback: update the lowest-level file that owns the rule or pattern, and avoid repeating the same guidance in multiple places.
 
+### readme-chain extension
+
+The `.pi/extensions/readme-chain/` extension provides:
+- **`readme_chain({ path })` tool** — Call this before editing a file to fetch the full
+  chain of AGENTS.md and README.md files for that file's path, from general to specific.
+  Reading the chain is always preferred over relying on memory.
+- **`/readme-chain [path]` command** — Lists the chain files for a path (for human use).
+- **Automatic reminder** — When the agent tries to `edit`, `write`, or `read` a source file
+  in a directory whose chain has not been consulted yet, a one-per-prompt warning is shown.
+
+See `.pi/extensions/readme-chain/README.md` for full documentation.
+
 # Algorithm Implementation
 
 ## Three-layer architecture
