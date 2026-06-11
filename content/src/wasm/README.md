@@ -13,16 +13,19 @@ exposed to web content.  Uses the vendored `wasmtime` crate
   `WasmInstance`, etc.) with `JsData` implementations.
 - `worker.rs` — `WasmWorker` (background compilation worker management),
   `WasmRequest`, `WasmResult`.
-- `functions.rs` — Spec-mapped implementations for stateless helpers
-  (validate, JS↔wasm value converters, export descriptors, instance export
-  list).  These are pure Rust logic working on `wasmtime` types.
+- `conversions.rs` — JS↔wasm value conversion (`js_val_to_wasm_val`,
+  `wasm_val_to_js_value`, `default_val_for_type`), implementing the
+  [Core Embedding](https://webassembly.github.io/spec/core/appendix/embedding.html#embed-func-type)
+  value-type conversion algorithms.
 - `namespace.rs` — Spec-mapped implementations for the `WebAssembly`
-  namespace operations (`compile`, `instantiate`).  These functions
+  namespace and its algorithms: `validate`, `compile`, `instantiate`
+  (bytes + module overloads), `instantiate the core`, `initialize an
+  instance object`, and `create an exports object`.  These functions
   receive already-converted Rust types (`Vec<u8>` for buffer sources,
   `&WasmModule` for module objects) — the JsValue→Rust conversion
   happens in the bindings layer via `content/src/webidl/` helpers.
   They orchestrate the async flow: create promises via
-  `crate::webidl::new_pending_promise`, push pending requests onto
+  `crate::webidl::a_new_promise`, push pending requests onto
   `GlobalScope`, and return the JS promise.
 
 ### Domain vs binding separation
@@ -36,7 +39,7 @@ return value into `JsResult<JsValue>`.
 
 | Layer | Location | Responsibility |
 |---|---|---|
-| **Domain helpers** | `content/src/wasm/functions.rs` | Pure Rust logic: `validate_wasm_module(&[u8]) -> bool`, JS↔wasm value converters, export descriptors |
+| **Conversions** | `content/src/wasm/conversions.rs` | JS↔wasm value conversion per Core Embedding spec |
 | **Namespace operations** | `content/src/wasm/namespace.rs` | Spec-mapped `compile`, `instantiate` (bytes + module overloads) — promise creation, pending-request push, result-wrapping |
 | **Types** | `content/src/wasm/types.rs` | Rust data types with `JsData` (`WasmModule`, `WasmInstance`, etc.) |
 | **Worker** | `content/src/wasm/worker.rs` | Background compilation worker management |
@@ -165,7 +168,7 @@ JS: WebAssembly.compile(buffer)
   │   converts JsValue → Vec<u8> via get_stable_bytes() (webidl)
   │
   ├─ [domain] namespace::compile_fn(stable_bytes, context):
-  │   ├─ new_pending_promise()  (via crate::webidl)
+  │   ├─ a_new_promise()  (via crate::webidl)
   │   ├─ store resolvers in GlobalScope.pending_wasm_resolvers
   │   ├─ push PendingRequest::WasmCompile { bytes, request_id }
   │   │  onto GlobalScope.pending_requests

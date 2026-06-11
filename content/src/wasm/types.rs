@@ -29,6 +29,30 @@ impl WasmModule {
     pub(crate) fn new(module: wasmtime::Module, bytes: Vec<u8>) -> Self {
         Self { module, bytes }
     }
+
+    /// <https://webassembly.github.io/spec/js-api/#dom-module-exports>
+    pub(crate) fn export_descriptors(&self) -> Vec<(String, &'static str)> {
+        // Step 1: "Let module be moduleObject.[[Module]]."
+        // Step 2: "Let exports be « »."
+        // Step 3: "For each (name, type) of module_exports(module),"
+        // Note: Steps 3.2-3.3 (building JsArray entries and appending) are done
+        // by the JS bindings glue — this domain method returns the raw Vec.
+        self.module.exports()
+            .map(|export| {
+                let kind = match export.ty() {
+                    wasmtime::ExternType::Func(_) => "function",
+                    wasmtime::ExternType::Table(_) => "table",
+                    wasmtime::ExternType::Memory(_) => "memory",
+                    wasmtime::ExternType::Global(_) => "global",
+                    wasmtime::ExternType::Tag(_) => "tag",
+                };
+                // Step 3.1: "Let kind be the string value of the extern type type."
+                (export.name().to_string(), kind)
+            })
+            .collect()
+        // Step 4: "Return exports."
+        // Note: The binding wraps this Vec in a JsArray before returning to JS.
+    }
 }
 
 /// <https://www.w3.org/TR/wasm-js-api/#instance-objects>

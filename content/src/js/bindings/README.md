@@ -97,6 +97,7 @@ fn module_exports_binding(
 | Abbreviated step (`// Step 2-3: Iterate and collect`) | Verbatim spec text (`// Step 3: "For each (name, type) of module_exports(module),"`) |
 | No `// Step N:` at all | Every spec-algorithm step has a `// Step N:` line before the corresponding code |
 | Combined steps (`// Steps 7-8: Set this.[[Module]]`) | Only when adjacent steps are implemented in the same code block — each still gets its own `// Step N:` line |
+| Inlining a named sub-algorithm into the parent function | When the spec calls a named sub-algorithm (e.g. "initialize an instance object", "create an exports object"), create a separate function with its own `/// <url>` anchor and `// Step N:` comments — mirror the spec's structure |
 | Steps in a doc comment above the function | Steps go inside the function body — `//` not `///` |
 | **Step comments on a JS binding function** | **Binding functions don't implement algorithms — no step comments** |
 
@@ -133,7 +134,7 @@ Bindings (arg extraction + webidl conversion):
 Domain (algorithm):
   content/src/wasm/namespace.rs
   fn compile_fn(bytes: Vec<u8>, ctx) -> JsResult<JsValue> {
-      let (promise, resolvers) = new_pending_promise(ctx); // webidl helper
+      let (promise, resolvers) = a_new_promise(ctx); // webidl helper
       // ... push pending request, store resolvers ...
       Ok(JsValue::from(promise))
   }

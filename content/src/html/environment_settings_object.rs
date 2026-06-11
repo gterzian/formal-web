@@ -14,8 +14,7 @@ use crate::js::platform_objects::{store_document_object, with_global_scope};
 use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
 use crate::dom::{Document, Event, EventDispatchHost};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
-use crate::html::TimerHandler;
-use crate::html::Window;
+use crate::html::{TimerHandler, Window};
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -295,7 +294,6 @@ impl EnvironmentSettingsObject {
     /// Take all pending wasm batches (bytes + request_id) from the GlobalScope.
     /// Marks them as Processing.
     pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
-        use crate::html::Window;
         let global = self.context.global_object();
         if let Some(window) = global.downcast_ref::<Window>() {
             window.global_scope.take_pending_wasm_batches()
@@ -307,7 +305,6 @@ impl EnvironmentSettingsObject {
     /// Take all pending wasm instantiate requests (module + request_id)
     /// from the GlobalScope.  Marks them as Processing.
     pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
-        use crate::html::Window;
         let global = self.context.global_object();
         if let Some(window) = global.downcast_ref::<Window>() {
             window.global_scope.take_pending_wasm_instantiates()
@@ -324,7 +321,6 @@ impl EnvironmentSettingsObject {
         boa_engine::object::JsObject,
         boa_engine::builtins::promise::ResolvingFunctions,
     )> {
-        use crate::html::Window;
         let global = self.context.global_object();
         let window = global.downcast_ref::<Window>()?;
         window.global_scope.consume_wasm_request(request_id)

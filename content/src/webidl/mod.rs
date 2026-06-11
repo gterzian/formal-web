@@ -12,7 +12,7 @@ pub(crate) use callback::{
     nullable_value,
 };
 pub(crate) use promise::{
-    error_to_rejection_reason, mark_promise_as_handled, new_pending_promise,
+    error_to_rejection_reason, mark_promise_as_handled, a_new_promise,
     promise_from_completion,
     promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
     transform_promise_to_undefined,

@@ -130,6 +130,48 @@ impl WasmWorker {
         }
     }
 
+    /// <https://webassembly.github.io/spec/js-api/#instantiate-the-core-of-a-webassembly-module>
+    ///
+    /// Runs on the background worker thread.  Creates a fresh store for the
+    /// wasmtime engine and instantiates the module with empty imports.
+    /// Returns the store and instance on success, or an error message string
+    /// on failure.
+    ///
+    /// Note: The spec algorithm runs in the context of the "surrounding agent's
+    /// associated store".  Since each instantiation gets its own store in the
+    /// current architecture (rather than a shared per-agent store), step 1
+    /// ("Let store be the surrounding agent's associated store") is replaced by
+    /// creating a fresh `Store` and step 5 ("Set the surrounding agent's
+    /// associated store to store") is a no-op.
+    fn instantiate_the_core_of_a_webassembly_module(
+        engine: &wasmtime::Engine,
+        module: &wasmtime::Module,
+    ) -> Result<(wasmtime::Store<()>, wasmtime::Instance), String> {
+        // Step 1: "Let store be the surrounding agent's associated store."
+        // Note: Each instantiation gets a fresh store (see function doc).
+        let mut store = Store::new(engine, ());
+
+        // Step 2: "Let result be module_instantiate(store, module, imports)."
+        // Note: imports are empty — read-the-imports step (spec step 3-5 of
+        // the outer algorithm) is not yet implemented.
+        let result = WasmtimeInstance::new(&mut store, module, &[]);
+
+        // Step 3: "If result is error, throw an appropriate exception type."
+        // Note: We return the error as a String; the caller maps it to an
+        // appropriate JS error type (LinkError, RuntimeError, etc.) based on
+        // the error kind.  Distinguishing link errors from runtime errors is
+        // not yet implemented — all errors produce the same string.
+        let instance = result.map_err(|error| error.to_string())?;
+
+        // Step 4: "Let (store, instance) be result."
+        // Step 5: "Set the surrounding agent's associated store to store."
+        // Note: No-op — the store is returned and wrapped in Arc<Mutex<>> for
+        // the content process to use.
+        //
+        // Step 6: "Return instance."
+        Ok((store, instance))
+    }
+
     /// Start the background worker if it hasn't been started yet.
     fn ensure_worker_started(&mut self) {
         if self.request_sender.is_some() {
@@ -196,10 +238,8 @@ impl WasmWorker {
                     }
                 }
                 Ok(WasmRequest::Instantiate { request_id, module }) => {
-                    let mut store = Store::new(&engine, ());
-                    let result = WasmtimeInstance::new(&mut store, &module, &[]);
-                    match result {
-                        Ok(instance) => {
+                    match Self::instantiate_the_core_of_a_webassembly_module(&engine, &module) {
+                        Ok((store, instance)) => {
                             let store = Arc::new(Mutex::new(store));
                             Self::push_result(
                                 &results,
@@ -211,13 +251,13 @@ impl WasmWorker {
                                 },
                             );
                         }
-                        Err(error) => {
+                        Err(message) => {
                             Self::push_result(
                                 &results,
                                 &signal_sender,
                                 WasmResult::InstantiateError {
                                     request_id,
-                                    message: error.to_string(),
+                                    message,
                                 },
                             );
                         }

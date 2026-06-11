@@ -21,6 +21,7 @@ use crate::html::{
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
 use crate::ui_event::deserialize_ui_event;
+use crate::wasm::{WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation};
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
@@ -356,7 +357,7 @@ pub(crate) struct ContentProcess {
     >,
 
     /// Background wasm compilation thread.
-    wasm_worker: crate::wasm::WasmWorker,
+    wasm_worker: WasmWorker,
 
     /// Pending wasm requests waiting for background results.
     /// Maps request_id → document_id.
@@ -385,7 +386,7 @@ impl ContentProcess {
             font_sender: FontTransportSender::default(),
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
-            wasm_worker: crate::wasm::WasmWorker::new(
+            wasm_worker: WasmWorker::new(
                 wasmtime::Engine::default(),
                 wasm_signal_sender,
             ),
@@ -1634,16 +1635,16 @@ impl ContentProcess {
     /// Called both at the end of `handle_command` and when the dedicated
     /// IPC signal fires.
     fn drain_wasm_results(&mut self) {
-        let completed: Vec<(u64, crate::wasm::WasmResult)> = {
+        let completed: Vec<(u64, WasmResult)> = {
             let results = self.wasm_worker.drain_results();
             results
                 .into_iter()
                 .map(|result| {
                     let request_id = match &result {
-                        crate::wasm::WasmResult::Compiled { request_id, .. }
-                        | crate::wasm::WasmResult::CompileError { request_id, .. }
-                        | crate::wasm::WasmResult::Instantiated { request_id, .. }
-                        | crate::wasm::WasmResult::InstantiateError { request_id, .. } => {
+                        WasmResult::Compiled { request_id, .. }
+                        | WasmResult::CompileError { request_id, .. }
+                        | WasmResult::Instantiated { request_id, .. }
+                        | WasmResult::InstantiateError { request_id, .. } => {
                             *request_id
                         }
                     };
@@ -1678,11 +1679,11 @@ impl ContentProcess {
             };
 
             match result {
-                crate::wasm::WasmResult::Compiled {
+                WasmResult::Compiled {
                     request_id: _,
                     module,
                 } => {
-                    if let Err(error) = crate::wasm::compile_continuation(
+                    if let Err(error) = compile_continuation(
                         &resolvers,
                         module,
                         Vec::new(),
@@ -1691,11 +1692,11 @@ impl ContentProcess {
                         eprintln!("WebAssembly: failed to resolve compile promise: {error}");
                     }
                 }
-                crate::wasm::WasmResult::CompileError {
+                WasmResult::CompileError {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = crate::wasm::compile_rejection(
+                    if let Err(error) = compile_rejection(
                         &resolvers,
                         message,
                         &mut content_document.settings.context,
@@ -1703,7 +1704,7 @@ impl ContentProcess {
                         eprintln!("WebAssembly: failed to reject compile promise: {error}");
                     }
                 }
-                crate::wasm::WasmResult::Instantiated {
+                WasmResult::Instantiated {
                     request_id: _,
                     store,
                     instance,
@@ -1714,7 +1715,7 @@ impl ContentProcess {
                         self.pending_wasm_requests.remove(&request_id);
                         continue;
                     };
-                    if let Err(error) = crate::wasm::instantiate_continuation(
+                    if let Err(error) = instantiate_continuation(
                         &module,
                         &instance,
                         &store,
@@ -1724,11 +1725,11 @@ impl ContentProcess {
                         eprintln!("WebAssembly: failed to resolve instantiate promise: {error}");
                     }
                 }
-                crate::wasm::WasmResult::InstantiateError {
+                WasmResult::InstantiateError {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = crate::wasm::compile_rejection(
+                    if let Err(error) = compile_rejection(
                         &resolvers,
                         message,
                         &mut content_document.settings.context,

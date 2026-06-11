@@ -58,6 +58,16 @@ for the definitive spec-annotation reference with examples and common mistakes.
    specific refactoring).  Design notes, architecture rationales, and
    implementation plans belong in the README chain, not in `// Note:`.
 
+4. **Mirror spec sub-algorithms as separate functions** — When a spec algorithm
+   calls a named sub-algorithm (e.g. "instantiate the core of a WebAssembly
+   module", "initialize an instance object"), create a dedicated function with
+   its own anchor URL and step comments.  Do not inline sub-algorithm logic
+   into the parent function.
+
+5. **No catch-all utility files** — Name domain modules by spec capability, not
+   by `utils.rs`/`functions.rs`/`helpers.rs`.  Each file should correspond to
+   a well-defined spec concept or algorithm group.
+
 See the "Spec-mapping review" step under "End-of-Task Flow" for the full
 review checklist.
 
