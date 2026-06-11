@@ -77,7 +77,8 @@ pub(crate) use attribute::AttributeDef;
 pub(crate) use constant::ConstantDef;
 pub(crate) use interface::{
     create_interface_instance, InterfaceDefinition,
-    register_interface_spec, WebIdlInterface,
+    register_interface_spec, register_namespace_spec,
+    WebIdlInterface, WebIdlNamespace,
 };
 pub(crate) use operation::OperationDef;
 pub(crate) use registry::{

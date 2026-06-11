@@ -68,6 +68,11 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
 
     initialize_registry(&mut context);
 
+    // ── Install WebAssembly namespace ──
+    if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut context) {
+        eprintln!("[content] failed to install WebAssembly namespace: {error}");
+    }
+
     macro_rules! reg {
         ($ty:ty) => {
             register_interface_spec::<$ty>(&mut context)

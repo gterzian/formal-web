@@ -8,6 +8,7 @@ pub mod dom;
 pub mod html;
 pub mod infra;
 pub mod streams;
+pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{
@@ -20,6 +21,7 @@ use crate::html::{
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
 use crate::ui_event::deserialize_ui_event;
+use crate::wasm::{WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation};
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
@@ -27,6 +29,7 @@ use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
+use ipc_channel::router::RouterProxy;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
@@ -352,10 +355,23 @@ pub(crate) struct ContentProcess {
     new_document_registry: Rc<
         RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>,
     >,
+
+    /// Background wasm compilation thread.
+    wasm_worker: WasmWorker,
+
+    /// Pending wasm requests waiting for background results.
+    /// Maps request_id → document_id.
+    pending_wasm_requests: HashMap<u64, DocumentId>,
+    /// Modules from instantiate requests, needed for exports creation.
+    pending_wasm_modules: HashMap<u64, wasmtime::Module>,
 }
 
 impl ContentProcess {
-    fn new(event_sender: IpcSender<ContentEvent>, event_loop_id: EventLoopId) -> Self {
+    fn new(
+        event_sender: IpcSender<ContentEvent>,
+        wasm_signal_sender: crossbeam_channel::Sender<()>,
+        event_loop_id: EventLoopId,
+    ) -> Self {
         Self {
             event_sender,
             event_loop_id,
@@ -370,6 +386,12 @@ impl ContentProcess {
             font_sender: FontTransportSender::default(),
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
+            wasm_worker: WasmWorker::new(
+                wasmtime::Engine::default(),
+                wasm_signal_sender,
+            ),
+            pending_wasm_requests: HashMap::new(),
+            pending_wasm_modules: HashMap::new(),
         }
     }
 
@@ -1070,6 +1092,15 @@ impl ContentProcess {
                 eprintln!("failed to clear window timers during document teardown: {error}");
             }
         }
+        // Clean up any pending wasm requests for this document so that
+        // worker results arriving after destruction are not misattributed,
+        // and to avoid orphaned promise entries.
+        // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
+        self.pending_wasm_requests.retain(|_request_id, doc_id| *doc_id != document_id);
+        self.pending_wasm_modules.retain(|request_id, _module| {
+            !self.pending_wasm_requests.contains_key(request_id)
+                || self.pending_wasm_requests.get(request_id) != Some(&document_id)
+        });
         let mut local_state = self
             .local_state
             .lock()
@@ -1572,9 +1603,167 @@ impl ContentProcess {
         .map_err(|error| error.to_string())
     }
 
+    /// Drain pending WebAssembly requests from all documents and submit
+    /// them to the background worker.
+    fn drain_all_pending_wasm_requests(&mut self) {
+        let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+
+        for document_id in document_ids {
+            let Some(content_document) = self.documents.get_mut(&document_id) else {
+                continue;
+            };
+
+            // Submit compile batches.
+            let batches = content_document.settings.take_pending_wasm_batches();
+            for (request_id, bytes) in batches {
+                self.pending_wasm_requests.insert(request_id, document_id);
+                self.wasm_worker.submit_compile(bytes, request_id);
+            }
+
+            // Submit instantiate requests.
+            let instantiates =
+                content_document.settings.take_pending_wasm_instantiates();
+            for (request_id, module) in instantiates {
+                self.pending_wasm_requests.insert(request_id, document_id);
+                self.pending_wasm_modules.insert(request_id, module.clone());
+                self.wasm_worker.submit_instantiate(module, request_id);
+            }
+        }
+    }
+
+    /// Drain completed wasm results from the shared queue.
+    /// Called both at the end of `handle_command` and when the dedicated
+    /// IPC signal fires.
+    fn drain_wasm_results(&mut self) {
+        let completed: Vec<(u64, WasmResult)> = {
+            let results = self.wasm_worker.drain_results();
+            results
+                .into_iter()
+                .map(|result| {
+                    let request_id = match &result {
+                        WasmResult::Compiled { request_id, .. }
+                        | WasmResult::CompileError { request_id, .. }
+                        | WasmResult::Instantiated { request_id, .. }
+                        | WasmResult::InstantiateError { request_id, .. } => {
+                            *request_id
+                        }
+                    };
+                    (request_id, result)
+                })
+                .collect()
+        };
+
+        for (request_id, result) in completed {
+            let Some(&document_id) = self.pending_wasm_requests.get(&request_id) else {
+                // This is expected when a document is destroyed before the
+                // worker finishes — the destroy_document cleanup removes the
+                // entry, and the worker's result arrives safely discarded.
+                continue;
+            };
+
+            let Some(content_document) = self.documents.get_mut(&document_id) else {
+                eprintln!("WebAssembly: document {} not found", document_id);
+                self.pending_wasm_requests.remove(&request_id);
+                continue;
+            };
+
+            let Some((_promise, resolvers)) =
+                content_document.settings.consume_wasm_request(request_id)
+            else {
+                eprintln!(
+                    "WebAssembly: request {} not found on document {}",
+                    request_id, document_id
+                );
+                self.pending_wasm_requests.remove(&request_id);
+                continue;
+            };
+
+            match result {
+                WasmResult::Compiled {
+                    request_id: _,
+                    module,
+                } => {
+                    if let Err(error) = compile_continuation(
+                        &resolvers,
+                        module,
+                        Vec::new(),
+                        &mut content_document.settings.context,
+                    ) {
+                        eprintln!("WebAssembly: failed to resolve compile promise: {error}");
+                    }
+                }
+                WasmResult::CompileError {
+                    request_id: _,
+                    message,
+                } => {
+                    if let Err(error) = compile_rejection(
+                        &resolvers,
+                        message,
+                        &mut content_document.settings.context,
+                    ) {
+                        eprintln!("WebAssembly: failed to reject compile promise: {error}");
+                    }
+                }
+                WasmResult::Instantiated {
+                    request_id: _,
+                    store,
+                    instance,
+                } => {
+                    let module = self.pending_wasm_modules.remove(&request_id);
+                    let Some(module) = module else {
+                        eprintln!("WebAssembly: no module found for instantiate request {}", request_id);
+                        self.pending_wasm_requests.remove(&request_id);
+                        continue;
+                    };
+                    if let Err(error) = instantiate_continuation(
+                        &module,
+                        &instance,
+                        &store,
+                        &resolvers,
+                        &mut content_document.settings.context,
+                    ) {
+                        eprintln!("WebAssembly: failed to resolve instantiate promise: {error}");
+                    }
+                }
+                WasmResult::InstantiateError {
+                    request_id: _,
+                    message,
+                } => {
+                    if let Err(error) = compile_rejection(
+                        &resolvers,
+                        message,
+                        &mut content_document.settings.context,
+                    ) {
+                        eprintln!("WebAssembly: failed to reject instantiate promise: {error}");
+                    }
+                }
+            }
+
+            self.pending_wasm_requests.remove(&request_id);
+        }
+
+        // Flush microtasks (promise .then() handlers) after resolving/rejecting.
+        for document in self.documents.values_mut() {
+            if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
+                eprintln!("WebAssembly: microtask checkpoint failed: {error}");
+            }
+        }
+    }
+
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     /// Note: The Rust event-loop worker emits these process effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
+        let result = self.handle_command_inner(command);
+
+        // After every command, drain any pending WebAssembly requests and
+        // process completed results from the shared queue.
+        self.drain_all_pending_wasm_requests();
+        self.drain_wasm_results();
+
+        result
+    }
+
+    fn handle_command_inner(&mut self, command: Command) -> Result<bool, String> {
         match command {
             Command::SetEventLoopId(event_loop_id) => {
                 self.event_loop_id = event_loop_id;
@@ -1748,43 +1937,61 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?;
 
-    let mut process = ContentProcess::new(event_sender, placeholder_id);
+    // Set up a crossbeam channel for the wasm worker to signal results.
+    let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
+
+    let mut process = ContentProcess::new(event_sender, wasm_signal_sender, placeholder_id);
+
+    // Route the command IPC through the router to get a crossbeam receiver.
+    let router = RouterProxy::new();
+    let cmd_rx =
+        router.route_ipc_receiver_to_new_crossbeam_receiver(command_receiver);
+
     loop {
-        let command = match command_receiver.recv() {
-            Ok(command) => command,
-            Err(_error) => break,
-        };
-        let notify_event_loop = matches!(
-            &command,
-            CreateEmptyDocument { .. }
-                | CreateLoadedDocument { .. }
-                | DestroyDocument { .. }
-                | DispatchEvent { .. }
-                | Command::RunBeforeUnload { .. }
-                | UpdateTheRendering { .. }
-                | RunWindowTimer { .. }
-                | CompleteDocumentFetch { .. }
-                | FailDocumentFetch { .. }
-        );
-        match process.handle_command(command) {
-            Ok(true) => {
-                if notify_event_loop {
-                    if let Err(error) = process.note_command_completed() {
-                        eprintln!("content error: {error}");
+        crossbeam_channel::select! {
+            recv(cmd_rx) -> cmd => {
+                match cmd {
+                    Ok(command) => {
+                        let notify = matches!(
+                            &command,
+                            CreateEmptyDocument { .. }
+                                | CreateLoadedDocument { .. }
+                                | DestroyDocument { .. }
+                                | DispatchEvent { .. }
+                                | Command::RunBeforeUnload { .. }
+                                | UpdateTheRendering { .. }
+                                | RunWindowTimer { .. }
+                                | CompleteDocumentFetch { .. }
+                                | FailDocumentFetch { .. }
+                        );
+                        match process.handle_command(command) {
+                            Ok(true) => {
+                                if notify {
+                                    let _ = process.note_command_completed();
+                                }
+                            }
+                            Ok(false) => break,
+                            Err(error) => {
+                                eprintln!("content error: {error}");
+                                if notify {
+                                    let _ = process.note_command_completed();
+                                }
+                            }
+                        }
                     }
+                    Err(_) => break,
                 }
             }
-            Ok(false) => break,
-            Err(error) => {
-                eprintln!("content error: {error}");
-                if notify_event_loop {
-                    if let Err(error) = process.note_command_completed() {
-                        eprintln!("content error: {error}");
-                    }
-                }
+            recv(wasm_rx) -> _ => {
+                process.drain_all_pending_wasm_requests();
+                process.drain_wasm_results();
             }
         }
     }
+
+    // Final drain on shutdown — the worker may have results queued that
+    // were never processed because the event loop exited.
+    process.drain_wasm_results();
 
     Ok(())
 }

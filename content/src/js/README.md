@@ -12,10 +12,28 @@ state.
   callback state so repeated lookups reuse the same `JsObject` identity.
 - `html_parser.rs` bridges html5ever parsing to Blitz mutations, records
   parser errors, and collects parser-discovered classic scripts.
-- `content/src/js/bindings` should convert arguments, check [inherited
+- **`content/src/js/bindings/` is the single home for Web IDL binding
+  definitions** — DOM, HTML, Streams, WebAssembly, CSS, or any other spec.
+  Each binding:
+  - Implements `WebIdlInterface` or `WebIdlNamespace` to define *which
+    members* the interface or namespace exposes.
+  - Provides thin getter/setter/method functions that convert JavaScript
+    arguments and delegate to domain-level implementations.
+  - Uses the Web IDL bindings infrastructure (`WebIdlInterface`,
+    `WebIdlNamespace`, `register_interface_spec`, `register_namespace_spec`,
+    etc.) from `content/src/webidl/bindings/` instead of calling Boa directly.
+- **Domain logic belongs in the domain directory; JS-interop code belongs
+  in the bindings.**  Pure Rust/wasmtime logic goes in the owning domain
+  directory (`content/src/dom/`, `content/src/html/`, `content/src/streams/`,
+  `content/src/wasm/`).  `WebIdlInterface` implementations, promise
+  resolution, object construction, and any code returning `JsValue` goes in
+  `content/src/js/bindings/`.  The binding code converts arguments, checks
+  [inherited
   interfaces](https://webidl.spec.whatwg.org/#dfn-inherited-interfaces) to
-  identify the platform object's type, and delegate; stateful algorithms
-  belong on the owning DOM, HTML, or Streams platform object type.
+  identify the platform object's type, and delegates to domain functions.
+- **Domain code must not depend on `boa_engine` or return `JsValue`.**
+  The domain layer returns Rust types; the bindings layer converts to JS
+  values as late as possible.
 - Run microtask checkpoints at task boundaries rather than after every
   Rust-to-JavaScript callback.
 - Document process structs against HTML concepts such as

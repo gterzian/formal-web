@@ -31,18 +31,42 @@ You can also update this documentation chain based on lessons learned from user 
 
 # Algorithm Implementation
 
-When implementing a spec algorithm, every changed file must satisfy these checks
-before the task is considered done:
+## Three-layer architecture
 
-1. **Step comments** — Every spec step has a `// Step N:` comment quoting the
-   first few words of the spec step verbatim.  The comment makes it obvious
-   which step the code corresponds to.
-2. **Anchor URLs** — Every function/struct top doc comment has the correct spec
-   anchor URL (`<https://html.spec.whatwg.org/#...>`).
+Every Web-exposed feature (DOM, HTML, Streams, WebAssembly) follows the same
+three-layer split.  See **`content/src/js/bindings/README.md`** for the
+definitive breakdown with examples and common mistakes.
+
+| Layer | Location | Signature convention |
+|---|---|---|
+| **Domain** | `content/src/<domain>/` | Methods implement spec algorithms. May import some Boa types when the algorithm requires it (e.g., `Context` for promise creation). |
+| **Web IDL bindings infra** | `content/src/webidl/bindings/` | Generic traits — NOT domain-specific |
+| **JS bindings glue** | `content/src/js/bindings/<domain>/` | `fn(this, args, ctx) -> JsResult<JsValue>` — thin: extract JS args, call domain, wrap |
+
+When implementing a spec algorithm, every changed file must satisfy these checks
+before the task is considered done.  See `content/src/js/bindings/README.md`
+for the definitive spec-annotation reference with examples and common mistakes.
+
+1. **Step comments** — Every spec step has a `// Step N:` comment inside the
+   function body quoting the **exact spec step text verbatim** — not an
+   abbreviation or summary.  Step numbering must match the spec exactly.
+2. **Anchor URLs** — Every function/struct top doc comment has **only** the
+   correct spec anchor URL (`<https://html.spec.whatwg.org/#...>`).  No
+   description, no step summary, no prose.
 3. **`// Note:` only for discrepancies** — Notes explain why the code differs
    from the spec (e.g. steps merged, split across processes, browser-engine
    specific refactoring).  Design notes, architecture rationales, and
    implementation plans belong in the README chain, not in `// Note:`.
+
+4. **Mirror spec sub-algorithms as separate functions** — When a spec algorithm
+   calls a named sub-algorithm (e.g. "instantiate the core of a WebAssembly
+   module", "initialize an instance object"), create a dedicated function with
+   its own anchor URL and step comments.  Do not inline sub-algorithm logic
+   into the parent function.
+
+5. **No catch-all utility files** — Name domain modules by spec capability, not
+   by `utils.rs`/`functions.rs`/`helpers.rs`.  Each file should correspond to
+   a well-defined spec concept or algorithm group.
 
 See the "Spec-mapping review" step under "End-of-Task Flow" for the full
 review checklist.
@@ -57,19 +81,19 @@ Plans and temporary task notes go under `scratchpad/`.
 
 ## Commands
 
-- `rustup toolchain install 1.92.0` — installs the pinned Rust toolchain.
-- `rustup run 1.92.0 cargo check` — type-checks the workspace.
-- `rustup run 1.92.0 cargo run --release` — default windowed embedder.
-- `rustup run 1.92.0 cargo run --release -- --headless` — headless mode.
-- `rustup run 1.92.0 cargo run --release -- --verify` — with trace recording and shutdown-time TLA+ validation.
-- `rustup run 1.92.0 cargo run --release -- webdriver --headless` — WebDriver server.
-- `rustup run 1.92.0 cargo run --release -- cdp --headless` — CDP server.
-- `rustup run 1.92.0 cargo run --release -- webdriver --headless --cdp-port 9222` — WebDriver and CDP together.
-- `rustup run 1.92.0 cargo run --release -- wpt` — runs the default WPT and local formal test selection.
-- `rustup run 1.92.0 cargo run --release -- wpt formal/load-event-fires.html` — runs one selected test.
+- `rustup toolchain install 1.94.0` — installs the pinned Rust toolchain.
+- `rustup run 1.94.0 cargo check` — type-checks the workspace.
+- `rustup run 1.94.0 cargo run --release` — default windowed embedder.
+- `rustup run 1.94.0 cargo run --release -- --headless` — headless mode.
+- `rustup run 1.94.0 cargo run --release -- --verify` — with trace recording and shutdown-time TLA+ validation.
+- `rustup run 1.94.0 cargo run --release -- webdriver --headless` — WebDriver server.
+- `rustup run 1.94.0 cargo run --release -- cdp --headless` — CDP server.
+- `rustup run 1.94.0 cargo run --release -- webdriver --headless --cdp-port 9222` — WebDriver and CDP together.
+- `rustup run 1.94.0 cargo run --release -- wpt` — runs the default WPT and local formal test selection.
+- `rustup run 1.94.0 cargo run --release -- wpt formal/load-event-fires.html` — runs one selected test.
 - `./verification/verify-navigation.sh` — headless navigation workflow validated against the TLA+ `Navigation` spec.
 - `./verification/verify-rendering.sh` — headless screenshot-based rendering verification (startup artifact + cross-origin iframe).
-- `rustup run 1.92.0 cargo run -- validate-tla --logs /path/to/logs --json` — validates a saved trace log directory.
+- `rustup run 1.94.0 cargo run -- validate-tla --logs /path/to/logs --json` — validates a saved trace log directory.
 
 # Local Extensions
 
@@ -124,6 +148,8 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
   code. A variable called `state` is always clearer than `s`.
 - Exception: closure parameters in iterator chains (`.map(|x| ...)`) where the type is obvious
   from context. But even there, prefer short but meaningful names like `tab` over `t`.
+- **Never use fully qualified paths** like `crate::wasm::namespace::compile_fn(...)` in
+  binding function bodies. Import with `use` at the top of the file and call unqualified.
 - Do not bulk-rename existing code with scripts — it creates merge conflicts, breaks history,
   and introduces subtle bugs when renames are inconsistent. Rename incrementally when
   modifying nearby code.
@@ -161,7 +187,7 @@ At the end of each task, run the following steps **in order**:
    warnings before committing. Run from the project root:
 
    ```bash
-   rustup run 1.92.0 cargo clippy --workspace --all-targets
+   rustup run 1.94.0 cargo clippy --workspace --all-targets
    ```
 
    Fix all warnings that appear (patch and vendored warnings can be ignored;
@@ -174,20 +200,32 @@ At the end of each task, run the following steps **in order**:
    Never run `cargo fmt` with `--all` or from inside a `vendor/` directory,
    as vendored formatting changes must not be committed.
 
-4. **Spec-mapping review** — Review all changed files for spec documentation
-   quality and conceptual fidelity.  For each algorithm implemented:
+4. **Spec-mapping review** — First, **re-read the documentation chain**
+   (`content/src/js/bindings/README.md`, `AGENTS.md` Algorithm Implementation
+   section, `content/README.md`, and any domain-specific READMEs) to
+   re-familiarize yourself with the exact rules for anchor URLs, step
+   comments, Note conventions, and the three-layer architecture (domain
+   method vs JS binding function).  Then review all changed files in that
+   light.  For each algorithm implemented:
    - Does the code map to the spec algorithm correctly at the conceptual
      level?  Read the spec algorithm, understand what each step does
      architecturally (which component owns which state, which side effects
      happen where), and verify the implementation reflects that split.
-   - Does every step have a `// Step N:` comment quoting the first few
-     words of the spec step?  The comment should make it obvious which
-     spec step the code corresponds to.
-   - Does every function/struct top doc comment have the correct spec anchor
-     URL (`<https://html.spec.whatwg.org/#...>`)?
-   - Are algorithm splits between content and other components (user agent,
-     net, embedder) clearly marked with spec step boundaries and
-     `// Note:` comments explaining why the split exists?
+   - Is the algorithm in the right layer?  Domain implementations go in
+     `content/src/<domain>/`.  JS binding functions (thin arg-extraction +
+     delegation) go in `content/src/js/bindings/<domain>/`.  Only domain
+     functions get spec annotations — binding functions have none (they are
+     plumbing, not algorithm steps).
+   - Does every domain method have `// Step N:` comments quoting the
+     **exact spec step text verbatim** (not an abbreviation)?  Step
+     numbering must match the spec exactly.
+   - Does every domain method/function top doc comment have **only** the
+     spec anchor URL (`<https://html.spec.whatwg.org/#...>`)?  No
+     description, no step summary, no prose, no "Implements the spec
+     algorithm" boilerplate.
+   - Are binding function bodies free of fully qualified paths like
+     `crate::wasm::namespace::fn_name(...)`?  Import with `use` at the
+     top and call unqualified.
    - Are `Note:` comments used only for discrepancies between the code and
      the spec text (never for design notes, implementation plans, or
      architecture rationales — those belong in the README chain)?
@@ -195,20 +233,22 @@ At the end of each task, run the following steps **in order**:
      `// TODO:` explaining the gap?
    Fix any issues found.
 
-5. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+5. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
 
 6. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
    - **Default WPT run** — Runs the Web Platform Tests suite (`tests/wpt/include.ini`) to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
 
      ```bash
-     rustup run 1.92.0 cargo run --release -- wpt
+     rustup run 1.94.0 cargo run --release -- wpt
      ```
 
      The WPT runner requires a working Python 3 with a functioning `ssl` module and `venv` support. If the run fails with a Python-related error, check `tests/wpt_runner/README.md` for debugging guidance.
 
    - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
 
-7. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
+7. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+
+8. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
 
 
 # Forbidden commands

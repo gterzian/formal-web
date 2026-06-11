@@ -12,6 +12,12 @@ The content crate owns the content process: DOM and HTML algorithms, document pa
 - `content/src/streams` holds native Streams [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object) and Streams Standard algorithms.
 - `content/src/infra` holds shared Infra Standard helpers.
 
+## Three-layer architecture
+
+Every Web-exposed feature follows a three-layer split (domain → Web IDL infra →
+JS bindings glue).  See `content/src/js/bindings/README.md` for the definitive
+description with examples and common mistakes.
+
 ## Spec Documentation
 
 - Keep the top doc comment anchor-only, for example:
@@ -23,4 +29,4 @@ The content crate owns the content process: DOM and HTML algorithms, document pa
 - Inside function bodies, map relevant code with verbatim `Step N:` comments.
 - Use `Note:` comments only for representation or mapping details that are not obvious from the spec text.
 - Put unimplemented work in `TODO:` directly below the related `Step N:` comment.
-- Keep `content/src/js/bindings` thin: argument conversion and [inherited interfaces](https://webidl.spec.whatwg.org/#dfn-inherited-interfaces) checks live there, while stateful algorithms live on the owning [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) type.
+- `WebIdlInterface` implementations live in `content/src/js/bindings/` — these define *which members* an interface exposes.  Domain methods on the corresponding Rust struct (in `content/src/<domain>/`) implement *what those members do*.

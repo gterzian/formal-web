@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
+    vec::Vec,
 };
 
 use super::environment_settings_object::EnvironmentSettingsObject;
@@ -17,6 +18,8 @@ use ipc_messages::{
     },
 };
 
+
+
 use crate::webidl::Callback;
 
 fn timer_debug_enabled() -> bool {
@@ -27,6 +30,62 @@ fn log_timer_debug(message: impl AsRef<str>) {
     if timer_debug_enabled() {
         eprintln!("[timer-debug][global] {}", message.as_ref());
     }
+}
+
+/// The lifecycle state of a pending request.
+#[derive(Debug, Clone, PartialEq, Eq, Trace, Finalize)]
+pub enum PendingState {
+    /// Just created, waiting for the content process to submit it.
+    Pending,
+    /// Sent to the background thread, waiting for completion.
+    Processing,
+}
+
+/// <https://www.w3.org/TR/wasm-js-api/#asynchronously-compile-a-webassembly-module>
+///
+/// A pending WebAssembly request stored on the GlobalScope during JS execution.
+/// The request stays in this Vec throughout its lifecycle — the state field
+/// tracks progress.  The content process mutates the state when submitting to
+/// the background thread and when resolving/rejecting the promise.
+///
+/// Note: JS-typed fields (promise, resolvers) are NOT stored here — they live
+/// in `GlobalScope.pending_wasm_resolvers` keyed by `request_id`.  This lets
+/// domain code in `content/src/wasm/` construct and push `PendingRequest`
+/// without importing `boa_engine`.
+#[derive(Trace, Finalize)]
+pub enum PendingRequest {
+    /// A WebAssembly module compilation or instantiate-byte request.
+    WasmCompile {
+        /// Stable copy of the buffer bytes.
+        #[unsafe_ignore_trace]
+        bytes: Vec<u8>,
+        /// The request id, correlating with the background thread's result.
+        #[unsafe_ignore_trace]
+        request_id: u64,
+        /// True if this came from `instantiate(bytes, ...)`, false for `compile(bytes, ...)`.
+        is_instantiate: bool,
+        /// Current lifecycle state.
+        ///
+        /// PendingState is a simple Copy enum, safe to ignore trace on.
+        #[unsafe_ignore_trace]
+        state: PendingState,
+    },
+
+    /// <https://www.w3.org/TR/wasm-js-api/#asynchronously-instantiate-a-webassembly-module>
+    ///
+    /// An instantiate(moduleObject, importObject) request.
+    /// The module is already compiled — this only needs instantiation.
+    WasmInstantiate {
+        /// The previously compiled wasm module.
+        #[unsafe_ignore_trace]
+        module: wasmtime::Module,
+        /// The request id, correlating with the content-process's processing.
+        #[unsafe_ignore_trace]
+        request_id: u64,
+        /// Current lifecycle state.
+        #[unsafe_ignore_trace]
+        state: PendingState,
+    },
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
@@ -179,6 +238,22 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     creation_url: RefCell<Option<url::Url>>,
 
+    /// Generic queue of pending async requests created during JS execution.
+    /// Populated by native JS functions (e.g. WebAssembly.compile) and drained
+    /// by the content process after JS execution completes.
+    pending_requests: GcRefCell<Vec<PendingRequest>>,
+
+    /// A counter for generating unique request IDs for async wasm operations.
+    #[unsafe_ignore_trace]
+    pending_wasm_request_id_counter: std::cell::Cell<u64>,
+
+    /// Map of request_id → (promise, resolvers) for pending wasm operations.
+    /// The promise and resolvers are stored here rather than in
+    /// `PendingRequest` so that domain code in `content/src/wasm/` can
+    /// push pending requests without importing `boa_engine`.
+    pending_wasm_resolvers:
+        GcRefCell<Vec<(u64, boa_engine::object::JsObject, boa_engine::builtins::promise::ResolvingFunctions)>>,
+
 }
 
 impl GlobalScope {
@@ -202,6 +277,9 @@ impl GlobalScope {
 
             new_document_registry: RefCell::new(None),
             creation_url: RefCell::new(None),
+            pending_requests: GcRefCell::new(Vec::new()),
+            pending_wasm_request_id_counter: std::cell::Cell::new(0),
+            pending_wasm_resolvers: GcRefCell::new(Vec::new()),
 
         }
     }
@@ -650,5 +728,106 @@ impl GlobalScope {
             taken.push(callbacks.remove(index).callback.clone());
         }
         taken
+    }
+
+    /// Push a pending async request onto this document's queue.
+    ///
+    /// Called by native JS functions (e.g. `WebAssembly.compile()`) during JS
+    /// execution.  The content process drains these requests after each command.
+    pub(crate) fn push_pending_request(&self, request: PendingRequest) {
+        self.pending_requests.borrow_mut().push(request);
+    }
+
+    /// Allocate a unique request ID for a pending wasm operation.
+    pub(crate) fn next_wasm_request_id(&self) -> u64 {
+        let id = self.pending_wasm_request_id_counter.get();
+        self.pending_wasm_request_id_counter.set(id.wrapping_add(1));
+        id
+    }
+
+    /// Mark all compile-type pending wasm requests as Processing and return
+    /// their bytes + request_ids.  Called by the content process.
+    pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
+        let mut requests = self.pending_requests.borrow_mut();
+        let mut batches = Vec::new();
+        for request in requests.iter_mut() {
+            if let PendingRequest::WasmCompile {
+                bytes,
+                request_id,
+                state,
+                ..
+            } = request
+            {
+                if *state == PendingState::Pending {
+                    *state = PendingState::Processing;
+                    batches.push((*request_id, bytes.clone()));
+                }
+            }
+        }
+        batches
+    }
+
+    /// Mark all instantiate-type pending wasm requests as Processing and
+    /// return their module + request_id.  Called by the content process.
+    pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
+        let mut requests = self.pending_requests.borrow_mut();
+        let mut instantiates = Vec::new();
+        for request in requests.iter_mut() {
+            if let PendingRequest::WasmInstantiate {
+                module,
+                request_id,
+                state,
+            } = request
+            {
+                if *state == PendingState::Pending {
+                    *state = PendingState::Processing;
+                    instantiates.push((*request_id, module.clone()));
+                }
+            }
+        }
+        instantiates
+    }
+
+    /// Store the promise and resolving functions for a pending wasm request.
+    /// Called by the bindings layer after creating the promise.
+    pub(crate) fn store_wasm_resolver(
+        &self,
+        request_id: u64,
+        promise: boa_engine::object::JsObject,
+        resolvers: boa_engine::builtins::promise::ResolvingFunctions,
+    ) {
+        self.pending_wasm_resolvers
+            .borrow_mut()
+            .push((request_id, promise, resolvers));
+    }
+
+    /// Remove and return the promise + resolvers for a completed request.
+    pub(crate) fn consume_wasm_request(
+        &self,
+        request_id: u64,
+    ) -> Option<(
+        boa_engine::object::JsObject,
+        boa_engine::builtins::promise::ResolvingFunctions,
+    )> {
+        // Remove the PendingRequest from the request queue.
+        {
+            let mut requests = self.pending_requests.borrow_mut();
+            let idx = requests.iter().position(|r| match r {
+                PendingRequest::WasmCompile {
+                    request_id: rid, ..
+                } => *rid == request_id,
+                PendingRequest::WasmInstantiate {
+                    request_id: rid, ..
+                } => *rid == request_id,
+            });
+            if let Some(idx) = idx {
+                requests.swap_remove(idx);
+            }
+        }
+        // Look up the promise/resolvers in the separate store.
+        let mut resolvers = self.pending_wasm_resolvers.borrow_mut();
+        let idx = resolvers.iter().position(|(rid, _, _)| *rid == request_id)?;
+        let (_rid, promise, res) = resolvers.swap_remove(idx);
+        Some((promise, res))
     }
 }

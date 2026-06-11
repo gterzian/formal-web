@@ -47,7 +47,34 @@ or `ObjectInitializer`. The Rust struct holds only the backing state.
 - **DOM interfaces** (`Document`, `EventTarget`, `Element`, …): `content/src/dom/`
 - **HTML interfaces** (`Window`, `HTMLAnchorElement`, `HTMLIFrameElement`, `Location`, …): `content/src/html/`
 - **Streams interfaces** (`ReadableStream`, `WritableStream`, …): `content/src/streams/`
-- **Boa-class registrations and bindings** (argument conversion, method impls): `content/src/js/bindings/`
+- **WebAssembly domains** (`WasmModule`, compilation worker, …): `content/src/wasm/`
+
+### Three-layer architecture
+
+Every Web-exposed feature follows a three-layer split:
+
+1. **Domain** (`content/src/<domain>/`) — Rust struct + spec-algorithm methods returning Rust types.
+2. **Web IDL bindings infra** (`content/src/webidl/bindings/`) — generic traits
+   (`WebIdlInterface`, `WebIdlNamespace`, `OperationDef`, etc.). Not domain-specific.
+3. **JS bindings glue** (`content/src/js/bindings/<domain>/`) — `WebIdlInterface` impl,
+   thin function pointers that downcast, call domain methods, wrap in `JsValue`.
+
+See `content/src/js/bindings/README.md` for the definitive description.
+
+**What belongs where:**
+
+| What | Where |
+|---|---|
+| Rust struct definition (`WasmModule`), JsData derive | `content/src/<domain>/types.rs` |
+| Spec-algorithm methods returning Rust types (`export_descriptors() → Vec<…>`) | `content/src/<domain>/functions.rs` — `impl WasmModule` |
+| `WebIdlInterface` impl (`define_members`, `create_platform_object`) | `content/src/js/bindings/<domain>/` |
+| Thin JsValue-wrapping function pointers (`fn(this, args, ctx) → JsResult<JsValue>`) | `content/src/js/bindings/<domain>/` |
+| `WebIdlInterface` trait, `register_interface_spec`, `OperationDef`, `AttributeDef` | `content/src/webidl/bindings/` (generic — no domain logic) |
+
+**Never add domain-specific code to `content/src/webidl/bindings/`.**
+Use the trait methods (`legacy_namespace()`, `constructor_length()`) to
+customize behaviour.  Never add an `impl WebIdlInterface` outside of
+`content/src/js/bindings/`.
 
 ### Exotic objects and custom internal methods
 
@@ -122,6 +149,29 @@ let object = ObjectInitializer::with_native_data_and_proto(
 ```
 
 See `content/src/js/bindings/` for concrete examples per interface.
+
+## Buffer source types
+
+<https://webidl.spec.whatwg.org/#js-buffer-source-types>
+
+The Web IDL buffer source types (`ArrayBuffer`, `ArrayBufferView`, `BufferSource`)
+have specific conversion algorithms implemented in `buffer_source.rs`.
+
+| Function | Spec algorithm | Purpose |
+|---|---|---|
+| `get_a_copy_of_the_buffer_source` | [#dfn-get-buffer-source-copy](https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy) | Extract bytes from an `ArrayBuffer` or typed array |
+| `convert_js_value_to_idl_array_buffer` | [#js-arraybuffer](https://webidl.spec.whatwg.org/#js-arraybuffer) | Convert a JS value to an IDL `ArrayBuffer`, rejecting `SharedArrayBuffer` |
+| `is_buffer_source` | [#dfn-buffer-source-type](https://webidl.spec.whatwg.org/#dfn-buffer-source-type) | Check whether a JS value is a buffer source type |
+
+The `get_a_copy_of_the_buffer_source` function is called by the bindings layer (e.g.
+`content/src/js/bindings/wasm/mod.rs`) to convert JS values into Rust `Vec<u8>`
+before passing them to domain functions.  Domain functions receive clean Rust types,
+never raw `JsValue`.
+
+Both `get_a_copy_of_the_buffer_source` and `convert_js_value_to_idl_array_buffer`
+enforce that `SharedArrayBuffer` is rejected (the `[AllowShared]` constraint) and
+note where `IsFixedLengthArrayBuffer` / `[AllowResizable]` checks are skipped due to
+Boa's API surface.
 
 ## Related documentation
 
