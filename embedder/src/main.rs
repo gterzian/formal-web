@@ -1,6 +1,7 @@
 mod event_loop;
 
 use clap::{Parser, Subcommand};
+use log::error;
 use std::ffi::OsString;
 use std::process::ExitCode;
 use verification::{TraceSender, VerificationRun, run_validation_from_iter};
@@ -126,13 +127,14 @@ fn delegated_tla_validate_command() -> Option<ExitCode> {
     Some(match run_validation_from_iter(forwarded_args) {
         Ok(exit_code) => exit_code,
         Err(error) => {
-            eprintln!("formal-web-embedder: {error}");
+            error!("formal-web-embedder: {error}");
             ExitCode::from(1)
         }
     })
 }
 
 fn main() -> ExitCode {
+    env_logger::init();
     if let Some(exit_code) = delegated_tla_validate_command() {
         return exit_code;
     }
@@ -143,7 +145,7 @@ fn main() -> ExitCode {
         match VerificationRun::start() {
             Ok(run) => Some(run),
             Err(error) => {
-                eprintln!("formal-web-embedder: {error}");
+                error!("formal-web-embedder: {error}");
                 return ExitCode::from(1);
             }
         }
@@ -169,7 +171,7 @@ fn main() -> ExitCode {
     let result = combine_results(result, verification_result);
 
     if let Err(error) = result {
-        eprintln!("formal-web-embedder: {error}");
+        error!("formal-web-embedder: {error}");
         return ExitCode::from(1);
     }
 

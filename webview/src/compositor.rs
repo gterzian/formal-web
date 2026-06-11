@@ -1,3 +1,4 @@
+use log::trace;
 use anyrender::{PaintScene, Scene as RenderScene};
 use ipc_messages::content::{
     EmbedBackgroundPolicy, FontTransportReceiver, FrameCompositionMetadata, FrameEmbedSite,
@@ -112,7 +113,7 @@ impl Compositor {
     ) {
         if input_debug_enabled() {
             let summary = scene.summary();
-            eprintln!(
+            trace!(
                 "[input-debug][compositor] store_frame frame={} root_candidate={} viewport=({},{}) embed_sites={} commands={}",
                 frame_id.0,
                 is_root_candidate,
@@ -202,7 +203,7 @@ impl Compositor {
                 .and_then(|frame| frame.resolved_viewport.as_ref())
                 .is_none();
         if input_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[input-debug][compositor] hit_test client=({x:.1},{y:.1}) refresh_needed={refresh_needed}"
             );
         }
@@ -230,7 +231,7 @@ impl Compositor {
         frame_local_to_root: Affine,
     ) -> Option<RenderScene> {
         if input_debug_enabled() {
-            eprintln!("[input-debug][compositor] composing frame {}", frame_id.0);
+            trace!("[input-debug][compositor] composing frame {}", frame_id.0);
         }
         let parent_viewport = self
             .committed_frames
@@ -288,7 +289,7 @@ impl Compositor {
                 composed_scene.append_scene(child_scene, child_transform);
                 composed_scene.pop_layer();
                 if input_debug_enabled() {
-                    eprintln!(
+                    trace!(
                         "[input-debug][compositor] composed embed site {} with child frame {}",
                         embed_site.embed_site_id.0, child_frame_id.0
                     );
@@ -347,7 +348,7 @@ impl Compositor {
     ) -> Option<Affine> {
         let Some(layout) = self.navigable_container_layout(parent_local_to_root, embed_site) else {
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][compositor] parent={} child={} record=skip reason=no-layout",
                     parent_frame_id.0, embed_site.child_frame_id.0,
                 );
@@ -357,7 +358,7 @@ impl Compositor {
 
         if !parent_viewport.intersects_local_rect(layout.clip_bounds) {
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][compositor] parent={} child={} record=skip visible=false clip=({:.1},{:.1})-({:.1},{:.1}) parent_viewport=({:.1},{:.1})",
                     parent_frame_id.0,
                     embed_site.child_frame_id.0,
@@ -375,7 +376,7 @@ impl Compositor {
         let child_local_to_root = parent_local_to_root * layout.child_local_from_parent.inverse();
 
         if input_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[input-debug][compositor] parent={} child={} record=ok clip=({:.1},{:.1})-({:.1},{:.1})",
                 parent_frame_id.0,
                 embed_site.child_frame_id.0,

@@ -1,3 +1,4 @@
+use log::error;
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
@@ -517,14 +518,14 @@ fn readable_stream_default_tee(
             // Step 19.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], r)."
             if let Some(branch1) = branch1.as_ref() {
                 if let Err(error) = default_tee_error_branch(branch1, error.clone(), context) {
-                    eprintln!("[readable-stream] default tee error branch1 failed: {error}");
+                    error!("[readable-stream] default tee error branch1 failed: {error}");
                 }
             }
 
             // Step 19.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], r)."
             if let Some(branch2) = branch2.as_ref() {
                 if let Err(error) = default_tee_error_branch(branch2, error, context) {
-                    eprintln!("[readable-stream] default tee error branch2 failed: {error}");
+                    error!("[readable-stream] default tee error branch2 failed: {error}");
                 }
             }
 
@@ -535,7 +536,7 @@ fn readable_stream_default_tee(
                     &[JsValue::undefined()],
                     context,
                 ) {
-                    eprintln!("[readable-stream] failed to resolve cancel promise: {error}");
+                    error!("[readable-stream] failed to resolve cancel promise: {error}");
                 }
             }
 
@@ -690,7 +691,7 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
                             if let Err(error) =
                                 default_tee_error_branch(branch1, error.clone(), context)
                             {
-                                eprintln!(
+                                error!(
                                     "[readable-stream] default tee error branch1 (chunk) failed: {error}"
                                 );
                             }
@@ -701,7 +702,7 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
                             if let Err(error) =
                                 default_tee_error_branch(branch2, error.clone(), context)
                             {
-                                eprintln!(
+                                error!(
                                     "[readable-stream] default tee error branch2 (chunk) failed: {error}"
                                 );
                             }
@@ -1816,12 +1817,12 @@ fn byte_tee_forward_reader_error(
             };
             if let Some(ref branch1) = branch1 {
                 if let Err(error) = byte_tee_error_branch(branch1, error.clone(), context) {
-                    eprintln!("[readable-stream] byte tee error branch1 failed: {error}");
+                    error!("[readable-stream] byte tee error branch1 failed: {error}");
                 }
             }
             if let Some(ref branch2) = branch2 {
                 if let Err(error) = byte_tee_error_branch(branch2, error, context) {
-                    eprintln!("[readable-stream] byte tee error branch2 failed: {error}");
+                    error!("[readable-stream] byte tee error branch2 failed: {error}");
                 }
             }
             if !canceled1 || !canceled2 {
@@ -1939,7 +1940,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                             if let Err(error) =
                                 byte_tee_error_branch(branch1, error.clone(), context)
                             {
-                                eprintln!(
+                                error!(
                                     "[readable-stream] byte tee error branch1 (chunk) failed: {error}"
                                 );
                             }
@@ -1950,7 +1951,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                             if let Err(error) =
                                 byte_tee_error_branch(branch2, error.clone(), context)
                             {
-                                eprintln!(
+                                error!(
                                     "[readable-stream] byte tee error branch2 (chunk) failed: {error}"
                                 );
                             }
@@ -2234,14 +2235,14 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
                                     // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
                                     if let Some(branch) = byob_branch.as_ref() {
                                         if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
-                                            eprintln!("[readable-stream] byte tee error byob-branch (chunk) failed: {error}");
+                                            error!("[readable-stream] byte tee error byob-branch (chunk) failed: {error}");
                                         }
                                     }
 
                                     // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
                                     if let Some(branch) = other_branch.as_ref() {
                                         if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
-                                            eprintln!("[readable-stream] byte tee error other-branch (chunk) failed: {error}");
+                                            error!("[readable-stream] byte tee error other-branch (chunk) failed: {error}");
                                         }
                                     }
 
@@ -2698,7 +2699,7 @@ fn promise_rejected_with_reason(reason: JsValue, context: &mut Context) -> JsObj
                 .reject
                 .call(&JsValue::undefined(), &[JsValue::undefined()], context)
         {
-            eprintln!("[readable-stream] failed to reject fallback promise: {error}");
+            error!("[readable-stream] failed to reject fallback promise: {error}");
         }
         promise_object
     })
@@ -2726,7 +2727,7 @@ fn reject_promise_with_error(
         .reject
         .call(&JsValue::undefined(), &[reason], context)
     {
-        eprintln!("[readable-stream] failed to reject promise with error: {error}");
+        error!("[readable-stream] failed to reject promise with error: {error}");
     }
 }
 
@@ -2782,7 +2783,7 @@ fn readable_stream_pipe_to(
         Ok(writer_object) => writer_object,
         Err(error) => {
             if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
-                eprintln!(
+                error!(
                     "[readable-stream] failed to release reader on pipe setup error: {error}"
                 );
             }
@@ -2796,7 +2797,7 @@ fn readable_stream_pipe_to(
         Ok(writer) => writer,
         Err(error) => {
             if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
-                eprintln!("[readable-stream] failed to release reader on writer error: {error}");
+                error!("[readable-stream] failed to release reader on writer error: {error}");
             }
             reject_promise_with_error(&pipe_resolvers, error, context);
             return pipe_promise_obj;
@@ -2959,7 +2960,7 @@ impl PipeToState {
     fn reject_and_finalize_with_reason(&self, reason: JsValue, context: &mut Context) {
         self.set_shutdown_error(Some(reason));
         if let Err(error) = self.finalize(context) {
-            eprintln!("[readable-stream] failed to finalize on rejection: {error}");
+            error!("[readable-stream] failed to finalize on rejection: {error}");
         }
     }
 

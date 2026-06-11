@@ -1,3 +1,4 @@
+use log::error;
 use crate::{
     AUTOMATION_TIMEOUT, AutomationRuntime, AutomationSnapshot, HttpRequest, NEXT_SESSION_ID,
     SCRIPT_TIMEOUT, read_http_request, write_http_response,
@@ -131,7 +132,7 @@ impl Drop for WebDriverServer {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             if let Err(error) = thread.join() {
-                eprintln!("[webdriver] failed to join server thread: {error:?}");
+                error!("[webdriver] failed to join server thread: {error:?}");
             }
         }
     }
@@ -142,14 +143,14 @@ fn run_server(listener: TcpListener, state: Arc<WebDriverState>, stop: Arc<Atomi
         match listener.accept() {
             Ok((stream, _address)) => {
                 if let Err(error) = handle_connection(stream, &state) {
-                    eprintln!("formal-web webdriver server error: {error}");
+                    error!("formal-web webdriver server error: {error}");
                 }
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) => {
-                eprintln!("formal-web webdriver accept error: {error}");
+                error!("formal-web webdriver accept error: {error}");
                 break;
             }
         }

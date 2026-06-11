@@ -11,6 +11,7 @@ use ipc_messages::content::{
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage,
 };
 use kurbo::Affine;
+use log::{debug, error, trace};
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
@@ -194,7 +195,7 @@ impl WebviewProvider {
     pub fn note_rendering_opportunity(&self, webview_id: WebviewId, reason: &str) {
         let _ = reason;
         if let Err(error) = self.user_agent.note_rendering_opportunity(webview_id.0) {
-            eprintln!("failed to note rendering opportunity for webview {webview_id:?}: {error}");
+            error!("failed to note rendering opportunity for webview {webview_id:?}: {error}");
         }
     }
 
@@ -240,7 +241,7 @@ impl WebviewProvider {
     ) -> Result<serde_json::Value, String> {
         let cdp_debug_enabled = std::env::var_os("FORMAL_WEB_DEBUG_CDP").is_some();
         if cdp_debug_enabled {
-            eprintln!(
+            debug!(
                 "[cdp][webview] evaluate enter traversable={:?} len={} timeout_ms={}",
                 traversable_id,
                 source.len(),
@@ -251,7 +252,7 @@ impl WebviewProvider {
             .user_agent
             .evaluate_script(traversable_id.0, source, timeout);
         if cdp_debug_enabled {
-            eprintln!(
+            debug!(
                 "[cdp][webview] evaluate exit ok={} traversable={:?}",
                 result.is_ok(),
                 traversable_id
@@ -319,7 +320,7 @@ impl WebviewProvider {
         let viewport_height = frame.viewport_height;
         let composition = frame.composition.clone();
         if input_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[input-debug][webview] on_paint_frame traversable={} frame={} embeds={}",
                 traversable_id.0,
                 frame_id.0,
@@ -364,7 +365,7 @@ impl WebviewProvider {
             let parent_traversable_id = child_navigable_host.parent_traversable_id;
             let content_frame_id = child_navigable_host.content_frame_id;
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][webview] navigation_committed child_webview={} parent_webview={} content_frame={}",
                     webview_id.0, parent_traversable_id.0, content_frame_id.0,
                 );
@@ -388,7 +389,7 @@ impl WebviewProvider {
         }
 
         if input_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[input-debug][webview] navigation_committed top_level_webview={}",
                 webview_id.0
             );
@@ -427,7 +428,7 @@ impl WebviewProvider {
             return false;
         };
         if input_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[input-debug][webview] append_web_content_scene webview={}",
                 webview_id.0
             );
@@ -493,7 +494,7 @@ impl WebviewProvider {
                 .map(|frame_id| self.webview_id_for_frame(root_webview_id, frame_id))
                 .unwrap_or(root_webview_id);
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][webview] root={} frame={} child={} target={} nonpositional=true",
                     root_webview_id.0,
                     target_frame_id
@@ -529,7 +530,7 @@ impl WebviewProvider {
             }
             self.publish_visible_child_viewports(viewports);
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][webview] root={} client=({client_x:.1},{client_y:.1}) hit=none target={}",
                     root_webview_id.0, root_webview_id.0,
                 );
@@ -546,7 +547,7 @@ impl WebviewProvider {
         if input_debug_enabled() {
             let logical_local_x = hit.local_x / viewport_scale;
             let logical_local_y = hit.local_y / viewport_scale;
-            eprintln!(
+            trace!(
                 "[input-debug][webview] root={} client=({client_x:.1},{client_y:.1}) frame={} child={} children={} target={} local=({:.1},{:.1})",
                 root_webview_id.0,
                 hit.frame_id.0,
@@ -589,7 +590,7 @@ impl WebviewProvider {
             next_published_child_viewports.insert(child_webview_id, published_viewport.clone());
 
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][webview] publish_child_viewport child_webview={} frame={} changed={} size=({},{}) offset=({:.1},{:.1}) scale={:.2}",
                     child_webview_id.0,
                     viewport.frame_id.0,
@@ -617,7 +618,7 @@ impl WebviewProvider {
                 published_viewport.offset_x,
                 published_viewport.offset_y,
             ) {
-                eprintln!("[webview] failed to set traversable viewport: {error}");
+                error!("[webview] failed to set traversable viewport: {error}");
             }
             // Do NOT call note_rendering_opportunity or request_redraw here.
             // Child viewport publishing during composition (composed_scene_for_webview)

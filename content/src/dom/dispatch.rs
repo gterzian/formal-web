@@ -1,3 +1,4 @@
+use log::trace;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
@@ -501,7 +502,7 @@ fn invoke(
             ListenerPhase::Capturing => "capturing",
             ListenerPhase::Bubbling => "bubbling",
         };
-        eprintln!(
+        trace!(
             "[input-debug][dispatch] phase={} current_target={} listeners={} matching_click_listeners={}",
             phase_name,
             debug_target_label(&entry.invocation_target),

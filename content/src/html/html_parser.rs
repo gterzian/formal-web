@@ -1,3 +1,4 @@
+use log::{error, warn};
 use std::{
     borrow::Cow,
     cell::{Cell, Ref, RefCell, RefMut},
@@ -293,11 +294,11 @@ pub fn execute_parser_scripts(
     for script in scripts {
         match script {
             PendingParserScript::External { src } => {
-                eprintln!("external script fetch is not implemented yet: {src}");
+                warn!("external script fetch is not implemented yet: {src}");
             }
             PendingParserScript::Inline { source } => {
                 if let Err(error) = settings.evaluate_script(&source) {
-                    eprintln!("content error: {error}");
+                    error!("content error: {error}");
                 }
             }
         }

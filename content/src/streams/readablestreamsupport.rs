@@ -1,3 +1,4 @@
+use log::error;
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
@@ -220,7 +221,7 @@ where
                         .unwrap_or_else(|_| JsValue::undefined());
                     if let Ok(rejected) = rejected_promise(reason, context) {
                         if let Err(error) = mark_promise_as_handled(&rejected, context) {
-                            eprintln!(
+                            error!(
                                 "[readable-stream] failed to mark promise as handled: {error}"
                             );
                         }

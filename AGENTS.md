@@ -179,12 +179,28 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 
 # Error Logging
 
-Errors must always be logged before being discarded. A `Result` value must never be silently dropped anywhere in the codebase — every `Result<_, E>` carries diagnostic information that can help debug failures in this multi-process system.
+# Logging
 
-- Use `if let Err(error) = fallible_operation() { eprintln!("...: {error}"); }` instead of `let _ = fallible_operation();`. The error message should identify the operation and include the error.
+The project uses the standard `log` crate with `env_logger` for structured logging. All crates depend on `log`; binary crates also depend on `env_logger` and call `env_logger::init()` at startup.
+
+## Log levels by category
+
+| Level | When to use |
+|---|---|
+| `error!` | Operation failures, system errors, unexpected conditions that need investigation |
+| `warn!` | Non-critical issues, unimplemented features, recoverable problems |
+| `info!` | Lifecycle events, startup/shutdown, test summaries |
+| `debug!` | Debug traces enabled by toggle (e.g. `render-state`, `timer-debug`, `stream-debug`, `cdp`) |
+| `trace!` | Very verbose debugging enabled by toggle (e.g. `input-debug`, `startup-debug`) |
+
+## Rules
+
+- Errors must always be logged before being discarded. A `Result` value must never be silently dropped anywhere in the codebase — every `Result<_, E>` carries diagnostic information that can help debug failures in this multi-process system.
+- Use `if let Err(error) = fallible_operation() { error!("...: {error}"); }` instead of `let _ = fallible_operation();`. The error message should identify the operation and include the error.
 - The only exception is IPC `send()` on reply channels (e.g. `reply.send(...)`, `waiter.send(...)`) where a closed receiver is an expected condition (client disconnected) rather than a system error.
-- Avoid bare `.expect()` and `.unwrap()` on `Result` — prefer propagating the error with `?` or logging with `eprintln!` and recovering.
-- Use `.ok()` only when the `None`/`Err` case carries no diagnostic value (e.g. parsing an optional value from a fallible source where `None` is a valid "not present" signal). 
+- Avoid bare `.expect()` and `.unwrap()` on `Result` — prefer propagating the error with `?` or logging with `error!` and recovering.
+- Use `.ok()` only when the `None`/`Err` case carries no diagnostic value (e.g. parsing an optional value from a fallible source where `None` is a valid "not present" signal).
+- The `ConsoleSink::Stderr` variant in `content/src/js/bindings/console.rs` is exempt — it implements the browser Console API output destination, not error logging.
 
 # End-of-Task Flow
 

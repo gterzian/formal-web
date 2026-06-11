@@ -1,3 +1,4 @@
+use log::error;
 mod chrome;
 
 use self::chrome::{ChromeAction, ChromeTabInfo, ChromeUi, ChromeViewState, WinitShellProvider};
@@ -464,7 +465,7 @@ impl WindowedApp {
         };
         self.with_provider(|provider| {
             if let Err(error) = provider.send_ui_event(webview_id, event) {
-                eprintln!("content event error: {error}");
+                error!("content event error: {error}");
             }
         });
         if let Some(window_state) = self.windows.get(&window_id) {
@@ -767,7 +768,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                     ),
                                 };
                                 if let Err(error) = result {
-                                    eprintln!("content event error: {error}");
+                                    error!("content event error: {error}");
                                 }
                             });
                         }
@@ -844,7 +845,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                     }
                                 };
                                 if let Err(error) = result {
-                                    eprintln!("touch event error: {error}");
+                                    error!("touch event error: {error}");
                                 }
                             });
                         }
@@ -905,7 +906,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                     mods: modifiers,
                                 }),
                             ) {
-                                eprintln!("wheel event error: {error}");
+                                error!("wheel event error: {error}");
                             }
                         });
                     }
@@ -930,7 +931,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 if let Some(provider) = self.provider.as_mut()
                     && let Err(error) = provider.sync_pending_messages()
                 {
-                    eprintln!("provider sync error: {error}");
+                    error!("provider sync error: {error}");
                 }
             }
             FormalWebUserEvent::NewFrameRendered => {

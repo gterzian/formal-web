@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use log::error;
 use image::{ImageReader, RgbaImage};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -97,10 +98,12 @@ struct DiffMetrics {
 }
 
 fn main() -> ExitCode {
+    env_logger::init();
+
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("webdriver-screenshot-check: {error}");
+            error!("webdriver-screenshot-check: {error}");
             ExitCode::from(1)
         }
     }

@@ -18,6 +18,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "aligned-vec"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -199,6 +208,7 @@ dependencies = [
  "clap",
  "futures-util",
  "ipc_messages",
+ "log",
  "serde",
  "serde_json",
  "tokio",
@@ -632,10 +642,12 @@ dependencies = [
  "crossbeam-channel",
  "cssparser",
  "data-url",
+ "env_logger",
  "html5ever",
  "ipc-channel",
  "ipc_messages",
  "keyboard-types",
+ "log",
  "serde",
  "serde_json",
  "stylo",
@@ -1084,6 +1096,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_filter"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "jiff",
+ "log",
+]
+
+[[package]]
 name = "equator"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1287,9 +1322,11 @@ dependencies = [
  "automation",
  "clap",
  "content",
+ "env_logger",
  "ipc-channel",
  "ipc_messages",
  "libc",
+ "log",
  "net",
  "serde",
  "serde_json",
@@ -1973,6 +2010,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jiff"
+version = "0.2.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4603d3033e49e2b0e31229fcab20a5d40089c607d975cd9c80551dc69eed9102"
+dependencies = [
+ "jiff-static",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "782d32378dddf207193ac91cefb848ad41abb58195c95168e1291227a0832b47"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.94"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2181,8 +2242,10 @@ dependencies = [
 name = "net"
 version = "0.1.0"
 dependencies = [
+ "env_logger",
  "ipc-channel",
  "ipc_messages",
+ "log",
  "mime_guess",
  "reqwest",
  "url",
@@ -2563,6 +2626,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 
 [[package]]
+name = "portable-atomic-util"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
+dependencies = [
+ "portable-atomic",
+]
+
+[[package]]
 name = "postcard"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2887,6 +2959,35 @@ dependencies = [
  "serde",
  "smallvec",
 ]
+
+[[package]]
+name = "regex"
+version = "1.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "regress"
@@ -4078,6 +4179,7 @@ dependencies = [
  "crossbeam-channel",
  "ipc-channel",
  "ipc_messages",
+ "log",
  "psl",
  "serde_json",
  "url",
@@ -4160,8 +4262,10 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "clap",
+ "env_logger",
  "image",
  "ipc-channel",
+ "log",
  "serde",
  "serde_json",
 ]
@@ -4572,6 +4676,7 @@ dependencies = [
  "ipc_messages",
  "keyboard-types",
  "kurbo",
+ "log",
  "peniko",
  "serde",
  "serde_json",
@@ -4986,7 +5091,9 @@ name = "wpt_runner"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "env_logger",
  "libc",
+ "log",
  "serde",
  "serde_json",
 ]

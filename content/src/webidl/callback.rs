@@ -1,3 +1,4 @@
+use log::error;
 use boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsString, JsValue,
     object::{JsObject, builtins::JsFunction},
@@ -100,7 +101,7 @@ impl EcmascriptHost for ContextCallbackHost<'_> {
     }
 
     fn report_exception(&mut self, error: JsError, _callback: &Callback) {
-        eprintln!("uncaught {} error: {error}", self.exception_context);
+        error!("uncaught {} error: {error}", self.exception_context);
     }
 }
 

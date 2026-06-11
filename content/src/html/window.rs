@@ -1,3 +1,4 @@
+use log::error;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 
@@ -253,7 +254,7 @@ pub(crate) fn window_open_steps(
         result.new_traversable_info,
         None,
     ) {
-        eprintln!("window.open: {error}");
+        error!("window.open: {error}");
     }
 
     // Step 17: "If noopener is true or windowType is 'new with no opener',

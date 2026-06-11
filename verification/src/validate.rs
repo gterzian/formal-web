@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
+use log::error;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -493,7 +494,7 @@ fn run_tlc(
     if let Some(config_path) = spec.trace_config_path().as_ref().or(spec.config.as_ref()) {
         let Some(config_name) = config_path.file_name() else {
             if let Err(error) = fs::remove_file(&generated_trace_data_path) {
-                eprintln!("[validate] failed to remove generated trace data: {error}");
+                error!("[validate] failed to remove generated trace data: {error}");
             }
             return Err(format!("invalid config path {}", config_path.display()));
         };

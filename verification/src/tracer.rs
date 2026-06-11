@@ -1,3 +1,4 @@
+use log::error;
 use std::mem;
 
 use crate::{LogEntry, TraceSender, VarUpdate};
@@ -89,7 +90,7 @@ impl TLATracer {
         };
 
         if let Err(error) = sender.send(entry) {
-            eprintln!("verification trace send failed: {error}");
+            error!("verification trace send failed: {error}");
         }
     }
 }

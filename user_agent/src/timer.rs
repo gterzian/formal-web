@@ -1,6 +1,7 @@
 use crossbeam_channel::{Receiver, Sender, select};
 use ipc_messages::content::{DocumentFetchId, DocumentId, EventLoopId, WindowTimerKey};
 use std::collections::HashMap;
+use log::debug;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use verification::TraceSender;
@@ -67,7 +68,7 @@ struct TimerWorker {
 /// timer debug output related to schedule, clear, and fire operations.
 fn log_timer_debug(message: impl AsRef<str>) {
     if std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some() {
-        eprintln!("[timer-debug][user-agent] {}", message.as_ref());
+        debug!("[timer-debug][user-agent] {}", message.as_ref());
     }
 }
 

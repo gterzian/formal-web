@@ -1,6 +1,7 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use log::error;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
@@ -478,7 +479,7 @@ pub fn run(args: TestWptArgs, verify: bool) -> Result<(), String> {
         if compared.actual == WptStatus::Crash {
             if let Some(runner) = shared_runner.take() {
                 if let Err(error) = runner.shutdown() {
-                    eprintln!("[wpt-runner] failed to shutdown runner on crash: {error}");
+                    error!("[wpt-runner] failed to shutdown runner on crash: {error}");
                 }
             }
             shared_runner_error = None;
@@ -507,7 +508,7 @@ pub fn run(args: TestWptArgs, verify: bool) -> Result<(), String> {
     }
 
     if summary.unexpected > 0 {
-        eprintln!(
+        error!(
             "WPT FAILURE: unexpected={} but expected 0. Treat this run as failing until the unexpected results are fixed or covered by metadata.",
             summary.unexpected
         );
@@ -801,7 +802,7 @@ impl WptServeProcess {
             Ok(child) => child,
             Err(error) => {
                 if let Err(error) = fs::remove_dir_all(&temp_dir) {
-                    eprintln!(
+                    error!(
                         "[wpt-runner] failed to remove temp dir after wptserve start error: {error}"
                     );
                 }
@@ -811,10 +812,10 @@ impl WptServeProcess {
 
         if let Err(error) = wait_for_wptserve_ready(port, &mut child, WPTSERVE_STARTUP_TIMEOUT) {
             if let Err(error) = shutdown_wptserve_child(&mut child) {
-                eprintln!("[wpt-runner] failed to shutdown wptserve child: {error}");
+                error!("[wpt-runner] failed to shutdown wptserve child: {error}");
             }
             if let Err(error) = fs::remove_dir_all(&temp_dir) {
-                eprintln!("[wpt-runner] failed to remove temp dir after wptserve timeout: {error}");
+                error!("[wpt-runner] failed to remove temp dir after wptserve timeout: {error}");
             }
             return Err(error);
         }
@@ -834,11 +835,11 @@ impl WptServeProcess {
 impl Drop for WptServeProcess {
     fn drop(&mut self) {
         if let Err(error) = shutdown_wptserve_child(&mut self.child) {
-            eprintln!("[wpt-runner] failed to shutdown wptserve child on drop: {error}");
+            error!("[wpt-runner] failed to shutdown wptserve child on drop: {error}");
         }
         unregister_wptserve_pid(self.child.id());
         if let Err(error) = fs::remove_dir_all(&self.temp_dir) {
-            eprintln!("[wpt-runner] failed to remove temp dir on drop: {error}");
+            error!("[wpt-runner] failed to remove temp dir on drop: {error}");
         }
     }
 }
@@ -887,10 +888,10 @@ impl Drop for BrowserProcess {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
             if let Err(error) = self.child.kill() {
-                eprintln!("[wpt-runner] failed to kill browser child on drop: {error}");
+                error!("[wpt-runner] failed to kill browser child on drop: {error}");
             }
             if let Err(error) = self.child.wait() {
-                eprintln!("[wpt-runner] failed to wait for browser child on drop: {error}");
+                error!("[wpt-runner] failed to wait for browser child on drop: {error}");
             }
         }
     }
@@ -1033,7 +1034,7 @@ fn run_with_shared_runner(
 
     if let Some(runner) = shared_runner.take() {
         if let Err(error) = runner.shutdown() {
-            eprintln!("[wpt-runner] failed to shutdown runner on retry: {error}");
+            error!("[wpt-runner] failed to shutdown runner on retry: {error}");
         }
     }
     *shared_runner_error = None;
@@ -2252,7 +2253,7 @@ fn register_wptserve_pid(pid: u32) {
     }
     pids.push(pid);
     if let Err(error) = save_registered_wptserve_pids(&pids) {
-        eprintln!("[wpt-runner] failed to save registered wptserve pids: {error}");
+        error!("[wpt-runner] failed to save registered wptserve pids: {error}");
     }
 }
 
@@ -2262,7 +2263,7 @@ fn unregister_wptserve_pid(pid: u32) {
     pids.retain(|existing| *existing != pid);
     if pids.len() != original_len {
         if let Err(error) = save_registered_wptserve_pids(&pids) {
-            eprintln!("[wpt-runner] failed to update registered wptserve pids: {error}");
+            error!("[wpt-runner] failed to update registered wptserve pids: {error}");
         }
     }
 }
@@ -2275,7 +2276,7 @@ fn cleanup_registered_wptserve_processes() {
 
     for pid in &pids {
         if let Err(error) = terminate_wptserve_process_group(*pid) {
-            eprintln!(
+            error!(
                 "[wpt-runner] failed to terminate wptserve process {}: {error}",
                 pid
             );
@@ -2283,7 +2284,7 @@ fn cleanup_registered_wptserve_processes() {
     }
 
     if let Err(error) = save_registered_wptserve_pids(&[]) {
-        eprintln!("[wpt-runner] failed to clear registered wptserve pids: {error}");
+        error!("[wpt-runner] failed to clear registered wptserve pids: {error}");
     }
 }
 
@@ -2417,7 +2418,7 @@ fn terminate_wptserve_process_group(pid: u32) -> Result<(), String> {
         send_signal_to_wptserve_group(pid, libc::SIGINT)?;
         thread::sleep(Duration::from_millis(100));
         if let Err(error) = send_signal_to_wptserve_group(pid, libc::SIGKILL) {
-            eprintln!("[wpt-runner] failed to send SIGKILL to wptserve group: {error}");
+            error!("[wpt-runner] failed to send SIGKILL to wptserve group: {error}");
         }
         Ok(())
     }
@@ -2545,10 +2546,10 @@ fn wait_for_wptserve_ready(port: u16, child: &mut Child, timeout: Duration) -> R
 
         if Instant::now() >= deadline {
             if let Err(error) = child.kill() {
-                eprintln!("[wpt-runner] failed to kill wptserve child on timeout: {error}");
+                error!("[wpt-runner] failed to kill wptserve child on timeout: {error}");
             }
             if let Err(error) = child.wait() {
-                eprintln!("[wpt-runner] failed to wait for wptserve child on timeout: {error}");
+                error!("[wpt-runner] failed to wait for wptserve child on timeout: {error}");
             }
             let stderr = read_child_stderr(child);
             return Err(format!(
@@ -2585,10 +2586,10 @@ fn wait_for_webdriver_ready(port: u16, child: &mut Child, timeout: Duration) -> 
 
         if Instant::now() >= deadline {
             if let Err(error) = child.kill() {
-                eprintln!("[wpt-runner] failed to kill WebDriver child on timeout: {error}");
+                error!("[wpt-runner] failed to kill WebDriver child on timeout: {error}");
             }
             if let Err(error) = child.wait() {
-                eprintln!("[wpt-runner] failed to wait for WebDriver child on timeout: {error}");
+                error!("[wpt-runner] failed to wait for WebDriver child on timeout: {error}");
             }
             let stderr = read_child_stderr(child);
             return Err(format!(
@@ -2617,10 +2618,10 @@ fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<ExitStatus, St
         }
         if Instant::now() >= deadline {
             if let Err(error) = child.kill() {
-                eprintln!("[wpt-runner] failed to kill child on wait timeout: {error}");
+                error!("[wpt-runner] failed to kill child on wait timeout: {error}");
             }
             if let Err(error) = child.wait() {
-                eprintln!("[wpt-runner] failed to wait for child after kill: {error}");
+                error!("[wpt-runner] failed to wait for child after kill: {error}");
             }
             return Err(format!(
                 "child process did not exit within {} ms",
@@ -2635,7 +2636,7 @@ fn read_child_stderr(child: &mut Child) -> String {
     let mut stderr = String::new();
     if let Some(mut handle) = child.stderr.take() {
         if let Err(error) = handle.read_to_string(&mut stderr) {
-            eprintln!("[wpt-runner] failed to read child stderr: {error}");
+            error!("[wpt-runner] failed to read child stderr: {error}");
         }
     }
     if stderr.len() > CHILD_STDERR_LIMIT {

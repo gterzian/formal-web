@@ -1,3 +1,4 @@
+use log::error;
 use crossbeam_channel::{Receiver, Sender, select, unbounded};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
@@ -410,14 +411,14 @@ fn completion_for_network_result(
 ) -> FetchCompletion {
     if record.is_aborted() {
         if let Err(error) = result {
-            eprintln!("ignored aborted fetch failure: {error}");
+            error!("ignored aborted fetch failure: {error}");
         }
         return FetchCompletion::Ignored;
     }
 
     if record.is_canceled() {
         if let Err(error) = result {
-            eprintln!("ignored canceled fetch failure: {error}");
+            error!("ignored canceled fetch failure: {error}");
         }
         return FetchCompletion::Ignored;
     }
@@ -499,14 +500,14 @@ fn finish_shutdown(mut child: Option<Child>) {
             Ok(true) => {}
             Ok(false) => {
                 if let Err(error) = child.kill() {
-                    eprintln!("failed to kill network process: {error}");
+                    error!("failed to kill network process: {error}");
                 }
                 if let Err(error) = child.wait() {
-                    eprintln!("failed to wait for network process exit: {error}");
+                    error!("failed to wait for network process exit: {error}");
                 }
             }
             Err(error) => {
-                eprintln!("fetch shutdown poll error: {error}");
+                error!("fetch shutdown poll error: {error}");
             }
         }
     }
@@ -653,7 +654,7 @@ impl FetchWorker {
                             }
                         }
                     }
-                    eprintln!("failed to send document fetch request to network process: {error}");
+                    error!("failed to send document fetch request to network process: {error}");
                 }
             }
             FetchCommand::StartNavigationFetch { fetch_id, request } => {
@@ -677,7 +678,7 @@ impl FetchWorker {
                     let _ = self
                         .user_agent_command_sender
                         .send(UserAgentCommand::NavigationFetchFailed { fetch_id });
-                    eprintln!(
+                    error!(
                         "failed to send navigation fetch request to network process: {error}"
                     );
                 }
@@ -699,7 +700,7 @@ impl FetchWorker {
         let completion = match response.result {
             Ok(fetch_response) => completion_for_network_result(fetch_record, Ok(fetch_response)),
             Err(error) => {
-                eprintln!("fetch failed: {error}");
+                error!("fetch failed: {error}");
                 completion_for_network_result(fetch_record, Err(error))
             }
         };
@@ -778,11 +779,11 @@ impl FetchWorker {
                     let response = match response {
                         Ok(Ok(response)) => response,
                         Ok(Err(error)) => {
-                            eprintln!("network process route error: {error}");
+                            error!("network process route error: {error}");
                             break;
                         }
                         Err(error) => {
-                            eprintln!("network response route closed: {error}");
+                            error!("network response route closed: {error}");
                             break;
                         }
                     };
@@ -809,7 +810,7 @@ pub fn run_fetch_thread(
         match FetchWorker::new(command_receiver, user_agent_command_sender, trace_sender) {
             Ok(worker) => worker,
             Err(error) => {
-                eprintln!("fetch thread startup failed: {error}");
+                error!("fetch thread startup failed: {error}");
                 return;
             }
         };
