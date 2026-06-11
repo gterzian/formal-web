@@ -14,18 +14,6 @@ use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::{instance_export_list, js_val_to_wasm_val, wasm_val_to_js_value, types::WasmInstance, types::WasmModule};
 use crate::webidl::new_pending_promise;
 
-/// <https://webassembly.github.io/spec/js-api/#dom-webassembly-validate>
-#[allow(dead_code)]
-// Note: Duplicated from `functions.rs` for internal use within this module.
-// When `namespace.rs` is converted to use the `functions.rs` version, remove this.
-pub(crate) fn validate_wasm_module(stable_bytes: &[u8]) -> bool {
-    // Step 2: "Compile stableBytes as a WebAssembly module and store the results as module."
-    // Step 3: "If module is error, return false."
-    // Note: Steps 4-6 (validating builtins and imported strings) are not yet implemented.
-    let engine = wasmtime::Engine::default();
-    matches!(Module::new(&engine, stable_bytes), Ok(_))
-}
-
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 pub(crate) fn asynchronously_compile_a_webassembly_module(
     stable_bytes: Vec<u8>,
@@ -39,7 +27,7 @@ pub(crate) fn asynchronously_compile_a_webassembly_module(
     // Step 2: "Run the following steps in parallel:"
     let global = context.global_object();
     let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("wasm: global object is not a Window")
+        JsNativeError::error().with_message("WebAssembly: global object is not a Window")
     })?;
     let request_id = window.global_scope.next_wasm_request_id();
     window.global_scope.push_pending_request(PendingRequest::WasmCompile {
@@ -69,7 +57,7 @@ pub(crate) fn asynchronously_instantiate_a_webassembly_module(
     // Step 6: "Run the following steps in parallel:"
     let global = context.global_object();
     let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("wasm: global object is not a Window")
+        JsNativeError::error().with_message("WebAssembly: global object is not a Window")
     })?;
     let request_id = window.global_scope.next_wasm_request_id();
     window.global_scope.push_pending_request(PendingRequest::WasmInstantiate {
@@ -100,7 +88,7 @@ pub(crate) fn instantiate_bytes(
     let (promise, resolvers) = new_pending_promise(context);
     let global = context.global_object();
     let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("wasm: global object is not a Window")
+        JsNativeError::error().with_message("WebAssembly: global object is not a Window")
     })?;
     let request_id = window.global_scope.next_wasm_request_id();
     window.global_scope.push_pending_request(PendingRequest::WasmCompile {
@@ -241,6 +229,18 @@ pub(crate) fn create_exports_object(
     Ok(exports_object)
 }
 
+/// Create a default `wasmtime::Val` for a given `ValType`, used to initialize
+/// result buffers before calling an exported wasm function.
+fn default_val_for_type(val_type: &wasmtime::ValType) -> wasmtime::Val {
+    match val_type {
+        wasmtime::ValType::I32 => wasmtime::Val::I32(0),
+        wasmtime::ValType::I64 => wasmtime::Val::I64(0),
+        wasmtime::ValType::F32 => wasmtime::Val::F32(0),
+        wasmtime::ValType::F64 => wasmtime::Val::F64(0),
+        _ => wasmtime::Val::I32(0),
+    }
+}
+
 fn create_exported_function_wrapper(
     func: Func,
     store: Arc<Mutex<Store<()>>>,
@@ -259,10 +259,13 @@ fn create_exported_function_wrapper(
                         js_val_to_wasm_val(&js_arg, &param_type, context)
                     })
                     .collect::<Result<_, _>>()?;
-                let mut results = vec![wasmtime::Val::I32(0); func_type.results().len()];
+                let mut results: Vec<wasmtime::Val> = func_type
+                    .results()
+                    .map(|val_type| default_val_for_type(&val_type))
+                    .collect();
                 func.call(&mut *store_guard, &params, &mut results).map_err(|error| {
                     JsNativeError::error()
-                        .with_message(format!("wasm trap: {}", error))
+                        .with_message(format!("WebAssembly trap: {}", error))
                 })?;
                 if results.len() == 1 {
                     wasm_val_to_js_value(&results[0], context)

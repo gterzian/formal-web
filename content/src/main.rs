@@ -1661,7 +1661,7 @@ impl ContentProcess {
             };
 
             let Some(content_document) = self.documents.get_mut(&document_id) else {
-                eprintln!("wasm: document {} not found", document_id);
+                eprintln!("WebAssembly: document {} not found", document_id);
                 self.pending_wasm_requests.remove(&request_id);
                 continue;
             };
@@ -1670,7 +1670,7 @@ impl ContentProcess {
                 content_document.settings.consume_wasm_request(request_id)
             else {
                 eprintln!(
-                    "wasm: request {} not found on document {}",
+                    "WebAssembly: request {} not found on document {}",
                     request_id, document_id
                 );
                 self.pending_wasm_requests.remove(&request_id);
@@ -1688,7 +1688,7 @@ impl ContentProcess {
                         Vec::new(),
                         &mut content_document.settings.context,
                     ) {
-                        eprintln!("wasm: failed to resolve compile promise: {error}");
+                        eprintln!("WebAssembly: failed to resolve compile promise: {error}");
                     }
                 }
                 crate::wasm::WasmResult::CompileError {
@@ -1700,7 +1700,7 @@ impl ContentProcess {
                         message,
                         &mut content_document.settings.context,
                     ) {
-                        eprintln!("wasm: failed to reject compile promise: {error}");
+                        eprintln!("WebAssembly: failed to reject compile promise: {error}");
                     }
                 }
                 crate::wasm::WasmResult::Instantiated {
@@ -1710,7 +1710,7 @@ impl ContentProcess {
                 } => {
                     let module = self.pending_wasm_modules.remove(&request_id);
                     let Some(module) = module else {
-                        eprintln!("wasm: no module found for instantiate request {}", request_id);
+                        eprintln!("WebAssembly: no module found for instantiate request {}", request_id);
                         self.pending_wasm_requests.remove(&request_id);
                         continue;
                     };
@@ -1721,7 +1721,7 @@ impl ContentProcess {
                         &resolvers,
                         &mut content_document.settings.context,
                     ) {
-                        eprintln!("wasm: failed to resolve instantiate promise: {error}");
+                        eprintln!("WebAssembly: failed to resolve instantiate promise: {error}");
                     }
                 }
                 crate::wasm::WasmResult::InstantiateError {
@@ -1733,7 +1733,7 @@ impl ContentProcess {
                         message,
                         &mut content_document.settings.context,
                     ) {
-                        eprintln!("wasm: failed to reject instantiate promise: {error}");
+                        eprintln!("WebAssembly: failed to reject instantiate promise: {error}");
                     }
                 }
             }
@@ -1744,7 +1744,7 @@ impl ContentProcess {
         // Flush microtasks (promise .then() handlers) after resolving/rejecting.
         for document in self.documents.values_mut() {
             if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
-                eprintln!("wasm: microtask checkpoint failed: {error}");
+                eprintln!("WebAssembly: microtask checkpoint failed: {error}");
             }
         }
     }

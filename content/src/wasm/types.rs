@@ -10,20 +10,22 @@ use wasmtime::Store;
 /// The JS-visible properties (exports, imports, customSections) are defined
 /// as static methods on the Module constructor when the namespace is set up.
 #[derive(Trace, Finalize)]
-#[allow(dead_code)]
 pub(crate) struct WasmModule {
     /// The compiled wasmtime module (Send + Sync).
     #[unsafe_ignore_trace]
     pub(crate) module: wasmtime::Module,
     /// The source bytes from which the module was compiled.
+    /// TODO: bytes is the [[Bytes]] internal slot (spec §4.2). Currently stored
+    /// during construction but never read back — needed once customSections is
+    /// implemented (spec §4.2.8).
     #[unsafe_ignore_trace]
+    #[allow(dead_code)]
     pub(crate) bytes: Vec<u8>,
 }
 
 impl JsData for WasmModule {}
 
 impl WasmModule {
-    #[allow(dead_code)]
     pub(crate) fn new(module: wasmtime::Module, bytes: Vec<u8>) -> Self {
         Self { module, bytes }
     }
@@ -44,10 +46,15 @@ pub(crate) struct WasmInstance {
     /// The exports object created from the instance's exports.
     pub(crate) exports: JsObject,
     /// Shared (main + worker), mutex-protected store.
+    /// TODO: store is needed by exported-function closures that access
+    /// the wasmtime instance after creation. The field on the struct is
+    /// never dereferenced directly — only the Arc is cloned into closures.
     #[unsafe_ignore_trace]
     #[allow(dead_code)]
     pub(crate) store: Arc<Mutex<Store<()>>>,
     /// The wasmtime instance handle.
+    /// TODO: instance is kept for ergonomic access when the content process
+    /// needs the handle (e.g. get_export). Currently unused after construction.
     #[unsafe_ignore_trace]
     #[allow(dead_code)]
     pub(crate) instance: wasmtime::Instance,
@@ -70,6 +77,8 @@ impl WasmInstance {
 }
 
 /// <https://www.w3.org/TR/wasm-js-api/#memory-objects>
+/// TODO: WebAssembly.Memory Web IDL interface not yet exposed. Struct is
+/// defined so the type is ready once the JS bindings glue is implemented.
 #[allow(dead_code)]
 #[derive(Trace, Finalize)]
 pub(crate) struct WasmMemory {
@@ -81,6 +90,7 @@ pub(crate) struct WasmMemory {
 impl JsData for WasmMemory {}
 
 /// <https://www.w3.org/TR/wasm-js-api/#table-objects>
+/// TODO: WebAssembly.Table Web IDL interface not yet exposed.
 #[allow(dead_code)]
 #[derive(Trace, Finalize)]
 pub(crate) struct WasmTable {
@@ -91,6 +101,7 @@ pub(crate) struct WasmTable {
 impl JsData for WasmTable {}
 
 /// <https://www.w3.org/TR/wasm-js-api/#global-objects>
+/// TODO: WebAssembly.Global Web IDL interface not yet exposed.
 #[allow(dead_code)]
 #[derive(Trace, Finalize)]
 pub(crate) struct WasmGlobal {
@@ -101,6 +112,7 @@ pub(crate) struct WasmGlobal {
 impl JsData for WasmGlobal {}
 
 /// <https://www.w3.org/TR/wasm-js-api/#tag-section>
+/// TODO: WebAssembly.Tag Web IDL interface not yet exposed.
 #[allow(dead_code)]
 #[derive(Trace, Finalize)]
 pub(crate) struct WasmTag {

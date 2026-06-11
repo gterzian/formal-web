@@ -115,7 +115,7 @@ impl WasmWorker {
         self.ensure_worker_started();
         if let Some(sender) = &self.request_sender {
             if let Err(error) = sender.send(WasmRequest::Compile { request_id, bytes }) {
-                eprintln!("wasm: failed to send compile request: {error}");
+                eprintln!("WebAssembly: failed to send compile request: {error}");
             }
         }
     }
@@ -125,7 +125,7 @@ impl WasmWorker {
         self.ensure_worker_started();
         if let Some(sender) = &self.request_sender {
             if let Err(error) = sender.send(WasmRequest::Instantiate { request_id, module }) {
-                eprintln!("wasm: failed to send instantiate request: {error}");
+                eprintln!("WebAssembly: failed to send instantiate request: {error}");
             }
         }
     }
@@ -236,7 +236,7 @@ impl Drop for WasmWorker {
         }
         if let Some(handle) = self.handle.take() {
             if let Err(error) = handle.join() {
-                eprintln!("wasm: failed to join worker: {error:?}");
+                eprintln!("WebAssembly: failed to join worker: {error:?}");
             }
         }
     }
