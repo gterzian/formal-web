@@ -1,3 +1,4 @@
+use log::error;
 use boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
@@ -81,7 +82,7 @@ pub(crate) fn rejected_promise_from_error(error: JsError, context: &mut Context)
                 .reject
                 .call(&JsValue::undefined(), &[JsValue::undefined()], context)
         {
-            eprintln!(
+            error!(
                 "[webidl] failed to reject fallback promise in rejected_promise_from_error: {error}"
             );
         }

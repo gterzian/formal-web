@@ -1,3 +1,4 @@
+use log::{debug, error};
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
@@ -22,7 +23,7 @@ fn timer_debug_enabled() -> bool {
 
 fn log_timer_debug(message: impl AsRef<str>) {
     if timer_debug_enabled() {
-        eprintln!("[timer-debug][settings] {}", message.as_ref());
+        debug!("[timer-debug][settings] {}", message.as_ref());
     }
 }
 
@@ -102,7 +103,7 @@ impl EnvironmentSettingsObject {
 
         store_document_object(&context, document_object).map_err(|error| error.to_string())?;
         install_document_property(&mut context).map_err(|error| error.to_string())?;
-        install_console_namespace(&mut context).map_err(|error| error.to_string())?;
+        install_console_namespace(&mut context).map_err(|error: boa_engine::JsError| error.to_string())?;
         install_css_namespace(&mut context).map_err(|error| error.to_string())?;
 
         let global = context.global_object();
@@ -221,7 +222,7 @@ impl EnvironmentSettingsObject {
                 global_scope.set_current_timer_nesting_level(previous_nesting_level);
                 Ok(())
             }) {
-                eprintln!("[timers] failed to reset timer nesting level: {error}");
+                error!("[timers] failed to reset timer nesting level: {error}");
             }
             return Ok(());
         };
@@ -243,7 +244,7 @@ impl EnvironmentSettingsObject {
                     Some(&global),
                 );
                 if let Err(error) = callback_result {
-                    eprintln!("content error: {error}");
+                    error!("content error: {error}");
                 }
             }
             TimerHandler::String { source } => {
@@ -258,30 +259,30 @@ impl EnvironmentSettingsObject {
                     .eval(Source::from_bytes(source.as_str()))
                     .map(|_| ())
                 {
-                    eprintln!("content error: {error}");
+                    error!("content error: {error}");
                 }
             }
         }
 
         if let Err(error) = with_global_scope(&self.context, |global_scope| {
             if let Err(error) = global_scope.complete_window_timer(timer_id, timer_key) {
-                eprintln!(
+                error!(
                     "failed to complete window timer (id={timer_id} key={timer_key}): {error}"
                 );
             }
             Ok(())
         }) {
-            eprintln!("failed to access global scope for timer completion: {error}");
+            error!("failed to access global scope for timer completion: {error}");
         }
         if let Err(error) = with_global_scope(&self.context, |global_scope| {
             global_scope.set_current_timer_nesting_level(previous_nesting_level);
             Ok(())
         }) {
-            eprintln!("failed to access global scope for timer nesting level: {error}");
+            error!("failed to access global scope for timer nesting level: {error}");
         }
 
         if let Err(error) = self.perform_a_microtask_checkpoint() {
-            eprintln!("content error: {error}");
+            error!("content error: {error}");
         }
         Ok(())
     }

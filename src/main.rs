@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use log::error;
 use std::ffi::OsString;
 use std::process::{Command as ProcessCommand, ExitCode, Stdio};
 use verification::run_validation_from_iter;
@@ -44,7 +45,7 @@ fn delegated_tla_validate_command() -> Option<ExitCode> {
     Some(match run_validation_from_iter(forwarded_args) {
         Ok(exit_code) => exit_code,
         Err(error) => {
-            eprintln!("formal-web: {error}");
+            error!("formal-web: {error}");
             ExitCode::from(1)
         }
     })
@@ -138,6 +139,7 @@ fn run_embedder_cdp(verify: bool, args: automation::CdpArgs) -> Result<(), Strin
 }
 
 fn main() -> ExitCode {
+    env_logger::init();
     if let Some(exit_code) = delegated_tla_validate_command() {
         return exit_code;
     }
@@ -152,7 +154,7 @@ fn main() -> ExitCode {
         return match wpt_runner::run(args, cli.verify) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("formal-web: {error}");
+                error!("formal-web: {error}");
                 ExitCode::from(1)
             }
         };
@@ -166,7 +168,7 @@ fn main() -> ExitCode {
     };
 
     if let Err(error) = result {
-        eprintln!("formal-web: {error}");
+        error!("formal-web: {error}");
         return ExitCode::from(1);
     }
 

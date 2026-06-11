@@ -1,3 +1,4 @@
+use log::{error, trace};
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
@@ -90,7 +91,7 @@ fn localize_ui_event_for_document(
     match event {
         UiEvent::PointerMove(event) | UiEvent::PointerUp(event) | UiEvent::PointerDown(event) => {
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][content] localize pointer before client=({:.1},{:.1}) page=({:.1},{:.1}) offset=({:.1},{:.1}) scroll=({:.1},{:.1})",
                     event.coords.client_x,
                     event.coords.client_y,
@@ -107,7 +108,7 @@ fn localize_ui_event_for_document(
             event.coords.page_x = event.coords.client_x + scroll_x;
             event.coords.page_y = event.coords.client_y + scroll_y;
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][content] localize pointer after client=({:.1},{:.1}) page=({:.1},{:.1})",
                     event.coords.client_x,
                     event.coords.client_y,
@@ -118,7 +119,7 @@ fn localize_ui_event_for_document(
         }
         UiEvent::Wheel(event) => {
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][content] localize wheel before client=({:.1},{:.1}) page=({:.1},{:.1}) offset=({:.1},{:.1}) scroll=({:.1},{:.1})",
                     event.coords.client_x,
                     event.coords.client_y,
@@ -135,7 +136,7 @@ fn localize_ui_event_for_document(
             event.coords.page_x = event.coords.client_x + scroll_x;
             event.coords.page_y = event.coords.client_y + scroll_y;
             if input_debug_enabled() {
-                eprintln!(
+                trace!(
                     "[input-debug][content] localize wheel after client=({:.1},{:.1}) page=({:.1},{:.1})",
                     event.coords.client_x,
                     event.coords.client_y,
@@ -167,7 +168,7 @@ pub(crate) fn dispatch_ui_event(
 ) -> Result<(), String> {
     let is_wheel = matches!(event, UiEvent::Wheel(_));
     if input_debug_enabled() {
-        eprintln!(
+        trace!(
             "[input-debug][content] document={} traversable={} event={}",
             document_id,
             source_navigable_id,
@@ -194,7 +195,7 @@ pub(crate) fn dispatch_ui_event(
     driver.handle_ui_event(event);
     if is_wheel && input_debug_enabled() {
         let document = document.borrow();
-        eprintln!(
+        trace!(
             "[input-debug][scroll] document={} traversable={} {}",
             document_id,
             source_navigable_id,
@@ -382,7 +383,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
                         .unwrap_or_else(|| format!("node#{node_id}"))
                 })
                 .collect::<Vec<_>>();
-            eprintln!(
+            trace!(
                 "[input-debug][content-dom] document={} traversable={} type={} target_node={} target_label={:?} chain={:?} chain_labels={:?}",
                 self.document_id,
                 self.source_navigable_id,
@@ -400,7 +401,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         let event_object = create_interface_instance::<JsUiEvent>(ui_event, &mut self.settings.context)
             .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
-            eprintln!("failed to dispatch UI event through JavaScript listeners: {error}");
+            error!("failed to dispatch UI event through JavaScript listeners: {error}");
             return;
         }
 
@@ -409,7 +410,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         }
 
         if let Err(error) = self.settings.perform_a_microtask_checkpoint() {
-            eprintln!("failed to run a microtask checkpoint after UI event dispatch: {error}");
+            error!("failed to run a microtask checkpoint after UI event dispatch: {error}");
         }
     }
 }

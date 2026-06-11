@@ -1,3 +1,4 @@
+use log::error;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -115,7 +116,7 @@ impl WasmWorker {
         self.ensure_worker_started();
         if let Some(sender) = &self.request_sender {
             if let Err(error) = sender.send(WasmRequest::Compile { request_id, bytes }) {
-                eprintln!("WebAssembly: failed to send compile request: {error}");
+                error!("WebAssembly: failed to send compile request: {error}");
             }
         }
     }
@@ -125,7 +126,7 @@ impl WasmWorker {
         self.ensure_worker_started();
         if let Some(sender) = &self.request_sender {
             if let Err(error) = sender.send(WasmRequest::Instantiate { request_id, module }) {
-                eprintln!("WebAssembly: failed to send instantiate request: {error}");
+                error!("WebAssembly: failed to send instantiate request: {error}");
             }
         }
     }
@@ -276,7 +277,7 @@ impl Drop for WasmWorker {
         }
         if let Some(handle) = self.handle.take() {
             if let Err(error) = handle.join() {
-                eprintln!("WebAssembly: failed to join worker: {error:?}");
+                error!("WebAssembly: failed to join worker: {error:?}");
             }
         }
     }

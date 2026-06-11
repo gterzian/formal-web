@@ -1,3 +1,4 @@
+use log::debug;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
@@ -32,7 +33,7 @@ fn stream_debug_enabled() -> bool {
 
 fn log_stream_debug(message: impl AsRef<str>) {
     if stream_debug_enabled() {
-        eprintln!("[stream-debug][transform] {}", message.as_ref());
+        debug!("[stream-debug][transform] {}", message.as_ref());
     }
 }
 

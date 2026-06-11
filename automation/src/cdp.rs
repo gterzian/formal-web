@@ -1,3 +1,4 @@
+use log::error;
 use crate::AutomationRuntime;
 use crate::{AUTOMATION_TIMEOUT, CdpEvent, HttpRequest, SCRIPT_TIMEOUT, find_header_terminator};
 use base64::Engine as _;
@@ -133,7 +134,7 @@ impl CdpServerHandle {
                     Ok(runtime) => {
                         runtime.block_on(run_cdp_server(listener, state, shutdown_receiver))
                     }
-                    Err(error) => eprintln!("formal-web cdp server init error: {error}"),
+                    Err(error) => error!("formal-web cdp server init error: {error}"),
                 }
             })
             .map_err(|error| format!("failed to spawn CDP server thread: {error}"))?;
@@ -152,7 +153,7 @@ impl Drop for CdpServerHandle {
         }
         if let Some(listener_thread) = self.listener_thread.take() {
             if let Err(error) = listener_thread.join() {
-                eprintln!("[cdp] failed to join listener thread: {error:?}");
+                error!("[cdp] failed to join listener thread: {error:?}");
             }
         }
     }
@@ -856,7 +857,7 @@ async fn run_cdp_server(
     let listener = match tokio::net::TcpListener::from_std(listener) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("formal-web cdp listener init error: {error}");
+            error!("formal-web cdp listener init error: {error}");
             return;
         }
     };
@@ -868,7 +869,7 @@ async fn run_cdp_server(
         tokio::select! {
             _ = &mut shutdown => {
                 if let Err(error) = session_shutdown_tx.send(true) {
-                    eprintln!("[cdp] failed to signal session shutdown: {error}");
+                    error!("[cdp] failed to signal session shutdown: {error}");
                 }
                 break;
             }
@@ -879,12 +880,12 @@ async fn run_cdp_server(
                         let task_shutdown = session_shutdown_rx.clone();
                         sessions.spawn(async move {
                             if let Err(error) = handle_cdp_stream(stream, task_state, task_shutdown).await {
-                                eprintln!("formal-web cdp connection error: {error}");
+                                error!("formal-web cdp connection error: {error}");
                             }
                         });
                     }
                     Err(error) => {
-                        eprintln!("formal-web cdp accept error: {error}");
+                        error!("formal-web cdp accept error: {error}");
                         break;
                     }
                 }
@@ -894,7 +895,7 @@ async fn run_cdp_server(
 
     while let Some(joined) = sessions.join_next().await {
         if let Err(error) = joined {
-            eprintln!("formal-web cdp session task error: {error}");
+            error!("formal-web cdp session task error: {error}");
         }
     }
 }
@@ -1182,7 +1183,7 @@ async fn handle_websocket_connection(
         .runtime
         .set_cdp_event_sink(None, Duration::from_millis(250))
     {
-        eprintln!("[cdp] failed to clear CDP event sink: {error}");
+        error!("[cdp] failed to clear CDP event sink: {error}");
     }
     result
 }
@@ -2003,7 +2004,7 @@ mod tests {
         assert_eq!(unknown_response["result"], json!({}));
 
         if let Err(error) = socket.close(None) {
-            eprintln!("[cdp-test] failed to close test socket: {error}");
+            error!("[cdp-test] failed to close test socket: {error}");
         }
     }
 
@@ -2252,7 +2253,7 @@ mod tests {
         assert_eq!(navigate_events[4]["params"]["frame"]["id"], page_target_id);
 
         if let Err(error) = socket.close(None) {
-            eprintln!("[cdp-test] failed to close test socket: {error}");
+            error!("[cdp-test] failed to close test socket: {error}");
         }
     }
 

@@ -8,6 +8,7 @@ use std::{
 use super::environment_settings_object::EnvironmentSettingsObject;
 
 use blitz_dom::BaseDocument;
+use log::{debug, error};
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
@@ -28,7 +29,7 @@ fn timer_debug_enabled() -> bool {
 
 fn log_timer_debug(message: impl AsRef<str>) {
     if timer_debug_enabled() {
-        eprintln!("[timer-debug][global] {}", message.as_ref());
+        debug!("[timer-debug][global] {}", message.as_ref());
     }
 }
 
@@ -527,7 +528,7 @@ impl GlobalScope {
                     timer_key: removed_timer.timer_key,
                 }))
         {
-            eprintln!("failed to send window timer clear to the embedder: {error}");
+            error!("failed to send window timer clear to the embedder: {error}");
         }
     }
 
@@ -624,7 +625,7 @@ impl GlobalScope {
                         timer_key: timer.timer_key,
                     }))
             {
-                eprintln!("failed to clear window timer during teardown: {error}");
+                error!("failed to clear window timer during teardown: {error}");
                 break;
             }
         }

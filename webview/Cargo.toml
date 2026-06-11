@@ -15,4 +15,5 @@ peniko = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 user_agent = { path = "../user_agent" }
+log = "0.4"
 verification = { path = "../verification" }

@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as ProcessCommand};
+use log::error;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -283,7 +284,7 @@ impl EventLoopWorker {
             // content process immediately after bootstrap.
             let command = viewport_command(snapshot);
             if let Err(error) = worker.send_command_inner(&command) {
-                eprintln!("failed to send initial viewport command: {error}");
+                error!("failed to send initial viewport command: {error}");
             }
         }
 
@@ -583,7 +584,7 @@ impl EventLoopWorker {
                     .webview_provider_sender
                     .send(WebviewProviderMessage::PaintFrame(snapshot))
                 {
-                    eprintln!("failed to enqueue webview-provider paint frame: {error}");
+                    error!("failed to enqueue webview-provider paint frame: {error}");
                 } else {
                     // Silently ignore send failures during shutdown — the event
                     // loop may have already closed.
@@ -613,14 +614,14 @@ impl EventLoopWorker {
                 Ok(true) => {}
                 Ok(false) => {
                     if let Err(error) = child.kill() {
-                        eprintln!("failed to kill content process: {error}");
+                        error!("failed to kill content process: {error}");
                     }
                     if let Err(error) = child.wait() {
-                        eprintln!("failed to wait for content process exit: {error}");
+                        error!("failed to wait for content process exit: {error}");
                     }
                 }
                 Err(error) => {
-                    eprintln!("content bridge shutdown poll error: {error}");
+                    error!("content bridge shutdown poll error: {error}");
                 }
             }
         }
@@ -637,12 +638,12 @@ impl EventLoopWorker {
             select! {
                 recv(command_receiver) -> command => {
                     let Ok(command) = command else {
-                        eprintln!(
+                        error!(
                             "event loop command channel closed for event loop {}; sending shutdown to content",
                             self.event_loop_id
                         );
                         if let Err(error) = self.send_command_inner(&ContentCommand::Shutdown) {
-                            eprintln!("failed to send shutdown command to content: {error}");
+                            error!("failed to send shutdown command to content: {error}");
                         }
                         break;
                     };
@@ -651,7 +652,7 @@ impl EventLoopWorker {
                         if let Some(reply) = self.stop_reply.take() {
                             let _ = reply.send(Err(error.clone()));
                         }
-                        eprintln!("content bridge command handling error: {error}");
+                        error!("content bridge command handling error: {error}");
                         break;
                     }
                 }
@@ -662,7 +663,7 @@ impl EventLoopWorker {
                             if let Some(reply) = self.stop_reply.take() {
                                 let _ = reply.send(Err(error.clone()));
                             }
-                            eprintln!("content bridge route error: {error}");
+                            error!("content bridge route error: {error}");
                             break;
                         }
                         Err(error) => {
@@ -679,7 +680,7 @@ impl EventLoopWorker {
                             } else {
                                 String::from("missing child handle")
                             };
-                            eprintln!(
+                            error!(
                                 "content event route closed for event loop {}: {error}; child status: {child_status}",
                                 self.event_loop_id
                             );
@@ -702,7 +703,7 @@ impl EventLoopWorker {
                             if let Some(reply) = self.stop_reply.take() {
                                 let _ = reply.send(Err(error.clone()));
                             }
-                            eprintln!("content bridge event handling error: {error}");
+                            error!("content bridge event handling error: {error}");
                             break;
                         }
                     }

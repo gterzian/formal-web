@@ -1,3 +1,4 @@
+use log::error;
 mod environment_settings_object;
 mod global_scope;
 mod html_anchor_element;
@@ -255,7 +256,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
             ) {
                 Ok(result) => result,
                 Err(error) => {
-                    eprintln!(
+                    error!(
                         "the_rules_for_choosing_a_navigable: failed to create document: {error}"
                     );
                     return ChosenNavigableResult {
@@ -270,7 +271,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                 settings,
                 document,
             ) {
-                eprintln!(
+                error!(
                     "the_rules_for_choosing_a_navigable: failed to register document: {error}"
                 );
             }

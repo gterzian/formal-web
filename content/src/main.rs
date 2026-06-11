@@ -27,6 +27,7 @@ use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
+use log::{debug, error, trace, warn};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_channel::router::RouterProxy;
@@ -212,7 +213,7 @@ fn input_debug_enabled() -> bool {
 
 fn log_render_state_debug(message: impl AsRef<str>) {
     if render_state_debug_enabled() {
-        eprintln!("[render-state][content] {}", message.as_ref());
+        debug!("[render-state][content] {}", message.as_ref());
     }
 }
 
@@ -243,14 +244,14 @@ fn maybe_log_input_layout_debug(document_id: DocumentId, document: &BaseDocument
     });
 
     if interesting_nodes.is_empty() {
-        eprintln!(
+        trace!(
             "[input-debug][layout] document={} interesting_nodes=none",
             document_id,
         );
         return;
     }
 
-    eprintln!(
+    trace!(
         "[input-debug][layout] document={} interesting_nodes={interesting_nodes:?}",
         document_id,
     );
@@ -308,7 +309,7 @@ impl NetProvider for ContentNetProvider {
                         body: request_body_string(&request.body),
                     },
                 )) {
-                    eprintln!("failed to send document fetch request to the embedder: {error}");
+                    error!("failed to send document fetch request to the embedder: {error}");
                 }
             }
         }
@@ -783,7 +784,7 @@ impl ContentProcess {
                 DeferredScriptState::Inline { source }
                 | DeferredScriptState::ExternalReady { source } => {
                     if let Err(error) = content_document.settings.evaluate_script(&source) {
-                        eprintln!("content error: {error}");
+                        error!("content error: {error}");
                     }
                 }
                 DeferredScriptState::ExternalPending { .. }
@@ -1000,7 +1001,7 @@ impl ContentProcess {
 
         for (script_index, src) in deferred_fetches {
             if let Err(error) = self.start_deferred_script_fetch(document_id, script_index, &src) {
-                eprintln!("content error: {error}");
+                error!("content error: {error}");
                 self.mark_deferred_script_failed(document_id, script_index);
             }
         }
@@ -1015,7 +1016,7 @@ impl ContentProcess {
     ) -> Result<serde_json::Value, String> {
         // Set up shared registry so window.open can register new documents.
         if let Err(error) = self.set_up_new_document_registry(traversable_id) {
-            eprintln!("failed to set up new document registry: {error}");
+            warn!("failed to set up new document registry: {error}");
         }
 
         let document_id = *self
@@ -1030,10 +1031,10 @@ impl ContentProcess {
 
         // Tear down and drain any documents created during JS execution.
         if let Err(error) = self.tear_down_new_document_registry(traversable_id) {
-            eprintln!("failed to tear down new document registry: {error}");
+            warn!("failed to tear down new document registry: {error}");
         }
         if let Err(error) = self.drain_new_traversable_documents() {
-            eprintln!("failed to drain new traversable documents: {error}");
+            warn!("failed to drain new traversable documents: {error}");
         }
 
         result
@@ -1046,7 +1047,7 @@ impl ContentProcess {
     ) -> Result<(), String> {
         // Set up shared registry so window.open can register new documents.
         if let Err(error) = self.set_up_new_document_registry(traversable_id) {
-            eprintln!("failed to set up new document registry: {error}");
+            warn!("failed to set up new document registry: {error}");
         }
 
         let document_id = *self
@@ -1089,7 +1090,7 @@ impl ContentProcess {
                     .remove(&content_document.traversable_id);
             }
             if let Err(error) = content_document.settings.clear_all_window_timers() {
-                eprintln!("failed to clear window timers during document teardown: {error}");
+                error!("failed to clear window timers during document teardown: {error}");
             }
         }
         // Clean up any pending wasm requests for this document so that
@@ -1413,7 +1414,7 @@ impl ContentProcess {
                     Bytes::copy_from_slice(&response.body),
                 );
                 let Some(content_document) = self.documents.get(&document_id) else {
-                    eprintln!(
+                    error!(
                         "[content] complete_document_fetch: document {document_id} not found"
                     );
                     return Ok(());
@@ -1439,14 +1440,14 @@ impl ContentProcess {
                 if deferred_script_response_is_executable(&response) {
                     self.complete_deferred_script_fetch(document_id, script_index, response.body);
                 } else {
-                    eprintln!(
+                    warn!(
                         "content deferred script rejected: url={} status={} content-type={}",
                         response.final_url, response.status, response.content_type,
                     );
                     self.mark_deferred_script_failed(document_id, script_index);
                 }
                 let Some(content_document) = self.documents.get(&document_id) else {
-                    eprintln!(
+                    error!(
                         "[content] complete_document_fetch (deferred script): document {document_id} not found"
                     );
                     return Ok(());
@@ -1494,7 +1495,7 @@ impl ContentProcess {
             } => {
                 handler.bytes(request_url, Bytes::new());
                 let Some(content_document) = self.documents.get(&document_id) else {
-                    eprintln!("[content] fail_document_fetch: document {document_id} not found");
+                    error!("[content] fail_document_fetch: document {document_id} not found");
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
@@ -1512,7 +1513,7 @@ impl ContentProcess {
             } => {
                 self.mark_deferred_script_failed(document_id, script_index);
                 let Some(content_document) = self.documents.get(&document_id) else {
-                    eprintln!(
+                    error!(
                         "[content] fail_document_fetch (deferred script): document {document_id} not found"
                     );
                     return Ok(());
@@ -1547,7 +1548,7 @@ impl ContentProcess {
             document.traversable_id
         };
         if let Err(error) = self.set_up_new_document_registry(traversable_id) {
-            eprintln!("failed to set up new document registry: {error}");
+            warn!("failed to set up new document registry: {error}");
         }
         {
             let Some(document) = self.documents.get_mut(&document_id) else {
@@ -1558,10 +1559,10 @@ impl ContentProcess {
                 .run_window_timer(timer_id, timer_key, nesting_level)?;
         }
         if let Err(error) = self.tear_down_new_document_registry(traversable_id) {
-            eprintln!("failed to tear down new document registry: {error}");
+            warn!("failed to tear down new document registry: {error}");
         }
         if let Err(error) = self.drain_new_traversable_documents() {
-            eprintln!("failed to drain new traversable documents: {error}");
+            warn!("failed to drain new traversable documents: {error}");
         }
         Ok(())
     }
@@ -1662,7 +1663,7 @@ impl ContentProcess {
             };
 
             let Some(content_document) = self.documents.get_mut(&document_id) else {
-                eprintln!("WebAssembly: document {} not found", document_id);
+                error!("WebAssembly: document {} not found", document_id);
                 self.pending_wasm_requests.remove(&request_id);
                 continue;
             };
@@ -1670,7 +1671,7 @@ impl ContentProcess {
             let Some((_promise, resolvers)) =
                 content_document.settings.consume_wasm_request(request_id)
             else {
-                eprintln!(
+                error!(
                     "WebAssembly: request {} not found on document {}",
                     request_id, document_id
                 );
@@ -1689,7 +1690,7 @@ impl ContentProcess {
                         Vec::new(),
                         &mut content_document.settings.context,
                     ) {
-                        eprintln!("WebAssembly: failed to resolve compile promise: {error}");
+                        error!("WebAssembly: failed to resolve compile promise: {error}");
                     }
                 }
                 WasmResult::CompileError {
@@ -1701,7 +1702,7 @@ impl ContentProcess {
                         message,
                         &mut content_document.settings.context,
                     ) {
-                        eprintln!("WebAssembly: failed to reject compile promise: {error}");
+                        error!("WebAssembly: failed to reject compile promise: {error}");
                     }
                 }
                 WasmResult::Instantiated {
@@ -1711,7 +1712,7 @@ impl ContentProcess {
                 } => {
                     let module = self.pending_wasm_modules.remove(&request_id);
                     let Some(module) = module else {
-                        eprintln!("WebAssembly: no module found for instantiate request {}", request_id);
+                        error!("WebAssembly: no module found for instantiate request {}", request_id);
                         self.pending_wasm_requests.remove(&request_id);
                         continue;
                     };
@@ -1722,7 +1723,7 @@ impl ContentProcess {
                         &resolvers,
                         &mut content_document.settings.context,
                     ) {
-                        eprintln!("WebAssembly: failed to resolve instantiate promise: {error}");
+                        error!("WebAssembly: failed to resolve instantiate promise: {error}");
                     }
                 }
                 WasmResult::InstantiateError {
@@ -1734,7 +1735,7 @@ impl ContentProcess {
                         message,
                         &mut content_document.settings.context,
                     ) {
-                        eprintln!("WebAssembly: failed to reject instantiate promise: {error}");
+                        error!("WebAssembly: failed to reject instantiate promise: {error}");
                     }
                 }
             }
@@ -1745,7 +1746,7 @@ impl ContentProcess {
         // Flush microtasks (promise .then() handlers) after resolving/rejecting.
         for document in self.documents.values_mut() {
             if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
-                eprintln!("WebAssembly: microtask checkpoint failed: {error}");
+                error!("WebAssembly: microtask checkpoint failed: {error}");
             }
         }
     }
@@ -1972,7 +1973,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                             }
                             Ok(false) => break,
                             Err(error) => {
-                                eprintln!("content error: {error}");
+                                error!("content error: {error}");
                                 if notify {
                                     let _ = process.note_command_completed();
                                 }

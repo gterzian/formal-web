@@ -13,6 +13,7 @@ use ipc_messages::content::{
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage, WindowTimerKey,
     iframe_target_name,
 };
+use log::{debug, error, trace};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -996,7 +997,7 @@ impl Drop for UserAgent {
     /// best-effort shutdown of the owned user-agent thread.
     fn drop(&mut self) {
         if let Err(error) = self.shutdown_inner() {
-            eprintln!("failed to shut down user-agent thread: {error}");
+            error!("failed to shut down user-agent thread: {error}");
         }
     }
 }
@@ -1104,7 +1105,7 @@ impl UserAgent {
 /// render-state debug output on the user-agent thread.
 fn log_render_state_debug(message: impl AsRef<str>) {
     if std::env::var_os("FORMAL_WEB_DEBUG_RENDER_STATE").is_some() {
-        eprintln!("[render-state][user-agent] {}", message.as_ref());
+        debug!("[render-state][user-agent] {}", message.as_ref());
     }
 }
 
@@ -1540,7 +1541,7 @@ impl UserAgentWorker {
             .ok_or_else(|| format!("missing event loop entry for id {}", agent.event_loop_id))?;
 
         if startup_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[startup-debug][user-agent] create_new_top_level_traversable sending CreateEmptyDocument traversable={} document={} event_loop={}",
                 traversable_id, document_id, agent.event_loop_id
             );
@@ -1563,7 +1564,7 @@ impl UserAgentWorker {
         )?;
 
         if startup_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[startup-debug][user-agent] create_new_top_level_traversable CreateEmptyDocument queued traversable={} document={} event_loop={}",
                 traversable_id, document_id, agent.event_loop_id
             );
@@ -1666,7 +1667,7 @@ impl UserAgentWorker {
         // The embedder notification is the model's observable hook for a new top-level
         // traversable.
         if startup_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[startup-debug][user-agent] create_new_top_level_traversable traversable={} target_name={}",
                 traversable_id, target_name
             );
@@ -2303,7 +2304,7 @@ impl UserAgentWorker {
     /// supplied startup URL.
     fn create_a_fresh_top_level_traversable(&mut self, destination_url: String) {
         if startup_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[startup-debug][user-agent] create_fresh_top_level_traversable destination_url={}",
                 destination_url
             );
@@ -2321,7 +2322,7 @@ impl UserAgentWorker {
             )
         })();
         if let Err(error) = result {
-            eprintln!("failed to create a fresh top-level traversable: {error}");
+            error!("failed to create a fresh top-level traversable: {error}");
         }
     }
 
@@ -2648,7 +2649,7 @@ impl UserAgentWorker {
             Ok(())
         })();
         if let Err(error) = result {
-            eprintln!("failed to run navigate: {error}");
+            error!("failed to run navigate: {error}");
         }
     }
 
@@ -2837,7 +2838,7 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
     fn handle_complete_before_unload(&mut self, result: BeforeUnloadResult) {
         if let Err(error) = self.handle_complete_before_unload_result(result) {
-            eprintln!("failed to complete beforeunload: {error}");
+            error!("failed to complete beforeunload: {error}");
         }
     }
 
@@ -2960,7 +2961,7 @@ impl UserAgentWorker {
                             document_id: previous_document_id,
                         },
                     ) {
-                        eprintln!("[user-agent] failed to destroy previous document: {error}");
+                        error!("[user-agent] failed to destroy previous document: {error}");
                     }
                 }
                 self.state.documents.remove(&previous_document_id);
@@ -2993,7 +2994,7 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#finalize-a-cross-document-navigation>
     fn handle_finalize_cross_document_navigation(&mut self, finalized: ContentFinalizeNavigation) {
         if let Err(error) = self.finalize_cross_document_navigation(finalized) {
-            eprintln!("failed to finalize cross-document navigation: {error}");
+            error!("failed to finalize cross-document navigation: {error}");
         }
     }
 
@@ -3146,7 +3147,7 @@ impl UserAgentWorker {
         };
 
         if input_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[input-debug][user-agent] dispatch_event traversable={} event_loop={} document={} bytes={}",
                 traversable_id,
                 handle,
@@ -3183,7 +3184,7 @@ impl UserAgentWorker {
         };
 
         if input_debug_enabled() {
-            eprintln!(
+            trace!(
                 "[input-debug][user-agent] rendering_opportunity traversable={} event_loop={} document={}",
                 traversable_id, handle, document_id,
             );
@@ -3288,7 +3289,7 @@ impl UserAgentWorker {
                         webview_id: WebviewId(pending.traversable_id),
                         status: NavigationCompletion::Aborted { message: error },
                     }) {
-                        eprintln!(
+                        error!(
                             "[user-agent] failed to report navigation completed (init doc): {error}"
                         );
                     }
@@ -3308,7 +3309,7 @@ impl UserAgentWorker {
                     webview_id: WebviewId(pending.traversable_id),
                     status: NavigationCompletion::Aborted { message: error },
                 }) {
-                    eprintln!(
+                    error!(
                         "[user-agent] failed to report navigation completed (command sender): {error}"
                     );
                 }
@@ -3394,7 +3395,7 @@ impl UserAgentWorker {
                     webview_id: WebviewId(pending.traversable_id),
                     status: NavigationCompletion::Aborted { message: error },
                 }) {
-                    eprintln!("[user-agent] failed to report navigation completed (send): {error}");
+                    error!("[user-agent] failed to report navigation completed (send): {error}");
                 }
             }
         }
@@ -3416,7 +3417,7 @@ impl UserAgentWorker {
                 message: format!("navigation fetch failed for {}", pending.request.url),
             },
         }) {
-            eprintln!("[user-agent] failed to report navigation completed (fetch failed): {error}");
+            error!("[user-agent] failed to report navigation completed (fetch failed): {error}");
         }
     }
 

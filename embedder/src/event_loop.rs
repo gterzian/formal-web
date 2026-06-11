@@ -18,6 +18,7 @@ use blitz_traits::shell::ColorScheme;
 use ipc_messages::content::WebviewId;
 use kurbo::{Affine, Rect};
 use peniko::{Color, Fill};
+use log::error;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Duration;
 use verification::TraceSender;
@@ -99,7 +100,7 @@ impl Embedder for EventLoopEmbedder {
             .dispatcher
             .send(FormalWebUserEvent::RequestRedraw(webview_id))
         {
-            eprintln!("failed to request redraw for webview {webview_id:?}: {error}");
+            error!("failed to request redraw for webview {webview_id:?}: {error}");
         }
     }
 

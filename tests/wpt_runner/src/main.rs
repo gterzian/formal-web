@@ -1,4 +1,5 @@
 use clap::Parser;
+use log::error;
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
@@ -13,11 +14,12 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    env_logger::init();
     let cli = Cli::parse();
     match wpt_runner::run(cli.args, cli.verify) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("formal-web-wpt: {error}");
+            error!("formal-web-wpt: {error}");
             ExitCode::from(1)
         }
     }
