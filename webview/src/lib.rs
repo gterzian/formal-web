@@ -10,6 +10,7 @@ use ipc_messages::content::{
     FontTransportReceiver, FrameId, NavigableId, NavigateRequest, PaintFrame,
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage,
 };
+use ipc_messages::media::VideoPaintId;
 use kurbo::Affine;
 use log::{debug, error, trace};
 use std::collections::HashMap;
@@ -20,7 +21,7 @@ use std::time::Duration;
 use user_agent::UserAgent;
 use verification::TraceSender;
 
-pub use compositor::VisibleFrameViewport;
+pub use compositor::{CompositorVideoFrame, VisibleFrameViewport};
 pub use user_agent::{Embedder, NavigationCompleted, NavigationCompletion};
 
 #[derive(Clone)]
@@ -91,6 +92,23 @@ pub struct WebviewProvider {
 }
 
 impl WebviewProvider {
+    pub fn update_video_frame(
+        &mut self,
+        webview_id: WebviewId,
+        frame: CompositorVideoFrame,
+    ) {
+        if let Some(state) = self.webviews.get_mut(&webview_id) {
+            state.compositor.update_video_frame(frame);
+            self.embedder.request_redraw(webview_id);
+        }
+    }
+
+    pub fn remove_video_frame(&mut self, webview_id: WebviewId, paint_id: VideoPaintId) {
+        if let Some(state) = self.webviews.get_mut(&webview_id) {
+            state.compositor.remove_video_frame(paint_id);
+        }
+    }
+
     pub fn new(
         embedder: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,

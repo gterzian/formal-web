@@ -14,6 +14,7 @@ path = "src/main.rs"
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
 content = { path = "content" }
+media = { path = "media" }
 net = { path = "net" }
 user_agent = { path = "user_agent" }
 verification = { path = "verification" }

@@ -1,5 +1,6 @@
 mod event_loop;
 mod fetch;
+pub(crate) mod media;
 mod timer;
 
 use blitz_traits::shell::ColorScheme;
@@ -31,6 +32,7 @@ use crate::event_loop::{
     traversable_viewport_command,
 };
 use crate::fetch::{FetchCommand, run_fetch_thread};
+use crate::media::MediaHandler;
 use crate::timer::{TimerCommand, run_timer_thread};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
@@ -908,6 +910,8 @@ pub enum UserAgentCommand {
     Shutdown {
         reply: Sender<Result<(), String>>,
     },
+    /// A media event from the media process (frames, EOS, errors, duration changes).
+    MediaEvent(ipc_messages::media::MediaEvent),
 }
 
 /// Public handle to the dedicated user-agent thread that owns browser-global state and worker
@@ -1267,6 +1271,8 @@ struct UserAgentWorker {
     /// request ids for automation round-trips across the user-agent and
     /// content event-loop boundary.
     next_automation_request_id: u64,
+    /// Media handler for communicating with the media process.
+    media_handler: MediaHandler,
 }
 
 impl UserAgentWorker {
@@ -1307,7 +1313,7 @@ impl UserAgentWorker {
 
         Self {
             state: UserAgentState::default(),
-            command_sender: user_agent_command_sender,
+            command_sender: user_agent_command_sender.clone(),
             command_receiver,
             fetch_command_sender,
             fetch_join_handle: Some(fetch_join_handle),
@@ -1321,6 +1327,7 @@ impl UserAgentWorker {
                 trace_sender.clone(),
             ),
             trace_sender,
+            media_handler: MediaHandler::new(user_agent_command_sender.clone()),
             next_automation_request_id: 1,
         }
     }
@@ -1441,6 +1448,9 @@ impl UserAgentWorker {
                 UserAgentCommand::Shutdown { reply } => {
                     self.handle_shutdown(reply);
                     break;
+                }
+                UserAgentCommand::MediaEvent(event) => {
+                    self.handle_media_event(event);
                 }
             }
         }
@@ -3615,6 +3625,37 @@ impl UserAgentWorker {
             shutdown_result = Err(String::from("timer thread panicked"));
         }
 
+        // Shut down the media handler.
+        self.media_handler.shutdown();
+
         let _ = reply.send(shutdown_result);
+    }
+
+    /// Handle a MediaEvent from the media process.
+    fn handle_media_event(&mut self, event: ipc_messages::media::MediaEvent) {
+        use ipc_messages::media::MediaEvent;
+        match event {
+            MediaEvent::Frame(video_frame) => {
+                // A decoded frame is ready. The user agent relays this to the
+                // compositor via the WebviewProvider / Embedder APIs.
+                // In the current architecture, the embedder's composition pass
+                // pulls the latest frame from a shared cache.
+                //
+                // TODO: Store the frame in a per-webview cache and trigger a repaint.
+                debug!("[media] received video frame: {}x{}", video_frame.width, video_frame.height);
+            }
+            MediaEvent::Eos { pipeline_id } => {
+                debug!("[media] pipeline {:?} reached end of stream", pipeline_id);
+            }
+            MediaEvent::Error { pipeline_id, message } => {
+                error!("[media] pipeline {:?} error: {}", pipeline_id, message);
+            }
+            MediaEvent::DurationChanged {
+                pipeline_id,
+                duration_secs,
+            } => {
+                debug!("[media] pipeline {:?} duration: {}s", pipeline_id, duration_secs);
+            }
+        }
     }
 }

@@ -1,0 +1,23 @@
+[package]
+name = "media"
+version = "0.1.0"
+edition = "2024"
+publish = false
+autobins = false
+
+[lib]
+path = "src/main.rs"
+
+[[bin]]
+name = "formal-web-media"
+path = "src/bin/media_process.rs"
+
+[dependencies]
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+ipc-channel = "0.21"
+ipc_messages = { path = "../ipc_messages" }
+serde = { version = "1", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+url = "2"

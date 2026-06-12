@@ -4,6 +4,7 @@ use ipc_messages::content::{
     EmbedBackgroundPolicy, FontTransportReceiver, FrameCompositionMetadata, FrameEmbedSite,
     FrameId, RecordedScene,
 };
+use ipc_messages::media::{VideoEmbedSite, VideoPaintId};
 use kurbo::{Affine, Point, Rect, Shape};
 use peniko::{Color, Fill};
 use std::collections::{HashMap, HashSet};
@@ -70,6 +71,16 @@ pub struct HitTestResult {
     pub has_child_frames: bool,
 }
 
+/// Carries the latest decoded video frame for a given pipeline, ready to paint.
+#[derive(Clone)]
+pub struct CompositorVideoFrame {
+    pub video_paint_id: VideoPaintId,
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8 pixel data, width * height * 4 bytes.
+    pub data: std::sync::Arc<[u8]>,
+}
+
 #[derive(Clone, Default)]
 pub struct Compositor {
     root_frame_id: Option<FrameId>,
@@ -77,6 +88,9 @@ pub struct Compositor {
     pending_frames: HashMap<FrameId, CachedFrame>,
     replace_root_on_next_paint: bool,
     resolved_tree_dirty: bool,
+    /// Latest frame per video paint id. Updated by the user agent before compose_scene.
+    /// Never cleared — stale frame stays until superseded or pipeline destroyed.
+    video_frames: HashMap<VideoPaintId, CompositorVideoFrame>,
 }
 
 impl Compositor {
@@ -84,6 +98,16 @@ impl Compositor {
         self.pending_frames.clear();
         self.replace_root_on_next_paint = true;
         self.resolved_tree_dirty = true;
+    }
+
+    /// Called by the user agent when a new VideoFrame arrives from the media process.
+    /// Non-blocking — just replaces the slot.
+    pub fn update_video_frame(&mut self, frame: CompositorVideoFrame) {
+        self.video_frames.insert(frame.video_paint_id, frame);
+    }
+
+    pub fn remove_video_frame(&mut self, paint_id: VideoPaintId) {
+        self.video_frames.remove(&paint_id);
     }
 
     pub fn note_child_navigation_finalized(&mut self, frame_id: FrameId) {
@@ -238,65 +262,120 @@ impl Compositor {
             .get(&frame_id)?
             .resolved_viewport
             .clone()?;
-        let mut embed_sites = self
-            .committed_frames
-            .get(&frame_id)?
-            .composition
-            .embed_sites
-            .clone();
-        embed_sites.sort_by_key(|site| (site.z_index, site.paint_order, site.embed_site_id.0));
-        let decoded_scene = {
-            let cached_frame = self.committed_frames.get_mut(&frame_id)?;
-            cached_frame.scene.clone().into_scene(font_receiver)
+
+        // Snapshot all per-frame data up front, releasing borrows on self.
+        let (embed_sites, video_sites, decoded_scene, background_policy_map) = {
+            let frame = self.committed_frames.get(&frame_id)?;
+            let embed_sites = frame.composition.embed_sites.clone();
+            let video_sites = frame.composition.video_sites.clone();
+            // The decoded scene is consumed; clone it before dropping the frame borrow.
+            let scene = frame.scene.clone().into_scene(font_receiver);
+            let bg_map = embed_sites
+                .iter()
+                .map(|s| (s.embed_site_id, s.background_policy))
+                .collect::<HashMap<_, _>>();
+            (embed_sites, video_sites, scene, bg_map)
         };
+
+        // Unified paint item so both types sort together by z_index / paint_order.
+        enum PaintItem {
+            Embed(FrameEmbedSite),
+            Video(VideoEmbedSite),
+        }
+
+        let mut paint_items: Vec<(i32, u32, PaintItem)> = embed_sites
+            .into_iter()
+            .map(|embed_site| {
+                (embed_site.z_index, embed_site.paint_order, PaintItem::Embed(embed_site))
+            })
+            .chain(video_sites.into_iter().map(|video_site| {
+                (video_site.z_index, video_site.paint_order, PaintItem::Video(video_site))
+            }))
+            .collect();
+        paint_items.sort_by_key(|(z, p, _)| (*z, *p));
+
         let mut composed_scene = RenderScene::with_tolerance(decoded_scene.tolerance);
 
         for command in decoded_scene.commands {
             composed_scene.commands.push(command);
         }
 
-        for embed_site in embed_sites {
-            let child_frame_id = embed_site.child_frame_id;
-            let Some(child_local_to_root) = self.record_child_frame_layout(
-                frame_id,
-                &parent_viewport,
-                frame_local_to_root,
-                &embed_site,
-            ) else {
-                continue;
-            };
+        for (_, _, item) in paint_items {
+            match item {
+                PaintItem::Embed(embed_site) => {
+                    let child_frame_id = embed_site.child_frame_id;
+                    let Some(child_local_to_root) = self.record_child_frame_layout(
+                        frame_id,
+                        &parent_viewport,
+                        frame_local_to_root,
+                        &embed_site,
+                    ) else {
+                        continue;
+                    };
 
-            if !stack.insert(child_frame_id) {
-                continue;
-            }
+                    if !stack.insert(child_frame_id) {
+                        continue;
+                    }
 
-            if let Some(child_scene) =
-                self.compose_frame(child_frame_id, font_receiver, stack, child_local_to_root)
-            {
-                let clip = Self::embed_local_clip(&embed_site);
-                let transform = Affine::new(embed_site.transform);
-                let child_transform = self
-                    .child_scene_transform(&clip, child_frame_id)
-                    .map(|scene_transform| transform * scene_transform)
-                    .unwrap_or(transform);
-                if matches!(
-                    embed_site.background_policy,
-                    EmbedBackgroundPolicy::OpaqueWhite
-                ) {
-                    composed_scene.fill(Fill::NonZero, transform, Color::WHITE, None, &clip);
+                    if let Some(child_scene) = self.compose_frame(
+                        child_frame_id,
+                        font_receiver,
+                        stack,
+                        child_local_to_root,
+                    ) {
+                        let clip = Self::embed_local_clip(&embed_site);
+                        let transform = Affine::new(embed_site.transform);
+                        let child_transform = self
+                            .child_scene_transform(&clip, child_frame_id)
+                            .map(|scene_transform| transform * scene_transform)
+                            .unwrap_or(transform);
+                        if matches!(
+                            background_policy_map.get(&embed_site.embed_site_id),
+                            Some(EmbedBackgroundPolicy::OpaqueWhite)
+                        ) {
+                            composed_scene.fill(
+                                Fill::NonZero,
+                                transform,
+                                Color::WHITE,
+                                None,
+                                &clip,
+                            );
+                        }
+                        composed_scene.push_clip_layer(transform, &clip);
+                        composed_scene.append_scene(child_scene, child_transform);
+                        composed_scene.pop_layer();
+                        if input_debug_enabled() {
+                            trace!(
+                                "[input-debug][compositor] composed embed site {} with child frame {}",
+                                embed_site.embed_site_id.0, child_frame_id.0
+                            );
+                        }
+                    }
+
+                    stack.remove(&child_frame_id);
                 }
-                composed_scene.push_clip_layer(transform, &clip);
-                composed_scene.append_scene(child_scene, child_transform);
-                composed_scene.pop_layer();
-                if input_debug_enabled() {
-                    trace!(
-                        "[input-debug][compositor] composed embed site {} with child frame {}",
-                        embed_site.embed_site_id.0, child_frame_id.0
+                PaintItem::Video(video_site) => {
+                    let Some(_video_frame) = self.video_frames.get(&video_site.paint_id) else {
+                        // First-frame not yet arrived; nothing to paint.
+                        continue;
+                    };
+
+                    // TODO: Paint the video frame using the compositor's image API.
+                    // The video frame data is stored as Arc<[u8]> (RGBA8 pixels).
+                    // Creating a peniko::Image requires peniko::Blob::new(Arc<[u8]>),
+                    // then composed_scene.draw_image(ImageBrushRef::from(&image), transform).
+                    let transform = Affine::new(video_site.transform);
+                    let clip = Rect::new(
+                        video_site.clip_bounds[0],
+                        video_site.clip_bounds[1],
+                        video_site.clip_bounds[2],
+                        video_site.clip_bounds[3],
                     );
+                    composed_scene.push_clip_layer(transform, &clip);
+                    // TODO: composed_scene.draw_image(image_brush_ref, transform);
+                    composed_scene.pop_layer();
                 }
             }
-
-            stack.remove(&child_frame_id);
         }
 
         Some(composed_scene)

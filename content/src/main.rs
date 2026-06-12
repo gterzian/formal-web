@@ -1380,7 +1380,10 @@ impl ContentProcess {
             })
             .collect();
 
-        FrameCompositionMetadata { embed_sites }
+        FrameCompositionMetadata {
+            embed_sites,
+            video_sites: Vec::new(),
+        }
     }
 
     fn complete_document_fetch(

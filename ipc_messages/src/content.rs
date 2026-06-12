@@ -5,6 +5,7 @@ use anyrender::{
 use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
+use crate::media::VideoEmbedSite;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fmt;
 use uuid::Uuid;
@@ -288,6 +289,7 @@ pub struct FrameEmbedSite {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FrameCompositionMetadata {
     pub embed_sites: Vec<FrameEmbedSite>,
+    pub video_sites: Vec<VideoEmbedSite>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
