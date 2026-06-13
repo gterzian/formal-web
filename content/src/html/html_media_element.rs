@@ -8,14 +8,6 @@ use boa_gc::{Finalize, Trace};
 use crate::html::HTMLElement;
 
 /// <https://html.spec.whatwg.org/#media-elements>
-///
-/// HTMLMediaElement is the shared base for HTMLVideoElement and HTMLAudioElement.
-/// This implementation covers network state, ready state, and the
-/// resource selection algorithm entry points.
-///
-/// Note: Only the subset needed for the initial HTMLVideoElement implementation is
-/// provided. Playback control (play(), pause()), time ranges, and track management
-/// are stubs for future work.
 #[derive(Trace, Finalize, JsData)]
 pub struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
@@ -67,47 +59,56 @@ pub struct HTMLMediaElement {
     is_currently_stalled: bool,
 
     /// <https://html.spec.whatwg.org/#show-poster-flag>
-    /// Note: Only meaningful for HTMLVideoElement; kept here for convenience.
     show_poster: bool,
 }
 
 /// <https://html.spec.whatwg.org/#mediaerror>
 #[derive(Trace, Finalize, JsData, Clone, Debug)]
 pub struct MediaError {
-    /// <https://html.spec.whatwg.org/#mediaerror-code>
+    /// <https://html.spec.whatwg.org/#dom-mediaerror-code>
     pub code: u16,
-    /// <https://html.spec.whatwg.org/#mediaerror-message>
+    /// <https://html.spec.whatwg.org/#dom-mediaerror-message>
     pub message: String,
 }
 
 impl MediaError {
-    /// <https://html.spec.whatwg.org/#create-a-mediaerror>
+    /// <https://html.spec.whatwg.org/#creating-a-mediaerror>
     pub fn new(code: u16, message: String) -> Self {
-        // Step 1: Return a new MediaError object whose code is the given error code
-        // and whose message is a string containing any details the user agent is able
-        // to supply.
         Self { code, message }
     }
 }
 
 // Network state constants.
 impl HTMLMediaElement {
+    /// <https://html.spec.whatwg.org/#dom-media-networkstate>
     pub const NETWORK_EMPTY: u16 = 0;
+    /// <https://html.spec.whatwg.org/#dom-media-networkstate>
     pub const NETWORK_IDLE: u16 = 1;
+    /// <https://html.spec.whatwg.org/#dom-media-networkstate>
     pub const NETWORK_LOADING: u16 = 2;
+    /// <https://html.spec.whatwg.org/#dom-media-networkstate>
     pub const NETWORK_NO_SOURCE: u16 = 3;
 
     // Ready state constants.
+    /// <https://html.spec.whatwg.org/#dom-media-readystate>
     pub const HAVE_NOTHING: u16 = 0;
+    /// <https://html.spec.whatwg.org/#dom-media-readystate>
     pub const HAVE_METADATA: u16 = 1;
+    /// <https://html.spec.whatwg.org/#dom-media-readystate>
     pub const HAVE_CURRENT_DATA: u16 = 2;
+    /// <https://html.spec.whatwg.org/#dom-media-readystate>
     pub const HAVE_FUTURE_DATA: u16 = 3;
+    /// <https://html.spec.whatwg.org/#dom-media-readystate>
     pub const HAVE_ENOUGH_DATA: u16 = 4;
 
     // Error code constants.
+    /// <https://html.spec.whatwg.org/#dom-mediaerror-media_err_aborted>
     pub const MEDIA_ERR_ABORTED: u16 = 1;
+    /// <https://html.spec.whatwg.org/#dom-mediaerror-media_err_network>
     pub const MEDIA_ERR_NETWORK: u16 = 2;
+    /// <https://html.spec.whatwg.org/#dom-mediaerror-media_err_decode>
     pub const MEDIA_ERR_DECODE: u16 = 3;
+    /// <https://html.spec.whatwg.org/#dom-mediaerror-media_err_src_not_supported>
     pub const MEDIA_ERR_SRC_NOT_SUPPORTED: u16 = 4;
 }
 
@@ -187,8 +188,7 @@ impl HTMLMediaElement {
         self.seeking
     }
 
-    /// <https://html.spec.whatwg.org/#current-playback-position>
-    /// Note: combined getter for currentTime.
+    /// <https://html.spec.whatwg.org/#dom-media-currenttime>
     pub(crate) fn current_time(&self) -> f64 {
         // Step 1: Return the default playback start position, unless that is zero,
         // in which case return the official playback position.
@@ -220,94 +220,97 @@ impl HTMLMediaElement {
 
     // ── Media element load algorithm ──
 
-    #[allow(dead_code)]
     /// <https://html.spec.whatwg.org/#media-element-load-algorithm>
     ///
-    /// Note: This implements the initial subset — aborts existing resource selection,
-    /// resets state, and invokes the resource selection algorithm. The in-parallel
-    /// portions (actually fetching the media resource) are delegated to the user agent
-    /// via IPC.
-    pub(crate) fn load(&mut self) {
+    /// Note: Steps 3–6 (pending task management, abort event) and step 8 (playbackRate)
+    /// are no-ops in the initial cut. The in-parallel fetch portion is delegated to
+    /// the user agent via IPC.
+    #[allow(dead_code)]
+    pub(crate) fn media_element_load_algorithm(&mut self) {
         // Step 1: Set this element's is currently stalled to false.
         self.is_currently_stalled = false;
-        // Step 2: Abort any already-running instance of the resource selection algorithm.
-        // (No-op in the initial cut — resource selection runs only once.)
-        // Step 3-5: Remove pending tasks from the media element event task source.
-        // (No-op in the initial cut.)
-        // Step 6: If networkState is NETWORK_LOADING or NETWORK_IDLE, fire abort event.
-        // (Deferred to event dispatch.)
-        // Step 7: If networkState != NETWORK_EMPTY, reset all state.
+        // Step 2: Abort any already-running instance of the resource selection algorithm for this
+        // element.
+        // Note: No-op in the initial cut — resource selection runs only once.
+        // Step 3: Let pending tasks be a list of all tasks from the media element's media element
+        // event task source in one of the task queues.
+        // Step 4: For each task in pending tasks that would resolve pending play promises or reject
+        // pending play promises, immediately resolve or reject those promises in the order the
+        // corresponding tasks were queued.
+        // Step 5: Remove each task in pending tasks from its task queue.
+        // Note: Steps 3–5 are no-ops until promise-based play() is implemented.
+        // Step 6: If networkState is NETWORK_LOADING or NETWORK_IDLE, fire an event named abort at
+        // the media element.
+        // Note: Deferred to event dispatch.
+        // Step 7: If networkState is not NETWORK_EMPTY, then:
         if self.network_state != Self::NETWORK_EMPTY {
-            // Step 7.5: Set readyState to HAVE_NOTHING.
+            // Step 7.1-4: Reset playback rate. (No-op — defaultPlaybackRate always 1.0.)
+            // Step 7.5: Set the element's readyState to HAVE_NOTHING.
             self.ready_state = Self::HAVE_NOTHING;
-            // Step 7.6: If paused is false, set paused to true.
-            // (Already true in initial state.)
+            // Step 7.6: If paused is false, then set paused to true.
+            // Note: paused is always true in the initial cut.
             // Step 7.7: Set seeking to false.
             self.seeking = false;
-            // Step 7.8: Set current playback position to 0, official playback position to 0.
+            // Step 7.8: Set the current playback position to 0, set the official playback
+            // position to 0.
             self.current_playback_position = 0.0;
             self.official_playback_position = 0.0;
-            // Step 7.9: Set timeline offset to NaN.
+            // Step 7.9: Set the timeline offset to NaN.
             // Step 7.10: Update the duration attribute to NaN.
             self.duration = f64::NAN;
         }
         // Step 8: Set playbackRate to defaultPlaybackRate.
-        // (No-op in the initial cut.)
-        // Step 9: Set error to null and can autoplay flag to true.
+        // Note: No-op — defaultPlaybackRate is always 1.0 in the initial cut.
+        // Step 9: Set the error attribute to null and the can autoplay flag to true.
         self.error = None;
         self.can_autoplay = true;
-        // Step 10: Invoke the resource selection algorithm.
+        // Step 10: Invoke the resource selection algorithm for the element.
         self.resource_selection_algorithm();
-        // Step 11: Playback of any previously playing media resource stops.
+        // Step 11: Playback of any previously playing media resource for this element stops.
+        // Note: No-op — there is no active playback in the initial cut.
     }
 
-    #[allow(dead_code)]
     /// <https://html.spec.whatwg.org/#resource-selection-algorithm>
     ///
-    /// Note: In the initial cut this runs synchronously (no in-parallel step yet).
-    /// Full implementation will split at "Await a stable state" and continue
-    /// in parallel via the user agent's media handler.
+    /// Note: Runs synchronously in the initial cut. The "await a stable state" boundary
+    /// and in-parallel continuation will be added when the user agent media handler
+    /// is wired up.
+    #[allow(dead_code)]
     pub(crate) fn resource_selection_algorithm(&mut self) {
         // Step 1: Set networkState to NETWORK_NO_SOURCE.
         self.network_state = Self::NETWORK_NO_SOURCE;
         // Step 2: Set show poster flag to true.
         self.show_poster = true;
-        // Step 3: If lazy loading is Eager or scripting is disabled,
-        // set delaying-the-load-event flag to true.
+        // Step 3: If lazy loading is Eager or scripting is disabled, set
+        // delaying-the-load-event flag to true.
         // Note: Initial cut always sets delaying-the-load-event.
         self.delaying_the_load_event = true;
 
-        // Step 4: Await a stable state. The synchronous section consists of
-        // all remaining steps until the algorithm says the synchronous section has ended.
-        // Note: In the initial cut this runs synchronously because we don't yet
-        // have a microtask queue. The in-parallel continuation will be added when
-        // the user agent media handler is wired up.
+        // Step 4: Await a stable state. The synchronous section consists of all remaining
+        // steps of this algorithm until the step says the synchronous section has ended.
 
-        // Step 5: ⌛ If the blocked-on-parser flag is false, populate pending text tracks.
-        // (No-op — no text track support yet.)
+        // Step 5: ⌛ If the element's blocked-on-parser flag is false, then populate the
+        // list of pending text tracks.
+        // Note: No-op — no text track support yet.
 
-        // Step 6: ⌛ Determine mode (object, attribute, children, or none).
+        // Step 6: ⌛ Determine the mode.
+        // (mode = attribute if the src attribute is present and not empty)
         let src_attr = self.html_element.element.get_attribute("src");
 
         if let Some(src) = src_attr.filter(|s| !s.is_empty()) {
-            // Step 6: mode = attribute
             // Step 7: ⌛ Set networkState to NETWORK_LOADING.
             self.network_state = Self::NETWORK_LOADING;
-            // Step 8: ⌛ Queue a loadstart event.
-            // (Deferred to event dispatch.)
-            // Step 9: Run appropriate steps for mode = attribute.
-            // For the initial cut, set current_src and fire the load event flow.
-
-            // Save the URL — content process sends MediaLoad to user agent
-            // which creates a pipeline in the media process.
+            // Step 8: ⌛ Queue a media element task given the media element to fire an event
+            // named loadstart at the media element.
+            // Note: Deferred to event dispatch.
+            // Step 9: ⌛ Run the appropriate steps for the mode, which depends on how the
+            // media source was determined.
+            // For mode = attribute: set current_src, then fetch via user agent.
             self.current_src = src;
 
             // TODO: Send MediaLoad event to user agent via ContentEvent IPC.
-            // This will create the media pipeline and start loading.
-            // The user agent responds with MediaReady (with VideoPaintId),
-            // which content stamps onto layout output as VideoEmbedSite.
         } else {
-            // No src attribute and no source children.
+            // No src attribute and no source children — mode = none.
             // Step 6.1: ⌛ Set networkState to NETWORK_EMPTY.
             self.network_state = Self::NETWORK_EMPTY;
             // Step 6.2: ⌛ Set delaying-the-load-event flag to false.
@@ -375,7 +378,7 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-volume>
     pub(crate) fn volume(&self) -> f64 {
         // Step 1: Return the current volume.
-        // Note: Initial cut returns 1.0 as default.
+        // Note: Initial cut always returns 1.0; the stored volume is not yet tracked.
         1.0
     }
 
@@ -398,12 +401,15 @@ impl HTMLMediaElement {
         self.html_element.element.set_attribute("preload", value);
     }
 
-    #[allow(dead_code)]
     /// <https://html.spec.whatwg.org/#dom-media-load>
-    pub(crate) fn load_method(&mut self) {
-        // Step 1: Let resumptionSteps be lazy load resumption steps.
-        // Step 2: If resumptionSteps is not null, invoke them.
+    #[allow(dead_code)]
+    pub(crate) fn load(&mut self) {
+        // Step 1: Let resumptionSteps be the media element's lazy load resumption steps.
+        // Step 2: If resumptionSteps is not null:
+        //   2.1: Set the media element's lazy load resumption steps to null.
+        //   2.2: Invoke resumptionSteps.
+        // Note: lazy load resumption steps are not yet implemented — always null.
         // Step 3: Run the media element load algorithm.
-        self.load();
+        self.media_element_load_algorithm();
     }
 }

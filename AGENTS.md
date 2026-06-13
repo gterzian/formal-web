@@ -36,9 +36,6 @@ The `.pi/extensions/readme-chain/` extension provides:
   chain of AGENTS.md and README.md files for that file's path, from general to specific.
   Reading the chain is always preferred over relying on memory.
 - **`/readme-chain [path]` command** — Lists the chain files for a path (for human use).
-- **Automatic reminder** — When the agent tries to `edit`, `write`, or `read` a source file
-  in a directory whose chain has not been consulted yet, a one-per-prompt warning is shown.
-
 See `.pi/extensions/readme-chain/README.md` for full documentation.
 
 # Algorithm Implementation
@@ -62,9 +59,13 @@ for the definitive spec-annotation reference with examples and common mistakes.
 1. **Step comments** — Every spec step has a `// Step N:` comment inside the
    function body quoting the **exact spec step text verbatim** — not an
    abbreviation or summary.  Step numbering must match the spec exactly.
-2. **Anchor URLs** — Every function/struct top doc comment has **only** the
-   correct spec anchor URL (`<https://html.spec.whatwg.org/#...>`).  No
-   description, no step summary, no prose.
+2. **Anchor URLs** — Every function, struct, associated constant, and
+   constant definition top doc comment has **only** the correct spec anchor
+   URL (`<https://html.spec.whatwg.org/#...>`).  No description, no step
+   summary, no prose.  Constants like `NETWORK_EMPTY`, `HAVE_NOTHING`, and
+   `MEDIA_ERR_ABORTED` are spec-defined IDL enum values and must carry their
+   spec anchor (`#dom-media-networkstate`, `#dom-media-readystate`,
+   `#dom-mediaerror-media_err_aborted` etc.) just like any method or struct.
 3. **`// Note:` only for discrepancies** — Notes explain why the code differs
    from the spec (e.g. steps merged, split across processes, browser-engine
    specific refactoring).  Design notes, architecture rationales, and
@@ -247,10 +248,13 @@ At the end of each task, run the following steps **in order**:
    - Does every domain method have `// Step N:` comments quoting the
      **exact spec step text verbatim** (not an abbreviation)?  Step
      numbering must match the spec exactly.
-   - Does every domain method/function top doc comment have **only** the
-     spec anchor URL (`<https://html.spec.whatwg.org/#...>`)?  No
-     description, no step summary, no prose, no "Implements the spec
-     algorithm" boilerplate.
+   - Does every domain method, function, struct, and associated
+     constant top doc comment have **only** the spec anchor URL
+     (`<https://html.spec.whatwg.org/#...>`)?  No description, no step
+     summary, no prose, no "Implements the spec algorithm" boilerplate.
+     Constants (`NETWORK_EMPTY`, `HAVE_NOTHING`, `MEDIA_ERR_ABORTED`)
+     are spec IDL values and must carry their anchor just like any
+     method.
    - Are binding function bodies free of fully qualified paths like
      `crate::wasm::namespace::fn_name(...)`?  Import with `use` at the
      top and call unqualified.

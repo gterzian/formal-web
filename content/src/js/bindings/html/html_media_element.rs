@@ -476,6 +476,9 @@ fn set_preload(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsRe
 
 fn load_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
     let _obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    // Note: load() takes &mut self and requires interior mutability. The HTMLMediaElement
+    // is behind a plain &ref in the binding layer. Adding RefCell support is tracked
+    // as a separate gap — this binding currently returns undefined.
     Ok(JsValue::undefined())
 }
 
