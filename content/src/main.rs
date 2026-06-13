@@ -41,7 +41,7 @@ use ipc_messages::content::{
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
     ElementClickResult, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent, EventLoopId,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FontTransportSender, FrameCompositionMetadata, FrameEmbedSite, FrameId, LoadedDocumentResponse,
+    FontTransportSender, FrameCompositionMetadata, EmbedLayout, EmbedSite, IframeEmbedSite, FrameId, LoadedDocumentResponse,
     NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult, TraversableViewport,
     ViewportSnapshot, WebviewId, WindowTimerKey,
 };
@@ -1367,23 +1367,22 @@ impl ContentProcess {
                 let (x, y, width, height) =
                     Self::content_box_for_iframe(document, iframe_node_id, scale)?;
                 let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
-                Some(FrameEmbedSite {
+                Some(EmbedSite::Frame(IframeEmbedSite {
                     embed_site_id: EmbedSiteId((iframe_node_id as u64).wrapping_add(1)),
                     child_frame_id: state.content_frame_id,
-                    z_index: 0,
-                    paint_order: paint_order as u32,
                     background_policy: EmbedBackgroundPolicy::OpaqueWhite,
-                    transform: [1.0, 0.0, 0.0, 1.0, x, y],
-                    clip_bounds: [x, y, x + width, y + height],
                     clip_svg_path,
-                })
+                    layout: EmbedLayout {
+                        z_index: 0,
+                        paint_order: paint_order as u32,
+                        transform: [1.0, 0.0, 0.0, 1.0, x, y],
+                        clip_bounds: [x, y, x + width, y + height],
+                    },
+                }))
             })
             .collect();
 
-        FrameCompositionMetadata {
-            embed_sites,
-            video_sites: Vec::new(),
-        }
+        FrameCompositionMetadata { embed_sites }
     }
 
     fn complete_document_fetch(

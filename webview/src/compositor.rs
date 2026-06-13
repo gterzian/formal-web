@@ -1,10 +1,10 @@
 use log::trace;
 use anyrender::{PaintScene, Scene as RenderScene};
 use ipc_messages::content::{
-    EmbedBackgroundPolicy, FontTransportReceiver, FrameCompositionMetadata, FrameEmbedSite,
-    FrameId, RecordedScene,
+    EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata,
+    FrameId, IframeEmbedSite, RecordedScene,
 };
-use ipc_messages::media::{VideoEmbedSite, VideoPaintId};
+use ipc_messages::media::VideoPaintId;
 use kurbo::{Affine, Point, Rect, Shape};
 use peniko::{Color, Fill};
 use std::collections::{HashMap, HashSet};
@@ -264,33 +264,25 @@ impl Compositor {
             .clone()?;
 
         // Snapshot all per-frame data up front, releasing borrows on self.
-        let (embed_sites, video_sites, decoded_scene, background_policy_map) = {
+        let (embed_sites, decoded_scene) = {
             let frame = self.committed_frames.get(&frame_id)?;
             let embed_sites = frame.composition.embed_sites.clone();
-            let video_sites = frame.composition.video_sites.clone();
             // The decoded scene is consumed; clone it before dropping the frame borrow.
             let scene = frame.scene.clone().into_scene(font_receiver);
-            let bg_map = embed_sites
-                .iter()
-                .map(|s| (s.embed_site_id, s.background_policy))
-                .collect::<HashMap<_, _>>();
-            (embed_sites, video_sites, scene, bg_map)
+            (embed_sites, scene)
         };
 
-        // Unified paint item so both types sort together by z_index / paint_order.
-        enum PaintItem {
-            Embed(FrameEmbedSite),
-            Video(VideoEmbedSite),
-        }
-
-        let mut paint_items: Vec<(i32, u32, PaintItem)> = embed_sites
-            .into_iter()
-            .map(|embed_site| {
-                (embed_site.z_index, embed_site.paint_order, PaintItem::Embed(embed_site))
+        let bg_map: HashMap<_, _> = embed_sites
+            .iter()
+            .filter_map(|site| match site {
+                EmbedSite::Frame(f) => Some((f.embed_site_id, f.background_policy)),
+                EmbedSite::Video(_) => None,
             })
-            .chain(video_sites.into_iter().map(|video_site| {
-                (video_site.z_index, video_site.paint_order, PaintItem::Video(video_site))
-            }))
+            .collect();
+
+        let mut paint_items: Vec<(i32, u32, &EmbedSite)> = embed_sites
+            .iter()
+            .map(|site| (site.z_index(), site.paint_order(), site))
             .collect();
         paint_items.sort_by_key(|(z, p, _)| (*z, *p));
 
@@ -300,15 +292,15 @@ impl Compositor {
             composed_scene.commands.push(command);
         }
 
-        for (_, _, item) in paint_items {
-            match item {
-                PaintItem::Embed(embed_site) => {
-                    let child_frame_id = embed_site.child_frame_id;
+        for (_, _, site) in paint_items {
+            match site {
+                EmbedSite::Frame(iframe_site) => {
+                    let child_frame_id = iframe_site.child_frame_id;
                     let Some(child_local_to_root) = self.record_child_frame_layout(
                         frame_id,
                         &parent_viewport,
                         frame_local_to_root,
-                        &embed_site,
+                        iframe_site,
                     ) else {
                         continue;
                     };
@@ -323,14 +315,14 @@ impl Compositor {
                         stack,
                         child_local_to_root,
                     ) {
-                        let clip = Self::embed_local_clip(&embed_site);
-                        let transform = Affine::new(embed_site.transform);
+                        let clip = Self::embed_local_clip(iframe_site);
+                        let transform = Affine::new(iframe_site.layout.transform);
                         let child_transform = self
                             .child_scene_transform(&clip, child_frame_id)
                             .map(|scene_transform| transform * scene_transform)
                             .unwrap_or(transform);
                         if matches!(
-                            background_policy_map.get(&embed_site.embed_site_id),
+                            bg_map.get(&iframe_site.embed_site_id),
                             Some(EmbedBackgroundPolicy::OpaqueWhite)
                         ) {
                             composed_scene.fill(
@@ -346,30 +338,28 @@ impl Compositor {
                         composed_scene.pop_layer();
                         if input_debug_enabled() {
                             trace!(
-                                "[input-debug][compositor] composed embed site {} with child frame {}",
-                                embed_site.embed_site_id.0, child_frame_id.0
+                                "[input-debug][compositor] composed iframe site {} with child frame {}",
+                                iframe_site.embed_site_id.0, child_frame_id.0
                             );
                         }
                     }
 
                     stack.remove(&child_frame_id);
                 }
-                PaintItem::Video(video_site) => {
-                    let Some(_video_frame) = self.video_frames.get(&video_site.paint_id) else {
+                EmbedSite::Video(video_data) => {
+                    let Some(_video_frame) = self.video_frames.get(&video_data.paint_id) else {
                         // First-frame not yet arrived; nothing to paint.
                         continue;
                     };
 
                     // TODO: Paint the video frame using the compositor's image API.
                     // The video frame data is stored as Arc<[u8]> (RGBA8 pixels).
-                    // Creating a peniko::Image requires peniko::Blob::new(Arc<[u8]>),
-                    // then composed_scene.draw_image(ImageBrushRef::from(&image), transform).
-                    let transform = Affine::new(video_site.transform);
+                    let transform = Affine::new(video_data.layout.transform);
                     let clip = Rect::new(
-                        video_site.clip_bounds[0],
-                        video_site.clip_bounds[1],
-                        video_site.clip_bounds[2],
-                        video_site.clip_bounds[3],
+                        video_data.layout.clip_bounds[0],
+                        video_data.layout.clip_bounds[1],
+                        video_data.layout.clip_bounds[2],
+                        video_data.layout.clip_bounds[3],
                     );
                     composed_scene.push_clip_layer(transform, &clip);
                     // TODO: composed_scene.draw_image(image_brush_ref, transform);
@@ -381,15 +371,15 @@ impl Compositor {
         Some(composed_scene)
     }
 
-    fn embed_local_clip(embed_site: &FrameEmbedSite) -> Rect {
-        let transform = Affine::new(embed_site.transform);
+    fn embed_local_clip(iframe_site: &IframeEmbedSite) -> Rect {
+        let transform = Affine::new(iframe_site.layout.transform);
         let translation_x = transform.as_coeffs()[4];
         let translation_y = transform.as_coeffs()[5];
         Rect::new(
-            embed_site.clip_bounds[0] - translation_x,
-            embed_site.clip_bounds[1] - translation_y,
-            embed_site.clip_bounds[2] - translation_x,
-            embed_site.clip_bounds[3] - translation_y,
+            iframe_site.layout.clip_bounds[0] - translation_x,
+            iframe_site.layout.clip_bounds[1] - translation_y,
+            iframe_site.layout.clip_bounds[2] - translation_x,
+            iframe_site.layout.clip_bounds[3] - translation_y,
         )
     }
 
@@ -423,13 +413,13 @@ impl Compositor {
         parent_frame_id: FrameId,
         parent_viewport: &ResolvedViewport,
         parent_local_to_root: Affine,
-        embed_site: &FrameEmbedSite,
+        iframe_site: &IframeEmbedSite,
     ) -> Option<Affine> {
-        let Some(layout) = self.navigable_container_layout(parent_local_to_root, embed_site) else {
+        let Some(layout) = self.navigable_container_layout(parent_local_to_root, iframe_site) else {
             if input_debug_enabled() {
                 trace!(
                     "[input-debug][compositor] parent={} child={} record=skip reason=no-layout",
-                    parent_frame_id.0, embed_site.child_frame_id.0,
+                    parent_frame_id.0, iframe_site.child_frame_id.0,
                 );
             }
             return None;
@@ -440,7 +430,7 @@ impl Compositor {
                 trace!(
                     "[input-debug][compositor] parent={} child={} record=skip visible=false clip=({:.1},{:.1})-({:.1},{:.1}) parent_viewport=({:.1},{:.1})",
                     parent_frame_id.0,
-                    embed_site.child_frame_id.0,
+                    iframe_site.child_frame_id.0,
                     layout.clip_bounds.x0,
                     layout.clip_bounds.y0,
                     layout.clip_bounds.x1,
@@ -458,7 +448,7 @@ impl Compositor {
             trace!(
                 "[input-debug][compositor] parent={} child={} record=ok clip=({:.1},{:.1})-({:.1},{:.1})",
                 parent_frame_id.0,
-                embed_site.child_frame_id.0,
+                iframe_site.child_frame_id.0,
                 layout.clip_bounds.x0,
                 layout.clip_bounds.y0,
                 layout.clip_bounds.x1,
@@ -470,8 +460,8 @@ impl Compositor {
             frame.child_frames.push(layout);
         }
 
-        if let Some(resolved_viewport) = self.frame_viewport(embed_site.child_frame_id)
-            && let Some(child_frame) = self.committed_frames.get_mut(&embed_site.child_frame_id)
+        if let Some(resolved_viewport) = self.frame_viewport(iframe_site.child_frame_id)
+            && let Some(child_frame) = self.committed_frames.get_mut(&iframe_site.child_frame_id)
         {
             child_frame.parent_frame_id = Some(parent_frame_id);
             child_frame.resolved_viewport = Some(resolved_viewport);
@@ -483,11 +473,11 @@ impl Compositor {
     fn navigable_container_layout(
         &self,
         parent_local_to_root: Affine,
-        embed_site: &FrameEmbedSite,
+        iframe_site: &IframeEmbedSite,
     ) -> Option<NavigableContainerLayout> {
-        let child_frame_id = embed_site.child_frame_id;
-        let transform = Affine::new(embed_site.transform);
-        let clip = Self::embed_local_clip(embed_site);
+        let child_frame_id = iframe_site.child_frame_id;
+        let transform = Affine::new(iframe_site.layout.transform);
+        let clip = Self::embed_local_clip(iframe_site);
         let child_scene_transform = self
             .child_scene_transform(&clip, child_frame_id)
             .unwrap_or(Affine::IDENTITY);
@@ -552,7 +542,10 @@ impl Compositor {
             .composition
             .embed_sites
             .iter()
-            .map(|site| site.child_frame_id)
+            .filter_map(|site| match site {
+                EmbedSite::Frame(f) => Some(f.child_frame_id),
+                EmbedSite::Video(_) => None,
+            })
             .collect::<Vec<_>>();
         for child_frame_id in child_frame_ids {
             if !stack.insert(child_frame_id) {

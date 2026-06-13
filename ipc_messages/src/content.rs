@@ -5,7 +5,7 @@ use anyrender::{
 use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
-use crate::media::VideoEmbedSite;
+use crate::media::VideoEmbedData;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fmt;
 use uuid::Uuid;
@@ -274,22 +274,57 @@ pub enum EmbedBackgroundPolicy {
     OpaqueWhite,
 }
 
+/// Layout properties shared by all embedded content (iframes, video, etc.).
+/// Used by the compositor to sort and position embed sites in the parent frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FrameEmbedSite {
-    pub embed_site_id: EmbedSiteId,
-    pub child_frame_id: FrameId,
-    pub z_index: i32,
-    pub paint_order: u32,
-    pub background_policy: EmbedBackgroundPolicy,
+pub struct EmbedLayout {
     pub transform: [f64; 6],
     pub clip_bounds: [f64; 4],
+    pub z_index: i32,
+    pub paint_order: u32,
+}
+
+/// An iframe embed site, identified by its child frame id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IframeEmbedSite {
+    pub embed_site_id: EmbedSiteId,
+    pub child_frame_id: FrameId,
+    pub background_policy: EmbedBackgroundPolicy,
     pub clip_svg_path: String,
+    pub layout: EmbedLayout,
+}
+
+/// A single embed site within a parent document's composition.
+/// Both iframes and video are [embedded content](https://html.spec.whatwg.org/#embedded-content)
+/// and share the same z-order / paint-order space.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EmbedSite {
+    Frame(IframeEmbedSite),
+    Video(VideoEmbedData),
+}
+
+impl EmbedSite {
+    pub fn layout(&self) -> &EmbedLayout {
+        match self {
+            EmbedSite::Frame(s) => &s.layout,
+            EmbedSite::Video(s) => &s.layout,
+        }
+    }
+
+    pub fn z_index(&self) -> i32 {
+        self.layout().z_index
+    }
+
+    pub fn paint_order(&self) -> u32 {
+        self.layout().paint_order
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FrameCompositionMetadata {
-    pub embed_sites: Vec<FrameEmbedSite>,
-    pub video_sites: Vec<VideoEmbedSite>,
+    /// All embedded content (iframes, video) sorted by the content process
+    /// in document order. The compositor sorts by z_index / paint_order.
+    pub embed_sites: Vec<EmbedSite>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

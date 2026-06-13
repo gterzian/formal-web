@@ -32,7 +32,7 @@ use crate::event_loop::{
     traversable_viewport_command,
 };
 use crate::fetch::{FetchCommand, run_fetch_thread};
-use crate::media::MediaHandler;
+use crate::media::{MediaCommand, run_media_thread};
 use crate::timer::{TimerCommand, run_timer_thread};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
@@ -1260,6 +1260,10 @@ struct UserAgentWorker {
     timer_command_sender: Sender<TimerCommand>,
     /// Join handle for the timer worker thread during shutdown.
     timer_join_handle: Option<JoinHandle<()>>,
+    /// Sender for the dedicated media worker that owns the media sidecar bridge.
+    media_command_sender: Sender<MediaCommand>,
+    /// Join handle for the media worker thread during shutdown.
+    media_join_handle: Option<JoinHandle<()>>,
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
     /// Sender for webview-provider updates that must be drained by host sync calls.
@@ -1271,8 +1275,6 @@ struct UserAgentWorker {
     /// request ids for automation round-trips across the user-agent and
     /// content event-loop boundary.
     next_automation_request_id: u64,
-    /// Media handler for communicating with the media process.
-    media_handler: MediaHandler,
 }
 
 impl UserAgentWorker {
@@ -1311,6 +1313,18 @@ impl UserAgentWorker {
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
+        let (media_command_sender, media_command_receiver) = unbounded();
+        let media_user_agent_command_sender = user_agent_command_sender.clone();
+        let media_join_handle = thread::Builder::new()
+            .name(String::from("formal-web:media"))
+            .spawn(move || {
+                run_media_thread(
+                    media_command_receiver,
+                    media_user_agent_command_sender,
+                )
+            })
+            .unwrap_or_else(|error| panic!("failed to spawn formal-web-media thread: {error}"));
+
         Self {
             state: UserAgentState::default(),
             command_sender: user_agent_command_sender.clone(),
@@ -1319,6 +1333,8 @@ impl UserAgentWorker {
             fetch_join_handle: Some(fetch_join_handle),
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
+            media_command_sender,
+            media_join_handle: Some(media_join_handle),
             host,
             webview_provider_sender,
             navigation_tracer: TLATracer::new(
@@ -1327,7 +1343,6 @@ impl UserAgentWorker {
                 trace_sender.clone(),
             ),
             trace_sender,
-            media_handler: MediaHandler::new(user_agent_command_sender.clone()),
             next_automation_request_id: 1,
         }
     }
@@ -3625,8 +3640,20 @@ impl UserAgentWorker {
             shutdown_result = Err(String::from("timer thread panicked"));
         }
 
-        // Shut down the media handler.
-        self.media_handler.shutdown();
+        let (media_reply_sender, media_reply_receiver) = bounded(1);
+        if let Err(error) = self.media_command_sender.send(MediaCommand::Shutdown {
+            reply: media_reply_sender,
+        }) {
+            shutdown_result = Err(format!("failed to request media shutdown: {error}"));
+        } else if let Err(error) = media_reply_receiver.recv() {
+            shutdown_result = Err(format!("media shutdown reply channel closed: {error}"));
+        }
+
+        if let Some(media_join_handle) = self.media_join_handle.take()
+            && media_join_handle.join().is_err()
+        {
+            shutdown_result = Err(String::from("media thread panicked"));
+        }
 
         let _ = reply.send(shutdown_result);
     }

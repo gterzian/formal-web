@@ -1,3 +1,4 @@
+use crate::content::EmbedLayout;
 use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
 use serde::{Deserialize, Serialize};
 
@@ -70,16 +71,12 @@ pub enum MediaEvent {
     },
 }
 
-/// Embed site for video content, carried inside FrameCompositionMetadata.
+/// Embed-site data for video content, carried inside `EmbedSite::Video`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VideoEmbedSite {
+pub struct VideoEmbedData {
     /// Opaque id stamped by content; user agent resolves to MediaPipelineId at compose time.
     pub paint_id: VideoPaintId,
-    /// Same semantics as FrameEmbedSite::transform — local-to-parent affine.
-    pub transform: [f64; 6],
-    pub clip_bounds: [f64; 4],
-    pub z_index: i32,
-    pub paint_order: u32,
+    pub layout: EmbedLayout,
 }
 
 /// Bootstrap message from the user agent to the media process.
