@@ -83,18 +83,33 @@ pub struct Bootstrap {
     pub event_loop_id: EventLoopId,
 }
 
+// Note: Transport mirror of Fetch's header-list shape.
+// Fetch semantics are owned by user_agent/fetch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderList {
+    pub headers: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchRequest {
     pub handler_id: DocumentFetchId,
     pub url: String,
     pub method: String,
+    #[serde(default)]
+    pub header_list: HeaderList,
     pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadedDocumentResponse {
     pub final_url: String,
+    #[serde(default)]
+    pub url_list: Vec<String>,
     pub status: u16,
+    #[serde(default)]
+    pub status_text: String,
+    #[serde(default)]
+    pub header_list: HeaderList,
     pub content_type: String,
     pub body: String,
 }
@@ -102,7 +117,13 @@ pub struct LoadedDocumentResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FetchResponse {
     pub final_url: String,
+    #[serde(default)]
+    pub url_list: Vec<String>,
     pub status: u16,
+    #[serde(default)]
+    pub status_text: String,
+    #[serde(default)]
+    pub header_list: HeaderList,
     pub content_type: String,
     pub body: Vec<u8>,
 }
@@ -762,12 +783,16 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::{
-        Command, DocumentFetchId, FetchResponse, FontTransportReceiver, FontTransportSender,
-        FrameCompositionMetadata, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
-        PaintTransportSummary, SceneSummary, WebviewId,
+        Command, DocumentFetchId, DocumentId, FetchResponse, FontTransportReceiver,
+        FontTransportSender, FrameCompositionMetadata, FrameId, HeaderList,
+        LoadedDocumentResponse, NavigableId, PaintFrame, PaintTransportSummary, SceneSummary,
+        WebviewId,
     };
     use anyrender::{Glyph, PaintScene, Scene, recording::RenderCommand};
-    use peniko::{Color, Fill, FontData, kurbo::Affine};
+    use peniko::{
+        Color, Fill, FontData,
+        kurbo::{Affine, Vec2},
+    };
 
     fn scene_with_glyph(font: &FontData, glyph_id: u16, x: f32, y: f32) -> Scene {
         let mut scene = Scene::new();
@@ -776,6 +801,7 @@ mod tests {
             16.0,
             true,
             &[],
+            Vec2::default(),
             Fill::NonZero,
             Color::BLACK,
             1.0,
@@ -848,6 +874,7 @@ mod tests {
             16.0,
             true,
             &[],
+            Vec2::default(),
             Fill::NonZero,
             Color::BLACK,
             1.0,
@@ -958,11 +985,19 @@ mod tests {
     fn create_loaded_document_command_round_trips_response_metadata() {
         let encoded = postcard::to_allocvec(&Command::CreateLoadedDocument {
             traversable_id: NavigableId::from_u128(3),
-            document_id: 7,
+            document_id: DocumentId::from_u128(7),
             frame_id: None,
             response: LoadedDocumentResponse {
                 final_url: String::from("https://example.test/final"),
+                url_list: vec![String::from("https://example.test/final")],
                 status: 201,
+                status_text: String::from("Created"),
+                header_list: HeaderList {
+                    headers: vec![(
+                        String::from("content-type"),
+                        String::from("text/html; charset=utf-8"),
+                    )],
+                },
                 content_type: String::from("text/html; charset=utf-8"),
                 body: String::from("<p>ok</p>"),
             },
@@ -983,7 +1018,7 @@ mod tests {
                 top_level_traversable_id,
             } => {
                 assert_eq!(traversable_id, NavigableId::from_u128(3));
-                assert_eq!(document_id, 7);
+                assert_eq!(document_id, DocumentId::from_u128(7));
                 assert_eq!(frame_id, None);
                 assert_eq!(parent_traversable_id, Some(NavigableId::from_u128(2)));
                 assert_eq!(top_level_traversable_id, NavigableId::from_u128(1));
@@ -991,7 +1026,15 @@ mod tests {
                     response,
                     LoadedDocumentResponse {
                         final_url: String::from("https://example.test/final"),
+                        url_list: vec![String::from("https://example.test/final")],
                         status: 201,
+                        status_text: String::from("Created"),
+                        header_list: HeaderList {
+                            headers: vec![(
+                                String::from("content-type"),
+                                String::from("text/html; charset=utf-8"),
+                            )],
+                        },
                         content_type: String::from("text/html; charset=utf-8"),
                         body: String::from("<p>ok</p>"),
                     }
@@ -1008,7 +1051,12 @@ mod tests {
             handler_id,
             response: FetchResponse {
                 final_url: String::from("https://example.test/script.js"),
+                url_list: vec![String::from("https://example.test/script.js")],
                 status: 404,
+                status_text: String::from("Not Found"),
+                header_list: HeaderList {
+                    headers: vec![(String::from("content-type"), String::from("text/html"))],
+                },
                 content_type: String::from("text/html"),
                 body: vec![1, 2, 3, 4],
             },
@@ -1027,7 +1075,15 @@ mod tests {
                     response,
                     FetchResponse {
                         final_url: String::from("https://example.test/script.js"),
+                        url_list: vec![String::from("https://example.test/script.js")],
                         status: 404,
+                        status_text: String::from("Not Found"),
+                        header_list: HeaderList {
+                            headers: vec![(
+                                String::from("content-type"),
+                                String::from("text/html"),
+                            )],
+                        },
                         content_type: String::from("text/html"),
                         body: vec![1, 2, 3, 4],
                     }

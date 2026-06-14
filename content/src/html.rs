@@ -1,4 +1,5 @@
 mod environment_settings_object;
+mod fetch;
 mod global_scope;
 mod html_anchor_element;
 mod html_dom_tree;
@@ -20,6 +21,8 @@ use ipc_messages::content::{
 };
 
 pub use environment_settings_object::EnvironmentSettingsObject;
+pub(crate) use fetch::header_list_from_value;
+pub use fetch::{Headers, Response};
 pub(crate) use global_scope::TimerHandler;
 pub use global_scope::{GlobalScope, GlobalScopeKind};
 pub use html_anchor_element::HTMLAnchorElement;

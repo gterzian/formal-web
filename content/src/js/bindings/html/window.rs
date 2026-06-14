@@ -157,7 +157,22 @@ impl WebIdlInterface for Window {
             unforgeable: false,
             promise_type: false,
         });
+        def.add_operation(OperationDef {
+            id: "fetch",
+            length: 1,
+            method: fetch_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
     }
+}
+
+fn fetch_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let window_object = current_window_object(this, context);
+    let window = downcast_window(&window_object)?;
+
+    window.fetch(args.get_or_undefined(0), args.get_or_undefined(1), context)
 }
 
 fn structured_clone_method(

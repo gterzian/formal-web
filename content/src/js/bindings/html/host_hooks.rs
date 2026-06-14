@@ -17,7 +17,8 @@ use crate::dom::{
     UIEvent,
 };
 use crate::html::{
-    GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Location, Window,
+    GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Headers, Location, Response,
+    Window,
 };
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController, ReadableStream,
@@ -89,6 +90,8 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
     reg!(HTMLIFrameElement);
     reg!(Window);
     reg!(Location);
+    reg!(Headers);
+    reg!(Response);
     reg!(ByteLengthQueuingStrategy);
     reg!(CountQueuingStrategy);
     reg!(ReadableStream);

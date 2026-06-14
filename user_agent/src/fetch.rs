@@ -3,7 +3,7 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
     DocumentFetchId, EventLoopId, FetchRequest as ContentFetchRequest,
-    FetchResponse as ContentFetchResponse, NavigationFetchId,
+    FetchResponse as ContentFetchResponse, HeaderList as ContentHeaderList, NavigationFetchId,
 };
 use ipc_messages::network::{
     Bootstrap as NetworkBootstrap, Request as NetworkRequest, Response as NetworkResponse,
@@ -18,7 +18,7 @@ use verification::TraceSender;
 
 use crate::{UserAgentCommand, sidecar_executable_path};
 
-/// graceful shutdown of the network sidecar owned by the fetch worker.
+/// graceful shutdown of the network process owned by the fetch worker.
 const FETCH_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// <https://fetch.spec.whatwg.org/#concept-header-list>
@@ -29,19 +29,37 @@ pub(crate) struct HeaderList {
 }
 
 impl HeaderList {
-    fn new() -> Self {
-        Self::default()
+    fn from_content_header_list(header_list: ContentHeaderList) -> Self {
+        Self {
+            headers: header_list.headers,
+        }
     }
 
-    fn from_content_type(content_type: &str) -> Self {
-        // Note: Phase 1 maps the existing content IPC `content_type` field into a one-entry
-        // header list. Full response headers belong in a later net/content IPC shape.
-        if content_type.is_empty() {
-            return Self::new();
+    fn to_content_header_list(&self) -> ContentHeaderList {
+        // Note: Formal-web plumbing converts the fetch worker's header-list storage back into the
+        // content IPC header-list transport shape.
+        ContentHeaderList {
+            headers: self.headers.clone(),
         }
+    }
 
-        Self {
-            headers: vec![(String::from("content-type"), content_type.to_owned())],
+    /// <https://fetch.spec.whatwg.org/#concept-header-list-get>
+    fn get(&self, name: &str) -> Option<String> {
+        // Step 1: "If list does not contain name, then return null."
+        let values = self
+            .headers
+            .iter()
+            .filter(|(header_name, _value)| header_name.eq_ignore_ascii_case(name))
+            .map(|(_header_name, value)| value.as_str())
+            .collect::<Vec<_>>();
+
+        if values.is_empty() {
+            None
+        } else {
+            // Step 2: "Return the values of all headers in list whose name is a
+            // byte-case-insensitive match for name, separated from each other by 0x2C 0x20, in
+            // order."
+            Some(values.join(", "))
         }
     }
 }
@@ -57,8 +75,8 @@ pub(crate) struct InternalFetchRequest {
     header_list: HeaderList,
     /// <https://fetch.spec.whatwg.org/#concept-request-body>
     ///
-    /// Note: Phase 1 preserves the current IPC body string here instead of modeling a Fetch body
-    /// stream. Body streaming remains out of scope for this PR.
+    /// Note: This keeps the existing IPC body string transport instead of modeling a Fetch body
+    /// stream.
     body: String,
     /// <https://fetch.spec.whatwg.org/#done-flag>
     done: bool,
@@ -72,13 +90,14 @@ impl InternalFetchRequest {
             handler_id: _,
             url,
             method,
+            header_list,
             body,
         } = request;
 
         Self {
             url,
             method,
-            header_list: HeaderList::new(),
+            header_list: HeaderList::from_content_header_list(header_list),
             body,
             done: false,
             keepalive: false,
@@ -86,10 +105,13 @@ impl InternalFetchRequest {
     }
 
     fn to_content_fetch_request(&self, handler_id: DocumentFetchId) -> ContentFetchRequest {
+        // Note: Formal-web plumbing converts the fetch worker's request snapshot into the content
+        // IPC request shape consumed by the net process.
         ContentFetchRequest {
             handler_id,
             url: self.url.clone(),
             method: self.method.clone(),
+            header_list: self.header_list.to_content_header_list(),
             body: self.body.clone(),
         }
     }
@@ -106,6 +128,8 @@ pub(crate) struct InternalFetchResponse {
     url_list: Vec<String>,
     /// <https://fetch.spec.whatwg.org/#concept-response-status>
     status: u16,
+    /// <https://fetch.spec.whatwg.org/#concept-response-status-message>
+    status_text: String,
     /// <https://fetch.spec.whatwg.org/#concept-response-header-list>
     header_list: HeaderList,
     // Note: Formal-web's current content IPC exposes `content_type` as a separate convenience
@@ -113,25 +137,49 @@ pub(crate) struct InternalFetchResponse {
     // trip the existing `FetchResponse` transport without changing behavior.
     content_type: String,
     /// <https://fetch.spec.whatwg.org/#concept-response-body>
+    ///
+    /// Note: This keeps the existing buffered byte transport and does not yet distinguish a null
+    /// body from an empty body.
     body: Vec<u8>,
 }
 
 impl InternalFetchResponse {
     fn from_content_fetch_response(response: ContentFetchResponse) -> Self {
+        let header_list = HeaderList::from_content_header_list(response.header_list);
+        let content_type = if response.content_type.is_empty() {
+            header_list.get("content-type").unwrap_or_default()
+        } else {
+            response.content_type
+        };
         Self {
-            url_list: vec![response.final_url],
+            url_list: if response.url_list.is_empty() {
+                vec![response.final_url]
+            } else {
+                response.url_list
+            },
             status: response.status,
-            header_list: HeaderList::from_content_type(&response.content_type),
-            content_type: response.content_type,
+            status_text: response.status_text,
+            header_list,
+            content_type,
             body: response.body,
         }
     }
 
     fn into_content_fetch_response(self) -> ContentFetchResponse {
+        // Note: Formal-web plumbing converts the fetch worker's response snapshot into the content
+        // IPC response shape used by document and navigation continuations.
+        let content_type = if self.content_type.is_empty() {
+            self.header_list.get("content-type").unwrap_or_default()
+        } else {
+            self.content_type
+        };
         ContentFetchResponse {
             final_url: self.url_list.last().cloned().unwrap_or_default(),
+            url_list: self.url_list,
             status: self.status,
-            content_type: self.content_type,
+            status_text: self.status_text,
+            header_list: self.header_list.to_content_header_list(),
+            content_type,
             body: self.body,
         }
     }
@@ -161,30 +209,27 @@ impl FetchController {
     }
 
     /// <https://fetch.spec.whatwg.org/#fetch-controller-abort>
-    // TODO: Wire this to AbortSignal/controller integration once content can initiate aborts and
-    // formal-web can carry structured abort reasons across content, user-agent, and net.
-    // Note: Phase 1 keeps the spec algorithm present so upcoming AbortSignal work has a precise
-    // controller entry point, but no production path calls it yet.
+    // TODO: Content cannot initiate fetch aborts yet, so no production path calls this algorithm.
+    // Note: Structured abort reasons are not carried across content, user-agent, and net yet.
     #[allow(dead_code)]
     pub(crate) fn abort(&mut self, error: Option<String>) {
-        // Step 1. Set controller's state to "aborted".
+        // Step 1: "Set controller's state to \"aborted\"."
         self.state = FetchControllerState::Aborted;
-        // Step 2. Let fallbackError be an "AbortError" DOMException.
+        // Step 2: "Let fallbackError be an \"AbortError\" DOMException."
         let fallback_error = String::from("AbortError");
-        // Step 3. Set error to fallbackError if it is not given.
+        // Step 3: "Set error to fallbackError if it is not given."
         let error = error.unwrap_or_else(|| fallback_error.clone());
-        // Step 4. Let serializedError be StructuredSerialize(error).
-        // TODO: Step 4. Replace this placeholder with StructuredSerialize(error).
-        // Note: formal-web does not yet expose DOMException or structured clone values across
-        // this worker boundary, so Phase 1 stores the serialized reason as a string placeholder.
+        // TODO: Step 4: "Let serializedError be StructuredSerialize(error)."
+        // Note: This stores the serialized abort reason as a string placeholder until structured
+        // clone / DOMException-shaped values are available across this boundary.
         let serialized_error = error;
-        // Step 5. Set controller's serialized abort reason to serializedError.
+        // Step 5: "Set controller's serialized abort reason to serializedError."
         self.serialized_abort_reason = Some(serialized_error);
     }
 
     /// <https://fetch.spec.whatwg.org/#fetch-controller-terminate>
     pub(crate) fn terminate(&mut self) {
-        // Step 1. Set controller's state to "terminated".
+        // Step 1: "Set controller's state to \"terminated\"."
         self.state = FetchControllerState::Terminated;
     }
 }
@@ -265,17 +310,16 @@ pub(crate) struct FetchRecord {
     request: InternalFetchRequest,
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record-fetch>
     controller: Option<FetchController>,
-    /// Formal-web continuation resumed when the network process completes this fetch.
+    // Note: Formal-web continuation resumed when the network process completes this fetch.
     continuation: PendingFetch,
 }
 
 impl FetchRecord {
     fn navigation_transport_handler_id() -> DocumentFetchId {
         // Note: Navigation fetches are keyed by `NavigationFetchId` in the user agent, and the net
-        // process ignores `FetchRequest.handler_id`. This placeholder exists only because Phase 1
-        // still reuses the content document-fetch IPC request shape for all network fetches. It
-        // is stable to make the intentionally-unused value obvious, and should disappear when net
-        // receives a Fetch-owned request type.
+        // process ignores `FetchRequest.handler_id`. This placeholder exists because the current
+        // network path reuses the content document-fetch IPC request shape for all network fetches.
+        // The stable value makes the intentionally-unused field obvious.
         DocumentFetchId::from_u128(0)
     }
 
@@ -327,14 +371,15 @@ impl FetchRecord {
 }
 
 // Note: Placeholder item for the fetch group's deferred fetch records list. The actual
-// `deferred fetch record` fields are intentionally deferred until deferred fetch processing exists.
+// `deferred fetch record` fields are not modeled because deferred fetch processing is not
+// implemented.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeferredFetchRecord;
 
 /// <https://fetch.spec.whatwg.org/#concept-fetch-group>
-// Note: Phase 1 keeps one fetch group on the fetch worker. The Fetch Standard associates a fetch
-// group with an environment settings object; that ownership split will be introduced when content
-// exposes environment-scoped Fetch API state.
+// Note: formal-web keeps one fetch group on the fetch worker. The Fetch Standard associates a
+// fetch group with an environment settings object, but content does not expose environment-scoped
+// Fetch API state yet.
 #[derive(Debug, Default)]
 pub(crate) struct FetchGroup {
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record>
@@ -365,9 +410,9 @@ impl FetchGroup {
 
     /// <https://fetch.spec.whatwg.org/#concept-fetch-group-terminate>
     pub(crate) fn terminate(&mut self) {
-        // Step 1. For each fetch record record of fetchGroup's fetch records, if record's
+        // Step 1: "For each fetch record record of fetchGroup's fetch records, if record's
         // controller is non-null and record's request's done flag is unset and keepalive is
-        // false, terminate record's controller.
+        // false, terminate record's controller."
         for record in self.fetch_records.values_mut() {
             if let Some(controller) = record.controller.as_mut() {
                 if !record.request.done && !record.request.keepalive {
@@ -375,7 +420,7 @@ impl FetchGroup {
                 }
             }
         }
-        // TODO: Step 2. "Process deferred fetches for fetchGroup."
+        // TODO: Step 2: "Process deferred fetches for fetchGroup."
         let _has_deferred_fetch_records = !self.deferred_fetch_records.is_empty();
     }
 }
@@ -459,21 +504,21 @@ struct FetchWorker {
     command_receiver: Receiver<FetchCommand>,
     /// Sender back into the user-agent thread for navigation/document fetch completions.
     user_agent_command_sender: Sender<UserAgentCommand>,
-    /// IPC sender to the dedicated network sidecar process.
+    /// IPC sender to the dedicated network process.
     network_request_sender: IpcSender<NetworkRequest>,
-    /// IPC receiver for network sidecar responses.
+    /// IPC receiver for network process responses.
     network_event_receiver: Receiver<Result<NetworkResponse, String>>,
-    /// Child process handle for the network sidecar.
+    /// Child process handle for the network process.
     child: Option<Child>,
     /// Transport-local request id allocator for the network IPC bridge.
     next_request_id: u64,
     /// <https://fetch.spec.whatwg.org/#concept-fetch-group>
     fetch_group: FetchGroup,
-    /// Deferred shutdown reply completed after the network sidecar exits.
+    /// Deferred shutdown reply completed after the network process exits.
     shutdown_reply: Option<Sender<Result<(), String>>>,
 }
 
-/// waiting on the network sidecar during shutdown.
+/// waiting on the network process during shutdown.
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, String> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -492,7 +537,7 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, Str
     }
 }
 
-/// gracefully shutting down the network sidecar owned by the fetch worker.
+/// gracefully shutting down the network process owned by the fetch worker.
 fn finish_shutdown(mut child: Option<Child>) {
     if let Some(child) = child.as_mut() {
         match wait_for_child_exit(child, FETCH_SHUTDOWN_GRACE_TIMEOUT) {
@@ -512,7 +557,7 @@ fn finish_shutdown(mut child: Option<Child>) {
     }
 }
 
-/// bootstrapping the dedicated network sidecar process used by
+/// bootstrapping the dedicated network process used by
 /// fetch-backed navigation and document fetch continuations.
 pub fn start_network_bridge(
     trace_sender: Option<TraceSender>,
@@ -550,11 +595,12 @@ pub fn start_network_bridge(
     ROUTER.add_typed_route(
         bootstrap.response_receiver,
         Box::new(move |message| {
-            let _ =
-                event_sender
-                    .send(message.map_err(|error| {
-                        format!("failed to decode network IPC response: {error}")
-                    }));
+            if let Err(error) = event_sender.send(
+                message
+                    .map_err(|error| format!("failed to decode network IPC response: {error}")),
+            ) {
+                eprintln!("failed to route network IPC response to fetch worker: {error}");
+            }
         }),
     );
 
@@ -562,7 +608,7 @@ pub fn start_network_bridge(
 }
 
 impl FetchWorker {
-    /// starting the fetch worker with its owned network sidecar.
+    /// starting the fetch worker with its owned network process.
     fn new(
         command_receiver: Receiver<FetchCommand>,
         user_agent_command_sender: Sender<UserAgentCommand>,
@@ -582,7 +628,15 @@ impl FetchWorker {
         })
     }
 
-    /// failing every pending fetch if the network sidecar stops before
+    fn send_user_agent_command(&self, command: UserAgentCommand, operation: &str) {
+        // Note: Formal-web plumbing logs failed cross-thread user-agent notifications before
+        // dropping them so fetch failures keep their diagnostic path.
+        if let Err(error) = self.user_agent_command_sender.send(command) {
+            eprintln!("{operation}: {error}");
+        }
+    }
+
+    /// failing every pending fetch if the network process stops before
     /// producing a response.
     fn fail_pending_fetches(&mut self) {
         // If the network bridge stops early, report every outstanding fetch back through the
@@ -590,18 +644,20 @@ impl FetchWorker {
         for fetch_record in self.fetch_group.drain_fetch_records() {
             match fetch_record.continuation {
                 PendingFetch::Document(pending_fetch) => {
-                    let _ = self.user_agent_command_sender.send(
+                    self.send_user_agent_command(
                         UserAgentCommand::DocumentFetchFailed {
                             event_loop_id: pending_fetch.event_loop_id,
                             handler_id: pending_fetch.handler_id,
                         },
+                        "failed to report pending document fetch failure",
                     );
                 }
                 PendingFetch::Navigation(pending_fetch) => {
-                    let _ = self.user_agent_command_sender.send(
+                    self.send_user_agent_command(
                         UserAgentCommand::NavigationFetchFailed {
                             fetch_id: pending_fetch.fetch_id,
                         },
+                        "failed to report pending navigation fetch failure",
                     );
                 }
             }
@@ -615,7 +671,7 @@ impl FetchWorker {
                 event_loop_id,
                 request,
             } => {
-                // Document fetches reuse the same network sidecar, but the completion returns
+                // Note: Document fetches reuse the same network process, but the completion returns
                 // directly to the owning event loop instead of the navigation finalization path.
                 let request_id = self.next_request_id;
                 self.next_request_id += 1;
@@ -637,18 +693,20 @@ impl FetchWorker {
                     if let Some(fetch_record) = self.fetch_group.remove_fetch_record(request_id) {
                         match fetch_record.continuation {
                             PendingFetch::Document(pending_fetch) => {
-                                let _ = self.user_agent_command_sender.send(
+                                self.send_user_agent_command(
                                     UserAgentCommand::DocumentFetchFailed {
                                         event_loop_id: pending_fetch.event_loop_id,
                                         handler_id: pending_fetch.handler_id,
                                     },
+                                    "failed to report document fetch send failure",
                                 );
                             }
                             PendingFetch::Navigation(pending_fetch) => {
-                                let _ = self.user_agent_command_sender.send(
+                                self.send_user_agent_command(
                                     UserAgentCommand::NavigationFetchFailed {
                                         fetch_id: pending_fetch.fetch_id,
                                     },
+                                    "failed to report navigation fetch send failure",
                                 );
                             }
                         }
@@ -674,9 +732,10 @@ impl FetchWorker {
                     request: network_request,
                 }) {
                     self.fetch_group.remove_fetch_record(request_id);
-                    let _ = self
-                        .user_agent_command_sender
-                        .send(UserAgentCommand::NavigationFetchFailed { fetch_id });
+                    self.send_user_agent_command(
+                        UserAgentCommand::NavigationFetchFailed { fetch_id },
+                        "failed to report navigation fetch send failure",
+                    );
                     eprintln!(
                         "failed to send navigation fetch request to network process: {error}"
                     );
@@ -684,7 +743,9 @@ impl FetchWorker {
             }
             FetchCommand::Shutdown { reply } => {
                 self.fetch_group.terminate();
-                let _ = self.network_request_sender.send(NetworkRequest::Shutdown);
+                if let Err(error) = self.network_request_sender.send(NetworkRequest::Shutdown) {
+                    eprintln!("failed to send network process shutdown request: {error}");
+                }
                 self.shutdown_reply = Some(reply);
             }
         }
@@ -712,13 +773,14 @@ impl FetchWorker {
             } => {
                 // Successful document fetches resume the owning event loop's content-side
                 // continuation.
-                let _ =
-                    self.user_agent_command_sender
-                        .send(UserAgentCommand::DocumentFetchCompleted {
-                            event_loop_id,
-                            handler_id,
-                            response,
-                        });
+                self.send_user_agent_command(
+                    UserAgentCommand::DocumentFetchCompleted {
+                        event_loop_id,
+                        handler_id,
+                        response,
+                    },
+                    "failed to report document fetch completion",
+                );
             }
             FetchCompletion::DocumentFailed {
                 event_loop_id,
@@ -726,31 +788,32 @@ impl FetchWorker {
             } => {
                 // Document fetch failures reenter the owning event loop so the content-side
                 // fetch algorithm can fail the handler in place.
-                let _ =
-                    self.user_agent_command_sender
-                        .send(UserAgentCommand::DocumentFetchFailed {
-                            event_loop_id,
-                            handler_id,
-                        });
+                self.send_user_agent_command(
+                    UserAgentCommand::DocumentFetchFailed {
+                        event_loop_id,
+                        handler_id,
+                    },
+                    "failed to report document fetch failure",
+                );
             }
             FetchCompletion::NavigationCompleted { fetch_id, response } => {
                 // Successful navigation fetches resume the user-agent-side document creation
                 // and finalization continuation keyed by `fetch_id`.
-                let _ = self.user_agent_command_sender.send(
+                self.send_user_agent_command(
                     UserAgentCommand::NavigationFetchCompleted {
                         fetch_id,
                         response,
                     },
+                    "failed to report navigation fetch completion",
                 );
             }
             FetchCompletion::NavigationFailed { fetch_id } => {
                 // Navigation fetch failures resume the same pending navigation record so the
                 // user agent can clear `ongoing_navigation_id` and surface failure to the embedder.
-                let _ =
-                    self.user_agent_command_sender
-                        .send(UserAgentCommand::NavigationFetchFailed {
-                            fetch_id,
-                        });
+                self.send_user_agent_command(
+                    UserAgentCommand::NavigationFetchFailed { fetch_id },
+                    "failed to report navigation fetch failure",
+                );
             }
             FetchCompletion::Ignored => {}
         }
@@ -759,7 +822,7 @@ impl FetchWorker {
     /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
     fn run(&mut self) {
         // The fetch worker owns the network-facing half of HTML's parallel fetch branch and
-        // drains either new user-agent requests or sidecar responses until shutdown.
+        // drains either new user-agent requests or network-process responses until shutdown.
         loop {
             let command_receiver = &self.command_receiver;
             let network_event_receiver = &self.network_event_receiver;

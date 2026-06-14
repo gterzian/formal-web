@@ -122,6 +122,11 @@ impl ReadableStream {
         self.disturbed.set(disturbed);
     }
 
+    /// <https://streams.spec.whatwg.org/#readablestream-disturbed>
+    pub(crate) fn disturbed(&self) -> bool {
+        self.disturbed.get()
+    }
+
     /// <https://streams.spec.whatwg.org/#initialize-readable-stream>
     fn initialize_readable_stream(&mut self) {
         // Step 1: "Set stream.[[state]] to \"readable\"."

@@ -1,7 +1,16 @@
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue};
+use boa_engine::{
+    Context, JsError, JsNativeError, JsResult, JsString, JsValue,
+    builtins::promise::ResolvingFunctions,
+    object::{JsObject, builtins::JsPromise},
+};
+use ipc_messages::content::{
+    Event as ContentEvent, FetchRequest as ContentFetchRequest, HeaderList as ContentHeaderList,
+};
+use url::Url;
 
-use crate::html::{GlobalScope, TimerHandler, Window};
-use crate::webidl::Callback;
+use crate::html::{GlobalScope, TimerHandler, Window, header_list_from_value};
+use crate::new_document_fetch_id;
+use crate::webidl::{Callback, error_to_rejection_reason};
 
 use crate::html::safe_passing_of_structured_data::{self, StructuredCloneOptions};
 
@@ -69,6 +78,74 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         self.global_scope().clear_timer(timer_id);
     }
 
+    /// <https://fetch.spec.whatwg.org/#fetch-method>
+    fn fetch(&self, input: &JsValue, init: &JsValue, context: &mut Context) -> JsResult<JsValue> {
+        // Step 1: "Let p be a new promise."
+        let (promise, resolvers) = JsPromise::new_pending(context);
+        let promise_object: JsObject = promise.into();
+
+        if let Err(error) = self.queue_fetch(input, init, &resolvers, context) {
+            let reason = error_to_rejection_reason(error, context);
+            reject_fetch_promise(&resolvers, reason, context)?;
+        }
+
+        // Step 13: "Return p."
+        Ok(JsValue::from(promise_object))
+    }
+
+    fn queue_fetch(
+        &self,
+        input: &JsValue,
+        init: &JsValue,
+        resolvers: &ResolvingFunctions,
+        context: &mut Context,
+    ) -> JsResult<()> {
+        // Step 2: "Let requestObject be the result of invoking the initial value of Request as constructor with input and init as arguments. If this throws an exception, reject p with it and return p."
+        // Note: Formal-web does not expose the Request class yet. The helper below constructs the
+        // subset of request fields that the existing IPC path can transport.
+        let request = fetch_request_from_input_and_init(input, init, self.global_scope(), context)?;
+
+        // TODO: Step 3: "Let request be requestObject’s request."
+        // TODO: Step 4: "If requestObject’s signal is aborted, then:"
+        // TODO: Step 5: "Let globalObject be request’s client’s global object."
+        // TODO: Step 6: "If globalObject is a ServiceWorkerGlobalScope object, then set request’s service-workers mode to \"none\"."
+        // TODO: Step 7: "Let responseObject be null."
+        // TODO: Step 8: "Let relevantRealm be this’s relevant realm."
+        // TODO: Step 9: "Let locallyAborted be false."
+        // TODO: Step 10: "Let controller be null."
+        // TODO: Step 11: "Add the following abort steps to requestObject’s signal:"
+        // TODO: Step 12: "Set controller to the result of calling fetch given request and processResponse given response being these steps:"
+        // TODO: Step 12 processResponse 1: "If locallyAborted is true, then abort these steps."
+        // TODO: Step 12 processResponse 2: "If response’s aborted flag is set, then:"
+        // TODO: Step 12 processResponse 3: "If response is a network error, then reject p with a TypeError and abort these steps."
+        // Note: The IPC request below is formal-web callback plumbing. It starts the user-agent
+        // fetch worker and resumes the Fetch method's processResponse continuation in the content
+        // process when the callback ID completes.
+        let handler_id = new_document_fetch_id();
+        self.global_scope()
+            .store_fetch_resolvers(handler_id, resolvers.clone());
+
+        let Some(event_sender) = self.global_scope().event_sender() else {
+            self.global_scope().take_fetch_resolvers(handler_id);
+            return Err(type_error(
+                "fetch is not available without a content event sender",
+            ));
+        };
+
+        event_sender
+            .send(ContentEvent::DocumentFetchRequested(ContentFetchRequest {
+                handler_id,
+                url: request.url.to_string(),
+                method: request.method,
+                header_list: request.header_list,
+                body: request.body,
+            }))
+            .map_err(|error| {
+                self.global_scope().take_fetch_resolvers(handler_id);
+                type_error(format!("failed to send fetch request: {error}"))
+            })
+    }
+
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
     fn timer_initialization_steps(
         &self,
@@ -134,6 +211,96 @@ impl WindowOrWorkerGlobalScope for Window {
     }
 }
 
+struct WindowFetchRequest {
+    url: Url,
+    method: String,
+    header_list: ContentHeaderList,
+    body: String,
+}
+
+fn fetch_request_from_input_and_init(
+    input: &JsValue,
+    init: &JsValue,
+    global_scope: &GlobalScope,
+    context: &mut Context,
+) -> JsResult<WindowFetchRequest> {
+    let input = input.to_string(context)?.to_std_string_escaped();
+    let base_url = global_scope
+        .creation_url()
+        .ok_or_else(|| type_error("fetch is not available without a creation URL"))?;
+    let url = base_url
+        .join(&input)
+        .map_err(|error| type_error(format!("failed to parse fetch URL `{input}`: {error}")))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(type_error("fetch URL must not include credentials"));
+    }
+    if global_scope.document_id().is_none() {
+        return Err(type_error("fetch is not available without a document"));
+    }
+
+    let init = fetch_request_init(init, context)?;
+    Ok(WindowFetchRequest {
+        url,
+        method: init.method,
+        header_list: init.header_list,
+        body: init.body,
+    })
+}
+
+struct WindowFetchRequestInit {
+    method: String,
+    header_list: ContentHeaderList,
+    body: String,
+}
+
+fn fetch_request_init(value: &JsValue, context: &mut Context) -> JsResult<WindowFetchRequestInit> {
+    let mut init = WindowFetchRequestInit {
+        method: String::from("GET"),
+        header_list: ContentHeaderList::default(),
+        body: String::new(),
+    };
+
+    if value.is_null_or_undefined() {
+        return Ok(init);
+    }
+
+    let Some(object) = value.as_object() else {
+        return Err(type_error("fetch init must be an object"));
+    };
+
+    let method = object.get(js_string("method"), context)?;
+    if !method.is_null_or_undefined() {
+        init.method = method.to_string(context)?.to_std_string_escaped();
+    }
+
+    let headers = object.get(js_string("headers"), context)?;
+    if !headers.is_null_or_undefined() {
+        init.header_list = header_list_from_value(&headers, context)?;
+    }
+
+    let body = object.get(js_string("body"), context)?;
+    if !body.is_null_or_undefined() {
+        init.body = body.to_string(context)?.to_std_string_escaped();
+    }
+
+    Ok(init)
+}
+
+fn reject_fetch_promise(
+    resolvers: &ResolvingFunctions,
+    reason: JsValue,
+    context: &mut Context,
+) -> JsResult<()> {
+    resolvers
+        .reject
+        .call(&JsValue::undefined(), &[reason], context)
+        .map(|_| ())
+}
+
+fn js_string(value: &'static str) -> JsString {
+    JsString::from(value)
+}
+
 fn timer_handler(value: &JsValue, context: &mut Context) -> JsResult<TimerHandler> {
     if let Some(object) = value.as_object() {
         if object.is_callable() {
@@ -158,4 +325,8 @@ fn timeout_ms(value: &JsValue, context: &mut Context) -> JsResult<u32> {
 
 fn internal_error(message: String) -> JsError {
     JsError::from(JsNativeError::typ().with_message(message))
+}
+
+fn type_error(message: impl Into<String>) -> JsError {
+    JsError::from(JsNativeError::typ().with_message(message.into()))
 }

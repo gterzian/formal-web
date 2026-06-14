@@ -8,8 +8,9 @@ use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
     BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentFetchId, DocumentId,
     EventLoopId, FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
-    NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
+    FinalizeNavigation as ContentFinalizeNavigation, FrameId, HeaderList as ContentHeaderList,
+    LoadedDocumentResponse, NavigableId, NavigateRequest, NavigationFetchId, NavigationId,
+    NewTraversableInfo,
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage, WindowTimerKey,
     iframe_target_name,
 };
@@ -400,6 +401,7 @@ impl NavigationRequest {
             handler_id: DocumentFetchId::new(),
             url: self.url.clone(),
             method: self.method.clone(),
+            header_list: ContentHeaderList::default(),
             body: self.body.clone().unwrap_or_default(),
         }
     }
@@ -3325,7 +3327,14 @@ impl UserAgentWorker {
             .and_then(|n| n.frame_id);
         let loaded_response = LoadedDocumentResponse {
             final_url: final_url.clone(),
+            url_list: if response.url_list.is_empty() {
+                vec![final_url.clone()]
+            } else {
+                response.url_list.clone()
+            },
             status: response.status,
+            status_text: response.status_text.clone(),
+            header_list: response.header_list.clone(),
             content_type: response.content_type.clone(),
             body: String::from_utf8_lossy(&response.body).into_owned(),
         };

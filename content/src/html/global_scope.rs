@@ -7,14 +7,12 @@ use std::{
 use super::environment_settings_object::EnvironmentSettingsObject;
 
 use blitz_dom::BaseDocument;
-use boa_engine::{JsValue, object::JsObject};
+use boa_engine::{JsValue, builtins::promise::ResolvingFunctions, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::{
-    content::{
-        DocumentId, Event as ContentEvent, NavigableId, WindowTimerClearRequest,
-        WindowTimerKey, WindowTimerRequest,
-    },
+use ipc_messages::content::{
+    DocumentFetchId, DocumentId, Event as ContentEvent, NavigableId, WindowTimerClearRequest,
+    WindowTimerKey, WindowTimerRequest,
 };
 
 use crate::webidl::Callback;
@@ -97,6 +95,17 @@ pub struct WindowTimer {
     pub timeout_ms: u32,
 }
 
+#[derive(Trace, Finalize)]
+pub struct PendingFetchPromise {
+    // Note: This stores the JavaScript promise resolver for an in-flight
+    // formal-web fetch request. The key is a formal-web callback ID, not a
+    // Fetch Standard concept.
+    #[unsafe_ignore_trace]
+    handler_id: DocumentFetchId,
+
+    resolving_functions: ResolvingFunctions,
+}
+
 #[derive(Clone)]
 struct TimerHost {
     document_id: DocumentId,
@@ -141,6 +150,8 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     current_timer_nesting_level: Cell<Option<u32>>,
 
+    pending_fetch_promises: GcRefCell<Vec<PendingFetchPromise>>,
+
     #[unsafe_ignore_trace]
     timer_host: RefCell<Option<TimerHost>>,
 
@@ -178,7 +189,6 @@ pub struct GlobalScope {
     /// The creation URL of this window's Document.
     #[unsafe_ignore_trace]
     creation_url: RefCell<Option<url::Url>>,
-
 }
 
 impl GlobalScope {
@@ -194,6 +204,7 @@ impl GlobalScope {
             timer_callback_identifier: Cell::new(0),
             window_timers: GcRefCell::new(Vec::new()),
             current_timer_nesting_level: Cell::new(None),
+            pending_fetch_promises: GcRefCell::new(Vec::new()),
             timer_host: RefCell::new(None),
             source_navigable_id: Cell::new(None),
             parent_traversable_id: Cell::new(None),
@@ -273,6 +284,39 @@ impl GlobalScope {
 
     pub(crate) fn event_sender(&self) -> Option<IpcSender<ContentEvent>> {
         self.event_sender.borrow().clone()
+    }
+
+    pub(crate) fn document_id(&self) -> Option<DocumentId> {
+        self.timer_host
+            .borrow()
+            .as_ref()
+            .map(|host| host.document_id)
+    }
+
+    pub(crate) fn store_fetch_resolvers(
+        &self,
+        handler_id: DocumentFetchId,
+        resolving_functions: ResolvingFunctions,
+    ) {
+        self.pending_fetch_promises
+            .borrow_mut()
+            .push(PendingFetchPromise {
+                handler_id,
+                resolving_functions,
+            });
+    }
+
+    pub(crate) fn take_fetch_resolvers(
+        &self,
+        handler_id: DocumentFetchId,
+    ) -> Option<ResolvingFunctions> {
+        let mut promises = self.pending_fetch_promises.borrow_mut();
+        let index = promises
+            .iter()
+            .position(|promise| promise.handler_id == handler_id)?;
+        let resolving_functions = promises[index].resolving_functions.clone();
+        promises.remove(index);
+        Some(resolving_functions)
     }
 
     pub(crate) fn set_timer_host(

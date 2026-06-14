@@ -15,16 +15,19 @@ use crate::dom::{
 };
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
-    attach_same_origin_child_document_for_traversable, execute_parser_scripts,
-    parse_html_into_document, run_dom_post_connection_steps_for_document,
+    Response as FetchResponseObject, attach_same_origin_child_document_for_traversable,
+    execute_parser_scripts, parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
+use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
+use crate::webidl::bindings::create_interface_instance;
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
+use boa_engine::{JsNativeError, JsValue};
 use data_url::DataUrl;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_messages::content::Command::{
@@ -37,9 +40,10 @@ use ipc_messages::content::{
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
     ElementClickResult, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent, EventLoopId,
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FontTransportSender, FrameCompositionMetadata, FrameEmbedSite, FrameId, LoadedDocumentResponse,
-    NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult, TraversableViewport,
-    ViewportSnapshot, WebviewId, WindowTimerKey,
+    FontTransportSender, FrameCompositionMetadata, FrameEmbedSite, FrameId,
+    HeaderList as ContentHeaderList, LoadedDocumentResponse, NavigableId, NavigationId,
+    PaintFrame, ScriptEvaluationResult, TraversableViewport, ViewportSnapshot, WebviewId,
+    WindowTimerKey,
 };
 use std::{
     cell::RefCell,
@@ -78,12 +82,27 @@ fn is_javascript_mime_essence(essence: &str) -> bool {
     )
 }
 
+fn response_content_type(response: &ContentFetchResponse) -> String {
+    if !response.content_type.is_empty() {
+        return response.content_type.clone();
+    }
+
+    response
+        .header_list
+        .headers
+        .iter()
+        .find(|(name, _value)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_name, value)| value.clone())
+        .unwrap_or_default()
+}
+
 fn deferred_script_response_is_executable(response: &ContentFetchResponse) -> bool {
     if !(200..=299).contains(&response.status) {
         return false;
     }
 
-    let essence = normalized_content_type_essence(&response.content_type);
+    let content_type = response_content_type(response);
+    let essence = normalized_content_type_essence(&content_type);
     essence.is_empty() || is_javascript_mime_essence(&essence)
 }
 
@@ -186,6 +205,30 @@ fn request_body_string(body: &Body) -> String {
     }
 }
 
+fn request_header_list(request: &Request) -> ContentHeaderList {
+    let mut headers = request
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(content_type) = request.content_type.as_ref() {
+        let has_content_type = headers
+            .iter()
+            .any(|(name, _value)| name.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            headers.push((String::from("content-type"), content_type.clone()));
+        }
+    }
+
+    ContentHeaderList { headers }
+}
+
 fn viewport_of_snapshot(snapshot: &ViewportSnapshot) -> Viewport {
     let color_scheme = match snapshot.color_scheme {
         MessageColorScheme::Light => ColorScheme::Light,
@@ -273,6 +316,8 @@ struct ContentNetProvider {
 impl NetProvider for ContentNetProvider {
     fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         match request.url.scheme() {
+            // Note: data: resource fetches still use the local content shortcut and bypass the
+            // Fetch-shaped response metadata pipeline.
             "data" => match DataUrl::process(request.url.as_str()) {
                 Ok(data_url) => match data_url.decode_to_vec() {
                     Ok((bytes, _fragment)) => {
@@ -302,6 +347,7 @@ impl NetProvider for ContentNetProvider {
                         handler_id,
                         url: request.url.to_string(),
                         method: request.method.to_string(),
+                        header_list: request_header_list(&request),
                         body: request_body_string(&request.body),
                     },
                 )) {
@@ -501,6 +547,7 @@ impl ContentProcess {
                 handler_id,
                 url: request.url.to_string(),
                 method: request.method.to_string(),
+                header_list: request_header_list(&request),
                 body: request_body_string(&request.body),
             }))
             .map_err(|error| {
@@ -575,6 +622,8 @@ impl ContentProcess {
             .map_err(|error| format!("failed to resolve deferred script URL `{src}`: {error}"))?;
 
         if resolved_url.scheme() == "data" {
+            // Note: data: deferred scripts still use the local content shortcut and bypass the
+            // Fetch-shaped response metadata pipeline.
             let (bytes, _fragment) = DataUrl::process(resolved_url.as_str())
                 .map_err(|error| format!("failed to decode deferred data script URL: {error}"))?
                 .decode_to_vec()
@@ -890,6 +939,7 @@ impl ContentProcess {
             status: _,
             content_type: _,
             body,
+            ..
         } = response;
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
@@ -951,7 +1001,9 @@ impl ContentProcess {
 
         // Set the navigable hierarchy on the GlobalScope so that `window.open`
         // can resolve `_parent`/`_top` targets.
-        let _ = self.set_navigable_hierarchy_on_global_scope(document_id);
+        if let Err(error) = self.set_navigable_hierarchy_on_global_scope(document_id) {
+            eprintln!("failed to set navigable hierarchy on global scope: {error}");
+        }
 
         run_dom_post_connection_steps_for_document(self, document_id)?;
 
@@ -1358,7 +1410,7 @@ impl ContentProcess {
     ) -> Result<(), String> {
         let response_url = response.final_url.clone();
         let response_status = response.status;
-        let response_type = response.content_type.clone();
+        let response_type = response_content_type(&response);
         let pending_handler = {
             let mut local_state = self
                 .local_state
@@ -1368,6 +1420,7 @@ impl ContentProcess {
         };
 
         let Some(pending_handler) = pending_handler else {
+            self.complete_window_fetch(handler_id, response)?;
             return Ok(());
         };
 
@@ -1410,7 +1463,7 @@ impl ContentProcess {
                 } else {
                     eprintln!(
                         "content deferred script rejected: url={} status={} content-type={}",
-                        response.final_url, response.status, response.content_type,
+                        response.final_url, response.status, response_type,
                     );
                     self.mark_deferred_script_failed(document_id, script_index);
                 }
@@ -1442,6 +1495,57 @@ impl ContentProcess {
         }
     }
 
+    fn complete_window_fetch(
+        &mut self,
+        handler_id: DocumentFetchId,
+        response: ContentFetchResponse,
+    ) -> Result<bool, String> {
+        let mut response = Some(response);
+
+        for content_document in self.documents.values_mut() {
+            let resolvers = with_global_scope(&content_document.settings.context, |global_scope| {
+                Ok(global_scope.take_fetch_resolvers(handler_id))
+            })
+            .map_err(|error| error.to_string())?;
+
+            let Some(resolvers) = resolvers else {
+                continue;
+            };
+
+            let response = response
+                .take()
+                .expect("window fetch response should be consumed once");
+            // Note: This is formal-web callback plumbing for the `fetch(input, init)` method's
+            // processResponse continuation. The Fetch method stored the JavaScript promise
+            // resolver under `handler_id`; this branch resumes it after the user-agent fetch worker
+            // returns response metadata and body bytes.
+            // Step 12 processResponse 4: "Set responseObject to the result of creating a Response object, given response, \"immutable\", and relevantRealm."
+            let response_data = FetchResponseObject::from_content_fetch_response(
+                response,
+                &mut content_document.settings.context,
+            )
+            .map_err(|error| error.to_string())?;
+            let response_object = create_interface_instance::<FetchResponseObject>(
+                response_data,
+                &mut content_document.settings.context,
+            )
+            .map_err(|error| error.to_string())?;
+            // Step 12 processResponse 5: "Resolve p with responseObject."
+            resolvers
+                .resolve
+                .call(
+                    &JsValue::undefined(),
+                    &[JsValue::from(response_object)],
+                    &mut content_document.settings.context,
+                )
+                .map_err(|error| error.to_string())?;
+            content_document.settings.perform_a_microtask_checkpoint()?;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
     fn fail_document_fetch(&mut self, handler_id: DocumentFetchId) -> Result<(), String> {
         let pending_handler = {
             let mut local_state = self
@@ -1452,6 +1556,7 @@ impl ContentProcess {
         };
 
         let Some(pending_handler) = pending_handler else {
+            self.fail_window_fetch(handler_id)?;
             return Ok(());
         };
 
@@ -1500,6 +1605,39 @@ impl ContentProcess {
                 Ok(())
             }
         }
+    }
+
+    fn fail_window_fetch(&mut self, handler_id: DocumentFetchId) -> Result<bool, String> {
+        for content_document in self.documents.values_mut() {
+            let resolvers = with_global_scope(&content_document.settings.context, |global_scope| {
+                Ok(global_scope.take_fetch_resolvers(handler_id))
+            })
+            .map_err(|error| error.to_string())?;
+
+            let Some(resolvers) = resolvers else {
+                continue;
+            };
+
+            // Step 12 processResponse 3: "If response is a network error, then reject p with a TypeError and abort these steps."
+            // Note: Formal-web reports transport failure through `DocumentFetchFailed` rather than
+            // constructing a Fetch Standard network error response object.
+            let reason = JsNativeError::typ()
+                .with_message("fetch failed")
+                .into_opaque(&mut content_document.settings.context)
+                .into();
+            resolvers
+                .reject
+                .call(
+                    &JsValue::undefined(),
+                    &[reason],
+                    &mut content_document.settings.context,
+                )
+                .map_err(|error| error.to_string())?;
+            content_document.settings.perform_a_microtask_checkpoint()?;
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 
     fn run_window_timer(
