@@ -20,13 +20,18 @@ description with examples and common mistakes.
 
 ## Spec Documentation
 
-- Keep the top doc comment anchor-only, for example:
+- **Anchor-only doc comments.** Every function, struct, associated constant,
+  and constant definition has **only** the spec anchor URL in its doc comment.
+  Zero prose — not a single explanatory sentence.  Examples:
   - `/// <https://dom.spec.whatwg.org/#concept-event-dispatch>`
   - `/// <https://html.spec.whatwg.org/#global-object>`
   - `/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>`
   - `/// <https://streams.spec.whatwg.org/#writablestream-state>`
-  - If a `Note:` about the function or type overall is in order, it belongs below the anchor link.
+  - Any prose following the anchor is a violation.  The spec is the documentation; if the function name is not enough context, the algorithm lives in the spec.
+  - The only exception is a `// Note:` on a separate line below the anchor,
+    and only for genuine spec discrepancies (split-process, browser-engine
+    refactoring).  Such notes must be fewer than ten across the codebase.
 - Inside function bodies, map relevant code with verbatim `Step N:` comments.
-- Use `Note:` comments only for representation or mapping details that are not obvious from the spec text.
+- Use `Note:` comments inside the function body for representation or mapping details that are not obvious from the spec text.  Design notes and architecture rationales belong in the README chain.
 - Put unimplemented work in `TODO:` directly below the related `Step N:` comment.
 - `WebIdlInterface` implementations live in `content/src/js/bindings/` — these define *which members* an interface exposes.  Domain methods on the corresponding Rust struct (in `content/src/<domain>/`) implement *what those members do*.

@@ -23,6 +23,8 @@ Because every spec anchor (heading, dfn, span, `a`) matches an `id` attribute in
 - **Algorithm boxes (`div[data-algorithm]`):** Renders the algorithm header and full recursive step numbering.
 - **All other elements:** Same as definitions — shows the element context and forward content.
 
+**Scrolling when a dfn truncates.** A `<dfn>` is an inline element inside a `<p>`; its siblings are other inline nodes within that `<p>`. The algorithm `<ol>` is a sibling of the `<p>`, not of the `<dfn>`, so `spec_lookup` on a dfn cannot reach it. If the result looks truncated (just a term name and a few linked concepts, no algorithm steps), check the `Section:` line in the output — it gives the section heading `id`. Look up that heading to see the full algorithm. For example, `#queue-a-microtask` truncates; `#queuing-tasks` (the section) renders the full algorithm.
+
 Algorithm steps are rendered with recursive step numbers (1, 1.1, 1.1.1, 1.2, 2, …). The HTML spec provides no step numbers in the markup — they are computed from the nested `<ol>` structure.
 
 **Cross-reference table.** When the content contains spec cross-references (terms linked to other sections or specs), a table is appended at the bottom:

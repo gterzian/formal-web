@@ -60,48 +60,43 @@ use std::{cell::RefCell, rc::Rc};
 use url::Url;
 
 /// <https://html.spec.whatwg.org/#queue-a-microtask>
-///
-/// Queues a microtask on the JavaScript event loop via Boa's `enqueue_job` API.
-/// The callback runs as a GenericJob on the relevant realm's microtask queue.
 pub fn queue_a_microtask<F>(context: &mut Context, callback: F)
 where
     F: FnOnce(&mut Context) -> JsResult<JsValue> + 'static,
 {
+    // Note: Steps 1-8 (asserting a surrounding agent, setting eventLoop,
+    // creating a new task, setting its steps/source/document/settings-object
+    // set) are handled by Boa's GenericJob + enqueue_job.  The realm carries
+    // the agent/event-loop association.
+    //
+    // Step 1: Assert: there is a surrounding agent. I.e., this algorithm is
+    //         not called while in parallel.
     let realm = context.realm().clone();
     let job = GenericJob::new(callback, realm);
+    // Step 9: Enqueue microtask on eventLoop's microtask queue.
     context.enqueue_job(Job::from(job));
 }
 
 /// <https://html.spec.whatwg.org/#await-a-stable-state>
-///
-/// Awaits a stable state by queueing a microtask that runs the given synchronous
-/// section.  The synchronous_section closure receives the Context and should
-/// perform the steps marked ⌛ in the calling algorithm.  After the synchronous
-/// section completes, the in_parallel continuation (if any) receives a reference
-/// to the Context for any follow-up work.
 pub fn await_a_stable_state<F>(context: &mut Context, synchronous_section: F)
 where
     F: FnOnce(&mut Context) -> JsResult<JsValue> + 'static,
 {
+    // Note: The preamble ("queue a microtask that runs the following steps, and
+    // must then stop executing") is implemented by delegating to
+    // queue_a_microtask.  The "stop executing" semantics are inherent: queuing
+    // a microtask returns immediately and the synchronous section runs later.
+    //
+    // Step 1: Run the algorithm's synchronous section.
+    //
+    // Step 2: Resume execution of the algorithm in parallel, if appropriate, as
+    //         described in the algorithm's steps.
+    //         (Implicit — after the synchronous section returns, control
+    //         resumes in the calling algorithm's in-parallel context.)
     queue_a_microtask(context, synchronous_section);
 }
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
-///
-/// Content-process portion of "create a new browsing context and document".
-/// Creates a new Document (type "html", content type "text/html") with the
-/// corresponding Window, realm, and environment settings object.
-///
-/// Steps that require UA-side state (browsing context allocation, group
-/// membership, agent selection, session history) are delegated to the UA
-/// by the calling algorithm (e.g. `create-a-new-child-navigable`,
-/// `creating-a-new-top-level-traversable`).
-///
-/// The caller must store the returned `EnvironmentSettingsObject` in a Rust
-/// container (e.g. `ContentProcess::documents` or the shared document registry)
-/// — if it is dropped the embedded `Context` is dropped and `JsObject` handles
-/// become dangling pointers. `EnvironmentSettingsObject` is not `Trace`; the
-/// per-Context Boa GC is self-contained and does not trace through it.
 pub(crate) fn create_a_new_browsing_context_and_document(
     event_sender: &IpcSender<ContentEvent>,
     traversable_id: NavigableId,
@@ -114,6 +109,11 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     ),
     String,
 > {
+    // Note: This function implements the content-process portion only.
+    // Steps requiring UA-side state (browsing context allocation, group
+    // membership, agent selection, session history) are delegated by the
+    // calling algorithm.  The caller must keep the returned ESO alive
+    // — dropping it drops the Context and invalidates JsObject handles.
     // Step 15: Create a new Document with type "html", content type "text/html"
     let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
         viewport: None,
@@ -175,34 +175,13 @@ pub(crate) fn navigate(
 }
 
 /// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
-///
-/// Result of the rules for choosing a navigable on the content side.
-/// All fields are `Option` because some cases require UA-side continuation
-/// (cross-process named-target lookup, new-traversable creation during
-/// anchor navigation).
 pub(crate) struct ChosenNavigableResult {
-    /// The resolved navigable ID, if content could resolve it locally.
     pub(crate) chosen_navigable_id: Option<NavigableId>,
-    /// New traversable info, if the content process created a new
-    /// top-level traversable locally (window.open path).
     pub(crate) new_traversable_info: Option<NewTraversableInfo>,
-    /// The Window JsObject to back the WindowProxy, for callers that
-    /// need to return it to JavaScript (window.open).
     pub(crate) return_window: Option<JsObject>,
 }
 
 /// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
-///
-/// Content-process side of the split algorithm.  Steps 1–7 are content-local
-/// (resolving `_self`, `_parent`, `_top`).  Step 7 (find-by-target-name) is
-/// delegated to the user agent because the content process does not own the
-/// global navigable registry.  Step 8 (new top-level traversable) is handled
-/// either locally (window.open, via `GlobalScope::create_document`) or delegated to
-/// the UA (anchor navigation).
-///
-/// Gaps: Step 2 (windowType) and Step 3 (sandboxingFlagSet) are not
-/// implemented.  windowType is always "existing or none" and sandboxing
-/// is not checked.
 pub(crate) fn the_rules_for_choosing_a_navigable(
     source_navigable_id: NavigableId,
     parent_navigable_id: Option<NavigableId>,

@@ -62,14 +62,27 @@ for the definitive spec-annotation reference with examples and common mistakes.
 2. **Anchor URLs** — Every function, struct, associated constant, and
    constant definition top doc comment has **only** the correct spec anchor
    URL (`<https://html.spec.whatwg.org/#...>`).  No description, no step
-   summary, no prose.  Constants like `NETWORK_EMPTY`, `HAVE_NOTHING`, and
+   summary, no prose.  **Zero prose — not a single explanatory sentence.**
+   If the function name is not enough context, the spec IS the documentation.
+   Explanatory doc comments on spec-implementing functions are violations.
+
+   | ❌ Wrong | ✅ Right |
+   |---|---|
+   | `/// <…>\n/// Queues a microtask via Boa's enqueue_job API.` | `/// <https://html.spec.whatwg.org/#queue-a-microtask>` |
+   | `/// <…>\n/// Content-process portion of the algorithm. …` | `/// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>` |
+   | `/// <…>\n/// Result of the rules for choosing a navigable. …` | `/// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>` |
+
+   Constants like `NETWORK_EMPTY`, `HAVE_NOTHING`, and
    `MEDIA_ERR_ABORTED` are spec-defined IDL enum values and must carry their
    spec anchor (`#dom-media-networkstate`, `#dom-media-readystate`,
    `#dom-mediaerror-media_err_aborted` etc.) just like any method or struct.
-3. **`// Note:` only for discrepancies** — Notes explain why the code differs
-   from the spec (e.g. steps merged, split across processes, browser-engine
-   specific refactoring).  Design notes, architecture rationales, and
-   implementation plans belong in the README chain, not in `// Note:`.
+3. **`// Note:` only for discrepancies** — A `// Note:` following the anchor URL
+   on a separate line is the **only** exception to the no-prose rule, and only
+   for genuine discrepancies between the code and the spec (e.g. steps merged,
+   split across processes, browser-engine specific refactoring).  Such notes
+   must be countable on two hands across the entire codebase — fewer than ten.
+   Design notes, architecture rationales, and implementation plans belong in
+   the README chain, not in doc comments or `// Note:`.
 
 4. **Mirror spec sub-algorithms as separate functions** — When a spec algorithm
    calls a named sub-algorithm (e.g. "instantiate the core of a WebAssembly
@@ -151,6 +164,8 @@ for detailed documentation.
 The `.pi/extensions/web_standards/` extension lazily loads and caches web standards documents (WHATWG, W3C, etc.) on first use. Provides three tools for the agent to read specs interactively:
 
 - **`spec_lookup`** — Look up a named anchor in a spec by its `id` attribute. Returns the element's tag, rendered content, and walks forward siblings to show algorithm boxes (with full recursive step numbering) until the next heading or named definition. This is the primary tool for reading spec content.
+
+  **Truncated dfn → scroll to section.** A `<dfn>` is inline inside a `<p>`, so its algorithm `<ol>` sibling is out of reach. When the result looks incomplete, check the `Section:` line — its value is the section heading id. Look that up next. See `.pi/extensions/web_standards/README.md` for details.
 - **`spec_ref_links`** — Find every place a concept is referenced in a spec. Returns the full URL for each usage site with its enclosing algorithm/section context. Use with `read` to render the full content at a specific reference location.
 - **`spec_search_id`** — Search for element `id` attributes containing a given substring. Use to discover anchor IDs when you know a keyword but not the exact id.
 
