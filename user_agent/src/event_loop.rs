@@ -592,6 +592,15 @@ impl EventLoopWorker {
                     let _ = self.host.new_frame_rendered();
                 }
             }
+            ContentEvent::MediaLoadRequested(request) => {
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::MediaLoadRequested {
+                        url: request.url,
+                        document_id: request.document_id,
+                        traversable_id: request.traversable_id,
+                    })
+                    .map_err(|error| format!("failed to send media load request: {error}"))?;
+            }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
 

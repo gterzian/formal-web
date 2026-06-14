@@ -250,6 +250,17 @@ pub struct DispatchEventEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// <https://html.spec.whatwg.org/#loading-the-media-resource>
+pub struct MediaLoadRequest {
+    /// The URL of the media resource to load.
+    pub url: String,
+    /// The document requesting the load.
+    pub document_id: DocumentId,
+    /// The traversable containing the media element.
+    pub traversable_id: NavigableId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowTimerRequest {
     pub document_id: DocumentId,
     pub timer_id: u32,
@@ -792,6 +803,7 @@ pub enum Event {
     ClipboardReadRequested(ClipboardReadRequest),
     ClipboardWriteRequested(ClipboardWriteRequest),
     CommandCompleted,
+    MediaLoadRequested(MediaLoadRequest),
     PaintReady(PaintFrame),
     ShutdownCompleted,
 }

@@ -54,7 +54,7 @@ struct MediaWorker {
     media_process_sender: IpcSender<MediaProcessCommand>,
     /// Crossbeam receiver for media process events routed via the IPC router.
     media_event_receiver: Receiver<Result<MediaEvent, String>>,
-    /// Child process handle for the media sidecar.
+    /// Child process handle for the media process.
     child: Option<Child>,
     /// Deferred shutdown reply completed after the media process exits.
     shutdown_reply: Option<Sender<Result<(), String>>>,
@@ -66,7 +66,7 @@ struct MediaWorker {
     next_paint_id: u64,
 }
 
-/// Bootstrap the dedicated media sidecar process.
+/// Bootstrap the dedicated media process.
 fn start_media_process() -> Result<
     (
         IpcSender<MediaProcessCommand>,

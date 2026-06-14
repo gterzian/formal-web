@@ -288,16 +288,16 @@ fn get_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResul
     Ok(JsValue::from(JsString::from(media.src())))
 }
 
-fn set_src(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let media = obj.downcast_ref::<HTMLMediaElement>().ok_or_else(|| {
+    let mut media = obj.downcast_mut::<HTMLMediaElement>().ok_or_else(|| {
         JsNativeError::typ().with_message("expected HTMLMediaElement")
     })?;
     let src = args.first()
         .and_then(|v| v.as_string())
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_default();
-    media.set_src(&src);
+    media.set_src(&src, context);
     Ok(JsValue::undefined())
 }
 

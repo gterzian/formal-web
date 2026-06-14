@@ -219,6 +219,11 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     top_level_traversable_id: Cell<Option<NavigableId>>,
 
+    /// <https://html.spec.whatwg.org/#concept-document>
+    /// The document id for the document associated with this global scope.
+    #[unsafe_ignore_trace]
+    document_id: RefCell<Option<DocumentId>>,
+
     /// Sender for content-to-user-agent IPC events (e.g. navigation requests).
     #[unsafe_ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
@@ -274,6 +279,7 @@ impl GlobalScope {
             source_navigable_id: Cell::new(None),
             parent_traversable_id: Cell::new(None),
             top_level_traversable_id: Cell::new(None),
+            document_id: RefCell::new(None),
             event_sender: RefCell::new(None),
 
             new_document_registry: RefCell::new(None),
@@ -350,6 +356,10 @@ impl GlobalScope {
         self.source_navigable_id.get()
     }
 
+    pub(crate) fn document_id(&self) -> Option<DocumentId> {
+        *self.document_id.borrow()
+    }
+
     pub(crate) fn event_sender(&self) -> Option<IpcSender<ContentEvent>> {
         self.event_sender.borrow().clone()
     }
@@ -359,6 +369,7 @@ impl GlobalScope {
         document_id: DocumentId,
         event_sender: IpcSender<ContentEvent>,
     ) {
+        self.document_id.borrow_mut().replace(document_id);
         self.timer_host.borrow_mut().replace(TimerHost {
             document_id,
             event_sender,

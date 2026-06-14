@@ -33,6 +33,7 @@ use crate::event_loop::{
 };
 use crate::fetch::{FetchCommand, run_fetch_thread};
 use crate::media::{MediaCommand, run_media_thread};
+use ipc_messages::media::MediaPipelineId;
 use crate::timer::{TimerCommand, run_timer_thread};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
@@ -886,6 +887,11 @@ pub enum UserAgentCommand {
         fetch_id: NavigationFetchId,
         response: ContentFetchResponse,
     },
+    MediaLoadRequested {
+        url: String,
+        document_id: DocumentId,
+        traversable_id: NavigableId,
+    },
     NavigationFetchFailed {
         fetch_id: NavigationFetchId,
     },
@@ -1447,6 +1453,13 @@ impl UserAgentWorker {
                     );
                 }
 
+                UserAgentCommand::MediaLoadRequested {
+                    url,
+                    document_id: _document_id,
+                    traversable_id,
+                } => {
+                    self.handle_media_load_requested(url, traversable_id);
+                }
                 UserAgentCommand::IframeTraversableRemoved {
                     parent_traversable_id,
                     content_navigable_id,
@@ -3656,6 +3669,35 @@ impl UserAgentWorker {
         }
 
         let _ = reply.send(shutdown_result);
+    }
+
+    /// Handle a MediaLoadRequested from the content process.
+    /// Creates a pipeline in the media process for the given URL.
+    ///
+    /// Note: Pipeline ID assignment is a placeholder — a proper allocator should
+    /// be added when multiple concurrent pipelines are supported.
+    fn handle_media_load_requested(
+        &mut self,
+        url: String,
+        traversable_id: NavigableId,
+    ) {
+        let pipeline_id = MediaPipelineId(0);
+        debug!(
+            "[media] load requested url={} traversalbe={} pipeline={:?}",
+            url, traversable_id.0, pipeline_id,
+        );
+        if let Err(error) = self
+            .media_command_sender
+            .send(MediaCommand::CreatePipeline { pipeline_id, url })
+        {
+            error!("failed to send CreatePipeline to media worker: {error}");
+        }
+        if let Err(error) = self
+            .media_command_sender
+            .send(MediaCommand::Play { pipeline_id })
+        {
+            error!("failed to send Play to media worker: {error}");
+        }
     }
 
     /// Handle a MediaEvent from the media process.

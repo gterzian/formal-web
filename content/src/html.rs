@@ -1,3 +1,5 @@
+use boa_engine::job::{GenericJob, Job};
+use boa_engine::{Context, JsResult, JsValue};
 use log::error;
 mod environment_settings_object;
 mod global_scope;
@@ -15,7 +17,7 @@ mod window;
 mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
 
-use boa_engine::{Context, object::JsObject};
+use boa_engine::object::JsObject;
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{
     DocumentId, Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,
@@ -56,6 +58,33 @@ pub(crate) use windowproxy::WindowProxy;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use std::{cell::RefCell, rc::Rc};
 use url::Url;
+
+/// <https://html.spec.whatwg.org/#queue-a-microtask>
+///
+/// Queues a microtask on the JavaScript event loop via Boa's `enqueue_job` API.
+/// The callback runs as a GenericJob on the relevant realm's microtask queue.
+pub fn queue_a_microtask<F>(context: &mut Context, callback: F)
+where
+    F: FnOnce(&mut Context) -> JsResult<JsValue> + 'static,
+{
+    let realm = context.realm().clone();
+    let job = GenericJob::new(callback, realm);
+    context.enqueue_job(Job::from(job));
+}
+
+/// <https://html.spec.whatwg.org/#await-a-stable-state>
+///
+/// Awaits a stable state by queueing a microtask that runs the given synchronous
+/// section.  The synchronous_section closure receives the Context and should
+/// perform the steps marked ⌛ in the calling algorithm.  After the synchronous
+/// section completes, the in_parallel continuation (if any) receives a reference
+/// to the Context for any follow-up work.
+pub fn await_a_stable_state<F>(context: &mut Context, synchronous_section: F)
+where
+    F: FnOnce(&mut Context) -> JsResult<JsValue> + 'static,
+{
+    queue_a_microtask(context, synchronous_section);
+}
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
 ///
