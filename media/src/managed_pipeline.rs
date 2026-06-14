@@ -5,9 +5,7 @@ use ipc_channel::ipc::{IpcSender, IpcSharedMemory};
 use ipc_messages::media::{MediaEvent, MediaPipelineId, VideoFrame};
 
 pub(crate) struct ManagedPipeline {
-    pub id: MediaPipelineId,
     pub element: gst::Pipeline,
-    pub bus: gst::Bus,
 }
 
 impl ManagedPipeline {
@@ -15,6 +13,7 @@ impl ManagedPipeline {
         id: MediaPipelineId,
         url: String,
         event_sender: IpcSender<MediaEvent>,
+        bus_msg_sender: crossbeam_channel::Sender<(MediaPipelineId, gst::Message)>,
     ) -> Result<Self, String> {
         let pipeline = gst::Pipeline::new();
 
@@ -100,18 +99,19 @@ impl ManagedPipeline {
                 .build(),
         );
 
+        // Route bus messages to the shared crossbeam channel via sync handler.
         let bus = pipeline
             .bus()
             .ok_or_else(|| String::from("failed to get GStreamer bus"))?;
+        bus.set_sync_handler(move |_bus, message| {
+            let _ = bus_msg_sender.send((id, message.to_owned()));
+            gst::BusSyncReply::Drop
+        });
 
         pipeline
             .set_state(gst::State::Paused)
             .map_err(|error| format!("failed to set pipeline to paused: {error}"))?;
 
-        Ok(Self {
-            id,
-            element: pipeline,
-            bus,
-        })
+        Ok(Self { element: pipeline })
     }
 }

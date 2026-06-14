@@ -2343,6 +2343,7 @@ dependencies = [
 name = "media"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "env_logger",
  "gstreamer",
  "gstreamer-app",

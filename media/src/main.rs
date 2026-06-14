@@ -3,6 +3,7 @@ mod managed_pipeline;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
+use ipc_channel::router::RouterProxy;
 use ipc_messages::media::{MediaBootstrap, MediaCommand, MediaEvent, MediaPipelineId};
 use managed_pipeline::ManagedPipeline;
 use std::collections::HashMap;
@@ -17,85 +18,105 @@ pub fn run_media_process(
         return;
     }
 
+    // Route the IPC command receiver through the router to get a crossbeam receiver.
+    let router = RouterProxy::new();
+    let cmd_rx = router.route_ipc_receiver_to_new_crossbeam_receiver(cmd_receiver);
+
+    // Shared channel for GStreamer bus messages from all pipelines.
+    // Each pipeline's sync handler sends (pipeline_id, message) here.
+    let (bus_msg_sender, bus_msg_receiver) =
+        crossbeam_channel::unbounded::<(MediaPipelineId, gst::Message)>();
+
     let mut pipelines: HashMap<MediaPipelineId, ManagedPipeline> = HashMap::new();
 
     loop {
-        // Drain incoming commands (non-blocking).
-        loop {
-            match cmd_receiver.try_recv() {
-                Ok(cmd) => {
-                    handle_command(cmd, &mut pipelines, &event_sender);
-                }
-                Err(_) => break, // empty or disconnected
-            }
-        }
-        // Check if the sender has disconnected (user agent shut down).
-        if cmd_receiver.try_recv().is_ok() || cmd_receiver.try_recv().is_err() {
-            // We got an Ok or an Err - if Ok, we already broke. If Err, also not a disconnection
-            // signal from ipc-channel. Instead, check by blocking recv returning Err.
-        }
-
-        // Poll GStreamer bus for each pipeline.
-        pipelines.retain(|_id, pipeline| {
-            while let Some(msg) = pipeline.bus.pop() {
-                match msg.view() {
-                    gst::MessageView::Eos(..) => {
-                        let _ = event_sender.send(MediaEvent::Eos {
-                            pipeline_id: pipeline.id,
-                        });
-                        pipeline.element.set_state(gst::State::Null).ok();
-                        return false; // drop pipeline
-                    }
-                    gst::MessageView::Error(error) => {
-                        let _ = event_sender.send(MediaEvent::Error {
-                            pipeline_id: pipeline.id,
-                            message: error.error().to_string(),
-                        });
-                        pipeline.element.set_state(gst::State::Null).ok();
-                        return false;
-                    }
-                    gst::MessageView::DurationChanged(..) => {
-                        if let Some(dur) = pipeline.element.query_duration::<gst::ClockTime>() {
-                            let _ = event_sender.send(MediaEvent::DurationChanged {
-                                pipeline_id: pipeline.id,
-                                duration_secs: dur.seconds_f64(),
-                            });
+        crossbeam_channel::select! {
+            recv(cmd_rx) -> cmd => {
+                match cmd {
+                    Ok(command) => {
+                        if handle_command(command, &mut pipelines, &event_sender, &bus_msg_sender) {
+                            break; // Shutdown received
                         }
                     }
-                    _ => {}
+                    Err(_) => break, // command channel disconnected
                 }
             }
-            true
-        });
+            recv(bus_msg_receiver) -> msg => {
+                match msg {
+                    Ok((pipeline_id, bus_msg)) => {
+                        handle_bus_message(&pipeline_id, &bus_msg, &pipelines, &event_sender);
+                    }
+                    Err(_) => {} // bus message channel disconnected (should not happen)
+                }
+            }
+        }
+    }
 
-        // Yield briefly to avoid busy-looping at 100% CPU.
-        std::thread::sleep(std::time::Duration::from_millis(1));
+    // Clean up remaining pipelines on shutdown.
+    for (_, pipeline) in pipelines.drain() {
+        if let Err(error) = pipeline.element.set_state(gst::State::Null) {
+            log::error!("failed to destroy pipeline during shutdown: {error}");
+        }
     }
 }
 
-fn handle_command(
-    cmd: MediaCommand,
-    pipelines: &mut HashMap<MediaPipelineId, ManagedPipeline>,
+fn handle_bus_message(
+    pipeline_id: &MediaPipelineId,
+    msg: &gst::Message,
+    pipelines: &HashMap<MediaPipelineId, ManagedPipeline>,
     event_sender: &IpcSender<MediaEvent>,
 ) {
-    match cmd {
-        MediaCommand::CreatePipeline {
-            pipeline_id,
-            url,
-        } => {
-            match ManagedPipeline::new(pipeline_id, url, event_sender.clone()) {
-                Ok(p) => {
-                    pipelines.insert(pipeline_id, p);
-                }
-                Err(error) => {
-                    log::error!("failed to create media pipeline {pipeline_id:?}: {error}");
-                    let _ = event_sender.send(MediaEvent::Error {
-                        pipeline_id,
-                        message: format!("pipeline creation failed: {error}"),
+    match msg.view() {
+        gst::MessageView::Eos(..) => {
+            // EOS does not destroy the pipeline; the user may want to replay or seek.
+            let _ = event_sender.send(MediaEvent::Eos {
+                pipeline_id: *pipeline_id,
+            });
+        }
+        gst::MessageView::Error(error) => {
+            let _ = event_sender.send(MediaEvent::Error {
+                pipeline_id: *pipeline_id,
+                message: error.error().to_string(),
+            });
+        }
+        gst::MessageView::DurationChanged(..) => {
+            if let Some(pipeline) = pipelines.get(pipeline_id) {
+                if let Some(dur) = pipeline.element.query_duration::<gst::ClockTime>() {
+                    let _ = event_sender.send(MediaEvent::DurationChanged {
+                        pipeline_id: *pipeline_id,
+                        duration_secs: dur.seconds_f64(),
                     });
                 }
             }
         }
+        _ => {}
+    }
+}
+
+/// Returns `true` if the loop should exit (Shutdown received).
+fn handle_command(
+    cmd: MediaCommand,
+    pipelines: &mut HashMap<MediaPipelineId, ManagedPipeline>,
+    event_sender: &IpcSender<MediaEvent>,
+    bus_msg_sender: &crossbeam_channel::Sender<(MediaPipelineId, gst::Message)>,
+) -> bool {
+    match cmd {
+        MediaCommand::CreatePipeline {
+            pipeline_id,
+            url,
+        } => match ManagedPipeline::new(pipeline_id, url, event_sender.clone(), bus_msg_sender.clone())
+        {
+            Ok(p) => {
+                pipelines.insert(pipeline_id, p);
+            }
+            Err(error) => {
+                log::error!("failed to create media pipeline {pipeline_id:?}: {error}");
+                let _ = event_sender.send(MediaEvent::Error {
+                    pipeline_id,
+                    message: format!("pipeline creation failed: {error}"),
+                });
+            }
+        },
         MediaCommand::Play { pipeline_id } => {
             if let Some(p) = pipelines.get(&pipeline_id) {
                 if let Err(error) = p.element.set_state(gst::State::Playing) {
@@ -132,11 +153,10 @@ fn handle_command(
             }
         }
         MediaCommand::Shutdown => {
-            for (_, pipeline) in pipelines.drain() {
-                let _ = pipeline.element.set_state(gst::State::Null);
-            }
+            return true;
         }
     }
+    false
 }
 
 fn media_token_from_args() -> Result<Option<String>, String> {
