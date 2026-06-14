@@ -1,10 +1,13 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
-use blitz_traits::events::{DomEvent, EventState, UiEvent};
+use blitz_traits::SmolStr;
+use blitz_traits::events::{BlitzKeyEvent, DomEvent, DomEventData, EventState, UiEvent};
 use boa_engine::{Context, JsResult, JsValue, object::JsObject};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
+#[cfg(target_os = "macos")]
+use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::{Callback, ContextCallbackHost, EcmascriptHost};
@@ -26,6 +29,95 @@ fn ui_event_kind(event: &UiEvent) -> &'static str {
         UiEvent::KeyDown(_) => "KeyDown",
         UiEvent::Ime(_) => "Ime",
         UiEvent::AppleStandardKeybinding(_) => "AppleStandardKeybinding",
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DeferredAppleStandardKeybinding {
+    command: Option<&'static str>,
+    keydown_default_prevented: bool,
+}
+
+fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        if !event.state.is_pressed() {
+            return None;
+        }
+
+        let command_mod = event.modifiers.contains(KeyboardModifiers::SUPER);
+        let control_mod = event.modifiers.contains(KeyboardModifiers::CONTROL);
+        let option_mod = event.modifiers.contains(KeyboardModifiers::ALT);
+        let shift_mod = event.modifiers.contains(KeyboardModifiers::SHIFT);
+
+        if command_mod {
+            match &event.key {
+                Key::Backspace => return Some("deleteToBeginningOfLine:"),
+                Key::Delete => return Some("deleteToEndOfLine:"),
+                Key::ArrowLeft if shift_mod => {
+                    return Some("moveToBeginningOfLineAndModifySelection:");
+                }
+                Key::ArrowLeft => return Some("moveToBeginningOfLine:"),
+                Key::ArrowRight if shift_mod => {
+                    return Some("moveToEndOfLineAndModifySelection:");
+                }
+                Key::ArrowRight => return Some("moveToEndOfLine:"),
+                Key::ArrowUp if shift_mod => {
+                    return Some("moveToBeginningOfDocumentAndModifySelection:");
+                }
+                Key::ArrowUp => return Some("moveToBeginningOfDocument:"),
+                Key::ArrowDown if shift_mod => {
+                    return Some("moveToEndOfDocumentAndModifySelection:");
+                }
+                Key::ArrowDown => return Some("moveToEndOfDocument:"),
+                _ => {}
+            }
+        }
+
+        if option_mod {
+            match &event.key {
+                Key::Backspace => return Some("deleteWordBackward:"),
+                Key::Delete => return Some("deleteWordForward:"),
+                Key::ArrowLeft if shift_mod => return Some("moveWordLeftAndModifySelection:"),
+                Key::ArrowLeft => return Some("moveWordLeft:"),
+                Key::ArrowRight if shift_mod => return Some("moveWordRightAndModifySelection:"),
+                Key::ArrowRight => return Some("moveWordRight:"),
+                _ => {}
+            }
+        }
+
+        if control_mod && let Key::Character(value) = &event.key {
+            return match value.to_lowercase().as_str() {
+                "a" if shift_mod => Some("moveToBeginningOfParagraphAndModifySelection:"),
+                "a" => Some("moveToBeginningOfParagraph:"),
+                "b" if shift_mod => Some("moveBackwardAndModifySelection:"),
+                "b" => Some("moveBackward:"),
+                "d" => Some("deleteForward:"),
+                "e" if shift_mod => Some("moveToEndOfParagraphAndModifySelection:"),
+                "e" => Some("moveToEndOfParagraph:"),
+                "f" if shift_mod => Some("moveForwardAndModifySelection:"),
+                "f" => Some("moveForward:"),
+                "h" => Some("deleteBackward:"),
+                "k" => Some("deleteToEndOfParagraph:"),
+                "n" if shift_mod => Some("moveDownAndModifySelection:"),
+                "n" => Some("moveDown:"),
+                "o" => Some("insertNewlineIgnoringFieldEditor:"),
+                "p" if shift_mod => Some("moveUpAndModifySelection:"),
+                "p" => Some("moveUp:"),
+                _ => None,
+            };
+        }
+
+        match &event.key {
+            Key::Backspace => Some("deleteBackward:"),
+            _ => None,
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = event;
+        None
     }
 }
 
@@ -181,6 +273,7 @@ pub(crate) fn dispatch_ui_event(
     }
 
     let mut document = document;
+    let deferred_apple_keybinding = Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default()));
     let handler = BlitzJSEventHandler::new(
         document_id,
         source_navigable_id,
@@ -189,9 +282,15 @@ pub(crate) fn dispatch_ui_event(
         Rc::clone(&document),
         settings,
         event_sender,
+        Rc::clone(&deferred_apple_keybinding),
     );
     let mut driver = EventDriver::new(&mut document, handler);
     driver.handle_ui_event(event);
+    let deferred_apple_keybinding = *deferred_apple_keybinding.borrow();
+    if let Some(command) = deferred_apple_keybinding.command
+        && !deferred_apple_keybinding.keydown_default_prevented {
+        driver.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(command)));
+    }
     if is_wheel && input_debug_enabled() {
         let document = document.borrow();
         eprintln!(
@@ -222,6 +321,7 @@ pub(crate) fn dispatch_trusted_click_event(
         document,
         settings,
         event_sender,
+        Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default())),
     );
     let target = handler
         .resolve_element_object(target_node_id)
@@ -255,6 +355,7 @@ struct BlitzJSEventHandler<'a> {
     _document: Rc<RefCell<BaseDocument>>,
     settings: &'a mut EnvironmentSettingsObject,
     event_sender: &'a IpcSender<ContentEvent>,
+    deferred_apple_keybinding: Rc<RefCell<DeferredAppleStandardKeybinding>>,
 }
 
 impl<'a> BlitzJSEventHandler<'a> {
@@ -266,6 +367,7 @@ impl<'a> BlitzJSEventHandler<'a> {
         document: Rc<RefCell<BaseDocument>>,
         settings: &'a mut EnvironmentSettingsObject,
         event_sender: &'a IpcSender<ContentEvent>,
+        deferred_apple_keybinding: Rc<RefCell<DeferredAppleStandardKeybinding>>,
     ) -> Self {
         Self {
             document_id,
@@ -275,6 +377,7 @@ impl<'a> BlitzJSEventHandler<'a> {
             _document: document,
             settings,
             event_sender,
+            deferred_apple_keybinding,
         }
     }
 }
@@ -406,6 +509,16 @@ impl EventHandler for BlitzJSEventHandler<'_> {
 
         if let Some(ui_event) = event_object.downcast_ref::<JsUiEvent>() {
             ui_event.apply_to_event_state(event_state);
+        }
+
+        if let DomEventData::KeyDown(key_event) = &event.data
+            && let Some(command) = apple_standard_keybinding_for_key_down(key_event) {
+            let keydown_default_prevented = event_state.is_cancelled();
+            *self.deferred_apple_keybinding.borrow_mut() = DeferredAppleStandardKeybinding {
+                command: Some(command),
+                keydown_default_prevented,
+            };
+            event_state.prevent_default();
         }
 
         if let Err(error) = self.settings.perform_a_microtask_checkpoint() {
