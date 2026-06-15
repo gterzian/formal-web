@@ -118,9 +118,14 @@ if [[ ! -f "$TLA2TOOLS_JAR" ]]; then
 fi
 
 cd "$ROOT"
-rustup run 1.92.0 cargo build --release --manifest-path "$ROOT/embedder/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-embedder
-rustup run 1.92.0 cargo build --release --manifest-path "$ROOT/content/Cargo.toml" --target-dir "$ROOT/target/sidecar-prebuild" --bin formal-web-content
-rustup run 1.92.0 cargo build --release --manifest-path "$ROOT/net/Cargo.toml" --target-dir "$ROOT/target/sidecar-prebuild" --bin formal-web-net
+cargo build --release --manifest-path "$ROOT/embedder/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-embedder
+cargo build --release --manifest-path "$ROOT/content/Cargo.toml" --target-dir "$ROOT/target/sidecar-prebuild" --bin formal-web-content
+cargo build --release --manifest-path "$ROOT/net/Cargo.toml" --target-dir "$ROOT/target/sidecar-prebuild" --bin formal-web-net
+
+# Copy the prebuilt content and net binaries to the main target/release directory
+# so the embedder's process spawner can find them via sidecar_search_paths.
+cp "$ROOT/target/sidecar-prebuild/release/formal-web-content" "$ROOT/target/release/formal-web-content"
+cp "$ROOT/target/sidecar-prebuild/release/formal-web-net" "$ROOT/target/release/formal-web-net"
 
 FORMAL_WEB_TLA2TOOLS_JAR="$TLA2TOOLS_JAR" \
 FORMAL_WEB_TLC_WORKERS="$TLC_WORKERS" \
