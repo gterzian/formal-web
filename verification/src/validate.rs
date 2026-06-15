@@ -1043,6 +1043,22 @@ fn print_human_report(results: &[SpecReport]) {
                         .unwrap_or(0);
                     println!("  failing entry source: {source_file}:{source_line}");
                 }
+                if let Some(failing_entry) = result.failing_entry.as_ref() {
+                    println!("  failing NDJSON entry:");
+                    println!("    {}", serde_json::to_string(failing_entry).unwrap_or_default());
+                }
+                if !result.context.is_empty() {
+                    println!("  preceding context entries:");
+                    for entry in &result.context {
+                        println!("    {}", serde_json::to_string(entry).unwrap_or_default());
+                    }
+                }
+                if let Some(tlc_output) = result.tlc_raw_output.as_ref() {
+                    println!("  TLC output (counterexample trace):");
+                    for line in tlc_output.lines() {
+                        println!("    | {line}");
+                    }
+                }
             }
         }
     }

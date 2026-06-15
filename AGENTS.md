@@ -104,7 +104,6 @@ Plans and temporary task notes go under `scratchpad/`.
 - `rustup run 1.94.0 cargo run --release -- wpt` — runs the default WPT and local formal test selection.
 - `rustup run 1.94.0 cargo run --release -- wpt formal/load-event-fires.html` — runs one selected test.
 - `./verification/verify-navigation.sh` — headless navigation workflow validated against the TLA+ `Navigation` spec.
-- `./verification/verify-rendering.sh` — headless screenshot-based rendering verification (startup artifact + cross-origin iframe).
 - `rustup run 1.94.0 cargo run -- validate-tla --logs /path/to/logs --json` — validates a saved trace log directory.
 
 # Local Extensions
