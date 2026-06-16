@@ -934,7 +934,6 @@ impl UserAgent {
         host: Arc<dyn Embedder>,
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
-        no_media: bool,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
         let mut worker = UserAgentWorker::new(
@@ -943,7 +942,6 @@ impl UserAgent {
             host,
             webview_provider_sender,
             trace_sender,
-            no_media,
         );
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
@@ -1299,7 +1297,6 @@ impl UserAgentWorker {
         host: Arc<dyn Embedder>,
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
-        no_media: bool,
     ) -> Self {
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
         let fetch_user_agent_command_sender = user_agent_command_sender.clone();
@@ -1329,12 +1326,8 @@ impl UserAgentWorker {
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
         let (media_command_sender, media_command_receiver) = unbounded();
-        #[cfg(not(feature = "media"))]
-        let _ = no_media; // suppress unused warning when media feature is disabled
         #[cfg(feature = "media")]
-        let media_join_handle = if no_media {
-            None
-        } else {
+        let media_join_handle = {
             let media_user_agent_command_sender = user_agent_command_sender.clone();
             Some(
                 thread::Builder::new()
@@ -3711,8 +3704,8 @@ impl UserAgentWorker {
         video_paint_id: VideoPaintId,
     ) {
         if self.media_join_handle.is_none() {
-            // No media worker thread — media support is disabled (either via
-            // --no-media flag or media feature compiled out). Silently ignore.
+            // No media worker thread — media support is disabled (media feature
+            // compiled out). Silently ignore.
             debug!(
                 "[media] load requested but media disabled url={} traversable={}",
                 url, traversable_id.0,
