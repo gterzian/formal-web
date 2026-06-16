@@ -4,9 +4,10 @@ use std::thread;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use crossbeam_channel::{Receiver, Sender, select, unbounded};
+use crossbeam_channel::{Receiver, Sender, select};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
+
 use ipc_messages::media::{
     MediaBootstrap, MediaEvent, MediaPipelineId, MediaCommand as MediaProcessCommand,
 };
@@ -17,26 +18,11 @@ use crate::UserAgentCommand;
 
 /// Commands that the user-agent and event-loop workers can send into the dedicated media worker.
 pub enum MediaCommand {
-    #[allow(dead_code)]
     CreatePipeline {
         pipeline_id: MediaPipelineId,
         url: String,
     },
-    #[allow(dead_code)]
     Play {
-        pipeline_id: MediaPipelineId,
-    },
-    #[allow(dead_code)]
-    Pause {
-        pipeline_id: MediaPipelineId,
-    },
-    #[allow(dead_code)]
-    Seek {
-        pipeline_id: MediaPipelineId,
-        position_secs: f64,
-    },
-    #[allow(dead_code)]
-    Destroy {
         pipeline_id: MediaPipelineId,
     },
     Shutdown {
@@ -44,7 +30,7 @@ pub enum MediaCommand {
     },
 }
 
-/// Worker that owns the dedicated media process and its event loop.
+/// Worker that owns the media process.
 struct MediaWorker {
     /// Receiver for commands from the user-agent / event-loop workers.
     command_receiver: Receiver<MediaCommand>,
@@ -53,24 +39,18 @@ struct MediaWorker {
     /// IPC sender to the dedicated media process.
     media_process_sender: IpcSender<MediaProcessCommand>,
     /// Crossbeam receiver for media process events routed via the IPC router.
-    media_event_receiver: Receiver<Result<MediaEvent, String>>,
+    media_event_receiver: Receiver<MediaEvent>,
     /// Child process handle for the media process.
     child: Option<Child>,
     /// Deferred shutdown reply completed after the media process exits.
     shutdown_reply: Option<Sender<Result<(), String>>>,
-    /// Monotonic pipeline id counter.
-    #[allow(dead_code)]
-    next_pipeline_id: u64,
-    /// Monotonic paint id counter.
-    #[allow(dead_code)]
-    next_paint_id: u64,
 }
 
 /// Bootstrap the dedicated media process.
 fn start_media_process() -> Result<
     (
         IpcSender<MediaProcessCommand>,
-        Receiver<Result<MediaEvent, String>>,
+        Receiver<MediaEvent>,
         Child,
     ),
     String,
@@ -93,15 +73,7 @@ fn start_media_process() -> Result<
         format!("failed to accept media bootstrap: {error}")
     })?;
 
-    let (event_sender, event_receiver) = unbounded();
-    ROUTER.add_typed_route::<MediaEvent>(
-        bootstrap.event_receiver,
-        Box::new(move |message| {
-            let _ = event_sender.send(message.map_err(|error| {
-                format!("failed to decode media IPC event: {error}")
-            }));
-        }),
-    );
+    let event_receiver = ROUTER.route_ipc_receiver_to_new_crossbeam_receiver(bootstrap.event_receiver);
 
     Ok((bootstrap.command_sender, event_receiver, child))
 }
@@ -119,8 +91,6 @@ impl MediaWorker {
             media_event_receiver,
             child: Some(child),
             shutdown_reply: None,
-            next_pipeline_id: 1,
-            next_paint_id: 1,
         })
     }
 
@@ -142,27 +112,7 @@ impl MediaWorker {
                     error!("[media] failed to send Play: {error}");
                 }
             }
-            MediaCommand::Pause { pipeline_id } => {
-                if let Err(error) = self.media_process_sender
-                    .send(MediaProcessCommand::Pause { pipeline_id })
-                {
-                    error!("[media] failed to send Pause: {error}");
-                }
-            }
-            MediaCommand::Seek { pipeline_id, position_secs } => {
-                if let Err(error) = self.media_process_sender
-                    .send(MediaProcessCommand::Seek { pipeline_id, position_secs })
-                {
-                    error!("[media] failed to send Seek: {error}");
-                }
-            }
-            MediaCommand::Destroy { pipeline_id } => {
-                if let Err(error) = self.media_process_sender
-                    .send(MediaProcessCommand::Destroy { pipeline_id })
-                {
-                    error!("[media] failed to send Destroy: {error}");
-                }
-            }
+
             MediaCommand::Shutdown { reply } => {
                 self.shutdown_reply = Some(reply);
                 let _ = self.media_process_sender.send(MediaProcessCommand::Shutdown);
@@ -193,16 +143,9 @@ impl MediaWorker {
                     }
                 }
                 recv(media_event_receiver) -> event => {
-                    let event = match event {
-                        Ok(Ok(event)) => event,
-                        Ok(Err(error)) => {
-                            error!("[media] process event error: {error}");
-                            break;
-                        }
-                        Err(error) => {
-                            error!("[media] event route closed: {error}");
-                            break;
-                        }
+                    let Ok(event) = event else {
+                        error!("[media] event route closed");
+                        break;
                     };
                     self.handle_media_event(event);
                 }
