@@ -854,7 +854,8 @@
         var a = parseInt(wasmAInput.value, 10) || 0;
         var b = parseInt(wasmBInput.value, 10) || 0;
         WebAssembly.instantiate(wasmModuleRef).then(function(result) {
-          var add = result.instance.exports.add;
+          // Note: instantiate(module) resolves with an Instance directly.
+          var add = result.exports.add;
           var sum = add(a, b);
           wasmAddOutput.textContent = a + " + " + b + " = " + sum;
           wasmAddOutput.className = "output-box success";
@@ -958,11 +959,13 @@
 
       domAddBtn.addEventListener("click", function() {
         var box = document.createElement("div");
-        var color = colorPalette[domContainer.children.length % colorPalette.length];
+        // Note: Use childNodes.length instead of children.length
+        // because 'children' is not yet implemented on all elements.
+        var color = colorPalette[domContainer.childNodes.length % colorPalette.length];
         box.style.cssText = "width:2.5rem;height:2.5rem;border-radius:0.5rem;background:" + color +
           ";display:inline-flex;align-items:center;justify-content:center;color:#fff;" +
           "font-size:0.8rem;font-weight:700;transition:transform 200ms ease, box-shadow 200ms ease;";
-        box.textContent = String(domContainer.children.length + 1);
+        box.textContent = String(domContainer.childNodes.length + 1);
         box.addEventListener("mouseenter", function() {
           box.style.transform = "scale(1.15)";
           box.style.boxShadow = "0 4px 12px rgba(0,0,0,0.2)";
@@ -1033,7 +1036,9 @@
         function step() {
           if (signal.aborted) return;
           abortProgress += 1.5;
-          abortBar.style.width = Math.min(abortProgress, 100) + "%";
+          // Note: Access the style attribute directly since CSSStyleDeclaration
+          // individual property setters don't persist to the element yet.
+          abortBar.setAttribute("style", "width:" + Math.min(abortProgress, 100) + "%");
           if (abortProgress >= 100) {
             abortOutput.textContent = "Completed to 100%";
             abortOutput.className = "output-box success";

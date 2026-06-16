@@ -2,12 +2,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::{Context, JsValue};
+use boa_engine::{Context, JsResult, JsValue};
 use boa_engine::JsData;
 use boa_gc::{Finalize, Trace};
 use log::{debug, error};
 
 use crate::html::{HTMLElement, await_a_stable_state};
+use crate::webidl::resolved_promise;
 use crate::js::platform_objects::with_global_scope;
 use ipc_messages::content::{Event as ContentEvent, MediaLoadRequest};
 use ipc_messages::media::VideoPaintId;
@@ -463,6 +464,112 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-preload>
     pub(crate) fn set_preload(&self, value: &str) {
         self.html_element.element.set_attribute("preload", value);
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-media-play>
+    pub(crate) fn play(&mut self, context: &mut Context) -> JsResult<JsValue> {
+        // Step 1: If the media element is not allowed to play, then return
+        // a promise rejected with a "NotAllowedError" DOMException.
+        // Note: Simplified — always allowed to play for now.
+
+        // Step 2: If the media element's error attribute is not null and
+        // its code is MEDIA_ERR_SRC_NOT_SUPPORTED...
+        // Note: Not yet implemented — error handling is simplified.
+
+        // Step 3: Let resumptionSteps be the media element's lazy load
+        // resumption steps.
+        // Step 4: If resumptionSteps is not null...
+        // Note: Lazy load resumption steps not yet implemented.
+
+        // Step 5: Let promise be a new promise and append promise to the
+        // list of pending play promises.
+        let promise = resolved_promise(JsValue::undefined(), context)?;
+        // Note: The list of pending play promises is not yet tracked.
+
+        // Step 6: Run the internal play steps for the media element.
+        self.internal_play_steps(context);
+
+        // Step 7: Return promise.
+        Ok(JsValue::from(promise))
+    }
+
+    /// <https://html.spec.whatwg.org/#internal-play-steps>
+    pub(crate) fn internal_play_steps(&mut self, context: &mut Context) {
+        // Step 1: If the media element's networkState attribute has the
+        // value NETWORK_EMPTY, invoke the media element's resource
+        // selection algorithm.
+        if self.network_state == Self::NETWORK_EMPTY {
+            self.resource_selection_algorithm(context);
+        }
+
+        // Step 2: If the playback has ended and the direction of playback
+        // is forwards, seek to the earliest possible position.
+        // Note: Not yet implemented — ended state and seeking not tracked.
+
+        // Step 3: If the media element's paused attribute is true:
+        if self.paused {
+            // Step 3.1: Change the value of paused to false.
+            self.paused = false;
+
+            // Step 3.2: If the show poster flag is true, set the element's
+            // show poster flag to false and run the time marches on steps.
+            if self.show_poster {
+                self.show_poster = false;
+                // Note: time marches on steps not yet implemented.
+            }
+
+            // Step 3.3: Queue a media element task to fire an event
+            // named play at the element.
+            // Note: Deferred — event dispatch not yet wired.
+
+            // Step 3.4: If readyState is HAVE_NOTHING, HAVE_METADATA,
+            // or HAVE_CURRENT_DATA, queue a task to fire waiting.
+            // Otherwise, notify about playing.
+            // Note: Deferred — event dispatch not yet wired.
+        }
+
+        // Step 4: Otherwise (not paused), if readyState is HAVE_FUTURE_DATA
+        // or HAVE_ENOUGH_DATA, resolve pending play promises.
+        // Note: Not yet implemented.
+
+        // Step 5: Set the media element's can autoplay flag to false.
+        self.can_autoplay = false;
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-media-pause>
+    pub(crate) fn pause(&mut self, context: &mut Context) {
+        // Step 1: If the media element's networkState attribute has the
+        // value NETWORK_EMPTY, invoke the media element's resource
+        // selection algorithm.
+        if self.network_state == Self::NETWORK_EMPTY {
+            self.resource_selection_algorithm(context);
+        }
+
+        // Step 2: Run the internal pause steps for the media element.
+        self.internal_pause_steps();
+    }
+
+    /// <https://html.spec.whatwg.org/#internal-pause-steps>
+    pub(crate) fn internal_pause_steps(&mut self) {
+        // Step 1: Set the media element's can autoplay flag to false.
+        self.can_autoplay = false;
+
+        // Step 2: If the media element's paused attribute is false:
+        if !self.paused {
+            // Step 2.1: Change the value of paused to true.
+            self.paused = true;
+
+            // Step 2.2: Take pending play promises...
+            // Note: Not yet implemented.
+
+            // Step 2.3: Queue a media element task to fire timeupdate,
+            // then pause, then reject pending play promises.
+            // Note: Deferred — event dispatch not yet wired.
+
+            // Step 2.4: Set the official playback position to the
+            // current playback position.
+            self.official_playback_position = self.current_playback_position;
+        }
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-load>

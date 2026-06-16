@@ -240,6 +240,22 @@ impl WebIdlInterface for HTMLMediaElement {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            id: "play",
+            length: 0,
+            method: play_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: true,
+        });
+        def.add_operation(OperationDef {
+            id: "pause",
+            length: 0,
+            method: pause_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
             id: "canPlayType",
             length: 1,
             method: can_play_type,
@@ -547,6 +563,30 @@ fn load_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsR
     // is behind a plain &ref in the binding layer. Adding RefCell support is tracked
     // as a separate gap — this binding currently returns undefined.
     Ok(JsValue::undefined())
+}
+
+fn play_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
+        media.play(context)
+    } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
+        video.media_element.play(context)
+    } else {
+        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+    }
+}
+
+fn pause_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
+        media.pause(context);
+        Ok(JsValue::undefined())
+    } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
+        video.media_element.pause(context);
+        Ok(JsValue::undefined())
+    } else {
+        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+    }
 }
 
 fn can_play_type(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
