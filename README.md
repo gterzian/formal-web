@@ -40,23 +40,15 @@ the compile level. Any JS constructor call to these interfaces throws
 ### GStreamer dependency
 
 When the `media` feature is enabled (the default), the `media` crate depends on
-[GStreamer](https://gstreamer.freedesktop.org/) for video decoding. Install the
-required development packages:
+[GStreamer](https://gstreamer.freedesktop.org/) for video decoding. See the
+[gstreamer crate documentation](https://docs.rs/gstreamer/latest/gstreamer/)
+for platform-specific installation instructions.
 
-**macOS (Homebrew):**
-```bash
-brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
-```
+To disable media support without changing the build configuration, pass
+`--no-media` at runtime to skip spawning the media process and stub out
+`HTMLMediaElement`/`HTMLVideoElement` at the object-construction level.
+To build entirely without GStreamer, use `--no-default-features`.
 
-**Debian/Ubuntu:**
-```bash
-sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-     libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base \
-     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
-```
-
-See the [gstreamer crate documentation](https://docs.rs/gstreamer/latest/gstreamer/)
-for platform-specific setup details.
 
 ## Project structure
 
@@ -65,6 +57,7 @@ for platform-specific setup details.
 | [`embedder/`](./embedder/README.md) | Default embedding of the engine: top-level application lifecycle, window management, browser chrome, and redraw loop |
 | [`user_agent/`](./user_agent/README.md) | All global coordination: navigables and traversables, session history, event loops, timers, fetch workers, and incoming requests from the embedder and webview layers |
 | [`content/`](./content/README.md) | DOM and JS execution: HTML algorithm implementations, Boa JS integration, Web IDL bridges, typed IPC — but not coordination with other components |
+| [`media/`](./media/README.md) | GStreamer-based video decoding pipeline, media process entrypoint, and IPC transport for video frames |
 | [`net/`](./net/README.md) | Networking and HTTP cache (future): executes HTTP and file fetch when the Fetch spec reaches the network or cache layer |
 | [`webview/`](./webview/README.md) | Public API for embedders: per-webview compositor state, hit testing, and redraw signaling |
 | [`automation/`](./automation/README.md) | WebDriver and CDP wire-protocol servers |
