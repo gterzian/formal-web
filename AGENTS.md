@@ -286,8 +286,9 @@ At the end of each task, run the following steps **in order**:
 
 5. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
 
-6. **Run task-appropriate verification** — Run only the verification steps that are relevant to the changes made. If the task involves changes to browser implementation code, run the following; otherwise skip them:
-   - **Default WPT run** — Runs the Web Platform Tests suite (`tests/wpt/include.ini`) to check for regressions in browser behavior. Appropriate for changes to content, DOM, HTML, or Web IDL implementation code.
+6. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
+
+   - **Default WPT run** —
 
      ```bash
      rustup run 1.94.0 cargo run --release -- wpt
@@ -295,7 +296,11 @@ At the end of each task, run the following steps **in order**:
 
      The WPT runner requires a working Python 3 with a functioning `ssl` module and `venv` support. If the run fails with a Python-related error, check `tests/wpt_runner/README.md` for debugging guidance.
 
-   - **`./verification/verify-navigation.sh`** — Builds and launches the formal-web browser with embedded TLA+ verification, tests hyperlink navigation via WebDriver, and validates shutdown-time model checking. Appropriate for changes to navigation, session history, embedder, or content-process code.
+   - **Navigation verification** — Validates hyperlink navigation and shutdown-time TLA+ model checking via WebDriver:
+
+     ```bash
+     ./verification/verify-navigation.sh
+     ```
 
 7. **Suggest a commit message** — Propose a commit message for changes tracked by git.
 
