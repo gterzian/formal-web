@@ -5,6 +5,10 @@ edition = "2024"
 publish = false
 autobins = false
 
+[features]
+default = ["media"]
+media = []
+
 [lib]
 path = "src/main.rs"
 

@@ -934,6 +934,7 @@ impl UserAgent {
         host: Arc<dyn Embedder>,
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
+        no_media: bool,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
         let mut worker = UserAgentWorker::new(
@@ -942,6 +943,7 @@ impl UserAgent {
             host,
             webview_provider_sender,
             trace_sender,
+            no_media,
         );
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
@@ -1297,6 +1299,7 @@ impl UserAgentWorker {
         host: Arc<dyn Embedder>,
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
+        no_media: bool,
     ) -> Self {
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
         let fetch_user_agent_command_sender = user_agent_command_sender.clone();
@@ -1326,16 +1329,28 @@ impl UserAgentWorker {
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
         let (media_command_sender, media_command_receiver) = unbounded();
-        let media_user_agent_command_sender = user_agent_command_sender.clone();
-        let media_join_handle = thread::Builder::new()
-            .name(String::from("formal-web:media"))
-            .spawn(move || {
-                run_media_thread(
-                    media_command_receiver,
-                    media_user_agent_command_sender,
-                )
-            })
-            .unwrap_or_else(|error| panic!("failed to spawn formal-web-media thread: {error}"));
+        #[cfg(not(feature = "media"))]
+        let _ = no_media; // suppress unused warning when media feature is disabled
+        #[cfg(feature = "media")]
+        let media_join_handle = if no_media {
+            None
+        } else {
+            let media_user_agent_command_sender = user_agent_command_sender.clone();
+            Some(
+                thread::Builder::new()
+                    .name(String::from("formal-web:media"))
+                    .spawn(move || {
+                        run_media_thread(
+                            media_command_receiver,
+                            media_user_agent_command_sender,
+                        )
+                    })
+                    .unwrap_or_else(|error| panic!("failed to spawn formal-web-media thread: {error}")),
+            )
+        };
+        // When media feature is disabled, never start the media thread.
+        #[cfg(not(feature = "media"))]
+        let media_join_handle: Option<thread::JoinHandle<()>> = None;
 
         Self {
             state: UserAgentState::default(),
@@ -1348,7 +1363,7 @@ impl UserAgentWorker {
             media_command_sender,
             pipeline_to_webview: HashMap::new(),
             next_pipeline_id: 0,
-            media_join_handle: Some(media_join_handle),
+            media_join_handle,
             host,
             webview_provider_sender,
             navigation_tracer: TLATracer::new(
@@ -3663,19 +3678,22 @@ impl UserAgentWorker {
             shutdown_result = Err(String::from("timer thread panicked"));
         }
 
-        let (media_reply_sender, media_reply_receiver) = bounded(1);
-        if let Err(error) = self.media_command_sender.send(MediaCommand::Shutdown {
-            reply: media_reply_sender,
-        }) {
-            shutdown_result = Err(format!("failed to request media shutdown: {error}"));
-        } else if let Err(error) = media_reply_receiver.recv() {
-            shutdown_result = Err(format!("media shutdown reply channel closed: {error}"));
-        }
+        // Shut down the media thread if it was started.
+        if self.media_join_handle.is_some() {
+            let (media_reply_sender, media_reply_receiver) = bounded(1);
+            if let Err(error) = self.media_command_sender.send(MediaCommand::Shutdown {
+                reply: media_reply_sender,
+            }) {
+                shutdown_result = Err(format!("failed to request media shutdown: {error}"));
+            } else if let Err(error) = media_reply_receiver.recv() {
+                shutdown_result = Err(format!("media shutdown reply channel closed: {error}"));
+            }
 
-        if let Some(media_join_handle) = self.media_join_handle.take()
-            && media_join_handle.join().is_err()
-        {
-            shutdown_result = Err(String::from("media thread panicked"));
+            if let Some(media_join_handle) = self.media_join_handle.take()
+                && media_join_handle.join().is_err()
+            {
+                shutdown_result = Err(String::from("media thread panicked"));
+            }
         }
 
         let _ = reply.send(shutdown_result);
@@ -3692,6 +3710,15 @@ impl UserAgentWorker {
         traversable_id: NavigableId,
         video_paint_id: VideoPaintId,
     ) {
+        if self.media_join_handle.is_none() {
+            // No media worker thread — media support is disabled (either via
+            // --no-media flag or media feature compiled out). Silently ignore.
+            debug!(
+                "[media] load requested but media disabled url={} traversable={}",
+                url, traversable_id.0,
+            );
+            return;
+        }
         let pipeline_id = MediaPipelineId(self.next_pipeline_id);
         self.next_pipeline_id += 1;
         let webview_id = WebviewId(traversable_id);

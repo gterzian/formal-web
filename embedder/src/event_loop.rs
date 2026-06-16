@@ -202,6 +202,7 @@ pub fn event_loop_is_ready() -> bool {
 
 fn run_embedder_event_loop<A, MakeApp>(
     trace_sender: Option<TraceSender>,
+    no_media: bool,
     make_app: MakeApp,
 ) -> Result<(), String>
 where
@@ -221,7 +222,7 @@ where
 
     let event_loop_embedder = Arc::new(EventLoopEmbedder::new(dispatcher));
     let embedder: Arc<dyn Embedder> = event_loop_embedder.clone();
-    let provider = match WebviewProvider::new(embedder, trace_sender) {
+    let provider = match WebviewProvider::new(embedder, trace_sender, no_media) {
         Ok(provider) => provider,
         Err(error) => {
             let mut guard = EVENT_LOOP_PROXY
@@ -249,15 +250,21 @@ where
     run_result
 }
 
-pub fn run_headed_event_loop(trace_sender: Option<TraceSender>) -> Result<(), String> {
-    run_embedder_event_loop(trace_sender, |provider| WindowedApp {
+pub fn run_headed_event_loop(
+    trace_sender: Option<TraceSender>,
+    no_media: bool,
+) -> Result<(), String> {
+    run_embedder_event_loop(trace_sender, no_media, |provider| WindowedApp {
         provider: Some(provider),
         ..WindowedApp::default()
     })
 }
 
-pub fn run_headless_event_loop(trace_sender: Option<TraceSender>) -> Result<(), String> {
-    run_embedder_event_loop(trace_sender, |provider| HeadlessEmbedderApp {
+pub fn run_headless_event_loop(
+    trace_sender: Option<TraceSender>,
+    no_media: bool,
+) -> Result<(), String> {
+    run_embedder_event_loop(trace_sender, no_media, |provider| HeadlessEmbedderApp {
         provider: Some(provider),
         ..HeadlessEmbedderApp::default()
     })

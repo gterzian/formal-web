@@ -22,7 +22,32 @@ impl WebIdlInterface for HTMLMediaElement {
         Some("HTMLElement")
     }
 
+    /// When the `media` feature is disabled, the constructor throws
+    /// `NotSupportedError` and the interface has no members.
+    fn create_platform_object(
+        _new_target: &JsValue,
+        _args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        #[cfg(not(feature = "media"))]
+        {
+            return Err(JsNativeError::typ()
+                .with_message("NotSupportedError: Media not available (media feature disabled)")
+                .into());
+        }
+        Err(JsNativeError::typ()
+            .with_message("Illegal constructor")
+            .into())
+    }
+
     fn define_members(def: &mut InterfaceDefinition) {
+        #[cfg(not(feature = "media"))]
+        {
+            // No members when media is disabled — the interface exists but is empty.
+            let _ = def;
+            return;
+        }
+
         // Constants
         def.add_constant(ConstantDef {
             id: "NETWORK_EMPTY",

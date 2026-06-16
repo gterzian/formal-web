@@ -114,6 +114,8 @@ Plans and temporary task notes go under `scratchpad/`.
 - `rustup toolchain install 1.94.0` — installs the pinned Rust toolchain.
 - `rustup run 1.94.0 cargo check` — type-checks the workspace.
 - `rustup run 1.94.0 cargo run --release` — default windowed embedder.
+- `rustup run 1.94.0 cargo run --release -- --no-media` — windowed embedder without media support (no media process, HTMLMediaElement constructors throw `NotSupportedError`).
+- `rustup run 1.94.0 cargo build --no-default-features` — build without GStreamer/media dependency entirely.
 - `rustup run 1.94.0 cargo run --release -- --headless` — headless mode.
 - `rustup run 1.94.0 cargo run --release -- --verify` — with trace recording and shutdown-time TLA+ validation.
 - `rustup run 1.94.0 cargo run --release -- webdriver --headless` — WebDriver server.

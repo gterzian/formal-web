@@ -112,9 +112,15 @@ impl WebviewProvider {
     pub fn new(
         embedder: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
+        no_media: bool,
     ) -> Result<Self, String> {
         let (provider_message_sender, provider_message_receiver) = unbounded();
-        let user_agent = UserAgent::start(embedder.clone(), provider_message_sender, trace_sender)?;
+        let user_agent = UserAgent::start(
+            embedder.clone(),
+            provider_message_sender,
+            trace_sender,
+            no_media,
+        )?;
 
         Ok(Self {
             webviews: HashMap::new(),

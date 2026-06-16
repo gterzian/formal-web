@@ -4,13 +4,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const PREBUILD_TARGET_DIR_NAME: &str = "sidecar-prebuild";
-const PREBUILD_BINARIES: [(&str, &str); 3] = [
-    ("content", "formal-web-content"),
-    ("net", "formal-web-net"),
-    ("media", "formal-web-media"),
-];
 
 fn main() {
+    let mut prebuild_binaries_list: Vec<(&str, &str)> =
+        vec![("content", "formal-web-content"), ("net", "formal-web-net")];
+
+    // Only prebuild the media binary when the media feature is enabled.
+    #[cfg(feature = "media")]
+    {
+        prebuild_binaries_list.push(("media", "formal-web-media"));
+    }
+
     for path in [
         "Cargo.toml",
         "build.rs",
@@ -33,10 +37,12 @@ fn main() {
         println!("cargo:rerun-if-changed={path}");
     }
 
-    prebuild_binaries().unwrap_or_else(|error| panic!("failed to prebuild binaries: {error}"));
+    if let Err(error) = prebuild_binaries(&prebuild_binaries_list) {
+        panic!("failed to prebuild binaries: {error}");
+    }
 }
 
-fn prebuild_binaries() -> Result<(), String> {
+fn prebuild_binaries(prebuild_list: &[(&str, &str)]) -> Result<(), String> {
     let manifest_dir = PathBuf::from(
         env::var("CARGO_MANIFEST_DIR")
             .map_err(|error| format!("missing CARGO_MANIFEST_DIR for build script: {error}"))?,
@@ -64,7 +70,7 @@ fn prebuild_binaries() -> Result<(), String> {
         command.arg("--release");
     }
     command.arg("--target-dir").arg(&prebuild_target_root);
-    for (package_name, binary_name) in PREBUILD_BINARIES {
+    for (package_name, binary_name) in prebuild_list {
         command
             .arg("-p")
             .arg(package_name)
@@ -91,7 +97,7 @@ fn prebuild_binaries() -> Result<(), String> {
         )
     })?;
 
-    for (_package_name, binary_name) in PREBUILD_BINARIES {
+    for (_package_name, binary_name) in prebuild_list {
         copy_prebuilt_binary(&prebuild_profile_dir, &target_profile_dir, binary_name)?;
     }
 
