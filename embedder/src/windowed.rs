@@ -17,11 +17,14 @@ use automation::{
     AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport,
 };
 use blitz_traits::events::{
-    BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton,
-    MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
+    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent,
+    MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::{ColorScheme, ShellProvider};
+use blitz_traits::SmolStr;
 use ipc_messages::content::WebviewId;
+#[cfg(target_os = "macos")]
+use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -66,6 +69,87 @@ impl TabState {
             .clone()
             .or_else(|| self.committed_url.clone())
             .unwrap_or_default()
+    }
+}
+
+fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        if !event.state.is_pressed() {
+            return None;
+        }
+
+        let command_mod = event.modifiers.contains(KeyboardModifiers::SUPER);
+        let control_mod = event.modifiers.contains(KeyboardModifiers::CONTROL);
+        let option_mod = event.modifiers.contains(KeyboardModifiers::ALT);
+        let shift_mod = event.modifiers.contains(KeyboardModifiers::SHIFT);
+
+        if command_mod {
+            match &event.key {
+                Key::Backspace => return Some("deleteToBeginningOfLine:"),
+                Key::Delete => return Some("deleteToEndOfLine:"),
+                Key::ArrowLeft if shift_mod => {
+                    return Some("moveToBeginningOfLineAndModifySelection:");
+                }
+                Key::ArrowLeft => return Some("moveToBeginningOfLine:"),
+                Key::ArrowRight if shift_mod => return Some("moveToEndOfLineAndModifySelection:"),
+                Key::ArrowRight => return Some("moveToEndOfLine:"),
+                Key::ArrowUp if shift_mod => {
+                    return Some("moveToBeginningOfDocumentAndModifySelection:");
+                }
+                Key::ArrowUp => return Some("moveToBeginningOfDocument:"),
+                Key::ArrowDown if shift_mod => {
+                    return Some("moveToEndOfDocumentAndModifySelection:");
+                }
+                Key::ArrowDown => return Some("moveToEndOfDocument:"),
+                _ => {}
+            }
+        }
+
+        if option_mod {
+            match &event.key {
+                Key::Backspace => return Some("deleteWordBackward:"),
+                Key::Delete => return Some("deleteWordForward:"),
+                Key::ArrowLeft if shift_mod => return Some("moveWordLeftAndModifySelection:"),
+                Key::ArrowLeft => return Some("moveWordLeft:"),
+                Key::ArrowRight if shift_mod => return Some("moveWordRightAndModifySelection:"),
+                Key::ArrowRight => return Some("moveWordRight:"),
+                _ => {}
+            }
+        }
+
+        if control_mod && let Key::Character(value) = &event.key {
+            return match value.to_lowercase().as_str() {
+                "a" if shift_mod => Some("moveToBeginningOfParagraphAndModifySelection:"),
+                "a" => Some("moveToBeginningOfParagraph:"),
+                "b" if shift_mod => Some("moveBackwardAndModifySelection:"),
+                "b" => Some("moveBackward:"),
+                "d" => Some("deleteForward:"),
+                "e" if shift_mod => Some("moveToEndOfParagraphAndModifySelection:"),
+                "e" => Some("moveToEndOfParagraph:"),
+                "f" if shift_mod => Some("moveForwardAndModifySelection:"),
+                "f" => Some("moveForward:"),
+                "h" => Some("deleteBackward:"),
+                "k" => Some("deleteToEndOfParagraph:"),
+                "n" if shift_mod => Some("moveDownAndModifySelection:"),
+                "n" => Some("moveDown:"),
+                "o" => Some("insertNewlineIgnoringFieldEditor:"),
+                "p" if shift_mod => Some("moveUpAndModifySelection:"),
+                "p" => Some("moveUp:"),
+                _ => None,
+            };
+        }
+
+        match &event.key {
+            Key::Backspace => Some("deleteBackward:"),
+            _ => None,
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = event;
+        None
     }
 }
 
@@ -648,13 +732,23 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                     .map(|state| state.keyboard_modifiers.state())
                     .unwrap_or_default();
                 let key = winit_key_event_to_blitz(&key_event, modifiers);
+                let apple_standard_keybinding = apple_standard_keybinding_for_key_down(&key);
                 let ui_event = if key_event.state.is_pressed() {
                     UiEvent::KeyDown(key)
                 } else {
                     UiEvent::KeyUp(key)
                 };
-                if Self::is_chrome_focused(&self.windows, window_id) {
-                    Self::chrome_event(self, window_id, ui_event);
+                let chrome_focused = Self::is_chrome_focused(&self.windows, window_id);
+                if chrome_focused {
+                    if let Some(command) = apple_standard_keybinding {
+                        Self::chrome_event(
+                            self,
+                            window_id,
+                            UiEvent::AppleStandardKeybinding(SmolStr::new(command)),
+                        );
+                    } else {
+                        Self::chrome_event(self, window_id, ui_event);
+                    }
                 } else {
                     self.dispatch_to_content(window_id, ui_event);
                 }
