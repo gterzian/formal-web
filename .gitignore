@@ -11,6 +11,8 @@ content/target/
 ipc_messages/target/
 target/
 .DS_Store
+content/Cargo.lock
+net/Cargo.lock
 node_modules/
 .pi/collected-sessions/
 .pi/extensions/pi-share-hf/.archive.log

@@ -117,15 +117,26 @@ if [[ ! -f "$TLA2TOOLS_JAR" ]]; then
     exit 1
 fi
 
-cd "$ROOT"
-cargo build --release --manifest-path "$ROOT/embedder/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-embedder
-cargo build --release --manifest-path "$ROOT/content/Cargo.toml" --target-dir "$ROOT/target/sidecar-prebuild" --bin formal-web-content
-cargo build --release --manifest-path "$ROOT/net/Cargo.toml" --target-dir "$ROOT/target/sidecar-prebuild" --bin formal-web-net
+# Kill any embedder processes left over from a previous interrupted run.
+pkill -f "$ROOT/target/release/formal-web-embedder" 2>/dev/null || true
 
-# Copy the prebuilt content and net binaries to the main target/release directory
-# so the embedder's process spawner can find them via sidecar_search_paths.
-cp "$ROOT/target/sidecar-prebuild/release/formal-web-content" "$ROOT/target/release/formal-web-content"
-cp "$ROOT/target/sidecar-prebuild/release/formal-web-net" "$ROOT/target/release/formal-web-net"
+cd "$ROOT"
+
+# Remove stale lock files that would otherwise cause Cargo to see conflicting
+# crate hashes ("multiple different versions of crate" errors).  The lock files
+# are not tracked in git; Cargo regenerates them each build.
+rm -f "$ROOT/content/Cargo.lock" "$ROOT/net/Cargo.lock"
+
+# Build all three binaries into the shared target/ directory.  Even though each
+# manifest resolves dependencies independently, the shared target dir lets Cargo
+# reuse already-compiled artifacts across the three builds (they share most of
+# their vendored dependency trees: boa, blitz, wasmtime, etc.).
+echo "building embedder..."
+cargo build --release --manifest-path "$ROOT/embedder/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-embedder
+echo "building content..."
+cargo build --release --manifest-path "$ROOT/content/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-content
+echo "building net..."
+cargo build --release --manifest-path "$ROOT/net/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-net
 
 FORMAL_WEB_TLA2TOOLS_JAR="$TLA2TOOLS_JAR" \
 FORMAL_WEB_TLC_WORKERS="$TLC_WORKERS" \
@@ -133,14 +144,19 @@ FORMAL_WEB_TLC_WORKERS="$TLC_WORKERS" \
     >"$LOG_FILE" 2>&1 &
 FORMAL_WEB_PID="$!"
 
+echo "waiting for webdriver server on port ${PORT}..."
 status_response=""
-for _ in {1..200}; do
+for i in {1..200}; do
     if ! kill -0 "$FORMAL_WEB_PID" 2>/dev/null; then
         fail_with_log "formal-web exited before the webdriver server became ready"
     fi
     status_response="$(curl --silent --show-error "http://127.0.0.1:${PORT}/status" 2>/dev/null || true)"
     if [[ "$status_response" == *'"ready":true'* ]]; then
+        echo "webdriver server ready (${i}0ms)"
         break
+    fi
+    if (( i % 50 == 0 )); then
+        echo "  ... still waiting (${i}0ms elapsed)..."
     fi
     sleep 0.1
 done
@@ -159,15 +175,20 @@ fi
 
 webdriver_request POST "/session/${SESSION_ID}/formal-web/element/click" '{"selector":"a.article-link"}' >/dev/null
 
+echo "navigating to ${TARGET_URL}..."
 current_url=""
-for _ in {1..200}; do
+for i in {1..200}; do
     if ! kill -0 "$FORMAL_WEB_PID" 2>/dev/null; then
         fail_with_log "formal-web exited before navigation reached the target artifact"
     fi
     url_response="$(webdriver_request GET "/session/${SESSION_ID}/url")"
     current_url="$(printf '%s' "$url_response" | json_value "value")"
     if [[ "$current_url" == "$TARGET_URL" ]]; then
+        echo "navigation completed (${i}0ms)"
         break
+    fi
+    if (( i % 50 == 0 )); then
+        echo "  ... still waiting (${i}0ms elapsed), current URL: ${current_url}"
     fi
     sleep 0.1
 done
