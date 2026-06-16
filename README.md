@@ -14,12 +14,21 @@ This builds and runs the default windowed embedder for local development.
 For a build without media support (no GStreamer dependency, no media process):
 
 ```bash
-cargo run --release -- --no-media
+cargo run --release --no-default-features
 ```
 
-This disables the media worker and prevents `HTMLMediaElement`/`HTMLVideoElement`
-construction (the constructors throw `NotSupportedError`). The `--no-media` flag
-is a runtime switch — media support is compiled in by default.
+This builds without the `media` Cargo feature, removing the GStreamer dependency
+entirely. The `--no-media` flag is forwarded to the embedder at runtime to
+prevent the media worker from spawning and to stub out
+`HTMLMediaElement`/`HTMLVideoElement` constructors (they throw
+`NotSupportedError`).
+
+With default features (media support compiled in), pass `--no-media` as a
+runtime flag to skip the media worker without changing the build:
+
+```bash
+cargo run --release -- --no-media
+```
 
 ## Build configuration
 
@@ -35,28 +44,26 @@ cargo build --no-default-features
 This removes the GStreamer dependency entirely (no need to install GStreamer
 development libraries) and stubs out `HTMLMediaElement`/`HTMLVideoElement` at
 the compile level. Any JS constructor call to these interfaces throws
-`NotSupportedError`.
+`NotSupportedError`. The `--no-media` CLI flag is forwarded as a runtime signal
+to the embedder to skip spawning the media worker (the flag is implied
+automatically when the `media` feature is disabled at build time).
 
 ### GStreamer dependency
 
 When the `media` feature is enabled (the default), the `media` crate depends on
-[GStreamer](https://gstreamer.freedesktop.org/) for video decoding. Install the
-required development packages:
+[GStreamer](https://gstreamer.freedesktop.org/) for video decoding. See the
+[gstreamer crate documentation](https://docs.rs/gstreamer/latest/gstreamer/)
+for platform-specific installation instructions.
 
-**macOS (Homebrew):**
+To build without GStreamer, pass `--no-default-features` to Cargo:
+
 ```bash
-brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
+cargo build --no-default-features
 ```
 
-**Debian/Ubuntu:**
-```bash
-sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-     libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base \
-     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
-```
+This excludes the `media` crate from compilation. The `--no-media` runtime flag
+is then implied automatically.
 
-See the [gstreamer crate documentation](https://docs.rs/gstreamer/latest/gstreamer/)
-for platform-specific setup details.
 
 ## Project structure
 
@@ -65,6 +72,7 @@ for platform-specific setup details.
 | [`embedder/`](./embedder/README.md) | Default embedding of the engine: top-level application lifecycle, window management, browser chrome, and redraw loop |
 | [`user_agent/`](./user_agent/README.md) | All global coordination: navigables and traversables, session history, event loops, timers, fetch workers, and incoming requests from the embedder and webview layers |
 | [`content/`](./content/README.md) | DOM and JS execution: HTML algorithm implementations, Boa JS integration, Web IDL bridges, typed IPC — but not coordination with other components |
+| [`media/`](./media/README.md) | GStreamer-based video decoding pipeline, media process entrypoint, and IPC transport for video frames |
 | [`net/`](./net/README.md) | Networking and HTTP cache (future): executes HTTP and file fetch when the Fetch spec reaches the network or cache layer |
 | [`webview/`](./webview/README.md) | Public API for embedders: per-webview compositor state, hit testing, and redraw signaling |
 | [`automation/`](./automation/README.md) | WebDriver and CDP wire-protocol servers |
