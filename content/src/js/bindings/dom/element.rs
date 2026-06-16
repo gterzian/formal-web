@@ -7,7 +7,7 @@ use boa_engine::{
 
 use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
-use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLMediaElement, HTMLVideoElement};
 use crate::webidl::bindings::{
     create_interface_instance,
 
@@ -154,6 +154,12 @@ pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R)
     }
     if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
         return Ok(f(&html_iframe_element.html_element.element));
+    }
+    if let Some(html_media_element) = object.downcast_ref::<HTMLMediaElement>() {
+        return Ok(f(&html_media_element.html_element.element));
+    }
+    if let Some(html_video_element) = object.downcast_ref::<HTMLVideoElement>() {
+        return Ok(f(&html_video_element.media_element.html_element.element));
     }
     Err(JsNativeError::typ()
         .with_message("receiver is not an Element")

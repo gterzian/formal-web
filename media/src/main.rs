@@ -13,6 +13,12 @@ pub fn run_media_process(
     cmd_receiver: IpcReceiver<MediaCommand>,
     event_sender: IpcSender<MediaEvent>,
 ) {
+    // On macOS, ensure NSApplication is set up on the main thread before any
+    // GStreamer GL elements are created. This avoids the "An NSApplication needs
+    // to be running on the main thread" warning.
+    #[cfg(target_os = "macos")]
+    gst::macos_main(|| {});
+
     if gst::init().is_err() {
         log::error!("GStreamer initialization failed");
         return;
@@ -104,23 +110,28 @@ fn handle_command(
         MediaCommand::CreatePipeline {
             pipeline_id,
             url,
-        } => match ManagedPipeline::new(pipeline_id, url, event_sender.clone(), bus_msg_sender.clone())
-        {
-            Ok(p) => {
-                pipelines.insert(pipeline_id, p);
-            }
-            Err(error) => {
-                log::error!("failed to create media pipeline {pipeline_id:?}: {error}");
-                let _ = event_sender.send(MediaEvent::Error {
-                    pipeline_id,
-                    message: format!("pipeline creation failed: {error}"),
-                });
+        } => {
+            log::info!("[media] creating pipeline id={:?} url={}", pipeline_id, url);
+            match ManagedPipeline::new(pipeline_id, url, event_sender.clone(), bus_msg_sender.clone())
+            {
+                Ok(p) => {
+                    log::info!("[media] pipeline created id={:?}", pipeline_id);
+                    pipelines.insert(pipeline_id, p);
+                }
+                Err(error) => {
+                    log::error!("[media] failed to create media pipeline {pipeline_id:?}: {error}");
+                    let _ = event_sender.send(MediaEvent::Error {
+                        pipeline_id,
+                        message: format!("pipeline creation failed: {error}"),
+                    });
+                }
             }
         },
         MediaCommand::Play { pipeline_id } => {
+            log::info!("[media] playing pipeline id={:?}", pipeline_id);
             if let Some(p) = pipelines.get(&pipeline_id) {
                 if let Err(error) = p.element.set_state(gst::State::Playing) {
-                    log::error!("failed to play pipeline {pipeline_id:?}: {error}");
+                    log::error!("[media] failed to play pipeline {pipeline_id:?}: {error}");
                 }
             }
         }

@@ -3,7 +3,7 @@ use boa_engine::{JsNativeError, JsResult, JsValue, object::JsObject};
 use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent,
 };
-use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Window};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLMediaElement, HTMLVideoElement, Window};
 
 pub(crate) fn with_abort_controller_ref<R>(
     object: &JsObject,
@@ -88,6 +88,21 @@ pub(crate) fn with_event_target_mut<R>(
             .node
             .event_target));
     }
+    if let Some(mut html_media_element) = object.downcast_mut::<HTMLMediaElement>() {
+        return Ok(f(&mut html_media_element
+            .html_element
+            .element
+            .node
+            .event_target));
+    }
+    if let Some(mut html_video_element) = object.downcast_mut::<HTMLVideoElement>() {
+        return Ok(f(&mut html_video_element
+            .media_element
+            .html_element
+            .element
+            .node
+            .event_target));
+    }
     if let Some(mut node) = object.downcast_mut::<Node>() {
         return Ok(f(&mut node.event_target));
     }
@@ -127,6 +142,21 @@ pub(crate) fn with_event_target_ref<R>(
     }
     if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
         return Ok(f(&html_iframe_element
+            .html_element
+            .element
+            .node
+            .event_target));
+    }
+    if let Some(html_media_element) = object.downcast_ref::<HTMLMediaElement>() {
+        return Ok(f(&html_media_element
+            .html_element
+            .element
+            .node
+            .event_target));
+    }
+    if let Some(html_video_element) = object.downcast_ref::<HTMLVideoElement>() {
+        return Ok(f(&html_video_element
+            .media_element
             .html_element
             .element
             .node

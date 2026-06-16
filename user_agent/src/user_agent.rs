@@ -1467,6 +1467,7 @@ impl UserAgentWorker {
                     traversable_id,
                     video_paint_id,
                 } => {
+                    debug!("[media] UA received MediaLoadRequested url={} traversable={}", url, traversable_id);
                     self.handle_media_load_requested(url, traversable_id, video_paint_id);
                 }
                 UserAgentCommand::IframeTraversableRemoved {
@@ -3735,6 +3736,8 @@ impl UserAgentWorker {
                 // Forward the frame to the webview provider via the provider message channel.
                 // The compositor stores it by VideoPaintId and uses it during the next
                 // composition pass.
+                debug!("[media] forwarding frame to compositor: {}x{} paint={:?}",
+                    video_frame.width, video_frame.height, paint_id);
                 if let Err(error) = self
                     .webview_provider_sender
                     .send(WebviewProviderMessage::VideoFrameReady {
@@ -3745,8 +3748,17 @@ impl UserAgentWorker {
                 {
                     error!("[media] failed to enqueue video frame: {error}");
                 } else {
+                    debug!("[media] frame enqueued, requesting redraw+render for webview {:?}", webview_id);
                     // Trigger a redraw so the compositor picks up the new frame.
                     let _ = self.host.request_redraw(webview_id);
+                    // Also trigger a rendering opportunity so the content process re-renders
+                    // and sends updated composition metadata (clip bounds) synchronized
+                    // with the video frame stream. Without this, the video frame is painted
+                    // using stale clip bounds when the page scrolls.
+                    let _ = self.command_sender
+                        .send(UserAgentCommand::RenderingOpportunityFor {
+                            traversable_id: webview_id.0,
+                        });
                     // Push a sync so the embedder processes the message promptly.
                     let _ = self.host.webview_provider_sync();
                 }

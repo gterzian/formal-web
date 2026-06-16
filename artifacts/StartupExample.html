@@ -418,8 +418,9 @@
             controls
             autoplay
             muted
-            width="100%"
-            style="border-radius: 1rem; background: rgba(255, 255, 255, 0.45); box-shadow: 0 18px 40px rgba(22, 55, 40, 0.18);"
+            width="320"
+            height="240"
+            style="display: block; width: 100%; max-width: 20rem; border-radius: 1rem; background: rgba(255, 255, 255, 0.45); box-shadow: 0 18px 40px rgba(22, 55, 40, 0.18); border: 3px solid red;"
           ></video>
         </div>
         <div class="status-grid">
@@ -523,6 +524,20 @@
 
       window.addEventListener("load", () => {
         window.requestAnimationFrame(updateFps);
+
+        // Trigger the media element load algorithm via JS src setter.
+        // The HTML parser sets attributes, but the load algorithm only
+        // runs from the IDL setter (JS-side), not from setAttribute.
+        // Re-assigning src here exercises the working code path.
+        var video = document.getElementById("startup-video");
+        if (video && video.src && !video.src.startsWith("blob:")) {
+          video.src = video.src;
+        }
+        if (video) {
+          video.play().catch(function(e) {
+            console.log("autoplay blocked:", e);
+          });
+        }
       });
 
       window.addEventListener("beforeunload", () => {

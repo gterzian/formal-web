@@ -5,7 +5,7 @@ use blitz_dom::BaseDocument;
 use boa_engine::{Context, JsValue};
 use boa_engine::JsData;
 use boa_gc::{Finalize, Trace};
-use log::error;
+use log::{debug, error};
 
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
@@ -365,11 +365,12 @@ impl HTMLMediaElement {
                     (event_sender, traversable_id, document_id)
                 {
                     let request = MediaLoadRequest {
-                        url: resolved_url,
+                        url: resolved_url.clone(),
                         document_id,
                         traversable_id,
                         video_paint_id,
                     };
+                    debug!("[media] sending MediaLoadRequested url={} traversable={}", resolved_url, traversable_id);
                     if let Err(error) = event_sender.send(ContentEvent::MediaLoadRequested(request))
                     {
                         error!("[media] failed to send MediaLoadRequested: {error}");

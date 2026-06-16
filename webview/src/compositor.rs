@@ -5,7 +5,7 @@ use ipc_messages::content::{
     FrameId, IframeEmbedSite, RecordedScene,
 };
 use ipc_messages::media::VideoPaintId;
-use kurbo::{Affine, Point, Rect, Shape};
+use kurbo::{Affine, Point, Rect, RoundedRect, Shape};
 use peniko::{
     Color, Fill, ImageAlphaType, ImageBrushRef, ImageData, ImageFormat,
 };
@@ -351,16 +351,36 @@ impl Compositor {
                 EmbedSite::Video(video_data) => {
                     let Some(video_frame) = self.video_frames.get(&video_data.paint_id) else {
                         // First-frame not yet arrived; nothing to paint.
+                        if input_debug_enabled() {
+                            trace!("[input-debug][compositor] video paint_id={:?} no frame yet", video_data.paint_id);
+                        }
                         continue;
                     };
+                    let transform = Affine::new(video_data.layout.transform);
+                    trace!("[compositor] video paint_id={:?} frame={}x{} transform=({:.1},{:.1}) clip_bounds={:?}",
+                        video_data.paint_id, video_frame.width, video_frame.height,
+                        transform.as_coeffs()[4], transform.as_coeffs()[5],
+                        video_data.layout.clip_bounds);
 
                     let transform = Affine::new(video_data.layout.transform);
-                    let clip_bounds_rect = Rect::new(
-                        video_data.layout.clip_bounds[0],
-                        video_data.layout.clip_bounds[1],
-                        video_data.layout.clip_bounds[2],
-                        video_data.layout.clip_bounds[3],
+
+                    // Compute clip bounds in local coordinates (same approach as
+                    // embed_local_clip for iframes).
+                    let tx = transform.as_coeffs()[4];
+                    let ty = transform.as_coeffs()[5];
+                    let clip_rect = Rect::new(
+                        video_data.layout.clip_bounds[0] - tx,
+                        video_data.layout.clip_bounds[1] - ty,
+                        video_data.layout.clip_bounds[2] - tx,
+                        video_data.layout.clip_bounds[3] - ty,
                     );
+                    // Use rounded clip if the element has border-radius.
+                    let rounded_clip: Option<RoundedRect> = if video_data.clip_radius > 0.0 {
+                        Some(RoundedRect::from_rect(clip_rect, video_data.clip_radius))
+                    } else {
+                        None
+                    };
+                    let local_clip = clip_rect;
 
                     // Build a peniko ImageData from the RGBA8 frame bytes.
                     let pixel_data = video_frame.data.clone();
@@ -372,32 +392,38 @@ impl Compositor {
                         height: video_frame.height,
                     };
 
-                    // Compute the transform that maps the video's natural size to the
-                    // layout box. The video's natural size (width x height) is scaled
-                    // to fill the layout clip bounds.
-                    let clip_w = clip_bounds_rect.width();
-                    let clip_h = clip_bounds_rect.height();
+                    // Compute a transform mapping the video's natural size to fill
+                    // the clip rect at the correct screen position.
+                    // The push_clip_layer clips at (local_clip) + (transform translation),
+                    // but does NOT transform subsequent drawing — so draw_image must
+                    // apply both the scale AND position translation.
+                    let local_w = local_clip.width();
+                    let local_h = local_clip.height();
                     let scale_x = if video_frame.width > 0 {
-                        clip_w / video_frame.width as f64
+                        local_w / video_frame.width as f64
                     } else {
                         1.0
                     };
                     let scale_y = if video_frame.height > 0 {
-                        clip_h / video_frame.height as f64
+                        local_h / video_frame.height as f64
                     } else {
                         1.0
                     };
-                    // Scale around the clip origin so the video fills the container.
+                    // Include the clip layer's translation so the image is drawn at the
+                    // element's screen position (same pattern as iframe child_transform).
                     let video_transform = Affine::new([
                         scale_x,
                         0.0,
                         0.0,
                         scale_y,
-                        clip_bounds_rect.x0,
-                        clip_bounds_rect.y0,
+                        tx,
+                        ty,
                     ]);
 
-                    composed_scene.push_clip_layer(transform, &clip_bounds_rect);
+                    match rounded_clip {
+                        Some(ref rc) => composed_scene.push_clip_layer(transform, rc),
+                        None => composed_scene.push_clip_layer(transform, &local_clip),
+                    };
                     composed_scene.draw_image(
                         ImageBrushRef::from(&image_data),
                         video_transform,

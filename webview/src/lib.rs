@@ -175,8 +175,8 @@ impl WebviewProvider {
                 data: video_frame,
             } => {
                 debug!(
-                    "[webview] received video frame: {}x{} paint={:?}",
-                    video_frame.width, video_frame.height, paint_id,
+                    "[webview] received video frame: {}x{} paint={:?} webview={:?}",
+                    video_frame.width, video_frame.height, paint_id, webview_id,
                 );
                 // Convert the IpcSharedMemory to Arc<[u8]> for the compositor.
                 let pixel_bytes: Arc<[u8]> = video_frame.data.take()

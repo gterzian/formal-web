@@ -13,7 +13,7 @@ name = "formal-web-media"
 path = "src/bin/media_process.rs"
 
 [dependencies]
-gstreamer = "0.23"
+gstreamer = { version = "0.23", features = ["v1_22"] }
 gstreamer-app = "0.23"
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }

@@ -4641,6 +4641,7 @@ dependencies = [
  "anyrender",
  "blitz-traits",
  "crossbeam-channel",
+ "ipc-channel",
  "ipc_messages",
  "keyboard-types",
  "kurbo",

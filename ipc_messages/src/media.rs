@@ -77,6 +77,9 @@ pub struct VideoEmbedData {
     /// Opaque id stamped by content; user agent resolves to MediaPipelineId at compose time.
     pub paint_id: VideoPaintId,
     pub layout: EmbedLayout,
+    /// Corner radius for clipping the video frame to match the element's CSS border-radius.
+    /// 0.0 means rectangular (no rounding).
+    pub clip_radius: f64,
 }
 
 /// Bootstrap message from the user agent to the media process.

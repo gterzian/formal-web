@@ -1338,12 +1338,17 @@ impl ContentProcess {
         let node = document.get_node(node_id)?;
         let layout = node.final_layout;
         let edge = layout.padding + layout.border;
+        debug!("[layout] node {} layout size=({}, {}) padding+border=({},{},{},{}) scroll=({},{})",
+            node_id, layout.size.width, layout.size.height,
+            edge.left, edge.right, edge.top, edge.bottom,
+            node.scroll_offset.x, node.scroll_offset.y);
         let (border_x, border_y) = Self::node_absolute_border_origin(document, node_id, scale)?;
         let x = border_x + f64::from(edge.left) * scale;
         let y = border_y + f64::from(edge.top) * scale;
         let width = (f64::from(layout.size.width) - f64::from(edge.left + edge.right)) * scale;
         let height = (f64::from(layout.size.height) - f64::from(edge.top + edge.bottom)) * scale;
         if width <= 0.0 || height <= 0.0 {
+            debug!("[layout] node {} skipped: computed size ({:.1},{:.1})", node_id, width, height);
             return None;
         }
         Some((x, y, width, height))
@@ -1403,8 +1408,51 @@ impl ContentProcess {
             let (x, y, width, height) =
                 match Self::content_box_for_node(document, video_node_id, scale) {
                     Some(box_) => box_,
-                    None => continue,
+                    None => {
+                        // Fallback: video element has 0x0 layout size (blitz doesn't natively
+                        // size video elements). Compute position only and use a default size.
+                        let fallback_w = 300.0 * scale;
+                        let fallback_h = 150.0 * scale;
+                        if let Some((bx, by)) =
+                            Self::node_absolute_border_origin(document, video_node_id, scale)
+                        {
+                            debug!("[layout] video node {} fallback position=({:.0},{:.0}) size=({:.0},{:.0})",
+                                video_node_id, bx, by, fallback_w, fallback_h);
+                            (bx, by, fallback_w, fallback_h)
+                        } else {
+                            debug!("[layout] video node {} skipped: no position", video_node_id);
+                            continue;
+                        }
+                    }
                 };
+            debug!("[layout] video node {} embed site: pos=({:.0},{:.0}) size=({:.0},{:.0})", video_node_id, x, y, width, height);
+            // Read border-radius from the element's computed style. This defaults to a
+            // small rounded radius if available, otherwise 0 (rect clip). For simplicity,
+            // we read from the style attribute — a full computed style lookup would be
+            // more accurate but the border radius is typically small.
+            let clip_radius = document.get_node(video_node_id)
+                .and_then(|n| n.element_data())
+                .and_then(|el| el.attr(local_name!("style")))
+                .and_then(|style_str| {
+                    // Look for border-radius in inline style: "border-radius: Npx" or "border-radius: Nrem"
+                    let s = style_str.to_lowercase();
+                    s.split(';')
+                        .find(|part| part.trim().starts_with("border-radius"))
+                        .and_then(|part| {
+                            let val = part.split(':').nth(1)?.trim();
+                            if val.ends_with("px") {
+                                val.trim_end_matches("px").parse::<f64>().ok().map(|v| v * scale)
+                            } else if val.ends_with("rem") {
+                                // rem is relative to root font-size (typically 16px)
+                                val.trim_end_matches("rem").parse::<f64>().ok()
+                                    .map(|v| v * 16.0 * scale)
+                            } else {
+                                None
+                            }
+                        })
+                })
+                .unwrap_or(0.0);
+
             embed_sites.push(EmbedSite::Video(VideoEmbedData {
                 paint_id: VideoPaintId(video_node_id as u64),
                 layout: EmbedLayout {
@@ -1413,6 +1461,7 @@ impl ContentProcess {
                     transform: [1.0, 0.0, 0.0, 1.0, x, y],
                     clip_bounds: [x, y, x + width, y + height],
                 },
+                clip_radius,
             }));
         }
 

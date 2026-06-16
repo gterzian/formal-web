@@ -10,7 +10,7 @@ use ipc_channel::router::ROUTER;
 use ipc_messages::media::{
     MediaBootstrap, MediaEvent, MediaPipelineId, MediaCommand as MediaProcessCommand,
 };
-use log::error;
+use log::{debug, error};
 
 use crate::sidecar_executable_path;
 use crate::UserAgentCommand;
@@ -127,6 +127,7 @@ impl MediaWorker {
     fn handle_command(&mut self, command: MediaCommand) {
         match command {
             MediaCommand::CreatePipeline { pipeline_id, url } => {
+                debug!("[media] media worker forwarding CreatePipeline id={:?} url={}", pipeline_id, url);
                 if let Err(error) = self.media_process_sender
                     .send(MediaProcessCommand::CreatePipeline { pipeline_id, url })
                 {
@@ -134,6 +135,7 @@ impl MediaWorker {
                 }
             }
             MediaCommand::Play { pipeline_id } => {
+                debug!("[media] media worker forwarding Play id={:?}", pipeline_id);
                 if let Err(error) = self.media_process_sender
                     .send(MediaProcessCommand::Play { pipeline_id })
                 {
