@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const PREBUILD_TARGET_DIR_NAME: &str = "sidecar-prebuild";
-const PREBUILD_BINARIES: [(&str, &str); 2] =
-    [("content", "formal-web-content"), ("net", "formal-web-net")];
+const PREBUILD_BINARIES: [(&str, &str); 3] = [
+    ("content", "formal-web-content"),
+    ("net", "formal-web-net"),
+    ("media", "formal-web-media"),
+];
 
 fn main() {
     for path in [
@@ -22,6 +25,8 @@ fn main() {
         "net/src",
         "user_agent/Cargo.toml",
         "user_agent/src",
+        "media/Cargo.toml",
+        "media/src",
         "webview/Cargo.toml",
         "webview/src",
     ] {

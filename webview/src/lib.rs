@@ -169,6 +169,28 @@ impl WebviewProvider {
                 self.on_new_webview(webview_id);
                 Ok(())
             }
+            WebviewProviderMessage::VideoFrameReady {
+                webview_id,
+                paint_id,
+                data: video_frame,
+            } => {
+                debug!(
+                    "[webview] received video frame: {}x{} paint={:?}",
+                    video_frame.width, video_frame.height, paint_id,
+                );
+                // Convert the IpcSharedMemory to Arc<[u8]> for the compositor.
+                let pixel_bytes: Arc<[u8]> = video_frame.data.take()
+                    .unwrap_or_default()
+                    .into();
+                let compositor_frame = CompositorVideoFrame {
+                    video_paint_id: paint_id,
+                    width: video_frame.width,
+                    height: video_frame.height,
+                    data: pixel_bytes,
+                };
+                self.update_video_frame(webview_id, compositor_frame);
+                Ok(())
+            }
         }
     }
 

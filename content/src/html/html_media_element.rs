@@ -10,6 +10,7 @@ use log::error;
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
 use ipc_messages::content::{Event as ContentEvent, MediaLoadRequest};
+use ipc_messages::media::VideoPaintId;
 
 /// <https://html.spec.whatwg.org/#media-elements>
 #[derive(Trace, Finalize, JsData)]
@@ -308,6 +309,21 @@ impl HTMLMediaElement {
         let src_attr = self.html_element.element.get_attribute("src");
         let src = src_attr.filter(|s| !s.is_empty());
 
+        // Resolve the src attribute value to an absolute URL against the document's
+        // base URL (creation URL), as required by the spec's current_src definition.
+        let resolved_src = src.as_ref().and_then(|s| {
+            with_global_scope(context, |global_scope| {
+                Ok(global_scope.creation_url())
+            })
+            .ok()
+            .flatten()
+            .and_then(|base_url| base_url.join(s).ok().map(|url| url.to_string()))
+        });
+
+        // Assign a VideoPaintId using the element's unique node_id.
+        let node_id = self.html_element.element.node.node_id;
+        let video_paint_id = VideoPaintId(node_id as u64);
+
         // Extract document_id and navigable_id from the GlobalScope.
         let global_scope_data = with_global_scope(context, |global_scope| {
             Ok((
@@ -331,7 +347,7 @@ impl HTMLMediaElement {
             // Note: No-op — text track support not yet implemented.
 
             // Step 6: ⌛ Determine the mode.
-            if let Some(src_url) = src {
+            if let Some(resolved_url) = resolved_src {
                 // mode = attribute
                 // Step 7: ⌛ Set networkState to NETWORK_LOADING.
                 // Note: networkState was already mutated before await_a_stable_state
@@ -349,9 +365,10 @@ impl HTMLMediaElement {
                     (event_sender, traversable_id, document_id)
                 {
                     let request = MediaLoadRequest {
-                        url: src_url,
+                        url: resolved_url,
                         document_id,
                         traversable_id,
+                        video_paint_id,
                     };
                     if let Err(error) = event_sender.send(ContentEvent::MediaLoadRequested(request))
                     {
@@ -367,7 +384,7 @@ impl HTMLMediaElement {
 
             // ── Synchronous section ends here ──
             Ok(JsValue::undefined())
-        });
+        })
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-autoplay>

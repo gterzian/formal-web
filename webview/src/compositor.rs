@@ -6,7 +6,9 @@ use ipc_messages::content::{
 };
 use ipc_messages::media::VideoPaintId;
 use kurbo::{Affine, Point, Rect, Shape};
-use peniko::{Color, Fill};
+use peniko::{
+    Color, Fill, ImageAlphaType, ImageBrushRef, ImageData, ImageFormat,
+};
 use std::collections::{HashMap, HashSet};
 use std::env;
 
@@ -347,22 +349,59 @@ impl Compositor {
                     stack.remove(&child_frame_id);
                 }
                 EmbedSite::Video(video_data) => {
-                    let Some(_video_frame) = self.video_frames.get(&video_data.paint_id) else {
+                    let Some(video_frame) = self.video_frames.get(&video_data.paint_id) else {
                         // First-frame not yet arrived; nothing to paint.
                         continue;
                     };
 
-                    // TODO: Paint the video frame using the compositor's image API.
-                    // The video frame data is stored as Arc<[u8]> (RGBA8 pixels).
                     let transform = Affine::new(video_data.layout.transform);
-                    let clip = Rect::new(
+                    let clip_bounds_rect = Rect::new(
                         video_data.layout.clip_bounds[0],
                         video_data.layout.clip_bounds[1],
                         video_data.layout.clip_bounds[2],
                         video_data.layout.clip_bounds[3],
                     );
-                    composed_scene.push_clip_layer(transform, &clip);
-                    // TODO: composed_scene.draw_image(image_brush_ref, transform);
+
+                    // Build a peniko ImageData from the RGBA8 frame bytes.
+                    let pixel_data = video_frame.data.clone();
+                    let image_data = ImageData {
+                        data: peniko::Blob::from(pixel_data.to_vec()),
+                        format: ImageFormat::Rgba8,
+                        alpha_type: ImageAlphaType::Alpha,
+                        width: video_frame.width,
+                        height: video_frame.height,
+                    };
+
+                    // Compute the transform that maps the video's natural size to the
+                    // layout box. The video's natural size (width x height) is scaled
+                    // to fill the layout clip bounds.
+                    let clip_w = clip_bounds_rect.width();
+                    let clip_h = clip_bounds_rect.height();
+                    let scale_x = if video_frame.width > 0 {
+                        clip_w / video_frame.width as f64
+                    } else {
+                        1.0
+                    };
+                    let scale_y = if video_frame.height > 0 {
+                        clip_h / video_frame.height as f64
+                    } else {
+                        1.0
+                    };
+                    // Scale around the clip origin so the video fills the container.
+                    let video_transform = Affine::new([
+                        scale_x,
+                        0.0,
+                        0.0,
+                        scale_y,
+                        clip_bounds_rect.x0,
+                        clip_bounds_rect.y0,
+                    ]);
+
+                    composed_scene.push_clip_layer(transform, &clip_bounds_rect);
+                    composed_scene.draw_image(
+                        ImageBrushRef::from(&image_data),
+                        video_transform,
+                    );
                     composed_scene.pop_layer();
                 }
             }

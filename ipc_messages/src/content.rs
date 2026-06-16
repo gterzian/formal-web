@@ -258,6 +258,9 @@ pub struct MediaLoadRequest {
     pub document_id: DocumentId,
     /// The traversable containing the media element.
     pub traversable_id: NavigableId,
+    /// Paint-layer identifier assigned by content for the video element.
+    /// Echoed in EmbedSite::Video so the compositor can route frames.
+    pub video_paint_id: crate::media::VideoPaintId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -720,6 +723,15 @@ pub enum WebviewProviderMessage {
     },
     NewWebview {
         webview_id: WebviewId,
+    },
+    /// A decoded video frame from the media process, ready for the compositor.
+    /// Carries the owning webview id, the paint id for compositor lookup,
+    /// and the RGBA8 pixel data as shared memory.
+    VideoFrameReady {
+        webview_id: WebviewId,
+        paint_id: crate::media::VideoPaintId,
+        /// RGBA8 pixel data as shared memory.
+        data: crate::media::VideoFrame,
     },
 }
 

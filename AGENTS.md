@@ -19,6 +19,10 @@ When in doubt, ask before writing.
 
 Never write any unsafe code withou the user's explicit approval.
 
+# grep caution
+
+When using `grep` (or `rg`/`find`), **never** search paths outside the repository root or under `vendor/` without explicit narrowing. In particular, avoid searching `~/.cargo/registry/` or other system-wide locations — those directories are large and the search will hang indefinitely. Instead, use `cargo doc` and check the generated docs, or browse the relevant source files directly with `read`.
+
 # Documentation Chain
 
 Read repository documentation from general to specific:

@@ -45,6 +45,8 @@ use ipc_messages::content::{
     NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult, TraversableViewport,
     ViewportSnapshot, WebviewId, WindowTimerKey,
 };
+use ipc_messages::media::{VideoEmbedData, VideoPaintId};
+use html5ever::local_name;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -1328,7 +1330,7 @@ impl ContentProcess {
         Some((x, y))
     }
 
-    fn content_box_for_iframe(
+    fn content_box_for_node(
         document: &BaseDocument,
         node_id: usize,
         scale: f64,
@@ -1360,27 +1362,59 @@ impl ContentProcess {
             .collect::<Vec<_>>();
         iframe_node_ids.sort_by_key(|(iframe_node_id, _)| *iframe_node_id);
 
-        let embed_sites = iframe_node_ids
-            .into_iter()
-            .enumerate()
-            .filter_map(|(paint_order, (iframe_node_id, state))| {
-                let (x, y, width, height) =
-                    Self::content_box_for_iframe(document, iframe_node_id, scale)?;
-                let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
-                Some(EmbedSite::Frame(IframeEmbedSite {
-                    embed_site_id: EmbedSiteId((iframe_node_id as u64).wrapping_add(1)),
-                    child_frame_id: state.content_frame_id,
-                    background_policy: EmbedBackgroundPolicy::OpaqueWhite,
-                    clip_svg_path,
-                    layout: EmbedLayout {
-                        z_index: 0,
-                        paint_order: paint_order as u32,
-                        transform: [1.0, 0.0, 0.0, 1.0, x, y],
-                        clip_bounds: [x, y, x + width, y + height],
-                    },
-                }))
-            })
-            .collect();
+        // Collect video node ids by scanning the document tree for <video> elements.
+        let mut video_node_ids = Vec::new();
+        document.visit(|node_id, node| {
+            if let Some(element_data) = node.element_data() {
+                if element_data.name.local == local_name!("video") {
+                    video_node_ids.push(node_id);
+                }
+            }
+        });
+
+        // Build iframe embed sites.
+        let iframe_count = iframe_node_ids.len();
+        let video_count = video_node_ids.len();
+        let mut embed_sites = Vec::with_capacity(iframe_count + video_count);
+
+        for (paint_order, (iframe_node_id, state)) in iframe_node_ids.into_iter().enumerate() {
+            let (x, y, width, height) =
+                match Self::content_box_for_node(document, iframe_node_id, scale) {
+                    Some(box_) => box_,
+                    None => continue,
+                };
+            let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
+            embed_sites.push(EmbedSite::Frame(IframeEmbedSite {
+                embed_site_id: EmbedSiteId((iframe_node_id as u64).wrapping_add(1)),
+                child_frame_id: state.content_frame_id,
+                background_policy: EmbedBackgroundPolicy::OpaqueWhite,
+                clip_svg_path,
+                layout: EmbedLayout {
+                    z_index: 0,
+                    paint_order: paint_order as u32,
+                    transform: [1.0, 0.0, 0.0, 1.0, x, y],
+                    clip_bounds: [x, y, x + width, y + height],
+                },
+            }));
+        }
+
+        // Build video embed sites.
+        for (paint_offset, video_node_id) in video_node_ids.into_iter().enumerate() {
+            let (x, y, width, height) =
+                match Self::content_box_for_node(document, video_node_id, scale) {
+                    Some(box_) => box_,
+                    None => continue,
+                };
+            embed_sites.push(EmbedSite::Video(VideoEmbedData {
+                paint_id: VideoPaintId(video_node_id as u64),
+                layout: EmbedLayout {
+                    z_index: 0,
+                    paint_order: (iframe_count + paint_offset) as u32,
+                    transform: [1.0, 0.0, 0.0, 1.0, x, y],
+                    clip_bounds: [x, y, x + width, y + height],
+                },
+            }));
+        }
 
         FrameCompositionMetadata { embed_sites }
     }

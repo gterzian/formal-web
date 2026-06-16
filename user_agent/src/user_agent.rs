@@ -33,7 +33,7 @@ use crate::event_loop::{
 };
 use crate::fetch::{FetchCommand, run_fetch_thread};
 use crate::media::{MediaCommand, run_media_thread};
-use ipc_messages::media::MediaPipelineId;
+use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use crate::timer::{TimerCommand, run_timer_thread};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
@@ -891,6 +891,7 @@ pub enum UserAgentCommand {
         url: String,
         document_id: DocumentId,
         traversable_id: NavigableId,
+        video_paint_id: VideoPaintId,
     },
     NavigationFetchFailed {
         fetch_id: NavigationFetchId,
@@ -1270,6 +1271,11 @@ struct UserAgentWorker {
     media_command_sender: Sender<MediaCommand>,
     /// Join handle for the media worker thread during shutdown.
     media_join_handle: Option<JoinHandle<()>>,
+    /// Maps media pipeline IDs to their owning webview and paint ID, so that
+    /// incoming video frames can be routed to the correct compositor slot.
+    pipeline_to_webview: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    /// Monotonic counter for assigning pipeline IDs.
+    next_pipeline_id: u64,
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
     /// Sender for webview-provider updates that must be drained by host sync calls.
@@ -1340,6 +1346,8 @@ impl UserAgentWorker {
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
             media_command_sender,
+            pipeline_to_webview: HashMap::new(),
+            next_pipeline_id: 0,
             media_join_handle: Some(media_join_handle),
             host,
             webview_provider_sender,
@@ -1457,8 +1465,9 @@ impl UserAgentWorker {
                     url,
                     document_id: _document_id,
                     traversable_id,
+                    video_paint_id,
                 } => {
-                    self.handle_media_load_requested(url, traversable_id);
+                    self.handle_media_load_requested(url, traversable_id, video_paint_id);
                 }
                 UserAgentCommand::IframeTraversableRemoved {
                     parent_traversable_id,
@@ -3680,11 +3689,16 @@ impl UserAgentWorker {
         &mut self,
         url: String,
         traversable_id: NavigableId,
+        video_paint_id: VideoPaintId,
     ) {
-        let pipeline_id = MediaPipelineId(0);
+        let pipeline_id = MediaPipelineId(self.next_pipeline_id);
+        self.next_pipeline_id += 1;
+        let webview_id = WebviewId(traversable_id);
+        self.pipeline_to_webview
+            .insert(pipeline_id, (webview_id, video_paint_id));
         debug!(
-            "[media] load requested url={} traversalbe={} pipeline={:?}",
-            url, traversable_id.0, pipeline_id,
+            "[media] load requested url={} traversable={} pipeline={:?} paint={:?}",
+            url, traversable_id.0, pipeline_id, video_paint_id,
         );
         if let Err(error) = self
             .media_command_sender
@@ -3705,13 +3719,37 @@ impl UserAgentWorker {
         use ipc_messages::media::MediaEvent;
         match event {
             MediaEvent::Frame(video_frame) => {
-                // A decoded frame is ready. The user agent relays this to the
-                // compositor via the WebviewProvider / Embedder APIs.
-                // In the current architecture, the embedder's composition pass
-                // pulls the latest frame from a shared cache.
-                //
-                // TODO: Store the frame in a per-webview cache and trigger a repaint.
-                debug!("[media] received video frame: {}x{}", video_frame.width, video_frame.height);
+                let pipeline_id = video_frame.pipeline_id;
+                let Some(&(webview_id, paint_id)) = self.pipeline_to_webview.get(&pipeline_id)
+                else {
+                    debug!(
+                        "[media] received frame for unknown pipeline {:?}",
+                        pipeline_id
+                    );
+                    return;
+                };
+                debug!(
+                    "[media] received video frame: {}x{} pipeline={:?}",
+                    video_frame.width, video_frame.height, pipeline_id,
+                );
+                // Forward the frame to the webview provider via the provider message channel.
+                // The compositor stores it by VideoPaintId and uses it during the next
+                // composition pass.
+                if let Err(error) = self
+                    .webview_provider_sender
+                    .send(WebviewProviderMessage::VideoFrameReady {
+                        webview_id,
+                        paint_id,
+                        data: video_frame,
+                    })
+                {
+                    error!("[media] failed to enqueue video frame: {error}");
+                } else {
+                    // Trigger a redraw so the compositor picks up the new frame.
+                    let _ = self.host.request_redraw(webview_id);
+                    // Push a sync so the embedder processes the message promptly.
+                    let _ = self.host.webview_provider_sync();
+                }
             }
             MediaEvent::Eos { pipeline_id } => {
                 debug!("[media] pipeline {:?} reached end of stream", pipeline_id);
