@@ -136,46 +136,63 @@ pub(crate) fn window_open_steps(
 
     // Step 3: "Let urlRecord be null."
     // Step 4: "If url is not the empty string:"
+    // Step 3: "Let urlRecord be null."
+    // Step 4: "If url is not the empty string:"
     let url_record = if url.is_empty() {
         None
     } else {
-        match url::Url::parse(url) {
-            Ok(record) => {
-                // <https://html.spec.whatwg.org/#cannot-navigate>
-                // If the destination URL has a different origin from the source
-                // document, the source cannot navigate the target.
-                //
-                // Note 1: `url::Url::origin()` creates a fresh opaque origin for
-                // `about:` scheme URLs (about:blank inherits its creator's origin
-                // per the HTML spec), so we skip the check for about:blank destinations.
-                //
-                // Note 2: The full sandboxing portion of "cannot navigate" is
-                // deferred.  For now we block any cross-origin navigation through
-                // window.open — same-origin navigations work, cross-origin throws.
-                //
-                // `file:` URLs produce opaque origins (unique per URL); skip the
-                // check for them since all local files are treated as same-origin
-                // for navigation purposes.
-                if record.scheme() != "about" && record.scheme() != "file" {
-                    if let Some(creation_url) = global_scope.creation_url() {
-                        if creation_url.origin() != record.origin() {
+        // Resolve relative URLs against the document's creation URL before
+        // parsing, so that window.open("page.html") works from a file:// or
+        // http:// origin.
+        let resolved = match url::Url::parse(url) {
+            Ok(absolute) => absolute,
+            Err(_) => {
+                // Try resolving as a relative URL.
+                match global_scope.creation_url() {
+                    Some(base_url) => match base_url.join(url) {
+                        Ok(resolved) => resolved,
+                        Err(_) => {
                             return Err(JsNativeError::typ()
-                                .with_message(format!(
-                                    "SecurityError: cross-origin navigation to {} is blocked",
-                                    record
-                                ))
+                                .with_message("SyntaxError: failed to parse URL in window.open")
                                 .into());
                         }
+                    },
+                    None => {
+                        return Err(JsNativeError::typ()
+                            .with_message("SyntaxError: failed to parse URL in window.open")
+                            .into());
                     }
                 }
-                Some(record.to_string())
             }
-            Err(_) => {
-                return Err(JsNativeError::typ()
-                    .with_message("SyntaxError: failed to parse URL in window.open")
-                    .into());
+        };
+        // <https://html.spec.whatwg.org/#cannot-navigate>
+        // If the destination URL has a different origin from the source
+        // document, the source cannot navigate the target.
+        //
+        // Note 1: `url::Url::origin()` creates a fresh opaque origin for
+        // `about:` scheme URLs (about:blank inherits its creator's origin
+        // per the HTML spec), so we skip the check for about:blank destinations.
+        //
+        // Note 2: The full sandboxing portion of "cannot navigate" is
+        // deferred.  For now we block any cross-origin navigation through
+        // window.open — same-origin navigations work, cross-origin throws.
+        //
+        // `file:` URLs produce opaque origins (unique per URL); skip the
+        // check for them since all local files are treated as same-origin
+        // for navigation purposes.
+        if resolved.scheme() != "about" && resolved.scheme() != "file" {
+            if let Some(creation_url) = global_scope.creation_url() {
+                if creation_url.origin() != resolved.origin() {
+                    return Err(JsNativeError::typ()
+                        .with_message(format!(
+                            "SecurityError: cross-origin navigation to {} is blocked",
+                            resolved
+                        ))
+                        .into());
+                }
             }
         }
+        Some(resolved.to_string())
     };
 
     // Step 5: "If target is the empty string, then set target to '_blank'."

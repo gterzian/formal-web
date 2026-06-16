@@ -177,16 +177,15 @@ impl BaseDocument {
 
                 let is_iframe =
                     *element_data.name.local == *"iframe" || *element_data.name.local == *"frame";
-
-                if *element_data.name.local == *"img"
+                let is_replaced_element = *element_data.name.local == *"img"
                     || *element_data.name.local == *"canvas"
+                    || *element_data.name.local == *"video"
                     || is_iframe
-                    || (cfg!(feature = "svg") && *element_data.name.local == *"svg")
+                    || (cfg!(feature = "svg") && *element_data.name.local == *"svg");
+
+                if is_replaced_element
                 {
-                    // Get width and height attributes on image element
-                    //
-                    // TODO: smarter sizing using these (depending on object-fit, they shouldn't
-                    // necessarily just override the native size)
+                    // Get width and height attributes.
                     let attr_size = taffy::Size {
                         width: element_data
                             .attr(local_name!("width"))
@@ -196,9 +195,9 @@ impl BaseDocument {
                             .and_then(|val| val.parse::<f32>().ok()),
                     };
 
-                    // Iframes use the default embedded-content object size when no explicit
-                    // dimensions are present, even when the content is composed out-of-process.
-                    let inherent_size = if is_iframe {
+                    // Replaced elements (iframe, video, etc.) use the default embedded-content
+                    // object size when no explicit dimensions are present.
+                    let inherent_size = if is_iframe || *element_data.name.local == *"video" {
                         taffy::Size {
                             width: 300.0,
                             height: 150.0,

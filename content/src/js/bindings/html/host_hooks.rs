@@ -18,7 +18,8 @@ use crate::dom::{
     UIEvent,
 };
 use crate::html::{
-    GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Location, Window,
+    GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement,
+    HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Location, Window,
 };
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController, ReadableStream,
@@ -93,6 +94,9 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
     reg!(HTMLElement);
     reg!(HTMLAnchorElement);
     reg!(HTMLIFrameElement);
+    reg!(HTMLInputElement);
+    reg!(HTMLMediaElement);
+    reg!(HTMLVideoElement);
     reg!(Window);
     reg!(Location);
     reg!(ByteLengthQueuingStrategy);
@@ -121,6 +125,9 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
     wire_registry_prototype::<HTMLElement, Element>(&mut context);
     wire_registry_prototype::<HTMLAnchorElement, HTMLElement>(&mut context);
     wire_registry_prototype::<HTMLIFrameElement, HTMLElement>(&mut context);
+    wire_registry_prototype::<HTMLMediaElement, HTMLElement>(&mut context);
+    wire_registry_prototype::<HTMLVideoElement, HTMLMediaElement>(&mut context);
+    wire_registry_prototype::<HTMLInputElement, HTMLElement>(&mut context);
     wire_registry_prototype::<Window, EventTarget>(&mut context);
 
     // ── Post-registration wiring ──

@@ -1,11 +1,14 @@
 use log::trace;
 use anyrender::{PaintScene, Scene as RenderScene};
 use ipc_messages::content::{
-    EmbedBackgroundPolicy, FontTransportReceiver, FrameCompositionMetadata, FrameEmbedSite,
-    FrameId, RecordedScene,
+    EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata,
+    FrameId, IframeEmbedSite, RecordedScene,
 };
-use kurbo::{Affine, Point, Rect, Shape};
-use peniko::{Color, Fill};
+use ipc_messages::media::VideoPaintId;
+use kurbo::{Affine, Point, Rect, RoundedRect, Shape};
+use peniko::{
+    Color, Fill, ImageAlphaType, ImageBrushRef, ImageData, ImageFormat,
+};
 use std::collections::{HashMap, HashSet};
 use std::env;
 
@@ -70,6 +73,16 @@ pub struct HitTestResult {
     pub has_child_frames: bool,
 }
 
+/// Carries the latest decoded video frame for a given pipeline, ready to paint.
+#[derive(Clone)]
+pub struct CompositorVideoFrame {
+    pub video_paint_id: VideoPaintId,
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8 pixel data, width * height * 4 bytes.
+    pub data: std::sync::Arc<[u8]>,
+}
+
 #[derive(Clone, Default)]
 pub struct Compositor {
     root_frame_id: Option<FrameId>,
@@ -77,6 +90,9 @@ pub struct Compositor {
     pending_frames: HashMap<FrameId, CachedFrame>,
     replace_root_on_next_paint: bool,
     resolved_tree_dirty: bool,
+    /// Latest frame per video paint id. Updated by the user agent before compose_scene.
+    /// Never cleared — stale frame stays until superseded or pipeline destroyed.
+    video_frames: HashMap<VideoPaintId, CompositorVideoFrame>,
 }
 
 impl Compositor {
@@ -84,6 +100,16 @@ impl Compositor {
         self.pending_frames.clear();
         self.replace_root_on_next_paint = true;
         self.resolved_tree_dirty = true;
+    }
+
+    /// Called by the user agent when a new VideoFrame arrives from the media process.
+    /// Non-blocking — just replaces the slot.
+    pub fn update_video_frame(&mut self, frame: CompositorVideoFrame) {
+        self.video_frames.insert(frame.video_paint_id, frame);
+    }
+
+    pub fn remove_video_frame(&mut self, paint_id: VideoPaintId) {
+        self.video_frames.remove(&paint_id);
     }
 
     pub fn note_child_navigation_finalized(&mut self, frame_id: FrameId) {
@@ -238,79 +264,187 @@ impl Compositor {
             .get(&frame_id)?
             .resolved_viewport
             .clone()?;
-        let mut embed_sites = self
-            .committed_frames
-            .get(&frame_id)?
-            .composition
-            .embed_sites
-            .clone();
-        embed_sites.sort_by_key(|site| (site.z_index, site.paint_order, site.embed_site_id.0));
-        let decoded_scene = {
-            let cached_frame = self.committed_frames.get_mut(&frame_id)?;
-            cached_frame.scene.clone().into_scene(font_receiver)
+
+        // Snapshot all per-frame data up front, releasing borrows on self.
+        let (embed_sites, decoded_scene) = {
+            let frame = self.committed_frames.get(&frame_id)?;
+            let embed_sites = frame.composition.embed_sites.clone();
+            // The decoded scene is consumed; clone it before dropping the frame borrow.
+            let scene = frame.scene.clone().into_scene(font_receiver);
+            (embed_sites, scene)
         };
+
+        let bg_map: HashMap<_, _> = embed_sites
+            .iter()
+            .filter_map(|site| match site {
+                EmbedSite::Frame(f) => Some((f.embed_site_id, f.background_policy)),
+                EmbedSite::Video(_) => None,
+            })
+            .collect();
+
+        let mut paint_items: Vec<(i32, u32, &EmbedSite)> = embed_sites
+            .iter()
+            .map(|site| (site.z_index(), site.paint_order(), site))
+            .collect();
+        paint_items.sort_by_key(|(z, p, _)| (*z, *p));
+
         let mut composed_scene = RenderScene::with_tolerance(decoded_scene.tolerance);
 
         for command in decoded_scene.commands {
             composed_scene.commands.push(command);
         }
 
-        for embed_site in embed_sites {
-            let child_frame_id = embed_site.child_frame_id;
-            let Some(child_local_to_root) = self.record_child_frame_layout(
-                frame_id,
-                &parent_viewport,
-                frame_local_to_root,
-                &embed_site,
-            ) else {
-                continue;
-            };
+        for (_, _, site) in paint_items {
+            match site {
+                EmbedSite::Frame(iframe_site) => {
+                    let child_frame_id = iframe_site.child_frame_id;
+                    let Some(child_local_to_root) = self.record_child_frame_layout(
+                        frame_id,
+                        &parent_viewport,
+                        frame_local_to_root,
+                        iframe_site,
+                    ) else {
+                        continue;
+                    };
 
-            if !stack.insert(child_frame_id) {
-                continue;
-            }
+                    if !stack.insert(child_frame_id) {
+                        continue;
+                    }
 
-            if let Some(child_scene) =
-                self.compose_frame(child_frame_id, font_receiver, stack, child_local_to_root)
-            {
-                let clip = Self::embed_local_clip(&embed_site);
-                let transform = Affine::new(embed_site.transform);
-                let child_transform = self
-                    .child_scene_transform(&clip, child_frame_id)
-                    .map(|scene_transform| transform * scene_transform)
-                    .unwrap_or(transform);
-                if matches!(
-                    embed_site.background_policy,
-                    EmbedBackgroundPolicy::OpaqueWhite
-                ) {
-                    composed_scene.fill(Fill::NonZero, transform, Color::WHITE, None, &clip);
+                    if let Some(child_scene) = self.compose_frame(
+                        child_frame_id,
+                        font_receiver,
+                        stack,
+                        child_local_to_root,
+                    ) {
+                        let clip = Self::embed_local_clip(iframe_site);
+                        let transform = Affine::new(iframe_site.layout.transform);
+                        let child_transform = self
+                            .child_scene_transform(&clip, child_frame_id)
+                            .map(|scene_transform| transform * scene_transform)
+                            .unwrap_or(transform);
+                        if matches!(
+                            bg_map.get(&iframe_site.embed_site_id),
+                            Some(EmbedBackgroundPolicy::OpaqueWhite)
+                        ) {
+                            composed_scene.fill(
+                                Fill::NonZero,
+                                transform,
+                                Color::WHITE,
+                                None,
+                                &clip,
+                            );
+                        }
+                        composed_scene.push_clip_layer(transform, &clip);
+                        composed_scene.append_scene(child_scene, child_transform);
+                        composed_scene.pop_layer();
+                        if input_debug_enabled() {
+                            trace!(
+                                "[input-debug][compositor] composed iframe site {} with child frame {}",
+                                iframe_site.embed_site_id.0, child_frame_id.0
+                            );
+                        }
+                    }
+
+                    stack.remove(&child_frame_id);
                 }
-                composed_scene.push_clip_layer(transform, &clip);
-                composed_scene.append_scene(child_scene, child_transform);
-                composed_scene.pop_layer();
-                if input_debug_enabled() {
-                    trace!(
-                        "[input-debug][compositor] composed embed site {} with child frame {}",
-                        embed_site.embed_site_id.0, child_frame_id.0
+                EmbedSite::Video(video_data) => {
+                    let Some(video_frame) = self.video_frames.get(&video_data.paint_id) else {
+                        // First-frame not yet arrived; nothing to paint.
+                        if input_debug_enabled() {
+                            trace!("[input-debug][compositor] video paint_id={:?} no frame yet", video_data.paint_id);
+                        }
+                        continue;
+                    };
+                    let transform = Affine::new(video_data.layout.transform);
+                    trace!("[compositor] video paint_id={:?} frame={}x{} transform=({:.1},{:.1}) clip_bounds={:?}",
+                        video_data.paint_id, video_frame.width, video_frame.height,
+                        transform.as_coeffs()[4], transform.as_coeffs()[5],
+                        video_data.layout.clip_bounds);
+
+                    let transform = Affine::new(video_data.layout.transform);
+
+                    // Compute clip bounds in local coordinates (same approach as
+                    // embed_local_clip for iframes).
+                    let tx = transform.as_coeffs()[4];
+                    let ty = transform.as_coeffs()[5];
+                    let clip_rect = Rect::new(
+                        video_data.layout.clip_bounds[0] - tx,
+                        video_data.layout.clip_bounds[1] - ty,
+                        video_data.layout.clip_bounds[2] - tx,
+                        video_data.layout.clip_bounds[3] - ty,
                     );
+                    // Use rounded clip if the element has border-radius.
+                    let rounded_clip: Option<RoundedRect> = if video_data.clip_radius > 0.0 {
+                        Some(RoundedRect::from_rect(clip_rect, video_data.clip_radius))
+                    } else {
+                        None
+                    };
+                    let local_clip = clip_rect;
+
+                    // Build a peniko ImageData from the RGBA8 frame bytes.
+                    let pixel_data = video_frame.data.clone();
+                    let image_data = ImageData {
+                        data: peniko::Blob::from(pixel_data.to_vec()),
+                        format: ImageFormat::Rgba8,
+                        alpha_type: ImageAlphaType::Alpha,
+                        width: video_frame.width,
+                        height: video_frame.height,
+                    };
+
+                    // Compute a transform mapping the video's natural size to fill
+                    // the clip rect at the correct screen position.
+                    // The push_clip_layer clips at (local_clip) + (transform translation),
+                    // but does NOT transform subsequent drawing — so draw_image must
+                    // apply both the scale AND position translation.
+                    let local_w = local_clip.width();
+                    let local_h = local_clip.height();
+                    let scale_x = if video_frame.width > 0 {
+                        local_w / video_frame.width as f64
+                    } else {
+                        1.0
+                    };
+                    let scale_y = if video_frame.height > 0 {
+                        local_h / video_frame.height as f64
+                    } else {
+                        1.0
+                    };
+                    // Include the clip layer's translation so the image is drawn at the
+                    // element's screen position (same pattern as iframe child_transform).
+                    let video_transform = Affine::new([
+                        scale_x,
+                        0.0,
+                        0.0,
+                        scale_y,
+                        tx,
+                        ty,
+                    ]);
+
+                    match rounded_clip {
+                        Some(ref rc) => composed_scene.push_clip_layer(transform, rc),
+                        None => composed_scene.push_clip_layer(transform, &local_clip),
+                    };
+                    composed_scene.draw_image(
+                        ImageBrushRef::from(&image_data),
+                        video_transform,
+                    );
+                    composed_scene.pop_layer();
                 }
             }
-
-            stack.remove(&child_frame_id);
         }
 
         Some(composed_scene)
     }
 
-    fn embed_local_clip(embed_site: &FrameEmbedSite) -> Rect {
-        let transform = Affine::new(embed_site.transform);
+    fn embed_local_clip(iframe_site: &IframeEmbedSite) -> Rect {
+        let transform = Affine::new(iframe_site.layout.transform);
         let translation_x = transform.as_coeffs()[4];
         let translation_y = transform.as_coeffs()[5];
         Rect::new(
-            embed_site.clip_bounds[0] - translation_x,
-            embed_site.clip_bounds[1] - translation_y,
-            embed_site.clip_bounds[2] - translation_x,
-            embed_site.clip_bounds[3] - translation_y,
+            iframe_site.layout.clip_bounds[0] - translation_x,
+            iframe_site.layout.clip_bounds[1] - translation_y,
+            iframe_site.layout.clip_bounds[2] - translation_x,
+            iframe_site.layout.clip_bounds[3] - translation_y,
         )
     }
 
@@ -344,13 +478,13 @@ impl Compositor {
         parent_frame_id: FrameId,
         parent_viewport: &ResolvedViewport,
         parent_local_to_root: Affine,
-        embed_site: &FrameEmbedSite,
+        iframe_site: &IframeEmbedSite,
     ) -> Option<Affine> {
-        let Some(layout) = self.navigable_container_layout(parent_local_to_root, embed_site) else {
+        let Some(layout) = self.navigable_container_layout(parent_local_to_root, iframe_site) else {
             if input_debug_enabled() {
                 trace!(
                     "[input-debug][compositor] parent={} child={} record=skip reason=no-layout",
-                    parent_frame_id.0, embed_site.child_frame_id.0,
+                    parent_frame_id.0, iframe_site.child_frame_id.0,
                 );
             }
             return None;
@@ -361,7 +495,7 @@ impl Compositor {
                 trace!(
                     "[input-debug][compositor] parent={} child={} record=skip visible=false clip=({:.1},{:.1})-({:.1},{:.1}) parent_viewport=({:.1},{:.1})",
                     parent_frame_id.0,
-                    embed_site.child_frame_id.0,
+                    iframe_site.child_frame_id.0,
                     layout.clip_bounds.x0,
                     layout.clip_bounds.y0,
                     layout.clip_bounds.x1,
@@ -379,7 +513,7 @@ impl Compositor {
             trace!(
                 "[input-debug][compositor] parent={} child={} record=ok clip=({:.1},{:.1})-({:.1},{:.1})",
                 parent_frame_id.0,
-                embed_site.child_frame_id.0,
+                iframe_site.child_frame_id.0,
                 layout.clip_bounds.x0,
                 layout.clip_bounds.y0,
                 layout.clip_bounds.x1,
@@ -391,8 +525,8 @@ impl Compositor {
             frame.child_frames.push(layout);
         }
 
-        if let Some(resolved_viewport) = self.frame_viewport(embed_site.child_frame_id)
-            && let Some(child_frame) = self.committed_frames.get_mut(&embed_site.child_frame_id)
+        if let Some(resolved_viewport) = self.frame_viewport(iframe_site.child_frame_id)
+            && let Some(child_frame) = self.committed_frames.get_mut(&iframe_site.child_frame_id)
         {
             child_frame.parent_frame_id = Some(parent_frame_id);
             child_frame.resolved_viewport = Some(resolved_viewport);
@@ -404,11 +538,11 @@ impl Compositor {
     fn navigable_container_layout(
         &self,
         parent_local_to_root: Affine,
-        embed_site: &FrameEmbedSite,
+        iframe_site: &IframeEmbedSite,
     ) -> Option<NavigableContainerLayout> {
-        let child_frame_id = embed_site.child_frame_id;
-        let transform = Affine::new(embed_site.transform);
-        let clip = Self::embed_local_clip(embed_site);
+        let child_frame_id = iframe_site.child_frame_id;
+        let transform = Affine::new(iframe_site.layout.transform);
+        let clip = Self::embed_local_clip(iframe_site);
         let child_scene_transform = self
             .child_scene_transform(&clip, child_frame_id)
             .unwrap_or(Affine::IDENTITY);
@@ -473,7 +607,10 @@ impl Compositor {
             .composition
             .embed_sites
             .iter()
-            .map(|site| site.child_frame_id)
+            .filter_map(|site| match site {
+                EmbedSite::Frame(f) => Some(f.child_frame_id),
+                EmbedSite::Video(_) => None,
+            })
             .collect::<Vec<_>>();
         for child_frame_id in child_frame_ids {
             if !stack.insert(child_frame_id) {

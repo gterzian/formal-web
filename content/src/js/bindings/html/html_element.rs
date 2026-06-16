@@ -4,13 +4,14 @@ use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
     js_string,
     native_function::NativeFunction,
-    object::{JsObject, ObjectInitializer},
+    object::{FunctionObjectBuilder, JsObject, ObjectInitializer},
     property::Attribute,
 };
 
 use crate::dom::Element;
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, inline_style_properties_for_element,
+    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
+    HTMLVideoElement, inline_style_properties_for_element,
 };
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, WebIdlInterface,
@@ -102,6 +103,10 @@ fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -
         return Ok(f(&anchor.html_element));
     }
 
+    if let Some(input) = object.downcast_ref::<HTMLInputElement>() {
+        return Ok(f(&input.html_element));
+    }
+
     if let Some(iframe) = object.downcast_ref::<HTMLIFrameElement>() {
         return Ok(f(&iframe.html_element));
     }
@@ -167,13 +172,154 @@ fn set_hidden(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsV
 }
 
 fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    with_html_element_ref(this, |html_element| {
-        inline_style_object_for_element(&html_element.element, context).map(JsValue::from)
-    })?
+    let object = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("style getter: receiver is not an object")
+    })?;
+    let element_ref = JsValue::from(object.clone());
+    let realm = context.realm().clone();
+
+    // Build the style declaration object with a reference to the element,
+    // so that cssText and individual property setters can write back.
+    let properties = with_html_element_ref(this, |html_element| {
+        inline_style_properties_for_element(&html_element.element)
+    })?;
+
+    let mut initializer = ObjectInitializer::new(context);
+    for (name, value) in &properties {
+        // cssText is handled separately; skip it here to avoid conflict.
+        if name == "cssText" {
+            continue;
+        }
+        let js_value = JsValue::from(JsString::from(value.as_str()));
+        initializer.property(
+            JsString::from(name.as_str()),
+            js_value.clone(),
+            Attribute::all(),
+        );
+        let alias = camel_case_property_name(name);
+        if alias != *name {
+            initializer.property(JsString::from(alias.as_str()), js_value, Attribute::all());
+        }
+    }
+
+    initializer.function(
+        NativeFunction::from_fn_ptr(get_style_property_value),
+        js_string!("getPropertyValue"),
+        1,
+    );
+
+    let style_obj = initializer.build();
+
+    // Store a reference to the element so cssText setter can write back.
+    style_obj.set(js_string!("__element"), element_ref, false, context)?;
+
+    // Implement cssText as a live getter/setter backed by the element's style attribute.
+    let css_text_getter =
+        NativeFunction::from_fn_ptr(style_css_text_getter);
+    let css_text_setter =
+        NativeFunction::from_fn_ptr(style_css_text_setter);
+    let css_text_getter_obj = FunctionObjectBuilder::new(&realm, css_text_getter).build();
+    let css_text_setter_obj = FunctionObjectBuilder::new(&realm, css_text_setter).build();
+    let css_text_desc = boa_engine::property::PropertyDescriptor::builder()
+        .get(css_text_getter_obj)
+        .set(css_text_setter_obj)
+        .enumerable(true)
+        .configurable(true)
+        .build();
+    style_obj.define_property_or_throw(js_string!("cssText"), css_text_desc, context)?;
+
+    Ok(style_obj.into())
 }
 
-fn inline_style_object_for_element(element: &Element, context: &mut Context) -> JsResult<JsObject> {
-    style_declaration_object(&inline_style_properties_for_element(element), context)
+fn resolve_style_element(
+    this: &JsValue,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("expected style object")
+    })?;
+    obj.get(js_string!("__element"), context)
+}
+
+fn style_css_text_getter(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    // Read the element's style attribute.
+    let element_val = resolve_style_element(this, context)?;
+    let element_obj = element_val.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("cssText getter: element not found")
+    })?;
+
+    let style_attr = if let Some(el) = element_obj.downcast_ref::<Element>() {
+        el.get_attribute("style").unwrap_or_default()
+    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
+        html_el.element.get_attribute("style").unwrap_or_default()
+    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
+        media.html_element.element.get_attribute("style").unwrap_or_default()
+    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
+        video.media_element.html_element.element.get_attribute("style").unwrap_or_default()
+    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
+        ifr.html_element.element.get_attribute("style").unwrap_or_default()
+    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
+        anc.html_element.element.get_attribute("style").unwrap_or_default()
+    } else {
+        String::new()
+    };
+    Ok(JsValue::from(JsString::from(style_attr)))
+}
+
+fn style_css_text_setter(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let value = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let element_val = resolve_style_element(this, context)?;
+    let element_obj = element_val.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("cssText setter: element not found")
+    })?;
+
+    if let Some(el) = element_obj.downcast_ref::<Element>() {
+        if value.is_empty() {
+            el.remove_attribute("style");
+        } else {
+            el.set_attribute("style", &value);
+        }
+    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
+        if value.is_empty() {
+            html_el.element.remove_attribute("style");
+        } else {
+            html_el.element.set_attribute("style", &value);
+        }
+    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
+        if value.is_empty() {
+            media.html_element.element.remove_attribute("style");
+        } else {
+            media.html_element.element.set_attribute("style", &value);
+        }
+    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
+        if value.is_empty() {
+            video.media_element.html_element.element.remove_attribute("style");
+        } else {
+            video.media_element.html_element.element.set_attribute("style", &value);
+        }
+    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
+        if value.is_empty() {
+            ifr.html_element.element.remove_attribute("style");
+        } else {
+            ifr.html_element.element.set_attribute("style", &value);
+        }
+    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
+        if value.is_empty() {
+            input.html_element.element.remove_attribute("style");
+        } else {
+            input.html_element.element.set_attribute("style", &value);
+        }
+    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
+        if value.is_empty() {
+            anc.html_element.element.remove_attribute("style");
+        } else {
+            anc.html_element.element.set_attribute("style", &value);
+        }
+    }
+    Ok(JsValue::undefined())
 }
 
 pub(crate) fn style_declaration_object(

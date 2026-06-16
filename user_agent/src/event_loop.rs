@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as ProcessCommand};
-use log::error;
+use log::{debug, error};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -591,6 +591,17 @@ impl EventLoopWorker {
                     let _ = self.host.webview_provider_sync();
                     let _ = self.host.new_frame_rendered();
                 }
+            }
+            ContentEvent::MediaLoadRequested(request) => {
+                debug!("[media] event loop forwarding MediaLoadRequested url={}", request.url);
+                self.user_agent_command_sender
+                    .send(UserAgentCommand::MediaLoadRequested {
+                        url: request.url,
+                        document_id: request.document_id,
+                        traversable_id: request.traversable_id,
+                        video_paint_id: request.video_paint_id,
+                    })
+                    .map_err(|error| format!("failed to send media load request: {error}"))?;
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }

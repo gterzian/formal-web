@@ -20,7 +20,6 @@ export default function (pi: ExtensionAPI) {
   // README.md or calls readme_chain for a given path.
   const consulted = new Set<string>();
   let projectRoot: string | null = null;
-  let notifiedOnce = false; // warn only once per session to avoid noise
 
   // ── Helpers ──
 
@@ -110,25 +109,6 @@ export default function (pi: ExtensionAPI) {
     consulted.add(dir);
   }
 
-  /** Check whether a file's directory ancestry has been consulted. */
-  function isConsulted(filePath: string, cwd: string): boolean {
-    const root = findRoot(cwd);
-    if (!root) return true; // no chain defined
-    const abs = path.resolve(cwd, filePath);
-    if (!abs.startsWith(root)) return true; // outside project
-
-    // Walk up from the file's directory to root, checking each ancestor.
-    let dir = fs.statSync(abs, { throwIfNoEntry: false })?.isDirectory()
-      ? abs
-      : path.dirname(abs);
-    while (dir.startsWith(root)) {
-      if (consulted.has(dir)) return true;
-      if (dir === root) break;
-      dir = path.dirname(dir);
-    }
-    return false;
-  }
-
   /** Should a given path be ignored (vendor, target, .pi, etc.)? */
   function isIgnored(filePath: string, cwd: string): boolean {
     const root = findRoot(cwd);
@@ -194,46 +174,22 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── Intercept edit/write/read to remind about the chain ──
+  // ── Auto-consult when reading README/AGENTS files ──
 
   pi.on("tool_call", async (event, ctx) => {
-    // Only intercept read/edit/write.
-    if (!["read", "edit", "write"].includes(event.toolName)) return;
+    if (event.toolName !== "read") return;
 
     const input = event.input as Record<string, unknown>;
     const filePath = typeof input.path === "string" ? input.path : undefined;
     if (!filePath) return;
 
-    // Ignore vendor/config/build artifacts.
     if (isIgnored(filePath, ctx.cwd)) return;
 
-    // If the agent is reading a README.md, mark it as consulted automatically.
     const fileName = path.basename(filePath);
-    if (event.toolName === "read" && (fileName === "README.md" || fileName === "AGENTS.md")) {
+    if (fileName === "README.md" || fileName === "AGENTS.md") {
       const dir = path.resolve(ctx.cwd, path.dirname(filePath));
       consulted.add(dir);
-      return;
     }
-
-    // If the chain has already been consulted for this path, skip.
-    if (isConsulted(filePath, ctx.cwd)) return;
-
-    // Warn at most once per session to avoid noise on consecutive files
-    // in the same unconsulted directory.
-    if (notifiedOnce) return;
-    notifiedOnce = true;
-
-    const root = findRoot(ctx.cwd);
-    const relativeDir = root
-      ? path.relative(root, path.dirname(path.resolve(ctx.cwd, filePath)))
-      : "?";
-
-    ctx.ui.notify(
-      `⚠️  Documentation chain not yet consulted for files under \`${relativeDir}/\`. ` +
-        `Call \`readme_chain({ path: "${filePath}" })\` first to read the ` +
-        "project conventions for this part of the codebase.",
-      "warning",
-    );
   });
 
   // ── Register /readme-chain command (for human use) ──
@@ -263,9 +219,4 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Reset notification flag on each new turn so the reminder fires at most
-  // once per prompt.
-  pi.on("turn_start", async () => {
-    notifiedOnce = false;
-  });
 }

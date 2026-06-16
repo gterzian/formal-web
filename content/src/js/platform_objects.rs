@@ -5,7 +5,7 @@ use boa_engine::{Context, JsError, JsNativeError, JsResult, object::JsObject};
 use html5ever::{local_name, ns};
 
 use crate::dom::{Element, Node};
-use crate::html::{GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Window};
+use crate::html::{GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLVideoElement, Window};
 use crate::webidl::bindings::create_interface_instance;
 
 pub(crate) fn with_global_scope<R>(
@@ -113,10 +113,14 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
             .and_then(|node| node.element_data())
             .map(|element| {
                 if element.name.ns == ns!(html) {
-                    if element.name.local == local_name!("a") {
+                    if element.name.local == local_name!("video") {
+                        4_u8
+                    } else if element.name.local == local_name!("a") {
                         2_u8
                     } else if element.name.local == local_name!("iframe") {
                         3_u8
+                    } else if element.name.local == local_name!("input") {
+                        5_u8
                     } else {
                         1_u8
                     }
@@ -127,6 +131,8 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
             .unwrap_or(0);
 
         match kind {
+            5 => create_interface_instance::<HTMLInputElement>(HTMLInputElement::new(document, node_id), context)?,
+            4 => create_interface_instance::<HTMLVideoElement>(HTMLVideoElement::new(document, node_id), context)?,
             3 => create_interface_instance::<HTMLIFrameElement>(HTMLIFrameElement::new(document, node_id), context)?,
             2 => create_interface_instance::<HTMLAnchorElement>(HTMLAnchorElement::new(document, node_id), context)?,
             1 => create_interface_instance::<HTMLElement>(HTMLElement::new(document, node_id), context)?,

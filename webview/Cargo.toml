@@ -8,6 +8,7 @@ publish = false
 anyrender = { version = "0.10", features = ["serde"] }
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
 crossbeam-channel = "0.5"
+ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 keyboard-types = "0.7"
 kurbo = "0.13"

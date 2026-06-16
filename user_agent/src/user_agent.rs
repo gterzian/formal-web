@@ -1,5 +1,6 @@
 mod event_loop;
 mod fetch;
+pub(crate) mod media;
 mod timer;
 
 use blitz_traits::shell::ColorScheme;
@@ -31,6 +32,8 @@ use crate::event_loop::{
     traversable_viewport_command,
 };
 use crate::fetch::{FetchCommand, run_fetch_thread};
+use crate::media::{MediaCommand, run_media_thread};
+use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use crate::timer::{TimerCommand, run_timer_thread};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
@@ -884,6 +887,12 @@ pub enum UserAgentCommand {
         fetch_id: NavigationFetchId,
         response: ContentFetchResponse,
     },
+    MediaLoadRequested {
+        url: String,
+        document_id: DocumentId,
+        traversable_id: NavigableId,
+        video_paint_id: VideoPaintId,
+    },
     NavigationFetchFailed {
         fetch_id: NavigationFetchId,
     },
@@ -908,6 +917,8 @@ pub enum UserAgentCommand {
     Shutdown {
         reply: Sender<Result<(), String>>,
     },
+    /// A media event from the media process (frames, EOS, errors, duration changes).
+    MediaEvent(ipc_messages::media::MediaEvent),
 }
 
 /// Public handle to the dedicated user-agent thread that owns browser-global state and worker
@@ -923,6 +934,7 @@ impl UserAgent {
         host: Arc<dyn Embedder>,
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
+        no_media: bool,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
         let mut worker = UserAgentWorker::new(
@@ -931,6 +943,7 @@ impl UserAgent {
             host,
             webview_provider_sender,
             trace_sender,
+            no_media,
         );
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
@@ -1256,6 +1269,15 @@ struct UserAgentWorker {
     timer_command_sender: Sender<TimerCommand>,
     /// Join handle for the timer worker thread during shutdown.
     timer_join_handle: Option<JoinHandle<()>>,
+    /// Sender for the dedicated media worker that owns the media sidecar bridge.
+    media_command_sender: Sender<MediaCommand>,
+    /// Join handle for the media worker thread during shutdown.
+    media_join_handle: Option<JoinHandle<()>>,
+    /// Maps media pipeline IDs to their owning webview and paint ID, so that
+    /// incoming video frames can be routed to the correct compositor slot.
+    pipeline_to_webview: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    /// Monotonic counter for assigning pipeline IDs.
+    next_pipeline_id: u64,
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
     /// Sender for webview-provider updates that must be drained by host sync calls.
@@ -1277,6 +1299,7 @@ impl UserAgentWorker {
         host: Arc<dyn Embedder>,
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
+        no_media: bool,
     ) -> Self {
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
         let fetch_user_agent_command_sender = user_agent_command_sender.clone();
@@ -1305,14 +1328,42 @@ impl UserAgentWorker {
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
+        let (media_command_sender, media_command_receiver) = unbounded();
+        #[cfg(not(feature = "media"))]
+        let _ = no_media; // suppress unused warning when media feature is disabled
+        #[cfg(feature = "media")]
+        let media_join_handle = if no_media {
+            None
+        } else {
+            let media_user_agent_command_sender = user_agent_command_sender.clone();
+            Some(
+                thread::Builder::new()
+                    .name(String::from("formal-web:media"))
+                    .spawn(move || {
+                        run_media_thread(
+                            media_command_receiver,
+                            media_user_agent_command_sender,
+                        )
+                    })
+                    .unwrap_or_else(|error| panic!("failed to spawn formal-web-media thread: {error}")),
+            )
+        };
+        // When media feature is disabled, never start the media thread.
+        #[cfg(not(feature = "media"))]
+        let media_join_handle: Option<thread::JoinHandle<()>> = None;
+
         Self {
             state: UserAgentState::default(),
-            command_sender: user_agent_command_sender,
+            command_sender: user_agent_command_sender.clone(),
             command_receiver,
             fetch_command_sender,
             fetch_join_handle: Some(fetch_join_handle),
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
+            media_command_sender,
+            pipeline_to_webview: HashMap::new(),
+            next_pipeline_id: 0,
+            media_join_handle,
             host,
             webview_provider_sender,
             navigation_tracer: TLATracer::new(
@@ -1425,6 +1476,15 @@ impl UserAgentWorker {
                     );
                 }
 
+                UserAgentCommand::MediaLoadRequested {
+                    url,
+                    document_id: _document_id,
+                    traversable_id,
+                    video_paint_id,
+                } => {
+                    debug!("[media] UA received MediaLoadRequested url={} traversable={}", url, traversable_id);
+                    self.handle_media_load_requested(url, traversable_id, video_paint_id);
+                }
                 UserAgentCommand::IframeTraversableRemoved {
                     parent_traversable_id,
                     content_navigable_id,
@@ -1441,6 +1501,9 @@ impl UserAgentWorker {
                 UserAgentCommand::Shutdown { reply } => {
                     self.handle_shutdown(reply);
                     break;
+                }
+                UserAgentCommand::MediaEvent(event) => {
+                    self.handle_media_event(event);
                 }
             }
         }
@@ -3615,6 +3678,130 @@ impl UserAgentWorker {
             shutdown_result = Err(String::from("timer thread panicked"));
         }
 
+        // Shut down the media thread if it was started.
+        if self.media_join_handle.is_some() {
+            let (media_reply_sender, media_reply_receiver) = bounded(1);
+            if let Err(error) = self.media_command_sender.send(MediaCommand::Shutdown {
+                reply: media_reply_sender,
+            }) {
+                shutdown_result = Err(format!("failed to request media shutdown: {error}"));
+            } else if let Err(error) = media_reply_receiver.recv() {
+                shutdown_result = Err(format!("media shutdown reply channel closed: {error}"));
+            }
+
+            if let Some(media_join_handle) = self.media_join_handle.take()
+                && media_join_handle.join().is_err()
+            {
+                shutdown_result = Err(String::from("media thread panicked"));
+            }
+        }
+
         let _ = reply.send(shutdown_result);
+    }
+
+    /// Handle a MediaLoadRequested from the content process.
+    /// Creates a pipeline in the media process for the given URL.
+    ///
+    /// Note: Pipeline ID assignment is a placeholder — a proper allocator should
+    /// be added when multiple concurrent pipelines are supported.
+    fn handle_media_load_requested(
+        &mut self,
+        url: String,
+        traversable_id: NavigableId,
+        video_paint_id: VideoPaintId,
+    ) {
+        if self.media_join_handle.is_none() {
+            // No media worker thread — media support is disabled (either via
+            // --no-media flag or media feature compiled out). Silently ignore.
+            debug!(
+                "[media] load requested but media disabled url={} traversable={}",
+                url, traversable_id.0,
+            );
+            return;
+        }
+        let pipeline_id = MediaPipelineId(self.next_pipeline_id);
+        self.next_pipeline_id += 1;
+        let webview_id = WebviewId(traversable_id);
+        self.pipeline_to_webview
+            .insert(pipeline_id, (webview_id, video_paint_id));
+        debug!(
+            "[media] load requested url={} traversable={} pipeline={:?} paint={:?}",
+            url, traversable_id.0, pipeline_id, video_paint_id,
+        );
+        if let Err(error) = self
+            .media_command_sender
+            .send(MediaCommand::CreatePipeline { pipeline_id, url })
+        {
+            error!("failed to send CreatePipeline to media worker: {error}");
+        }
+        if let Err(error) = self
+            .media_command_sender
+            .send(MediaCommand::Play { pipeline_id })
+        {
+            error!("failed to send Play to media worker: {error}");
+        }
+    }
+
+    /// Handle a MediaEvent from the media process.
+    fn handle_media_event(&mut self, event: ipc_messages::media::MediaEvent) {
+        use ipc_messages::media::MediaEvent;
+        match event {
+            MediaEvent::Frame(video_frame) => {
+                let pipeline_id = video_frame.pipeline_id;
+                let Some(&(webview_id, paint_id)) = self.pipeline_to_webview.get(&pipeline_id)
+                else {
+                    debug!(
+                        "[media] received frame for unknown pipeline {:?}",
+                        pipeline_id
+                    );
+                    return;
+                };
+                debug!(
+                    "[media] received video frame: {}x{} pipeline={:?}",
+                    video_frame.width, video_frame.height, pipeline_id,
+                );
+                // Forward the frame to the webview provider via the provider message channel.
+                // The compositor stores it by VideoPaintId and uses it during the next
+                // composition pass.
+                debug!("[media] forwarding frame to compositor: {}x{} paint={:?}",
+                    video_frame.width, video_frame.height, paint_id);
+                if let Err(error) = self
+                    .webview_provider_sender
+                    .send(WebviewProviderMessage::VideoFrameReady {
+                        webview_id,
+                        paint_id,
+                        data: video_frame,
+                    })
+                {
+                    error!("[media] failed to enqueue video frame: {error}");
+                } else {
+                    debug!("[media] frame enqueued, requesting redraw+render for webview {:?}", webview_id);
+                    // Trigger a redraw so the compositor picks up the new frame.
+                    let _ = self.host.request_redraw(webview_id);
+                    // Also trigger a rendering opportunity so the content process re-renders
+                    // and sends updated composition metadata (clip bounds) synchronized
+                    // with the video frame stream. Without this, the video frame is painted
+                    // using stale clip bounds when the page scrolls.
+                    let _ = self.command_sender
+                        .send(UserAgentCommand::RenderingOpportunityFor {
+                            traversable_id: webview_id.0,
+                        });
+                    // Push a sync so the embedder processes the message promptly.
+                    let _ = self.host.webview_provider_sync();
+                }
+            }
+            MediaEvent::Eos { pipeline_id } => {
+                debug!("[media] pipeline {:?} reached end of stream", pipeline_id);
+            }
+            MediaEvent::Error { pipeline_id, message } => {
+                error!("[media] pipeline {:?} error: {}", pipeline_id, message);
+            }
+            MediaEvent::DurationChanged {
+                pipeline_id,
+                duration_secs,
+            } => {
+                debug!("[media] pipeline {:?} duration: {}s", pipeline_id, duration_secs);
+            }
+        }
     }
 }

@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = ["media"]
+media = []
+
 [dependencies]
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
 crossbeam-channel = "0.5"

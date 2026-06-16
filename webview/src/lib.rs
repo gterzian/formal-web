@@ -10,6 +10,7 @@ use ipc_messages::content::{
     FontTransportReceiver, FrameId, NavigableId, NavigateRequest, PaintFrame,
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage,
 };
+use ipc_messages::media::VideoPaintId;
 use kurbo::Affine;
 use log::{debug, error, trace};
 use std::collections::HashMap;
@@ -20,7 +21,7 @@ use std::time::Duration;
 use user_agent::UserAgent;
 use verification::TraceSender;
 
-pub use compositor::VisibleFrameViewport;
+pub use compositor::{CompositorVideoFrame, VisibleFrameViewport};
 pub use user_agent::{Embedder, NavigationCompleted, NavigationCompletion};
 
 #[derive(Clone)]
@@ -91,12 +92,35 @@ pub struct WebviewProvider {
 }
 
 impl WebviewProvider {
+    pub fn update_video_frame(
+        &mut self,
+        webview_id: WebviewId,
+        frame: CompositorVideoFrame,
+    ) {
+        if let Some(state) = self.webviews.get_mut(&webview_id) {
+            state.compositor.update_video_frame(frame);
+            self.embedder.request_redraw(webview_id);
+        }
+    }
+
+    pub fn remove_video_frame(&mut self, webview_id: WebviewId, paint_id: VideoPaintId) {
+        if let Some(state) = self.webviews.get_mut(&webview_id) {
+            state.compositor.remove_video_frame(paint_id);
+        }
+    }
+
     pub fn new(
         embedder: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
+        no_media: bool,
     ) -> Result<Self, String> {
         let (provider_message_sender, provider_message_receiver) = unbounded();
-        let user_agent = UserAgent::start(embedder.clone(), provider_message_sender, trace_sender)?;
+        let user_agent = UserAgent::start(
+            embedder.clone(),
+            provider_message_sender,
+            trace_sender,
+            no_media,
+        )?;
 
         Ok(Self {
             webviews: HashMap::new(),
@@ -149,6 +173,28 @@ impl WebviewProvider {
             }
             WebviewProviderMessage::NewWebview { webview_id } => {
                 self.on_new_webview(webview_id);
+                Ok(())
+            }
+            WebviewProviderMessage::VideoFrameReady {
+                webview_id,
+                paint_id,
+                data: video_frame,
+            } => {
+                debug!(
+                    "[webview] received video frame: {}x{} paint={:?} webview={:?}",
+                    video_frame.width, video_frame.height, paint_id, webview_id,
+                );
+                // Convert the IpcSharedMemory to Arc<[u8]> for the compositor.
+                let pixel_bytes: Arc<[u8]> = video_frame.data.take()
+                    .unwrap_or_default()
+                    .into();
+                let compositor_frame = CompositorVideoFrame {
+                    video_paint_id: paint_id,
+                    width: video_frame.width,
+                    height: video_frame.height,
+                    data: pixel_bytes,
+                };
+                self.update_video_frame(webview_id, compositor_frame);
                 Ok(())
             }
         }

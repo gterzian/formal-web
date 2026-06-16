@@ -11,6 +11,53 @@ rustup run 1.92.0 cargo run --release
 
 This builds and runs the default windowed embedder for local development.
 
+For a build without media support (no GStreamer dependency, no media process):
+
+```bash
+cargo run --release -- --no-media
+```
+
+This disables the media worker and prevents `HTMLMediaElement`/`HTMLVideoElement`
+construction (the constructors throw `NotSupportedError`). The `--no-media` flag
+is a runtime switch — media support is compiled in by default.
+
+## Build configuration
+
+### `media` feature
+
+Media support (GStreamer-based video decoding) is enabled by default via the
+`media` Cargo feature. To build entirely without media support:
+
+```bash
+cargo build --no-default-features
+```
+
+This removes the GStreamer dependency entirely (no need to install GStreamer
+development libraries) and stubs out `HTMLMediaElement`/`HTMLVideoElement` at
+the compile level. Any JS constructor call to these interfaces throws
+`NotSupportedError`.
+
+### GStreamer dependency
+
+When the `media` feature is enabled (the default), the `media` crate depends on
+[GStreamer](https://gstreamer.freedesktop.org/) for video decoding. Install the
+required development packages:
+
+**macOS (Homebrew):**
+```bash
+brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
+```
+
+**Debian/Ubuntu:**
+```bash
+sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+     libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base \
+     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+```
+
+See the [gstreamer crate documentation](https://docs.rs/gstreamer/latest/gstreamer/)
+for platform-specific setup details.
+
 ## Project structure
 
 | Directory | Description |

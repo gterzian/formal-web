@@ -1,13 +1,14 @@
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     js_string,
-    object::{ObjectInitializer, builtins::JsArray},
+    native_function::NativeFunction,
+    object::{FunctionObjectBuilder, ObjectInitializer, builtins::JsArray},
     property::Attribute,
 };
 
 use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
-use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement};
 use crate::webidl::bindings::{
     create_interface_instance,
 
@@ -53,6 +54,18 @@ impl WebIdlInterface for Element {
             id: "innerHTML",
             getter: get_inner_html,
             setter: Some(set_inner_html),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+        });
+        def.add_attribute(AttributeDef {
+            id: "classList",
+            getter: get_class_list,
+            setter: None,
             static_: false,
             unforgeable: false,
             promise_type: false,
@@ -155,6 +168,15 @@ pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R)
     if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
         return Ok(f(&html_iframe_element.html_element.element));
     }
+    if let Some(html_input_element) = object.downcast_ref::<HTMLInputElement>() {
+        return Ok(f(&html_input_element.html_element.element));
+    }
+    if let Some(html_media_element) = object.downcast_ref::<HTMLMediaElement>() {
+        return Ok(f(&html_media_element.html_element.element));
+    }
+    if let Some(html_video_element) = object.downcast_ref::<HTMLVideoElement>() {
+        return Ok(f(&html_video_element.media_element.html_element.element));
+    }
     Err(JsNativeError::typ()
         .with_message("receiver is not an Element")
         .into())
@@ -187,6 +209,204 @@ fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         element.set_inner_html(&html);
     })?;
     Ok(JsValue::undefined())
+}
+
+/// <https://dom.spec.whatwg.org/#dom-element-classlist>
+fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let realm = context.realm().clone();
+    let obj = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("classList receiver is not an object")
+    })?;
+    let obj_clone = JsValue::from(obj.clone());
+
+    // Build a simple JS object that wraps class attribute manipulation.
+    // <https://dom.spec.whatwg.org/#domtokenlist>
+    let token_list = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(class_list_add),
+            js_string!("add"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(class_list_remove),
+            js_string!("remove"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(class_list_toggle),
+            js_string!("toggle"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(class_list_contains),
+            js_string!("contains"),
+            1,
+        )
+        .build();
+
+    // Store a reference to the element so closures can access it.
+    // Note: The spec requires that DOMTokenList is "live" — changes to
+    // the element's class attribute are reflected. Our implementation
+    // reads the class attribute fresh on each call.
+    token_list.set(js_string!("__element"), obj_clone, false, context)?;
+
+    // length getter
+    let len_fn = NativeFunction::from_fn_ptr(class_list_length);
+    let len_fn_obj = FunctionObjectBuilder::new(&realm, len_fn).build();
+    let len_desc = boa_engine::property::PropertyDescriptor::builder()
+        .get(len_fn_obj)
+        .enumerable(true)
+        .configurable(true)
+        .build();
+    token_list.define_property_or_throw(js_string!("length"), len_desc, context)?;
+
+    Ok(token_list.into())
+}
+
+fn class_list_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<String> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("expected object")
+    })?;
+    let element_val = obj.get(js_string!("__element"), context)?;
+    let element_obj = element_val.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("classList: element not found")
+    })?;
+
+    if let Some(el) = element_obj.downcast_ref::<Element>() {
+        Ok(el.get_attribute("class").unwrap_or_default())
+    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
+        Ok(html_el.element.get_attribute("class").unwrap_or_default())
+    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
+        Ok(media.html_element.element.get_attribute("class").unwrap_or_default())
+    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
+        Ok(video.media_element.html_element.element.get_attribute("class").unwrap_or_default())
+    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
+        Ok(ifr.html_element.element.get_attribute("class").unwrap_or_default())
+    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
+        Ok(input.html_element.element.get_attribute("class").unwrap_or_default())
+    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
+        Ok(anc.html_element.element.get_attribute("class").unwrap_or_default())
+    } else {
+        Ok(String::new())
+    }
+}
+
+fn class_list_set_value(this: &JsValue, value: &str, context: &mut Context) -> JsResult<()> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("expected object")
+    })?;
+    let element_val = obj.get(js_string!("__element"), context)?;
+    let element_obj = element_val.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("classList: element not found")
+    })?;
+
+    if let Some(el) = element_obj.downcast_ref::<Element>() {
+        if value.is_empty() {
+            el.remove_attribute("class");
+        } else {
+            el.set_attribute("class", value);
+        }
+    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
+        if value.is_empty() {
+            html_el.element.remove_attribute("class");
+        } else {
+            html_el.element.set_attribute("class", value);
+        }
+    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
+        if value.is_empty() {
+            media.html_element.element.remove_attribute("class");
+        } else {
+            media.html_element.element.set_attribute("class", value);
+        }
+    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
+        if value.is_empty() {
+            video.media_element.html_element.element.remove_attribute("class");
+        } else {
+            video.media_element.html_element.element.set_attribute("class", value);
+        }
+    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
+        if value.is_empty() {
+            ifr.html_element.element.remove_attribute("class");
+        } else {
+            ifr.html_element.element.set_attribute("class", value);
+        }
+    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
+        if value.is_empty() {
+            input.html_element.element.remove_attribute("class");
+        } else {
+            input.html_element.element.set_attribute("class", value);
+        }
+    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
+        if value.is_empty() {
+            anc.html_element.element.remove_attribute("class");
+        } else {
+            anc.html_element.element.set_attribute("class", value);
+        }
+    }
+    Ok(())
+}
+
+fn class_list_add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let token = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+    let current = class_list_value(this, &[], context)?;
+    let mut classes: Vec<String> = if current.is_empty() {
+        Vec::new()
+    } else {
+        current.split(' ').map(|s| s.to_string()).collect()
+    };
+    if !classes.contains(&token) {
+        classes.push(token);
+        let new_value = classes.join(" ");
+        class_list_set_value(this, &new_value, context)?;
+    }
+    Ok(JsValue::undefined())
+}
+
+fn class_list_remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let token = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+    let current = class_list_value(this, &[], context)?;
+    let classes: Vec<String> = current
+        .split(' ')
+        .filter(|c| !c.is_empty() && *c != token)
+        .map(|s| s.to_string())
+        .collect();
+    let new_value = classes.join(" ");
+    class_list_set_value(this, &new_value, context)?;
+    Ok(JsValue::undefined())
+}
+
+fn class_list_toggle(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let token = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+    let current = class_list_value(this, &[], context)?;
+    let mut classes: Vec<String> = if current.is_empty() {
+        Vec::new()
+    } else {
+        current.split(' ').map(|s| s.to_string()).collect()
+    };
+    if let Some(pos) = classes.iter().position(|c| c == &token) {
+        classes.remove(pos);
+        let new_value = classes.join(" ");
+        class_list_set_value(this, &new_value, context)?;
+        Ok(JsValue::new(false))
+    } else {
+        classes.push(token);
+        let new_value = classes.join(" ");
+        class_list_set_value(this, &new_value, context)?;
+        Ok(JsValue::new(true))
+    }
+}
+
+fn class_list_contains(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let token = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+    let current = class_list_value(this, &[], context)?;
+    let classes: Vec<&str> = current.split(' ').collect();
+    Ok(JsValue::new(classes.contains(&token.as_str())))
+}
+
+fn class_list_length(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let current = class_list_value(this, &[], context)?;
+    let count = if current.is_empty() { 0 } else { current.split(' ').count() };
+    Ok(JsValue::new(count))
 }
 
 fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
