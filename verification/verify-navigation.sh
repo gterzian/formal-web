@@ -127,16 +127,23 @@ cd "$ROOT"
 # are not tracked in git; Cargo regenerates them each build.
 rm -f "$ROOT/content/Cargo.lock" "$ROOT/net/Cargo.lock"
 
-# Build all three binaries into the shared target/ directory.  Even though each
-# manifest resolves dependencies independently, the shared target dir lets Cargo
-# reuse already-compiled artifacts across the three builds (they share most of
-# their vendored dependency trees: boa, blitz, wasmtime, etc.).
+# Build embedder into the main target/ and the sidecars (content, net) into a
+# separate directory so their Cargo.lock files don't pollute the main build.
+# Each sidecar has its own dependency resolution; keeping them separate avoids
+# cross-contamination when switching between `cargo run --release` (root build)
+# and verification runs.  Stale lock files are removed before building to avoid
+# "multiple different versions of crate" errors without a full cargo clean.
 echo "building embedder..."
 cargo build --release --manifest-path "$ROOT/embedder/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-embedder
 echo "building content..."
-cargo build --release --manifest-path "$ROOT/content/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-content
+cargo build --release --manifest-path "$ROOT/content/Cargo.toml" --target-dir "$ROOT/target/sidecar-prebuild" --bin formal-web-content
 echo "building net..."
-cargo build --release --manifest-path "$ROOT/net/Cargo.toml" --target-dir "$ROOT/target" --bin formal-web-net
+cargo build --release --manifest-path "$ROOT/net/Cargo.toml" --target-dir "$ROOT/target/sidecar-prebuild" --bin formal-web-net
+
+# Copy the prebuilt content and net binaries to the main target/release directory
+# so the embedder's process spawner can find them via sidecar_search_paths.
+cp "$ROOT/target/sidecar-prebuild/release/formal-web-content" "$ROOT/target/release/formal-web-content"
+cp "$ROOT/target/sidecar-prebuild/release/formal-web-net" "$ROOT/target/release/formal-web-net"
 
 FORMAL_WEB_TLA2TOOLS_JAR="$TLA2TOOLS_JAR" \
 FORMAL_WEB_TLC_WORKERS="$TLC_WORKERS" \
