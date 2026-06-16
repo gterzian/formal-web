@@ -57,6 +57,9 @@ fn run_embedder_process(embedder_args: Vec<OsString>) -> Result<(), String> {
     if !cfg!(debug_assertions) {
         command.arg("--release");
     }
+    if cfg!(not(feature = "media")) {
+        command.arg("--no-default-features");
+    }
     command
         .arg("--manifest-path")
         .arg("embedder/Cargo.toml")
