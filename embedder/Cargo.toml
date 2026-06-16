@@ -8,6 +8,10 @@ publish = false
 name = "formal-web-embedder"
 path = "src/main.rs"
 
+[features]
+default = ["media"]
+media = ["webview/media"]
+
 [dependencies]
 anyrender = { version = "0.10", features = ["serde"] }
 anyrender_vello = "0.10.1"
@@ -34,4 +38,4 @@ winit = "0.30"
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
-webview = { path = "../webview" }
+webview = { path = "../webview", default-features = false }

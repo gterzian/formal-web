@@ -16,10 +16,6 @@ struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     headless: bool,
 
-    /// Disable media support (no media process, HTMLMediaElement creation throws).
-    #[arg(long, global = true, default_value_t = false)]
-    no_media: bool,
-
     #[command(subcommand)]
     command: Option<CommandKind>,
 }
@@ -36,7 +32,6 @@ enum CommandKind {
 #[derive(Clone, Default)]
 struct AppRunOptions {
     headless: bool,
-    no_media: bool,
     startup_url: Option<String>,
     window_title: Option<String>,
     trace_sender: Option<TraceSender>,
@@ -51,12 +46,10 @@ fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
     let event_loop_result = if options.headless {
         event_loop::run_headless_event_loop(
             options.trace_sender.clone(),
-            options.no_media,
         )
     } else {
         event_loop::run_headed_event_loop(
             options.trace_sender.clone(),
-            options.no_media,
         )
     };
     event_loop::clear_event_loop_options();
@@ -67,7 +60,6 @@ fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
 fn run_webdriver(
     args: automation::WebDriverArgs,
     trace_sender: Option<TraceSender>,
-    no_media: bool,
 ) -> Result<(), String> {
     let runtime = automation::automation_bridge(
         |command| event_loop::send_user_event(event_loop::FormalWebUserEvent::Automation(command)),
@@ -85,7 +77,6 @@ fn run_webdriver(
         .transpose()?;
     let result = run_app_with_options(AppRunOptions {
         headless: args.headless,
-        no_media,
         startup_url: args
             .startup_url
             .or_else(|| Some(String::from("about:blank"))),
@@ -97,7 +88,7 @@ fn run_webdriver(
     result
 }
 
-fn run_cdp(args: automation::CdpArgs, trace_sender: Option<TraceSender>, no_media: bool) -> Result<(), String> {
+fn run_cdp(args: automation::CdpArgs, trace_sender: Option<TraceSender>) -> Result<(), String> {
     let runtime = automation::automation_bridge(
         |command| event_loop::send_user_event(event_loop::FormalWebUserEvent::Automation(command)),
         || event_loop::send_user_event(event_loop::FormalWebUserEvent::Exit),
@@ -106,7 +97,6 @@ fn run_cdp(args: automation::CdpArgs, trace_sender: Option<TraceSender>, no_medi
     let server = automation::CdpServerHandle::start(args.port, runtime)?;
     let result = run_app_with_options(AppRunOptions {
         headless: args.headless,
-        no_media,
         startup_url: args
             .startup_url
             .or_else(|| Some(String::from("about:blank"))),
@@ -174,8 +164,8 @@ fn main() -> ExitCode {
             trace_sender: trace_sender.clone(),
             ..AppRunOptions::default()
         }),
-        Some(CommandKind::WebDriver(args)) => run_webdriver(args, trace_sender.clone(), cli.no_media),
-        Some(CommandKind::Cdp(args)) => run_cdp(args, trace_sender.clone(), cli.no_media),
+        Some(CommandKind::WebDriver(args)) => run_webdriver(args, trace_sender.clone()),
+        Some(CommandKind::Cdp(args)) => run_cdp(args, trace_sender.clone()),
     };
     drop(trace_sender);
 

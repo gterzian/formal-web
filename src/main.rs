@@ -14,10 +14,6 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     headless: bool,
 
-    /// Disable media support (no media process, HTMLMediaElement creation throws).
-    #[arg(long, global = true, default_value_t = false)]
-    no_media: bool,
-
     #[command(subcommand)]
     command: Option<CommandKind>,
 }
@@ -61,6 +57,9 @@ fn run_embedder_process(embedder_args: Vec<OsString>) -> Result<(), String> {
     if !cfg!(debug_assertions) {
         command.arg("--release");
     }
+    if cfg!(not(feature = "media")) {
+        command.arg("--no-default-features");
+    }
     command
         .arg("--manifest-path")
         .arg("embedder/Cargo.toml")
@@ -88,7 +87,7 @@ fn run_embedder_process(embedder_args: Vec<OsString>) -> Result<(), String> {
     }
 }
 
-fn run_embedder_default(verify: bool, headless: bool, no_media: bool) -> Result<(), String> {
+fn run_embedder_default(verify: bool, headless: bool) -> Result<(), String> {
     let mut args = Vec::<OsString>::new();
     if verify {
         args.push(OsString::from("--verify"));
@@ -96,23 +95,13 @@ fn run_embedder_default(verify: bool, headless: bool, no_media: bool) -> Result<
     if headless {
         args.push(OsString::from("--headless"));
     }
-    if no_media {
-        args.push(OsString::from("--no-media"));
-    }
     run_embedder_process(args)
 }
 
-fn run_embedder_webdriver(
-    verify: bool,
-    no_media: bool,
-    args: automation::WebDriverArgs,
-) -> Result<(), String> {
+fn run_embedder_webdriver(verify: bool, args: automation::WebDriverArgs) -> Result<(), String> {
     let mut embedder_args = Vec::<OsString>::new();
     if verify {
         embedder_args.push(OsString::from("--verify"));
-    }
-    if no_media {
-        embedder_args.push(OsString::from("--no-media"));
     }
     embedder_args.push(OsString::from("webdriver"));
     embedder_args.push(OsString::from("--port"));
@@ -134,13 +123,10 @@ fn run_embedder_webdriver(
     run_embedder_process(embedder_args)
 }
 
-fn run_embedder_cdp(verify: bool, no_media: bool, args: automation::CdpArgs) -> Result<(), String> {
+fn run_embedder_cdp(verify: bool, args: automation::CdpArgs) -> Result<(), String> {
     let mut embedder_args = Vec::<OsString>::new();
     if verify {
         embedder_args.push(OsString::from("--verify"));
-    }
-    if no_media {
-        embedder_args.push(OsString::from("--no-media"));
     }
     embedder_args.push(OsString::from("cdp"));
     embedder_args.push(OsString::from("--port"));
@@ -177,11 +163,10 @@ fn main() -> ExitCode {
         };
     }
 
-    let no_media = cli.no_media || cfg!(not(feature = "media"));
     let result = match command {
-        None => run_embedder_default(cli.verify, cli.headless, no_media),
-        Some(CommandKind::WebDriver(args)) => run_embedder_webdriver(cli.verify, no_media, args),
-        Some(CommandKind::Cdp(args)) => run_embedder_cdp(cli.verify, no_media, args),
+        None => run_embedder_default(cli.verify, cli.headless),
+        Some(CommandKind::WebDriver(args)) => run_embedder_webdriver(cli.verify, args),
+        Some(CommandKind::Cdp(args)) => run_embedder_cdp(cli.verify, args),
         Some(CommandKind::Wpt { .. }) => Ok(()),
     };
 

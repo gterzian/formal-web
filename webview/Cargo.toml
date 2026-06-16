@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = ["media"]
+media = ["user_agent/media"]
+
 [dependencies]
 anyrender = { version = "0.10", features = ["serde"] }
 blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
@@ -15,6 +19,6 @@ kurbo = "0.13"
 peniko = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-user_agent = { path = "../user_agent" }
+user_agent = { path = "../user_agent", default-features = false }
 log = "0.4"
 verification = { path = "../verification" }
