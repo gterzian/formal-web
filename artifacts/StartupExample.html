@@ -346,6 +346,24 @@
         </div>
       </section>
 
+      <!-- ──── 3b. window.open ──── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>window.open</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          Opens a new navigable via <code>window.open()</code>.
+          Supports <code>_blank</code>, <code>noopener</code>,
+          and named targets.
+        </p>
+
+        <div class="btn-row" style="margin-bottom:0.6rem;">
+          <button class="btn btn-primary" id="winopen-blank-btn" type="button">Open navigated.html</button>
+        </div>
+        <div class="output-box" id="winopen-output">Click the button</div>
+      </section>
+
       <!-- ──── 4. DOM creation ──── -->
       <section class="section-card">
         <div class="section-title">
@@ -427,15 +445,21 @@
         return bytes.buffer;
       })();
 
-      var wasmModuleRef = null;
       var wasmAddBtn    = document.getElementById("wasm-add-btn");
       var wasmAddOutput = document.getElementById("wasm-add-output");
       var wasmAInput    = document.getElementById("wasm-a");
       var wasmBInput    = document.getElementById("wasm-b");
 
+      // Cache for the exported wasm function — instantiate once, call many times.
+      var wasmAdd = null;
+
       function compileWasmModule() {
         WebAssembly.compile(WASM_ADD_BINARY).then(function(module) {
-          wasmModuleRef = module;
+          // Instantiate once and cache the exported function so subsequent
+          // clicks call add() directly without going through the worker.
+          return WebAssembly.instantiate(module);
+        }).then(function(result) {
+          wasmAdd = result.exports.add;
           wasmAddOutput.textContent = "Module compiled \u2713 ready to add";
           wasmAddOutput.className = "output-box success";
         }).catch(function(err) {
@@ -445,7 +469,7 @@
       }
 
       wasmAddBtn.addEventListener("click", function() {
-        if (!wasmModuleRef) {
+        if (!wasmAdd) {
           wasmAddOutput.textContent = "Module not yet compiled, waiting\u2026";
           wasmAddOutput.className = "output-box";
           return;
@@ -457,15 +481,14 @@
           wasmAddOutput.className = "output-box error";
           return;
         }
-        WebAssembly.instantiate(wasmModuleRef).then(function(result) {
-          var add = result.exports.add;
-          var sum = add(a, b);
+        try {
+          var sum = wasmAdd(a, b);
           wasmAddOutput.textContent = a + " + " + b + " = " + sum;
           wasmAddOutput.className = "output-box success";
-        }).catch(function(err) {
-          wasmAddOutput.textContent = "Instantiate failed: " + err.message;
+        } catch(err) {
+          wasmAddOutput.textContent = "Call failed: " + err.message;
           wasmAddOutput.className = "output-box error";
-        });
+        }
       });
 
       // ──── 3. Streams API ────
@@ -532,6 +555,21 @@
         } catch(e) {
           streamTransformOutput.textContent = "TransformStream error: " + e.message;
           streamTransformOutput.className = "output-box error";
+        }
+      });
+
+      // ──── 3b. window.open ────
+      var winopenBlankBtn = document.getElementById("winopen-blank-btn");
+      var winopenOutput   = document.getElementById("winopen-output");
+
+      winopenBlankBtn.addEventListener("click", function() {
+        var w = window.open("navigated.html", "_blank", "popup,width=500,height=350");
+        if (w) {
+          winopenOutput.textContent = "Opened navigated.html — window proxy returned";
+          winopenOutput.className = "output-box success";
+        } else {
+          winopenOutput.textContent = "window.open returned null (noopener or blocked)";
+          winopenOutput.className = "output-box";
         }
       });
 
