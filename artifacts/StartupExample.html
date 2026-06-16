@@ -3,234 +3,251 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>FormalWeb Startup Example</title>
+    <title>FormalWeb Capability Showcase</title>
     <style>
-      html,
-      body {
+      html, body {
         min-height: 100%;
         margin: 0;
       }
 
       body {
-        position: relative;
-        background: #f4e8d2;
-        color: #163728;
-        font-family: system-ui, sans-serif;
+        background: #f8f7f4;
+        color: #1e1e2a;
+        font-family: system-ui, -apple-system, sans-serif;
         overflow-x: hidden;
         overflow-y: auto;
         scrollbar-gutter: stable;
-        transition: color 180ms ease;
-      }
-
-      body::before {
-        content: "";
-        position: fixed;
-        inset: 0;
-        background: linear-gradient(180deg, #f4e8d2 0%, #f0e1c7 100%);
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 180ms ease;
-      }
-
-      body:hover::before {
-        opacity: 1;
-      }
-
-      body:hover {
-        color: #123022;
       }
 
       main {
-        position: relative;
-        z-index: 1;
-        display: grid;
-        width: min(64rem, calc(100vw - 1.5rem));
-        min-height: 100vh;
+        max-width: 64rem;
         margin: 0 auto;
-        box-sizing: border-box;
-        grid-template-columns: minmax(18rem, 22rem) minmax(0, 1fr);
-        gap: 1rem 1.2rem;
-        align-content: center;
-        padding: 1rem 0.75rem 1.5rem;
+        padding: 2rem 1rem 3rem;
       }
 
-      .hero-panel,
-      .control-panel {
-        display: grid;
-        gap: 0.9rem;
-        align-content: start;
+      /* ── Header ── */
+
+      .page-header {
+        text-align: center;
+        margin-bottom: 2.5rem;
       }
 
-      .hero-panel {
-        justify-items: center;
+      .page-header svg.header-diagram {
+        display: block;
+        width: min(28rem, 100%);
+        height: auto;
+        margin: 0 auto 1.2rem;
       }
 
-      .intro-card {
-        display: grid;
-        gap: 0.75rem;
-        padding: 1rem 1.1rem;
-        border: 1px solid rgba(22, 55, 40, 0.16);
-        border-radius: 1.1rem;
-        background: rgba(255, 255, 255, 0.54);
-        box-shadow: 0 12px 28px rgba(22, 55, 40, 0.08);
+      .page-header h1 {
+        margin: 0 0 0.4rem;
+        font-size: clamp(1.8rem, 4vw, 2.6rem);
+        letter-spacing: -0.02em;
+        font-weight: 700;
+        color: #1a1a2e;
       }
 
-      h1 {
+      .page-header p {
         margin: 0;
-        font-size: clamp(1.8rem, 3.8vw, 2.55rem);
-        letter-spacing: 0.02em;
-        line-height: 1.04;
-      }
-
-      p {
-        margin: 0;
-        max-width: 40rem;
+        font-size: 1.05rem;
+        color: #5a5a72;
+        max-width: 36rem;
+        margin-inline: auto;
         line-height: 1.5;
       }
 
-      .intro-card p {
-        text-align: left;
+      /* ── Section cards ── */
+
+      .section-card {
+        background: #ffffff;
+        border: 1px solid #e4e2ec;
+        border-radius: 1.2rem;
+        padding: 1.5rem 1.5rem 1.8rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+        transition: box-shadow 200ms ease;
       }
 
-      svg {
+      .section-card:hover {
+        box-shadow: 0 8px 28px rgba(0,0,0,0.07);
+      }
+
+      .section-card.full-width {
+        padding: 0;
+        overflow: hidden;
+      }
+
+      .section-card.full-width video {
         display: block;
-        width: min(18rem, 100%);
-        height: auto;
-      }
-
-      img {
-        display: block;
-        width: min(18rem, 100%);
-        height: auto;
-        border-radius: 1rem;
-        box-shadow: 0 18px 40px rgba(22, 55, 40, 0.18);
-        background: rgba(255, 255, 255, 0.45);
-        padding: 0.5rem;
-        transition: box-shadow 180ms ease, transform 180ms ease;
-      }
-
-      img:hover {
-        box-shadow: 0 28px 58px rgba(22, 55, 40, 0.28);
-        transform: translateY(-2px);
-      }
-
-      .hint {
-        max-width: 18rem;
-        font-size: 0.92rem;
-        text-align: center;
-        opacity: 0.85;
-      }
-
-      .status-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0.9rem;
         width: 100%;
+        max-height: 480px;
+        object-fit: contain;
+        background: #0a0a12;
       }
 
-      .status-card {
-        display: grid;
-        gap: 0.35rem;
-        padding: 1rem 1.1rem;
-        border: 1px solid rgba(22, 55, 40, 0.16);
-        border-radius: 1rem;
-        background: rgba(255, 255, 255, 0.62);
-        box-shadow: 0 12px 28px rgba(22, 55, 40, 0.08);
+      .section-title {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin: 0 0 1rem;
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: #1a1a2e;
       }
 
-      .status-label {
-        display: block;
-        margin: 0;
-        font-size: 0.78rem;
-        letter-spacing: 0.08em;
+      .section-title .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
         text-transform: uppercase;
-        opacity: 0.68;
+        background: #e8e7f0;
+        color: #5a5a72;
       }
 
-      .status-value {
-        display: block;
-        margin: 0;
-        font-size: clamp(1.45rem, 2.8vw, 1.95rem);
-        font-variant-numeric: tabular-nums;
+      .section-title .badge.working { background: #d4edda; color: #155724; }
+      .section-title .badge.partial { background: #fff3cd; color: #856404; }
+
+      .section-desc {
+        margin: -0.4rem 0 1rem;
+        font-size: 0.92rem;
+        color: #6b6b82;
+        line-height: 1.5;
       }
 
-      .button-row {
+      /* ── Grid layouts ── */
+
+      .grid-2 {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.75rem;
-        width: 100%;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
       }
 
-      .counter-button,
-      .accent-button {
+      .grid-3 {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 0.75rem;
+      }
+
+      @media (max-width: 700px) {
+        .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      }
+
+      /* ── Stat cards ── */
+
+      .stat-card {
+        padding: 0.8rem 1rem;
+        border: 1px solid #e4e2ec;
+        border-radius: 0.85rem;
+        background: #faf9f7;
+      }
+
+      .stat-label {
+        display: block;
+        font-size: 0.72rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #7a7a92;
+        margin-bottom: 0.2rem;
+      }
+
+      .stat-value {
+        display: block;
+        font-size: clamp(1.2rem, 2.5vw, 1.6rem);
+        font-variant-numeric: tabular-nums;
+        color: #1a1a2e;
+      }
+
+      .stat-value.small { font-size: clamp(0.9rem, 2vw, 1.1rem); }
+
+      /* ── Buttons ── */
+
+      .btn {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 100%;
-        min-width: 0;
-        padding: 0.9rem 1rem;
+        gap: 0.4rem;
+        padding: 0.65rem 1rem;
         border: 0;
         border-radius: 999px;
         font: inherit;
-        font-size: 1rem;
+        font-size: 0.9rem;
+        font-weight: 500;
         cursor: pointer;
-        transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+        white-space: nowrap;
+        transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
       }
 
-      .counter-button {
-        background: #1c5a45;
-        color: #fff7ea;
-        box-shadow: 0 16px 30px rgba(22, 55, 40, 0.18);
+      .btn:active { transform: translateY(1px); }
+
+      .btn-primary {
+        background: #4a6cf7;
+        color: #fff;
+        box-shadow: 0 4px 12px rgba(74,108,247,0.25);
+      }
+      .btn-primary:hover {
+        background: #3b5de7;
+        transform: translateY(-1px);
+        box-shadow: 0 6px 18px rgba(74,108,247,0.30);
       }
 
-      .counter-button:hover {
-        background: #164636;
-        transform: translateY(-2px);
-        box-shadow: 0 20px 34px rgba(22, 55, 40, 0.24);
+      .btn-success {
+        background: #28a745;
+        color: #fff;
+        box-shadow: 0 4px 12px rgba(40,167,69,0.20);
+      }
+      .btn-success:hover {
+        background: #218838;
+        transform: translateY(-1px);
       }
 
-      .counter-button:active {
-        transform: translateY(0);
+      .btn-warning {
+        background: #ffc107;
+        color: #1a1a2e;
+        box-shadow: 0 4px 12px rgba(255,193,7,0.25);
+      }
+      .btn-warning:hover {
+        background: #e0a800;
+        transform: translateY(-1px);
       }
 
-      .accent-button {
-        background: #ffb449;
-        color: #163728;
-        box-shadow: 0 16px 30px rgba(230, 99, 63, 0.18);
+      .btn-outline {
+        background: transparent;
+        color: #4a6cf7;
+        border: 2px solid #4a6cf7;
+      }
+      .btn-outline:hover {
+        background: #4a6cf7;
+        color: #fff;
       }
 
-      .accent-button:hover {
-        background: #ff9e2c;
-        transform: translateY(-2px);
-        box-shadow: 0 20px 34px rgba(230, 99, 63, 0.24);
+      .btn[data-active="true"] {
+        background: #dc3545;
+        color: #fff;
       }
 
-      .accent-button:active {
-        transform: translateY(0);
+      .btn-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
       }
 
-      .accent-button[data-active="true"] {
-        background: #e63b2e;
-        color: #fff7ea;
-      }
+      /* ── Hover probe ── */
 
       .hover-probe {
         display: inline-flex;
         align-items: center;
         gap: 0.6rem;
-        padding: 0.85rem 1.15rem;
-        border: 2px solid rgba(22, 55, 40, 0.28);
+        padding: 0.7rem 1rem;
+        border: 2px solid #d4d2de;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.58);
-        box-shadow: 0 10px 24px rgba(22, 55, 40, 0.1);
-        font-size: 0.98rem;
-        line-height: 1;
-        transition:
-          background 180ms ease,
-          border-color 180ms ease,
-          box-shadow 180ms ease,
-          transform 180ms ease,
-          color 180ms ease;
+        background: #faf9f7;
+        font-size: 0.92rem;
+        transition: background 180ms ease, border-color 180ms ease,
+                    box-shadow 180ms ease, transform 180ms ease, color 180ms ease;
       }
 
       .hover-probe::before {
@@ -238,270 +255,511 @@
         display: inline-grid;
         place-items: center;
         min-width: 3.5rem;
-        padding: 0.35rem 0.55rem;
+        padding: 0.25rem 0.5rem;
         border-radius: 999px;
-        background: rgba(22, 55, 40, 0.12);
-        font-size: 0.8rem;
+        background: #e4e2ec;
+        font-size: 0.72rem;
         letter-spacing: 0.04em;
         text-transform: uppercase;
         transition: background 180ms ease, color 180ms ease;
       }
 
       .hover-probe:hover {
-        color: #fff7ea;
-        background: #1c5a45;
-        border-color: #1c5a45;
-        box-shadow: 0 18px 34px rgba(22, 55, 40, 0.22);
-        transform: translateY(-2px) scale(1.01);
+        color: #fff;
+        background: #4a6cf7;
+        border-color: #4a6cf7;
+        box-shadow: 0 8px 20px rgba(74,108,247,0.25);
+        transform: translateY(-2px);
       }
 
       .hover-probe:hover::before {
-        content: "Hover";
-        background: rgba(255, 247, 234, 0.2);
-        color: #fff7ea;
+        content: "Hover!";
+        background: rgba(255,255,255,0.2);
+        color: #fff;
       }
 
-      .signal-card {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        grid-template-areas:
-          "chip title"
-          "chip state";
-        gap: 0.15rem 0.75rem;
-        align-items: center;
-        width: 100%;
-        padding: 0.95rem 1rem;
-        border: 1px solid rgba(22, 55, 40, 0.16);
-        border-radius: 1rem;
-        background: rgba(255, 255, 255, 0.62);
-        box-shadow: 0 12px 28px rgba(22, 55, 40, 0.08);
-        box-sizing: border-box;
-        transition: background 180ms ease, color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+      /* ── Code / output ── */
+
+      .code-block {
+        background: #1a1a2e;
+        color: #e4e2ec;
+        padding: 0.8rem 1rem;
+        border-radius: 0.7rem;
+        font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", monospace;
+        font-size: 0.82rem;
+        line-height: 1.5;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
       }
 
-      .signal-card[data-active="true"] {
-        background: #1c5a45;
-        color: #fff7ea;
-        box-shadow: 0 18px 34px rgba(22, 55, 40, 0.2);
-        transform: translateY(-1px);
+      .code-block .success { color: #28a745; }
+      .code-block .error   { color: #dc3545; }
+      .code-block .info    { color: #4a9cf7; }
+      .code-block .dim     { color: #7a7a92; }
+
+      .output-box {
+        min-height: 1.8rem;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #e4e2ec;
+        border-radius: 0.6rem;
+        background: #faf9f7;
+        font-size: 0.85rem;
+        color: #1a1a2e;
+        transition: background 200ms ease, color 200ms ease;
       }
 
-      .signal-chip {
-        grid-area: chip;
-        width: 0.95rem;
-        height: 0.95rem;
-        border-radius: 999px;
-        background: #d2c7b4;
-        box-shadow: inset 0 0 0 3px rgba(22, 55, 40, 0.1), 0 0 0 0 rgba(255, 180, 73, 0);
-        transition: background 180ms ease, box-shadow 180ms ease;
+      .output-box.success {
+        border-color: #28a745;
+        background: #d4edda;
+        color: #155724;
       }
 
-      .signal-card[data-active="true"] .signal-chip {
-        background: #ffb449;
-        box-shadow: inset 0 0 0 3px rgba(255, 247, 234, 0.24), 0 0 0 10px rgba(255, 180, 73, 0.14);
+      .output-box.error {
+        border-color: #dc3545;
+        background: #f8d7da;
+        color: #721c24;
       }
 
-      .signal-title {
-        grid-area: title;
-        font-size: 0.95rem;
-        font-weight: 700;
+      .output-box.info {
+        border-color: #4a9cf7;
+        background: #cce5ff;
+        color: #004085;
       }
 
-      .signal-state {
-        grid-area: state;
-        font-size: 0.92rem;
-        opacity: 0.85;
-      }
-
-      .article-link {
-        color: #1c5a45;
-        font-weight: 700;
-        text-decoration-thickness: 0.08em;
-        text-underline-offset: 0.16em;
-      }
-
-      .article-link:hover {
-        color: #e63b2e;
-      }
+      /* ── Cross-origin iframe ── */
 
       .cross-origin-frame {
         display: block;
         width: 100%;
-        height: 22rem;
-        border: 1px solid rgba(22, 55, 40, 0.16);
-        border-radius: 1rem;
-        background: rgba(255, 255, 255, 0.72);
-        box-shadow: 0 12px 28px rgba(22, 55, 40, 0.08);
+        height: 20rem;
+        border: 1px solid #e4e2ec;
+        border-radius: 0.85rem;
+        background: #faf9f7;
+        box-shadow: inset 0 2px 6px rgba(0,0,0,0.03);
       }
 
-      @media (max-width: 860px) {
-        main {
-          min-height: auto;
-          grid-template-columns: 1fr;
-          align-content: start;
-          padding-top: 0.85rem;
-        }
+      /* ── Demos ── */
 
-        .status-grid {
-          grid-template-columns: 1fr;
-        }
-
-        .button-row {
-          grid-template-columns: 1fr;
-        }
-
-        .intro-card p,
-        .hint {
-          text-align: center;
-          max-width: none;
-        }
+      .wasm-arg-row {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
       }
+
+      .wasm-arg-row input {
+        flex: 1;
+        min-width: 5rem;
+        max-width: 8rem;
+        padding: 0.45rem 0.7rem;
+        border: 1px solid #d4d2de;
+        border-radius: 0.5rem;
+        font: inherit;
+        font-size: 0.9rem;
+        background: #faf9f7;
+      }
+
+      .abort-progress {
+        height: 0.5rem;
+        border-radius: 999px;
+        background: #e4e2ec;
+        overflow: hidden;
+        margin-top: 0.5rem;
+      }
+
+      .abort-progress-bar {
+        height: 100%;
+        width: 0%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #4a6cf7, #4a9cf7);
+        transition: width 100ms linear;
+      }
+
+      .abort-progress-bar.aborted {
+        background: linear-gradient(90deg, #dc3545, #e35d6a);
+      }
+
+      /* ── Console box ── */
+      .console-box {
+        background: #1a1a2e;
+        color: #c8c8d8;
+        padding: 0.6rem 0.8rem;
+        border-radius: 0.6rem;
+        font-family: "SF Mono", "Cascadia Code", monospace;
+        font-size: 0.78rem;
+        line-height: 1.5;
+        min-height: 2rem;
+        max-height: 6rem;
+        overflow-y: auto;
+      }
+
+      .console-box .log   { color: #c8c8d8; }
+      .console-box .warn  { color: #ffc107; }
+      .console-box .error { color: #dc3545; }
     </style>
   </head>
   <body>
     <main>
-      <section class="hero-panel">
-        <svg
-          width="368"
-          height="106"
-          viewBox="0 0 368 106"
-          version="1.1"
-          xmlns="http://www.w3.org/2000/svg"
-          style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;"
-        >
-          <g>
-            <path d="M131.548,97.488L131.548,8.369L144.939,8.369C150.903,8.369 155.656,8.831 159.196,9.755C162.774,10.678 165.795,12.236 168.258,14.43C170.759,16.7 172.741,19.528 174.203,22.915C175.703,26.339 176.454,29.802 176.454,33.304C176.454,39.692 174.01,45.098 169.123,49.523C173.856,51.139 177.589,53.967 180.321,58.008C183.091,62.01 184.477,66.666 184.477,71.976C184.477,78.941 182.014,84.828 177.089,89.638C174.126,92.601 170.797,94.66 167.103,95.814C163.063,96.93 158.003,97.488 151.923,97.488L131.548,97.488ZM144.997,46.637L149.21,46.637C154.213,46.637 157.878,45.531 160.206,43.318C162.534,41.106 163.698,37.845 163.698,33.535C163.698,29.341 162.505,26.156 160.119,23.982C157.734,21.808 154.27,20.721 149.73,20.721L144.997,20.721L144.997,46.637ZM144.997,84.847L153.308,84.847C159.388,84.847 163.852,83.654 166.699,81.269C169.701,78.691 171.201,75.42 171.201,71.456C171.201,67.608 169.758,64.376 166.872,61.76C164.063,59.181 159.042,57.892 151.808,57.892L144.997,57.892L144.997,84.847Z" style="fill-rule:nonzero;" />
-            <rect x="202.173" y="0" width="12.987" height="97.488" style="fill-rule:nonzero;" />
-            <path d="M247.806,41.269L247.806,97.488L234.819,97.488L234.819,41.269L247.806,41.269ZM232.857,17.893C232.857,15.623 233.684,13.66 235.338,12.006C236.993,10.351 238.975,9.524 241.284,9.524C243.631,9.524 245.632,10.351 247.286,12.006C248.941,13.622 249.768,15.603 249.768,17.951C249.768,20.298 248.941,22.299 247.286,23.953C245.67,25.608 243.689,26.435 241.341,26.435C238.994,26.435 236.993,25.608 235.338,23.953C233.684,22.299 232.857,20.279 232.857,17.893Z" style="fill-rule:nonzero;" />
-            <path d="M285.856,53.39L285.856,97.488L272.869,97.488L272.869,53.39L267.328,53.39L267.328,41.269L272.869,41.269L272.869,20.663L285.856,20.663L285.856,41.269L295.957,41.269L295.957,53.39L285.856,53.39Z" style="fill-rule:nonzero;" />
-            <path d="M331.64,85.251L365.059,85.251L365.059,97.488L305.897,97.488L342.318,53.39L313.631,53.39L313.631,41.269L368.003,41.269L331.64,85.251Z" style="fill-rule:nonzero;" />
-          </g>
-          <g>
-            <g>
-              <circle cx="53" cy="53" r="53" style="fill:rgb(1,99,63);" />
-              <circle cx="53" cy="53" r="45.773" style="fill:rgb(0,118,114);" />
-              <circle cx="53" cy="53" r="38.545" style="fill:rgb(62,149,147);" />
-              <circle cx="53" cy="53" r="31.318" style="fill:rgb(252,176,64);" />
-              <circle cx="53" cy="53" r="24.091" style="fill:rgb(233,86,41);" />
-              <circle cx="53" cy="53" r="16.864" style="fill:rgb(230,29,50);" />
-            </g>
-            <g>
-              <path d="M39.759,90.287C39.549,90.287 39.338,90.241 39.137,90.144C38.49,89.83 38.177,89.087 38.404,88.405L49.211,55.986L38.33,55.986C37.853,55.986 37.407,55.747 37.141,55.35C36.875,54.953 36.826,54.448 37.011,54.008L51.303,19.707C51.524,19.174 52.045,18.826 52.622,18.826L66.2,18.826C66.684,18.826 67.136,19.072 67.399,19.478C67.663,19.886 67.702,20.397 67.504,20.839L56.257,45.982L66.914,45.982C67.439,45.982 67.922,46.27 68.172,46.73C68.422,47.192 68.398,47.754 68.11,48.193L40.955,89.64C40.682,90.057 40.228,90.287 39.759,90.287Z" style="fill:rgb(244,232,210);fill-rule:nonzero;" />
-            </g>
-          </g>
+      <!-- ──────────────── Header ──────────────── -->
+      <div class="page-header">
+        <svg class="header-diagram" width="448" height="80" viewBox="0 0 448 80" xmlns="http://www.w3.org/2000/svg">
+          <rect x="0" y="0" width="60" height="60" rx="8" fill="#4a6cf7" opacity="0.9"/>
+          <text x="30" y="38" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" font-family="system-ui">HTML</text>
+          <text x="30" y="50" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">CSS</text>
+
+          <rect x="92" y="0" width="60" height="60" rx="8" fill="#28a745" opacity="0.9"/>
+          <text x="122" y="34" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="system-ui">JS</text>
+          <text x="122" y="48" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">Boa</text>
+
+          <line x1="60" y1="30" x2="92" y2="30" stroke="#d4d2de" stroke-width="2" stroke-dasharray="4,3"/>
+          <line x1="152" y1="30" x2="184" y2="30" stroke="#d4d2de" stroke-width="2" stroke-dasharray="4,3"/>
+
+          <rect x="184" y="0" width="86" height="60" rx="8" fill="#6f42c1" opacity="0.9"/>
+          <text x="227" y="30" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="system-ui">WebAssembly</text>
+          <text x="227" y="44" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">wasmtime</text>
+
+          <line x1="270" y1="30" x2="302" y2="30" stroke="#d4d2de" stroke-width="2" stroke-dasharray="4,3"/>
+
+          <rect x="302" y="0" width="60" height="60" rx="8" fill="#fd7e14" opacity="0.9"/>
+          <text x="332" y="30" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="system-ui">Streams</text>
+          <text x="332" y="44" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">DOM</text>
+
+          <line x1="362" y1="30" x2="394" y2="30" stroke="#d4d2de" stroke-width="2" stroke-dasharray="4,3"/>
+
+          <rect x="394" y="0" width="54" height="60" rx="8" fill="#dc3545" opacity="0.9"/>
+          <text x="421" y="30" text-anchor="middle" fill="#fff" font-size="8" font-weight="700" font-family="system-ui">Video</text>
+          <text x="421" y="44" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">Media</text>
+
+          <line x1="30" y1="60" x2="30" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
+          <line x1="122" y1="60" x2="122" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
+          <line x1="227" y1="60" x2="227" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
+          <line x1="332" y1="60" x2="332" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
+          <line x1="421" y1="60" x2="421" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
+          <line x1="30" y1="74" x2="421" y2="74" stroke="#d4d2de" stroke-width="2"/>
+          <text x="226" y="78" text-anchor="middle" fill="#7a7a92" font-size="9" font-family="system-ui">Rust content process</text>
         </svg>
-        <img src="blitz-landscape.svg" alt="Stylized landscape illustration used to verify document-driven image fetches." />
-        <div class="hover-probe">Static hover probe</div>
-        <p class="hint">Move the pointer across the page to exercise hover styling, then use the wheel or trackpad if the window is shorter than the page.</p>
+        <h1>FormalWeb Capability Showcase</h1>
+        <p>
+          Live demonstration of browser capabilities implemented from
+          scratch in Rust: HTML, CSS, DOM, JavaScript, WebAssembly,
+          Streams, media playback, and cross-origin iframes.
+        </p>
+      </div>
+
+      <!-- ──────────────── 1. Video Playback ──────────────── -->
+      <section class="section-card full-width">
+        <video
+          id="capabilities-video"
+          src="IMG_7716.mov"
+          controls
+          autoplay
+          muted
+          playsinline
+        ></video>
       </section>
-      <section class="control-panel">
-        <iframe
-          class="cross-origin-frame"
-          title="Cross-origin verification frame"
-          src="https://gterzian.github.io/lsp_agent/"
-        ></iframe>
-        <div class="intro-card">
-          <h1>FormalWeb Fetch Bootstrap</h1>
-          <p>
-            The startup navigation now completes by going through the fetch worker,
-            which fetches this checked-in artifact and then resumes
-            <code>processNavigationFetchResponse</code>.
-          </p>
-          <p>
-            Navigate away through
-            <a class="article-link" href="navigated.html">A new document</a>
-            to exercise hyperlink following and the deferred beforeunload check.
-          </p>
-          <video
-            id="startup-video"
-            src="IMG_7716.mov"
-            controls
-            autoplay
-            muted
-            width="320"
-            height="240"
-            style="display: block; width: 100%; max-width: 20rem; border-radius: 1rem; background: rgba(255, 255, 255, 0.45); box-shadow: 0 18px 40px rgba(22, 55, 40, 0.18); border: 3px solid red;"
-          ></video>
+
+      <!-- ──────────────── 2. JavaScript & Interaction ─────── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>JavaScript Interaction</span>
+          <span class="badge working">Working</span>
         </div>
-        <div class="status-grid">
-          <div class="status-card">
-            <span class="status-label">Animation FPS</span>
-            <span class="status-value" id="fps-value">0.0</span>
+        <p class="section-desc">
+          DOM event handling, animation timing, button interactions,
+          and CSS hover transitions — all driven by the Boa JavaScript engine.
+        </p>
+
+        <div class="grid-2" style="margin-bottom:1rem;">
+          <div class="stat-card">
+            <span class="stat-label">Animation FPS</span>
+            <span class="stat-value" id="fps-value">0.0</span>
           </div>
-          <div class="status-card">
-            <span class="status-label">Button Clicks</span>
-            <span class="status-value" id="click-count">0</span>
+          <div class="stat-card">
+            <span class="stat-label">Click Counter</span>
+            <span class="stat-value" id="click-count">0</span>
           </div>
         </div>
-        <div class="button-row">
-          <button
-            class="counter-button"
-            id="click-counter-button"
-            type="button"
-            aria-label="Increment click counter"
-          >
-            Increment Click Counter
+
+        <div class="btn-row" style="margin-bottom:1rem;">
+          <button class="btn btn-primary" id="click-counter-btn" type="button">
+            + Increment
           </button>
-          <button
-            class="accent-button"
-            id="accent-toggle-button"
-            type="button"
-            aria-label="Toggle signal accent"
-            aria-pressed="false"
-            data-active="false"
-          >
-            Toggle Signal Accent
+          <button class="btn btn-warning" id="toggle-signal-btn" type="button" data-active="false">
+            Toggle Signal
           </button>
-          <button
-            class="counter-button"
-            id="open-tab-button"
-            type="button"
-            aria-label="Open a new tab"
-          >
-            Click to Open Tab
+          <button class="btn btn-outline" id="reset-counter-btn" type="button">
+            Reset
           </button>
         </div>
-        <div class="signal-card" id="signal-card" data-active="false">
-          <div class="signal-chip" aria-hidden="true"></div>
-          <span class="signal-title">JS Interaction Probe</span>
-          <span class="signal-state" id="signal-state">Signal idle</span>
+
+        <div class="grid-2">
+          <div class="hover-probe">Static hover probe</div>
+          <div class="output-box" id="signal-output">Signal idle</div>
+        </div>
+
+        <p style="margin: 0.8rem 0 0; font-size:0.85rem; color:#7a7a92;">
+          Move the pointer across the page to exercise CSS hover transitions;
+          click buttons to trigger event handlers; scroll to see the full page.
+        </p>
+      </section>
+
+      <!-- ──────────────── 3. WebAssembly ─────────────────── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>WebAssembly</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          <code>WebAssembly.validate()</code>, <code>compile()</code>,
+          and <code>instantiate()</code> using the wasmtime engine via
+          background compilation.
+        </p>
+
+        <div class="grid-2" style="margin-bottom:0.8rem;">
+          <div class="stat-card">
+            <span class="stat-label">Validate</span>
+            <div class="btn-row" style="margin-top:0.4rem;">
+              <button class="btn btn-success" id="wasm-validate-btn" type="button">Validate valid wasm</button>
+              <button class="btn btn-outline" id="wasm-validate-invalid-btn" type="button" style="border-color:#dc3545;color:#dc3545;">Validate invalid</button>
+            </div>
+            <div class="output-box" id="wasm-validate-output" style="margin-top:0.4rem;">
+              Waiting…
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Compile &amp; Instantiate</span>
+            <p style="font-size:0.78rem; color:#7a7a92;margin:0.3rem 0;">
+              Compile a wasm module, then instantiate and call <code>add(a, b)</code>.
+            </p>
+            <div class="wasm-arg-row" style="margin-top:0.4rem;">
+              <input type="number" id="wasm-a" value="42" min="0" max="1000" />
+              <span style="color:#7a7a92;">+</span>
+              <input type="number" id="wasm-b" value="58" min="0" max="1000" />
+              <button class="btn btn-success" id="wasm-add-btn" type="button">= ?</button>
+            </div>
+            <div class="output-box" id="wasm-add-output" style="margin-top:0.3rem;">
+              Not compiled yet
+            </div>
+          </div>
+        </div>
+
+        <details>
+          <summary style="cursor:pointer;font-size:0.82rem;color:#7a7a92;">
+            Show wasm binary
+          </summary>
+          <div class="code-block" style="margin-top:0.5rem;font-size:0.7rem;">
+<span class="dim">;; WAT source (compiled to the binary below):</span>
+<span class="dim">;; (module</span>
+<span class="dim">;;   (func (export "add") (param i32 i32) (result i32)</span>
+<span class="dim">;;     local.get 0</span>
+<span class="dim">;;     local.get 1</span>
+<span class="dim">;;     i32.add))</span>
+
+<span class="dim">// Base64 representation of the wasm binary:</span>
+<span id="wasm-b64-display">AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABags=</span>
+          </div>
+        </details>
+      </section>
+
+      <!-- ──────────────── 4. Streams API ─────────────────── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>Streams API</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          Create a <code>ReadableStream</code> from an array,
+          consume it with a reader, and pipe through a <code>TransformStream</code>.
+        </p>
+
+        <div class="grid-2">
+          <div class="stat-card">
+            <span class="stat-label">ReadableStream from array</span>
+            <div class="btn-row" style="margin-top:0.4rem;">
+              <button class="btn btn-primary" id="stream-read-btn" type="button">Read stream</button>
+            </div>
+            <div class="output-box" id="stream-read-output" style="margin-top:0.4rem;">Click to read</div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">TransformStream (uppercase)</span>
+            <div class="btn-row" style="margin-top:0.4rem;">
+              <button class="btn btn-primary" id="stream-transform-btn" type="button">Transform</button>
+            </div>
+            <div class="output-box" id="stream-transform-output" style="margin-top:0.4rem;">Click to transform</div>
+          </div>
         </div>
       </section>
+
+      <!-- ──────────────── 5. DOM & CSS ───────────────────── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>DOM &amp; CSS</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          Element creation, class toggling, computed style reading,
+          event dispatch, and CSS transitions.
+        </p>
+
+        <div class="grid-2" style="margin-bottom:1rem;">
+          <div class="stat-card">
+            <span class="stat-label">DOM creation</span>
+            <div class="btn-row" style="margin-top:0.4rem;">
+              <button class="btn btn-primary" id="dom-add-element-btn" type="button">Add a box</button>
+              <button class="btn btn-outline" id="dom-clear-elements-btn" type="button">Clear</button>
+            </div>
+            <div id="dom-box-container" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.5rem;min-height:2rem;"></div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Computed style</span>
+            <div class="btn-row" style="margin-top:0.4rem;">
+              <button class="btn btn-primary" id="computed-style-btn" type="button">Read probe style</button>
+            </div>
+            <div class="code-block" id="computed-style-output" style="margin-top:0.4rem;font-size:0.7rem;">
+              Click to read computed styles…
+            </div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label">AbortController / AbortSignal</span>
+          <p style="font-size:0.82rem;color:#7a7a92;margin:0.3rem 0;">
+            Start a progress bar, then abort it mid-way. The abort listener fires and
+            the progress stops.
+          </p>
+          <div class="btn-row" style="margin-top:0.3rem;">
+            <button class="btn btn-success" id="abort-start-btn" type="button">Start</button>
+            <button class="btn btn-outline" id="abort-stop-btn" type="button" style="border-color:#dc3545;color:#dc3545;" disabled>Abort</button>
+          </div>
+          <div class="abort-progress">
+            <div class="abort-progress-bar" id="abort-progress-bar"></div>
+          </div>
+          <div class="output-box" id="abort-output" style="margin-top:0.4rem;">Idle</div>
+        </div>
+      </section>
+
+      <!-- ──────────────── 6. Console ─────────────────────── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>Console</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          The <code>console.log()</code>, <code>console.warn()</code>,
+          and <code>console.error()</code> APIs print structured messages.
+          Try it below.
+        </p>
+
+        <div class="btn-row" style="margin-bottom:0.6rem;">
+          <button class="btn btn-primary" id="console-log-btn" type="button">console.log("Hello!")</button>
+          <button class="btn btn-warning" id="console-warn-btn" type="button">console.warn("Caution")</button>
+          <button class="btn btn-outline" id="console-error-btn" type="button" style="border-color:#dc3545;color:#dc3545;">console.error("Fail")</button>
+        </div>
+        <div class="console-box" id="console-output">
+          <span class="dim">// Console output appears here</span>
+        </div>
+      </section>
+
+      <!-- ──────────────── 7. Navigation & Cross-Origin ───── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>Navigation &amp; Cross-Origin</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          Hyperlink following, <code>window.open()</code>, cross-origin
+          iframes, <code>beforeunload</code> events, and
+          <code>Location</code> manipulation.
+        </p>
+
+        <div class="grid-2">
+          <div class="stat-card">
+            <span class="stat-label">Hyperlink navigation</span>
+            <p style="font-size:0.85rem;margin:0.4rem 0;">
+              <a class="nav-link" href="navigated.html" style="color:#4a6cf7;font-weight:600;text-decoration-thickness:0.08em;">
+                Navigate to navigated.html
+              </a>
+            </p>
+            <p style="font-size:0.85rem;margin:0.4rem 0;">
+              <a class="nav-link" href="location-nav-test.html" style="color:#4a6cf7;font-weight:600;">
+                location-nav-test.html
+              </a>
+            </p>
+            <div class="btn-row" style="margin-top:0.3rem;">
+              <button class="btn btn-outline" id="open-tab-btn" type="button">window.open navigated.html</button>
+            </div>
+            <p style="font-size:0.78rem;color:#7a7a92;margin:0.5rem 0 0;">
+              The <code>beforeunload</code> handler fires when navigating away.
+              Check the console or server log.
+            </p>
+          </div>
+          <div class="stat-card" style="padding:0;">
+            <iframe
+              class="cross-origin-frame"
+              title="Cross-origin verification frame"
+              src="https://gterzian.github.io/lsp_agent/"
+              style="border-radius:0.85rem;"
+            ></iframe>
+          </div>
+        </div>
+      </section>
+
+      <!-- ──────────────── Footer ──────────────── -->
+      <footer style="text-align:center;padding:1rem 0 0;font-size:0.82rem;color:#a0a0b8;">
+        formal-web · built from scratch in Rust
+      </footer>
     </main>
+
     <script>
-      const fpsValue = document.getElementById("fps-value");
-      const clickCountValue = document.getElementById("click-count");
-      const clickCounterButton = document.getElementById("click-counter-button");
-      const accentToggleButton = document.getElementById("accent-toggle-button");
-      const signalCard = document.getElementById("signal-card");
-      const signalState = document.getElementById("signal-state");
+      // ════════════════════════════════════════════════════════════
+      // 1. Video
+      // ════════════════════════════════════════════════════════════
+      (function() {
+        var video = document.getElementById("capabilities-video");
+        if (video) {
+          // Re-assign src to trigger the load algorithm via the IDL setter
+          if (video.src && !video.src.startsWith("blob:")) {
+            video.src = video.src;
+          }
+          video.play().catch(function(e) {
+            console.log("autoplay blocked:", e);
+          });
+        }
+      })();
 
-      fpsValue.textContent = "0.0";
-      clickCountValue.textContent = "0";
+      // ════════════════════════════════════════════════════════════
+      // 2. JavaScript Interaction
+      // ════════════════════════════════════════════════════════════
 
-      let clickCount = 0;
-      let sampleStart = null;
-      let sampledFrames = 0;
-      let signalActive = false;
+      var fpsValue     = document.getElementById("fps-value");
+      var clickCountEl = document.getElementById("click-count");
+      var clickBtn     = document.getElementById("click-counter-btn");
+      var resetBtn     = document.getElementById("reset-counter-btn");
+      var toggleBtn    = document.getElementById("toggle-signal-btn");
+      var signalOutput = document.getElementById("signal-output");
 
-      clickCounterButton.addEventListener("click", () => {
+      var clickCount  = 0;
+      var signalActive = false;
+      var sampleStart  = null;
+      var sampledFrames = 0;
+
+      clickBtn.addEventListener("click", function() {
         clickCount += 1;
-        clickCountValue.textContent = String(clickCount);
+        clickCountEl.textContent = String(clickCount);
       });
 
-      accentToggleButton.addEventListener("click", () => {
+      resetBtn.addEventListener("click", function() {
+        clickCount = 0;
+        clickCountEl.textContent = "0";
+      });
+
+      toggleBtn.addEventListener("click", function() {
         signalActive = !signalActive;
-        const active = String(signalActive);
-        accentToggleButton.setAttribute("aria-pressed", active);
-        accentToggleButton.setAttribute("data-active", active);
-        signalCard.setAttribute("data-active", active);
-        signalState.textContent = signalActive ? "Signal armed" : "Signal idle";
-      });
-
-      document.getElementById("open-tab-button").addEventListener("click", () => {
-        var href = location.href;
-        var base = href.substring(0, href.lastIndexOf("/") + 1);
-        window.open(base + "navigated.html", "_blank");
+        var active = String(signalActive);
+        toggleBtn.setAttribute("data-active", active);
+        signalOutput.textContent = signalActive ? "Signal armed" : "Signal idle";
+        signalOutput.className = "output-box" + (signalActive ? " success" : "");
       });
 
       function updateFps(timestamp) {
@@ -509,39 +767,348 @@
           sampleStart = timestamp;
           sampledFrames = 0;
         }
-
         sampledFrames += 1;
-        const elapsed = timestamp - sampleStart;
+        var elapsed = timestamp - sampleStart;
         if (elapsed >= 250) {
-          const fps = (sampledFrames * 1000) / elapsed;
+          var fps = (sampledFrames * 1000) / elapsed;
           fpsValue.textContent = fps.toFixed(1);
           sampleStart = timestamp;
           sampledFrames = 0;
         }
-
         window.requestAnimationFrame(updateFps);
       }
 
-      window.addEventListener("load", () => {
-        window.requestAnimationFrame(updateFps);
+      // ════════════════════════════════════════════════════════════
+      // 3. WebAssembly
+      // ════════════════════════════════════════════════════════════
 
-        // Trigger the media element load algorithm via JS src setter.
-        // The HTML parser sets attributes, but the load algorithm only
-        // runs from the IDL setter (JS-side), not from setAttribute.
-        // Re-assigning src here exercises the working code path.
-        var video = document.getElementById("startup-video");
-        if (video && video.src && !video.src.startsWith("blob:")) {
-          video.src = video.src;
+      // A minimal wasm module that exports "add(i32, i32) → i32".
+      // WAT: (module (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))
+      var WASM_ADD_BINARY = (function() {
+        // prettier-ignore
+        var bytes = new Uint8Array([
+          0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+          0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, // type section
+          0x03, 0x02, 0x01, 0x00,       // function section
+          0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00, // export "add"
+          0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b  // code body
+        ]);
+        return bytes.buffer;
+      })();
+
+      var wasmModuleRef = null; // holds the compiled Module object
+
+      var wasmValidateBtn     = document.getElementById("wasm-validate-btn");
+      var wasmValidateInvalid = document.getElementById("wasm-validate-invalid-btn");
+      var wasmValidateOutput  = document.getElementById("wasm-validate-output");
+      var wasmAddBtn          = document.getElementById("wasm-add-btn");
+      var wasmAddOutput       = document.getElementById("wasm-add-output");
+      var wasmAInput          = document.getElementById("wasm-a");
+      var wasmBInput          = document.getElementById("wasm-b");
+
+      function appendConsole(text, cls) {
+        var box = document.getElementById("console-output");
+        var line = document.createElement("div");
+        line.className = cls || "log";
+        line.textContent = text;
+        box.appendChild(line);
+        box.scrollTop = box.scrollHeight;
+      }
+
+      wasmValidateBtn.addEventListener("click", function() {
+        var result = WebAssembly.validate(WASM_ADD_BINARY);
+        wasmValidateOutput.textContent = "WebAssembly.validate() → " + result;
+        wasmValidateOutput.className = "output-box" + (result ? " success" : " error");
+        appendConsole("WebAssembly.validate(valid) → " + result, "log");
+      });
+
+      wasmValidateInvalid.addEventListener("click", function() {
+        var bad = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0xff]).buffer;
+        var result = WebAssembly.validate(bad);
+        wasmValidateOutput.textContent = "WebAssembly.validate(invalid) → " + result;
+        wasmValidateOutput.className = "output-box" + (result ? " success" : " error");
+        appendConsole("WebAssembly.validate(invalid) → " + result, result ? "log" : "warn");
+      });
+
+      // Pre-compile the module on page load
+      function compileWasmModule() {
+        WebAssembly.compile(WASM_ADD_BINARY).then(function(module) {
+          wasmModuleRef = module;
+          wasmAddOutput.textContent = "Module compiled ✓ ready to add";
+          wasmAddOutput.className = "output-box success";
+          appendConsole("WebAssembly.compile() → Module ready", "log");
+          wasmAddBtn.disabled = false;
+        }).catch(function(err) {
+          wasmAddOutput.textContent = "Compile failed: " + err.message;
+          wasmAddOutput.className = "output-box error";
+          appendConsole("WebAssembly.compile() → Error: " + err.message, "error");
+        });
+      }
+
+      wasmAddBtn.addEventListener("click", function() {
+        if (!wasmModuleRef) {
+          wasmAddOutput.textContent = "Module not yet compiled, waiting…";
+          wasmAddOutput.className = "output-box";
+          return;
         }
-        if (video) {
-          video.play().catch(function(e) {
-            console.log("autoplay blocked:", e);
+        var a = parseInt(wasmAInput.value, 10) || 0;
+        var b = parseInt(wasmBInput.value, 10) || 0;
+        WebAssembly.instantiate(wasmModuleRef).then(function(result) {
+          var add = result.instance.exports.add;
+          var sum = add(a, b);
+          wasmAddOutput.textContent = a + " + " + b + " = " + sum;
+          wasmAddOutput.className = "output-box success";
+          appendConsole("WebAssembly.instantiate → add(" + a + ", " + b + ") = " + sum, "log");
+        }).catch(function(err) {
+          wasmAddOutput.textContent = "Instantiate failed: " + err.message;
+          wasmAddOutput.className = "output-box error";
+          appendConsole("WebAssembly.instantiate → Error: " + err.message, "error");
+        });
+      });
+
+      // ════════════════════════════════════════════════════════════
+      // 4. Streams API
+      // ════════════════════════════════════════════════════════════
+
+      var streamReadBtn     = document.getElementById("stream-read-btn");
+      var streamReadOutput  = document.getElementById("stream-read-output");
+      var streamTransformBtn = document.getElementById("stream-transform-btn");
+      var streamTransformOutput = document.getElementById("stream-transform-output");
+
+      streamReadBtn.addEventListener("click", function() {
+        try {
+          var stream = ReadableStream.from([10, 20, 30, 40, 50]);
+          var reader = stream.getReader();
+          var results = [];
+          function pump() {
+            return reader.read().then(function(r) {
+              if (r.done) {
+                streamReadOutput.textContent = "Read: [" + results.join(", ") + "]";
+                streamReadOutput.className = "output-box success";
+                appendConsole("ReadableStream: [" + results.join(", ") + "]", "log");
+                return;
+              }
+              results.push(r.value);
+              return pump();
+            });
+          }
+          pump().catch(function(err) {
+            streamReadOutput.textContent = "Stream error: " + err.message;
+            streamReadOutput.className = "output-box error";
           });
+        } catch(e) {
+          streamReadOutput.textContent = "Stream API error: " + e.message;
+          streamReadOutput.className = "output-box error";
+          appendConsole("ReadableStream error: " + e.message, "error");
         }
       });
 
-      window.addEventListener("beforeunload", () => {
-        console.log("beforeunload");
+      streamTransformBtn.addEventListener("click", function() {
+        try {
+          var transform = new TransformStream({
+            transform: function(chunk, controller) {
+              controller.enqueue(String(chunk).toUpperCase());
+            }
+          });
+          var writer = transform.writable.getWriter();
+          var reader = transform.readable.getReader();
+
+          var words = ["formal", "web", "streams", "api"];
+          // Write all words, then close
+          Promise.all(words.map(function(w) { return writer.write(w); })).then(function() {
+            return writer.close();
+          });
+
+          // Read all results
+          var out = [];
+          function pump() {
+            return reader.read().then(function(r) {
+              if (r.done) {
+                streamTransformOutput.textContent = "Transformed: [" + out.join(", ") + "]";
+                streamTransformOutput.className = "output-box success";
+                appendConsole("TransformStream: [" + out.join(", ") + "]", "log");
+                return;
+              }
+              out.push(r.value);
+              return pump();
+            });
+          }
+          pump().catch(function(err) {
+            streamTransformOutput.textContent = "Transform error: " + err.message;
+            streamTransformOutput.className = "output-box error";
+          });
+        } catch(e) {
+          streamTransformOutput.textContent = "TransformStream error: " + e.message;
+          streamTransformOutput.className = "output-box error";
+        }
+      });
+
+      // ════════════════════════════════════════════════════════════
+      // 5. DOM & CSS
+      // ════════════════════════════════════════════════════════════
+
+      var domContainer       = document.getElementById("dom-box-container");
+      var domAddBtn          = document.getElementById("dom-add-element-btn");
+      var domClearBtn        = document.getElementById("dom-clear-elements-btn");
+      var computedStyleBtn   = document.getElementById("computed-style-btn");
+      var computedStyleOut   = document.getElementById("computed-style-output");
+      var hoverProbeEl       = document.querySelector(".hover-probe");
+
+      var colorPalette = ["#4a6cf7", "#28a745", "#ffc107", "#dc3545", "#6f42c1", "#fd7e14"];
+
+      domAddBtn.addEventListener("click", function() {
+        var box = document.createElement("div");
+        var color = colorPalette[domContainer.children.length % colorPalette.length];
+        box.style.cssText = "width:2.5rem;height:2.5rem;border-radius:0.5rem;background:" + color +
+          ";display:inline-flex;align-items:center;justify-content:center;color:#fff;" +
+          "font-size:0.8rem;font-weight:700;transition:transform 200ms ease, box-shadow 200ms ease;";
+        box.textContent = String(domContainer.children.length + 1);
+        box.addEventListener("mouseenter", function() {
+          box.style.transform = "scale(1.15)";
+          box.style.boxShadow = "0 4px 12px rgba(0,0,0,0.2)";
+        });
+        box.addEventListener("mouseleave", function() {
+          box.style.transform = "scale(1)";
+          box.style.boxShadow = "none";
+        });
+        domContainer.appendChild(box);
+      });
+
+      domClearBtn.addEventListener("click", function() {
+        domContainer.innerHTML = "";
+      });
+
+      computedStyleBtn.addEventListener("click", function() {
+        if (!hoverProbeEl) {
+          computedStyleOut.textContent = "Error: hover probe not found";
+          return;
+        }
+        var styles = window.getComputedStyle(hoverProbeEl);
+        var props = [
+          "background-color",
+          "color",
+          "border-radius",
+          "font-size",
+          "padding",
+          "border"
+        ];
+        var lines = props.map(function(p) {
+          return "  " + p + ": " + styles.getPropertyValue(p);
+        });
+        computedStyleOut.textContent = "Computed styles for .hover-probe:\n" + lines.join("\n");
+        appendConsole("getComputedStyle read " + props.length + " properties", "log");
+      });
+
+      // ── AbortController demo ──
+
+      var abortStartBtn = document.getElementById("abort-start-btn");
+      var abortStopBtn  = document.getElementById("abort-stop-btn");
+      var abortBar      = document.getElementById("abort-progress-bar");
+      var abortOutput   = document.getElementById("abort-output");
+
+      var abortController = null;
+      var abortAnimFrame  = null;
+      var abortProgress   = 0;
+
+      function startAbortDemo() {
+        if (abortAnimFrame) return;
+        abortController = new AbortController();
+        abortStopBtn.disabled = false;
+        abortProgress = 0;
+        abortBar.style.width = "0%";
+        abortBar.classList.remove("aborted");
+        abortOutput.textContent = "Running…";
+        abortOutput.className = "output-box info";
+
+        var signal = abortController.signal;
+        signal.addEventListener("abort", function() {
+          abortOutput.textContent = "Aborted at " + Math.round(abortProgress) + "%";
+          abortOutput.className = "output-box error";
+          abortBar.classList.add("aborted");
+          abortStopBtn.disabled = true;
+          abortAnimFrame = null;
+          appendConsole("AbortController: signal aborted at " + Math.round(abortProgress) + "%", "warn");
+        });
+
+        function step() {
+          if (signal.aborted) return;
+          abortProgress += 1.5;
+          abortBar.style.width = Math.min(abortProgress, 100) + "%";
+          if (abortProgress >= 100) {
+            abortOutput.textContent = "Completed to 100%";
+            abortOutput.className = "output-box success";
+            abortStopBtn.disabled = true;
+            abortBar.classList.remove("aborted");
+            abortAnimFrame = null;
+            appendConsole("AbortController: completed to 100%", "log");
+            return;
+          }
+          abortAnimFrame = window.setTimeout(step, 100);
+        }
+
+        abortAnimFrame = window.setTimeout(step, 100);
+      }
+
+      abortStartBtn.addEventListener("click", function() {
+        startAbortDemo();
+      });
+
+      abortStopBtn.addEventListener("click", function() {
+        if (abortController) {
+          abortController.abort();
+          if (abortAnimFrame) {
+            window.clearTimeout(abortAnimFrame);
+            abortAnimFrame = null;
+          }
+        }
+      });
+
+      // ════════════════════════════════════════════════════════════
+      // 6. Console
+      // ════════════════════════════════════════════════════════════
+
+      document.getElementById("console-log-btn").addEventListener("click", function() {
+        console.log("Hello from FormalWeb!", { timestamp: Date.now() });
+        appendConsole("→ console.log() called", "log");
+      });
+
+      document.getElementById("console-warn-btn").addEventListener("click", function() {
+        console.warn("Caution: this is a warning message");
+        appendConsole("→ console.warn() called", "warn");
+      });
+
+      document.getElementById("console-error-btn").addEventListener("click", function() {
+        console.error("Error: something went wrong (simulated)");
+        appendConsole("→ console.error() called", "error");
+      });
+
+      // ════════════════════════════════════════════════════════════
+      // 7. Navigation
+      // ════════════════════════════════════════════════════════════
+
+      document.getElementById("open-tab-btn").addEventListener("click", function() {
+        var href = location.href;
+        var base = href.substring(0, href.lastIndexOf("/") + 1);
+        window.open(base + "navigated.html", "_blank");
+        appendConsole("window.open(navigated.html, _blank)", "log");
+      });
+
+      // ════════════════════════════════════════════════════════════
+      // Init
+      // ════════════════════════════════════════════════════════════
+
+      window.addEventListener("load", function() {
+        // Start FPS counter
+        window.requestAnimationFrame(updateFps);
+
+        // Pre-compile wasm module
+        compileWasmModule();
+
+        appendConsole("Page loaded — all capability modules initialized", "log");
+      });
+
+      window.addEventListener("beforeunload", function() {
+        console.log("beforeunload fired");
       });
     </script>
   </body>
