@@ -12,15 +12,15 @@ path = "src/main.rs"
 
 [features]
 default = ["media"]
-media = []
+media = ["dep:media", "user_agent/media"]
 
 [dependencies]
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
 content = { path = "content" }
-media = { path = "media" }
+media = { path = "media", optional = true }
 net = { path = "net" }
-user_agent = { path = "user_agent" }
+user_agent = { path = "user_agent", default-features = false }
 verification = { path = "verification" }
 webview = { path = "webview" }
 wpt_runner = { path = "tests/wpt_runner" }

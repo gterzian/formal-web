@@ -14,12 +14,21 @@ This builds and runs the default windowed embedder for local development.
 For a build without media support (no GStreamer dependency, no media process):
 
 ```bash
-cargo run --release -- --no-media
+cargo run --release --no-default-features
 ```
 
-This disables the media worker and prevents `HTMLMediaElement`/`HTMLVideoElement`
-construction (the constructors throw `NotSupportedError`). The `--no-media` flag
-is a runtime switch — media support is compiled in by default.
+This builds without the `media` Cargo feature, removing the GStreamer dependency
+entirely. The `--no-media` flag is forwarded to the embedder at runtime to
+prevent the media worker from spawning and to stub out
+`HTMLMediaElement`/`HTMLVideoElement` constructors (they throw
+`NotSupportedError`).
+
+With default features (media support compiled in), pass `--no-media` as a
+runtime flag to skip the media worker without changing the build:
+
+```bash
+cargo run --release -- --no-media
+```
 
 ## Build configuration
 
@@ -35,7 +44,9 @@ cargo build --no-default-features
 This removes the GStreamer dependency entirely (no need to install GStreamer
 development libraries) and stubs out `HTMLMediaElement`/`HTMLVideoElement` at
 the compile level. Any JS constructor call to these interfaces throws
-`NotSupportedError`.
+`NotSupportedError`. The `--no-media` CLI flag is forwarded as a runtime signal
+to the embedder to skip spawning the media worker (the flag is implied
+automatically when the `media` feature is disabled at build time).
 
 ### GStreamer dependency
 
@@ -44,10 +55,14 @@ When the `media` feature is enabled (the default), the `media` crate depends on
 [gstreamer crate documentation](https://docs.rs/gstreamer/latest/gstreamer/)
 for platform-specific installation instructions.
 
-To disable media support without changing the build configuration, pass
-`--no-media` at runtime to skip spawning the media process and stub out
-`HTMLMediaElement`/`HTMLVideoElement` at the object-construction level.
-To build entirely without GStreamer, use `--no-default-features`.
+To build without GStreamer, pass `--no-default-features` to Cargo:
+
+```bash
+cargo build --no-default-features
+```
+
+This excludes the `media` crate from compilation. The `--no-media` runtime flag
+is then implied automatically.
 
 
 ## Project structure

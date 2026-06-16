@@ -177,7 +177,7 @@ fn main() -> ExitCode {
         };
     }
 
-    let no_media = cli.no_media;
+    let no_media = cli.no_media || cfg!(not(feature = "media"));
     let result = match command {
         None => run_embedder_default(cli.verify, cli.headless, no_media),
         Some(CommandKind::WebDriver(args)) => run_embedder_webdriver(cli.verify, no_media, args),

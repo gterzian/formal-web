@@ -6,6 +6,7 @@ use std::process::Command;
 const PREBUILD_TARGET_DIR_NAME: &str = "sidecar-prebuild";
 
 fn main() {
+    #[allow(unused_mut)]
     let mut prebuild_binaries_list: Vec<(&str, &str)> =
         vec![("content", "formal-web-content"), ("net", "formal-web-net")];
 
