@@ -8,7 +8,7 @@ use boa_engine::{
 
 use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
-use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLMediaElement, HTMLVideoElement};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement};
 use crate::webidl::bindings::{
     create_interface_instance,
 
@@ -168,6 +168,9 @@ pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R)
     if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
         return Ok(f(&html_iframe_element.html_element.element));
     }
+    if let Some(html_input_element) = object.downcast_ref::<HTMLInputElement>() {
+        return Ok(f(&html_input_element.html_element.element));
+    }
     if let Some(html_media_element) = object.downcast_ref::<HTMLMediaElement>() {
         return Ok(f(&html_media_element.html_element.element));
     }
@@ -279,6 +282,8 @@ fn class_list_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
         Ok(video.media_element.html_element.element.get_attribute("class").unwrap_or_default())
     } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
         Ok(ifr.html_element.element.get_attribute("class").unwrap_or_default())
+    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
+        Ok(input.html_element.element.get_attribute("class").unwrap_or_default())
     } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
         Ok(anc.html_element.element.get_attribute("class").unwrap_or_default())
     } else {
@@ -324,6 +329,12 @@ fn class_list_set_value(this: &JsValue, value: &str, context: &mut Context) -> J
             ifr.html_element.element.remove_attribute("class");
         } else {
             ifr.html_element.element.set_attribute("class", value);
+        }
+    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
+        if value.is_empty() {
+            input.html_element.element.remove_attribute("class");
+        } else {
+            input.html_element.element.set_attribute("class", value);
         }
     } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
         if value.is_empty() {

@@ -123,6 +123,44 @@ Window directly for same-origin). When cross-origin support requires a
 proper exotic object, use this methodology to add new public wrappers
 without changing existing visibility boundaries.
 
+## Adding a new HTML element type
+
+Every HTML element exposed to JavaScript needs entries in several dispatch
+tables.  When the existing set (HTMLAnchorElement, HTMLIFrameElement,
+HTMLInputElement, HTMLMediaElement, HTMLVideoElement) doesn't cover a new
+tag, add a domain struct in `content/src/html/`, a `WebIdlInterface` impl in
+`content/src/js/bindings/html/`, then wire it into each of the following:
+
+1. **`content/src/html.rs`** — declare the module and re-export the type.
+2. **`content/src/js/bindings/html/mod.rs`** — declare the bindings module.
+3. **`content/src/js/bindings/html/host_hooks.rs`** —
+   - Call `reg!(NewType);` alongside the existing `reg!` calls.
+   - Add a `wire_registry_prototype::<NewType, ParentType>(&mut context);`
+     line to link the new type's prototype into the inheritance chain.
+     This is **required** even though `parent_name()` returns `Some(...)`
+     — the parent lookup via `parent_name()` is not yet automatic.  Without
+     this call the new type's prototype falls back to `%Object.prototype%`
+     and inherited methods (`addEventListener`, `dispatchEvent`, etc.)
+     will not be found.
+4. **`content/src/js/platform_objects.rs`** — add a new `kind` value in
+   `resolve_element_object` for the tag name, and a matching
+   `create_interface_instance` arm.
+5. **`content/src/js/bindings/dom/element.rs`** — add a downcast arm in
+   `with_element_ref` for the new type.  Also add arms in `class_list_value`
+   and `class_list_set_value` if they use the element-punning pattern.
+6. **`content/src/js/bindings/html/html_element.rs`** — add a downcast arm
+   in `with_html_element_ref`, and arms in `style_css_text_getter` and
+   `style_css_text_setter`.
+7. **`content/src/js/downcast.rs`** — add arms in both
+   `with_event_target_mut` and `with_event_target_ref`.
+8. **`content/src/dom/dispatch.rs`** — add an arm in `path_for_target`.
+
+The prototype chain is only partially automatic.  The `register_interface_spec`
+code sets up each prototype object and registers its members, but the
+prototype-to-parent linkage is done by explicit `wire_registry_prototype`
+calls in `host_hooks.rs`.  Each new type that inherits from an existing
+interface must have a corresponding `wire_registry_prototype` line.
+
 ## Related
 
 - `content/src/webidl/README.md` — Boa platform object integration, exotic pattern

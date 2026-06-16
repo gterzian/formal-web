@@ -3,12 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>FormalWeb Capability Showcase</title>
+    <title>FormalWeb Startup Demo</title>
     <style>
-      html, body {
-        min-height: 100%;
-        margin: 0;
-      }
+      html, body { min-height: 100%; margin: 0; }
 
       body {
         background: #f8f7f4;
@@ -25,19 +22,7 @@
         padding: 2rem 1rem 3rem;
       }
 
-      /* ── Header ── */
-
-      .page-header {
-        text-align: center;
-        margin-bottom: 2.5rem;
-      }
-
-      .page-header svg.header-diagram {
-        display: block;
-        width: min(28rem, 100%);
-        height: auto;
-        margin: 0 auto 1.2rem;
-      }
+      .page-header { text-align: center; margin-bottom: 2.5rem; }
 
       .page-header h1 {
         margin: 0 0 0.4rem;
@@ -56,8 +41,6 @@
         line-height: 1.5;
       }
 
-      /* ── Section cards ── */
-
       .section-card {
         background: #ffffff;
         border: 1px solid #e4e2ec;
@@ -65,24 +48,6 @@
         padding: 1.5rem 1.5rem 1.8rem;
         margin-bottom: 1.5rem;
         box-shadow: 0 4px 16px rgba(0,0,0,0.04);
-        transition: box-shadow 200ms ease;
-      }
-
-      .section-card:hover {
-        box-shadow: 0 8px 28px rgba(0,0,0,0.07);
-      }
-
-      .section-card.full-width {
-        padding: 0;
-        overflow: hidden;
-      }
-
-      .section-card.full-width video {
-        display: block;
-        width: 100%;
-        max-height: 480px;
-        object-fit: contain;
-        background: #0a0a12;
       }
 
       .section-title {
@@ -109,7 +74,6 @@
       }
 
       .section-title .badge.working { background: #d4edda; color: #155724; }
-      .section-title .badge.partial { background: #fff3cd; color: #856404; }
 
       .section-desc {
         margin: -0.4rem 0 1rem;
@@ -117,26 +81,6 @@
         color: #6b6b82;
         line-height: 1.5;
       }
-
-      /* ── Grid layouts ── */
-
-      .grid-2 {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1rem;
-      }
-
-      .grid-3 {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-        gap: 0.75rem;
-      }
-
-      @media (max-width: 700px) {
-        .grid-2, .grid-3 { grid-template-columns: 1fr; }
-      }
-
-      /* ── Stat cards ── */
 
       .stat-card {
         padding: 0.8rem 1rem;
@@ -160,10 +104,6 @@
         font-variant-numeric: tabular-nums;
         color: #1a1a2e;
       }
-
-      .stat-value.small { font-size: clamp(0.9rem, 2vw, 1.1rem); }
-
-      /* ── Buttons ── */
 
       .btn {
         display: inline-flex;
@@ -204,16 +144,6 @@
         transform: translateY(-1px);
       }
 
-      .btn-warning {
-        background: #ffc107;
-        color: #1a1a2e;
-        box-shadow: 0 4px 12px rgba(255,193,7,0.25);
-      }
-      .btn-warning:hover {
-        background: #e0a800;
-        transform: translateY(-1px);
-      }
-
       .btn-outline {
         background: transparent;
         color: #4a6cf7;
@@ -224,61 +154,7 @@
         color: #fff;
       }
 
-      .btn[data-active="true"] {
-        background: #dc3545;
-        color: #fff;
-      }
-
-      .btn-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.6rem;
-      }
-
-      /* ── Hover probe ── */
-
-      .hover-probe {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.6rem;
-        padding: 0.7rem 1rem;
-        border: 2px solid #d4d2de;
-        border-radius: 999px;
-        background: #faf9f7;
-        font-size: 0.92rem;
-        transition: background 180ms ease, border-color 180ms ease,
-                    box-shadow 180ms ease, transform 180ms ease, color 180ms ease;
-      }
-
-      .hover-probe::before {
-        content: "Idle";
-        display: inline-grid;
-        place-items: center;
-        min-width: 3.5rem;
-        padding: 0.25rem 0.5rem;
-        border-radius: 999px;
-        background: #e4e2ec;
-        font-size: 0.72rem;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        transition: background 180ms ease, color 180ms ease;
-      }
-
-      .hover-probe:hover {
-        color: #fff;
-        background: #4a6cf7;
-        border-color: #4a6cf7;
-        box-shadow: 0 8px 20px rgba(74,108,247,0.25);
-        transform: translateY(-2px);
-      }
-
-      .hover-probe:hover::before {
-        content: "Hover!";
-        background: rgba(255,255,255,0.2);
-        color: #fff;
-      }
-
-      /* ── Code / output ── */
+      .btn-row { display: flex; flex-wrap: wrap; gap: 0.6rem; }
 
       .code-block {
         background: #1a1a2e;
@@ -293,10 +169,7 @@
         word-break: break-all;
       }
 
-      .code-block .success { color: #28a745; }
-      .code-block .error   { color: #dc3545; }
-      .code-block .info    { color: #4a9cf7; }
-      .code-block .dim     { color: #7a7a92; }
+      .code-block .dim { color: #7a7a92; }
 
       .output-box {
         min-height: 1.8rem;
@@ -321,26 +194,6 @@
         color: #721c24;
       }
 
-      .output-box.info {
-        border-color: #4a9cf7;
-        background: #cce5ff;
-        color: #004085;
-      }
-
-      /* ── Cross-origin iframe ── */
-
-      .cross-origin-frame {
-        display: block;
-        width: 100%;
-        height: 20rem;
-        border: 1px solid #e4e2ec;
-        border-radius: 0.85rem;
-        background: #faf9f7;
-        box-shadow: inset 0 2px 6px rgba(0,0,0,0.03);
-      }
-
-      /* ── Demos ── */
-
       .wasm-arg-row {
         display: flex;
         gap: 0.5rem;
@@ -360,95 +213,36 @@
         background: #faf9f7;
       }
 
-      .abort-progress {
-        height: 0.5rem;
-        border-radius: 999px;
-        background: #e4e2ec;
-        overflow: hidden;
-        margin-top: 0.5rem;
+      .cross-origin-frame {
+        display: block;
+        width: 100%;
+        height: 20rem;
+        border: 1px solid #e4e2ec;
+        border-radius: 0.85rem;
+        background: #faf9f7;
+        box-shadow: inset 0 2px 6px rgba(0,0,0,0.03);
       }
-
-      .abort-progress-bar {
-        height: 100%;
-        width: 0%;
-        border-radius: 999px;
-        background: linear-gradient(90deg, #4a6cf7, #4a9cf7);
-        transition: width 100ms linear;
-      }
-
-      .abort-progress-bar.aborted {
-        background: linear-gradient(90deg, #dc3545, #e35d6a);
-      }
-
-      /* ── Console box ── */
-      .console-box {
-        background: #1a1a2e;
-        color: #c8c8d8;
-        padding: 0.6rem 0.8rem;
-        border-radius: 0.6rem;
-        font-family: "SF Mono", "Cascadia Code", monospace;
-        font-size: 0.78rem;
-        line-height: 1.5;
-        min-height: 2rem;
-        max-height: 6rem;
-        overflow-y: auto;
-      }
-
-      .console-box .log   { color: #c8c8d8; }
-      .console-box .warn  { color: #ffc107; }
-      .console-box .error { color: #dc3545; }
     </style>
   </head>
   <body>
     <main>
-      <!-- ──────────────── Header ──────────────── -->
       <div class="page-header">
-        <svg class="header-diagram" width="448" height="80" viewBox="0 0 448 80" xmlns="http://www.w3.org/2000/svg">
-          <rect x="0" y="0" width="60" height="60" rx="8" fill="#4a6cf7" opacity="0.9"/>
-          <text x="30" y="38" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" font-family="system-ui">HTML</text>
-          <text x="30" y="50" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">CSS</text>
-
-          <rect x="92" y="0" width="60" height="60" rx="8" fill="#28a745" opacity="0.9"/>
-          <text x="122" y="34" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="system-ui">JS</text>
-          <text x="122" y="48" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">Boa</text>
-
-          <line x1="60" y1="30" x2="92" y2="30" stroke="#d4d2de" stroke-width="2" stroke-dasharray="4,3"/>
-          <line x1="152" y1="30" x2="184" y2="30" stroke="#d4d2de" stroke-width="2" stroke-dasharray="4,3"/>
-
-          <rect x="184" y="0" width="86" height="60" rx="8" fill="#6f42c1" opacity="0.9"/>
-          <text x="227" y="30" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="system-ui">WebAssembly</text>
-          <text x="227" y="44" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">wasmtime</text>
-
-          <line x1="270" y1="30" x2="302" y2="30" stroke="#d4d2de" stroke-width="2" stroke-dasharray="4,3"/>
-
-          <rect x="302" y="0" width="60" height="60" rx="8" fill="#fd7e14" opacity="0.9"/>
-          <text x="332" y="30" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="system-ui">Streams</text>
-          <text x="332" y="44" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">DOM</text>
-
-          <line x1="362" y1="30" x2="394" y2="30" stroke="#d4d2de" stroke-width="2" stroke-dasharray="4,3"/>
-
-          <rect x="394" y="0" width="54" height="60" rx="8" fill="#dc3545" opacity="0.9"/>
-          <text x="421" y="30" text-anchor="middle" fill="#fff" font-size="8" font-weight="700" font-family="system-ui">Video</text>
-          <text x="421" y="44" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="9" font-family="system-ui">Media</text>
-
-          <line x1="30" y1="60" x2="30" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
-          <line x1="122" y1="60" x2="122" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
-          <line x1="227" y1="60" x2="227" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
-          <line x1="332" y1="60" x2="332" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
-          <line x1="421" y1="60" x2="421" y2="74" stroke="#d4d2de" stroke-width="1.5"/>
-          <line x1="30" y1="74" x2="421" y2="74" stroke="#d4d2de" stroke-width="2"/>
-          <text x="226" y="78" text-anchor="middle" fill="#7a7a92" font-size="9" font-family="system-ui">Rust content process</text>
-        </svg>
-        <h1>FormalWeb Capability Showcase</h1>
+        <h1>FormalWeb Startup Demo</h1>
         <p>
           Live demonstration of browser capabilities implemented from
-          scratch in Rust: HTML, CSS, DOM, JavaScript, WebAssembly,
-          Streams, media playback, and cross-origin iframes.
+          scratch in Rust.
         </p>
       </div>
 
-      <!-- ──────────────── 1. Video Playback ──────────────── -->
-      <section class="section-card full-width">
+      <!-- ──── 0. Video ──── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>Video Playback</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          Media playback via <code>&lt;video&gt;</code> element with autoplay.
+        </p>
         <video
           id="capabilities-video"
           src="IMG_7716.mov"
@@ -456,124 +250,85 @@
           autoplay
           muted
           playsinline
+          style="display:block;width:100%;max-height:480px;object-fit:contain;background:#0a0a12;border-radius:0.6rem;"
         ></video>
       </section>
 
-      <!-- ──────────────── 2. JavaScript & Interaction ─────── -->
+      <!-- ──── 1. Click Counter ──── -->
       <section class="section-card">
         <div class="section-title">
-          <span>JavaScript Interaction</span>
+          <span>Click Counter</span>
           <span class="badge working">Working</span>
         </div>
         <p class="section-desc">
-          DOM event handling, animation timing, button interactions,
-          and CSS hover transitions — all driven by the Boa JavaScript engine.
+          DOM event handling backed by the Boa JavaScript engine.
         </p>
 
-        <div class="grid-2" style="margin-bottom:1rem;">
-          <div class="stat-card">
-            <span class="stat-label">Animation FPS</span>
-            <span class="stat-value" id="fps-value">0.0</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-label">Click Counter</span>
-            <span class="stat-value" id="click-count">0</span>
-          </div>
+        <div class="stat-card" style="margin-bottom:0.8rem;">
+          <span class="stat-label">Count</span>
+          <span class="stat-value" id="click-count">0</span>
         </div>
 
-        <div class="btn-row" style="margin-bottom:1rem;">
-          <button class="btn btn-primary" id="click-counter-btn" type="button">
-            + Increment
-          </button>
-          <button class="btn btn-warning" id="toggle-signal-btn" type="button" data-active="false">
-            Toggle Signal
-          </button>
-          <button class="btn btn-outline" id="reset-counter-btn" type="button">
-            Reset
-          </button>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="click-counter-btn" type="button">+ Increment</button>
+          <button class="btn btn-outline" id="reset-counter-btn" type="button">Reset</button>
         </div>
-
-        <div class="grid-2">
-          <div class="hover-probe">Static hover probe</div>
-          <div class="output-box" id="signal-output">Signal idle</div>
-        </div>
-
-        <p style="margin: 0.8rem 0 0; font-size:0.85rem; color:#7a7a92;">
-          Move the pointer across the page to exercise CSS hover transitions;
-          click buttons to trigger event handlers; scroll to see the full page.
-        </p>
       </section>
 
-      <!-- ──────────────── 3. WebAssembly ─────────────────── -->
+      <!-- ──── 2. WebAssembly ──── -->
       <section class="section-card">
         <div class="section-title">
           <span>WebAssembly</span>
           <span class="badge working">Working</span>
         </div>
         <p class="section-desc">
-          <code>WebAssembly.validate()</code>, <code>compile()</code>,
-          and <code>instantiate()</code> using the wasmtime engine via
-          background compilation.
+          Wasm module compiled on page load, then instantiated on demand.
+          Uses <code>WebAssembly.compile()</code> and <code>instantiate()</code>
+          via the wasmtime engine with background compilation.
         </p>
 
-        <div class="grid-2" style="margin-bottom:0.8rem;">
-          <div class="stat-card">
-            <span class="stat-label">Validate</span>
-            <div class="btn-row" style="margin-top:0.4rem;">
-              <button class="btn btn-success" id="wasm-validate-btn" type="button">Validate valid wasm</button>
-              <button class="btn btn-outline" id="wasm-validate-invalid-btn" type="button" style="border-color:#dc3545;color:#dc3545;">Validate invalid</button>
-            </div>
-            <div class="output-box" id="wasm-validate-output" style="margin-top:0.4rem;">
-              Waiting…
-            </div>
+        <div class="stat-card">
+          <span class="stat-label">Compile &amp; Instantiate</span>
+          <p style="font-size:0.82rem;color:#7a7a92;margin:0.3rem 0;">
+            Calls <code>add(a, b)</code> on a pre-compiled wasm module.
+            Type two numbers and click "=".
+          </p>
+          <div class="wasm-arg-row" style="margin-top:0.4rem;">
+            <input type="text" id="wasm-a" value="42" />
+            <span style="color:#7a7a92;">+</span>
+            <input type="text" id="wasm-b" value="58" />
+            <button class="btn btn-success" id="wasm-add-btn" type="button">= ?</button>
           </div>
-          <div class="stat-card">
-            <span class="stat-label">Compile &amp; Instantiate</span>
-            <p style="font-size:0.78rem; color:#7a7a92;margin:0.3rem 0;">
-              Compile a wasm module, then instantiate and call <code>add(a, b)</code>.
-            </p>
-            <div class="wasm-arg-row" style="margin-top:0.4rem;">
-              <input type="number" id="wasm-a" value="42" min="0" max="1000" />
-              <span style="color:#7a7a92;">+</span>
-              <input type="number" id="wasm-b" value="58" min="0" max="1000" />
-              <button class="btn btn-success" id="wasm-add-btn" type="button">= ?</button>
-            </div>
-            <div class="output-box" id="wasm-add-output" style="margin-top:0.3rem;">
-              Not compiled yet
-            </div>
+          <div class="output-box" id="wasm-add-output" style="margin-top:0.3rem;">
+            Not compiled yet
           </div>
         </div>
 
-        <details>
-          <summary style="cursor:pointer;font-size:0.82rem;color:#7a7a92;">
-            Show wasm binary
-          </summary>
+        <details style="margin-top:0.8rem;">
+          <summary style="cursor:pointer;font-size:0.82rem;color:#7a7a92;">Show wasm binary</summary>
           <div class="code-block" style="margin-top:0.5rem;font-size:0.7rem;">
-<span class="dim">;; WAT source (compiled to the binary below):</span>
 <span class="dim">;; (module</span>
 <span class="dim">;;   (func (export "add") (param i32 i32) (result i32)</span>
 <span class="dim">;;     local.get 0</span>
 <span class="dim">;;     local.get 1</span>
 <span class="dim">;;     i32.add))</span>
-
-<span class="dim">// Base64 representation of the wasm binary:</span>
 <span id="wasm-b64-display">AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABags=</span>
           </div>
         </details>
       </section>
 
-      <!-- ──────────────── 4. Streams API ─────────────────── -->
+      <!-- ──── 3. Streams API ──── -->
       <section class="section-card">
         <div class="section-title">
           <span>Streams API</span>
           <span class="badge working">Working</span>
         </div>
         <p class="section-desc">
-          Create a <code>ReadableStream</code> from an array,
-          consume it with a reader, and pipe through a <code>TransformStream</code>.
+          <code>ReadableStream</code> from an array + <code>TransformStream</code>
+          that uppercases strings.
         </p>
 
-        <div class="grid-2">
+        <div class="grid-2" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
           <div class="stat-card">
             <span class="stat-label">ReadableStream from array</span>
             <div class="btn-row" style="margin-top:0.4rem;">
@@ -591,134 +346,50 @@
         </div>
       </section>
 
-      <!-- ──────────────── 5. DOM & CSS ───────────────────── -->
+      <!-- ──── 4. DOM creation ──── -->
       <section class="section-card">
         <div class="section-title">
-          <span>DOM &amp; CSS</span>
+          <span>DOM creation</span>
           <span class="badge working">Working</span>
         </div>
         <p class="section-desc">
-          Element creation, class toggling, computed style reading,
-          event dispatch, and CSS transitions.
+          Create <code>&lt;div&gt;</code> elements, set inline styles,
+          attach event listeners, and append to the container.
         </p>
 
-        <div class="grid-2" style="margin-bottom:1rem;">
-          <div class="stat-card">
-            <span class="stat-label">DOM creation</span>
-            <div class="btn-row" style="margin-top:0.4rem;">
-              <button class="btn btn-primary" id="dom-add-element-btn" type="button">Add a box</button>
-              <button class="btn btn-outline" id="dom-clear-elements-btn" type="button">Clear</button>
-            </div>
-            <div id="dom-box-container" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.5rem;min-height:2rem;"></div>
-          </div>
-          <div class="stat-card">
-            <span class="stat-label">Computed style</span>
-            <div class="btn-row" style="margin-top:0.4rem;">
-              <button class="btn btn-primary" id="computed-style-btn" type="button">Read probe style</button>
-            </div>
-            <div class="code-block" id="computed-style-output" style="margin-top:0.4rem;font-size:0.7rem;">
-              Click to read computed styles…
-            </div>
-          </div>
+        <div class="btn-row" style="margin-bottom:0.8rem;">
+          <button class="btn btn-primary" id="dom-add-element-btn" type="button">Add a box</button>
+          <button class="btn btn-outline" id="dom-clear-elements-btn" type="button">Clear</button>
         </div>
-
-        <div class="stat-card">
-          <span class="stat-label">AbortController / AbortSignal</span>
-          <p style="font-size:0.82rem;color:#7a7a92;margin:0.3rem 0;">
-            Start a progress bar, then abort it mid-way. The abort listener fires and
-            the progress stops.
-          </p>
-          <div class="btn-row" style="margin-top:0.3rem;">
-            <button class="btn btn-success" id="abort-start-btn" type="button">Start</button>
-            <button class="btn btn-outline" id="abort-stop-btn" type="button" style="border-color:#dc3545;color:#dc3545;" disabled>Abort</button>
-          </div>
-          <div class="abort-progress">
-            <div class="abort-progress-bar" id="abort-progress-bar"></div>
-          </div>
-          <div class="output-box" id="abort-output" style="margin-top:0.4rem;">Idle</div>
-        </div>
+        <div id="dom-box-container" style="display:flex;flex-wrap:wrap;gap:0.4rem;min-height:2rem;"></div>
       </section>
 
-      <!-- ──────────────── 6. Console ─────────────────────── -->
+      <!-- ──── 5. Cross-origin iframe ──── -->
       <section class="section-card">
         <div class="section-title">
-          <span>Console</span>
+          <span>Cross-origin iframe</span>
           <span class="badge working">Working</span>
         </div>
         <p class="section-desc">
-          The <code>console.log()</code>, <code>console.warn()</code>,
-          and <code>console.error()</code> APIs print structured messages.
-          Try it below.
+          Embedded third-party content via <code>&lt;iframe&gt;</code>.
         </p>
-
-        <div class="btn-row" style="margin-bottom:0.6rem;">
-          <button class="btn btn-primary" id="console-log-btn" type="button">console.log("Hello!")</button>
-          <button class="btn btn-warning" id="console-warn-btn" type="button">console.warn("Caution")</button>
-          <button class="btn btn-outline" id="console-error-btn" type="button" style="border-color:#dc3545;color:#dc3545;">console.error("Fail")</button>
-        </div>
-        <div class="console-box" id="console-output">
-          <span class="dim">// Console output appears here</span>
-        </div>
+        <iframe
+          class="cross-origin-frame"
+          title="Cross-origin verification frame"
+          src="https://gterzian.github.io/lsp_agent/"
+        ></iframe>
       </section>
 
-      <!-- ──────────────── 7. Navigation & Cross-Origin ───── -->
-      <section class="section-card">
-        <div class="section-title">
-          <span>Navigation &amp; Cross-Origin</span>
-          <span class="badge working">Working</span>
-        </div>
-        <p class="section-desc">
-          Hyperlink following, <code>window.open()</code>, cross-origin
-          iframes, <code>beforeunload</code> events, and
-          <code>Location</code> manipulation.
-        </p>
-
-        <div class="grid-2">
-          <div class="stat-card">
-            <span class="stat-label">Hyperlink navigation</span>
-            <p style="font-size:0.85rem;margin:0.4rem 0;">
-              <a class="nav-link" href="navigated.html" style="color:#4a6cf7;font-weight:600;text-decoration-thickness:0.08em;">
-                Navigate to navigated.html
-              </a>
-            </p>
-            <p style="font-size:0.85rem;margin:0.4rem 0;">
-              <a class="nav-link" href="location-nav-test.html" style="color:#4a6cf7;font-weight:600;">
-                location-nav-test.html
-              </a>
-            </p>
-            <div class="btn-row" style="margin-top:0.3rem;">
-              <button class="btn btn-outline" id="open-tab-btn" type="button">window.open navigated.html</button>
-            </div>
-            <p style="font-size:0.78rem;color:#7a7a92;margin:0.5rem 0 0;">
-              The <code>beforeunload</code> handler fires when navigating away.
-              Check the console or server log.
-            </p>
-          </div>
-          <div class="stat-card" style="padding:0;">
-            <iframe
-              class="cross-origin-frame"
-              title="Cross-origin verification frame"
-              src="https://gterzian.github.io/lsp_agent/"
-              style="border-radius:0.85rem;"
-            ></iframe>
-          </div>
-        </div>
-      </section>
-
-      <!-- ──────────────── Footer ──────────────── -->
       <footer style="text-align:center;padding:1rem 0 0;font-size:0.82rem;color:#a0a0b8;">
         formal-web · built from scratch in Rust
       </footer>
     </main>
 
     <script>
-      // ════════════════════════════════════════════════════════════
-      // 1. Video
-      // ════════════════════════════════════════════════════════════
+      // ──── 0. Video ────
       (function() {
         var video = document.getElementById("capabilities-video");
         if (video) {
-          // Re-assign src to trigger the load algorithm via the IDL setter
           if (video.src && !video.src.startsWith("blob:")) {
             video.src = video.src;
           }
@@ -728,21 +399,11 @@
         }
       })();
 
-      // ════════════════════════════════════════════════════════════
-      // 2. JavaScript Interaction
-      // ════════════════════════════════════════════════════════════
-
-      var fpsValue     = document.getElementById("fps-value");
+      // ──── 1. Click Counter ────
       var clickCountEl = document.getElementById("click-count");
       var clickBtn     = document.getElementById("click-counter-btn");
       var resetBtn     = document.getElementById("reset-counter-btn");
-      var toggleBtn    = document.getElementById("toggle-signal-btn");
-      var signalOutput = document.getElementById("signal-output");
-
-      var clickCount  = 0;
-      var signalActive = false;
-      var sampleStart  = null;
-      var sampledFrames = 0;
+      var clickCount   = 0;
 
       clickBtn.addEventListener("click", function() {
         clickCount += 1;
@@ -754,123 +415,60 @@
         clickCountEl.textContent = "0";
       });
 
-      toggleBtn.addEventListener("click", function() {
-        signalActive = !signalActive;
-        var active = String(signalActive);
-        toggleBtn.setAttribute("data-active", active);
-        signalOutput.textContent = signalActive ? "Signal armed" : "Signal idle";
-        signalOutput.className = "output-box" + (signalActive ? " success" : "");
-      });
-
-      function updateFps(timestamp) {
-        if (sampleStart === null) {
-          sampleStart = timestamp;
-          sampledFrames = 0;
-        }
-        sampledFrames += 1;
-        var elapsed = timestamp - sampleStart;
-        if (elapsed >= 250) {
-          var fps = (sampledFrames * 1000) / elapsed;
-          fpsValue.textContent = fps.toFixed(1);
-          sampleStart = timestamp;
-          sampledFrames = 0;
-        }
-        window.requestAnimationFrame(updateFps);
-      }
-
-      // ════════════════════════════════════════════════════════════
-      // 3. WebAssembly
-      // ════════════════════════════════════════════════════════════
-
-      // A minimal wasm module that exports "add(i32, i32) → i32".
-      // WAT: (module (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))
+      // ──── 2. WebAssembly ────
       var WASM_ADD_BINARY = (function() {
-        // prettier-ignore
         var bytes = new Uint8Array([
-          0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
-          0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, // type section
-          0x03, 0x02, 0x01, 0x00,       // function section
-          0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00, // export "add"
-          0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b  // code body
+          0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+          0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
+          0x03, 0x02, 0x01, 0x00,
+          0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
+          0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b
         ]);
         return bytes.buffer;
       })();
 
-      var wasmModuleRef = null; // holds the compiled Module object
+      var wasmModuleRef = null;
+      var wasmAddBtn    = document.getElementById("wasm-add-btn");
+      var wasmAddOutput = document.getElementById("wasm-add-output");
+      var wasmAInput    = document.getElementById("wasm-a");
+      var wasmBInput    = document.getElementById("wasm-b");
 
-      var wasmValidateBtn     = document.getElementById("wasm-validate-btn");
-      var wasmValidateInvalid = document.getElementById("wasm-validate-invalid-btn");
-      var wasmValidateOutput  = document.getElementById("wasm-validate-output");
-      var wasmAddBtn          = document.getElementById("wasm-add-btn");
-      var wasmAddOutput       = document.getElementById("wasm-add-output");
-      var wasmAInput          = document.getElementById("wasm-a");
-      var wasmBInput          = document.getElementById("wasm-b");
-
-      function appendConsole(text, cls) {
-        var box = document.getElementById("console-output");
-        var line = document.createElement("div");
-        line.className = cls || "log";
-        line.textContent = text;
-        box.appendChild(line);
-        box.scrollTop = box.scrollHeight;
-      }
-
-      wasmValidateBtn.addEventListener("click", function() {
-        var result = WebAssembly.validate(WASM_ADD_BINARY);
-        wasmValidateOutput.textContent = "WebAssembly.validate() → " + result;
-        wasmValidateOutput.className = "output-box" + (result ? " success" : " error");
-        appendConsole("WebAssembly.validate(valid) → " + result, "log");
-      });
-
-      wasmValidateInvalid.addEventListener("click", function() {
-        var bad = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0xff]).buffer;
-        var result = WebAssembly.validate(bad);
-        wasmValidateOutput.textContent = "WebAssembly.validate(invalid) → " + result;
-        wasmValidateOutput.className = "output-box" + (result ? " success" : " error");
-        appendConsole("WebAssembly.validate(invalid) → " + result, result ? "log" : "warn");
-      });
-
-      // Pre-compile the module on page load
       function compileWasmModule() {
         WebAssembly.compile(WASM_ADD_BINARY).then(function(module) {
           wasmModuleRef = module;
-          wasmAddOutput.textContent = "Module compiled ✓ ready to add";
+          wasmAddOutput.textContent = "Module compiled \u2713 ready to add";
           wasmAddOutput.className = "output-box success";
-          appendConsole("WebAssembly.compile() → Module ready", "log");
-          wasmAddBtn.disabled = false;
         }).catch(function(err) {
           wasmAddOutput.textContent = "Compile failed: " + err.message;
           wasmAddOutput.className = "output-box error";
-          appendConsole("WebAssembly.compile() → Error: " + err.message, "error");
         });
       }
 
       wasmAddBtn.addEventListener("click", function() {
         if (!wasmModuleRef) {
-          wasmAddOutput.textContent = "Module not yet compiled, waiting…";
+          wasmAddOutput.textContent = "Module not yet compiled, waiting\u2026";
           wasmAddOutput.className = "output-box";
           return;
         }
-        var a = parseInt(wasmAInput.value, 10) || 0;
-        var b = parseInt(wasmBInput.value, 10) || 0;
+        var a = parseInt(wasmAInput.value, 10);
+        var b = parseInt(wasmBInput.value, 10);
+        if (isNaN(a) || isNaN(b)) {
+          wasmAddOutput.textContent = "Enter two numbers";
+          wasmAddOutput.className = "output-box error";
+          return;
+        }
         WebAssembly.instantiate(wasmModuleRef).then(function(result) {
-          // Note: instantiate(module) resolves with an Instance directly.
           var add = result.exports.add;
           var sum = add(a, b);
           wasmAddOutput.textContent = a + " + " + b + " = " + sum;
           wasmAddOutput.className = "output-box success";
-          appendConsole("WebAssembly.instantiate → add(" + a + ", " + b + ") = " + sum, "log");
         }).catch(function(err) {
           wasmAddOutput.textContent = "Instantiate failed: " + err.message;
           wasmAddOutput.className = "output-box error";
-          appendConsole("WebAssembly.instantiate → Error: " + err.message, "error");
         });
       });
 
-      // ════════════════════════════════════════════════════════════
-      // 4. Streams API
-      // ════════════════════════════════════════════════════════════
-
+      // ──── 3. Streams API ────
       var streamReadBtn     = document.getElementById("stream-read-btn");
       var streamReadOutput  = document.getElementById("stream-read-output");
       var streamTransformBtn = document.getElementById("stream-transform-btn");
@@ -886,7 +484,6 @@
               if (r.done) {
                 streamReadOutput.textContent = "Read: [" + results.join(", ") + "]";
                 streamReadOutput.className = "output-box success";
-                appendConsole("ReadableStream: [" + results.join(", ") + "]", "log");
                 return;
               }
               results.push(r.value);
@@ -900,7 +497,6 @@
         } catch(e) {
           streamReadOutput.textContent = "Stream API error: " + e.message;
           streamReadOutput.className = "output-box error";
-          appendConsole("ReadableStream error: " + e.message, "error");
         }
       });
 
@@ -913,21 +509,16 @@
           });
           var writer = transform.writable.getWriter();
           var reader = transform.readable.getReader();
-
           var words = ["formal", "web", "streams", "api"];
-          // Write all words, then close
           Promise.all(words.map(function(w) { return writer.write(w); })).then(function() {
             return writer.close();
           });
-
-          // Read all results
           var out = [];
           function pump() {
             return reader.read().then(function(r) {
               if (r.done) {
                 streamTransformOutput.textContent = "Transformed: [" + out.join(", ") + "]";
                 streamTransformOutput.className = "output-box success";
-                appendConsole("TransformStream: [" + out.join(", ") + "]", "log");
                 return;
               }
               out.push(r.value);
@@ -944,27 +535,18 @@
         }
       });
 
-      // ════════════════════════════════════════════════════════════
-      // 5. DOM & CSS
-      // ════════════════════════════════════════════════════════════
-
-      var domContainer       = document.getElementById("dom-box-container");
-      var domAddBtn          = document.getElementById("dom-add-element-btn");
-      var domClearBtn        = document.getElementById("dom-clear-elements-btn");
-      var computedStyleBtn   = document.getElementById("computed-style-btn");
-      var computedStyleOut   = document.getElementById("computed-style-output");
-      var hoverProbeEl       = document.querySelector(".hover-probe");
-
+      // ──── 4. DOM creation ────
+      var domContainer = document.getElementById("dom-box-container");
+      var domAddBtn    = document.getElementById("dom-add-element-btn");
+      var domClearBtn  = document.getElementById("dom-clear-elements-btn");
       var colorPalette = ["#4a6cf7", "#28a745", "#ffc107", "#dc3545", "#6f42c1", "#fd7e14"];
 
       domAddBtn.addEventListener("click", function() {
         var box = document.createElement("div");
-        // Note: Use childNodes.length instead of children.length
-        // because 'children' is not yet implemented on all elements.
         var color = colorPalette[domContainer.childNodes.length % colorPalette.length];
         box.style.cssText = "width:2.5rem;height:2.5rem;border-radius:0.5rem;background:" + color +
           ";display:inline-flex;align-items:center;justify-content:center;color:#fff;" +
-          "font-size:0.8rem;font-weight:700;transition:transform 200ms ease, box-shadow 200ms ease;";
+          "font-size:0.8rem;font-weight:700;";
         box.textContent = String(domContainer.childNodes.length + 1);
         box.addEventListener("mouseenter", function() {
           box.style.transform = "scale(1.15)";
@@ -981,139 +563,9 @@
         domContainer.innerHTML = "";
       });
 
-      computedStyleBtn.addEventListener("click", function() {
-        if (!hoverProbeEl) {
-          computedStyleOut.textContent = "Error: hover probe not found";
-          return;
-        }
-        var styles = window.getComputedStyle(hoverProbeEl);
-        var props = [
-          "background-color",
-          "color",
-          "border-radius",
-          "font-size",
-          "padding",
-          "border"
-        ];
-        var lines = props.map(function(p) {
-          return "  " + p + ": " + styles.getPropertyValue(p);
-        });
-        computedStyleOut.textContent = "Computed styles for .hover-probe:\n" + lines.join("\n");
-        appendConsole("getComputedStyle read " + props.length + " properties", "log");
-      });
-
-      // ── AbortController demo ──
-
-      var abortStartBtn = document.getElementById("abort-start-btn");
-      var abortStopBtn  = document.getElementById("abort-stop-btn");
-      var abortBar      = document.getElementById("abort-progress-bar");
-      var abortOutput   = document.getElementById("abort-output");
-
-      var abortController = null;
-      var abortAnimFrame  = null;
-      var abortProgress   = 0;
-
-      function startAbortDemo() {
-        if (abortAnimFrame) return;
-        abortController = new AbortController();
-        abortStopBtn.disabled = false;
-        abortProgress = 0;
-        abortBar.style.width = "0%";
-        abortBar.classList.remove("aborted");
-        abortOutput.textContent = "Running…";
-        abortOutput.className = "output-box info";
-
-        var signal = abortController.signal;
-        signal.addEventListener("abort", function() {
-          abortOutput.textContent = "Aborted at " + Math.round(abortProgress) + "%";
-          abortOutput.className = "output-box error";
-          abortBar.classList.add("aborted");
-          abortStopBtn.disabled = true;
-          abortAnimFrame = null;
-          appendConsole("AbortController: signal aborted at " + Math.round(abortProgress) + "%", "warn");
-        });
-
-        function step() {
-          if (signal.aborted) return;
-          abortProgress += 1.5;
-          // Note: Access the style attribute directly since CSSStyleDeclaration
-          // individual property setters don't persist to the element yet.
-          abortBar.setAttribute("style", "width:" + Math.min(abortProgress, 100) + "%");
-          if (abortProgress >= 100) {
-            abortOutput.textContent = "Completed to 100%";
-            abortOutput.className = "output-box success";
-            abortStopBtn.disabled = true;
-            abortBar.classList.remove("aborted");
-            abortAnimFrame = null;
-            appendConsole("AbortController: completed to 100%", "log");
-            return;
-          }
-          abortAnimFrame = window.setTimeout(step, 100);
-        }
-
-        abortAnimFrame = window.setTimeout(step, 100);
-      }
-
-      abortStartBtn.addEventListener("click", function() {
-        startAbortDemo();
-      });
-
-      abortStopBtn.addEventListener("click", function() {
-        if (abortController) {
-          abortController.abort();
-          if (abortAnimFrame) {
-            window.clearTimeout(abortAnimFrame);
-            abortAnimFrame = null;
-          }
-        }
-      });
-
-      // ════════════════════════════════════════════════════════════
-      // 6. Console
-      // ════════════════════════════════════════════════════════════
-
-      document.getElementById("console-log-btn").addEventListener("click", function() {
-        console.log("Hello from FormalWeb!", { timestamp: Date.now() });
-        appendConsole("→ console.log() called", "log");
-      });
-
-      document.getElementById("console-warn-btn").addEventListener("click", function() {
-        console.warn("Caution: this is a warning message");
-        appendConsole("→ console.warn() called", "warn");
-      });
-
-      document.getElementById("console-error-btn").addEventListener("click", function() {
-        console.error("Error: something went wrong (simulated)");
-        appendConsole("→ console.error() called", "error");
-      });
-
-      // ════════════════════════════════════════════════════════════
-      // 7. Navigation
-      // ════════════════════════════════════════════════════════════
-
-      document.getElementById("open-tab-btn").addEventListener("click", function() {
-        var href = location.href;
-        var base = href.substring(0, href.lastIndexOf("/") + 1);
-        window.open(base + "navigated.html", "_blank");
-        appendConsole("window.open(navigated.html, _blank)", "log");
-      });
-
-      // ════════════════════════════════════════════════════════════
-      // Init
-      // ════════════════════════════════════════════════════════════
-
+      // ──── Init ────
       window.addEventListener("load", function() {
-        // Start FPS counter
-        window.requestAnimationFrame(updateFps);
-
-        // Pre-compile wasm module
         compileWasmModule();
-
-        appendConsole("Page loaded — all capability modules initialized", "log");
-      });
-
-      window.addEventListener("beforeunload", function() {
-        console.log("beforeunload fired");
       });
     </script>
   </body>

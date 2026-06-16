@@ -5,7 +5,7 @@ use blitz_dom::BaseDocument;
 use boa_engine::{JsResult, JsValue, object::JsObject};
 
 use crate::js::{with_event_mut, with_event_target_mut, with_event_target_ref};
-use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, Window};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
 use crate::webidl::{EcmascriptHost, call_user_objects_operation};
 
 use super::event::{EventListener, NONE};
@@ -241,6 +241,15 @@ fn path_for_target(
             host,
             Rc::clone(&html_element.element.node.document),
             html_element.element.node.node_id,
+            target.clone(),
+        );
+    }
+
+    if let Some(html_input_element) = target.downcast_ref::<HTMLInputElement>() {
+        return path_for_node(
+            host,
+            Rc::clone(&html_input_element.html_element.element.node.document),
+            html_input_element.html_element.element.node.node_id,
             target.clone(),
         );
     }

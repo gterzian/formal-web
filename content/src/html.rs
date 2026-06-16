@@ -7,6 +7,7 @@ mod html_anchor_element;
 mod html_dom_tree;
 mod html_element;
 pub(crate) mod html_iframe_element;
+pub(crate) mod html_input_element;
 pub(crate) mod html_media_element;
 pub(crate) mod html_video_element;
 mod html_parser;
@@ -36,6 +37,7 @@ pub(crate) use html_element::{
     inline_style_properties_for_element, resolved_style_properties_for_element,
 };
 pub use html_iframe_element::HTMLIFrameElement;
+pub use html_input_element::HTMLInputElement;
 pub use html_media_element::{HTMLMediaElement, MediaError};
 pub use html_video_element::HTMLVideoElement;
 pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traversable;

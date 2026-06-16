@@ -10,8 +10,8 @@ use boa_engine::{
 
 use crate::dom::Element;
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLMediaElement, HTMLVideoElement,
-    inline_style_properties_for_element,
+    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
+    HTMLVideoElement, inline_style_properties_for_element,
 };
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, WebIdlInterface,
@@ -101,6 +101,10 @@ fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -
 
     if let Some(anchor) = object.downcast_ref::<HTMLAnchorElement>() {
         return Ok(f(&anchor.html_element));
+    }
+
+    if let Some(input) = object.downcast_ref::<HTMLInputElement>() {
+        return Ok(f(&input.html_element));
     }
 
     if let Some(iframe) = object.downcast_ref::<HTMLIFrameElement>() {
@@ -301,6 +305,12 @@ fn style_css_text_setter(this: &JsValue, args: &[JsValue], context: &mut Context
             ifr.html_element.element.remove_attribute("style");
         } else {
             ifr.html_element.element.set_attribute("style", &value);
+        }
+    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
+        if value.is_empty() {
+            input.html_element.element.remove_attribute("style");
+        } else {
+            input.html_element.element.set_attribute("style", &value);
         }
     } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
         if value.is_empty() {
