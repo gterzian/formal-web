@@ -8,7 +8,7 @@ use crate::js::platform_objects::{
 };
 use crate::js::with_event_target_mut;
 use crate::html::{
-    Location, Window, WindowOrWorkerGlobalScope, WindowProxy,
+    Location, Window, WindowOrWorkerGlobalScope, resolve_window,
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
@@ -362,20 +362,7 @@ fn get_computed_style_method(
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
-/// Create a WindowProxy exotic object wrapping the given Window.
-/// The returned JsObject carries a `WindowProxy` data struct whose
-/// `internal_methods()` override supplies the 10 overridden internal
-/// methods specified by HTML §7.2.3.
-///
-/// The prototype is set to `Window.prototype` so that accessors and
-/// methods on the Window WebIDL interface are reachable through the
-/// proxy's prototype chain.
-pub(crate) fn create_window_proxy(window: JsObject) -> JsValue {
-    let prototype = window.prototype();
-    let proxy = WindowProxy::new(window);
-    let proxy_object = JsObject::from_proto_and_data(prototype, proxy);
-    JsValue::from(proxy_object)
-}
+
 
 fn location_object(context: &mut Context) -> JsResult<JsObject> {
     if let Some(object) = cached_location_object(context)? {
@@ -392,24 +379,9 @@ fn location_object(context: &mut Context) -> JsResult<JsObject> {
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
 /// Resolve the Window from a receiver that may be a Window or a WindowProxy.
-/// When accessors on Window.prototype are invoked via a WindowProxy (e.g.
-/// `proxy.onload = ...`), the receiver (`this`) is the WindowProxy JsObject.
-/// This function unwraps WindowProxy to its inner Window so that downcasts
-/// succeed.
+/// Delegates to the domain layer's `resolve_window`.
 fn current_window_object(this: &JsValue, context: &Context) -> JsObject {
-    if let Some(object) = this.as_object() {
-        // If the receiver is a WindowProxy, extract the inner Window.
-        // This handles [[Get]] and [[Set]] delegation: the spec says
-        // OrdinaryGet(W, P, Receiver) / OrdinarySet(W, P, V, Receiver)
-        // where operations happen on W (the Window) even though the
-        // Receiver is the WindowProxy.
-        if let Some(proxy) = object.downcast_ref::<WindowProxy>() {
-            return proxy.window_handle().clone();
-        }
-        return object.clone();
-    }
-
-    context.global_object()
+    resolve_window(this, context)
 }
 
 fn downcast_window(object: &JsObject) -> JsResult<boa_gc::GcRef<'_, Window>> {

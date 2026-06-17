@@ -134,16 +134,16 @@ impl BuiltInConstructor for Proxy {
 }
 
 impl Proxy {
-    pub(crate) fn new(target: JsObject, handler: JsObject) -> Self {
+    pub fn new(target: JsObject, handler: JsObject) -> Self {
         Self {
             data: Some((target, handler)),
         }
     }
 
-    /// This is an internal method only built for usage in the proxy internal methods.
+    /// Returns the (target, handler) of the proxy.
     ///
-    /// It returns the (target, handler) of the proxy.
-    pub(crate) fn try_data(&self) -> JsResult<(JsObject, JsObject)> {
+    /// This is an internal method only built for usage in the proxy internal methods.
+    pub fn try_data(&self) -> JsResult<(JsObject, JsObject)> {
         self.data.clone().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("Proxy object has empty handler and target")
@@ -157,7 +157,7 @@ impl Proxy {
     //  - [ECMAScript reference][spec]
     //
     // [spec]: https://tc39.es/ecma262/#sec-proxycreate
-    pub(crate) fn create(
+    pub fn create(
         target: &JsValue,
         handler: &JsValue,
         context: &mut Context,
