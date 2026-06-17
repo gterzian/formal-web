@@ -165,6 +165,9 @@ struct DiagnoseReport {
     base_spec_excerpt: Option<SpecExcerpt>,
     tlc_raw_output: Option<String>,
     message: Option<String>,
+    /// Human-readable explanation of what the trace model was trying
+    /// to do with the failing entry and why it failed.
+    event_context: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -465,7 +468,13 @@ fn validate_spec(
     };
 
     if report.status == SpecStatus::Fail {
-        let failing_index = report.tlc_diameter.unwrap_or(trace_length);
+        // The TLC diameter is the number of states explored (initial state + accepted events).
+        // The first unaccepted event is at (diameter - 1), i.e. the first trace entry that
+        // the model could not transition from.  Map to 0-indexed line position directly.
+        let failing_index = report
+            .tlc_diameter
+            .map(|diameter| diameter.saturating_sub(1))
+            .unwrap_or(trace_length);
         let window = read_trace_window(&trace_file, failing_index, failure_context)?;
         report.failing_entry = window.failing_entry;
         report.context = window.context;
@@ -878,6 +887,15 @@ fn build_diagnose_report(spec: &SpecLayout, report: SpecReport) -> Result<Diagno
         None => None,
     };
 
+    let event_context = trace_event
+        .as_deref()
+        .map(event_failure_context)
+        .map(|ctx| {
+            let cleaned = ctx.trim();
+            // The event_failure_context strings end with a space; clean it.
+            cleaned.to_owned()
+        });
+
     Ok(DiagnoseReport {
         spec: report.spec,
         status: report.status,
@@ -893,6 +911,7 @@ fn build_diagnose_report(spec: &SpecLayout, report: SpecReport) -> Result<Diagno
         base_spec_excerpt,
         tlc_raw_output: report.tlc_raw_output,
         message: report.message,
+        event_context,
     })
 }
 
@@ -987,6 +1006,48 @@ fn resolve_process_path(path: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to resolve current directory: {error}"))
 }
 
+/// Explain what the TLA+ model was trying to do when processing a trace event that failed.
+/// This gives the user actionable context about why the model might have gotten stuck.
+fn event_failure_context(event: &str) -> &'static str {
+    match event {
+        "CreateNavigable" => {
+            "The model tried to create a new navigable but no free IDs were available. "
+        }
+        "CreateChildNavigable" => {
+            "The model tried to create a child navigable but no free IDs were available. "
+        }
+        "CreateNavigation" => {
+            "The model tried to create a new navigation but no free navigation IDs were \
+available. This is unlikely to be the root cause \u{2014} a preceding event probably failed first, leaving the model stuck before reaching this entry. "
+        }
+        "StartNavigating" => {
+            "The model tried to start a navigation by queueing beforeunload for all \
+affected navigables. The navigation start queue must be non-empty with this \
+navigation at the head. A missing or out-of-order CreateNavigation event is \
+the most common cause. "
+        }
+        "RunBeforeUnload" => {
+            "The model tried to record a beforeunload outcome for a navigable \
+(Approved or Aborted). The navigable's beforeunload status must be set to \
+'Queued' for this navigation ID first (by the preceding StartNavigating). \
+A missing StartNavigating event, or a navigable that was not included in \
+the affected set, prevents this step. "
+        }
+        "ContinueNavigation" => {
+            "The model tried to finalize or abort a navigation, but not all affected \
+navigables have resolved their beforeunload status. Every navigable in the \
+affected set must have a RunBeforeUnload event (outcome \"Approved\" or \
+\"Aborted\") before ContinueNavigation can proceed. A missing \
+RunBeforeUnload event for one or more affected navigables is the most \
+common cause. "
+        }
+        _ => {
+            "The model could not apply this event. Check the trace model \
+preconditions for this action in the TLA+ spec. "
+        }
+    }
+}
+
 fn failure_message(trace_length: usize, diameter: Option<usize>, tlc_success: bool) -> String {
     match (diameter, tlc_success) {
         (Some(diameter), true) => format!(
@@ -1041,7 +1102,12 @@ fn print_human_report(results: &[SpecReport]) {
                         .get("source_line")
                         .and_then(Value::as_u64)
                         .unwrap_or(0);
+                    let event = failing_entry
+                        .get("event")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
                     println!("  failing entry source: {source_file}:{source_line}");
+                    println!("    {:?}", event_failure_context(event));
                 }
                 if let Some(failing_entry) = result.failing_entry.as_ref() {
                     println!("  failing NDJSON entry:");
