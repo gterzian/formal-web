@@ -302,7 +302,7 @@ At the end of each task, run the following steps **in order**:
      ./verification/verify-navigation.sh
      ```
 
-7. **Suggest a commit message** — Propose a commit message for changes tracked by git.
+7. **Suggest a commit message** — Whenever asked for a commit message (whether at end-of-task or any other time), propose a message for the current `git diff HEAD` (the uncommitted changes), not for the entire session's work.  Run `git diff --stat HEAD` to see what changed, and `git diff HEAD` to read the diff before writing the message.
 
 8. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
 

@@ -20,6 +20,8 @@ struct WindowProxyHandler {
 
 impl JsData for WindowProxyHandler {}
 
+// Step 1 of every WindowProxy internal method:
+// "Let W be the value of the [[Window]] internal slot of this."
 fn handler_window(this: &JsValue) -> JsResult<JsObject> {
     let obj = this.as_object().ok_or_else(|| {
         JsNativeError::typ()
@@ -87,6 +89,7 @@ fn trap_define_property(
     let key = args.get(1).unwrap_or(&undefined_val);
     let desc_obj = args.get(2).unwrap_or(&undefined_val);
 
+    // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 2.1: "If P is an array index property name, return false."
     if is_array_index_key(key) {
         return Ok(JsValue::new(false));
@@ -112,7 +115,12 @@ fn trap_get(
     let undefined_val = JsValue::undefined();
     let key_val = args.get(1).unwrap_or(&undefined_val);
 
-    // Step 3: "Return ? OrdinaryGet(this, P, Receiver)."
+    // Step 2: "Check if an access between two browsing contexts should be
+    //           reported, given the current global object's browsing context,
+    //           W's browsing context, P, and the current settings object."
+    // Note: Access reporting is not yet implemented.
+    // Step 3: "If IsPlatformObjectSameOrigin(W) is true, then return ?
+    //           OrdinaryGet(this, P, Receiver)."
     let prop_key = key_val.to_property_key(context)?;
     win.get(prop_key, context)
 }
@@ -128,6 +136,11 @@ fn trap_set(
     let undefined_val = JsValue::undefined();
     let key = args.get(1).unwrap_or(&undefined_val);
 
+    // Step 2: "Check if an access between two browsing contexts should be
+    //           reported, given the current global object's browsing context,
+    //           W's browsing context, P, and the current settings object."
+    // Note: Access reporting is not yet implemented.
+    // Step 3: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 3.1: "If P is an array index property name, return false."
     if is_array_index_key(key) {
         return Ok(JsValue::new(false));
@@ -151,9 +164,16 @@ fn trap_delete_property(
     let undefined_val = JsValue::undefined();
     let key = args.get(1).unwrap_or(&undefined_val);
 
+    // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 2.1: "If P is an array index property name:"
     if is_array_index_key(key) {
         let prop_key = key.to_property_key(context)?;
+        // Step 2.1.1: "Let desc be ! this.[[GetOwnProperty]](P)."
+        // Note: Uses has_own_property (public API) instead of
+        // [[GetOwnProperty]] (pub(crate)).  The result is equivalent:
+        // if desc is undefined, return true; otherwise return false.
+        // Step 2.1.2: "If desc is undefined, then return true."
+        // Step 2.1.3: "Return false."
         let has = win.has_own_property(prop_key, context)?;
         return Ok(JsValue::new(!has));
     }
@@ -175,6 +195,9 @@ fn trap_has(
     let undefined_val = JsValue::undefined();
     let key = args.get(1).unwrap_or(&undefined_val);
 
+    // Note: The WindowProxy spec does not override [[HasProperty]].  This
+    // trap is provided for completeness.  "length" returns true (child
+    // frame count); all other keys delegate to the target's [[HasProperty]].
     if let Some(s) = key.as_string() {
         if s == "length" {
             return Ok(JsValue::new(true));
@@ -194,9 +217,12 @@ fn trap_get_prototype_of(
     _context: &mut Context,
 ) -> JsResult<JsValue> {
     let win = handler_window(this)?;
+    // Step 2: "If IsPlatformObjectSameOrigin(W) is true, then return !
+    //           OrdinaryGetPrototypeOf(W)."
     let proto = win.prototype();
     match proto {
         Some(p) => Ok(JsValue::from(p)),
+        // Step 3: "Return null."
         None => Ok(JsValue::null()),
     }
 }
@@ -213,7 +239,9 @@ fn trap_own_keys(
     // Step 2: "Let maxProperties be W's associated Document's document-tree
     //          child navigables's size."
     // Note: Child navigable support not yet implemented — keys is empty.
-    // Step 4: "Return the concatenation of keys and OrdinaryOwnPropertyKeys(W)."
+    // Step 3: "Let keys be the range 0 to maxProperties, exclusive."
+    // Step 4: "If IsPlatformObjectSameOrigin(W) is true, then return the
+    //           concatenation of keys and OrdinaryOwnPropertyKeys(W)."
     let window_keys = win.own_property_keys(context)?;
     let key_values: Vec<JsValue> = window_keys.into_iter().map(JsValue::from).collect();
 
