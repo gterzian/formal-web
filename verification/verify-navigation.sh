@@ -122,11 +122,6 @@ pkill -f "$ROOT/target/release/formal-web-embedder" 2>/dev/null || true
 
 cd "$ROOT"
 
-# Remove stale lock files that would otherwise cause Cargo to see conflicting
-# crate hashes ("multiple different versions of crate" errors).  The lock files
-# are not tracked in git; Cargo regenerates them each build.
-rm -f "$ROOT/content/Cargo.lock" "$ROOT/net/Cargo.lock"
-
 # Build embedder into the main target/ and the sidecars (content, net) into a
 # separate directory so their Cargo.lock files don't pollute the main build.
 # Each sidecar has its own dependency resolution; keeping them separate avoids

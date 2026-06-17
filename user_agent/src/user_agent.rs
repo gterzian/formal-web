@@ -1703,7 +1703,7 @@ impl UserAgentWorker {
                 }],
             },
         );
-        verification::tla_log!(self.navigation_tracer, "CreateNavigable", traversable_id);
+        //verification::tla_log!(self.navigation_tracer, "CreateNavigable", traversable_id);
         if target_name_keeps_browser_ui_focus(&target_name) {
             self.state.set_active_top_level_traversable(traversable_id);
         }
@@ -2077,63 +2077,25 @@ impl UserAgentWorker {
         // Note: The inclusive-descendant navigable set needed for step 23a is pre-computed here
         // before setting the ongoing navigation so that it reflects the current tree state.
         let descendant_navigable_ids = descendant_navigable_ids(&self.state, navigable_id);
-        let affected_navigable_ids = std::iter::once(navigable_id)
-            .chain(descendant_navigable_ids.iter().copied())
-            .collect::<Vec<_>>();
-        let beforeunload_navigable_ids = affected_navigable_ids
-            .iter()
-            .copied()
-            .filter(|candidate_navigable_id| {
-                self.state
-                    .nav_document_id(*candidate_navigable_id)
-                    .and_then(|document_id| self.state.documents.get(&document_id))
-                    .is_some_and(|document| !document.is_initial_about_blank)
-            })
-            .collect::<Vec<_>>();
-        let beforeunload_navigable_id_set = beforeunload_navigable_ids
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>();
-        let auto_approved_navigable_ids = affected_navigable_ids
-            .into_iter()
-            .filter(|candidate_navigable_id| {
-                !beforeunload_navigable_id_set.contains(candidate_navigable_id)
-            })
-            .collect::<Vec<_>>();
-
         // Step 19: "Set the ongoing navigation for navigable to navigationId."
         self.state
             .set_navigable_ongoing_navigation(traversable_id, Some(navigation_id));
         verification::tla_log!(self.navigation_tracer, "StartNavigating", navigation_id);
 
-        for auto_approved_navigable_id in auto_approved_navigable_ids {
-            verification::tla_log!(
-                self.navigation_tracer,
-                "RunBeforeUnload",
-                auto_approved_navigable_id,
-                navigation_id,
-                "Approved"
-            );
-        }
+        // Note: The implementation always runs the beforeunload check through content,
+        // even for initial about:blank documents.  This ensures the trace always contains
+        // a content-side RunBeforeUnload event, making verification sensitive to whether
+        // the content process's beforeunload path is functioning.
 
-        // Step 23: "In parallel, run these steps:"
-
-        if !beforeunload_navigable_ids.is_empty() {
-            self.check_if_unloading_is_canceled(
-                navigation_id,
-                navigable_id,
-                destination_url,
-                user_involvement,
-                beforeunload_navigable_ids,
-            )
-        } else {
-            self.create_navigation_params_by_fetching(
-                navigation_id,
-                traversable_id,
-                destination_url,
-                user_involvement,
-            )
-        }
+        self.check_if_unloading_is_canceled(
+            navigation_id,
+            navigable_id,
+            destination_url,
+            user_involvement,
+            std::iter::once(navigable_id)
+                .chain(descendant_navigable_ids.iter().copied())
+                .collect(),
+        )
     }
 
     /// <https://html.spec.whatwg.org/multipage/#checking-if-unloading-is-canceled>
@@ -2193,18 +2155,19 @@ impl UserAgentWorker {
 
         for (document_id, candidate_traversable_id) in beforeunload_targets {
             let command_sender = self.command_sender_for_traversable(candidate_traversable_id)?;
-            if let Err(error) = self.send_event_loop_command(
-                &command_sender,
-                ContentCommand::RunBeforeUnload {
+            if let Err(error) = command_sender.send(EventLoopCommand::FireAndForget {
+                command: ContentCommand::RunBeforeUnload {
                     document_id,
                     check_id,
                     navigation_id,
                 },
-            ) {
+            }) {
                 self.state
                     .pending_before_unload_navigations
                     .remove(&check_id);
-                return Err(error);
+                return Err(format!(
+                    "failed to send RunBeforeUnload command: {error}"
+                ));
             }
         }
 
