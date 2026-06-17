@@ -29,7 +29,7 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-pub mod internal_methods;
+pub(crate) mod internal_methods;
 
 pub mod builtins;
 mod datatypes;

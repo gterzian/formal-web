@@ -118,3 +118,44 @@ Any spec that serves a complete, queryable HTML document. Common targets:
 - All downloaded spec HTML stays in memory for the session and is cleared on `session_shutdown`.
 - `spec_ref_links` matches the `ref-for-{id}` prefix on any element; the WHATWG spec uses `<a>` elements with this pattern. Circled-digit suffixes (U+2460–U+2473, compound) distinguish multiple references.
 - URL fragments use `encodeURI` to percent-encode non-ASCII characters (circled digits) for correct browser navigation.
+
+## Finding Boa API matches via spec anchors
+
+When implementing Web IDL or HTML algorithms in Rust with Boa, the ECMAScript
+operations referenced by web specs (e.g. `ProxyCreate`, `CreateBuiltinFunction`,
+`SetImmutablePrototype`) map to Boa's Rust API.  The ECMAScript spec anchor
+(e.g. `#sec-proxycreate`) pinpoints the implementation location.
+
+**Methodology:**
+1. Web IDL/HTML specs link to ECMAScript operations with URLs like
+   `https://tc39.es/ecma262/#sec-proxycreate`.
+2. Search for that anchor (`sec-proxycreate`) within vendored Boa to find the
+   corresponding Rust function (e.g. `Proxy::create`).
+3. The spec anchor often appears in Boa's doc comments directly:
+   ```rust
+   // `10.5.14 ProxyCreate ( target, handler )`
+   //
+   // [spec]: https://tc39.es/ecma262/#sec-proxycreate
+   pub fn create(target, handler, context) { ... }
+   ```
+4. If the function is `pub(crate)`, check whether a public alternative exists
+   or whether making it `pub` is appropriate (e.g. `Proxy::create` and
+   `Proxy::try_data` in `vendor/boa/core/engine/src/builtins/proxy/mod.rs`).
+
+**Common ECMAScript → Boa mappings:**
+
+| Spec operation | Boa API | Notes |
+|---|---|---|
+| `ProxyCreate(target, handler)` | `boa_engine::builtins::proxy::Proxy::create(target, handler, context)` | Returns `JsResult<JsObject>` |
+| `CreateBuiltinFunction(steps, length, name, ...)` | `FunctionObjectBuilder::new(realm, NativeFunction::from_copy_closure_with_captures(...)).name(name).length(length).build()` | `NativeFunction::from_copy_closure_with_captures` for state-carrying traps |
+| `OrdinaryObjectCreate(null, slots)` | `JsObject::with_null_proto()` | Creates object with null prototype |
+| `CreateDataPropertyOrThrow(O, P, V)` | `handler.create_data_property_or_throw(key, value, context)` | Method on `JsObject` |
+| `SetImmutablePrototype(O, V)` | Check `window.prototype()` then `JsObject::equals` | Use the public `prototype()` method, not `__get_prototype_of__` |
+| `IsCallable(target)` | `target.is_callable()` | Method on `JsObject` |
+| `IsConstructor(target)` | `target.is_constructor()` | Method on `JsObject` |
+| `ToPropertyDescriptor(obj)` | `obj.to_property_descriptor(context)` | Method on `JsObject` |
+| `GetMethod(V, P)` | `handler.get_method(key, context)` | Currently `pub(crate)` in Boa |
+
+When the spec anchor URL is shortened (e.g. `https://tc39.es/ecma262/#sec-proxycreate`
+without the multipage path), search for just the anchor (`sec-proxycreate`) in the
+Boa codebase.  Boa's doc comments use both full multipage URLs and shortened ones.
