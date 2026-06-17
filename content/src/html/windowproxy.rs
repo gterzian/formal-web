@@ -1,15 +1,4 @@
 //! <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
-//!
-//! The WindowProxy is an exotic object that wraps a Window ordinary object
-//! and is implemented as a JavaScript Proxy following the Web IDL observable
-//! array pattern (§3.10).  The Proxy target is the inner Window and the
-//! handler is an ordinary object whose trap functions implement the
-//! WindowProxy semantics per HTML §7.2.3.
-//!
-//! The handler carries a [[Window]] internal slot (via JsData) referencing
-//! the wrapped Window.  Each trap reads the handler's internal slot via
-//! `this`, replicating the observable array pattern where the handler
-//! stores state in internal slots ([[BackingList]], [[Type]], etc.).
 
 use boa_engine::{
     Context, JsData, JsNativeError, JsObject, JsResult, JsValue,
@@ -23,8 +12,6 @@ use boa_gc::{Finalize, Trace};
 
 use crate::webidl::is_array_index_key;
 
-// ── Handler struct with [[Window]] internal slot ──
-
 /// <https://webidl.spec.whatwg.org/#creating-an-observable-array-exotic-object>
 #[derive(Trace, Finalize)]
 struct WindowProxyHandler {
@@ -32,8 +19,6 @@ struct WindowProxyHandler {
 }
 
 impl JsData for WindowProxyHandler {}
-
-// ── Helper: extract Window from handler (via `this`) ──
 
 fn handler_window(this: &JsValue) -> JsResult<JsObject> {
     let obj = this.as_object().ok_or_else(|| {
@@ -46,8 +31,6 @@ fn handler_window(this: &JsValue) -> JsResult<JsObject> {
     })?;
     Ok(handler.window.clone())
 }
-
-// ── Trap functions ──
 
 /// <https://html.spec.whatwg.org/#windowproxy-setprototypeof>
 fn trap_set_prototype_of(
@@ -77,6 +60,7 @@ fn trap_prevent_extensions(
     _captures: &WindowProxyHandler,
     _context: &mut Context,
 ) -> JsResult<JsValue> {
+    // Step 1: "Return false."
     Ok(JsValue::new(false))
 }
 
@@ -87,6 +71,7 @@ fn trap_is_extensible(
     _captures: &WindowProxyHandler,
     _context: &mut Context,
 ) -> JsResult<JsValue> {
+    // Step 1: "Return true."
     Ok(JsValue::new(true))
 }
 
@@ -103,7 +88,7 @@ fn trap_get_own_property_descriptor(
 
     // Step 2: "If P is an array index property name:"
     if is_array_index_key(key) {
-        // Child navigable lookup not yet implemented.
+        // Note: Child navigable lookup not yet implemented.
         return Ok(JsValue::undefined());
     }
 
@@ -154,8 +139,6 @@ fn trap_get(
     let key_val = args.get(1).unwrap_or(&undefined_val);
 
     // Step 3: "Return ? OrdinaryGet(this, P, Receiver)."
-    // Delegate to the target's [[Get]] via the public API, matching the
-    // observable array pattern's "Return ? O.[[Get]](P, Receiver)".
     let prop_key = property_key_from_value_with_ctx(key_val, context);
     win.get(prop_key, context)
 }
@@ -254,7 +237,8 @@ fn trap_own_keys(
     let win = handler_window(this)?;
 
     // Step 2: "Let maxProperties be W's associated Document's document-tree
-    //          child navigables's size." → empty (not yet implemented).
+    //          child navigables's size."
+    // Note: Child navigable support not yet implemented — keys is empty.
     // Step 4: "Return the concatenation of keys and OrdinaryOwnPropertyKeys(W)."
     let window_keys = win.own_property_keys(context)?;
     let key_values: Vec<JsValue> = window_keys.into_iter().map(JsValue::from).collect();
@@ -277,15 +261,12 @@ fn trap_own_keys(
     Ok(JsValue::from(key_array))
 }
 
-// ── Public API ──
-
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 pub(crate) fn create_window_proxy(
     window: &JsObject,
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // Step 1-2 (observable array pattern): Create handler with null proto
-    // and a [[Window]] internal slot.
+    // Note: The handler is created with a [[Window]] internal slot.
     let handler_proto: JsPrototype = None;
     let handler: JsObject = JsObject::<WindowProxyHandler>::new(
         context.root_shape(),
@@ -296,7 +277,8 @@ pub(crate) fn create_window_proxy(
     )
     .upcast();
 
-    // Steps 3+: Register all traps.
+    // Note: Each trap is registered via CreateBuiltinFunction +
+    // CreateDataPropertyOrThrow, matching the observable array pattern.
     let traps: &[(
         &str,
         usize,
@@ -317,8 +299,8 @@ pub(crate) fn create_window_proxy(
 
     for &(name_str, length, trap_fn) in traps {
         let name = js_string!(name_str);
-        // Each trap is a NativeFunction with a dummy handler capture.
-        // The real handler state is read from `this` inside each trap.
+        // Note: The captures value is a dummy; the real handler is
+        // read from `this` inside each trap function.
         let trap = NativeFunction::from_copy_closure_with_captures(
             move |this, args, _captures: &WindowProxyHandler, context| {
                 trap_fn(this, args, _captures, context)
@@ -334,8 +316,7 @@ pub(crate) fn create_window_proxy(
         handler.create_data_property_or_throw(name, fn_obj, context)?;
     }
 
-    // ── Create the Proxy ──
-    Proxy::create(&JsValue::from(window.clone()), &handler.into(), context)
+        Proxy::create(&JsValue::from(window.clone()), &handler.into(), context)
         .map(JsValue::from)
 }
 
@@ -351,8 +332,6 @@ pub(crate) fn resolve_window(value: &JsValue, context: &Context) -> JsObject {
     }
     context.global_object()
 }
-
-// ── Helpers ──
 
 fn descriptor_to_js_value(desc: &PropertyDescriptor, context: &mut Context) -> JsValue {
     if desc.is_data_descriptor() {
@@ -410,8 +389,6 @@ fn desc_from_obj(desc_obj: &JsValue, context: &mut Context) -> JsResult<Property
             .into()),
     }
 }
-
-// ── Cross-origin helpers (HTML §7.2.1.3) ──
 
 #[allow(dead_code)]
 struct CrossOriginPropertyEntry {

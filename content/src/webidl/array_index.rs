@@ -1,18 +1,8 @@
 //! <https://webidl.spec.whatwg.org/#dfn-array-index-property-name>
-//!
-//! Helpers for the Web IDL "array index property name" definition.
 
 use boa_engine::JsValue;
 
 /// <https://webidl.spec.whatwg.org/#dfn-array-index-property-name>
-///
-/// A string property name P is an array index if:
-/// - P is not the empty string
-/// - ToUint32(P) is not 2^32-1
-/// - SameValue(ToString(ToUint32(P)), P) is true
-///
-/// This also checks numeric JsValue variants as they would be coerced
-/// to string for property access.
 pub(crate) fn is_array_index_key(key: &JsValue) -> bool {
     if let Some(s) = key.as_string() {
         let s = s.to_std_string_escaped();
