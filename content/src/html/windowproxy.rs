@@ -5,7 +5,7 @@ use boa_engine::{
     builtins::proxy::Proxy,
     js_string,
     native_function::NativeFunction,
-    object::{FunctionObjectBuilder, JsPrototype, ObjectInitializer},
+    object::{FunctionObjectBuilder, JsPrototype},
     property::{PropertyDescriptor, PropertyKey},
 };
 use boa_gc::{Finalize, Trace};
@@ -75,32 +75,6 @@ fn trap_is_extensible(
     Ok(JsValue::new(true))
 }
 
-/// <https://html.spec.whatwg.org/#windowproxy-getownproperty>
-fn trap_get_own_property_descriptor(
-    this: &JsValue,
-    args: &[JsValue],
-    _captures: &WindowProxyHandler,
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let win = handler_window(this)?;
-    let undefined_val = JsValue::undefined();
-    let key = args.get(1).unwrap_or(&undefined_val);
-
-    // Step 2: "If P is an array index property name:"
-    if is_array_index_key(key) {
-        // Note: Child navigable lookup not yet implemented.
-        return Ok(JsValue::undefined());
-    }
-
-    // Step 3: "Return ! OrdinaryGetOwnProperty(W, P)."
-    let prop_key = property_key_from_value_with_ctx(key, context);
-    let desc = win.borrow().properties().get(&prop_key);
-    match desc {
-        None => Ok(JsValue::undefined()),
-        Some(desc) => Ok(descriptor_to_js_value(&desc, context)),
-    }
-}
-
 /// <https://html.spec.whatwg.org/#windowproxy-defineownproperty>
 fn trap_define_property(
     this: &JsValue,
@@ -120,7 +94,7 @@ fn trap_define_property(
 
     // Step 2.2: "Return ? OrdinaryDefineOwnProperty(W, P, Desc)."
     let desc = desc_from_obj(desc_obj, context)?;
-    let prop_key = property_key_from_value_with_ctx(key, context);
+    let prop_key = key.to_property_key(context)?;
     match win.define_property_or_throw(prop_key, desc, context) {
         Ok(_) => Ok(JsValue::new(true)),
         Err(_) => Ok(JsValue::new(false)),
@@ -139,7 +113,7 @@ fn trap_get(
     let key_val = args.get(1).unwrap_or(&undefined_val);
 
     // Step 3: "Return ? OrdinaryGet(this, P, Receiver)."
-    let prop_key = property_key_from_value_with_ctx(key_val, context);
+    let prop_key = key_val.to_property_key(context)?;
     win.get(prop_key, context)
 }
 
@@ -161,7 +135,7 @@ fn trap_set(
 
     // Step 3.2: "Return ? OrdinarySet(W, P, V, Receiver)."
     let value = args.get(2).cloned().unwrap_or(JsValue::undefined());
-    let prop_key = property_key_from_value_with_ctx(key, context);
+    let prop_key = key.to_property_key(context)?;
     let result = win.set(prop_key, value, false, context)?;
     Ok(JsValue::new(result))
 }
@@ -179,13 +153,13 @@ fn trap_delete_property(
 
     // Step 2.1: "If P is an array index property name:"
     if is_array_index_key(key) {
-        let prop_key = property_key_from_value_with_ctx(key, context);
+        let prop_key = key.to_property_key(context)?;
         let has = win.has_own_property(prop_key, context)?;
         return Ok(JsValue::new(!has));
     }
 
     // Step 2.2: "Return ? OrdinaryDelete(W, P)."
-    let prop_key = property_key_from_value_with_ctx(key, context);
+    let prop_key = key.to_property_key(context)?;
     let result = win.delete_property_or_throw(prop_key, context)?;
     Ok(JsValue::new(result))
 }
@@ -207,7 +181,7 @@ fn trap_has(
         }
     }
 
-    let prop_key = property_key_from_value_with_ctx(key, context);
+    let prop_key = key.to_property_key(context)?;
     let result = win.has_property(prop_key, context)?;
     Ok(JsValue::new(result))
 }
@@ -288,7 +262,7 @@ pub(crate) fn create_window_proxy(
         ("setPrototypeOf", 2, trap_set_prototype_of as _),
         ("isExtensible", 1, trap_is_extensible as _),
         ("preventExtensions", 1, trap_prevent_extensions as _),
-        ("getOwnPropertyDescriptor", 2, trap_get_own_property_descriptor as _),
+
         ("defineProperty", 3, trap_define_property as _),
         ("get", 3, trap_get as _),
         ("set", 4, trap_set as _),
@@ -316,7 +290,7 @@ pub(crate) fn create_window_proxy(
         handler.create_data_property_or_throw(name, fn_obj, context)?;
     }
 
-        Proxy::create(&JsValue::from(window.clone()), &handler.into(), context)
+    Proxy::create(&JsValue::from(window.clone()), &handler.into(), context)
         .map(JsValue::from)
 }
 
@@ -331,54 +305,6 @@ pub(crate) fn resolve_window(value: &JsValue, context: &Context) -> JsObject {
         return object.clone();
     }
     context.global_object()
-}
-
-fn descriptor_to_js_value(desc: &PropertyDescriptor, context: &mut Context) -> JsValue {
-    if desc.is_data_descriptor() {
-        let mut obj = ObjectInitializer::new(context);
-        obj.property(js_string!("value"), desc.expect_value().clone(), Default::default());
-        obj.property(js_string!("writable"), desc.expect_writable(), Default::default());
-        obj.property(js_string!("enumerable"), desc.expect_enumerable(), Default::default());
-        obj.property(js_string!("configurable"), desc.expect_configurable(), Default::default());
-        obj.build().into()
-    } else if desc.is_accessor_descriptor() {
-        let mut obj = ObjectInitializer::new(context);
-        if let Some(get) = desc.get() {
-            if !get.is_undefined() {
-                obj.property(js_string!("get"), get.clone(), Default::default());
-            }
-        }
-        if let Some(set) = desc.set() {
-            if !set.is_undefined() {
-                obj.property(js_string!("set"), set.clone(), Default::default());
-            }
-        }
-        obj.property(js_string!("enumerable"), desc.expect_enumerable(), Default::default());
-        obj.property(js_string!("configurable"), desc.expect_configurable(), Default::default());
-        obj.build().into()
-    } else {
-        let mut obj = ObjectInitializer::new(context);
-        obj.property(js_string!("enumerable"), desc.expect_enumerable(), Default::default());
-        obj.property(js_string!("configurable"), desc.expect_configurable(), Default::default());
-        obj.build().into()
-    }
-}
-
-fn property_key_from_value_with_ctx(key: &JsValue, context: &mut Context) -> PropertyKey {
-    if let Some(s) = key.as_string() {
-        PropertyKey::String(s.clone())
-    } else if let Some(n) = key.as_number() {
-        if n.fract() == 0.0 && n >= 0.0 && n < u32::MAX as f64 {
-            PropertyKey::from(n as u32)
-        } else {
-            PropertyKey::from(n)
-        }
-    } else if let Some(sym) = key.as_symbol() {
-        PropertyKey::Symbol(sym)
-    } else {
-        let s = key.to_string(context).unwrap_or_else(|_| js_string!(""));
-        PropertyKey::String(s)
-    }
 }
 
 fn desc_from_obj(desc_obj: &JsValue, context: &mut Context) -> JsResult<PropertyDescriptor> {
