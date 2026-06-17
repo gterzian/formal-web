@@ -6,206 +6,333 @@
 //! handler is an ordinary object whose trap functions implement the
 //! WindowProxy semantics per HTML §7.2.3.
 //!
-//! Each trap matches a WindowProxy internal method.  Traps that differ from
-//! the default Proxy behavior (which delegates to the target) are explicitly
-//! implemented.  Traps whose default behavior matches the WindowProxy spec
-//! for the same-origin case are omitted — the Proxy spec's default
-//! [[GetOwnProperty]] / [[Get]] / [[Set]] / [[Delete]] / [[DefineOwnProperty]]
-//! / [[HasProperty]] / [[OwnPropertyKeys]] all delegate to the target's
-//! ordinary operations, which IS the WindowProxy same-origin algorithm.
+//! The handler carries a [[Window]] internal slot (via JsData) referencing
+//! the wrapped Window.  Each trap reads the handler's internal slot via
+//! `this`, replicating the observable array pattern where the handler
+//! stores state in internal slots ([[BackingList]], [[Type]], etc.).
 
 use boa_engine::{
-    Context, JsNativeError, JsObject, JsResult, JsValue,
+    Context, JsData, JsNativeError, JsObject, JsResult, JsValue,
     builtins::proxy::Proxy,
     js_string,
     native_function::NativeFunction,
-    object::FunctionObjectBuilder,
+    object::{FunctionObjectBuilder, JsPrototype, ObjectInitializer},
     property::{PropertyDescriptor, PropertyKey},
 };
+use boa_gc::{Finalize, Trace};
+
+use crate::webidl::is_array_index_key;
+
+// ── Handler struct with [[Window]] internal slot ──
+
+/// <https://webidl.spec.whatwg.org/#creating-an-observable-array-exotic-object>
+#[derive(Trace, Finalize)]
+struct WindowProxyHandler {
+    window: JsObject,
+}
+
+impl JsData for WindowProxyHandler {}
+
+// ── Helper: extract Window from handler (via `this`) ──
+
+fn handler_window(this: &JsValue) -> JsResult<JsObject> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("WindowProxy trap called with non-object this")
+    })?;
+    let handler = obj.downcast_ref::<WindowProxyHandler>().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("WindowProxy trap called on non-WindowProxy handler")
+    })?;
+    Ok(handler.window.clone())
+}
+
+// ── Trap functions ──
+
+/// <https://html.spec.whatwg.org/#windowproxy-setprototypeof>
+fn trap_set_prototype_of(
+    this: &JsValue,
+    args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+    // Step 1: "Return ! SetImmutablePrototype(this, V)."
+    let current = win.prototype();
+    let undefined_val = JsValue::undefined();
+    let val = args.get(1).unwrap_or(&undefined_val);
+    let same = match (&current, val) {
+        (Some(current_proto), _) => val
+            .as_object()
+            .map_or(false, |v| JsObject::equals(current_proto, &v)),
+        (None, _) => val.is_null(),
+    };
+    Ok(JsValue::new(same))
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-preventextensions>
+fn trap_prevent_extensions(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    Ok(JsValue::new(false))
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-isextensible>
+fn trap_is_extensible(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    Ok(JsValue::new(true))
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-getownproperty>
+fn trap_get_own_property_descriptor(
+    this: &JsValue,
+    args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+    let undefined_val = JsValue::undefined();
+    let key = args.get(1).unwrap_or(&undefined_val);
+
+    // Step 2: "If P is an array index property name:"
+    if is_array_index_key(key) {
+        // Child navigable lookup not yet implemented.
+        return Ok(JsValue::undefined());
+    }
+
+    // Step 3: "Return ! OrdinaryGetOwnProperty(W, P)."
+    let prop_key = property_key_from_value_with_ctx(key, context);
+    let desc = win.borrow().properties().get(&prop_key);
+    match desc {
+        None => Ok(JsValue::undefined()),
+        Some(desc) => Ok(descriptor_to_js_value(&desc, context)),
+    }
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-defineownproperty>
+fn trap_define_property(
+    this: &JsValue,
+    args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+    let undefined_val = JsValue::undefined();
+    let key = args.get(1).unwrap_or(&undefined_val);
+    let desc_obj = args.get(2).unwrap_or(&undefined_val);
+
+    // Step 2.1: "If P is an array index property name, return false."
+    if is_array_index_key(key) {
+        return Ok(JsValue::new(false));
+    }
+
+    // Step 2.2: "Return ? OrdinaryDefineOwnProperty(W, P, Desc)."
+    let desc = desc_from_obj(desc_obj, context)?;
+    let prop_key = property_key_from_value_with_ctx(key, context);
+    match win.define_property_or_throw(prop_key, desc, context) {
+        Ok(_) => Ok(JsValue::new(true)),
+        Err(_) => Ok(JsValue::new(false)),
+    }
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-get>
+fn trap_get(
+    this: &JsValue,
+    args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+    let undefined_val = JsValue::undefined();
+    let key_val = args.get(1).unwrap_or(&undefined_val);
+
+    // Step 3: "Return ? OrdinaryGet(this, P, Receiver)."
+    // Delegate to the target's [[Get]] via the public API, matching the
+    // observable array pattern's "Return ? O.[[Get]](P, Receiver)".
+    let prop_key = property_key_from_value_with_ctx(key_val, context);
+    win.get(prop_key, context)
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-set>
+fn trap_set(
+    this: &JsValue,
+    args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+    let undefined_val = JsValue::undefined();
+    let key = args.get(1).unwrap_or(&undefined_val);
+
+    // Step 3.1: "If P is an array index property name, return false."
+    if is_array_index_key(key) {
+        return Ok(JsValue::new(false));
+    }
+
+    // Step 3.2: "Return ? OrdinarySet(W, P, V, Receiver)."
+    let value = args.get(2).cloned().unwrap_or(JsValue::undefined());
+    let prop_key = property_key_from_value_with_ctx(key, context);
+    let result = win.set(prop_key, value, false, context)?;
+    Ok(JsValue::new(result))
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-delete>
+fn trap_delete_property(
+    this: &JsValue,
+    args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+    let undefined_val = JsValue::undefined();
+    let key = args.get(1).unwrap_or(&undefined_val);
+
+    // Step 2.1: "If P is an array index property name:"
+    if is_array_index_key(key) {
+        let prop_key = property_key_from_value_with_ctx(key, context);
+        let has = win.has_own_property(prop_key, context)?;
+        return Ok(JsValue::new(!has));
+    }
+
+    // Step 2.2: "Return ? OrdinaryDelete(W, P)."
+    let prop_key = property_key_from_value_with_ctx(key, context);
+    let result = win.delete_property_or_throw(prop_key, context)?;
+    Ok(JsValue::new(result))
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-has>
+fn trap_has(
+    this: &JsValue,
+    args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+    let undefined_val = JsValue::undefined();
+    let key = args.get(1).unwrap_or(&undefined_val);
+
+    if let Some(s) = key.as_string() {
+        if s == "length" {
+            return Ok(JsValue::new(true));
+        }
+    }
+
+    let prop_key = property_key_from_value_with_ctx(key, context);
+    let result = win.has_property(prop_key, context)?;
+    Ok(JsValue::new(result))
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-getprototypeof>
+fn trap_get_prototype_of(
+    this: &JsValue,
+    _args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+    let proto = win.prototype();
+    match proto {
+        Some(p) => Ok(JsValue::from(p)),
+        None => Ok(JsValue::null()),
+    }
+}
+
+/// <https://html.spec.whatwg.org/#windowproxy-ownpropertykeys>
+fn trap_own_keys(
+    this: &JsValue,
+    _args: &[JsValue],
+    _captures: &WindowProxyHandler,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let win = handler_window(this)?;
+
+    // Step 2: "Let maxProperties be W's associated Document's document-tree
+    //          child navigables's size." → empty (not yet implemented).
+    // Step 4: "Return the concatenation of keys and OrdinaryOwnPropertyKeys(W)."
+    let window_keys = win.own_property_keys(context)?;
+    let key_values: Vec<JsValue> = window_keys.into_iter().map(JsValue::from).collect();
+
+    let key_array = JsObject::with_object_proto(context.intrinsics());
+    for (i, val) in key_values.iter().enumerate() {
+        key_array
+            .create_data_property_or_throw(i as u32, val.clone(), context)
+            .expect("CreateArrayFromList: creating array properties");
+    }
+    key_array.set_prototype(None);
+    key_array
+        .create_data_property_or_throw(
+            js_string!("length"),
+            JsValue::new(key_values.len()),
+            context,
+        )
+        .expect("CreateArrayFromList: setting length");
+
+    Ok(JsValue::from(key_array))
+}
+
+// ── Public API ──
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 pub(crate) fn create_window_proxy(
     window: &JsObject,
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // Create handler with null prototype (Web IDL observable array pattern).
-    let handler = JsObject::with_null_proto();
+    // Step 1-2 (observable array pattern): Create handler with null proto
+    // and a [[Window]] internal slot.
+    let handler_proto: JsPrototype = None;
+    let handler: JsObject = JsObject::<WindowProxyHandler>::new(
+        context.root_shape(),
+        handler_proto,
+        WindowProxyHandler {
+            window: window.clone(),
+        },
+    )
+    .upcast();
 
-    // ── [[SetPrototypeOf]] trap ──
-    // <https://html.spec.whatwg.org/#windowproxy-setprototypeof>
-    // Step 1: "Return ! SetImmutablePrototype(this, V)."
-    {
+    // Steps 3+: Register all traps.
+    let traps: &[(
+        &str,
+        usize,
+        fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>,
+    )] = &[
+        ("getPrototypeOf", 1, trap_get_prototype_of as _),
+        ("setPrototypeOf", 2, trap_set_prototype_of as _),
+        ("isExtensible", 1, trap_is_extensible as _),
+        ("preventExtensions", 1, trap_prevent_extensions as _),
+        ("getOwnPropertyDescriptor", 2, trap_get_own_property_descriptor as _),
+        ("defineProperty", 3, trap_define_property as _),
+        ("get", 3, trap_get as _),
+        ("set", 4, trap_set as _),
+        ("deleteProperty", 2, trap_delete_property as _),
+        ("has", 2, trap_has as _),
+        ("ownKeys", 1, trap_own_keys as _),
+    ];
+
+    for &(name_str, length, trap_fn) in traps {
+        let name = js_string!(name_str);
+        // Each trap is a NativeFunction with a dummy handler capture.
+        // The real handler state is read from `this` inside each trap.
         let trap = NativeFunction::from_copy_closure_with_captures(
-            |_this, args, win: &JsObject, _context| {
-                let current = win.prototype();
-                let undefined_val = JsValue::undefined();
-                let val = args.get(1).unwrap_or(&undefined_val);
-
-                let same = match (&current, val) {
-                    (Some(current_proto), _) => val
-                        .as_object()
-                        .map_or(false, |v| JsObject::equals(current_proto, &v)),
-                    (None, _) => val.is_null(),
-                };
-                Ok(JsValue::new(same))
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
             },
-            window.clone(),
-        );
-        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
-            .name(js_string!("setPrototypeOf"))
-            .length(2)
-            .build();
-        handler.create_data_property_or_throw(js_string!("setPrototypeOf"), fn_obj, context)?;
-    }
-
-    // ── [[PreventExtensions]] trap ──
-    // <https://html.spec.whatwg.org/#windowproxy-preventextensions>
-    // Step 1: "Return false."
-    {
-        let trap = NativeFunction::from_copy_closure_with_captures(
-            |_this, _args, _win: &JsObject, _context| Ok(JsValue::new(false)),
-            window.clone(),
-        );
-        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
-            .name(js_string!("preventExtensions"))
-            .length(1)
-            .build();
-        handler.create_data_property_or_throw(
-            js_string!("preventExtensions"),
-            fn_obj,
-            context,
-        )?;
-    }
-
-    // ── [[DefineOwnProperty]] trap ──
-    // <https://html.spec.whatwg.org/#windowproxy-defineownproperty>
-    // Array index: return false (spec step 2.1).
-    // Non-array-index: Return ? OrdinaryDefineOwnProperty(W, P, Desc).
-    {
-        let trap = NativeFunction::from_copy_closure_with_captures(
-            |_this, args, win: &JsObject, context| {
-                let undefined_val = JsValue::undefined();
-                let key = args.get(1).unwrap_or(&undefined_val);
-                let desc_obj = args.get(2).unwrap_or(&undefined_val);
-
-                // Step 2.1: "If P is an array index property name, return false."
-                if is_array_index_key(key) {
-                    return Ok(JsValue::new(false));
-                }
-
-                // Step 2.2: "Return ? OrdinaryDefineOwnProperty(W, P, Desc)."
-                let desc = desc_from_obj(desc_obj, context)?;
-                let prop_key = property_key_from_value_with_ctx(key, context);
-                match win.define_property_or_throw(prop_key, desc, context) {
-                    Ok(_) => Ok(JsValue::new(true)),
-                    Err(_) => Ok(JsValue::new(false)),
-                }
+            WindowProxyHandler {
+                window: window.clone(),
             },
-            window.clone(),
         );
         let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
-            .name(js_string!("defineProperty"))
-            .length(3)
+            .name(name.clone())
+            .length(length)
             .build();
-        handler.create_data_property_or_throw(js_string!("defineProperty"), fn_obj, context)?;
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
     }
-
-    // ── [[Set]] trap ──
-    // <https://html.spec.whatwg.org/#windowproxy-set>
-    // Array index: return false (spec step 3.1).
-    // Non-array-index: Return ? OrdinarySet(W, P, V, Receiver).
-    {
-        let trap = NativeFunction::from_copy_closure_with_captures(
-            |_this, args, win: &JsObject, context| {
-                let undefined_val = JsValue::undefined();
-                let key = args.get(1).unwrap_or(&undefined_val);
-
-                // Step 3.1: "If P is an array index property name, return false."
-                if is_array_index_key(key) {
-                    return Ok(JsValue::new(false));
-                }
-
-                // Step 3.2: "Return ? OrdinarySet(W, P, V, Receiver)."
-                let value = args.get(2).cloned().unwrap_or(JsValue::undefined());
-                let prop_key = property_key_from_value_with_ctx(key, context);
-                // target.set() uses self as receiver, which is correct here
-                // because OrdinarySet(W, P, V, Receiver) starts property
-                // lookup on W (the Window), not on the proxy.
-                let result = win.set(prop_key, value, false, context)?;
-                Ok(JsValue::new(result))
-            },
-            window.clone(),
-        );
-        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
-            .name(js_string!("set"))
-            .length(4)
-            .build();
-        handler.create_data_property_or_throw(js_string!("set"), fn_obj, context)?;
-    }
-
-    // ── [[Delete]] trap ──
-    // <https://html.spec.whatwg.org/#windowproxy-delete>
-    // Array index: check own property (spec step 2.1).
-    // Non-array-index: Return ? OrdinaryDelete(W, P).
-    {
-        let trap = NativeFunction::from_copy_closure_with_captures(
-            |_this, args, win: &JsObject, context| {
-                let undefined_val = JsValue::undefined();
-                let key = args.get(1).unwrap_or(&undefined_val);
-
-                // Step 2.1: "If P is an array index property name:"
-                if is_array_index_key(key) {
-                    let prop_key = property_key_from_value_with_ctx(key, context);
-                    // Step 2.1.1: "Let desc be ! this.[[GetOwnProperty]](P)."
-                    // Step 2.1.2: "If desc is undefined, return true."
-                    // Step 2.1.3: "Return false."
-                    let has = win.has_own_property(prop_key, context)?;
-                    return Ok(JsValue::new(!has));
-                }
-
-                // Step 2.2: "Return ? OrdinaryDelete(W, P)."
-                let prop_key = property_key_from_value_with_ctx(key, context);
-                let result = win.delete_property_or_throw(prop_key, context)?;
-                Ok(JsValue::new(result))
-            },
-            window.clone(),
-        );
-        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
-            .name(js_string!("deleteProperty"))
-            .length(2)
-            .build();
-        handler.create_data_property_or_throw(js_string!("deleteProperty"), fn_obj, context)?;
-    }
-
-    // ── [[GetPrototypeOf]] not provided ──
-    // <https://html.spec.whatwg.org/#windowproxy-getprototypeof>
-    // Same-origin: delegates to OrdinaryGetPrototypeOf(W) → Proxy default.
-    // Cross-origin: return null — not yet active.
-
-    // ── [[IsExtensible]] not provided ──
-    // <https://html.spec.whatwg.org/#windowproxy-isextensible>
-    // Proxy default delegates to target.[[IsExtensible]]().  For an
-    // extensible Window this returns true, matching the spec.  Providing
-    // a trap would risk Proxy invariant violations (if target differs).
-
-    // ── [[GetOwnProperty]] not provided ──
-    // <https://html.spec.whatwg.org/#windowproxy-getownproperty>
-    // Same-origin non-array-index: Proxy default delegates to target's
-    // [[GetOwnProperty]] which IS OrdinaryGetOwnProperty(W, P).
-    // Array-index child navigable support not yet implemented.
-
-    // ── [[Get]] not provided ──
-    // <https://html.spec.whatwg.org/#windowproxy-get>
-    // Same-origin: Proxy default calls target.[[Get]](P, Receiver) with
-    // the proxy as receiver — this IS OrdinaryGet(this, P, Receiver).
-
-    // ── [[HasProperty]] not provided ──
-    // Not listed as overridden in the WindowProxy spec.  Proxy default is correct.
-
-    // ── [[OwnPropertyKeys]] not provided ──
-    // <https://html.spec.whatwg.org/#windowproxy-ownpropertykeys>
-    // Same-origin: Proxy default returns target's own property keys.
-    // Child navigable indices not yet implemented.
 
     // ── Create the Proxy ──
     Proxy::create(&JsValue::from(window.clone()), &handler.into(), context)
@@ -213,13 +340,6 @@ pub(crate) fn create_window_proxy(
 }
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
-///
-/// Resolve the inner Window from a value that may be a WindowProxy
-/// (Proxy exotic object wrapping a Window).  When accessors on
-/// Window.prototype are invoked via a WindowProxy (e.g.
-/// `proxy.onload = ...`), the receiver (`this`) is the Proxy object.
-/// This function extracts the Proxy's target (the inner Window) so
-/// that downcasts succeed.
 pub(crate) fn resolve_window(value: &JsValue, context: &Context) -> JsObject {
     if let Some(object) = value.as_object() {
         if let Some(proxy) = object.downcast_ref::<Proxy>() {
@@ -232,40 +352,40 @@ pub(crate) fn resolve_window(value: &JsValue, context: &Context) -> JsObject {
     context.global_object()
 }
 
-// ── Helper functions ──
+// ── Helpers ──
 
-/// <https://webidl.spec.whatwg.org/#dfn-array-index-property-name>
-fn is_array_index_key(key: &JsValue) -> bool {
-    if let Some(s) = key.as_string() {
-        let s = s.to_std_string_escaped();
-        if s.is_empty() {
-            return false;
+fn descriptor_to_js_value(desc: &PropertyDescriptor, context: &mut Context) -> JsValue {
+    if desc.is_data_descriptor() {
+        let mut obj = ObjectInitializer::new(context);
+        obj.property(js_string!("value"), desc.expect_value().clone(), Default::default());
+        obj.property(js_string!("writable"), desc.expect_writable(), Default::default());
+        obj.property(js_string!("enumerable"), desc.expect_enumerable(), Default::default());
+        obj.property(js_string!("configurable"), desc.expect_configurable(), Default::default());
+        obj.build().into()
+    } else if desc.is_accessor_descriptor() {
+        let mut obj = ObjectInitializer::new(context);
+        if let Some(get) = desc.get() {
+            if !get.is_undefined() {
+                obj.property(js_string!("get"), get.clone(), Default::default());
+            }
         }
-        let parsed: u64 = match s.parse() {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        if parsed >= u32::MAX as u64 {
-            return false;
+        if let Some(set) = desc.set() {
+            if !set.is_undefined() {
+                obj.property(js_string!("set"), set.clone(), Default::default());
+            }
         }
-        parsed.to_string() == s
-    } else if key.is_number() {
-        if let Some(n) = key.as_number() {
-            n.fract() == 0.0 && n >= 0.0 && n < u32::MAX as f64
-        } else {
-            false
-        }
+        obj.property(js_string!("enumerable"), desc.expect_enumerable(), Default::default());
+        obj.property(js_string!("configurable"), desc.expect_configurable(), Default::default());
+        obj.build().into()
     } else {
-        false
+        let mut obj = ObjectInitializer::new(context);
+        obj.property(js_string!("enumerable"), desc.expect_enumerable(), Default::default());
+        obj.property(js_string!("configurable"), desc.expect_configurable(), Default::default());
+        obj.build().into()
     }
 }
 
-/// Convert a JsValue property key to a PropertyKey, using a Context
-/// for ToString conversion when needed.
-fn property_key_from_value_with_ctx(
-    key: &JsValue,
-    context: &mut Context,
-) -> PropertyKey {
+fn property_key_from_value_with_ctx(key: &JsValue, context: &mut Context) -> PropertyKey {
     if let Some(s) = key.as_string() {
         PropertyKey::String(s.clone())
     } else if let Some(n) = key.as_number() {
@@ -277,13 +397,11 @@ fn property_key_from_value_with_ctx(
     } else if let Some(sym) = key.as_symbol() {
         PropertyKey::Symbol(sym)
     } else {
-        // null, undefined, boolean — convert via ToString
         let s = key.to_string(context).unwrap_or_else(|_| js_string!(""));
         PropertyKey::String(s)
     }
 }
 
-/// Convert a JsValue descriptor object to a PropertyDescriptor.
 fn desc_from_obj(desc_obj: &JsValue, context: &mut Context) -> JsResult<PropertyDescriptor> {
     match desc_obj.as_object() {
         Some(o) => o.to_property_descriptor(context),
@@ -293,11 +411,8 @@ fn desc_from_obj(desc_obj: &JsValue, context: &mut Context) -> JsResult<Property
     }
 }
 
-// ── Cross-origin helper operations ──
-// These implement the abstract operations from HTML spec § 7.2.1.3.
-// They are ready for cross-origin support.
+// ── Cross-origin helpers (HTML §7.2.1.3) ──
 
-/// <https://html.spec.whatwg.org/#crossoriginproperties-(-o-)>
 #[allow(dead_code)]
 struct CrossOriginPropertyEntry {
     property: &'static str,
@@ -305,7 +420,6 @@ struct CrossOriginPropertyEntry {
     needs_set: bool,
 }
 
-/// <https://html.spec.whatwg.org/#crossoriginproperties-(-o-)>
 #[allow(dead_code)]
 fn cross_origin_window_properties() -> Vec<CrossOriginPropertyEntry> {
     vec![
@@ -325,26 +439,20 @@ fn cross_origin_window_properties() -> Vec<CrossOriginPropertyEntry> {
     ]
 }
 
-/// <https://html.spec.whatwg.org/#crossoriginownpropertykeys-(-o-)>
 #[allow(dead_code)]
 pub(crate) fn cross_origin_own_property_keys() -> Vec<PropertyKey> {
     let mut keys: Vec<PropertyKey> = cross_origin_window_properties()
         .into_iter()
         .map(|p| PropertyKey::String(js_string!(p.property)))
         .collect();
-
     keys.push(PropertyKey::String(js_string!("then")));
     keys.push(PropertyKey::Symbol(boa_engine::JsSymbol::to_string_tag()));
     keys.push(PropertyKey::Symbol(boa_engine::JsSymbol::has_instance()));
     keys.push(PropertyKey::Symbol(boa_engine::JsSymbol::is_concat_spreadable()));
-
     keys
 }
 
-/// <https://html.spec.whatwg.org/#crossoriginownpropertykeys-(-o-)>
 #[allow(dead_code)]
 pub(crate) fn is_cross_origin_property(name: &str) -> bool {
-    cross_origin_window_properties()
-        .iter()
-        .any(|p| p.property == name)
+    cross_origin_window_properties().iter().any(|p| p.property == name)
 }
