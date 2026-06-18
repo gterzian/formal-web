@@ -14,6 +14,7 @@ pub mod webidl;
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
+use crate::js::platform_objects::with_global_scope;
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
@@ -644,7 +645,7 @@ impl ContentProcess {
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
         let registry = Rc::clone(&self.new_document_registry);
-        crate::js::platform_objects::with_global_scope(
+        with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.set_new_document_registry(registry);
@@ -665,7 +666,7 @@ impl ContentProcess {
             .documents
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        crate::js::platform_objects::with_global_scope(
+        with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.clear_new_document_registry();
@@ -694,7 +695,7 @@ impl ContentProcess {
                 continue;
             }
             // Read the traversable_id from the new document's own GlobalScope.
-            let new_traversable_id = crate::js::platform_objects::with_global_scope(
+            let new_traversable_id = with_global_scope(
                 &settings.context,
                 |global_scope| Ok(global_scope.source_navigable_id()),
             )
@@ -854,14 +855,16 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        let _ = crate::js::platform_objects::with_global_scope(
+        if let Err(error) = with_global_scope(
             &settings.context,
             |global_scope| {
                 global_scope
                     .set_video_paint_registry(Rc::clone(&self.video_paint_registry));
                 Ok(())
             },
-        );
+        ) {
+            error!("[media] failed to set video paint registry on GlobalScope: {error}");
+        }
 
         // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
@@ -955,14 +958,16 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        let _ = crate::js::platform_objects::with_global_scope(
+        if let Err(error) = with_global_scope(
             &settings.context,
             |global_scope| {
                 global_scope
                     .set_video_paint_registry(Rc::clone(&self.video_paint_registry));
                 Ok(())
             },
-        );
+        ) {
+            error!("[media] failed to set video paint registry on GlobalScope: {error}");
+        }
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
@@ -1715,7 +1720,7 @@ impl ContentProcess {
         };
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        crate::js::platform_objects::with_global_scope(
+        with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.set_navigable_hierarchy(

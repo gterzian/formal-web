@@ -180,8 +180,10 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
   code. A variable called `state` is always clearer than `s`.
 - Exception: closure parameters in iterator chains (`.map(|x| ...)`) where the type is obvious
   from context. But even there, prefer short but meaningful names like `tab` over `t`.
-- **Never use fully qualified paths** like `crate::wasm::namespace::compile_fn(...)` in
-  binding function bodies. Import with `use` at the top of the file and call unqualified.
+- **Never use fully qualified paths** — no `crate::foo::bar::baz(...)` anywhere.
+  Import with `use` at the top of the file and call unqualified.
+  The only exception is disambiguating between two crates that export the same name,
+  and even then prefer `use ... as` renaming.
 - Do not bulk-rename existing code with scripts — it creates merge conflicts, breaks history,
   and introduces subtle bugs when renames are inconsistent. Rename incrementally when
   modifying nearby code.
@@ -216,7 +218,10 @@ The project uses the standard `log` crate with `env_logger` for structured loggi
 ## Rules
 
 - Errors must always be logged before being discarded. A `Result` value must never be silently dropped anywhere in the codebase — every `Result<_, E>` carries diagnostic information that can help debug failures in this multi-process system.
-- Use `if let Err(error) = fallible_operation() { error!("...: {error}"); }` instead of `let _ = fallible_operation();`. The error message should identify the operation and include the error.
+- **Never use `let _ = ...`** to silence a `Result`. Every `Result` carries diagnostic
+  information; silent discarding makes multi-process failures impossible to debug.
+  Always use `if let Err(error) = fallible_operation() { error!("...: {error}"); }`.
+  The error message must identify the operation.
 - The only exception is IPC `send()` on reply channels (e.g. `reply.send(...)`, `waiter.send(...)`) where a closed receiver is an expected condition (client disconnected) rather than a system error.
 - Avoid bare `.expect()` and `.unwrap()` on `Result` — prefer propagating the error with `?` or logging with `error!` and recovering.
 - Use `.ok()` only when the `None`/`Err` case carries no diagnostic value (e.g. parsing an optional value from a fallible source where `None` is a valid "not present" signal).
