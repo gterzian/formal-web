@@ -1,15 +1,42 @@
 use crate::content::EmbedLayout;
 use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Identifies a pipeline within the media process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaPipelineId(pub u64);
 
 /// Opaque paint-layer identifier for a video element.
-/// Assigned by the user agent, echoed back to content, stamped on VideoEmbedSite.
+/// <https://html.spec.whatwg.org/#the-video-element>
+///
+/// Assigned once per video element at construction time using a UUID so that the
+/// identifier is globally unique across all documents and traversables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct VideoPaintId(pub u64);
+pub struct VideoPaintId(pub Uuid);
+
+impl VideoPaintId {
+    /// Create a new globally unique video paint identifier.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Construct from the raw 16-byte representation of a UUID.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(Uuid::from_bytes(bytes))
+    }
+
+    /// Return the inner UUID as 16 bytes.
+    pub fn as_bytes(self) -> [u8; 16] {
+        *self.0.as_bytes()
+    }
+}
+
+impl Default for VideoPaintId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// User agent → media process commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]

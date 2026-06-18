@@ -14,6 +14,7 @@ pub mod webidl;
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
+use crate::js::platform_objects::with_global_scope;
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
@@ -367,6 +368,13 @@ pub(crate) struct ContentProcess {
     pending_wasm_requests: HashMap<u64, DocumentId>,
     /// Modules from instantiate requests, needed for exports creation.
     pending_wasm_modules: HashMap<u64, wasmtime::Module>,
+
+    /// Shared registry mapping (document_id, node_id) → VideoPaintId.
+    /// Populated by `resource_selection_algorithm` during JS execution
+    /// and read by `build_frame_composition_metadata` during rendering.
+    /// One Rc is kept here; clones are placed on GlobalScope during
+    /// document creation.
+    video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
 }
 
 impl ContentProcess {
@@ -389,6 +397,7 @@ impl ContentProcess {
             font_sender: FontTransportSender::default(),
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
+            video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
             wasm_worker: WasmWorker::new(
                 wasmtime::Engine::default(),
                 wasm_signal_sender,
@@ -636,7 +645,7 @@ impl ContentProcess {
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
         let registry = Rc::clone(&self.new_document_registry);
-        crate::js::platform_objects::with_global_scope(
+        with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.set_new_document_registry(registry);
@@ -657,7 +666,7 @@ impl ContentProcess {
             .documents
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        crate::js::platform_objects::with_global_scope(
+        with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.clear_new_document_registry();
@@ -686,7 +695,7 @@ impl ContentProcess {
                 continue;
             }
             // Read the traversable_id from the new document's own GlobalScope.
-            let new_traversable_id = crate::js::platform_objects::with_global_scope(
+            let new_traversable_id = with_global_scope(
                 &settings.context,
                 |global_scope| Ok(global_scope.source_navigable_id()),
             )
@@ -844,6 +853,19 @@ impl ContentProcess {
             Some(document_id),
         )?;
 
+        // Set the video-paint registry on GlobalScope so that
+        // resource_selection_algorithm can register paint IDs.
+        if let Err(error) = with_global_scope(
+            &settings.context,
+            |global_scope| {
+                global_scope
+                    .set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+                Ok(())
+            },
+        ) {
+            error!("[media] failed to set video paint registry on GlobalScope: {error}");
+        }
+
         // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
         // TODO: Persist the document's post-load readiness state in the DOM model.
@@ -933,6 +955,19 @@ impl ContentProcess {
             Some(traversable_id),
             Some(document_id),
         )?;
+
+        // Set the video-paint registry on GlobalScope so that
+        // resource_selection_algorithm can register paint IDs.
+        if let Err(error) = with_global_scope(
+            &settings.context,
+            |global_scope| {
+                global_scope
+                    .set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+                Ok(())
+            },
+        ) {
+            error!("[media] failed to set video paint registry on GlobalScope: {error}");
+        }
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
@@ -1222,6 +1257,7 @@ impl ContentProcess {
         document_id: DocumentId,
     ) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
+        let video_paint_registry = Rc::clone(&self.video_paint_registry);
         let paint_frame = {
             let document = self
                 .documents
@@ -1274,9 +1310,11 @@ impl ContentProcess {
                 let (width, height) = viewport.window_size;
                 let mut scene = RenderScene::new();
                 let composition = Self::build_frame_composition_metadata(
+                    document_id,
                     &document_guard,
                     &document.navigable_container_states,
                     viewport.scale_f64(),
+                    &mut video_paint_registry.borrow_mut(),
                 );
 
                 // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
@@ -1355,9 +1393,11 @@ impl ContentProcess {
     }
 
     fn build_frame_composition_metadata(
+        document_id: DocumentId,
         document: &BaseDocument,
         container_states: &HashMap<usize, NavigableContainerState>,
         scale: f64,
+        video_paint_registry: &mut HashMap<(DocumentId, usize), VideoPaintId>,
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
@@ -1453,8 +1493,12 @@ impl ContentProcess {
                 })
                 .unwrap_or(0.0);
 
+            let paint_id = video_paint_registry
+                .entry((document_id, video_node_id))
+                .or_insert_with(VideoPaintId::new);
+
             embed_sites.push(EmbedSite::Video(VideoEmbedData {
-                paint_id: VideoPaintId(video_node_id as u64),
+                paint_id: *paint_id,
                 layout: EmbedLayout {
                     z_index: 0,
                     paint_order: (iframe_count + paint_offset) as u32,
@@ -1676,7 +1720,7 @@ impl ContentProcess {
         };
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        crate::js::platform_objects::with_global_scope(
+        with_global_scope(
             &content_document.settings.context,
             |global_scope| {
                 global_scope.set_navigable_hierarchy(
