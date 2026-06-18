@@ -3,10 +3,10 @@ name = "anyrender_skia"
 description = "Skia backend for anyrender"
 version = "0.8.0"
 documentation = "https://docs.rs/anyrender_skia"
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
-edition.workspace = true
+homepage = "https://github.com/dioxuslabs/anyrender"
+repository = "https://github.com/dioxuslabs/anyrender"
+license = "MIT OR Apache-2.0"
+edition = "2024"
 
 [features]
 pixels_window_renderer = ["dep:pixels_window_renderer"]

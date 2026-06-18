@@ -3,10 +3,10 @@ name = "anyrender_svg"
 description = "Render SVGs with anyrender"
 version = "0.11.0"
 documentation = "https://docs.rs/anyrender-svg"
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
-edition.workspace = true
+homepage = "https://github.com/dioxuslabs/anyrender"
+repository = "https://github.com/dioxuslabs/anyrender"
+license = "MIT OR Apache-2.0"
+edition = "2024"
 
 [features]
 default = ["text", "image_format_png", "image_format_gif", "image_format_jpeg", "image_format_webp"]

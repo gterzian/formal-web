@@ -41,5 +41,4 @@ env_logger = "0.11"
 crossbeam-channel = "0.5"
 xml5ever = "0.39.0"
 
-[patch.crates-io]
-anyrender = { path = "../vendor/anyrender/crates/anyrender" }
+

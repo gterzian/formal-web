@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 default-run = "formal-web"
-build = "build.rs"
 
 [[bin]]
 name = "formal-web"
@@ -12,25 +11,78 @@ path = "src/main.rs"
 
 [features]
 default = ["media"]
-media = ["dep:media", "user_agent/media"]
+media = []
 
 [dependencies]
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
-content = { path = "content" }
-media = { path = "media", optional = true }
-net = { path = "net" }
-user_agent = { path = "user_agent", default-features = false }
-verification = { path = "verification" }
-webview = { path = "webview" }
 wpt_runner = { path = "tests/wpt_runner" }
-ipc-channel = "0.21"
-ipc_messages = { path = "ipc_messages" }
-libc = "0.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+verification = { path = "verification" }
 log = "0.4"
 env_logger = "0.11"
-url = "2"
 
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "automation",
+    "content",
+    "embedder",
+    "ipc_messages",
+    "media",
+    "net",
+    "user_agent",
+    "verification",
+    "webview",
+]
+default-members = [
+    ".",
+    "automation",
+    "content",
+    "embedder",
+    "ipc_messages",
+    "media",
+    "net",
+    "user_agent",
+    "verification",
+    "webview",
+]
 
+[workspace.dependencies]
+# Versions required by the vendored anyrender crates.  These are resolved via
+# workspace inheritance when anyrender crates use `{ workspace = true }`.
+anyrender = { path = "vendor/anyrender/crates/anyrender" }
+anyrender_vello = { path = "vendor/anyrender/crates/anyrender_vello" }
+anyrender_vello_cpu = { path = "vendor/anyrender/crates/anyrender_vello_cpu" }
+anyrender_svg = { path = "vendor/anyrender/crates/anyrender_svg" }
+wgpu_context = { path = "vendor/anyrender/crates/wgpu_context" }
+pixels_window_renderer = { path = "vendor/anyrender/crates/pixels_window_renderer" }
+softbuffer_window_renderer = { path = "vendor/anyrender/crates/softbuffer_window_renderer" }
+kurbo = "0.13.1"
+peniko = "0.6"
+vello_cpu = { version = "0.0.8", default-features = false, features = ["std", "text", "u8_pipeline"] }
+raw-window-handle = "0.6.0"
+serde = "1"
+debug_timer = "0.1.1"
+vello = { version = "0.9", features = ["wgpu"] }
+vello_hybrid = "0.0.8"
+vello_common = "0.0.8"
+glifo = "=0.1.0"
+wgpu = "29"
+usvg = { version = "0.46.0", default-features = false }
+image = { version = "0.25", default-features = false }
+rustc-hash = "2"
+futures-channel = "0.3"
+futures-util = "0.3"
+futures-intrusive = "0.5.0"
+pollster = "0.4"
+wasm-bindgen-futures = "0.4"
+softbuffer = "0.4"
+pixels = "0.17"
+
+[patch.crates-io]
+anyrender = { path = "vendor/anyrender/crates/anyrender" }
+anyrender_vello = { path = "vendor/anyrender/crates/anyrender_vello" }
+anyrender_vello_cpu = { path = "vendor/anyrender/crates/anyrender_vello_cpu" }
+anyrender_svg = { path = "vendor/anyrender/crates/anyrender_svg" }
+wgpu_context = { path = "vendor/anyrender/crates/wgpu_context" }

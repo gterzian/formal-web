@@ -3,18 +3,25 @@ name = "stylo_taffy"
 license = "MIT OR Apache-2.0 OR MPL-2.0"
 description = "Interop crate for the stylo and taffy crates"
 keywords = ["css", "layout"]
-version.workspace = true
-homepage.workspace = true
-repository.workspace = true
-categories.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-
+version = "0.3.0-alpha.4"
+homepage = "https://github.com/dioxuslabs/blitz"
+repository = "https://github.com/dioxuslabs/blitz"
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.89.0"
 
 [dependencies]
-taffy = { workspace = true }
-style = { workspace = true }
-style_atoms = { workspace = true }
+taffy = { version = "=0.11.0-experimental-cache-fix.3", default-features = false, features = [
+    "std",
+    "flexbox",
+    "grid",
+    "block_layout",
+    "content_size",
+    "calc",
+    "detailed_layout_info",
+] }
+style = { version = "0.17.0", package = "stylo" }
+style_atoms = { version = "0.17.0", package = "stylo_atoms" }
 
 [features]
 default = ["std", "block", "flexbox", "grid"]

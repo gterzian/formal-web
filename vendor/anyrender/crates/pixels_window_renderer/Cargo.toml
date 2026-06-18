@@ -3,10 +3,10 @@ name = "pixels_window_renderer"
 description = "AnyRender WindowRenderer backed by the pixels crate"
 version = "0.5.0"
 documentation = "https://docs.rs/pixels_window_renderer"
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
-edition.workspace = true
+homepage = "https://github.com/dioxuslabs/anyrender"
+repository = "https://github.com/dioxuslabs/anyrender"
+license = "MIT OR Apache-2.0"
+edition = "2024"
 
 [features]
 log_frame_times = ["debug_timer/enable"]

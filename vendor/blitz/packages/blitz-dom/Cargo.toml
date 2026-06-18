@@ -2,13 +2,13 @@
 name = "blitz-dom"
 description = "Blitz DOM implementation"
 documentation = "https://docs.rs/blitz-dom"
-version.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-categories.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = "0.3.0-alpha.4"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/dioxuslabs/blitz"
+repository = "https://github.com/dioxuslabs/blitz"
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.89.0"
 
 [features]
 default = [
@@ -34,59 +34,67 @@ parallel-construct = []
 log_phase_times = ["debug_timer/enable"]
 
 [dependencies]
-# Blitz dependencies
-blitz-traits = { workspace = true }
-stylo_taffy = { workspace = true, features = ["default"] }
-debug_timer = { workspace = true }
+# Blitz dependencies (in-repo)
+blitz-traits = { path = "../blitz-traits", default-features = false }
+stylo_taffy = { path = "../stylo_taffy", features = ["default"] }
+debug_timer = { path = "../debug_timer" }
 
 # Servo dependencies
-style = { workspace = true }
-selectors = { workspace = true }
-cssparser = { workspace = true }
-style_config = { workspace = true }
-style_traits = { workspace = true }
-style_dom = { workspace = true }
-app_units = { workspace = true }
-euclid = { workspace = true }
-atomic_refcell = { workspace = true }
-markup5ever = { workspace = true }
-smallvec = { workspace = true }
+style = { version = "0.17.0", package = "stylo" }
+selectors = { version = "0.38.0", package = "selectors" }
+cssparser = "0.37.0"
+style_config = { version = "0.17.0", package = "stylo_static_prefs" }
+style_traits = { version = "0.17.0", package = "stylo_traits" }
+style_dom = { version = "0.17.0", package = "stylo_dom" }
+app_units = "0.7.5"
+euclid = "0.22"
+atomic_refcell = "0.1.13"
+markup5ever = "0.39.0"
+smallvec = "1"
 
 # DioxusLabs dependencies
-taffy = { workspace = true }
-anyrender = { workspace = true, optional = true }
+taffy = { version = "=0.11.0-experimental-cache-fix.3", default-features = false, features = [
+    "std",
+    "flexbox",
+    "grid",
+    "block_layout",
+    "content_size",
+    "calc",
+    "detailed_layout_info",
+] }
+anyrender = { version = "0.10.0", optional = true }
 
 # Linebender/Fontations dependencies
-accesskit = { workspace = true, optional = true }
-parley = { workspace = true }
-skrifa = { workspace = true }
-linebender_resource_handle = { workspace = true }
-color = { workspace = true }
-kurbo = { workspace = true }
+accesskit = { version = "0.24", optional = true }
+parley = { version = "0.9", default-features = false, features = ["std"] }
+skrifa = { version = "0.42", default-features = false, features = ["std"] }
+linebender_resource_handle = "0.1"
+color = "0.3"
+kurbo = "0.13.1"
 
 # Other dependencies
-slab = { workspace = true }
-bitflags = { workspace = true }
-tracing = { workspace = true, optional = true }
-rayon = { workspace = true }
+slab = "0.4.9"
+bitflags = "2.8.0"
+tracing = { version = "0.1.40", optional = true }
+rayon = "1"
 
 # Media & Decoding
-image = { workspace = true }
-usvg = { workspace = true, optional = true }
-wuff = { workspace = true, optional = true }
-html-escape = { workspace = true }
-percent-encoding = { workspace = true }
+image = { version = "=0.25.6", default-features = false }
+usvg = { version = "0.46", optional = true }
+wuff = { version = "0.2", optional = true }
+html-escape = "0.2.13"
+percent-encoding = "2.3.1"
 
 # IO & Networking
-url = { workspace = true }
+url = "2.5.0"
 
 # Input
-keyboard-types = { workspace = true }
-cursor-icon = { workspace = true }
-thread_local = { workspace = true }
+keyboard-types = "0.7"
+cursor-icon = "1"
+thread_local = "1"
 
 # WASM
-web-time = { workspace = true }
+web-time = "1"
 
 # HACK: Blitz doesn't need to depend on objc2 directly. But this feature flag is necessary
 # to prevent debug builds from panicking.

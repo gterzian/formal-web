@@ -112,18 +112,66 @@ Plans and temporary task notes go under `scratchpad/`.
 ## Commands
 
 - `rustup toolchain install 1.94.0` — installs the pinned Rust toolchain.
-- `rustup run 1.94.0 cargo check` — type-checks the workspace.
-- `rustup run 1.94.0 cargo run --release` — default windowed embedder.
-- `rustup run 1.94.0 cargo build --no-default-features` — build without GStreamer/media dependency entirely.
-- `rustup run 1.94.0 cargo run --release -- --headless` — headless mode.
-- `rustup run 1.94.0 cargo run --release -- --verify` — with trace recording and shutdown-time TLA+ validation.
-- `rustup run 1.94.0 cargo run --release -- webdriver --headless` — WebDriver server.
-- `rustup run 1.94.0 cargo run --release -- cdp --headless` — CDP server.
-- `rustup run 1.94.0 cargo run --release -- webdriver --headless --cdp-port 9222` — WebDriver and CDP together.
-- `rustup run 1.94.0 cargo run --release -- wpt` — runs the default WPT and local formal test selection.
-- `rustup run 1.94.0 cargo run --release -- wpt formal/load-event-fires.html` — runs one selected test.
-- `./verification/verify-navigation.sh` — headless navigation workflow validated against the TLA+ `Navigation` spec.
-- `rustup run 1.94.0 cargo run -- validate-tla --logs /path/to/logs --json` — validates a saved trace log directory.
+
+## Build Architecture
+
+The root `Cargo.toml` defines a `[workspace]` with all project packages as
+members.  `cargo build --release` builds everything in one invocation with
+shared dependency resolution and incremental compilation.
+
+### Components
+
+- **Root binary** (`formal-web`): thin launcher that delegates to the embedder.
+- **Embedder** (`formal-web-embedder`): the actual application process.
+- **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-media`): spawned by the embedder.
+
+### Three verbs
+
+```bash
+# Check all — type-check every package
+rustup run 1.94.0 cargo check
+
+# Build all — produce all binaries
+rustup run 1.94.0 cargo build --release
+
+# Run all — launch the embedder
+rustup run 1.94.0 cargo run --release
+```
+
+Without media:
+
+```bash
+rustup run 1.94.0 cargo build --release --no-default-features
+rustup run 1.94.0 cargo run --release -- --no-default-features
+```
+
+### Individual packages
+
+```bash
+cargo build --release -p content --bin formal-web-content
+cargo build --release -p net     --bin formal-web-net
+cargo build --release -p embedder --bin formal-web-embedder
+cargo build --release -p media   --bin formal-web-media
+```
+
+### Vendored crates
+
+The vendored blitz packages under `vendor/blitz/packages/` were originally
+part of blitz's own Cargo workspace, using `workspace = true` inheritance
+for both package metadata and dependency versions.  Cargo does not support
+nested workspaces, so the relevant packages (blitz-traits, blitz-dom,
+blitz-paint, blitz-html, stylo_taffy, debug_timer) were de-workspaced:
+all `version.workspace = true` and `{ workspace = true }` references were
+replaced with their concrete values from the blitz workspace definition.
+The root `[workspace.dependencies]` provides the same for the vendored
+anyrender crates under `vendor/anyrender/crates/`.
+
+### Process binary search paths
+
+When the embedder spawns a helper process, it searches the directory
+containing its own executable (`target/{profile}/`).  With the workspace,
+all binaries land in the shared `target/{profile}/` directory, so the
+embedder finds them by default.
 
 # Local Extensions
 

@@ -2,24 +2,24 @@
 name = "blitz-html"
 description = "Blitz HTML parser"
 documentation = "https://docs.rs/blitz-html"
-version.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-categories.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = "0.3.0-alpha.4"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/dioxuslabs/blitz"
+repository = "https://github.com/dioxuslabs/blitz"
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.89.0"
 
 [features]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 
 [dependencies]
-# Blitz dependencies
-blitz-dom = { workspace = true }
-blitz-traits = { workspace = true }
+# Blitz dependencies (in-repo)
+blitz-dom = { path = "../blitz-dom", default-features = false }
+blitz-traits = { path = "../blitz-traits", default-features = false }
 
 # Servo dependencies
-html5ever = { workspace = true }
-xml5ever = { workspace = true }
+html5ever = "0.39.0"
+xml5ever = "0.39.0"
 
-tracing = { workspace = true, optional = true }
+tracing = { version = "0.1.40", optional = true }

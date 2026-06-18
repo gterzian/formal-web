@@ -12,6 +12,8 @@ ipc_messages/target/
 target/
 .DS_Store
 content/Cargo.lock
+embedder/Cargo.lock
+media/Cargo.lock
 net/Cargo.lock
 node_modules/
 .pi/collected-sessions/

@@ -2,20 +2,20 @@
 name = "blitz-traits"
 description = "Shared traits and types for Blitz"
 documentation = "https://docs.rs/blitz-traits"
-version.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-categories.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = "0.3.0-alpha.4"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/dioxuslabs/blitz"
+repository = "https://github.com/dioxuslabs/blitz"
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.89.0"
 
 [dependencies]
-http = { workspace = true }
-url = { workspace = true }
-bytes = { workspace = true }
-keyboard-types = { workspace = true }
-smol_str = { workspace = true }
-bitflags = { workspace = true }
-cursor-icon = { workspace = true }
-serde = { workspace = true }
+http = "1.1.0"
+url = "2.5.0"
+bytes = "1.7.1"
+keyboard-types = "0.7"
+smol_str = "0.3"
+bitflags = "2.8.0"
+cursor-icon = "1"
+serde = "1"
