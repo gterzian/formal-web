@@ -14,7 +14,6 @@ pub mod webidl;
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
-use crate::html::html_media_element::VIDEO_PAINT_REGISTRY;
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
@@ -368,6 +367,13 @@ pub(crate) struct ContentProcess {
     pending_wasm_requests: HashMap<u64, DocumentId>,
     /// Modules from instantiate requests, needed for exports creation.
     pending_wasm_modules: HashMap<u64, wasmtime::Module>,
+
+    /// Shared registry mapping (document_id, node_id) → VideoPaintId.
+    /// Populated by `resource_selection_algorithm` during JS execution
+    /// and read by `build_frame_composition_metadata` during rendering.
+    /// One Rc is kept here; clones are placed on GlobalScope during
+    /// document creation.
+    video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
 }
 
 impl ContentProcess {
@@ -390,6 +396,7 @@ impl ContentProcess {
             font_sender: FontTransportSender::default(),
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
+            video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
             wasm_worker: WasmWorker::new(
                 wasmtime::Engine::default(),
                 wasm_signal_sender,
@@ -845,6 +852,17 @@ impl ContentProcess {
             Some(document_id),
         )?;
 
+        // Set the video-paint registry on GlobalScope so that
+        // resource_selection_algorithm can register paint IDs.
+        let _ = crate::js::platform_objects::with_global_scope(
+            &settings.context,
+            |global_scope| {
+                global_scope
+                    .set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+                Ok(())
+            },
+        );
+
         // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
         // TODO: Persist the document's post-load readiness state in the DOM model.
@@ -934,6 +952,17 @@ impl ContentProcess {
             Some(traversable_id),
             Some(document_id),
         )?;
+
+        // Set the video-paint registry on GlobalScope so that
+        // resource_selection_algorithm can register paint IDs.
+        let _ = crate::js::platform_objects::with_global_scope(
+            &settings.context,
+            |global_scope| {
+                global_scope
+                    .set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+                Ok(())
+            },
+        );
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
@@ -1223,6 +1252,7 @@ impl ContentProcess {
         document_id: DocumentId,
     ) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
+        let video_paint_registry = Rc::clone(&self.video_paint_registry);
         let paint_frame = {
             let document = self
                 .documents
@@ -1279,6 +1309,7 @@ impl ContentProcess {
                     &document_guard,
                     &document.navigable_container_states,
                     viewport.scale_f64(),
+                    &mut video_paint_registry.borrow_mut(),
                 );
 
                 // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
@@ -1361,6 +1392,7 @@ impl ContentProcess {
         document: &BaseDocument,
         container_states: &HashMap<usize, NavigableContainerState>,
         scale: f64,
+        video_paint_registry: &mut HashMap<(DocumentId, usize), VideoPaintId>,
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
@@ -1456,10 +1488,7 @@ impl ContentProcess {
                 })
                 .unwrap_or(0.0);
 
-            let mut registry = VIDEO_PAINT_REGISTRY
-                .lock()
-                .expect("VIDEO_PAINT_REGISTRY mutex poisoned");
-            let paint_id = registry
+            let paint_id = video_paint_registry
                 .entry((document_id, video_node_id))
                 .or_insert_with(VideoPaintId::new);
 

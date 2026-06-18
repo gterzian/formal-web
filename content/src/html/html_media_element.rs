@@ -1,7 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{LazyLock, Mutex};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{Context, JsResult, JsValue};
@@ -12,15 +10,8 @@ use log::{debug, error};
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::webidl::resolved_promise;
 use crate::js::platform_objects::with_global_scope;
-use ipc_messages::content::{DocumentId, Event as ContentEvent, MediaLoadRequest};
+use ipc_messages::content::{Event as ContentEvent, MediaLoadRequest};
 use ipc_messages::media::VideoPaintId;
-
-/// Global registry mapping (document_id, node_id) → VideoPaintId.
-/// Populated by `resource_selection_algorithm` and consulted by
-/// `ContentProcess::build_frame_composition_metadata` so that both the
-/// embed-site paint_id and the media-load-request paint_id agree.
-pub(crate) static VIDEO_PAINT_REGISTRY: LazyLock<Mutex<HashMap<(DocumentId, usize), VideoPaintId>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// <https://html.spec.whatwg.org/#media-elements>
 #[derive(Trace, Finalize, JsData)]
@@ -365,14 +356,13 @@ impl HTMLMediaElement {
             }
         };
 
-        // Register the paint_id in the global registry so the composition
+        // Register the paint_id via GlobalScope so the composition
         // metadata builder can find the same UUID for this video element.
         if let Some(document_id) = document_id {
-            VIDEO_PAINT_REGISTRY
-                .lock()
-                .expect("VIDEO_PAINT_REGISTRY mutex poisoned")
-                .entry((document_id, node_id))
-                .or_insert(video_paint_id);
+            let _ = with_global_scope(context, |global_scope| {
+                global_scope.register_video_paint_id(document_id, node_id, video_paint_id);
+                Ok(())
+            });
         }
 
         await_a_stable_state(context, move |_ctx| {

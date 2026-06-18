@@ -12,11 +12,11 @@ use log::{debug, error};
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
-use ipc_messages::{
-    content::{
-        DocumentId, Event as ContentEvent, NavigableId, WindowTimerClearRequest,
-        WindowTimerKey, WindowTimerRequest,
-    },
+use ipc_messages::content::DocumentId;
+use ipc_messages::media::VideoPaintId;
+use ipc_messages::content::{
+    Event as ContentEvent, NavigableId, WindowTimerClearRequest,
+    WindowTimerKey, WindowTimerRequest,
 };
 
 
@@ -239,6 +239,17 @@ pub struct GlobalScope {
             Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
         >>,
 
+    /// Shared registry mapping (document_id, node_id) → VideoPaintId.
+    /// Set by `ContentProcess` during document creation so that both
+    /// `resource_selection_algorithm` (to insert) and
+    /// `ContentProcess::build_frame_composition_metadata` (to read) share
+    /// the same `Rc`.
+    #[unsafe_ignore_trace]
+    video_paint_registry:
+        RefCell<Option<
+            Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+        >>,
+
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
     #[unsafe_ignore_trace]
@@ -283,6 +294,7 @@ impl GlobalScope {
             event_sender: RefCell::new(None),
 
             new_document_registry: RefCell::new(None),
+            video_paint_registry: RefCell::new(None),
             creation_url: RefCell::new(None),
             pending_requests: GcRefCell::new(Vec::new()),
             pending_wasm_request_id_counter: std::cell::Cell::new(0),
@@ -706,7 +718,33 @@ impl GlobalScope {
         Ok(())
     }
 
+    /// Set the shared video-paint registry that both GlobalScope and
+    /// ContentProcess access.  ContentProcess sets this during document
+    /// creation so that `resource_selection_algorithm` can register
+    /// paint IDs during JS execution.
+    pub(crate) fn set_video_paint_registry(
+        &self,
+        registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+    ) {
+        *self.video_paint_registry.borrow_mut() = Some(registry);
+    }
 
+    /// Register a VideoPaintId for a (document_id, node_id) pair.
+    /// Returns the existing paint ID if one is already registered, or
+    /// inserts and returns the given one.
+    pub(crate) fn register_video_paint_id(
+        &self,
+        document_id: DocumentId,
+        node_id: usize,
+        paint_id: VideoPaintId,
+    ) {
+        if let Some(registry) = self.video_paint_registry.borrow().as_ref() {
+            registry
+                .borrow_mut()
+                .entry((document_id, node_id))
+                .or_insert(paint_id);
+        }
+    }
 
     pub(crate) fn set_creation_url(&self, url: url::Url) {
         self.creation_url.borrow_mut().replace(url);
