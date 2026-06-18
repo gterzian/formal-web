@@ -109,30 +109,24 @@ impl JsData for MyExotic {
 
 3. Inside each function, use `obj.downcast_ref::<MyExotic>()` to access the data.
 4. Delegate to the inner object using the **public** `JsObject` methods
-   (`get()`, `set()`, `prototype()`, `own_property_keys()`, etc.) or,
-   when no existing public method covers the exact operation, add a **new
-   public wrapper** in `vendor/boa/core/engine/src/object/operations.rs`.
+   (`get()`, `set()`, `prototype()`, `own_property_keys()`, etc.).
    See `content/src/js/README.md` for the full methodology.
 
-The `content` crate uses this pattern for `WindowProxy` — see
-`content/src/html/windowproxy.rs`.
+The `content` crate uses this exotic-object pattern with `JsProxyBuilder`
+for `WindowProxy` — see `content/src/html/windowproxy.rs`.
 
-**Rejected approach:** Changing `pub(crate)` to `pub` on existing internal
-functions, types, or dispatch methods (`__get__`, `__set__`, etc.) in
-`vendor/boa/`. This breaks encapsulation and creates maintenance burden.
+**Rejected approach:** Modifying the external Boa dependency to make internal
+APIs public. All exotic-object implementations must use only public Boa APIs.
 
 **Note:** `#[derive(JsData)]` cannot be used when manually overriding
 `internal_methods()` because the derive macro generates a conflicting
 implementation. Use `#[derive(Trace, Finalize)]` and implement `JsData` by hand.
 
 **Visibility note:** When implementing exotic objects, **do not modify**
-`vendor/boa/` to make internal APIs public. Instead, use only what boa
-already exposes publicly. See `content/src/js/README.md` ("Working with
-vendored boa: use spec links, not visibility changes") for the correct
-methodology: read the spec's ECMAScript link references, search `vendor/boa/`
-for those spec links to find the corresponding implementation, then use the
-already-public wrapper methods or add new public wrappers without changing
-existing visibility boundaries.
+the external Boa dependency to make internal APIs public. Instead, use only
+what boa already exposes publicly. See `content/src/js/README.md` ("Working
+with Boa's public API: use spec links, not `pub(crate)` internals") for the
+correct methodology.
 
 ### The ObjectInitializer pattern
 

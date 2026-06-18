@@ -27,18 +27,15 @@ and `HTMLVideoElement` constructors throw `NotSupportedError` at runtime.
 
 ## Project architecture
 
-A multiprocess approach is chosen by default, because that is the gold standard for web engines. 
+A multiprocess approach is chosen by default; the goal is to follow [Apple's guidelines for an independent browser engine](https://developer.apple.com/documentation/
+BrowserEngineKit/designing-your-browser-architecture).
 
 The following procesess are used:
 
 - Main: running the `embedder`, `webview`, and `user_agent` crates. The process is started in `src/main.rs`.
-- Content: running the `content` crate, and started in `user_agent/src/event_loop.rs`, because each process is running what is essentially a window event loop. In the future it will also run dedicated worker event loops. Service workers will likely run in their own process, and for shared worker the issue hasn't been decided yet (it seems there is a move towards isolating them per top-level sites). There is one process per [similar origin window agent](https://html.spec.whatwg.org/#similar-origin-window-agent); this is the only process of which there can be more than one.
+- Content: running the `content` crate, and started in `user_agent/src/event_loop.rs`, because each process is running what is essentially a window event loop. In the future it will also run dedicated worker event loops. Service workers will likely run in their own process, and for shared worker the issue hasn't been decided yet (it seems there is a move towards isolating them per top-level sites). There is one process per [similar origin window agent](https://html.spec.whatwg.org/#similar-origin-window-agent); this is the only process type of which there can be more than one.
 - Net: running the `net` crate. That process is owned by the fetch worker in `user_agent/src/fetch.rs`, and the code in the process will essentially be the part of the fetch standard that starts at https://fetch.spec.whatwg.org/#http-network-or-cache-fetch.
 - Media: running the `media` crate, which runs gstreamer, which is started and owned by the media worker in `user_agent/src/media.rs`. This is an optional feature as expalined above under Quick Start.
-
-
-The goal is to follow [Apple's guidelines for an independent browser engine](https://developer.apple.com/documentation/
-BrowserEngineKit/designing-your-browser-architecture).
 
 
 ## Project structure

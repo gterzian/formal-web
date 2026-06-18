@@ -43,15 +43,20 @@ state.
 ## Exotic objects
 
 Some HTML spec objects (WindowProxy, Location) require exotic internal methods.
-Boa supports custom internal methods via `JsData::internal_methods()` returning
-a custom `InternalObjectMethods` vtable. See `content/src/webidl/README.md` for
-the exotic-object implementation pattern.
+The `InternalObjectMethods` vtable (`pub(crate)`) is not accessible from outside
+the `boa_engine` crate.  Exotic objects must be implemented using only public
+Boa APIs — primarily `JsProxyBuilder` (from `boa_engine::object::builtins`)
+for proxy-based exotic objects.
 
-### Working with vendored boa: use spec links, not visibility changes
+See `content/src/webidl/README.md` for the exotic-object implementation pattern,
+and `content/src/html/windowproxy.rs` for a concrete example.
 
-When implementing a spec algorithm that references ECMAScript operations,
-**never modify `vendor/boa/`** to make internal APIs public. Instead, follow
-this methodology:
+### Working with Boa's public API: use spec links, not `pub(crate)` internals
+
+Boa is an external dependency of the content crate (via crates.io or GitHub).
+The content crate **must not** depend on any `pub(crate)` internal function,
+type, or method
+inside Boa.  Instead, follow this methodology:
 
 1. Read the relevant spec (e.g. HTML §7.2.3 The WindowProxy exotic object)
    using `spec_lookup`.
@@ -59,69 +64,37 @@ this methodology:
    JS operation references an ECMAScript spec algorithm by URL, e.g.
    [`OrdinaryGetPrototypeOf`](https://tc39.es/ecma262/#sec-ordinarygetprototypeof)
    or [`OrdinaryGetOwnProperty`](https://tc39.es/ecma262/#sec-ordinarygetownproperty).
-3. Search `vendor/boa/` for that exact ECMAScript spec link using `grep`:
-   ```bash
-   grep -rn "tc39.es/ecma262/#sec-xxx" vendor/boa/
-   ```
-   Boa code is documented with spec links, so this finds the exact function
-   implementing that operation.
-4. Check if the function is **already public**. If not, look for a
-   **higher-level public wrapper**:
+3. Check if there is an **already-public equivalent** in Boa:
 
-   | ECMAScript operation | `pub(crate)` impl in boa | Already-public equivalent |
-   |---|---|---|
-   | `OrdinaryGetPrototypeOf` | `ordinary_get_prototype_of` | `JsObject::prototype()` |
-   | `OrdinaryIsExtensible` | `ordinary_is_extensible` | `JsObject::is_extensible(context)` |
-   | `OrdinaryGet` | `ordinary_get` | `JsObject::get(key, context)` |
-   | `OrdinarySet` | `ordinary_set` | `JsObject::set(key, value, throw, context)` |
-   | `OrdinaryDelete` | `ordinary_delete` | `JsObject::delete_property_or_throw(key, context)` |
-   | `OrdinaryHasProperty` | `ordinary_has_property` | `JsObject::has_property(key, context)` |
-   | `OrdinaryOwnPropertyKeys` | `ordinary_own_property_keys` | `JsObject::own_property_keys(context)` |
+   | ECMAScript operation | Public Boa API |
+   |---|---|
+   | `ProxyCreate(target, handler)` | `JsProxyBuilder::new(target)...build(context)` |
+   | `OrdinaryGetPrototypeOf` | `JsObject::prototype()` |
+   | `OrdinaryIsExtensible` | `JsObject::is_extensible(context)` |
+   | `OrdinaryGet` | `JsObject::get(key, context)` |
+   | `OrdinarySet` | `JsObject::set(key, value, throw, context)` |
+   | `OrdinaryDelete` | `JsObject::delete_property_or_throw(key, context)` |
+   | `OrdinaryHasProperty` | `JsObject::has_property(key, context)` |
+   | `OrdinaryOwnPropertyKeys` | `JsObject::own_property_keys(context)` |
+
+4. When the proxy pattern is needed (WindowProxy, Location, etc.), use
+   `JsProxyBuilder` from `boa_engine::object::builtins`.  This public API
+   lets you supply each trap as a plain `NativeFunctionPointer` — no captures,
+   no custom handler struct, no access to `pub(crate)` internals.
 
 5. When no existing public method covers the exact operation needed (e.g.,
-   getting a raw `PropertyDescriptor` for [[GetOwnProperty]], or passing a
-   custom receiver for [[Set]]/[[Get]]), add a **new public wrapper method**
-   to `JsObject` in `vendor/boa/core/engine/src/object/operations.rs`.
-   **Do not change the visibility** of existing `pub(crate)` internal
-   functions or dispatch methods. New public wrappers keep the existing
-   visibility boundaries intact.
+   getting a raw `PropertyDescriptor` for [[GetOwnProperty]]), restructure
+   the implementation to use the available public methods, or submit a PR
+   to the upstream Boa project to add the missing public wrapper.
 
-   Example — adding a `get_own_property_descriptor` method:
-   ```rust
-   impl JsObject {
-       /// [[GetOwnProperty]] returning the raw descriptor.
-       pub fn get_own_property_descriptor(
-           &self,
-           key: &PropertyKey,
-           context: &mut Context,
-       ) -> JsResult<Option<PropertyDescriptor>> {
-           self.__get_own_property__(
-               key,
-               &mut InternalMethodPropertyContext::new(context),
-           )
-       }
-   }
-   ```
+**Never modify the external Boa dependency to make internal APIs public.**
 
-6. As a last resort, if vendoring constraints forbid any new public API
-   additions, restructure the implementation to avoid needing the internal
-   operation — for example, implement `SetImmutablePrototype` manually using
-   only `JsObject::prototype()` (public), or skip the problematic operation
-   and rely on ordinary behaviour for that internal method.
-
-**Visible changes to vendor code that are strictly forbidden:**
-- Changing `pub(crate) fn` to `pub fn` on existing functions or methods
-- Changing `pub(crate)` fields on existing public structs to `pub`
-- Changing `pub(crate) mod` to `pub mod` on existing modules
-- Changing `pub(crate) const` to `pub const` on existing constants
-
-These break the vendored library's internal encapsulation boundary and
-create maintenance burden on future vendor updates.
-
-The WindowProxy currently uses the transparent-proxy approach (returns the
-Window directly for same-origin). When cross-origin support requires a
-proper exotic object, use this methodology to add new public wrappers
-without changing existing visibility boundaries.
+The WindowProxy currently uses `JsProxyBuilder` (the public Boa API) to
+create a proper Proxy with native-function traps for all 10 overridden
+internal methods (see `content/src/html/windowproxy.rs`).  This avoids any
+`pub(crate)` access.  When cross-origin support requires additional
+internal-method overrides, follow the same pattern — use `JsProxyBuilder`
+traps backed by the public `JsObject` methods above.
 
 ## Adding a new HTML element type
 
