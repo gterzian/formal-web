@@ -52,20 +52,36 @@ fn delegated_tla_validate_command() -> Option<ExitCode> {
 }
 
 fn run_embedder_process(embedder_args: Vec<OsString>) -> Result<(), String> {
-    let mut command = ProcessCommand::new("rustup");
-    command.arg("run").arg("1.94.0").arg("cargo").arg("run");
-    if !cfg!(debug_assertions) {
-        command.arg("--release");
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| String::from("failed to resolve executable directory"))?;
+    let embedder_name = format!("formal-web-embedder{}", std::env::consts::EXE_SUFFIX);
+    let embedder_path = exe_dir.join(&embedder_name);
+
+    if !embedder_path.is_file() {
+        println!("formal-web: building formal-web-embedder...");
+        let mut build_command = ProcessCommand::new("rustup");
+        build_command.arg("run").arg("1.94.0").arg("cargo").arg("build");
+        if !cfg!(debug_assertions) {
+            build_command.arg("--release");
+        }
+        build_command.arg("-p").arg("embedder").arg("--bin").arg("formal-web-embedder");
+        let status = build_command
+            .status()
+            .map_err(|error| format!("failed to compile embedder binary: {error}"))?;
+        if !status.success() {
+            return Err(format!("cargo build for embedder failed with status {status}"));
+        }
     }
-    if cfg!(not(feature = "media")) {
-        command.arg("--no-default-features");
+
+    if !embedder_path.is_file() {
+        return Err(format!("Could not locate or compile formal-web-embedder at {}", embedder_path.display()));
     }
+
+    let mut command = ProcessCommand::new(&embedder_path);
     command
-        .arg("--manifest-path")
-        .arg("embedder/Cargo.toml")
-        .arg("--bin")
-        .arg("formal-web-embedder")
-        .arg("--")
         .args(embedder_args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
