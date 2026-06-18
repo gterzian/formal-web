@@ -1,6 +1,0 @@
-package wasi:tls@0.3.0-draft;
-
-world imports {
-    import client;
-    import types;
-}

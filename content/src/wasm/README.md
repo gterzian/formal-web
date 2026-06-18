@@ -1,8 +1,8 @@
 # content/src/wasm — WebAssembly JS API
 
 Implements the [`WebAssembly`](https://www.w3.org/TR/wasm-js-api/) namespace
-exposed to web content.  Uses the vendored `wasmtime` crate
-(`vendor/wasmtime/`) as the underlying WebAssembly engine.
+exposed to web content.  Uses the `wasmtime` crate (crates.io) as the
+underlying WebAssembly engine.
 
 ## Architecture
 
@@ -199,6 +199,6 @@ Background worker (WasmWorker):
 
 ## Dependencies
 
-- `wasmtime` crate (vendored) — core WebAssembly compilation.
+- `wasmtime` crate (crates.io) — core WebAssembly compilation.
 - `crossbeam-channel` — message passing between main thread and
   background compilation worker.
