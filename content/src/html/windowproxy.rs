@@ -268,41 +268,31 @@ pub(crate) fn create_window_proxy(
     window: &JsObject,
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    // Note: The handler is created with a [[Window]] internal slot.
+    // Uses the CreateBuiltinFunction + CreateDataPropertyOrThrow trap-registration pattern from
+    // <https://webidl.spec.whatwg.org/#creating-an-observable-array-exotic-object>.
+
+    // Let W be window.
+
+    // Let handler be OrdinaryObjectCreate(null, « [[Window]] »).
     let handler_proto: JsPrototype = None;
     let handler: JsObject = JsObject::<WindowProxyHandler>::new(
         context.root_shape(),
         handler_proto,
+        // Set handler.[[Window]] to W.
         WindowProxyHandler {
             window: window.clone(),
         },
     )
     .upcast();
 
-    // Note: Each trap is registered via CreateBuiltinFunction +
-    // CreateDataPropertyOrThrow, matching the observable array pattern.
-    let traps: &[(
-        &str,
-        usize,
-        fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>,
-    )] = &[
-        ("getPrototypeOf", 1, trap_get_prototype_of as _),
-        ("setPrototypeOf", 2, trap_set_prototype_of as _),
-        ("isExtensible", 1, trap_is_extensible as _),
-        ("preventExtensions", 1, trap_prevent_extensions as _),
+    // For each trap, CreateBuiltinFunction + CreateDataPropertyOrThrow onto handler.
 
-        ("defineProperty", 3, trap_define_property as _),
-        ("get", 3, trap_get as _),
-        ("set", 4, trap_set as _),
-        ("deleteProperty", 2, trap_delete_property as _),
-        ("has", 2, trap_has as _),
-        ("ownKeys", 1, trap_own_keys as _),
-    ];
-
-    for &(name_str, length, trap_fn) in traps {
-        let name = js_string!(name_str);
-        // Note: The captures value is a dummy; the real handler is
-        // read from `this` inside each trap function.
+    // defineProperty
+    //   Let defineProperty be CreateBuiltinFunction(the steps from §7.2.3 [[DefineOwnProperty]], 3, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "defineProperty", defineProperty).
+    {
+        let name = js_string!("defineProperty");
+        let trap_fn = trap_define_property as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
         let trap = NativeFunction::from_copy_closure_with_captures(
             move |this, args, _captures: &WindowProxyHandler, context| {
                 trap_fn(this, args, _captures, context)
@@ -313,11 +303,201 @@ pub(crate) fn create_window_proxy(
         );
         let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
             .name(name.clone())
-            .length(length)
+            .length(3)
             .build();
         handler.create_data_property_or_throw(name, fn_obj, context)?;
     }
 
+    // deleteProperty
+    //   Let deleteProperty be CreateBuiltinFunction(the steps from §7.2.3 [[Delete]], 2, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "deleteProperty", deleteProperty).
+    {
+        let name = js_string!("deleteProperty");
+        let trap_fn = trap_delete_property as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(2)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // get
+    //   Let get be CreateBuiltinFunction(the steps from §7.2.3 [[Get]], 3, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "get", get).
+    {
+        let name = js_string!("get");
+        let trap_fn = trap_get as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(3)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // has
+    //   Let has be CreateBuiltinFunction(the steps from §7.2.3 [[HasProperty]], 2, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "has", has).
+    {
+        let name = js_string!("has");
+        let trap_fn = trap_has as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(2)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // ownKeys
+    //   Let ownKeys be CreateBuiltinFunction(the steps from §7.2.3 [[OwnPropertyKeys]], 1, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "ownKeys", ownKeys).
+    {
+        let name = js_string!("ownKeys");
+        let trap_fn = trap_own_keys as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(1)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // preventExtensions
+    //   Let preventExtensions be CreateBuiltinFunction(the steps from §7.2.3 [[PreventExtensions]], 0, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "preventExtensions", preventExtensions).
+    {
+        let name = js_string!("preventExtensions");
+        let trap_fn = trap_prevent_extensions as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(0)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // set
+    //   Let set be CreateBuiltinFunction(the steps from §7.2.3 [[Set]], 4, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "set", set).
+    {
+        let name = js_string!("set");
+        let trap_fn = trap_set as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(4)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // getPrototypeOf
+    //   Let getPrototypeOf be CreateBuiltinFunction(the steps from §7.2.3 [[GetPrototypeOf]], 1, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "getPrototypeOf", getPrototypeOf).
+    {
+        let name = js_string!("getPrototypeOf");
+        let trap_fn = trap_get_prototype_of as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(1)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // setPrototypeOf
+    //   Let setPrototypeOf be CreateBuiltinFunction(the steps from §7.2.3 [[SetPrototypeOf]], 2, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "setPrototypeOf", setPrototypeOf).
+    {
+        let name = js_string!("setPrototypeOf");
+        let trap_fn = trap_set_prototype_of as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(2)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // isExtensible
+    //   Let isExtensible be CreateBuiltinFunction(the steps from §7.2.3 [[IsExtensible]], 1, "", « », realm).
+    //   Perform ! CreateDataPropertyOrThrow(handler, "isExtensible", isExtensible).
+    {
+        let name = js_string!("isExtensible");
+        let trap_fn = trap_is_extensible as fn(&JsValue, &[JsValue], &WindowProxyHandler, &mut Context) -> JsResult<JsValue>;
+        let trap = NativeFunction::from_copy_closure_with_captures(
+            move |this, args, _captures: &WindowProxyHandler, context| {
+                trap_fn(this, args, _captures, context)
+            },
+            WindowProxyHandler {
+                window: window.clone(),
+            },
+        );
+        let fn_obj = FunctionObjectBuilder::new(context.realm(), trap)
+            .name(name.clone())
+            .length(1)
+            .build();
+        handler.create_data_property_or_throw(name, fn_obj, context)?;
+    }
+
+    // Return ! ProxyCreate(W, handler).
     Proxy::create(&JsValue::from(window.clone()), &handler.into(), context)
         .map(JsValue::from)
 }
