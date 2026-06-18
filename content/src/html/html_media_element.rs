@@ -1,5 +1,7 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{LazyLock, Mutex};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{Context, JsResult, JsValue};
@@ -10,8 +12,15 @@ use log::{debug, error};
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::webidl::resolved_promise;
 use crate::js::platform_objects::with_global_scope;
-use ipc_messages::content::{Event as ContentEvent, MediaLoadRequest};
+use ipc_messages::content::{DocumentId, Event as ContentEvent, MediaLoadRequest};
 use ipc_messages::media::VideoPaintId;
+
+/// Global registry mapping (document_id, node_id) → VideoPaintId.
+/// Populated by `resource_selection_algorithm` and consulted by
+/// `ContentProcess::build_frame_composition_metadata` so that both the
+/// embed-site paint_id and the media-load-request paint_id agree.
+pub(crate) static VIDEO_PAINT_REGISTRY: LazyLock<Mutex<HashMap<(DocumentId, usize), VideoPaintId>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// <https://html.spec.whatwg.org/#media-elements>
 #[derive(Trace, Finalize, JsData)]
@@ -60,6 +69,11 @@ pub struct HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#show-poster-flag>
     show_poster: bool,
+
+    /// Globally-unique paint-layer identifier for this video element (UUID v4).
+    /// Not traced — this is an internal identifier, not a JS value or GC-managed object.
+    #[unsafe_ignore_trace]
+    video_paint_id: VideoPaintId,
 }
 
 /// <https://html.spec.whatwg.org/#mediaerror>
@@ -130,6 +144,7 @@ impl HTMLMediaElement {
             delaying_the_load_event: false,
             is_currently_stalled: false,
             show_poster: true,
+            video_paint_id: VideoPaintId::new(),
         }
     }
 
@@ -163,6 +178,14 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-currentsrc>
     pub(crate) fn current_src(&self) -> String {
         self.current_src.clone()
+    }
+
+    /// Globally-unique paint-layer identifier for this media element.
+    #[allow(dead_code)]
+    // Note: Reserved for use by future code that needs to read the paint_id from
+    // the element (e.g., pipeline teardown cleanup).
+    pub(crate) fn video_paint_id(&self) -> VideoPaintId {
+        self.video_paint_id
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-duration>
@@ -321,9 +344,10 @@ impl HTMLMediaElement {
             .and_then(|base_url| base_url.join(s).ok().map(|url| url.to_string()))
         });
 
-        // Assign a VideoPaintId using the element's unique node_id.
+        // Register VideoPaintId in the global registry so that
+        // build_frame_composition_metadata can find the same ID.
         let node_id = self.html_element.element.node.node_id;
-        let video_paint_id = VideoPaintId(node_id as u64);
+        let video_paint_id = self.video_paint_id;
 
         // Extract document_id and navigable_id from the GlobalScope.
         let global_scope_data = with_global_scope(context, |global_scope| {
@@ -340,6 +364,16 @@ impl HTMLMediaElement {
                 (None, None, None)
             }
         };
+
+        // Register the paint_id in the global registry so the composition
+        // metadata builder can find the same UUID for this video element.
+        if let Some(document_id) = document_id {
+            VIDEO_PAINT_REGISTRY
+                .lock()
+                .expect("VIDEO_PAINT_REGISTRY mutex poisoned")
+                .entry((document_id, node_id))
+                .or_insert(video_paint_id);
+        }
 
         await_a_stable_state(context, move |_ctx| {
             // ── Synchronous section starts here ──

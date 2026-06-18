@@ -14,6 +14,7 @@ pub mod webidl;
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
+use crate::html::html_media_element::VIDEO_PAINT_REGISTRY;
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
@@ -1274,6 +1275,7 @@ impl ContentProcess {
                 let (width, height) = viewport.window_size;
                 let mut scene = RenderScene::new();
                 let composition = Self::build_frame_composition_metadata(
+                    document_id,
                     &document_guard,
                     &document.navigable_container_states,
                     viewport.scale_f64(),
@@ -1355,6 +1357,7 @@ impl ContentProcess {
     }
 
     fn build_frame_composition_metadata(
+        document_id: DocumentId,
         document: &BaseDocument,
         container_states: &HashMap<usize, NavigableContainerState>,
         scale: f64,
@@ -1453,8 +1456,15 @@ impl ContentProcess {
                 })
                 .unwrap_or(0.0);
 
+            let mut registry = VIDEO_PAINT_REGISTRY
+                .lock()
+                .expect("VIDEO_PAINT_REGISTRY mutex poisoned");
+            let paint_id = registry
+                .entry((document_id, video_node_id))
+                .or_insert_with(VideoPaintId::new);
+
             embed_sites.push(EmbedSite::Video(VideoEmbedData {
-                paint_id: VideoPaintId(video_node_id as u64),
+                paint_id: *paint_id,
                 layout: EmbedLayout {
                     z_index: 0,
                     paint_order: (iframe_count + paint_offset) as u32,
