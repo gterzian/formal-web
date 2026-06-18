@@ -1,6 +1,0 @@
-{
-  "private": true,
-  "scripts": {
-    "prettier": "npx prettier -w ."
-  }
-}

@@ -220,30 +220,36 @@ UA-side state. The opener is only used for:
 
 <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 
-`WindowProxy` is a Rust `JsData` struct wrapping a `JsObject` handle to the
-current Window.  The struct overrides `JsData::internal_methods()` to supply
-a custom `InternalObjectMethods` vtable that implements the 10 overridden
-internal methods specified by HTML §7.2.3.
+`WindowProxy` is an ECMAScript Proxy exotic object (created via
+`JsProxyBuilder`) wrapping the active Window.  The proxy uses native-function
+traps for all 10 overridden internal methods specified by HTML §7.2.3.
 
-### Current implementation (proper exotic object)
+### Current implementation (`JsProxyBuilder` + native-function traps)
 
-The WindowProxy is now a proper exotic object with all 10 overridden internal
+The WindowProxy is implemented using `JsProxyBuilder` from
+`boa_engine::object::builtins`, which is Boa's public API for creating Proxy
+objects with native Rust trap functions.  Each of the 10 overridden internal
 methods (`[[GetPrototypeOf]]`, `[[SetPrototypeOf]]`, `[[IsExtensible]]`,
 `[[PreventExtensions]]`, `[[GetOwnProperty]]`, `[[DefineOwnProperty]]`,
-`[[Get]]`, `[[Set]]`, `[[Delete]]`, `[[OwnPropertyKeys]]`).
+`[[Get]]`, `[[Set]]`, `[[Delete]]`, `[[OwnPropertyKeys]]`) is a plain
+`NativeFunctionPointer` — no captures, no custom handler struct, no access
+to `pub(crate)` Boa internals.
 
 For the same-origin fast path (always active in the current single-origin
 content process):
 - `[[GetOwnProperty]]` delegates to `OrdinaryGetOwnProperty(W, P)` on the
   inner Window object, so Window own properties are correctly visible.
 - `[[DefineOwnProperty]]`, `[[Delete]]`, and `[[Set]]` delegate to the
-  corresponding operations on the Window.
-- `[[Get]]` calls `OrdinaryGet(this, P, Receiver)` manually (to avoid
-  recursion through the vtable), covering both proxy own properties and
-  the Window.prototype prototype chain.
+  corresponding operations on the Window via public `JsObject` methods.
+- `[[Get]]` delegates to `JsObject::get(key, context)` on the Window,
+  covering both proxy own properties and the Window.prototype prototype chain.
 - `[[OwnPropertyKeys]]` concatenates array-index keys (empty until child
   navigable tracking is added) with the Window's own property keys.
 - `[[SetPrototypeOf]]` implements `SetImmutablePrototype`.
+
+Each trap receives the proxy **target** (the Window) as `args[0]`, per the
+ECMAScript Proxy internal method specification (10.5).  The target is obtained
+from the trap arguments rather than from captures or custom handler fields.
 
 Cross-origin paths (`CrossOriginGetOwnPropertyHelper`,
 `CrossOriginPropertyFallback`, `CrossOriginGet`, `CrossOriginSet`,
@@ -266,18 +272,18 @@ WindowProxy will silently leak all cross-origin properties instead of applying
 the restricted CrossOriginProperties table (HTML §7.2.3).
 
 **3. Navigation window swapping is untested and unused.**
-The `WindowProxy.window` field exists and is documented as "swap the active
-Window without changing the proxy identity", but there is no call site that
-performs this swap.  Cross-document navigation does not update the proxy.
+The WindowProxy wraps a fixed Window; there is no mechanism to swap the
+active Window behind the same proxy identity.  Cross-document navigation
+does not update the proxy.
 
 ### Implementation notes
 
-The WindowProxy exotic object is implemented as a transparent proxy using
-only boa's existing public API (no vendor modifications). The `create_window_proxy()`
-function returns the inner Window's `JsObject` directly, which satisfies all
-same-origin operations per HTML §7.2.3. See `content/src/js/README.md`
-("Working with vendored boa: use spec links, not visibility changes") for
-the methodology of finding the right public API via ECMAScript spec links.
+The WindowProxy uses `JsProxyBuilder` — Boa's public API for constructing
+Proxy objects from native Rust function pointers.  This avoids any access to
+`pub(crate)` internals (`Proxy::create`, `Proxy::try_data`, etc.) and works
+with Boa as an external dependency from the `boa-dev/boa` repository.  See
+`content/src/js/README.md` ("Working with Boa's public API: use spec links,
+not `pub(crate)` internals") for the general methodology.
 
 See also:
 - `content/src/webidl/README.md` for the exotic-object pattern with JsData.
