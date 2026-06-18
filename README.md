@@ -37,6 +37,10 @@ The following procesess are used:
 - Media: running the `media` crate, which runs gstreamer, which is started and owned by the media worker in `user_agent/src/media.rs`. This is an optional feature as expalined above under Quick Start.
 
 
+The goal is to follow [Apple's guidelines for an independent browser engine](https://developer.apple.com/documentation/
+BrowserEngineKit/designing-your-browser-architecture).
+
+
 ## Project structure
 
 | Directory | Description |
