@@ -1,5 +1,0 @@
-package foo:foo;
-
-world host {
-  import foo: func();
-}

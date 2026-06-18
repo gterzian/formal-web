@@ -1,7 +1,0 @@
-package paths:path1;
-
-interface test {}
-
-world path1 {
-    import test;
-}

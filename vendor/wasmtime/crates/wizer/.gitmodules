@@ -1,3 +1,0 @@
-[submodule "benches/uap-bench/uap-core"]
-	path = benches/uap-bench/uap-core
-	url = https://github.com/ua-parser/uap-core.git
