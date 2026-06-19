@@ -29,8 +29,7 @@ rustup run 1.94.0 cargo run --release -- --no-default-features
 
 ## Project architecture
 
-A multiprocess approach is chosen by default, because the goal is to match [Apple's guidelines for an independent browser engine](https://developer.apple.com/documentation/
-BrowserEngineKit/designing-your-browser-architecture). 
+A multiprocess approach is chosen by default, because the goal is to match [Apple's guidelines for an independent browser engine](https://developer.apple.com/documentation/BrowserEngineKit/designing-your-browser-architecture). 
 
 The following procesess are used:
 
