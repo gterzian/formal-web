@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[lib]
+name = "embedder"
+path = "src/lib.rs"
+
 [[bin]]
 name = "formal-web-embedder"
 path = "src/main.rs"
