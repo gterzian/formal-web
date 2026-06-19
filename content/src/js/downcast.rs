@@ -3,7 +3,10 @@ use boa_engine::{JsNativeError, JsResult, JsValue, object::JsObject};
 use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent,
 };
-use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Window};
+use crate::html::{
+    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
+    HTMLVideoElement, Window,
+};
 
 pub(crate) fn with_abort_controller_ref<R>(
     object: &JsObject,

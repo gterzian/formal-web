@@ -1,12 +1,7 @@
-use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue,
-    js_string,
-};
+use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string};
 
 use crate::dom::{Event, UIEvent};
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 use super::event::init_flag;
 

@@ -44,13 +44,9 @@ fn run_app_with_options(options: AppRunOptions) -> Result<(), String> {
     });
 
     let event_loop_result = if options.headless {
-        event_loop::run_headless_event_loop(
-            options.trace_sender.clone(),
-        )
+        event_loop::run_headless_event_loop(options.trace_sender.clone())
     } else {
-        event_loop::run_headed_event_loop(
-            options.trace_sender.clone(),
-        )
+        event_loop::run_headed_event_loop(options.trace_sender.clone())
     };
     event_loop::clear_event_loop_options();
 

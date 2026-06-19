@@ -1,8 +1,12 @@
 use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, FrameId, NewChildNavigableInfo,
-    IframeTraversableRemoval, NavigableId, UserNavigationInvolvement, iframe_target_name,
+    DocumentId, Event as ContentEvent, FrameId, IframeTraversableRemoval, NavigableId,
+    NewChildNavigableInfo, UserNavigationInvolvement, iframe_target_name,
 };
-use std::{cell::RefCell, collections::{HashMap, HashSet}, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use blitz_dom::BaseDocument;
 use boa_engine::JsData;
@@ -398,11 +402,12 @@ fn create_a_new_child_navigable(
     // environment settings object.  The content-process side handles this;
     // the UA handles BC allocation, group membership, and session history.
     let content_frame_id = process.allocate_child_frame_id();
-    let (_global_object, settings, new_document) = crate::html::create_a_new_browsing_context_and_document(
-        &process.event_sender,
-        content_navigable,
-        new_document_id,
-    )?;
+    let (_global_object, settings, new_document) =
+        crate::html::create_a_new_browsing_context_and_document(
+            &process.event_sender,
+            content_navigable,
+            new_document_id,
+        )?;
 
     // Register the document in ContentProcess immediately.
     process.documents.insert(

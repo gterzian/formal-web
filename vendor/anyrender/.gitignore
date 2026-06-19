@@ -1,7 +1,0 @@
-/target
-.DS_Store
-/scratch
-/.vscode
-/examples/output/**/*.png
-/examples/output/**/*.jpg
-/examples/output/**/*.jpeg

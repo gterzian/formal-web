@@ -1,14 +1,12 @@
 use std::{mem, ptr};
 
-use boa_engine::{
-    Context, JsData, JsNativeError, JsResult, JsValue, object::JsObject,
-};
+use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::js::with_event_target_mut;
 use crate::streams::PipeToState;
-use crate::webidl::{Callback, EcmascriptHost};
 use crate::webidl::bindings::create_interface_instance;
+use crate::webidl::{Callback, EcmascriptHost};
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 

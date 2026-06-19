@@ -1,13 +1,9 @@
-use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-};
+use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsString, JsValue};
 
-use crate::js::with_event_target_mut;
 use crate::html::HTMLIFrameElement;
+use crate::js::with_event_target_mut;
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 use crate::webidl::{callback_function_value, nullable_value};
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface,
-};
 
 // ── WebIDL interface definition (§3) ──
 

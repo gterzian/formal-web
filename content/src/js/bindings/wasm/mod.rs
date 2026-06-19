@@ -12,20 +12,22 @@
 
 mod interfaces;
 
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
 use crate::wasm::{
-    WasmInstance, WasmModule, validate_wasm_module,
+    WasmInstance, WasmModule,
     namespace::{
         asynchronously_compile_a_webassembly_module,
-        asynchronously_instantiate_a_webassembly_module,
-        instantiate_bytes,
+        asynchronously_instantiate_a_webassembly_module, instantiate_bytes,
     },
+    validate_wasm_module,
 };
-use crate::webidl::{get_a_copy_of_the_buffer_source, is_buffer_source, rejected_promise_from_error};
 use crate::webidl::bindings::{
-    register_interface_spec,
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_namespace_spec,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_interface_spec,
+    register_namespace_spec,
 };
+use crate::webidl::{
+    get_a_copy_of_the_buffer_source, is_buffer_source, rejected_promise_from_error,
+};
+use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
 
 // ── Namespace type ──
 
@@ -100,10 +102,7 @@ pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
 
     // Register error types (CompileError, LinkError, RuntimeError).
     // https://webassembly.github.io/spec/js-api/#error-objects
-    interfaces::register_wasm_error_types(
-        &resolve_wasm_namespace(context)?,
-        context,
-    )?;
+    interfaces::register_wasm_error_types(&resolve_wasm_namespace(context)?, context)?;
 
     Ok(())
 }
@@ -127,11 +126,7 @@ fn resolve_wasm_namespace(context: &mut Context) -> JsResult<JsObject> {
 // call the corresponding domain function in `content/src/wasm/namespace.rs`,
 // and wrap the result.
 
-fn validate_fn(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn validate_fn(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let bytes_value = args.first().ok_or_else(|| {
         JsNativeError::typ().with_message("WebAssembly.validate: missing argument")
     })?;
@@ -139,11 +134,7 @@ fn validate_fn(
     Ok(JsValue::new(validate_wasm_module(&stable_bytes)))
 }
 
-fn compile_fn(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn compile_fn(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let bytes_value = match args.first() {
         Some(val) => val,
         None => {
@@ -162,11 +153,7 @@ fn compile_fn(
     asynchronously_compile_a_webassembly_module(stable_bytes, context)
 }
 
-fn instantiate_fn(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn instantiate_fn(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let first = match args.first() {
         Some(val) => val,
         None => {
@@ -192,7 +179,9 @@ fn instantiate_fn(
         Some(obj) => obj,
         None => {
             let error: JsError = JsNativeError::typ()
-                .with_message("WebAssembly.instantiate: first argument must be a buffer source or Module")
+                .with_message(
+                    "WebAssembly.instantiate: first argument must be a buffer source or Module",
+                )
                 .into();
             return Ok(rejected_promise_from_error(error, context).into());
         }

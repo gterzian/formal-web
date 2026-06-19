@@ -1,7 +1,7 @@
 use clap::Args;
+use log::error;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use log::error;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
@@ -2065,10 +2065,7 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     // prebuilds content and net (not the embedder).  A stale embedder from a
     // previous run causes the content process to fail at IPC bootstrap (the
     // content binary itself is prebuilt by build.rs and checked below).
-    let embedder_builds = [(
-        repo_root.join("embedder/Cargo.toml"),
-        BROWSER_BINARY_NAME,
-    )];
+    let embedder_builds = [(repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME)];
 
     for (manifest_path, binary_name) in &runner_builds {
         let isolated_target_dir = prebuild_target_root.join(binary_name);

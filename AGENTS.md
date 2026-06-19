@@ -154,17 +154,16 @@ cargo build --release -p embedder --bin formal-web-embedder
 cargo build --release -p media   --bin formal-web-media
 ```
 
-### Vendored crates
+### External dependencies: blitz and anyrender
 
-The vendored blitz packages under `vendor/blitz/packages/` were originally
-part of blitz's own Cargo workspace, using `workspace = true` inheritance
-for both package metadata and dependency versions.  Cargo does not support
-nested workspaces, so the relevant packages (blitz-traits, blitz-dom,
-blitz-paint, blitz-html, stylo_taffy, debug_timer) were de-workspaced:
-all `version.workspace = true` and `{ workspace = true }` references were
-replaced with their concrete values from the blitz workspace definition.
-The root `[workspace.dependencies]` provides the same for the vendored
-anyrender crates under `vendor/anyrender/crates/`.
+Blitz crates (blitz-traits, blitz-dom, blitz-paint, blitz-html, stylo_taffy,
+debug_timer) come from a git dependency on
+<https://github.com/gterzian/blitz> (rev `954b41f`).
+
+AnyRender crates (anyrender, anyrender_vello, anyrender_vello_cpu,
+anyrender_svg, wgpu_context) are sourced from crates.io at the versions
+required by the blitz workspace (0.10, 0.10.1, 0.12.1, 0.11.0, 0.6.0
+respectively).
 
 ### Process binary search paths
 

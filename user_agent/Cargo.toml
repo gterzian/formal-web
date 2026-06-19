@@ -9,7 +9,7 @@ default = ["media"]
 media = []
 
 [dependencies]
-blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
+blitz-traits = { workspace = true }
 crossbeam-channel = "0.5"
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }

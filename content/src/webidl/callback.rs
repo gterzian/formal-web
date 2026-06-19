@@ -1,9 +1,9 @@
-use log::error;
 use boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsString, JsValue,
     object::{JsObject, builtins::JsFunction},
 };
 use boa_gc::{Finalize, Trace};
+use log::error;
 
 /// <https://webidl.spec.whatwg.org/#idl-callback-function>
 // Note: The content process reuses `Callback` for both [callback function](https://webidl.spec.whatwg.org/#idl-callback-function) type values and objects implementing a [callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) because both Web IDL representations are a tuple of (object reference, callback context).

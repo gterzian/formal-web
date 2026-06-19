@@ -18,8 +18,8 @@ use blitz_traits::events::{
 use blitz_traits::shell::ColorScheme;
 use ipc_messages::content::WebviewId;
 use keyboard_types::Modifiers as KeyboardModifiers;
-use serde_json::Value;
 use log::error;
+use serde_json::Value;
 use std::time::Duration;
 use webview::WebviewProvider;
 
@@ -307,7 +307,8 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
         match event {
             FormalWebUserEvent::WebviewProviderSync => {
                 if let Some(p) = self.provider.as_mut()
-                    && let Err(e) = p.sync_pending_messages() {
+                    && let Err(e) = p.sync_pending_messages()
+                {
                     error!("provider sync error: {e}");
                 }
             }

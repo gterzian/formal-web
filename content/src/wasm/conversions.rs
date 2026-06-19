@@ -13,7 +13,8 @@ pub(crate) fn js_val_to_wasm_val(
 ) -> Result<wasmtime::Val, JsNativeError> {
     match wasm_type {
         wasmtime::ValType::I32 => {
-            let n = value.to_number(context)
+            let n = value
+                .to_number(context)
                 .map_err(|_| JsNativeError::typ().with_message("expected number for i32"))?;
             Ok(wasmtime::Val::I32(n as i32))
         }
@@ -21,12 +22,14 @@ pub(crate) fn js_val_to_wasm_val(
             Err(JsNativeError::typ().with_message("i64 wasm values not yet supported"))
         }
         wasmtime::ValType::F32 => {
-            let n = value.to_number(context)
+            let n = value
+                .to_number(context)
                 .map_err(|_| JsNativeError::typ().with_message("expected number for f32"))?;
             Ok(wasmtime::Val::F32(n as u32))
         }
         wasmtime::ValType::F64 => {
-            let n = value.to_number(context)
+            let n = value
+                .to_number(context)
                 .map_err(|_| JsNativeError::typ().with_message("expected number for f64"))?;
             Ok(wasmtime::Val::F64(n.to_bits()))
         }

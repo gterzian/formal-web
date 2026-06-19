@@ -12,8 +12,8 @@ use boa_engine::{
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::{
-    js::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
     dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
+    js::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
     streams::SizeAlgorithm,
     webidl::bindings::create_interface_instance,
     webidl::{
@@ -612,7 +612,8 @@ pub(crate) fn create_writable_stream_default_controller(
 ) -> JsResult<(WritableStreamDefaultController, JsObject)> {
     let controller = WritableStreamDefaultController::new();
     let controller_object: JsObject =
-        create_interface_instance::<WritableStreamDefaultController>(controller.clone(), context)?.into();
+        create_interface_instance::<WritableStreamDefaultController>(controller.clone(), context)?
+            .into();
     Ok((controller, controller_object))
 }
 

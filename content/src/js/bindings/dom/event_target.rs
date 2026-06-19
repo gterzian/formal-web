@@ -2,16 +2,14 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    js_string,
-    object::JsObject,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
 };
 
+use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::js::platform_objects::{
     document_object, object_for_existing_node, resolve_element_object,
 };
 use crate::js::with_event_target_mut;
-use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::webidl::{
     Callback, ContextCallbackHost, EcmascriptHost, callback_interface_type_value, nullable_value,
 };
@@ -27,9 +25,7 @@ pub(crate) struct AddEventListenerOptions {
 // ── WebIDL interface definition (§3) ──
 
 use crate::webidl::bindings::{
-    create_interface_instance,
-
-    InterfaceDefinition, OperationDef, WebIdlInterface,
+    InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
 
 impl WebIdlInterface for EventTarget {
@@ -70,7 +66,6 @@ impl WebIdlInterface for EventTarget {
         });
     }
 }
-
 
 fn add_event_listener(
     this: &JsValue,

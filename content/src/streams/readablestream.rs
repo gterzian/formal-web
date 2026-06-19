@@ -21,8 +21,8 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
 
-use crate::js::with_abort_signal_ref;
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
+use crate::js::with_abort_signal_ref;
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{
@@ -1094,8 +1094,10 @@ pub(crate) fn create_readable_stream(
 
     // Step 6: "Let controller be a new ReadableStreamDefaultController."
     let controller = super::ReadableStreamDefaultController::new();
-    let controller_object =
-        create_interface_instance::<super::ReadableStreamDefaultController>(controller.clone(), context)?;
+    let controller_object = create_interface_instance::<super::ReadableStreamDefaultController>(
+        controller.clone(),
+        context,
+    )?;
 
     // Step 7: "Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm)."
     set_up_readable_stream_default_controller(
@@ -1115,7 +1117,8 @@ pub(crate) fn create_readable_stream(
 }
 fn create_readable_stream_object(context: &mut Context) -> JsResult<(ReadableStream, JsObject)> {
     let stream = ReadableStream::new();
-    let stream_object: JsObject = create_interface_instance::<ReadableStream>(stream.clone(), context)?.into();
+    let stream_object: JsObject =
+        create_interface_instance::<ReadableStream>(stream.clone(), context)?.into();
     Ok((stream, stream_object))
 }
 
@@ -1134,7 +1137,8 @@ fn create_readable_byte_stream(
 
     // Step 3: "Let controller be a new ReadableByteStreamController."
     let controller = ReadableByteStreamController::new();
-    let controller_object = create_interface_instance::<ReadableByteStreamController>(controller.clone(), context)?;
+    let controller_object =
+        create_interface_instance::<ReadableByteStreamController>(controller.clone(), context)?;
 
     // Step 4: "Perform ? SetUpReadableByteStreamController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, 0, undefined)."
     super::set_up_readable_byte_stream_controller(
@@ -2783,9 +2787,7 @@ fn readable_stream_pipe_to(
         Ok(writer_object) => writer_object,
         Err(error) => {
             if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
-                error!(
-                    "[readable-stream] failed to release reader on pipe setup error: {error}"
-                );
+                error!("[readable-stream] failed to release reader on pipe setup error: {error}");
             }
             reject_promise_with_error(&pipe_resolvers, error, context);
             return pipe_promise_obj;

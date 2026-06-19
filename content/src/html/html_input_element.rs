@@ -35,11 +35,7 @@ impl HTMLInputElement {
             .and_then(|node| node.element_data())
             .and_then(|element| element.text_input_data())
             .map(|input_data| input_data.editor.raw_text().to_string())
-            .or_else(|| {
-                self.html_element
-                    .element
-                    .get_attribute("value")
-            })
+            .or_else(|| self.html_element.element.get_attribute("value"))
             .unwrap_or_default()
     }
 
@@ -53,9 +49,7 @@ impl HTMLInputElement {
         if sanitized.is_empty() {
             self.html_element.element.remove_attribute("value");
         } else {
-            self.html_element
-                .element
-                .set_attribute("value", &sanitized);
+            self.html_element.element.set_attribute("value", &sanitized);
         }
     }
 

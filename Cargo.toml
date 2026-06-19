@@ -49,40 +49,10 @@ default-members = [
 ]
 
 [workspace.dependencies]
-# Versions required by the vendored anyrender crates.  These are resolved via
-# workspace inheritance when anyrender crates use `{ workspace = true }`.
-anyrender = { path = "vendor/anyrender/crates/anyrender" }
-anyrender_vello = { path = "vendor/anyrender/crates/anyrender_vello" }
-anyrender_vello_cpu = { path = "vendor/anyrender/crates/anyrender_vello_cpu" }
-anyrender_svg = { path = "vendor/anyrender/crates/anyrender_svg" }
-wgpu_context = { path = "vendor/anyrender/crates/wgpu_context" }
-pixels_window_renderer = { path = "vendor/anyrender/crates/pixels_window_renderer" }
-softbuffer_window_renderer = { path = "vendor/anyrender/crates/softbuffer_window_renderer" }
-kurbo = "0.13.1"
-peniko = "0.6"
-vello_cpu = { version = "0.0.8", default-features = false, features = ["std", "text", "u8_pipeline"] }
-raw-window-handle = "0.6.0"
-serde = "1"
-debug_timer = "0.1.1"
-vello = { version = "0.9", features = ["wgpu"] }
-vello_hybrid = "0.0.8"
-vello_common = "0.0.8"
-glifo = "=0.1.0"
-wgpu = "29"
-usvg = { version = "0.46.0", default-features = false }
-image = { version = "0.25", default-features = false }
-rustc-hash = "2"
-futures-channel = "0.3"
-futures-util = "0.3"
-futures-intrusive = "0.5.0"
-pollster = "0.4"
-wasm-bindgen-futures = "0.4"
-softbuffer = "0.4"
-pixels = "0.17"
+# Blitz crates (git dep from gterzian/blitz fork)
+blitz-traits = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
+blitz-dom = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
+blitz-paint = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
+blitz-html = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
 
-[patch.crates-io]
-anyrender = { path = "vendor/anyrender/crates/anyrender" }
-anyrender_vello = { path = "vendor/anyrender/crates/anyrender_vello" }
-anyrender_vello_cpu = { path = "vendor/anyrender/crates/anyrender_vello_cpu" }
-anyrender_svg = { path = "vendor/anyrender/crates/anyrender_svg" }
-wgpu_context = { path = "vendor/anyrender/crates/wgpu_context" }
+

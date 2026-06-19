@@ -33,8 +33,8 @@ use crate::event_loop::{
 };
 use crate::fetch::{FetchCommand, run_fetch_thread};
 use crate::media::{MediaCommand, run_media_thread};
-use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use crate::timer::{TimerCommand, run_timer_thread};
+use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
     let current_executable = std::env::current_exe()
@@ -1028,10 +1028,7 @@ impl UserAgent {
     /// browser-chrome URL bar, automation).  `event_loop_id` is `None`
     /// because the event loop is not known at this call site; the UA
     /// looks it up from navigable state in `handle_navigate`.
-    pub fn start_navigation(
-        &self,
-        request: NavigateRequest,
-    ) -> Result<(), String> {
+    pub fn start_navigation(&self, request: NavigateRequest) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::Navigate {
                 event_loop_id: None,
@@ -1333,12 +1330,11 @@ impl UserAgentWorker {
                 thread::Builder::new()
                     .name(String::from("formal-web:media"))
                     .spawn(move || {
-                        run_media_thread(
-                            media_command_receiver,
-                            media_user_agent_command_sender,
-                        )
+                        run_media_thread(media_command_receiver, media_user_agent_command_sender)
                     })
-                    .unwrap_or_else(|error| panic!("failed to spawn formal-web-media thread: {error}")),
+                    .unwrap_or_else(|error| {
+                        panic!("failed to spawn formal-web-media thread: {error}")
+                    }),
             )
         };
         // When media feature is disabled, never start the media thread.
@@ -1475,7 +1471,10 @@ impl UserAgentWorker {
                     traversable_id,
                     video_paint_id,
                 } => {
-                    debug!("[media] UA received MediaLoadRequested url={} traversable={}", url, traversable_id);
+                    debug!(
+                        "[media] UA received MediaLoadRequested url={} traversable={}",
+                        url, traversable_id
+                    );
                     self.handle_media_load_requested(url, traversable_id, video_paint_id);
                 }
                 UserAgentCommand::IframeTraversableRemoved {
@@ -1882,8 +1881,6 @@ impl UserAgentWorker {
         Ok(traversable_id)
     }
 
-
-
     /// <https://html.spec.whatwg.org/multipage/browsers.html#obtain-browsing-context-navigation>
     /// Note: The current model uses the active document URL plus a same-site check as the
     /// observable approximation for swap-group decisions before response-driven document creation.
@@ -2165,9 +2162,7 @@ impl UserAgentWorker {
                 self.state
                     .pending_before_unload_navigations
                     .remove(&check_id);
-                return Err(format!(
-                    "failed to send RunBeforeUnload command: {error}"
-                ));
+                return Err(format!("failed to send RunBeforeUnload command: {error}"));
             }
         }
 
@@ -3719,26 +3714,32 @@ impl UserAgentWorker {
                 // Forward the frame to the webview provider via the provider message channel.
                 // The compositor stores it by VideoPaintId and uses it during the next
                 // composition pass.
-                debug!("[media] forwarding frame to compositor: {}x{} paint={:?}",
-                    video_frame.width, video_frame.height, paint_id);
-                if let Err(error) = self
-                    .webview_provider_sender
-                    .send(WebviewProviderMessage::VideoFrameReady {
-                        webview_id,
-                        paint_id,
-                        data: video_frame,
-                    })
+                debug!(
+                    "[media] forwarding frame to compositor: {}x{} paint={:?}",
+                    video_frame.width, video_frame.height, paint_id
+                );
+                if let Err(error) =
+                    self.webview_provider_sender
+                        .send(WebviewProviderMessage::VideoFrameReady {
+                            webview_id,
+                            paint_id,
+                            data: video_frame,
+                        })
                 {
                     error!("[media] failed to enqueue video frame: {error}");
                 } else {
-                    debug!("[media] frame enqueued, requesting redraw+render for webview {:?}", webview_id);
+                    debug!(
+                        "[media] frame enqueued, requesting redraw+render for webview {:?}",
+                        webview_id
+                    );
                     // Trigger a redraw so the compositor picks up the new frame.
                     let _ = self.host.request_redraw(webview_id);
                     // Also trigger a rendering opportunity so the content process re-renders
                     // and sends updated composition metadata (clip bounds) synchronized
                     // with the video frame stream. Without this, the video frame is painted
                     // using stale clip bounds when the page scrolls.
-                    let _ = self.command_sender
+                    let _ = self
+                        .command_sender
                         .send(UserAgentCommand::RenderingOpportunityFor {
                             traversable_id: webview_id.0,
                         });
@@ -3749,14 +3750,20 @@ impl UserAgentWorker {
             MediaEvent::Eos { pipeline_id } => {
                 debug!("[media] pipeline {:?} reached end of stream", pipeline_id);
             }
-            MediaEvent::Error { pipeline_id, message } => {
+            MediaEvent::Error {
+                pipeline_id,
+                message,
+            } => {
                 error!("[media] pipeline {:?} error: {}", pipeline_id, message);
             }
             MediaEvent::DurationChanged {
                 pipeline_id,
                 duration_secs,
             } => {
-                debug!("[media] pipeline {:?} duration: {}s", pipeline_id, duration_secs);
+                debug!(
+                    "[media] pipeline {:?} duration: {}s",
+                    pipeline_id, duration_secs
+                );
             }
         }
     }

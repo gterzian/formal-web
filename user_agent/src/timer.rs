@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender, select};
 use ipc_messages::content::{DocumentFetchId, DocumentId, EventLoopId, WindowTimerKey};
-use std::collections::HashMap;
 use log::debug;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use verification::TraceSender;

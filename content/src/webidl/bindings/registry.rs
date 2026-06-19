@@ -35,7 +35,10 @@ impl InterfaceRegistry {
     ) {
         self.map.insert(
             TypeId::of::<T>(),
-            InterfaceEntry { prototype, constructor },
+            InterfaceEntry {
+                prototype,
+                constructor,
+            },
         );
     }
 
@@ -51,9 +54,7 @@ impl InterfaceRegistry {
 // ── Context-based helpers (used by all current callers) ──
 
 /// Get a constructor from the HostDefined registry.
-pub(crate) fn get_constructor_from_host_defined<T: 'static>(
-    context: &Context,
-) -> Option<JsObject> {
+pub(crate) fn get_constructor_from_host_defined<T: 'static>(context: &Context) -> Option<JsObject> {
     context
         .get_data::<InterfaceRegistry>()
         .and_then(|r| r.get_constructor::<T>())
@@ -80,9 +81,7 @@ pub(crate) fn register_in_host_defined<T: WebIdlInterface + 'static>(
 }
 
 /// Get a prototype from the HostDefined registry.
-pub(crate) fn get_prototype_from_host_defined<T: 'static>(
-    context: &Context,
-) -> Option<JsObject> {
+pub(crate) fn get_prototype_from_host_defined<T: 'static>(context: &Context) -> Option<JsObject> {
     context
         .get_data::<InterfaceRegistry>()
         .and_then(|r| r.get_prototype::<T>())
@@ -90,9 +89,7 @@ pub(crate) fn get_prototype_from_host_defined<T: 'static>(
 }
 
 /// Wire the prototype chain for an interface that inherits from another.
-pub(crate) fn wire_prototype<TChild: 'static, TParent: 'static>(
-    context: &mut Context,
-) {
+pub(crate) fn wire_prototype<TChild: 'static, TParent: 'static>(context: &mut Context) {
     if let Some(registry) = context.remove_data::<InterfaceRegistry>() {
         let child_proto = registry.get_prototype::<TChild>().cloned();
         let parent_proto = registry.get_prototype::<TParent>().cloned();

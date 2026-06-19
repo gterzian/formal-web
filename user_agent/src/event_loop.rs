@@ -4,15 +4,14 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
     Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, ColorScheme as MessageColorScheme,
-    Command as ContentCommand, ElementClickResult,
-    Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
-    WebviewProviderMessage,
+    Command as ContentCommand, ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId,
+    TraversableViewport, ViewportSnapshot, WebviewProviderMessage,
 };
+use log::{debug, error};
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as ProcessCommand};
-use log::{debug, error};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -593,7 +592,10 @@ impl EventLoopWorker {
                 }
             }
             ContentEvent::MediaLoadRequested(request) => {
-                debug!("[media] event loop forwarding MediaLoadRequested url={}", request.url);
+                debug!(
+                    "[media] event loop forwarding MediaLoadRequested url={}",
+                    request.url
+                );
                 self.user_agent_command_sender
                     .send(UserAgentCommand::MediaLoadRequested {
                         url: request.url,

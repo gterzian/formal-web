@@ -1,11 +1,7 @@
-use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-};
+use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLAnchorElement;
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 use super::hyperlink_element_utils::document_creation_url;
 
@@ -80,7 +76,6 @@ impl WebIdlInterface for HTMLAnchorElement {
             put_forwards: None,
             legacy_lenient_setter: false,
         });
-
     }
 }
 

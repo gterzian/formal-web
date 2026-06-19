@@ -1,7 +1,7 @@
-use log::error;
 use boa_engine::{JsData, object::JsObject};
 use boa_gc::{Finalize, Trace};
 use ipc_messages::content::UserNavigationInvolvement;
+use log::error;
 use url::{Host, Url};
 
 use super::Window;

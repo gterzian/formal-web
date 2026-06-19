@@ -1215,7 +1215,8 @@ fn create_transform_stream_default_controller(
 ) -> JsResult<(TransformStreamDefaultController, JsObject)> {
     let controller = TransformStreamDefaultController::new();
     let controller_object: JsObject =
-        create_interface_instance::<TransformStreamDefaultController>(controller.clone(), context)?.into();
+        create_interface_instance::<TransformStreamDefaultController>(controller.clone(), context)?
+            .into();
     Ok((controller, controller_object))
 }
 

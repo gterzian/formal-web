@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
+use log::error;
 use serde::Serialize;
 use serde_json::Value;
-use log::error;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -1111,7 +1111,10 @@ fn print_human_report(results: &[SpecReport]) {
                 }
                 if let Some(failing_entry) = result.failing_entry.as_ref() {
                     println!("  failing NDJSON entry:");
-                    println!("    {}", serde_json::to_string(failing_entry).unwrap_or_default());
+                    println!(
+                        "    {}",
+                        serde_json::to_string(failing_entry).unwrap_or_default()
+                    );
                 }
                 if !result.context.is_empty() {
                     println!("  preceding context entries:");

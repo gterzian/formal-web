@@ -4,8 +4,8 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::{JsResult, JsValue, object::JsObject};
 
-use crate::js::{with_event_mut, with_event_target_mut, with_event_target_ref};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
+use crate::js::{with_event_mut, with_event_target_mut, with_event_target_ref};
 use crate::webidl::{EcmascriptHost, call_user_objects_operation};
 
 use super::event::{EventListener, NONE};

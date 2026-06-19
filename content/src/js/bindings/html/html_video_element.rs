@@ -1,8 +1,6 @@
 // ── HTMLVideoElement JS bindings ──
 
-use boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue,
-};
+use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLVideoElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
@@ -39,7 +37,6 @@ impl WebIdlInterface for HTMLVideoElement {
             let _ = def;
             return;
         }
-
 
         def.add_attribute(AttributeDef {
             id: "videoWidth",
@@ -117,35 +114,48 @@ impl WebIdlInterface for HTMLVideoElement {
 }
 
 fn get_video_width(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
     Ok(JsValue::from(video.video_width()))
 }
 
-fn get_video_height(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
+fn get_video_height(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
     Ok(JsValue::from(video.video_height()))
 }
 
 fn get_poster(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
     Ok(JsValue::from(JsString::from(video.poster())))
 }
 
 fn set_poster(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
-    let poster = args.first()
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+    let poster = args
+        .first()
         .and_then(|v| v.as_string())
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_default();
@@ -153,38 +163,51 @@ fn set_poster(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsRes
     Ok(JsValue::undefined())
 }
 
-fn get_plays_inline(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
+fn get_plays_inline(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
     Ok(JsValue::from(video.plays_inline()))
 }
 
 fn set_plays_inline(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
     let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
     video.set_plays_inline(value);
     Ok(JsValue::undefined())
 }
 
 fn get_width(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
     Ok(JsValue::from(JsString::from(video.width())))
 }
 
 fn set_width(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
-    let value = args.first()
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+    let value = args
+        .first()
         .and_then(|v| v.as_string())
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_default();
@@ -193,19 +216,24 @@ fn set_width(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResu
 }
 
 fn get_height(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
     Ok(JsValue::from(JsString::from(video.height())))
 }
 
 fn set_height(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj.downcast_ref::<HTMLVideoElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLVideoElement")
-    })?;
-    let value = args.first()
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let video = obj
+        .downcast_ref::<HTMLVideoElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+    let value = args
+        .first()
         .and_then(|v| v.as_string())
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_default();

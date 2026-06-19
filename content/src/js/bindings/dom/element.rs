@@ -1,18 +1,18 @@
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
-    js_string,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, js_string,
     native_function::NativeFunction,
     object::{FunctionObjectBuilder, ObjectInitializer, builtins::JsArray},
     property::Attribute,
 };
 
-use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::dom::{DOMException, Element};
-use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement};
+use crate::html::{
+    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
+    HTMLVideoElement,
+};
+use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::webidl::bindings::{
-    create_interface_instance,
-
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
 
 // ── WebIDL interface definition (§3) ──
@@ -151,7 +151,6 @@ impl WebIdlInterface for Element {
     }
 }
 
-
 pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R) -> JsResult<R> {
     let object = this
         .as_object()
@@ -214,9 +213,9 @@ fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
 /// <https://dom.spec.whatwg.org/#dom-element-classlist>
 fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let realm = context.realm().clone();
-    let obj = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("classList receiver is not an object")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("classList receiver is not an object"))?;
     let obj_clone = JsValue::from(obj.clone());
 
     // Build a simple JS object that wraps class attribute manipulation.
@@ -264,41 +263,62 @@ fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
 }
 
 fn class_list_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<String> {
-    let obj = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected object")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     let element_val = obj.get(js_string!("__element"), context)?;
-    let element_obj = element_val.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("classList: element not found")
-    })?;
+    let element_obj = element_val
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("classList: element not found"))?;
 
     if let Some(el) = element_obj.downcast_ref::<Element>() {
         Ok(el.get_attribute("class").unwrap_or_default())
     } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
         Ok(html_el.element.get_attribute("class").unwrap_or_default())
     } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(media.html_element.element.get_attribute("class").unwrap_or_default())
+        Ok(media
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
     } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(video.media_element.html_element.element.get_attribute("class").unwrap_or_default())
+        Ok(video
+            .media_element
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
     } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
-        Ok(ifr.html_element.element.get_attribute("class").unwrap_or_default())
+        Ok(ifr
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
     } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
-        Ok(input.html_element.element.get_attribute("class").unwrap_or_default())
+        Ok(input
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
     } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
-        Ok(anc.html_element.element.get_attribute("class").unwrap_or_default())
+        Ok(anc
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
     } else {
         Ok(String::new())
     }
 }
 
 fn class_list_set_value(this: &JsValue, value: &str, context: &mut Context) -> JsResult<()> {
-    let obj = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected object")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     let element_val = obj.get(js_string!("__element"), context)?;
-    let element_obj = element_val.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("classList: element not found")
-    })?;
+    let element_obj = element_val
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("classList: element not found"))?;
 
     if let Some(el) = element_obj.downcast_ref::<Element>() {
         if value.is_empty() {
@@ -320,9 +340,17 @@ fn class_list_set_value(this: &JsValue, value: &str, context: &mut Context) -> J
         }
     } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
         if value.is_empty() {
-            video.media_element.html_element.element.remove_attribute("class");
+            video
+                .media_element
+                .html_element
+                .element
+                .remove_attribute("class");
         } else {
-            video.media_element.html_element.element.set_attribute("class", value);
+            video
+                .media_element
+                .html_element
+                .element
+                .set_attribute("class", value);
         }
     } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
         if value.is_empty() {
@@ -347,7 +375,10 @@ fn class_list_set_value(this: &JsValue, value: &str, context: &mut Context) -> J
 }
 
 fn class_list_add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let token = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+    let token = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
     let current = class_list_value(this, &[], context)?;
     let mut classes: Vec<String> = if current.is_empty() {
         Vec::new()
@@ -363,7 +394,10 @@ fn class_list_add(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
 }
 
 fn class_list_remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let token = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+    let token = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
     let current = class_list_value(this, &[], context)?;
     let classes: Vec<String> = current
         .split(' ')
@@ -376,7 +410,10 @@ fn class_list_remove(this: &JsValue, args: &[JsValue], context: &mut Context) ->
 }
 
 fn class_list_toggle(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let token = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+    let token = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
     let current = class_list_value(this, &[], context)?;
     let mut classes: Vec<String> = if current.is_empty() {
         Vec::new()
@@ -396,8 +433,15 @@ fn class_list_toggle(this: &JsValue, args: &[JsValue], context: &mut Context) ->
     }
 }
 
-fn class_list_contains(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let token = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
+fn class_list_contains(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let token = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
     let current = class_list_value(this, &[], context)?;
     let classes: Vec<&str> = current.split(' ').collect();
     Ok(JsValue::new(classes.contains(&token.as_str())))
@@ -405,7 +449,11 @@ fn class_list_contains(this: &JsValue, args: &[JsValue], context: &mut Context) 
 
 fn class_list_length(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let current = class_list_value(this, &[], context)?;
-    let count = if current.is_empty() { 0 } else { current.split(' ').count() };
+    let count = if current.is_empty() {
+        0
+    } else {
+        current.split(' ').count()
+    };
     Ok(JsValue::new(count))
 }
 
@@ -438,8 +486,7 @@ fn query_selector_all(
     let values = node_ids
         .into_iter()
         .map(|node_id| {
-            crate::js::platform_objects::resolve_element_object(node_id, context)
-                .map(JsValue::from)
+            crate::js::platform_objects::resolve_element_object(node_id, context).map(JsValue::from)
         })
         .collect::<JsResult<Vec<_>>>()?;
     Ok(JsArray::from_iter(values, context).into())

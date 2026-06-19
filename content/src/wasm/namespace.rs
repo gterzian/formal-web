@@ -3,10 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
-    builtins::promise::ResolvingFunctions,
-    native_function::NativeFunction,
-    object::FunctionObjectBuilder,
+    Context, JsNativeError, JsResult, JsValue, builtins::promise::ResolvingFunctions, js_string,
+    native_function::NativeFunction, object::FunctionObjectBuilder, object::JsObject,
 };
 use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 
@@ -42,13 +40,17 @@ pub(crate) fn asynchronously_compile_a_webassembly_module(
         JsNativeError::error().with_message("WebAssembly: global object is not a Window")
     })?;
     let request_id = window.global_scope.next_wasm_request_id();
-    window.global_scope.push_pending_request(PendingRequest::WasmCompile {
-        bytes: stable_bytes,
-        request_id,
-        is_instantiate: false,
-        state: PendingState::Pending,
-    });
-    window.global_scope.store_wasm_resolver(request_id, promise.clone(), resolvers);
+    window
+        .global_scope
+        .push_pending_request(PendingRequest::WasmCompile {
+            bytes: stable_bytes,
+            request_id,
+            is_instantiate: false,
+            state: PendingState::Pending,
+        });
+    window
+        .global_scope
+        .store_wasm_resolver(request_id, promise.clone(), resolvers);
     // Step 3: "Return promise."
     Ok(JsValue::from(promise))
 }
@@ -72,21 +74,22 @@ pub(crate) fn asynchronously_instantiate_a_webassembly_module(
         JsNativeError::error().with_message("WebAssembly: global object is not a Window")
     })?;
     let request_id = window.global_scope.next_wasm_request_id();
-    window.global_scope.push_pending_request(PendingRequest::WasmInstantiate {
-        module,
-        request_id,
-        state: PendingState::Pending,
-    });
-    window.global_scope.store_wasm_resolver(request_id, promise.clone(), resolvers);
+    window
+        .global_scope
+        .push_pending_request(PendingRequest::WasmInstantiate {
+            module,
+            request_id,
+            state: PendingState::Pending,
+        });
+    window
+        .global_scope
+        .store_wasm_resolver(request_id, promise.clone(), resolvers);
     // Step 7: "Return promise."
     Ok(JsValue::from(promise))
 }
 
 /// <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate>
-pub(crate) fn instantiate_bytes(
-    stable_bytes: Vec<u8>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+pub(crate) fn instantiate_bytes(stable_bytes: Vec<u8>, context: &mut Context) -> JsResult<JsValue> {
     // Note: Step 1 ("Let stableBytes be a copy of the bytes held by the buffer bytes")
     // was already executed by the bindings layer.
     //
@@ -103,13 +106,17 @@ pub(crate) fn instantiate_bytes(
         JsNativeError::error().with_message("WebAssembly: global object is not a Window")
     })?;
     let request_id = window.global_scope.next_wasm_request_id();
-    window.global_scope.push_pending_request(PendingRequest::WasmCompile {
-        bytes: stable_bytes,
-        request_id,
-        is_instantiate: true,
-        state: PendingState::Pending,
-    });
-    window.global_scope.store_wasm_resolver(request_id, promise.clone(), resolvers);
+    window
+        .global_scope
+        .push_pending_request(PendingRequest::WasmCompile {
+            bytes: stable_bytes,
+            request_id,
+            is_instantiate: true,
+            state: PendingState::Pending,
+        });
+    window
+        .global_scope
+        .store_wasm_resolver(request_id, promise.clone(), resolvers);
     Ok(JsValue::from(promise))
 }
 
@@ -128,7 +135,8 @@ pub(crate) fn compile_continuation(
     // Note: builtinSetNames and importedStringModule are not yet supported.
     let module_proto = get_wasm_module_prototype(context)
         .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
-    let module_object = JsObject::from_proto_and_data(Some(module_proto), WasmModule::new(module, bytes));
+    let module_object =
+        JsObject::from_proto_and_data(Some(module_proto), WasmModule::new(module, bytes));
     // Step 2.2.5.2: "Resolve promise with moduleObject."
     resolvers
         .resolve
@@ -180,7 +188,8 @@ fn initialize_an_instance_object(
 ) -> JsResult<JsObject> {
     // Step 1: "Create an exports object from module and instance and let exportsObject be the result."
     let mut store_guard = store.lock().unwrap();
-    let exports_object = create_an_exports_object(module, instance, &mut *store_guard, store, context)?;
+    let exports_object =
+        create_an_exports_object(module, instance, &mut *store_guard, store, context)?;
     drop(store_guard);
 
     // Step 2: "Set instanceObject.[[Instance]] to instance."
@@ -245,10 +254,13 @@ fn instance_export_list(
     instance: &WasmtimeInstance,
     store: &mut wasmtime::Store<()>,
 ) -> Vec<(String, wasmtime::Extern)> {
-    module.exports()
+    module
+        .exports()
         .filter_map(|export| {
             let name = export.name();
-            instance.get_export(&mut *store, name).map(|val| (name.to_string(), val))
+            instance
+                .get_export(&mut *store, name)
+                .map(|val| (name.to_string(), val))
         })
         .collect()
 }
@@ -277,10 +289,10 @@ fn create_exported_function_wrapper(
                     .results()
                     .map(|val_type| default_val_for_type(&val_type))
                     .collect();
-                func.call(&mut *store_guard, &params, &mut results).map_err(|error| {
-                    JsNativeError::error()
-                        .with_message(format!("WebAssembly trap: {}", error))
-                })?;
+                func.call(&mut *store_guard, &params, &mut results)
+                    .map_err(|error| {
+                        JsNativeError::error().with_message(format!("WebAssembly trap: {}", error))
+                    })?;
                 if results.len() == 1 {
                     wasm_val_to_js_value(&results[0], context)
                 } else {
@@ -299,30 +311,47 @@ fn create_exported_function_wrapper(
 // ── Helpers ──
 
 fn get_wasm_module_prototype(context: &mut Context) -> Option<JsObject> {
-    let ns = context.global_object().get(js_string!("WebAssembly"), context).ok()?;
+    let ns = context
+        .global_object()
+        .get(js_string!("WebAssembly"), context)
+        .ok()?;
     let ns_obj = ns.as_object()?;
     let ctor = ns_obj.get(js_string!("Module"), context).ok()?;
     let ctor_obj = ctor.as_object()?;
-    ctor_obj.get(js_string!("prototype"), context).ok()
+    ctor_obj
+        .get(js_string!("prototype"), context)
+        .ok()
         .and_then(|p| p.as_object().map(|o| o.clone()))
 }
 
 fn get_wasm_instance_prototype(context: &mut Context) -> Option<JsObject> {
-    let ns = context.global_object().get(js_string!("WebAssembly"), context).ok()?;
+    let ns = context
+        .global_object()
+        .get(js_string!("WebAssembly"), context)
+        .ok()?;
     let ns_obj = ns.as_object()?;
     let ctor = ns_obj.get(js_string!("Instance"), context).ok()?;
     let ctor_obj = ctor.as_object()?;
-    ctor_obj.get(js_string!("prototype"), context).ok()
+    ctor_obj
+        .get(js_string!("prototype"), context)
+        .ok()
         .and_then(|p| p.as_object().map(|o| o.clone()))
 }
 
 fn create_compile_error(message: &str, context: &mut Context) -> JsValue {
     // Use the registered CompileError constructor on the WebAssembly namespace.
-    if let Ok(ns) = context.global_object().get(js_string!("WebAssembly"), context) {
+    if let Ok(ns) = context
+        .global_object()
+        .get(js_string!("WebAssembly"), context)
+    {
         if let Some(ns_obj) = ns.as_object() {
             if let Ok(ce_ctor) = ns_obj.get(js_string!("CompileError"), context) {
                 if let Some(ctor) = ce_ctor.as_object() {
-                    if let Ok(error) = ctor.call(&JsValue::undefined(), &[js_string!(message).into()], context) {
+                    if let Ok(error) = ctor.call(
+                        &JsValue::undefined(),
+                        &[js_string!(message).into()],
+                        context,
+                    ) {
                         return error;
                     }
                 }

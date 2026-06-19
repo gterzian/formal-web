@@ -1,9 +1,8 @@
 //! <https://webidl.spec.whatwg.org/#js-buffer-source-types>
 
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue,
+    Context, JsNativeError, JsResult, JsValue, object::builtins::JsArrayBuffer,
     object::builtins::JsTypedArray,
-    object::builtins::JsArrayBuffer,
 };
 
 /// <https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy>
@@ -14,8 +13,7 @@ pub(crate) fn get_a_copy_of_the_buffer_source(
     // Step 1: "Let jsBufferSource be the result of converting bufferSource
     //          to a JavaScript value."
     let object = value.as_object().ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("argument must be an ArrayBuffer or typed array")
+        JsNativeError::typ().with_message("argument must be an ArrayBuffer or typed array")
     })?;
 
     // Step 5: "If jsBufferSource has a [[ViewedArrayBuffer]] internal slot, then:"

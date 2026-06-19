@@ -13,13 +13,14 @@ use boa_engine::{
     symbol::JsSymbol,
 };
 
+use super::hyperlink_element_utils;
 use crate::dom::{
     AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
     UIEvent,
 };
 use crate::html::{
-    GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement,
-    HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Location, Window,
+    GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
+    HTMLMediaElement, HTMLVideoElement, Location, Window,
 };
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController, ReadableStream,
@@ -28,16 +29,11 @@ use crate::streams::{
     WritableStreamDefaultController, WritableStreamDefaultWriter,
 };
 use crate::webidl::bindings::{
-    get_registry_prototype, initialize_registry,
-    register_interface_spec, wire_registry_prototype,
+    get_registry_prototype, initialize_registry, register_interface_spec, wire_registry_prototype,
 };
-use super::hyperlink_element_utils;
 // Note: AbortSignal static methods (abort, timeout, any) are registered via
 // static operations in `AbortSignal::define_members`.
-use super::super::streams::readablestream::{
-    pipe_to_native_method,
-    values_method,
-};
+use super::super::streams::readablestream::{pipe_to_native_method, values_method};
 
 pub(crate) struct WindowHostHooks {
     document: Rc<RefCell<BaseDocument>>,
@@ -77,8 +73,7 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
 
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<$ty>(&mut context)
-                .map_err(|error| error.to_string())?;
+            register_interface_spec::<$ty>(&mut context).map_err(|error| error.to_string())?;
         };
     }
 
@@ -114,7 +109,9 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
     reg!(TransformStreamDefaultController);
 
     if let Some(de_proto) = get_registry_prototype::<DOMException>(&context) {
-        de_proto.set_prototype(Some(context.intrinsics().constructors().error().prototype()));
+        de_proto.set_prototype(Some(
+            context.intrinsics().constructors().error().prototype(),
+        ));
     }
 
     wire_registry_prototype::<UIEvent, Event>(&mut context);
@@ -135,7 +132,8 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
     // HTMLAnchorElement: HTMLHyperlinkElementUtils members (§HTMLHyperlinkElementUtils)
     if let Some(proto) = get_registry_prototype::<HTMLAnchorElement>(&context) {
         hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(
-            &proto, &mut context,
+            &proto,
+            &mut context,
         )
         .map_err(|error| error.to_string())?;
     }
@@ -148,14 +146,12 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
         let realm = context.realm().clone();
 
         // values() and @@asyncIterator
-        let values_fn = FunctionObjectBuilder::new(
-            &realm,
-            NativeFunction::from_fn_ptr(values_method),
-        )
-        .name(js_string!("values"))
-        .length(0)
-        .constructor(false)
-        .build();
+        let values_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(values_method))
+                .name(js_string!("values"))
+                .length(0)
+                .constructor(false)
+                .build();
 
         let values_desc = PropertyDescriptor::builder()
             .value(values_fn.clone())
@@ -163,7 +159,8 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
             .enumerable(true)
             .configurable(true)
             .build();
-        rs_proto.define_property_or_throw(js_string!("values"), values_desc, &mut context)
+        rs_proto
+            .define_property_or_throw(js_string!("values"), values_desc, &mut context)
             .map(|_| ())
             .map_err(|error| error.to_string())?;
 
@@ -172,32 +169,32 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
             .writable(true)
             .configurable(true)
             .build();
-        rs_proto.define_property_or_throw(JsSymbol::async_iterator(), symbol_desc, &mut context)
+        rs_proto
+            .define_property_or_throw(JsSymbol::async_iterator(), symbol_desc, &mut context)
             .map(|_| ())
             .map_err(|error| error.to_string())?;
 
         // pipeTo with JS wrapper workaround
-        let pipe_to_native_fn = FunctionObjectBuilder::new(
-            &realm,
-            NativeFunction::from_fn_ptr(pipe_to_native_method),
-        )
-        .name(js_string!("pipeTo"))
-        .length(2)
-        .constructor(false)
-        .build();
+        let pipe_to_native_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(pipe_to_native_method))
+                .name(js_string!("pipeTo"))
+                .length(2)
+                .constructor(false)
+                .build();
 
         let native_desc = PropertyDescriptor::builder()
             .value(pipe_to_native_fn)
             .writable(true)
             .configurable(true)
             .build();
-        rs_proto.define_property_or_throw(
-            js_string!("__formalWebReadableStreamPipeToNative"),
-            native_desc,
-            &mut context,
-        )
-        .map(|_| ())
-        .map_err(|error| error.to_string())?;
+        rs_proto
+            .define_property_or_throw(
+                js_string!("__formalWebReadableStreamPipeToNative"),
+                native_desc,
+                &mut context,
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())?;
 
         let pipe_to_wrapper = context.eval(Source::from_bytes(
             "(function pipeTo() { return ReadableStream.prototype.__formalWebReadableStreamPipeToNative.call(this, arguments[0], arguments[1]); })",
@@ -213,7 +210,8 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
             .writable(true)
             .configurable(true)
             .build();
-        rs_proto.define_property_or_throw(js_string!("pipeTo"), pipe_to_desc, &mut context)
+        rs_proto
+            .define_property_or_throw(js_string!("pipeTo"), pipe_to_desc, &mut context)
             .map(|_| ())
             .map_err(|error| error.to_string())?;
     }
