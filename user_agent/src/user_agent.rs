@@ -1703,7 +1703,8 @@ impl UserAgentWorker {
                 }],
             },
         );
-        //verification::tla_log!(self.navigation_tracer, "CreateNavigable", traversable_id);
+        
+        verification::tla_log!(self.navigation_tracer, "CreateNavigable", traversable_id);
         if target_name_keeps_browser_ui_focus(&target_name) {
             self.state.set_active_top_level_traversable(traversable_id);
         }
