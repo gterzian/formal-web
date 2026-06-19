@@ -1,7 +1,5 @@
 use boa_engine::{
-    Context, JsObject, JsResult, JsValue,
-    js_string,
-    native_function::NativeFunction,
+    Context, JsObject, JsResult, JsValue, js_string, native_function::NativeFunction,
     property::PropertyDescriptor,
 };
 
@@ -73,10 +71,7 @@ pub(crate) fn define_static_attributes(
 ) -> JsResult<()> {
     // Step 1: "Let attributes be the list of static attributes that are
     //          members of definition."
-    let static_attrs: Vec<&AttributeDef> = attributes
-        .iter()
-        .filter(|a| a.static_)
-        .collect();
+    let static_attrs: Vec<&AttributeDef> = attributes.iter().filter(|a| a.static_).collect();
 
     // Step 2: "Define the attributes attributes of definition on target
     //          given realm."
@@ -123,9 +118,9 @@ fn define_attributes_on_target(
         // Step 1.3: "Let setter be the result of creating an attribute
         //            setter given attr, definition, and realm."
         // Note: The algorithm returns undefined if attr is read only.
-        let setter_fn = attr.setter.map(|s| {
-            NativeFunction::from_fn_ptr(s).to_js_function(&realm)
-        });
+        let setter_fn = attr
+            .setter
+            .map(|s| NativeFunction::from_fn_ptr(s).to_js_function(&realm));
 
         // Step 1.4: "Let configurable be false if attr is unforgeable
         //            and true otherwise."

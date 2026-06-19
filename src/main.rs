@@ -52,28 +52,37 @@ fn delegated_tla_validate_command() -> Option<ExitCode> {
 }
 
 fn run_embedder_process(embedder_args: Vec<OsString>) -> Result<(), String> {
-    let mut command = ProcessCommand::new("rustup");
-    command.arg("run").arg("1.94.0").arg("cargo").arg("run");
-    if !cfg!(debug_assertions) {
-        command.arg("--release");
+    // The embedder is a workspace member, so cargo build --release already
+    // produces target/{profile}/formal-web-embedder alongside the root
+    // binary.  Find it and run it directly rather than spawning a nested
+    // cargo invocation (which would deadlock on the workspace target dir).
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let embedder_path = current_exe
+        .parent()
+        .ok_or_else(|| String::from("failed to resolve executable directory"))?
+        .join("formal-web-embedder");
+
+    if !embedder_path.is_file() {
+        return Err(format!(
+            "embedder binary not found at {}; run `cargo build --release -p embedder --bin formal-web-embedder` first",
+            embedder_path.display()
+        ));
     }
-    if cfg!(not(feature = "media")) {
-        command.arg("--no-default-features");
-    }
-    command
-        .arg("--manifest-path")
-        .arg("embedder/Cargo.toml")
-        .arg("--bin")
-        .arg("formal-web-embedder")
-        .arg("--")
-        .args(embedder_args)
+
+    let status = ProcessCommand::new(&embedder_path)
+        .args(&embedder_args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    let status = command
+        .stderr(Stdio::inherit())
         .status()
-        .map_err(|error| format!("failed to execute embedder process: {error}"))?;
+        .map_err(|error| {
+            format!(
+                "failed to execute embedder at {}: {error}",
+                embedder_path.display()
+            )
+        })?;
+
     if status.success() {
         Ok(())
     } else {

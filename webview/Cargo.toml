@@ -10,7 +10,7 @@ media = ["user_agent/media"]
 
 [dependencies]
 anyrender = { version = "0.10", features = ["serde"] }
-blitz-traits = { path = "../vendor/blitz/packages/blitz-traits", default-features = false }
+blitz-traits = { workspace = true }
 crossbeam-channel = "0.5"
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }

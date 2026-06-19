@@ -9,12 +9,12 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
 
 use ipc_messages::media::{
-    MediaBootstrap, MediaEvent, MediaPipelineId, MediaCommand as MediaProcessCommand,
+    MediaBootstrap, MediaCommand as MediaProcessCommand, MediaEvent, MediaPipelineId,
 };
 use log::{debug, error};
 
-use crate::sidecar_executable_path;
 use crate::UserAgentCommand;
+use crate::sidecar_executable_path;
 
 /// Commands that the user-agent and event-loop workers can send into the dedicated media worker.
 pub enum MediaCommand {
@@ -47,14 +47,8 @@ struct MediaWorker {
 }
 
 /// Bootstrap the dedicated media process.
-fn start_media_process() -> Result<
-    (
-        IpcSender<MediaProcessCommand>,
-        Receiver<MediaEvent>,
-        Child,
-    ),
-    String,
-> {
+fn start_media_process()
+-> Result<(IpcSender<MediaProcessCommand>, Receiver<MediaEvent>, Child), String> {
     let executable_path = sidecar_executable_path("formal-web-media")?;
 
     let (server, token) = IpcOneShotServer::<MediaBootstrap>::new()
@@ -65,15 +59,16 @@ fn start_media_process() -> Result<
     child_process.arg0("formal-web-media");
     child_process.arg("--media-token").arg(&token);
 
-    let child = child_process.spawn().map_err(|error| {
-        format!("failed to start media process: {error}")
-    })?;
+    let child = child_process
+        .spawn()
+        .map_err(|error| format!("failed to start media process: {error}"))?;
 
-    let (_receiver, bootstrap) = server.accept().map_err(|error| {
-        format!("failed to accept media bootstrap: {error}")
-    })?;
+    let (_receiver, bootstrap) = server
+        .accept()
+        .map_err(|error| format!("failed to accept media bootstrap: {error}"))?;
 
-    let event_receiver = ROUTER.route_ipc_receiver_to_new_crossbeam_receiver(bootstrap.event_receiver);
+    let event_receiver =
+        ROUTER.route_ipc_receiver_to_new_crossbeam_receiver(bootstrap.event_receiver);
 
     Ok((bootstrap.command_sender, event_receiver, child))
 }
@@ -97,8 +92,12 @@ impl MediaWorker {
     fn handle_command(&mut self, command: MediaCommand) {
         match command {
             MediaCommand::CreatePipeline { pipeline_id, url } => {
-                debug!("[media] media worker forwarding CreatePipeline id={:?} url={}", pipeline_id, url);
-                if let Err(error) = self.media_process_sender
+                debug!(
+                    "[media] media worker forwarding CreatePipeline id={:?} url={}",
+                    pipeline_id, url
+                );
+                if let Err(error) = self
+                    .media_process_sender
                     .send(MediaProcessCommand::CreatePipeline { pipeline_id, url })
                 {
                     error!("[media] failed to send CreatePipeline: {error}");
@@ -106,7 +105,8 @@ impl MediaWorker {
             }
             MediaCommand::Play { pipeline_id } => {
                 debug!("[media] media worker forwarding Play id={:?}", pipeline_id);
-                if let Err(error) = self.media_process_sender
+                if let Err(error) = self
+                    .media_process_sender
                     .send(MediaProcessCommand::Play { pipeline_id })
                 {
                     error!("[media] failed to send Play: {error}");
@@ -115,7 +115,9 @@ impl MediaWorker {
 
             MediaCommand::Shutdown { reply } => {
                 self.shutdown_reply = Some(reply);
-                let _ = self.media_process_sender.send(MediaProcessCommand::Shutdown);
+                let _ = self
+                    .media_process_sender
+                    .send(MediaProcessCommand::Shutdown);
             }
         }
     }

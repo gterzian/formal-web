@@ -5,9 +5,7 @@
 //
 // Only a subset of the full IDL is exposed for the initial video cut.
 
-use boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue,
-};
+use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLMediaElement;
 use crate::html::HTMLVideoElement;
@@ -306,42 +304,61 @@ impl WebIdlInterface for HTMLMediaElement {
 
 // ── Attribute getters/setters ──
 
-fn get_network_state(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+fn get_network_state(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.network_state()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.network_state()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn get_ready_state(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.ready_state()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.ready_state()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn get_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::from(JsString::from(media.src())))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::from(JsString::from(video.media_element.src())))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let src = args.first()
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let src = args
+        .first()
         .and_then(|v| v.as_string())
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_default();
@@ -350,74 +367,110 @@ fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
         video.media_element.set_src(&src, context);
     } else {
-        return Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into());
+        return Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into());
     }
     Ok(JsValue::undefined())
 }
 
 fn get_current_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::from(JsString::from(media.current_src())))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::from(JsString::from(video.media_element.current_src())))
+        Ok(JsValue::from(JsString::from(
+            video.media_element.current_src(),
+        )))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn get_duration(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.duration()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.duration()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn get_paused(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.paused()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.paused()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn get_seeking(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.seeking()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.seeking()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
-fn get_current_time(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+fn get_current_time(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.current_time()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.current_time()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
-fn set_current_time(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let _obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+fn set_current_time(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let _obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     // TODO: Implement using interior mutability.
     Ok(JsValue::undefined())
 }
 
 fn get_error(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         match media.error() {
             Some(_) => Ok(JsValue::null()),
@@ -429,144 +482,193 @@ fn get_error(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsRes
             None => Ok(JsValue::null()),
         }
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn get_autoplay(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.autoplay()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.autoplay()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn set_autoplay(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         media.set_autoplay(value);
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         video.media_element.set_autoplay(value);
     } else {
-        return Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into());
+        return Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into());
     }
     Ok(JsValue::undefined())
 }
 
 fn get_loop(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.loop_()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.loop_()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn set_loop(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         media.set_loop(value);
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         video.media_element.set_loop(value);
     } else {
-        return Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into());
+        return Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into());
     }
     Ok(JsValue::undefined())
 }
 
 fn get_controls(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.controls()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.controls()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn set_controls(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         media.set_controls(value);
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         video.media_element.set_controls(value);
     } else {
-        return Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into());
+        return Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into());
     }
     Ok(JsValue::undefined())
 }
 
 fn get_muted(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.muted()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.muted()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn set_muted(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         media.set_muted(value);
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         video.media_element.set_muted(value);
     } else {
-        return Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into());
+        return Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into());
     }
     Ok(JsValue::undefined())
 }
 
 fn get_volume(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::new(media.volume()))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::new(video.media_element.volume()))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn set_volume(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     let volume = args.first().and_then(|v| v.as_number()).unwrap_or(1.0);
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         media.set_volume(volume);
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         video.media_element.set_volume(volume);
     } else {
-        return Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into());
+        return Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into());
     }
     Ok(JsValue::undefined())
 }
 
 fn get_preload(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         Ok(JsValue::from(JsString::from(media.preload())))
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         Ok(JsValue::from(JsString::from(video.media_element.preload())))
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn set_preload(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let value = args.first()
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let value = args
+        .first()
         .and_then(|v| v.as_string())
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_default();
@@ -575,7 +677,9 @@ fn set_preload(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsRe
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
         video.media_element.set_preload(&value);
     } else {
-        return Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into());
+        return Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into());
     }
     Ok(JsValue::undefined())
 }
@@ -583,7 +687,9 @@ fn set_preload(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsRe
 // ── Operations ──
 
 fn load_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let _obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let _obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     // Note: load() takes &mut self and requires interior mutability. The HTMLMediaElement
     // is behind a plain &ref in the binding layer. Adding RefCell support is tracked
     // as a separate gap — this binding currently returns undefined.
@@ -591,18 +697,24 @@ fn load_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsR
 }
 
 fn play_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
         media.play(context)
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
         video.media_element.play(context)
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn pause_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
         media.pause(context);
         Ok(JsValue::undefined())
@@ -610,12 +722,16 @@ fn pause_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsR
         video.media_element.pause(context);
         Ok(JsValue::undefined())
     } else {
-        Err(JsNativeError::typ().with_message("expected HTMLMediaElement").into())
+        Err(JsNativeError::typ()
+            .with_message("expected HTMLMediaElement")
+            .into())
     }
 }
 
 fn can_play_type(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let _obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let _obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     // Step 1: Return "probably" if the type is a media type that can be rendered.
     // Initial cut: return empty string (no types supported).
     Ok(JsValue::from(JsString::from("")))

@@ -57,9 +57,7 @@ fn trap_set_prototype_of(
     let undefined = JsValue::undefined();
     let val = args.get(1).unwrap_or(&undefined);
     let same = match (&current, val) {
-        (Some(current_proto), _) => val
-            .as_object()
-            .map_or(false, |v| *current_proto == v),
+        (Some(current_proto), _) => val.as_object().map_or(false, |v| *current_proto == v),
         (None, _) => val.is_null(),
     };
     Ok(JsValue::new(same))
@@ -112,11 +110,7 @@ fn trap_define_property(
 }
 
 /// <https://html.spec.whatwg.org/#windowproxy-get>
-fn trap_get(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn trap_get(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let win = target_window(args)?;
     let undefined = JsValue::undefined();
     let key_val = args.get(1).unwrap_or(&undefined);
@@ -132,11 +126,7 @@ fn trap_get(
 }
 
 /// <https://html.spec.whatwg.org/#windowproxy-set>
-fn trap_set(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn trap_set(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let win = target_window(args)?;
     let undefined = JsValue::undefined();
     let key = args.get(1).unwrap_or(&undefined);
@@ -189,11 +179,7 @@ fn trap_delete_property(
 }
 
 /// <https://html.spec.whatwg.org/#windowproxy-has>
-fn trap_has(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn trap_has(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let win = target_window(args)?;
     let undefined = JsValue::undefined();
     let key = args.get(1).unwrap_or(&undefined);
@@ -213,11 +199,7 @@ fn trap_has(
 }
 
 /// <https://html.spec.whatwg.org/#windowproxy-ownpropertykeys>
-fn trap_own_keys(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn trap_own_keys(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let win = target_window(args)?;
 
     // Step 2: "Let maxProperties be W's associated Document's document-tree
@@ -280,10 +262,7 @@ fn desc_from_obj(desc_obj: &JsValue, context: &mut Context) -> JsResult<Property
 /// construct the WindowProxy with native-function traps for each of the
 /// 10 overridden internal methods.  This is a Boa-specific convenience;
 /// the ECMAScript spec constructs a Proxy via `ProxyCreate(target, handler)`.
-pub(crate) fn create_window_proxy(
-    window: &JsObject,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+pub(crate) fn create_window_proxy(window: &JsObject, context: &mut Context) -> JsResult<JsValue> {
     let proxy = JsProxyBuilder::new(window.clone())
         .get_prototype_of(trap_get_prototype_of)
         .set_prototype_of(trap_set_prototype_of)
@@ -335,19 +314,71 @@ struct CrossOriginPropertyEntry {
 #[allow(dead_code)]
 fn cross_origin_window_properties() -> Vec<CrossOriginPropertyEntry> {
     vec![
-        CrossOriginPropertyEntry { property: "window", needs_get: true, needs_set: false },
-        CrossOriginPropertyEntry { property: "self", needs_get: true, needs_set: false },
-        CrossOriginPropertyEntry { property: "location", needs_get: true, needs_set: true },
-        CrossOriginPropertyEntry { property: "close", needs_get: false, needs_set: false },
-        CrossOriginPropertyEntry { property: "closed", needs_get: true, needs_set: false },
-        CrossOriginPropertyEntry { property: "focus", needs_get: false, needs_set: false },
-        CrossOriginPropertyEntry { property: "blur", needs_get: false, needs_set: false },
-        CrossOriginPropertyEntry { property: "frames", needs_get: true, needs_set: false },
-        CrossOriginPropertyEntry { property: "length", needs_get: true, needs_set: false },
-        CrossOriginPropertyEntry { property: "top", needs_get: true, needs_set: false },
-        CrossOriginPropertyEntry { property: "opener", needs_get: true, needs_set: false },
-        CrossOriginPropertyEntry { property: "parent", needs_get: true, needs_set: false },
-        CrossOriginPropertyEntry { property: "postMessage", needs_get: false, needs_set: false },
+        CrossOriginPropertyEntry {
+            property: "window",
+            needs_get: true,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "self",
+            needs_get: true,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "location",
+            needs_get: true,
+            needs_set: true,
+        },
+        CrossOriginPropertyEntry {
+            property: "close",
+            needs_get: false,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "closed",
+            needs_get: true,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "focus",
+            needs_get: false,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "blur",
+            needs_get: false,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "frames",
+            needs_get: true,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "length",
+            needs_get: true,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "top",
+            needs_get: true,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "opener",
+            needs_get: true,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "parent",
+            needs_get: true,
+            needs_set: false,
+        },
+        CrossOriginPropertyEntry {
+            property: "postMessage",
+            needs_get: false,
+            needs_set: false,
+        },
     ]
 }
 
@@ -360,11 +391,15 @@ pub(crate) fn cross_origin_own_property_keys() -> Vec<PropertyKey> {
     keys.push(PropertyKey::String(js_string!("then")));
     keys.push(PropertyKey::Symbol(boa_engine::JsSymbol::to_string_tag()));
     keys.push(PropertyKey::Symbol(boa_engine::JsSymbol::has_instance()));
-    keys.push(PropertyKey::Symbol(boa_engine::JsSymbol::is_concat_spreadable()));
+    keys.push(PropertyKey::Symbol(
+        boa_engine::JsSymbol::is_concat_spreadable(),
+    ));
     keys
 }
 
 #[allow(dead_code)]
 pub(crate) fn is_cross_origin_property(name: &str) -> bool {
-    cross_origin_window_properties().iter().any(|p| p.property == name)
+    cross_origin_window_properties()
+        .iter()
+        .any(|p| p.property == name)
 }

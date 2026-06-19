@@ -9,8 +9,8 @@ mod html_element;
 pub(crate) mod html_iframe_element;
 pub(crate) mod html_input_element;
 pub(crate) mod html_media_element;
-pub(crate) mod html_video_element;
 mod html_parser;
+pub(crate) mod html_video_element;
 mod hyperlink_element_utils;
 mod location;
 pub(crate) mod safe_passing_of_structured_data;
@@ -37,13 +37,13 @@ pub(crate) use html_element::{
     inline_style_properties_for_element, resolved_style_properties_for_element,
 };
 pub use html_iframe_element::HTMLIFrameElement;
-pub use html_input_element::HTMLInputElement;
-pub use html_media_element::{HTMLMediaElement, MediaError};
-pub use html_video_element::HTMLVideoElement;
 pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traversable;
 pub(crate) use html_iframe_element::run_iframe_load_event_steps_for_traversable;
+pub use html_input_element::HTMLInputElement;
+pub use html_media_element::{HTMLMediaElement, MediaError};
 pub(crate) use html_parser::PendingParserScript;
 pub use html_parser::{JsHtmlParserProvider, execute_parser_scripts, parse_html_into_document};
+pub use html_video_element::HTMLVideoElement;
 pub(crate) use hyperlink_element_utils::HyperlinkElementUtils;
 pub use location::Location;
 pub(crate) use location::LocationError;
@@ -131,10 +131,7 @@ pub(crate) fn create_a_new_browsing_context_and_document(
         Some(document_id),
     )?;
     // Step 22: Populate with html/head/body given document.
-    parse_html_into_document(
-        &mut document.borrow_mut(),
-        crate::EMPTY_HTML_DOCUMENT,
-    );
+    parse_html_into_document(&mut document.borrow_mut(), crate::EMPTY_HTML_DOCUMENT);
     // Step 10 (continued): global object is the Window.
     let global_object = settings.context.global_object();
     Ok((global_object, settings, document))
@@ -276,14 +273,10 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                     };
                 }
             };
-            if let Err(error) = global_scope.register_new_traversable_document(
-                new_document_id,
-                settings,
-                document,
-            ) {
-                error!(
-                    "the_rules_for_choosing_a_navigable: failed to register document: {error}"
-                );
+            if let Err(error) =
+                global_scope.register_new_traversable_document(new_document_id, settings, document)
+            {
+                error!("the_rules_for_choosing_a_navigable: failed to register document: {error}");
             }
 
             let new_info = NewTraversableInfo {

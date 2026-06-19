@@ -1,7 +1,4 @@
-use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue,
-    object::JsObject,
-};
+use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, object::JsObject};
 
 use crate::streams::{
     ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader,
@@ -12,10 +9,8 @@ use crate::streams::{
     with_readable_stream_byob_request_ref, with_readable_stream_default_reader_ref,
     with_readable_stream_ref,
 };
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::{create_value_async_iterator, rejected_promise};
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-};
 
 // ── WebIDL interface definitions (§3) ──
 
@@ -408,7 +403,11 @@ fn tee_method(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     stream.tee(context)
 }
 
-pub(crate) fn values_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn values_method(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let stream_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("ReadableStream receiver is not an object")
     })?;
@@ -419,7 +418,11 @@ pub(crate) fn values_method(this: &JsValue, args: &[JsValue], context: &mut Cont
     Ok(JsValue::from(iterator))
 }
 
-pub(crate) fn from_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn from_static(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     Ok(JsValue::from(readable_stream_from_iterable(
         args.get_or_undefined(0).clone(),
         context,

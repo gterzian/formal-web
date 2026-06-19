@@ -107,13 +107,14 @@ fn handle_command(
     bus_msg_sender: &crossbeam_channel::Sender<(MediaPipelineId, gst::Message)>,
 ) -> bool {
     match cmd {
-        MediaCommand::CreatePipeline {
-            pipeline_id,
-            url,
-        } => {
+        MediaCommand::CreatePipeline { pipeline_id, url } => {
             log::info!("[media] creating pipeline id={:?} url={}", pipeline_id, url);
-            match ManagedPipeline::new(pipeline_id, url, event_sender.clone(), bus_msg_sender.clone())
-            {
+            match ManagedPipeline::new(
+                pipeline_id,
+                url,
+                event_sender.clone(),
+                bus_msg_sender.clone(),
+            ) {
                 Ok(p) => {
                     log::info!("[media] pipeline created id={:?}", pipeline_id);
                     pipelines.insert(pipeline_id, p);
@@ -126,7 +127,7 @@ fn handle_command(
                     });
                 }
             }
-        },
+        }
         MediaCommand::Play { pipeline_id } => {
             log::info!("[media] playing pipeline id={:?}", pipeline_id);
             if let Some(p) = pipelines.get(&pipeline_id) {
@@ -184,8 +185,8 @@ fn media_token_from_args() -> Result<Option<String>, String> {
 }
 
 pub fn run_media_process_from_args() -> Result<(), String> {
-    let token = media_token_from_args()?
-        .ok_or_else(|| String::from("missing --media-token argument"))?;
+    let token =
+        media_token_from_args()?.ok_or_else(|| String::from("missing --media-token argument"))?;
     run_media_process_with_token(token)
 }
 

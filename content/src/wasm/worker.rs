@@ -183,7 +183,10 @@ impl WasmWorker {
         let engine = self.engine.clone();
         let results = Arc::clone(&self.results);
 
-        let signal_sender = self.signal_sender.clone().expect("signal_sender set at construction");
+        let signal_sender = self
+            .signal_sender
+            .clone()
+            .expect("signal_sender set at construction");
         let handle = thread::Builder::new()
             .name("wasm-worker".to_string())
             .spawn(move || {

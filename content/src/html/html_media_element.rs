@@ -2,14 +2,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::{Context, JsResult, JsValue};
 use boa_engine::JsData;
+use boa_engine::{Context, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 use log::{debug, error};
 
 use crate::html::{HTMLElement, await_a_stable_state};
-use crate::webidl::resolved_promise;
 use crate::js::platform_objects::with_global_scope;
+use crate::webidl::resolved_promise;
 use ipc_messages::content::{Event as ContentEvent, MediaLoadRequest};
 use ipc_messages::media::VideoPaintId;
 
@@ -327,12 +327,10 @@ impl HTMLMediaElement {
         // Resolve the src attribute value to an absolute URL against the document's
         // base URL (creation URL), as required by the spec's current_src definition.
         let resolved_src = src.as_ref().and_then(|s| {
-            with_global_scope(context, |global_scope| {
-                Ok(global_scope.creation_url())
-            })
-            .ok()
-            .flatten()
-            .and_then(|base_url| base_url.join(s).ok().map(|url| url.to_string()))
+            with_global_scope(context, |global_scope| Ok(global_scope.creation_url()))
+                .ok()
+                .flatten()
+                .and_then(|base_url| base_url.join(s).ok().map(|url| url.to_string()))
         });
 
         // Register VideoPaintId in the global registry so that
@@ -395,7 +393,10 @@ impl HTMLMediaElement {
                         traversable_id,
                         video_paint_id,
                     };
-                    debug!("[media] sending MediaLoadRequested url={} traversable={}", resolved_url, traversable_id);
+                    debug!(
+                        "[media] sending MediaLoadRequested url={} traversable={}",
+                        resolved_url, traversable_id
+                    );
                     if let Err(error) = event_sender.send(ContentEvent::MediaLoadRequested(request))
                     {
                         error!("[media] failed to send MediaLoadRequested: {error}");

@@ -66,7 +66,6 @@
 /// // In the host hooks setup:
 /// register_interface_spec::<Event>(&mut context)?;
 /// ```
-
 mod attribute;
 mod constant;
 mod interface;
@@ -76,12 +75,11 @@ pub(crate) mod registry;
 pub(crate) use attribute::AttributeDef;
 pub(crate) use constant::ConstantDef;
 pub(crate) use interface::{
-    create_interface_instance, InterfaceDefinition,
+    InterfaceDefinition, WebIdlInterface, WebIdlNamespace, create_interface_instance,
     register_interface_spec, register_namespace_spec,
-    WebIdlInterface, WebIdlNamespace,
 };
 pub(crate) use operation::OperationDef;
 pub(crate) use registry::{
-    get_prototype_from_host_defined as get_registry_prototype,
-    initialize as initialize_registry, wire_prototype as wire_registry_prototype,
+    get_prototype_from_host_defined as get_registry_prototype, initialize as initialize_registry,
+    wire_prototype as wire_registry_prototype,
 };

@@ -44,14 +44,56 @@ pub(crate) fn register_hyperlink_element_utils_on_prototype(
 ) -> JsResult<()> {
     let realm = context.realm().clone();
     link_property(proto, context, &realm, "origin", get_origin, None)?;
-    link_property(proto, context, &realm, "protocol", get_protocol, Some(set_protocol))?;
-    link_property(proto, context, &realm, "username", get_username, Some(set_username))?;
-    link_property(proto, context, &realm, "password", get_password, Some(set_password))?;
+    link_property(
+        proto,
+        context,
+        &realm,
+        "protocol",
+        get_protocol,
+        Some(set_protocol),
+    )?;
+    link_property(
+        proto,
+        context,
+        &realm,
+        "username",
+        get_username,
+        Some(set_username),
+    )?;
+    link_property(
+        proto,
+        context,
+        &realm,
+        "password",
+        get_password,
+        Some(set_password),
+    )?;
     link_property(proto, context, &realm, "host", get_host, Some(set_host))?;
-    link_property(proto, context, &realm, "hostname", get_hostname, Some(set_hostname))?;
+    link_property(
+        proto,
+        context,
+        &realm,
+        "hostname",
+        get_hostname,
+        Some(set_hostname),
+    )?;
     link_property(proto, context, &realm, "port", get_port, Some(set_port))?;
-    link_property(proto, context, &realm, "pathname", get_pathname, Some(set_pathname))?;
-    link_property(proto, context, &realm, "search", get_search, Some(set_search))?;
+    link_property(
+        proto,
+        context,
+        &realm,
+        "pathname",
+        get_pathname,
+        Some(set_pathname),
+    )?;
+    link_property(
+        proto,
+        context,
+        &realm,
+        "search",
+        get_search,
+        Some(set_search),
+    )?;
     link_property(proto, context, &realm, "hash", get_hash, Some(set_hash))?;
     Ok(())
 }

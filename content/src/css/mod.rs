@@ -7,10 +7,10 @@ use std::borrow::Cow;
 use style::context::QuirksMode;
 use style::parser::ParserContext;
 use style::servo_arc::Arc as ServoArc;
-use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style::stylesheets::supports_rule::{
     Declaration, SupportsCondition, parse_condition_or_declaration,
 };
+use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style::values::Parser;
 use style_traits::ParsingMode;
 
@@ -60,9 +60,7 @@ impl CSS {
         {
             let mut input = cssparser::ParserInput::new(condition_text);
             let mut parser: Parser = cssparser::Parser::new(&mut input);
-            if let Ok(condition) =
-                parser.parse_entirely(|input| SupportsCondition::parse(input))
-            {
+            if let Ok(condition) = parser.parse_entirely(|input| SupportsCondition::parse(input)) {
                 if condition.eval(&context) {
                     return true;
                 }

@@ -1,9 +1,9 @@
-use log::error;
 use crate::AutomationRuntime;
 use crate::{AUTOMATION_TIMEOUT, CdpEvent, HttpRequest, SCRIPT_TIMEOUT, find_header_terminator};
 use base64::Engine as _;
 use clap::Args;
 use futures_util::{SinkExt, StreamExt};
+use log::error;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::ErrorKind;

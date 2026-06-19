@@ -1,4 +1,3 @@
-use log::error;
 use crossbeam_channel::{Receiver, Sender, select, unbounded};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use ipc_channel::router::ROUTER;
@@ -9,6 +8,7 @@ use ipc_messages::content::{
 use ipc_messages::network::{
     Bootstrap as NetworkBootstrap, Request as NetworkRequest, Response as NetworkResponse,
 };
+use log::error;
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -447,9 +447,11 @@ fn completion_for_network_result(
                 response,
             }
         }
-        (PendingFetch::Navigation(pending_fetch), Err(_error)) => FetchCompletion::NavigationFailed {
-            fetch_id: pending_fetch.fetch_id,
-        },
+        (PendingFetch::Navigation(pending_fetch), Err(_error)) => {
+            FetchCompletion::NavigationFailed {
+                fetch_id: pending_fetch.fetch_id,
+            }
+        }
     }
 }
 
@@ -678,9 +680,7 @@ impl FetchWorker {
                     let _ = self
                         .user_agent_command_sender
                         .send(UserAgentCommand::NavigationFetchFailed { fetch_id });
-                    error!(
-                        "failed to send navigation fetch request to network process: {error}"
-                    );
+                    error!("failed to send navigation fetch request to network process: {error}");
                 }
             }
             FetchCommand::Shutdown { reply } => {
@@ -737,21 +737,16 @@ impl FetchWorker {
             FetchCompletion::NavigationCompleted { fetch_id, response } => {
                 // Successful navigation fetches resume the user-agent-side document creation
                 // and finalization continuation keyed by `fetch_id`.
-                let _ = self.user_agent_command_sender.send(
-                    UserAgentCommand::NavigationFetchCompleted {
-                        fetch_id,
-                        response,
-                    },
-                );
+                let _ = self
+                    .user_agent_command_sender
+                    .send(UserAgentCommand::NavigationFetchCompleted { fetch_id, response });
             }
             FetchCompletion::NavigationFailed { fetch_id } => {
                 // Navigation fetch failures resume the same pending navigation record so the
                 // user agent can clear `ongoing_navigation_id` and surface failure to the embedder.
-                let _ =
-                    self.user_agent_command_sender
-                        .send(UserAgentCommand::NavigationFetchFailed {
-                            fetch_id,
-                        });
+                let _ = self
+                    .user_agent_command_sender
+                    .send(UserAgentCommand::NavigationFetchFailed { fetch_id });
             }
             FetchCompletion::Ignored => {}
         }

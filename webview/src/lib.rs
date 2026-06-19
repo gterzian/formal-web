@@ -92,11 +92,7 @@ pub struct WebviewProvider {
 }
 
 impl WebviewProvider {
-    pub fn update_video_frame(
-        &mut self,
-        webview_id: WebviewId,
-        frame: CompositorVideoFrame,
-    ) {
+    pub fn update_video_frame(&mut self, webview_id: WebviewId, frame: CompositorVideoFrame) {
         if let Some(state) = self.webviews.get_mut(&webview_id) {
             state.compositor.update_video_frame(frame);
             self.embedder.request_redraw(webview_id);
@@ -114,11 +110,7 @@ impl WebviewProvider {
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (provider_message_sender, provider_message_receiver) = unbounded();
-        let user_agent = UserAgent::start(
-            embedder.clone(),
-            provider_message_sender,
-            trace_sender,
-        )?;
+        let user_agent = UserAgent::start(embedder.clone(), provider_message_sender, trace_sender)?;
 
         Ok(Self {
             webviews: HashMap::new(),
@@ -183,9 +175,7 @@ impl WebviewProvider {
                     video_frame.width, video_frame.height, paint_id, webview_id,
                 );
                 // Convert the IpcSharedMemory to Arc<[u8]> for the compositor.
-                let pixel_bytes: Arc<[u8]> = video_frame.data.take()
-                    .unwrap_or_default()
-                    .into();
+                let pixel_bytes: Arc<[u8]> = video_frame.data.take().unwrap_or_default().into();
                 let compositor_frame = CompositorVideoFrame {
                     video_paint_id: paint_id,
                     width: video_frame.width,

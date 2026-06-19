@@ -1,6 +1,6 @@
-pub(crate) mod bindings;
 mod array_index;
 mod async_iterable;
+pub(crate) mod bindings;
 mod buffer_source;
 mod callback;
 mod promise;
@@ -14,8 +14,7 @@ pub(crate) use callback::{
     nullable_value,
 };
 pub(crate) use promise::{
-    error_to_rejection_reason, mark_promise_as_handled, a_new_promise,
-    promise_from_completion,
+    a_new_promise, error_to_rejection_reason, mark_promise_as_handled, promise_from_completion,
     promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
     transform_promise_to_undefined,
 };

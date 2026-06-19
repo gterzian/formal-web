@@ -37,7 +37,8 @@ impl WasmModule {
         // Step 3: "For each (name, type) of module_exports(module),"
         // Note: Steps 3.2-3.3 (building JsArray entries and appending) are done
         // by the JS bindings glue — this domain method returns the raw Vec.
-        self.module.exports()
+        self.module
+            .exports()
             .map(|export| {
                 let kind = match export.ty() {
                     wasmtime::ExternType::Func(_) => "function",

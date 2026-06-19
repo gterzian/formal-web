@@ -8,7 +8,7 @@ use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationIn
 use url::Url;
 
 use crate::html::{
-    HTMLElement, HyperlinkElementUtils, the_rules_for_choosing_a_navigable, navigate,
+    HTMLElement, HyperlinkElementUtils, navigate, the_rules_for_choosing_a_navigable,
 };
 
 /// <https://html.spec.whatwg.org/#htmlanchorelement>
@@ -81,8 +81,8 @@ impl HTMLAnchorElement {
             top_level_navigable_id,
             &target,
             noopener,
-            None,   // no GlobalScope: anchor nav delegates new traversables to UA
-            None,   // no Context: no return window needed
+            None, // no GlobalScope: anchor nav delegates new traversables to UA
+            None, // no Context: no return window needed
         );
 
         navigate(

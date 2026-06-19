@@ -1,4 +1,3 @@
-use log::error;
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
@@ -8,6 +7,7 @@ use boa_engine::{
     property::Attribute,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use log::error;
 
 use crate::webidl::{
     Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function,
@@ -221,9 +221,7 @@ where
                         .unwrap_or_else(|_| JsValue::undefined());
                     if let Ok(rejected) = rejected_promise(reason, context) {
                         if let Err(error) = mark_promise_as_handled(&rejected, context) {
-                            error!(
-                                "[readable-stream] failed to mark promise as handled: {error}"
-                            );
+                            error!("[readable-stream] failed to mark promise as handled: {error}");
                         }
                     }
                 }

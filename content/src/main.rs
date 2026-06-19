@@ -2,11 +2,11 @@
 #[path = "../../embedder/src/ui_event.rs"]
 pub(crate) mod ui_event;
 
-pub mod js;
 pub mod css;
 pub mod dom;
 pub mod html;
 pub mod infra;
+pub mod js;
 pub mod streams;
 pub mod wasm;
 pub mod webidl;
@@ -14,22 +14,24 @@ pub mod webidl;
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
-use crate::js::platform_objects::with_global_scope;
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
+use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
-use crate::wasm::{WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation};
+use crate::wasm::{
+    WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation,
+};
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
-use log::{debug, error, trace, warn};
 use data_url::DataUrl;
+use html5ever::local_name;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_channel::router::RouterProxy;
 use ipc_messages::content::Command::{
@@ -40,14 +42,14 @@ use ipc_messages::content::Command::{
 use ipc_messages::content::{
     BeforeUnloadCheckId, Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
-    ElementClickResult, EmbedBackgroundPolicy, EmbedSiteId, Event as ContentEvent, EventLoopId,
-    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FontTransportSender, FrameCompositionMetadata, EmbedLayout, EmbedSite, IframeEmbedSite, FrameId, LoadedDocumentResponse,
-    NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult, TraversableViewport,
-    ViewportSnapshot, WebviewId, WindowTimerKey,
+    ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
+    Event as ContentEvent, EventLoopId, FetchRequest as ContentFetchRequest,
+    FetchResponse as ContentFetchResponse, FontTransportSender, FrameCompositionMetadata, FrameId,
+    IframeEmbedSite, LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame,
+    ScriptEvaluationResult, TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
 };
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
-use html5ever::local_name;
+use log::{debug, error, trace, warn};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -356,9 +358,8 @@ pub(crate) struct ContentProcess {
     /// (window.open).  ContentProcess holds one Rc, and before running JS it
     /// sets a clone on the source document's GlobalScope so that
     /// `register_new_traversable_document` can insert directly into this map.
-    new_document_registry: Rc<
-        RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>,
-    >,
+    new_document_registry:
+        Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
 
     /// Background wasm compilation thread.
     wasm_worker: WasmWorker,
@@ -398,10 +399,7 @@ impl ContentProcess {
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
-            wasm_worker: WasmWorker::new(
-                wasmtime::Engine::default(),
-                wasm_signal_sender,
-            ),
+            wasm_worker: WasmWorker::new(wasmtime::Engine::default(), wasm_signal_sender),
             pending_wasm_requests: HashMap::new(),
             pending_wasm_modules: HashMap::new(),
         }
@@ -645,13 +643,10 @@ impl ContentProcess {
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
         let registry = Rc::clone(&self.new_document_registry);
-        with_global_scope(
-            &content_document.settings.context,
-            |global_scope| {
-                global_scope.set_new_document_registry(registry);
-                Ok(())
-            },
-        )
+        with_global_scope(&content_document.settings.context, |global_scope| {
+            global_scope.set_new_document_registry(registry);
+            Ok(())
+        })
         .map_err(|error| format!("failed to set new document registry: {error}"))
     }
 
@@ -666,13 +661,10 @@ impl ContentProcess {
             .documents
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        with_global_scope(
-            &content_document.settings.context,
-            |global_scope| {
-                global_scope.clear_new_document_registry();
-                Ok(())
-            },
-        )
+        with_global_scope(&content_document.settings.context, |global_scope| {
+            global_scope.clear_new_document_registry();
+            Ok(())
+        })
         .map_err(|error| format!("failed to clear new document registry: {error}"))
     }
 
@@ -695,10 +687,9 @@ impl ContentProcess {
                 continue;
             }
             // Read the traversable_id from the new document's own GlobalScope.
-            let new_traversable_id = with_global_scope(
-                &settings.context,
-                |global_scope| Ok(global_scope.source_navigable_id()),
-            )
+            let new_traversable_id = with_global_scope(&settings.context, |global_scope| {
+                Ok(global_scope.source_navigable_id())
+            })
             .map_err(|error| format!("failed to read new traversable id: {error}"))?
             .unwrap_or_else(NavigableId::new);
 
@@ -729,7 +720,6 @@ impl ContentProcess {
     /// `create_a_new_child_navigable` to create the document in the content
     /// process immediately, since we are already in the correct browsing
     /// context group.
-
 
     /// <https://html.spec.whatwg.org/multipage/#navigate-html>
     /// Note: This function implements the content-process portion of the `#navigate-html`
@@ -855,14 +845,10 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(
-            &settings.context,
-            |global_scope| {
-                global_scope
-                    .set_video_paint_registry(Rc::clone(&self.video_paint_registry));
-                Ok(())
-            },
-        ) {
+        if let Err(error) = with_global_scope(&settings.context, |global_scope| {
+            global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            Ok(())
+        }) {
             error!("[media] failed to set video paint registry on GlobalScope: {error}");
         }
 
@@ -958,14 +944,10 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(
-            &settings.context,
-            |global_scope| {
-                global_scope
-                    .set_video_paint_registry(Rc::clone(&self.video_paint_registry));
-                Ok(())
-            },
-        ) {
+        if let Err(error) = with_global_scope(&settings.context, |global_scope| {
+            global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            Ok(())
+        }) {
             error!("[media] failed to set video paint registry on GlobalScope: {error}");
         }
 
@@ -1134,7 +1116,8 @@ impl ContentProcess {
         // worker results arriving after destruction are not misattributed,
         // and to avoid orphaned promise entries.
         // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
-        self.pending_wasm_requests.retain(|_request_id, doc_id| *doc_id != document_id);
+        self.pending_wasm_requests
+            .retain(|_request_id, doc_id| *doc_id != document_id);
         self.pending_wasm_modules.retain(|request_id, _module| {
             !self.pending_wasm_requests.contains_key(request_id)
                 || self.pending_wasm_requests.get(request_id) != Some(&document_id)
@@ -1376,17 +1359,28 @@ impl ContentProcess {
         let node = document.get_node(node_id)?;
         let layout = node.final_layout;
         let edge = layout.padding + layout.border;
-        debug!("[layout] node {} layout size=({}, {}) padding+border=({},{},{},{}) scroll=({},{})",
-            node_id, layout.size.width, layout.size.height,
-            edge.left, edge.right, edge.top, edge.bottom,
-            node.scroll_offset.x, node.scroll_offset.y);
+        debug!(
+            "[layout] node {} layout size=({}, {}) padding+border=({},{},{},{}) scroll=({},{})",
+            node_id,
+            layout.size.width,
+            layout.size.height,
+            edge.left,
+            edge.right,
+            edge.top,
+            edge.bottom,
+            node.scroll_offset.x,
+            node.scroll_offset.y
+        );
         let (border_x, border_y) = Self::node_absolute_border_origin(document, node_id, scale)?;
         let x = border_x + f64::from(edge.left) * scale;
         let y = border_y + f64::from(edge.top) * scale;
         let width = (f64::from(layout.size.width) - f64::from(edge.left + edge.right)) * scale;
         let height = (f64::from(layout.size.height) - f64::from(edge.top + edge.bottom)) * scale;
         if width <= 0.0 || height <= 0.0 {
-            debug!("[layout] node {} skipped: computed size ({:.1},{:.1})", node_id, width, height);
+            debug!(
+                "[layout] node {} skipped: computed size ({:.1},{:.1})",
+                node_id, width, height
+            );
             return None;
         }
         Some((x, y, width, height))
@@ -1445,32 +1439,41 @@ impl ContentProcess {
 
         // Build video embed sites.
         for (paint_offset, video_node_id) in video_node_ids.into_iter().enumerate() {
-            let (x, y, width, height) =
-                match Self::content_box_for_node(document, video_node_id, scale) {
-                    Some(box_) => box_,
-                    None => {
-                        // Fallback: video element has 0x0 layout size (blitz doesn't natively
-                        // size video elements). Compute position only and use a default size.
-                        let fallback_w = 300.0 * scale;
-                        let fallback_h = 150.0 * scale;
-                        if let Some((bx, by)) =
-                            Self::node_absolute_border_origin(document, video_node_id, scale)
-                        {
-                            debug!("[layout] video node {} fallback position=({:.0},{:.0}) size=({:.0},{:.0})",
-                                video_node_id, bx, by, fallback_w, fallback_h);
-                            (bx, by, fallback_w, fallback_h)
-                        } else {
-                            debug!("[layout] video node {} skipped: no position", video_node_id);
-                            continue;
-                        }
+            let (x, y, width, height) = match Self::content_box_for_node(
+                document,
+                video_node_id,
+                scale,
+            ) {
+                Some(box_) => box_,
+                None => {
+                    // Fallback: video element has 0x0 layout size (blitz doesn't natively
+                    // size video elements). Compute position only and use a default size.
+                    let fallback_w = 300.0 * scale;
+                    let fallback_h = 150.0 * scale;
+                    if let Some((bx, by)) =
+                        Self::node_absolute_border_origin(document, video_node_id, scale)
+                    {
+                        debug!(
+                            "[layout] video node {} fallback position=({:.0},{:.0}) size=({:.0},{:.0})",
+                            video_node_id, bx, by, fallback_w, fallback_h
+                        );
+                        (bx, by, fallback_w, fallback_h)
+                    } else {
+                        debug!("[layout] video node {} skipped: no position", video_node_id);
+                        continue;
                     }
-                };
-            debug!("[layout] video node {} embed site: pos=({:.0},{:.0}) size=({:.0},{:.0})", video_node_id, x, y, width, height);
+                }
+            };
+            debug!(
+                "[layout] video node {} embed site: pos=({:.0},{:.0}) size=({:.0},{:.0})",
+                video_node_id, x, y, width, height
+            );
             // Read border-radius from the element's computed style. This defaults to a
             // small rounded radius if available, otherwise 0 (rect clip). For simplicity,
             // we read from the style attribute — a full computed style lookup would be
             // more accurate but the border radius is typically small.
-            let clip_radius = document.get_node(video_node_id)
+            let clip_radius = document
+                .get_node(video_node_id)
                 .and_then(|n| n.element_data())
                 .and_then(|el| el.attr(local_name!("style")))
                 .and_then(|style_str| {
@@ -1481,10 +1484,15 @@ impl ContentProcess {
                         .and_then(|part| {
                             let val = part.split(':').nth(1)?.trim();
                             if val.ends_with("px") {
-                                val.trim_end_matches("px").parse::<f64>().ok().map(|v| v * scale)
+                                val.trim_end_matches("px")
+                                    .parse::<f64>()
+                                    .ok()
+                                    .map(|v| v * scale)
                             } else if val.ends_with("rem") {
                                 // rem is relative to root font-size (typically 16px)
-                                val.trim_end_matches("rem").parse::<f64>().ok()
+                                val.trim_end_matches("rem")
+                                    .parse::<f64>()
+                                    .ok()
                                     .map(|v| v * 16.0 * scale)
                             } else {
                                 None
@@ -1543,9 +1551,7 @@ impl ContentProcess {
                     Bytes::copy_from_slice(&response.body),
                 );
                 let Some(content_document) = self.documents.get(&document_id) else {
-                    error!(
-                        "[content] complete_document_fetch: document {document_id} not found"
-                    );
+                    error!("[content] complete_document_fetch: document {document_id} not found");
                     return Ok(());
                 };
                 let traversable_id = content_document.traversable_id;
@@ -1720,16 +1726,10 @@ impl ContentProcess {
         };
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        with_global_scope(
-            &content_document.settings.context,
-            |global_scope| {
-                global_scope.set_navigable_hierarchy(
-                    parent_traversable_id,
-                    top_level_traversable_id,
-                );
-                Ok(())
-            },
-        )
+        with_global_scope(&content_document.settings.context, |global_scope| {
+            global_scope.set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
+            Ok(())
+        })
         .map_err(|error| error.to_string())
     }
 
@@ -1751,8 +1751,7 @@ impl ContentProcess {
             }
 
             // Submit instantiate requests.
-            let instantiates =
-                content_document.settings.take_pending_wasm_instantiates();
+            let instantiates = content_document.settings.take_pending_wasm_instantiates();
             for (request_id, module) in instantiates {
                 self.pending_wasm_requests.insert(request_id, document_id);
                 self.pending_wasm_modules.insert(request_id, module.clone());
@@ -1774,9 +1773,7 @@ impl ContentProcess {
                         WasmResult::Compiled { request_id, .. }
                         | WasmResult::CompileError { request_id, .. }
                         | WasmResult::Instantiated { request_id, .. }
-                        | WasmResult::InstantiateError { request_id, .. } => {
-                            *request_id
-                        }
+                        | WasmResult::InstantiateError { request_id, .. } => *request_id,
                     };
                     (request_id, result)
                 })
@@ -1841,7 +1838,10 @@ impl ContentProcess {
                 } => {
                     let module = self.pending_wasm_modules.remove(&request_id);
                     let Some(module) = module else {
-                        error!("WebAssembly: no module found for instantiate request {}", request_id);
+                        error!(
+                            "WebAssembly: no module found for instantiate request {}",
+                            request_id
+                        );
                         self.pending_wasm_requests.remove(&request_id);
                         continue;
                     };
@@ -2074,8 +2074,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
 
     // Route the command IPC through the router to get a crossbeam receiver.
     let router = RouterProxy::new();
-    let cmd_rx =
-        router.route_ipc_receiver_to_new_crossbeam_receiver(command_receiver);
+    let cmd_rx = router.route_ipc_receiver_to_new_crossbeam_receiver(command_receiver);
 
     loop {
         crossbeam_channel::select! {

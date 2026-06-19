@@ -1,10 +1,10 @@
-use log::error;
 use crate::{
     AUTOMATION_TIMEOUT, AutomationRuntime, AutomationSnapshot, HttpRequest, NEXT_SESSION_ID,
     SCRIPT_TIMEOUT, read_http_request, write_http_response,
 };
 use base64::Engine as _;
 use clap::Args;
+use log::error;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::ErrorKind;

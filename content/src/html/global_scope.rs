@@ -8,18 +8,15 @@ use std::{
 use super::environment_settings_object::EnvironmentSettingsObject;
 
 use blitz_dom::BaseDocument;
-use log::{debug, error};
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::DocumentId;
-use ipc_messages::media::VideoPaintId;
 use ipc_messages::content::{
-    Event as ContentEvent, NavigableId, WindowTimerClearRequest,
-    WindowTimerKey, WindowTimerRequest,
+    Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
-
-
+use ipc_messages::media::VideoPaintId;
+use log::{debug, error};
 
 use crate::webidl::Callback;
 
@@ -234,10 +231,15 @@ pub struct GlobalScope {
     /// and ContentProcess (to retrieve) share the same `Rc`, so no separate
     /// flush step is needed.
     #[unsafe_ignore_trace]
-    new_document_registry:
-        RefCell<Option<
-            Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
-        >>,
+    new_document_registry: RefCell<
+        Option<
+            Rc<
+                RefCell<
+                    HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>,
+                >,
+            >,
+        >,
+    >,
 
     /// Shared registry mapping (document_id, node_id) → VideoPaintId.
     /// Set by `ContentProcess` during document creation so that both
@@ -245,10 +247,7 @@ pub struct GlobalScope {
     /// `ContentProcess::build_frame_composition_metadata` (to read) share
     /// the same `Rc`.
     #[unsafe_ignore_trace]
-    video_paint_registry:
-        RefCell<Option<
-            Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
-        >>,
+    video_paint_registry: RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>,
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
@@ -268,9 +267,13 @@ pub struct GlobalScope {
     /// The promise and resolvers are stored here rather than in
     /// `PendingRequest` so that domain code in `content/src/wasm/` can
     /// push pending requests without importing `boa_engine`.
-    pending_wasm_resolvers:
-        GcRefCell<Vec<(u64, boa_engine::object::JsObject, boa_engine::builtins::promise::ResolvingFunctions)>>,
-
+    pending_wasm_resolvers: GcRefCell<
+        Vec<(
+            u64,
+            boa_engine::object::JsObject,
+            boa_engine::builtins::promise::ResolvingFunctions,
+        )>,
+    >,
 }
 
 impl GlobalScope {
@@ -299,7 +302,6 @@ impl GlobalScope {
             pending_requests: GcRefCell::new(Vec::new()),
             pending_wasm_request_id_counter: std::cell::Cell::new(0),
             pending_wasm_resolvers: GcRefCell::new(Vec::new()),
-
         }
     }
 
@@ -689,7 +691,9 @@ impl GlobalScope {
     /// that may trigger `the_rules_for_choosing_a_navigable`.
     pub(crate) fn set_new_document_registry(
         &self,
-        registry: Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
+        registry: Rc<
+            RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>,
+        >,
     ) {
         *self.new_document_registry.borrow_mut() = Some(registry);
     }
@@ -876,7 +880,9 @@ impl GlobalScope {
         }
         // Look up the promise/resolvers in the separate store.
         let mut resolvers = self.pending_wasm_resolvers.borrow_mut();
-        let idx = resolvers.iter().position(|(rid, _, _)| *rid == request_id)?;
+        let idx = resolvers
+            .iter()
+            .position(|(rid, _, _)| *rid == request_id)?;
         let (_rid, promise, res) = resolvers.swap_remove(idx);
         Some((promise, res))
     }

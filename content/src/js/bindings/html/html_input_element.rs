@@ -3,9 +3,7 @@
 use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLInputElement;
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 impl WebIdlInterface for HTMLInputElement {
     const NAME: &'static str = "HTMLInputElement";
@@ -39,28 +37,30 @@ impl WebIdlInterface for HTMLInputElement {
 }
 
 fn get_value(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected object")
-    })?;
-    let input = obj.downcast_ref::<HTMLInputElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLInputElement")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let input = obj
+        .downcast_ref::<HTMLInputElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLInputElement"))?;
     Ok(JsValue::from(JsString::from(input.value())))
 }
 
 fn focus_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let _obj = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let _obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     // Note: focus() is a no-op — element focus management not yet implemented.
     Ok(JsValue::undefined())
 }
 
 fn set_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected object")
-    })?;
-    let input = obj.downcast_ref::<HTMLInputElement>().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected HTMLInputElement")
-    })?;
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    let input = obj
+        .downcast_ref::<HTMLInputElement>()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLInputElement"))?;
     let value = args
         .first()
         .map(|v| v.to_string(context))

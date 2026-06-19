@@ -1,20 +1,17 @@
 use std::rc::Rc;
 
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    js_string,
+    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, js_string,
     object::{JsObject, builtins::JsArray},
     property::Attribute,
 };
 
+use crate::dom::Document;
 use crate::js::platform_objects::{
     document_object, invalidate_cached_node_ids, resolve_element_object,
     resolve_or_create_text_node_object,
 };
-use crate::dom::Document;
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 // ── WebIDL interface definition (§3) ──
 

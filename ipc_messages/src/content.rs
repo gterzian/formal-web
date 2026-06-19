@@ -1,3 +1,4 @@
+use crate::media::VideoEmbedData;
 use anyrender::{
     Scene,
     recording::{GlyphRunCommand, RenderCommand},
@@ -5,7 +6,6 @@ use anyrender::{
 use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
-use crate::media::VideoEmbedData;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fmt;
 use uuid::Uuid;

@@ -47,22 +47,16 @@ pub enum MediaCommand {
         url: String,
     },
     /// Begin or resume playback.
-    Play {
-        pipeline_id: MediaPipelineId,
-    },
+    Play { pipeline_id: MediaPipelineId },
     /// Pause playback. Frames stop arriving; last frame stays visible.
-    Pause {
-        pipeline_id: MediaPipelineId,
-    },
+    Pause { pipeline_id: MediaPipelineId },
     /// Seek to position in seconds.
     Seek {
         pipeline_id: MediaPipelineId,
         position_secs: f64,
     },
     /// Tear down the pipeline and release all resources.
-    Destroy {
-        pipeline_id: MediaPipelineId,
-    },
+    Destroy { pipeline_id: MediaPipelineId },
     /// Shut down the media process.
     Shutdown,
 }
@@ -83,9 +77,7 @@ pub enum MediaEvent {
     /// A decoded frame is ready.
     Frame(VideoFrame),
     /// Pipeline reached end of stream.
-    Eos {
-        pipeline_id: MediaPipelineId,
-    },
+    Eos { pipeline_id: MediaPipelineId },
     /// An unrecoverable error occurred.
     Error {
         pipeline_id: MediaPipelineId,

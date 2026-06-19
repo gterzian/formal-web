@@ -1,20 +1,17 @@
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    js_string,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string,
     native_function::NativeFunction,
 };
 
-use crate::js::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
 use crate::dom::{
     AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal, signal_abort,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
-use crate::webidl::{callback_function_value, nullable_value};
+use crate::js::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
 use crate::webidl::bindings::{
-    create_interface_instance,
-
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
+use crate::webidl::{callback_function_value, nullable_value};
 
 use super::event_target::ContextEventDispatchHost;
 
@@ -131,13 +128,21 @@ pub(crate) fn signal_abort_with_context(
     signal_abort(&mut host, signal, reason)
 }
 
-pub(crate) fn abort_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn abort_static(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let reason = abort_reason_from_argument(args.get(0), context)?;
     let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), context)?;
     Ok(JsValue::from(signal.object()?))
 }
 
-pub(crate) fn timeout_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn timeout_static(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let milliseconds = args.get_or_undefined(0).to_length(context)?;
     let signal = create_abort_signal(AbortSignal::new(), context)?;
     let callback = NativeFunction::from_copy_closure_with_captures(
@@ -166,7 +171,11 @@ pub(crate) fn timeout_static(_: &JsValue, args: &[JsValue], context: &mut Contex
     Ok(JsValue::from(signal.object()?))
 }
 
-pub(crate) fn any_static(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn any_static(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let signals = sequence_abort_signals(args.get_or_undefined(0), context)?;
     let result_signal = create_abort_signal(AbortSignal::new(), context)?;
     initialize_dependent_abort_signal(&result_signal, &signals)?;

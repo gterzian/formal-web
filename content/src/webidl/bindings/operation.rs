@@ -1,7 +1,5 @@
 use boa_engine::{
-    Context, JsObject, JsResult, JsValue,
-    js_string,
-    native_function::NativeFunction,
+    Context, JsObject, JsResult, JsValue, js_string, native_function::NativeFunction,
     property::PropertyDescriptor,
 };
 
@@ -79,10 +77,7 @@ pub(crate) fn define_static_operations(
 ) -> JsResult<()> {
     // Step 1: "Let operations be the list of static operations that are
     //          members of definition."
-    let static_ops: Vec<&OperationDef> = operations
-        .iter()
-        .filter(|o| o.static_)
-        .collect();
+    let static_ops: Vec<&OperationDef> = operations.iter().filter(|o| o.static_).collect();
 
     // Step 2: "Define the operations operations of definition on target
     //          given realm."

@@ -17,8 +17,8 @@ use automation::{AutomationCommand, AutomationVisibleFrameViewport};
 use blitz_traits::shell::ColorScheme;
 use ipc_messages::content::WebviewId;
 use kurbo::{Affine, Rect};
-use peniko::{Color, Fill};
 use log::error;
+use peniko::{Color, Fill};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::Duration;
 use verification::TraceSender;
@@ -249,18 +249,14 @@ where
     run_result
 }
 
-pub fn run_headed_event_loop(
-    trace_sender: Option<TraceSender>,
-) -> Result<(), String> {
+pub fn run_headed_event_loop(trace_sender: Option<TraceSender>) -> Result<(), String> {
     run_embedder_event_loop(trace_sender, |provider| WindowedApp {
         provider: Some(provider),
         ..WindowedApp::default()
     })
 }
 
-pub fn run_headless_event_loop(
-    trace_sender: Option<TraceSender>,
-) -> Result<(), String> {
+pub fn run_headless_event_loop(trace_sender: Option<TraceSender>) -> Result<(), String> {
     run_embedder_event_loop(trace_sender, |provider| HeadlessEmbedderApp {
         provider: Some(provider),
         ..HeadlessEmbedderApp::default()

@@ -11,8 +11,8 @@ use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
-use crate::webidl::{Callback, ContextCallbackHost, EcmascriptHost};
 use crate::webidl::bindings::create_interface_instance;
+use crate::webidl::{Callback, ContextCallbackHost, EcmascriptHost};
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -274,7 +274,8 @@ pub(crate) fn dispatch_ui_event(
     }
 
     let mut document = document;
-    let deferred_apple_keybinding = Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default()));
+    let deferred_apple_keybinding =
+        Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default()));
     let handler = BlitzJSEventHandler::new(
         document_id,
         source_navigable_id,
@@ -289,7 +290,8 @@ pub(crate) fn dispatch_ui_event(
     driver.handle_ui_event(event);
     let deferred_apple_keybinding = *deferred_apple_keybinding.borrow();
     if let Some(command) = deferred_apple_keybinding.command
-        && !deferred_apple_keybinding.keydown_default_prevented {
+        && !deferred_apple_keybinding.keydown_default_prevented
+    {
         driver.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(command)));
     }
     if is_wheel && input_debug_enabled() {
@@ -501,8 +503,9 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         let time_stamp = self.settings.current_time_millis();
         let view = Some(self.settings.context.global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
-        let event_object = create_interface_instance::<JsUiEvent>(ui_event, &mut self.settings.context)
-            .expect("UIEvent construction must succeed");
+        let event_object =
+            create_interface_instance::<JsUiEvent>(ui_event, &mut self.settings.context)
+                .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
             error!("failed to dispatch UI event through JavaScript listeners: {error}");
             return;
@@ -513,7 +516,8 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         }
 
         if let DomEventData::KeyDown(key_event) = &event.data
-            && let Some(command) = apple_standard_keybinding_for_key_down(key_event) {
+            && let Some(command) = apple_standard_keybinding_for_key_down(key_event)
+        {
             let keydown_default_prevented = event_state.is_cancelled();
             *self.deferred_apple_keybinding.borrow_mut() = DeferredAppleStandardKeybinding {
                 command: Some(command),

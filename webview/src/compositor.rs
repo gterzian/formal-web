@@ -1,14 +1,12 @@
-use log::trace;
 use anyrender::{PaintScene, Scene as RenderScene};
 use ipc_messages::content::{
-    EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata,
-    FrameId, IframeEmbedSite, RecordedScene,
+    EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata, FrameId,
+    IframeEmbedSite, RecordedScene,
 };
 use ipc_messages::media::VideoPaintId;
 use kurbo::{Affine, Point, Rect, RoundedRect, Shape};
-use peniko::{
-    Color, Fill, ImageAlphaType, ImageBrushRef, ImageData, ImageFormat,
-};
+use log::trace;
+use peniko::{Color, Fill, ImageAlphaType, ImageBrushRef, ImageData, ImageFormat};
 use std::collections::{HashMap, HashSet};
 use std::env;
 
@@ -352,15 +350,23 @@ impl Compositor {
                     let Some(video_frame) = self.video_frames.get(&video_data.paint_id) else {
                         // First-frame not yet arrived; nothing to paint.
                         if input_debug_enabled() {
-                            trace!("[input-debug][compositor] video paint_id={:?} no frame yet", video_data.paint_id);
+                            trace!(
+                                "[input-debug][compositor] video paint_id={:?} no frame yet",
+                                video_data.paint_id
+                            );
                         }
                         continue;
                     };
                     let transform = Affine::new(video_data.layout.transform);
-                    trace!("[compositor] video paint_id={:?} frame={}x{} transform=({:.1},{:.1}) clip_bounds={:?}",
-                        video_data.paint_id, video_frame.width, video_frame.height,
-                        transform.as_coeffs()[4], transform.as_coeffs()[5],
-                        video_data.layout.clip_bounds);
+                    trace!(
+                        "[compositor] video paint_id={:?} frame={}x{} transform=({:.1},{:.1}) clip_bounds={:?}",
+                        video_data.paint_id,
+                        video_frame.width,
+                        video_frame.height,
+                        transform.as_coeffs()[4],
+                        transform.as_coeffs()[5],
+                        video_data.layout.clip_bounds
+                    );
 
                     let transform = Affine::new(video_data.layout.transform);
 
@@ -411,23 +417,13 @@ impl Compositor {
                     };
                     // Include the clip layer's translation so the image is drawn at the
                     // element's screen position (same pattern as iframe child_transform).
-                    let video_transform = Affine::new([
-                        scale_x,
-                        0.0,
-                        0.0,
-                        scale_y,
-                        tx,
-                        ty,
-                    ]);
+                    let video_transform = Affine::new([scale_x, 0.0, 0.0, scale_y, tx, ty]);
 
                     match rounded_clip {
                         Some(ref rc) => composed_scene.push_clip_layer(transform, rc),
                         None => composed_scene.push_clip_layer(transform, &local_clip),
                     };
-                    composed_scene.draw_image(
-                        ImageBrushRef::from(&image_data),
-                        video_transform,
-                    );
+                    composed_scene.draw_image(ImageBrushRef::from(&image_data), video_transform);
                     composed_scene.pop_layer();
                 }
             }
@@ -480,7 +476,8 @@ impl Compositor {
         parent_local_to_root: Affine,
         iframe_site: &IframeEmbedSite,
     ) -> Option<Affine> {
-        let Some(layout) = self.navigable_container_layout(parent_local_to_root, iframe_site) else {
+        let Some(layout) = self.navigable_container_layout(parent_local_to_root, iframe_site)
+        else {
             if input_debug_enabled() {
                 trace!(
                     "[input-debug][compositor] parent={} child={} record=skip reason=no-layout",

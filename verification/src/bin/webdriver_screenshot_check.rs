@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
-use log::error;
 use image::{ImageReader, RgbaImage};
+use log::error;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

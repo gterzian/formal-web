@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 default-run = "formal-web"
-build = "build.rs"
 
 [[bin]]
 name = "formal-web"
@@ -12,25 +11,48 @@ path = "src/main.rs"
 
 [features]
 default = ["media"]
-media = ["dep:media", "user_agent/media"]
+media = []
 
 [dependencies]
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
-content = { path = "content" }
-media = { path = "media", optional = true }
-net = { path = "net" }
-user_agent = { path = "user_agent", default-features = false }
-verification = { path = "verification" }
-webview = { path = "webview" }
 wpt_runner = { path = "tests/wpt_runner" }
-ipc-channel = "0.21"
-ipc_messages = { path = "ipc_messages" }
-libc = "0.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+verification = { path = "verification" }
 log = "0.4"
 env_logger = "0.11"
-url = "2"
+
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "automation",
+    "content",
+    "embedder",
+    "ipc_messages",
+    "media",
+    "net",
+    "user_agent",
+    "verification",
+    "webview",
+]
+default-members = [
+    ".",
+    "automation",
+    "content",
+    "embedder",
+    "ipc_messages",
+    "media",
+    "net",
+    "user_agent",
+    "verification",
+    "webview",
+]
+
+[workspace.dependencies]
+# Blitz crates (git dep from gterzian/blitz fork)
+blitz-traits = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
+blitz-dom = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
+blitz-paint = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
+blitz-html = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
 
 

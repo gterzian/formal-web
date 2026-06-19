@@ -6,18 +6,13 @@
 //! domain method or function, and wraps the result.
 
 use boa_engine::{
-    Context, JsNativeError, JsObject, JsResult, JsValue,
-    js_string,
-    native_function::NativeFunction,
-    object::FunctionObjectBuilder,
-    property::PropertyDescriptor,
+    Context, JsNativeError, JsObject, JsResult, JsValue, js_string,
+    native_function::NativeFunction, object::FunctionObjectBuilder, property::PropertyDescriptor,
 };
 
 use crate::wasm::{WasmInstance, WasmModule};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::get_a_copy_of_the_buffer_source;
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-};
 
 // WebIdlInterface: Module
 
@@ -83,8 +78,7 @@ impl WebIdlInterface for WasmModule {
         let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, context)?;
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
-            JsNativeError::typ()
-                .with_message(format!("CompileError: {}", error))
+            JsNativeError::typ().with_message(format!("CompileError: {}", error))
         })?;
         // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
         Ok(WasmModule::new(module, stable_bytes))
@@ -124,15 +118,14 @@ fn module_exports_binding(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let module_value = args.first().ok_or_else(|| {
-        JsNativeError::typ().with_message("Module.exports: missing argument")
-    })?;
+    let module_value = args
+        .first()
+        .ok_or_else(|| JsNativeError::typ().with_message("Module.exports: missing argument"))?;
     let module_object = module_value.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("Module.exports: argument must be a Module object")
     })?;
     let wasm_module = module_object.downcast_ref::<WasmModule>().ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("Module.exports: argument is not a WebAssembly.Module")
+        JsNativeError::typ().with_message("Module.exports: argument is not a WebAssembly.Module")
     })?;
 
     let descriptors = wasm_module.export_descriptors();
@@ -147,7 +140,12 @@ fn module_exports_binding(
         let entry_obj = entry.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("failed to create export descriptor")
         })?;
-        entry_obj.set(js_string!("name"), js_string!(name.as_str()), false, context)?;
+        entry_obj.set(
+            js_string!("name"),
+            js_string!(name.as_str()),
+            false,
+            context,
+        )?;
         entry_obj.set(js_string!("kind"), js_string!(*kind), false, context)?;
         exports_array.push(entry, context)?;
     }
@@ -192,19 +190,21 @@ pub(crate) fn register_wasm_error_types(
             // SAFETY: The closure is 'static — no borrowed data captured.
             unsafe {
                 NativeFunction::from_closure(
-                    move |_new_target: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
+                    move |_new_target: &JsValue,
+                          args: &[JsValue],
+                          ctx: &mut Context|
+                          -> JsResult<JsValue> {
                         let message = args
                             .first()
                             .and_then(|v| v.as_string())
                             .map(|s| s.to_std_string_escaped())
                             .unwrap_or_default();
                         // Create an Error via the built-in Error constructor.
-                        let error = ctx
-                            .intrinsics()
-                            .constructors()
-                            .error()
-                            .constructor()
-                            .call(&JsValue::undefined(), &[JsValue::from(js_string!(message.as_str()))], ctx)?;
+                        let error = ctx.intrinsics().constructors().error().constructor().call(
+                            &JsValue::undefined(),
+                            &[JsValue::from(js_string!(message.as_str()))],
+                            ctx,
+                        )?;
                         // Set name to the error type name (CompileError, etc.)
                         // so the error is recognized by name-based checks.
                         if let Some(obj) = error.as_object() {

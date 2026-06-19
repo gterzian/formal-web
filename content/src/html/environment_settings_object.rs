@@ -3,19 +3,18 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsResult, JsValue, Source, js_string, object::JsObject,
-    property::Attribute,
+    Context, JsError, JsResult, JsValue, Source, js_string, object::JsObject, property::Attribute,
 };
 use ipc_channel::ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
+use crate::dom::{Document, Event, EventDispatchHost};
+use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_boa_context;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
 use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
-use crate::dom::{Document, Event, EventDispatchHost};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
-use crate::html::{TimerHandler, Window};
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -103,7 +102,8 @@ impl EnvironmentSettingsObject {
 
         store_document_object(&context, document_object).map_err(|error| error.to_string())?;
         install_document_property(&mut context).map_err(|error| error.to_string())?;
-        install_console_namespace(&mut context).map_err(|error: boa_engine::JsError| error.to_string())?;
+        install_console_namespace(&mut context)
+            .map_err(|error: boa_engine::JsError| error.to_string())?;
         install_css_namespace(&mut context).map_err(|error| error.to_string())?;
 
         let global = context.global_object();
@@ -266,9 +266,7 @@ impl EnvironmentSettingsObject {
 
         if let Err(error) = with_global_scope(&self.context, |global_scope| {
             if let Err(error) = global_scope.complete_window_timer(timer_id, timer_key) {
-                error!(
-                    "failed to complete window timer (id={timer_id} key={timer_key}): {error}"
-                );
+                error!("failed to complete window timer (id={timer_id} key={timer_key}): {error}");
             }
             Ok(())
         }) {

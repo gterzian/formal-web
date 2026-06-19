@@ -1,23 +1,18 @@
-use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue,
-    object::JsObject,
-};
+use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, object::JsObject};
 
-use crate::js::platform_objects::{
-    location_object as cached_location_object, store_location_object,
-};
-use crate::js::with_event_target_mut;
 use crate::html::{
     Location, Window, WindowOrWorkerGlobalScope, resolve_window,
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
-use crate::webidl::{callback_function_value, nullable_value};
-use crate::webidl::bindings::{
-    create_interface_instance,
-
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
+use crate::js::platform_objects::{
+    location_object as cached_location_object, store_location_object,
 };
+use crate::js::with_event_target_mut;
+use crate::webidl::bindings::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+};
+use crate::webidl::{callback_function_value, nullable_value};
 
 use crate::js::bindings::dom::with_element_ref;
 
@@ -362,7 +357,6 @@ fn get_computed_style_method(
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
-
 
 fn location_object(context: &mut Context) -> JsResult<JsObject> {
     if let Some(object) = cached_location_object(context)? {

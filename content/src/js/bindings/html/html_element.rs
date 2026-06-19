@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    js_string,
+    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, js_string,
     native_function::NativeFunction,
     object::{FunctionObjectBuilder, JsObject, ObjectInitializer},
     property::Attribute,
@@ -13,9 +12,7 @@ use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
     HTMLVideoElement, inline_style_properties_for_element,
 };
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -214,10 +211,8 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     style_obj.set(js_string!("__element"), element_ref, false, context)?;
 
     // Implement cssText as a live getter/setter backed by the element's style attribute.
-    let css_text_getter =
-        NativeFunction::from_fn_ptr(style_css_text_getter);
-    let css_text_setter =
-        NativeFunction::from_fn_ptr(style_css_text_setter);
+    let css_text_getter = NativeFunction::from_fn_ptr(style_css_text_getter);
+    let css_text_setter = NativeFunction::from_fn_ptr(style_css_text_setter);
     let css_text_getter_obj = FunctionObjectBuilder::new(&realm, css_text_getter).build();
     let css_text_setter_obj = FunctionObjectBuilder::new(&realm, css_text_setter).build();
     let css_text_desc = boa_engine::property::PropertyDescriptor::builder()
@@ -231,50 +226,70 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     Ok(style_obj.into())
 }
 
-fn resolve_style_element(
-    this: &JsValue,
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("expected style object")
-    })?;
+fn resolve_style_element(this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
+    let obj = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected style object"))?;
     obj.get(js_string!("__element"), context)
 }
 
-fn style_css_text_getter(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn style_css_text_getter(
+    this: &JsValue,
+    _: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     // Read the element's style attribute.
     let element_val = resolve_style_element(this, context)?;
-    let element_obj = element_val.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("cssText getter: element not found")
-    })?;
+    let element_obj = element_val
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("cssText getter: element not found"))?;
 
     let style_attr = if let Some(el) = element_obj.downcast_ref::<Element>() {
         el.get_attribute("style").unwrap_or_default()
     } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
         html_el.element.get_attribute("style").unwrap_or_default()
     } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
-        media.html_element.element.get_attribute("style").unwrap_or_default()
+        media
+            .html_element
+            .element
+            .get_attribute("style")
+            .unwrap_or_default()
     } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.html_element.element.get_attribute("style").unwrap_or_default()
+        video
+            .media_element
+            .html_element
+            .element
+            .get_attribute("style")
+            .unwrap_or_default()
     } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
-        ifr.html_element.element.get_attribute("style").unwrap_or_default()
+        ifr.html_element
+            .element
+            .get_attribute("style")
+            .unwrap_or_default()
     } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
-        anc.html_element.element.get_attribute("style").unwrap_or_default()
+        anc.html_element
+            .element
+            .get_attribute("style")
+            .unwrap_or_default()
     } else {
         String::new()
     };
     Ok(JsValue::from(JsString::from(style_attr)))
 }
 
-fn style_css_text_setter(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn style_css_text_setter(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let value = args
         .get_or_undefined(0)
         .to_string(context)?
         .to_std_string_escaped();
     let element_val = resolve_style_element(this, context)?;
-    let element_obj = element_val.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("cssText setter: element not found")
-    })?;
+    let element_obj = element_val
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("cssText setter: element not found"))?;
 
     if let Some(el) = element_obj.downcast_ref::<Element>() {
         if value.is_empty() {
@@ -296,9 +311,17 @@ fn style_css_text_setter(this: &JsValue, args: &[JsValue], context: &mut Context
         }
     } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
         if value.is_empty() {
-            video.media_element.html_element.element.remove_attribute("style");
+            video
+                .media_element
+                .html_element
+                .element
+                .remove_attribute("style");
         } else {
-            video.media_element.html_element.element.set_attribute("style", &value);
+            video
+                .media_element
+                .html_element
+                .element
+                .set_attribute("style", &value);
         }
     } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
         if value.is_empty() {

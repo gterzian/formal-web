@@ -169,9 +169,7 @@ pub(crate) fn create_interface_prototype_object<T: WebIdlInterface>(
     // Note: DOMException is handled in the DOMException binding directly.
 
     // Step 5: "Otherwise, set proto to realm.[[Intrinsics]].[[%Object.prototype%]]."
-    let proto = proto.unwrap_or_else(|| {
-        context.intrinsics().constructors().object().prototype()
-    });
+    let proto = proto.unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
 
     // Step 6: "Assert: proto is an Object."
     debug_assert!(true, "proto was set in steps 1-5");
@@ -348,16 +346,18 @@ where
     let constructor = {
         let f = FunctionObjectBuilder::new(
             &realm,
-            NativeFunction::from_fn_ptr(|new_target: &JsValue, args: &[JsValue], ctx: &mut Context| {
-                let obj = T::create_platform_object(new_target, args, ctx)?;
-                // §3.8 step: Get(newTarget, "prototype")
-                let proto = resolve_instance_prototype(new_target, ctx);
-                let instance = match proto {
-                    Some(p) => JsObject::from_proto_and_data(Some(p), obj),
-                    None => create_interface_instance(obj, ctx)?,
-                };
-                Ok(JsValue::from(instance))
-            }),
+            NativeFunction::from_fn_ptr(
+                |new_target: &JsValue, args: &[JsValue], ctx: &mut Context| {
+                    let obj = T::create_platform_object(new_target, args, ctx)?;
+                    // §3.8 step: Get(newTarget, "prototype")
+                    let proto = resolve_instance_prototype(new_target, ctx);
+                    let instance = match proto {
+                        Some(p) => JsObject::from_proto_and_data(Some(p), obj),
+                        None => create_interface_instance(obj, ctx)?,
+                    };
+                    Ok(JsValue::from(instance))
+                },
+            ),
         )
         .name(T::NAME)
         .length(T::constructor_length())
@@ -409,14 +409,14 @@ where
         .configurable(true)
         .build();
     if let Some(ns_name) = T::legacy_namespace() {
-        let ns_val = context
-            .global_object()
-            .get(js_string!(ns_name), context)?;
-        let ns_obj = ns_val
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message(format!(
-                "interface {}: namespace '{}' not found", T::NAME, ns_name
-            )))?;
+        let ns_val = context.global_object().get(js_string!(ns_name), context)?;
+        let ns_obj = ns_val.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message(format!(
+                "interface {}: namespace '{}' not found",
+                T::NAME,
+                ns_name
+            ))
+        })?;
         ns_obj.define_property_or_throw(js_string!(T::NAME), desc, context)?;
     } else {
         context
@@ -430,10 +430,7 @@ where
 /// Resolve the instance prototype per §3.8 step "Get(newTarget, "prototype")".
 ///
 /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-fn resolve_instance_prototype(
-    new_target: &JsValue,
-    context: &mut Context,
-) -> Option<JsObject> {
+fn resolve_instance_prototype(new_target: &JsValue, context: &mut Context) -> Option<JsObject> {
     let nt = new_target.as_object()?;
     let proto_val = nt.get(js_string!("prototype"), context).ok()?;
     proto_val.as_object().map(|o| o.clone())
@@ -458,10 +455,12 @@ pub(crate) fn create_interface_instance<T>(data: T, context: &mut Context) -> Js
 where
     T: NativeObject + 'static,
 {
-    let prototype = super::registry::get_prototype_from_host_defined::<T>(context)
-        .ok_or_else(|| {
-            JsError::from(JsNativeError::typ()
-                .with_message(format!("interface not registered: {}", std::any::type_name::<T>())))
+    let prototype =
+        super::registry::get_prototype_from_host_defined::<T>(context).ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message(format!(
+                "interface not registered: {}",
+                std::any::type_name::<T>()
+            )))
         })?;
     Ok(JsObject::from_proto_and_data(Some(prototype), data))
 }

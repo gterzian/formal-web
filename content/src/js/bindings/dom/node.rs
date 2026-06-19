@@ -2,20 +2,18 @@ use std::rc::Rc;
 
 use blitz_dom::NodeData;
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
-    object::builtins::JsArray,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, object::builtins::JsArray,
 };
 
+use crate::dom::{DOMException, Document, Element, Node};
+use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 use crate::js::platform_objects::{
     collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
     object_for_existing_node,
 };
-use crate::dom::{DOMException, Document, Element, Node};
-use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 use crate::webidl::bindings::{
-    create_interface_instance,
-
     AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
+    create_interface_instance,
 };
 
 impl WebIdlInterface for Node {
@@ -277,7 +275,6 @@ impl WebIdlInterface for Node {
         });
     }
 }
-
 
 // ── Member getters/setters/methods ──
 

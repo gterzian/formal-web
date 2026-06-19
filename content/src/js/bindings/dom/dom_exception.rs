@@ -1,11 +1,7 @@
-use boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue,
-};
+use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::dom::DOMException;
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 // ── WebIDL interface definition (§3) ──
 

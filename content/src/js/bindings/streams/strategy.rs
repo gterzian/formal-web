@@ -1,13 +1,9 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue,
-    js_string,
-    native_function::NativeFunction,
+    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, native_function::NativeFunction,
     object::FunctionObjectBuilder,
 };
 
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, byte_length_size, count_size,
