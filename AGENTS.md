@@ -103,7 +103,7 @@ review checklist.
 
 # Project Structure
 
-The formal-web project implements a web browser from scratch from separate processes coordinated by the user agent. The main `formal-web` binary launches dedicated `formal-web-content` and `formal-web-net` processes from the `content` and `net` packages. The embedder delegates to these processes through the `webview` and `user_agent` layers, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.
+The formal-web project implements a web browser from scratch from separate processes coordinated by the user agent. The main `formal-web` binary runs the embedder directly in-process and launches dedicated `formal-web-content` and `formal-web-net` helper processes from the `content` and `net` packages. It delegates to these processes through the `webview` and `user_agent` layers, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.
 
 TLA+ models under `verification/` verify critical algorithms (e.g. navigation). The TLA+ Toolbox jar is at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar`. Verification artifacts go in temporary directories.
 
@@ -121,8 +121,8 @@ shared dependency resolution and incremental compilation.
 
 ### Components
 
-- **Root binary** (`formal-web`): thin launcher that delegates to the embedder.
-- **Embedder** (`formal-web-embedder`): the actual application process.
+- **Root binary** (`formal-web`): runs the embedder directly in-process, creating the window and event loop.
+- **Embedder crate** (`embedder`): a library used by the root binary that owns the winit event loop, window, chrome, and automation plumbing. A standalone `formal-web-embedder` binary is also produced for direct use.
 - **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-media`): spawned by the embedder.
 
 ### Three verbs
@@ -278,8 +278,8 @@ The project uses the standard `log` crate with `env_logger` for structured loggi
 
 At the end of each task, run the following steps **in order**:
 
-1. **Tear down browser/CDP infra** — Kill any formal-web embedder processes
-   (`pkill -f "formal-web-embedder")`, CDP servers, or other processes that
+1. **Tear down browser/CDP infra** — Kill any formal-web processes
+   (`pkill -f "formal-web"`)`, CDP servers, or other processes that
    were started during the session. Leftover processes can block ports and
    interfere with subsequent tasks.
 

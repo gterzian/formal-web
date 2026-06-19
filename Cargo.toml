@@ -16,6 +16,7 @@ media = []
 [dependencies]
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
+embedder = { path = "embedder" }
 wpt_runner = { path = "tests/wpt_runner" }
 verification = { path = "verification" }
 log = "0.4"
