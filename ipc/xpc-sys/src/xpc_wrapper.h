@@ -44,6 +44,15 @@ void fw_xpc_set_peer_handler(
     void* context
 );
 
+// Create a connection to an embedded XPC service (bypasses launchd).
+// Services inside XPCServices/ are found in the app bundle.
+xpc_connection_t fw_xpc_create_connection(
+    const char* service_name,
+    dispatch_queue_t queue,
+    xpc_peer_message_callback callback,
+    void* context
+);
+
 // Extract a peer connection from a listener event.
 xpc_connection_t fw_xpc_peer_from_event(xpc_object_t event);
 
@@ -52,6 +61,10 @@ void fw_xpc_resume(xpc_connection_t connection);
 
 // Cancel a connection.
 void fw_xpc_cancel(xpc_connection_t connection);
+
+// Run the XPC service event loop (calls xpc_main internally).
+// Never returns.
+void fw_xpc_run_service(void (*handler)(xpc_connection_t, void*), void* context);
 
 #ifdef __cplusplus
 }

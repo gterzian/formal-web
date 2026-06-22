@@ -1,4 +1,4 @@
-use ipc::{ExtensionEndpoint, ExtensionManifest};
+use ipc::{ExtensionEndpoint, ExtensionManifest, run_extension};
 use ipc_messages::content::{FetchRequest, FetchResponse};
 use ipc_messages::network::{Request, Response};
 use reqwest::Method;
@@ -101,7 +101,7 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
 
 pub fn run_net_process_v2(token: String) -> Result<(), String> {
     let manifest = NetExtensionManifest;
-    let server = ipc::run_extension::<NetExtensionManifest, Request, Response>(
+    let server = run_extension::<NetExtensionManifest, Request, Response>(
         &manifest,
         &token,
         "formal-web.net",

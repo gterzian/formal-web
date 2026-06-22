@@ -33,6 +33,7 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 
+use ipc::{ExtensionEndpoint, ExtensionManifest, run_extension};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
@@ -2106,10 +2107,10 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 
 struct ContentExtensionManifest;
 
-impl ipc::ExtensionManifest for ContentExtensionManifest {
-    fn endpoint(&self) -> ipc::ExtensionEndpoint {
-        ipc::ExtensionEndpoint::MultiInstance {
-            service_name: "formal-web.content",
+impl ExtensionManifest for ContentExtensionManifest {
+    fn endpoint(&self) -> ExtensionEndpoint {
+        ExtensionEndpoint::MultiInstance {
+            service_name: "com.formal-web.app.content",
         }
     }
 }
@@ -2117,10 +2118,14 @@ impl ipc::ExtensionManifest for ContentExtensionManifest {
 /// Run the content process using the new IPC abstraction layer.
 pub fn run_content_process(token: String) -> Result<(), String> {
     let manifest = ContentExtensionManifest;
-    let server = ipc::run_extension::<ContentExtensionManifest, Command, ContentEvent>(
+
+    // If the token starts with "xpc-ep:", it's an anonymous XPC endpoint.
+    // Use the multi-instance endpoint pattern instead of the listen-based
+    // extension (which triggers launchd's watchdog for the 42MB binary).
+    let server = run_extension::<ContentExtensionManifest, Command, ContentEvent>(
         &manifest,
         &token,
-        "formal-web.content",
+        "com.formal-web.app.content",
     )
     .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 

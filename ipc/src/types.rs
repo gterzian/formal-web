@@ -49,54 +49,46 @@ pub trait ExtensionManifest {
 
 // ── IpcSender ───────────────────────────────────────────────────────────────
 
-/// A sender for sending messages to an extension process.
+/// Transport-agnostic sender for messages to an extension process.
 ///
-/// On the ipc-channel backend, this wraps an `IpcChannelSender<T>`.
-/// On the native backend, it wraps an `XpcConnection` and serializes
-/// messages as postcard bytes in XPC dictionaries.
-#[cfg(feature = "ipc-channel-backend")]
+/// Wraps either an ipc-channel sender (for content in mixed mode, or all
+/// extensions in ipc-channel-backend mode) or an XPC connection (for net/media
+/// in mixed mode).
 #[derive(Clone)]
-pub struct IpcSender<T: Serialize + DeserializeOwned>(pub(crate) ipc_channel::ipc::IpcSender<T>);
+pub struct IpcSender<T: Serialize + DeserializeOwned> {
+    pub(crate) transport: IpcTransport<T>,
+}
 
-#[cfg(feature = "ipc-channel-backend")]
+#[derive(Clone)]
+pub(crate) enum IpcTransport<T: Serialize + DeserializeOwned> {
+    IpcChannel(ipc_channel::ipc::IpcSender<T>),
+    #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+    Xpc {
+        connection: xpc_sys::XpcConnection,
+        _marker: std::marker::PhantomData<T>,
+    },
+}
+
 impl<T: Serialize + DeserializeOwned> IpcSender<T> {
     pub fn send(&self, message: T) -> Result<(), IpcError> {
-        self.0
-            .send(message)
-            .map_err(|error| IpcError::Transport(error.to_string()))
+        match &self.transport {
+            IpcTransport::IpcChannel(sender) => sender
+                .send(message)
+                .map_err(|error| IpcError::Transport(error.to_string())),
+            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+            IpcTransport::Xpc { connection, .. } => {
+                let payload = postcard::to_allocvec(&message)
+                    .map_err(|error| IpcError::Serialize(error.to_string()))?;
+                let mut dict = xpc_sys::XpcDictionary::new();
+                dict.set_data("_p", &payload);
+                connection.send_message(&dict);
+                Ok(())
+            }
+        }
     }
 
     pub fn send_with_shmem(&self, message: T, _shmem: IpcSharedRegion) -> Result<(), IpcError> {
         self.send(message)
-    }
-}
-
-#[cfg(not(feature = "ipc-channel-backend"))]
-#[derive(Clone)]
-pub struct IpcSender<T: Serialize + DeserializeOwned> {
-    pub(crate) connection: xpc_sys::XpcConnection,
-    pub(crate) _marker: std::marker::PhantomData<T>,
-}
-
-#[cfg(not(feature = "ipc-channel-backend"))]
-impl<T: Serialize + DeserializeOwned> IpcSender<T> {
-    pub fn send(&self, message: T) -> Result<(), IpcError> {
-        let payload = postcard::to_allocvec(&message)
-            .map_err(|error| IpcError::Serialize(error.to_string()))?;
-        let mut dict = xpc_sys::XpcDictionary::new();
-        dict.set_data("_p", &payload);
-        self.connection.send_message(&dict);
-        Ok(())
-    }
-
-    pub fn send_with_shmem(&self, message: T, _shmem: IpcSharedRegion) -> Result<(), IpcError> {
-        let payload = postcard::to_allocvec(&message)
-            .map_err(|error| IpcError::Serialize(error.to_string()))?;
-        let mut dict = xpc_sys::XpcDictionary::new();
-        dict.set_data("_p", &payload);
-        // TODO: attach shmem when XPC shared memory is implemented
-        self.connection.send_message(&dict);
-        Ok(())
     }
 }
 
@@ -120,10 +112,8 @@ impl<T> IpcIncoming<T> {
 // ── IpcSharedRegion ─────────────────────────────────────────────────────────
 
 /// A shared memory region for bulk data transport.
-#[cfg(feature = "ipc-channel-backend")]
 pub struct IpcSharedRegion(ipc_channel::ipc::IpcSharedMemory);
 
-#[cfg(feature = "ipc-channel-backend")]
 impl IpcSharedRegion {
     pub fn allocate(size: usize) -> Result<Self, IpcError> {
         let shmem = ipc_channel::ipc::IpcSharedMemory::from_byte(0, size);
@@ -141,27 +131,6 @@ impl IpcSharedRegion {
 
     pub fn size(&self) -> usize {
         self.0.len()
-    }
-}
-
-#[cfg(not(feature = "ipc-channel-backend"))]
-pub struct IpcSharedRegion;
-
-#[cfg(not(feature = "ipc-channel-backend"))]
-impl IpcSharedRegion {
-    pub fn allocate(_size: usize) -> Result<Self, IpcError> {
-        Err(IpcError::Transport(
-            "native backend: shared memory not yet implemented".into(),
-        ))
-    }
-    pub fn as_slice(&self) -> &[u8] {
-        &[]
-    }
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut []
-    }
-    pub fn size(&self) -> usize {
-        0
     }
 }
 
@@ -186,9 +155,9 @@ pub struct ExtensionServer<
 > {
     pub tx: IpcSender<Out>,
     pub rx: Receiver<IpcIncoming<In>>,
-    /// On the native XPC backend, the listener connection must be kept alive
+    /// On the XPC backend, the listener connection must be kept alive
     /// for the lifetime of the extension server. The ipc-channel backend
-    /// does not use a listener.
-    #[cfg(not(feature = "ipc-channel-backend"))]
+    /// leaves this as None.
+    #[allow(dead_code)]
     pub(crate) _listener: Option<xpc_sys::XpcConnection>,
 }

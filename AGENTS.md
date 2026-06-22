@@ -234,6 +234,8 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Do not bulk-rename existing code with scripts — it creates merge conflicts, breaks history,
   and introduces subtle bugs when renames are inconsistent. Rename incrementally when
   modifying nearby code.
+- **No wildcard imports** — `use foo::bar::*` is prohibited. Every import must list the
+  specific types or traits used. This makes dependencies clear at every module boundary.
 
 # Spec Fidelity
 

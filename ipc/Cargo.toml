@@ -5,7 +5,12 @@ edition = "2024"
 publish = false
 
 [features]
-ipc-channel-backend = ["dep:ipc-channel"]
+# When enabled, uses ipc-channel for ALL extensions (net, media, content).
+# When disabled (default), uses a mixed backend:
+#   - Native XPC for net and media (launchd services)
+#   - ipc-channel for content (Unix domain sockets; XPC not usable —
+#     macOS AMFI rejects ad-hoc-signed embedded XPC services).
+ipc-channel-backend = []
 
 [dependencies]
 crossbeam-channel = "0.5"
@@ -13,7 +18,9 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 
-ipc-channel = { version = "0.21", optional = true }
+# Always available: content uses ipc-channel when not using ipc-channel-backend
+# (see Module docs in backend.rs).
+ipc-channel = "0.21"
 
 # xpc-sys is only needed on Apple targets without ipc-channel-backend.
 # Cargo cfg-gated dependencies don't support feature selectors in the

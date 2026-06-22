@@ -2,15 +2,25 @@ mod managed_pipeline;
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
-use ipc::{ExtensionEndpoint, ExtensionManifest};
+use ipc::ExtensionEndpoint;
 use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
 use managed_pipeline::ManagedPipeline;
 use std::collections::HashMap;
 use std::env;
 
+struct MediaExtensionManifest;
+
+impl ipc::ExtensionManifest for MediaExtensionManifest {
+    fn endpoint(&self) -> ExtensionEndpoint {
+        ExtensionEndpoint::Singleton {
+            service_name: "formal-web.media",
+        }
+    }
+}
+
 pub fn run_media_process(
-    cmd_rx: crossbeam_channel::Receiver<MediaCommand>,
-    event_tx: crossbeam_channel::Sender<MediaEvent>,
+    cmd_rx: crossbeam_channel::Receiver<ipc::IpcIncoming<MediaCommand>>,
+    event_tx: ipc::IpcSender<MediaEvent>,
 ) {
     // On macOS, ensure NSApplication is set up on the main thread before any
     // GStreamer GL elements are created. This avoids the "An NSApplication needs
@@ -34,8 +44,13 @@ pub fn run_media_process(
         crossbeam_channel::select! {
             recv(cmd_rx) -> cmd => {
                 match cmd {
-                    Ok(command) => {
-                        if handle_command(command, &mut pipelines, &event_tx, &bus_msg_sender) {
+                    Ok(incoming) => {
+                        if handle_command(
+                            incoming.payload,
+                            &mut pipelines,
+                            &event_tx,
+                            &bus_msg_sender,
+                        ) {
                             break; // Shutdown received
                         }
                     }
@@ -65,11 +80,10 @@ fn handle_bus_message(
     pipeline_id: &MediaPipelineId,
     msg: &gst::Message,
     pipelines: &HashMap<MediaPipelineId, ManagedPipeline>,
-    event_tx: &crossbeam_channel::Sender<MediaEvent>,
+    event_tx: &ipc::IpcSender<MediaEvent>,
 ) {
     match msg.view() {
         gst::MessageView::Eos(..) => {
-            // EOS does not destroy the pipeline; the user may want to replay or seek.
             let _ = event_tx.send(MediaEvent::Eos {
                 pipeline_id: *pipeline_id,
             });
@@ -98,7 +112,7 @@ fn handle_bus_message(
 fn handle_command(
     cmd: MediaCommand,
     pipelines: &mut HashMap<MediaPipelineId, ManagedPipeline>,
-    event_tx: &crossbeam_channel::Sender<MediaEvent>,
+    event_tx: &ipc::IpcSender<MediaEvent>,
     bus_msg_sender: &crossbeam_channel::Sender<(MediaPipelineId, gst::Message)>,
 ) -> bool {
     match cmd {
@@ -174,52 +188,16 @@ fn media_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-struct MediaExtensionManifest;
-
-impl ExtensionManifest for MediaExtensionManifest {
-    fn endpoint(&self) -> ExtensionEndpoint {
-        ExtensionEndpoint::Singleton {
-            service_name: "formal-web.media",
-        }
-    }
-}
-
-/// Run the media process using the new IPC abstraction layer.
-pub fn run_media_process_v2(token: String) -> Result<(), String> {
+pub fn run_media_process_from_args() -> Result<(), String> {
+    let token = media_token_from_args()?;
     let manifest = MediaExtensionManifest;
     let server = ipc::run_extension::<MediaExtensionManifest, MediaCommand, MediaEvent>(
         &manifest,
-        &token,
+        &token.unwrap_or_default(),
         "formal-web.media",
     )
     .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
-    // Bridge the IPC receiver to a crossbeam channel for the event loop.
-    let (crossbeam_cmd_tx, crossbeam_cmd_rx) = crossbeam_channel::unbounded::<MediaCommand>();
-    std::thread::spawn(move || {
-        while let Ok(incoming) = server.rx.recv() {
-            if crossbeam_cmd_tx.send(incoming.payload).is_err() {
-                break;
-            }
-        }
-    });
-
-    // Create a crossbeam channel for events, bridged to the IPC sender.
-    let (crossbeam_evt_tx, crossbeam_evt_rx) = crossbeam_channel::unbounded::<MediaEvent>();
-    let ipc_tx = server.tx;
-    std::thread::spawn(move || {
-        while let Ok(event) = crossbeam_evt_rx.recv() {
-            if ipc_tx.send(event).is_err() {
-                break;
-            }
-        }
-    });
-
-    run_media_process(crossbeam_cmd_rx, crossbeam_evt_tx);
+    run_media_process(server.rx, server.tx);
     Ok(())
-}
-
-pub fn run_media_process_from_args() -> Result<(), String> {
-    let token = media_token_from_args()?;
-    run_media_process_v2(token.unwrap_or_default())
 }

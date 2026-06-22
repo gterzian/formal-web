@@ -79,7 +79,7 @@ impl ContentExtensionManifest {
 impl ExtensionManifest for ContentExtensionManifest {
     fn endpoint(&self) -> ExtensionEndpoint {
         ExtensionEndpoint::MultiInstance {
-            service_name: "formal-web.content",
+            service_name: "com.formal-web.app.content",
         }
     }
 

@@ -10,8 +10,10 @@ use ipc_channel::ipc::{
 use ipc_channel::router::ROUTER;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::IpcError;
-use crate::types::*;
+use crate::types::{
+    BootstrapToken, ExtensionClient, ExtensionManifest, ExtensionServer, IpcTransport,
+};
+use crate::{IpcError, IpcIncoming, IpcSender};
 
 // ── Bootstrap message ──────────────────────────────────────────────────────
 
@@ -50,7 +52,9 @@ where
         child_to_parent_rx,
     } = bootstrap;
 
-    let out_tx = IpcSender(parent_to_child_tx);
+    let out_tx = IpcSender {
+        transport: IpcTransport::IpcChannel(parent_to_child_tx),
+    };
 
     let (crossbeam_in_tx, crossbeam_in_rx) = unbounded();
     ROUTER.add_typed_route(
@@ -129,7 +133,10 @@ where
     });
 
     Ok(ExtensionServer {
-        tx: IpcSender(child_to_parent_tx),
+        tx: IpcSender {
+            transport: IpcTransport::IpcChannel(child_to_parent_tx),
+        },
         rx: crossbeam_in_rx,
+        _listener: None,
     })
 }

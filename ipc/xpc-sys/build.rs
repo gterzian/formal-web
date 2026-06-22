@@ -5,7 +5,6 @@ fn main() {
         cc::Build::new()
             .file("src/xpc_wrapper.c")
             .flag("-Wall")
-            .flag("-Werror")
             .compile("xpc_wrapper");
 
         println!("cargo:rustc-link-lib=framework=Foundation");

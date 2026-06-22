@@ -4,26 +4,19 @@
 <dict>
     <key>Label</key>
     <string>formal-web.content</string>
-
     <key>MachServices</key>
     <dict>
         <key>formal-web.content</key>
         <true/>
     </dict>
-
     <key>ProgramArguments</key>
     <array>
         <string>__TARGET_DIR__/formal-web-content</string>
-        <string>--content-token</string>
-        <string>xpc</string>
     </array>
-
     <key>XPCService</key>
     <dict>
         <key>ServiceType</key>
         <string>MultipleInstances</string>
-        <key>RunLoopType</key>
-        <string>NSRunLoop</string>
     </dict>
 </dict>
 </plist>
