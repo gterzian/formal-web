@@ -1,7 +1,7 @@
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use ipc_channel::ipc::{IpcSender, IpcSharedMemory};
+use ipc_channel::ipc::IpcSender;
 use ipc_messages::media::{MediaEvent, MediaPipelineId, VideoFrame};
 
 pub(crate) struct ManagedPipeline {
@@ -90,7 +90,7 @@ impl ManagedPipeline {
                         pipeline_id: id,
                         width: width as u32,
                         height: height as u32,
-                        data: IpcSharedMemory::from_bytes(map.as_slice()),
+                        data: map.as_slice().to_vec(),
                     };
 
                     let _ = event_sender.send(MediaEvent::Frame(frame));

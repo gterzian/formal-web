@@ -5,15 +5,19 @@ edition = "2024"
 publish = false
 autobins = false
 
+[features]
+extension-bin = []
+
 [lib]
 path = "src/main.rs"
 
 [[bin]]
 name = "formal-web-net"
 path = "src/bin/net_process.rs"
+required-features = ["extension-bin"]
 
 [dependencies]
-ipc-channel = "0.21"
+ipc = { path = "../crates/ipc" }
 ipc_messages = { path = "../ipc_messages" }
 mime_guess = "2"
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }

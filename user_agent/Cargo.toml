@@ -11,8 +11,8 @@ media = []
 [dependencies]
 blitz-traits = { workspace = true }
 crossbeam-channel = "0.5"
-ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
+ipc = { path = "../crates/ipc" }
 serde_json = "1"
 psl = "2"
 url = "2"

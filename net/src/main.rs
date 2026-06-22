@@ -1,6 +1,6 @@
-use ipc_channel::ipc::{self, IpcSender};
+use ipc::{ExtensionEndpoint, ExtensionManifest};
 use ipc_messages::content::{FetchRequest, FetchResponse};
-use ipc_messages::network::{Bootstrap, Request, Response};
+use ipc_messages::network::{Request, Response};
 use reqwest::Method;
 use reqwest::blocking::Client;
 use reqwest::header::CONTENT_TYPE;
@@ -9,6 +9,16 @@ use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use url::Url;
 use verification::TraceSender;
+
+struct NetExtensionManifest;
+
+impl ExtensionManifest for NetExtensionManifest {
+    fn endpoint(&self) -> ExtensionEndpoint {
+        ExtensionEndpoint::Singleton {
+            service_name: "formal-web.net",
+        }
+    }
+}
 
 fn net_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
@@ -89,18 +99,14 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
     })
 }
 
-pub fn run_net_process(token: String) -> Result<(), String> {
-    let (request_sender, request_receiver) =
-        ipc::channel::<Request>().map_err(|error| error.to_string())?;
-    let (response_sender, response_receiver) =
-        ipc::channel::<Response>().map_err(|error| error.to_string())?;
-    let bootstrap = IpcSender::<Bootstrap>::connect(token).map_err(|error| error.to_string())?;
-    bootstrap
-        .send(Bootstrap {
-            request_sender,
-            response_receiver,
-        })
-        .map_err(|error| error.to_string())?;
+pub fn run_net_process_v2(token: String) -> Result<(), String> {
+    let manifest = NetExtensionManifest;
+    let server = ipc::run_extension::<NetExtensionManifest, Request, Response>(
+        &manifest,
+        &token,
+        "formal-web.net",
+    )
+    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
     let mut _trace_sender: Option<TraceSender> = None;
 
@@ -109,22 +115,33 @@ pub fn run_net_process(token: String) -> Result<(), String> {
         .build()
         .map_err(|error| format!("failed to build reqwest client: {error}"))?;
 
+    // server.tx sends Response to parent (server's Out = parent's In)
+    // server.rx receives Request from parent (server's In = parent's Out)
+    let response_sender = server.tx;
+    let request_receiver = server.rx;
+
     loop {
         match request_receiver.recv() {
-            Ok(Request::SetTraceSender(trace_sender)) => {
-                _trace_sender = trace_sender;
+            Ok(incoming) => {
+                let request = incoming.payload;
+                match request {
+                    Request::SetTraceSender(trace_sender) => {
+                        _trace_sender = trace_sender;
+                    }
+                    Request::Fetch {
+                        request_id,
+                        request,
+                    } => {
+                        let result = fetch_request(&client, &request);
+                        if let Err(error) = response_sender.send(Response { request_id, result }) {
+                            log::error!("failed to send fetch response: {error}");
+                            break;
+                        }
+                    }
+                    Request::Shutdown => break,
+                }
             }
-            Ok(Request::Fetch {
-                request_id,
-                request,
-            }) => {
-                let result = fetch_request(&client, &request);
-                response_sender
-                    .send(Response { request_id, result })
-                    .map_err(|error| format!("failed to send fetch response: {error}"))?;
-            }
-            Ok(Request::Shutdown) => break,
-            Err(_error) => break,
+            Err(_) => break,
         }
     }
 
@@ -132,7 +149,8 @@ pub fn run_net_process(token: String) -> Result<(), String> {
 }
 
 pub fn run_net_process_from_args() -> Result<(), String> {
-    let token =
-        net_token_from_args()?.ok_or_else(|| String::from("missing --net-token argument"))?;
-    run_net_process(token)
+    let token = net_token_from_args()?;
+    // If a token was provided (ipc-channel mode), use it.
+    // Otherwise, use the native XPC backend (process launched by launchd).
+    run_net_process_v2(token.unwrap_or_default())
 }

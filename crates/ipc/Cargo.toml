@@ -1,0 +1,25 @@
+[package]
+name = "ipc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+ipc-channel-backend = ["dep:ipc-channel"]
+
+[dependencies]
+crossbeam-channel = "0.5"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+
+ipc-channel = { version = "0.21", optional = true }
+
+# xpc-sys is only needed on Apple targets without ipc-channel-backend.
+# Cargo cfg-gated dependencies don't support feature selectors in the
+# target table, so we add it unconditionally for now. The crate is a
+# no-op stub on non-Apple targets.
+xpc-sys = { path = "../xpc-sys" }
+
+[lib]
+path = "src/lib.rs"

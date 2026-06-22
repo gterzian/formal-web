@@ -8,6 +8,7 @@ autobins = false
 [features]
 default = ["media"]
 media = []
+extension-bin = []
 
 [lib]
 path = "src/main.rs"
@@ -15,8 +16,10 @@ path = "src/main.rs"
 [[bin]]
 name = "formal-web-content"
 path = "src/bin/content_process.rs"
+required-features = ["extension-bin"]
 
 [dependencies]
+arboard = { version = "3.6.1", default-features = false }
 anyrender = { version = "0.10", features = ["serde"] }
 boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", default-features = false }
 boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"] }
@@ -27,7 +30,7 @@ cssparser = "0.37"
 ipc_messages = { path = "../ipc_messages" }
 data-url = "0.3"
 html5ever = "0.39.0"
-ipc-channel = "0.21"
+ipc = { path = "../crates/ipc" }
 keyboard-types = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,5 +1,5 @@
 use crate::content::EmbedLayout;
-use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -67,8 +67,10 @@ pub struct VideoFrame {
     pub pipeline_id: MediaPipelineId,
     pub width: u32,
     pub height: u32,
-    /// RGBA8, width * height * 4 bytes.
-    pub data: IpcSharedMemory,
+    /// RGBA8 pixel data, width * height * 4 bytes.
+    /// Carried as a byte buffer for cross-backend compatibility.
+    /// Backends can transfer this as shared memory via `send_with_shmem`.
+    pub data: Vec<u8>,
 }
 
 /// Media process → user agent events.
@@ -101,9 +103,4 @@ pub struct VideoEmbedData {
     pub clip_radius: f64,
 }
 
-/// Bootstrap message from the user agent to the media process.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MediaBootstrap {
-    pub command_sender: IpcSender<MediaCommand>,
-    pub event_receiver: IpcReceiver<MediaEvent>,
-}
+

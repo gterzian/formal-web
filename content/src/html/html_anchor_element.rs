@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
 use boa_gc::{Finalize, Trace};
-use ipc_channel::ipc::IpcSender;
+use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
 use url::Url;
 

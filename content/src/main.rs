@@ -32,15 +32,15 @@ use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
-use ipc_channel::ipc::{self, IpcSender};
-use ipc_channel::router::RouterProxy;
+
+
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
     SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
-    BeforeUnloadCheckId, Bootstrap, ClipboardReadRequest, ClipboardWriteRequest,
+    BeforeUnloadCheckId, ClipboardWriteRequested,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
     ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
     Event as ContentEvent, EventLoopId, FetchRequest as ContentFetchRequest,
@@ -127,43 +127,72 @@ pub(crate) fn new_document_fetch_id() -> DocumentFetchId {
     DocumentFetchId::new()
 }
 
+/// Shared clipboard cache for paste-without-IPC.
+/// `get_clipboard_text` reads from this cache instead of doing a blocking
+/// IPC round-trip. The embedder prefetches clipboard text before dispatching
+/// paste events and writes it here via `set_clipboard_cache`.
+type ClipboardCache = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+
+fn new_clipboard_cache() -> ClipboardCache {
+    std::sync::Arc::new(std::sync::Mutex::new(None))
+}
+
 struct ContentShellProvider {
-    event_sender: IpcSender<ContentEvent>,
+    event_sender: ipc::IpcSender<ContentEvent>,
+    clipboard_cache: ClipboardCache,
 }
 
 impl ContentShellProvider {
-    fn new(event_sender: IpcSender<ContentEvent>) -> Self {
-        Self { event_sender }
+    fn new(event_sender: ipc::IpcSender<ContentEvent>, clipboard_cache: ClipboardCache) -> Self {
+        Self { event_sender, clipboard_cache }
     }
 }
 
 impl ShellProvider for ContentShellProvider {
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
-        let (reply_sender, reply_receiver) =
-            ipc::channel::<Result<String, String>>().map_err(|_| ClipboardError)?;
-        self.event_sender
-            .send(ContentEvent::ClipboardReadRequested(ClipboardReadRequest {
-                reply_sender,
-            }))
-            .map_err(|_| ClipboardError)?;
-        reply_receiver
-            .recv()
-            .map_err(|_| ClipboardError)?
-            .map_err(|_| ClipboardError)
+        // First try the prefetched cache (populated by the embedder before
+        // dispatching paste events via DispatchEventEntry.prefetched_clipboard_text).
+        if let Ok(mut cache) = self.clipboard_cache.lock() {
+            if let Some(text) = cache.take() {
+                return Ok(text);
+            }
+        }
+        // Fall back to reading the system clipboard directly.
+        // This avoids a blocking IPC round-trip and works because the
+        // clipboard is a shared system resource accessible from any process.
+        clipboard_direct_read()
     }
 
     fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
-        let (reply_sender, reply_receiver) =
-            ipc::channel::<Result<(), String>>().map_err(|_| ClipboardError)?;
+        // Fire-and-forget: send the write request, no reply expected.
         self.event_sender
             .send(ContentEvent::ClipboardWriteRequested(
-                ClipboardWriteRequest { text, reply_sender },
+                ClipboardWriteRequested { text },
             ))
-            .map_err(|_| ClipboardError)?;
-        reply_receiver
-            .recv()
-            .map_err(|_| ClipboardError)?
             .map_err(|_| ClipboardError)
+    }
+}
+
+/// Read the system clipboard directly from this process.
+/// Used as a fallback when the prefetched clipboard cache is empty.
+/// This is a best-effort read; if the clipboard cannot be accessed,
+/// an empty string is returned.
+fn clipboard_direct_read() -> Result<String, ClipboardError> {
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    {
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                match clipboard.get_text() {
+                    Ok(text) => Ok(text),
+                    Err(_) => Ok(String::new()),
+                }
+            }
+            Err(_) => Ok(String::new()),
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        Ok(String::new())
     }
 }
 
@@ -274,7 +303,7 @@ fn maybe_log_input_layout_debug(document_id: DocumentId, document: &BaseDocument
 
 #[derive(Clone)]
 struct ContentNetProvider {
-    event_sender: IpcSender<ContentEvent>,
+    event_sender: ipc::IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     content_document_id: DocumentId,
 }
@@ -344,7 +373,7 @@ struct DocumentViewportState {
 }
 
 pub(crate) struct ContentProcess {
-    event_sender: IpcSender<ContentEvent>,
+    event_sender: ipc::IpcSender<ContentEvent>,
     event_loop_id: EventLoopId,
     local_state: LocalContentStateRef,
     default_viewport: Option<ViewportSnapshot>,
@@ -354,6 +383,10 @@ pub(crate) struct ContentProcess {
     font_namespace: u64,
     font_sender: FontTransportSender,
     navigation_tracer: TLATracer,
+    /// Shared clipboard cache. The embedder writes prefetched clipboard text
+    /// here before dispatching paste events; `ShellProvider::get_clipboard_text`
+    /// reads from this cache instead of doing a blocking IPC round-trip.
+    clipboard_cache: ClipboardCache,
     /// Shared registry for traversable documents created during JS execution
     /// (window.open).  ContentProcess holds one Rc, and before running JS it
     /// sets a clone on the source document's GlobalScope so that
@@ -380,10 +413,11 @@ pub(crate) struct ContentProcess {
 
 impl ContentProcess {
     fn new(
-        event_sender: IpcSender<ContentEvent>,
+        event_sender: ipc::IpcSender<ContentEvent>,
         wasm_signal_sender: crossbeam_channel::Sender<()>,
         event_loop_id: EventLoopId,
     ) -> Self {
+        let clipboard_cache = new_clipboard_cache();
         Self {
             event_sender,
             event_loop_id,
@@ -397,11 +431,20 @@ impl ContentProcess {
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
             navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
+            clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
             wasm_worker: WasmWorker::new(wasmtime::Engine::default(), wasm_signal_sender),
             pending_wasm_requests: HashMap::new(),
             pending_wasm_modules: HashMap::new(),
+        }
+    }
+
+    /// Set the clipboard cache from a prefetched clipboard text.
+    /// Called before dispatching paste events.
+    fn set_clipboard_cache(&self, text: Option<String>) {
+        if let Ok(mut cache) = self.clipboard_cache.lock() {
+            *cache = text;
         }
     }
 
@@ -446,6 +489,7 @@ impl ContentProcess {
             })),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
+                self.clipboard_cache.clone(),
             ))),
             html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
             ..DocumentConfig::default()
@@ -1142,7 +1186,12 @@ impl ContentProcess {
     }
 
     fn dispatch_events(&mut self, events: Vec<DispatchEventEntry>) -> Result<(), String> {
-        for DispatchEventEntry { document_id, event } in events {
+        for DispatchEventEntry { document_id, event, prefetched_clipboard_text } in events {
+            // Store prefetched clipboard text before dispatching the event
+            // so that `ShellProvider::get_clipboard_text` can return it
+            // without a blocking IPC round-trip.
+            self.set_clipboard_cache(prefetched_clipboard_text);
+
             let Some(document) = self.documents.get_mut(&document_id) else {
                 continue;
             };
@@ -1152,7 +1201,7 @@ impl ContentProcess {
                 maybe_log_input_layout_debug(document_id, &document_guard);
             }
 
-            // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` hands the serialized UI event batch to the content process.
+            // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` writes the serialized UI event batch to the content process.
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
@@ -2050,37 +2099,45 @@ fn content_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
+struct ContentExtensionManifest;
+
+impl ipc::ExtensionManifest for ContentExtensionManifest {
+    fn endpoint(&self) -> ipc::ExtensionEndpoint {
+        ipc::ExtensionEndpoint::MultiInstance {
+            service_name: "formal-web.content",
+        }
+    }
+}
+
+/// Run the content process using the new IPC abstraction layer.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    let (command_sender, command_receiver) =
-        ipc::channel::<Command>().map_err(|error| error.to_string())?;
-    let (event_sender, event_receiver) =
-        ipc::channel::<ContentEvent>().map_err(|error| error.to_string())?;
-    let bootstrap = IpcSender::<Bootstrap>::connect(token).map_err(|error| error.to_string())?;
+    let manifest = ContentExtensionManifest;
+    let server = ipc::run_extension::<ContentExtensionManifest, Command, ContentEvent>(
+        &manifest,
+        &token,
+        "formal-web.content",
+    )
+    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
+
+    // server.tx sends ContentEvent to parent (server's Out = parent's In)
+    // server.rx receives Command from parent (server's In = parent's Out)
+    let event_sender = server.tx;
+    let cmd_rx = server.rx;
+
     // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
-    // Use a placeholder until the real id arrives.
     let placeholder_id = EventLoopId::from_u128(0);
-    bootstrap
-        .send(Bootstrap {
-            command_sender,
-            event_receiver,
-            event_loop_id: placeholder_id,
-        })
-        .map_err(|error| error.to_string())?;
 
     // Set up a crossbeam channel for the wasm worker to signal results.
     let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
 
     let mut process = ContentProcess::new(event_sender, wasm_signal_sender, placeholder_id);
 
-    // Route the command IPC through the router to get a crossbeam receiver.
-    let router = RouterProxy::new();
-    let cmd_rx = router.route_ipc_receiver_to_new_crossbeam_receiver(command_receiver);
-
     loop {
         crossbeam_channel::select! {
             recv(cmd_rx) -> cmd => {
                 match cmd {
-                    Ok(command) => {
+                    Ok(incoming) => {
+                        let command = incoming.payload;
                         let notify = matches!(
                             &command,
                             CreateEmptyDocument { .. }
@@ -2118,15 +2175,13 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         }
     }
 
-    // Final drain on shutdown — the worker may have results queued that
-    // were never processed because the event loop exited.
     process.drain_wasm_results();
-
     Ok(())
 }
 
 pub fn run_content_process_from_args() -> Result<(), String> {
-    let token = content_token_from_args()?
-        .ok_or_else(|| String::from("missing --content-token argument"))?;
-    run_content_process(token)
+    let token = content_token_from_args()?;
+    // If a token was provided (ipc-channel mode), use it.
+    // Otherwise, use the native XPC backend (process launched by launchd).
+    run_content_process(token.unwrap_or_default())
 }

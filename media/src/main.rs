@@ -2,9 +2,10 @@ mod managed_pipeline;
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
-use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
-use ipc_channel::router::RouterProxy;
-use ipc_messages::media::{MediaBootstrap, MediaCommand, MediaEvent, MediaPipelineId};
+use ::ipc_channel::ipc::{self as ipc_channel, IpcReceiver, IpcSender};
+use ipc::{ExtensionEndpoint, ExtensionManifest};
+use ::ipc_channel::router::RouterProxy;
+use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
 use managed_pipeline::ManagedPipeline;
 use std::collections::HashMap;
 use std::env;
@@ -184,25 +185,58 @@ fn media_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-pub fn run_media_process_from_args() -> Result<(), String> {
-    let token =
-        media_token_from_args()?.ok_or_else(|| String::from("missing --media-token argument"))?;
-    run_media_process_with_token(token)
+struct MediaExtensionManifest;
+
+impl ExtensionManifest for MediaExtensionManifest {
+    fn endpoint(&self) -> ExtensionEndpoint {
+        ExtensionEndpoint::Singleton {
+            service_name: "formal-web.media",
+        }
+    }
 }
 
-pub fn run_media_process_with_token(token: String) -> Result<(), String> {
-    let (command_sender, command_receiver) =
-        ipc::channel::<MediaCommand>().map_err(|error| error.to_string())?;
-    let (event_sender, event_receiver) =
-        ipc::channel::<MediaEvent>().map_err(|error| error.to_string())?;
-    let bootstrap = IpcSender::<MediaBootstrap>::connect(token)
-        .map_err(|error| format!("failed to connect media bootstrap: {error}"))?;
-    bootstrap
-        .send(MediaBootstrap {
-            command_sender,
-            event_receiver,
-        })
-        .map_err(|error| format!("failed to send media bootstrap: {error}"))?;
-    run_media_process(command_receiver, event_sender);
+/// Run the media process using the new IPC abstraction layer.
+pub fn run_media_process_v2(token: String) -> Result<(), String> {
+    let manifest = MediaExtensionManifest;
+    let server = ipc::run_extension::<MediaExtensionManifest, MediaCommand, MediaEvent>(
+        &manifest,
+        &token,
+        "formal-web.media",
+    )
+    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
+
+    // Create legacy channels to bridge with the existing run_media_process function.
+    let (legacy_cmd_tx, legacy_cmd_rx) = ipc_channel::channel::<MediaCommand>()
+        .map_err(|error| format!("failed to create legacy command channel: {error}"))?;
+    let (legacy_evt_tx, legacy_evt_rx) = ipc_channel::channel::<MediaEvent>()
+        .map_err(|error| format!("failed to create legacy event channel: {error}"))?;
+
+    // Bridge new command receiver -> legacy command sender
+    let cmd_bridge = legacy_cmd_tx;
+    std::thread::spawn(move || {
+        while let Ok(incoming) = server.rx.recv() {
+            if cmd_bridge.send(incoming.payload).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Bridge legacy event receiver -> new event sender
+    std::thread::spawn(move || {
+        while let Ok(event) = legacy_evt_rx.recv() {
+            if server.tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+
+    run_media_process(legacy_cmd_rx, legacy_evt_tx);
     Ok(())
+}
+
+pub fn run_media_process_from_args() -> Result<(), String> {
+    let token = media_token_from_args()?;
+    // If a token was provided (ipc-channel mode), use it.
+    // Otherwise, use the native XPC backend (process launched by launchd).
+    run_media_process_v2(token.unwrap_or_default())
 }

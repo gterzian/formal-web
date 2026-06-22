@@ -5,7 +5,7 @@ use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandl
 use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, DomEvent, DomEventData, EventState, UiEvent};
 use boa_engine::{Context, JsResult, JsValue, object::JsObject};
-use ipc_channel::ipc::IpcSender;
+use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};

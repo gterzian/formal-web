@@ -3,7 +3,7 @@ use anyrender::{
     Scene,
     recording::{GlyphRunCommand, RenderCommand},
 };
-use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
+
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -73,15 +73,6 @@ pub struct TraversableViewport {
     pub viewport: ViewportSnapshot,
     pub offset_x: f32,
     pub offset_y: f32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Bootstrap {
-    pub command_sender: IpcSender<Command>,
-    pub event_receiver: IpcReceiver<Event>,
-    /// The `EventLoopId` assigned by the user agent for this content process.
-    /// Used by `window.open` to include the correct event loop id in new traversable info.
-    pub event_loop_id: EventLoopId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,21 +223,24 @@ pub struct ElementClickResult {
     pub error: Option<String>,
 }
 
+/// Fire-and-forget clipboard write request.
+/// No reply expected — the embedder writes to the system clipboard
+/// and does not need to acknowledge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClipboardReadRequest {
-    pub reply_sender: IpcSender<Result<String, String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClipboardWriteRequest {
+pub struct ClipboardWriteRequested {
     pub text: String,
-    pub reply_sender: IpcSender<Result<(), String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchEventEntry {
     pub document_id: DocumentId,
     pub event: String,
+    /// Prefetched clipboard text attached by the embedder when it detects
+    /// a paste shortcut before forwarding the event to content.
+    /// Content stores this in a local cache so `ShellProvider::get_clipboard_text`
+    /// can return it without a blocking IPC round-trip.
+    #[serde(default)]
+    pub prefetched_clipboard_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,14 +355,18 @@ impl FontIdentifier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisteredFont {
     pub id: FontIdentifier,
-    data: IpcSharedMemory,
+    /// Font binary data, copied into this buffer for transport.
+    /// On the native XPC backend, this is serialized as postcard bytes.
+    /// On the ipc-channel backend, `send_with_shmem` can carry it as
+    /// shared memory instead.
+    data: Vec<u8>,
 }
 
 impl RegisteredFont {
     fn from_font_data(id: FontIdentifier, font_data: &FontData) -> Self {
         Self {
             id,
-            data: IpcSharedMemory::from_bytes(font_data.data.data()),
+            data: font_data.data.data().to_vec(),
         }
     }
 
@@ -377,7 +375,7 @@ impl RegisteredFont {
     }
 
     fn into_font_data(self) -> FontData {
-        FontData::new(self.data.take().unwrap_or_default().into(), self.id.index)
+        FontData::new(self.data.into(), self.id.index)
     }
 }
 
@@ -625,22 +623,12 @@ impl RecordedScene {
     }
 }
 
-fn serialize_scene_to_shared_memory(scene: &RecordedScene) -> Result<IpcSharedMemory, String> {
-    let byte_len = postcard::experimental::serialized_size(scene)
-        .map_err(|error| format!("failed to measure paint scene: {error}"))?;
-    let mut bytes = IpcSharedMemory::from_byte(0, byte_len);
-    {
-        let buffer = unsafe { bytes.deref_mut() };
-        let written = postcard::to_slice(scene, buffer)
-            .map_err(|error| format!("failed to serialize paint scene: {error}"))?;
-        debug_assert_eq!(written.len(), byte_len);
-    }
-    Ok(bytes)
+fn serialize_scene_to_vec(scene: &RecordedScene) -> Result<Vec<u8>, String> {
+    postcard::to_allocvec(scene)
+        .map_err(|error| format!("failed to serialize paint scene: {error}"))
 }
 
-fn deserialize_scene_from_shared_memory(
-    scene_bytes: &IpcSharedMemory,
-) -> Result<RecordedScene, String> {
+fn deserialize_scene_from_slice(scene_bytes: &[u8]) -> Result<RecordedScene, String> {
     postcard::from_bytes(scene_bytes)
         .map_err(|error| format!("failed to deserialize paint scene: {error}"))
 }
@@ -653,7 +641,9 @@ pub struct PaintFrame {
     pub viewport_height: u32,
     pub composition: FrameCompositionMetadata,
     font_registrations: Vec<RegisteredFont>,
-    scene_bytes: IpcSharedMemory,
+    /// Serialized scene data. Carried as bytes for cross-backend compatibility.
+    /// Backends can transfer this as shared memory via `send_with_shmem`.
+    scene_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -683,7 +673,7 @@ impl PaintFrame {
             viewport_height,
             composition,
             font_registrations: registered_fonts,
-            scene_bytes: serialize_scene_to_shared_memory(&scene)?,
+            scene_bytes: serialize_scene_to_vec(&scene)?,
         })
     }
 
@@ -709,7 +699,7 @@ impl PaintFrame {
             ..
         } = self;
         font_receiver.register_fonts(font_registrations);
-        deserialize_scene_from_shared_memory(&scene_bytes)
+        deserialize_scene_from_slice(&scene_bytes)
     }
 }
 
@@ -812,8 +802,9 @@ pub enum Event {
     IframeTraversableRemoved(IframeTraversableRemoval),
     ScriptEvaluated(ScriptEvaluationResult),
     ElementClicked(ElementClickResult),
-    ClipboardReadRequested(ClipboardReadRequest),
-    ClipboardWriteRequested(ClipboardWriteRequest),
+    /// A request from content to write text to the system clipboard.
+    /// This is fire-and-forget — no reply is sent.
+    ClipboardWriteRequested(ClipboardWriteRequested),
     CommandCompleted,
     MediaLoadRequested(MediaLoadRequest),
     PaintReady(PaintFrame),

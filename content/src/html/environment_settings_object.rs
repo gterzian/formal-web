@@ -5,7 +5,7 @@ use blitz_dom::BaseDocument;
 use boa_engine::{
     Context, JsError, JsResult, JsValue, Source, js_string, object::JsObject, property::Attribute,
 };
-use ipc_channel::ipc::IpcSender;
+use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
