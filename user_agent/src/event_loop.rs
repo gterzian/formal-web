@@ -387,7 +387,7 @@ impl EventLoopWorker {
     fn handle_content_event_message(
         &mut self,
         event: ContentEvent,
-        shmem_data: &HashMap<usize, Vec<u8>>,
+        incoming_shmem: &HashMap<usize, ipc::IpcSharedRegion>,
     ) -> Result<bool, String> {
         match event {
             ContentEvent::DocumentFetchRequested(request) => {
@@ -547,17 +547,11 @@ impl EventLoopWorker {
                     frame.viewport_width,
                     frame.viewport_height,
                 ));
-                let scene_bytes = shmem_data
-                    .get(&frame.scene_shmem_key)
-                    .cloned()
-                    .unwrap_or_default();
-                let font_data: HashMap<usize, Vec<u8>> = shmem_data.clone();
                 if let Err(error) = self
                     .webview_provider_sender
                     .send(WebviewProviderMessage::PaintFrame {
                         frame,
-                        scene_bytes,
-                        font_data,
+                        shmem_regions: incoming_shmem.clone(),
                     })
                 {
                     error!("failed to enqueue webview-provider paint frame: {error}");
@@ -674,15 +668,9 @@ impl EventLoopWorker {
                         }
                     };
 
-                    // Reconstruct the IPC shared memory map into a Vec<u8> map
-                    // for the content event handler (it doesn't depend on IpcSharedRegion).
-                    let shmem_vec: HashMap<usize, Vec<u8>> = incoming
-                        .shmem_regions
-                        .into_iter()
-                        .map(|(key, region)| (key, region.as_slice().to_vec()))
-                        .collect();
-
-                    match self.handle_content_event_message(incoming.payload, &shmem_vec) {
+                    match self
+                        .handle_content_event_message(incoming.payload, &incoming.shmem_regions)
+                    {
                         Ok(true) => {}
                         Ok(false) => {
                             if let Some(reply) = self.stop_reply.take() {

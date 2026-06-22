@@ -12,6 +12,7 @@ media = ["user_agent/media"]
 anyrender = { version = "0.10", features = ["serde"] }
 blitz-traits = { workspace = true }
 crossbeam-channel = "0.5"
+ipc = { path = "../ipc" }
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 keyboard-types = "0.7"

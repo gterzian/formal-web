@@ -2744,6 +2744,7 @@ name = "ipc_messages"
 version = "0.1.0"
 dependencies = [
  "anyrender",
+ "ipc",
  "ipc-channel",
  "peniko",
  "postcard",
@@ -6565,6 +6566,7 @@ dependencies = [
  "anyrender",
  "blitz-traits",
  "crossbeam-channel",
+ "ipc",
  "ipc-channel",
  "ipc_messages",
  "keyboard-types",

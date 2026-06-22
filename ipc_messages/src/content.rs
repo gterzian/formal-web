@@ -726,19 +726,32 @@ impl PaintFrame {
         }
     }
 
-    /// Consume the paint frame into a `RecordedScene`.  `scene_bytes` and
-    /// `font_data` must come from the IPC shared memory map, keyed by the
-    /// values stored in this frame.
+    /// Consume the paint frame into a `RecordedScene`.  The scene bytes and
+    /// font data are read from the IPC shmem regions map, keyed by the
+    /// values stored in this frame.  No copy is made beyond the final
+    /// deserialization.
     pub fn into_recorded_scene(
         self,
         font_receiver: &mut FontTransportReceiver,
-        scene_bytes: &[u8],
-        font_data: &HashMap<usize, Vec<u8>>,
+        shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
     ) -> Result<RecordedScene, String> {
         let PaintFrame {
             font_registrations, ..
         } = self;
-        font_receiver.register_fonts(font_registrations, font_data);
+
+        // Reconstruct font data from the shmem regions for the receiver.
+        let mut font_data: HashMap<usize, Vec<u8>> = HashMap::new();
+        for font in &font_registrations {
+            if let Some(region) = shmem_regions.get(&font.data_shmem_key) {
+                font_data.insert(font.data_shmem_key, region.as_slice().to_vec());
+            }
+        }
+        font_receiver.register_fonts(font_registrations, &font_data);
+
+        let scene_bytes = shmem_regions
+            .get(&self.scene_shmem_key)
+            .map(|r| r.as_slice())
+            .unwrap_or_default();
         deserialize_scene_from_slice(scene_bytes)
     }
 }
@@ -751,11 +764,11 @@ pub enum WebviewProviderMessage {
     /// `font_data`.
     PaintFrame {
         frame: PaintFrame,
-        /// Serialized scene bytes, reconstructed from the IPC shmem map.
-        scene_bytes: Vec<u8>,
-        /// Font binary data indexed by each font's `data_shmem_key`,
-        /// reconstructed from the IPC shmem map.
-        font_data: HashMap<usize, Vec<u8>>,
+        /// IPC shared memory regions. The caller passes this to
+        /// `PaintFrame::into_recorded_scene()`, which reads scene bytes
+        /// and font data from the regions keyed by `scene_shmem_key` and
+        /// each font's `data_shmem_key`.
+        shmem_regions: HashMap<usize, ipc::IpcSharedRegion>,
     },
     RegisterChildNavigableHost {
         child_webview_id: WebviewId,

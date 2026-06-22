@@ -150,9 +150,8 @@ impl WebviewProvider {
         match message {
             WebviewProviderMessage::PaintFrame {
                 frame,
-                scene_bytes,
-                font_data,
-            } => self.on_paint_frame(frame, &scene_bytes, &font_data),
+                shmem_regions,
+            } => self.on_paint_frame(frame, &shmem_regions),
             WebviewProviderMessage::RegisterChildNavigableHost {
                 child_webview_id,
                 parent_traversable_id,
@@ -343,8 +342,7 @@ impl WebviewProvider {
     pub fn on_paint_frame(
         &mut self,
         mut frame: PaintFrame,
-        scene_bytes: &[u8],
-        font_data: &HashMap<usize, Vec<u8>>,
+        shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
     ) -> Result<(), String> {
         let _source_webview_id = frame.traversable_id;
         let is_root_candidate = !self
@@ -371,7 +369,7 @@ impl WebviewProvider {
             );
         }
         let recorded_scene =
-            frame.into_recorded_scene(&mut self.font_receiver, scene_bytes, font_data)?;
+            frame.into_recorded_scene(&mut self.font_receiver, shmem_regions)?;
 
         let state = self.webviews.entry(traversable_id).or_default();
         state.compositor.store_frame(

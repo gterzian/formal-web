@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 anyrender = { version = "0.10", features = ["serde"] }
+ipc = { path = "../ipc" }
 ipc-channel = "0.21"
 peniko = "0.6.0"
 postcard = { version = "1", features = ["use-std"] }

@@ -154,6 +154,7 @@ impl<T> IpcIncoming<T> {
 // ── IpcSharedRegion ─────────────────────────────────────────────────────────
 
 /// A shared memory region for bulk data transport.
+#[derive(Clone, Debug, PartialEq)]
 pub struct IpcSharedRegion(ipc_channel::ipc::IpcSharedMemory);
 
 impl IpcSharedRegion {
