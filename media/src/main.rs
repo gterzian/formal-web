@@ -20,7 +20,7 @@ impl ipc::ExtensionManifest for MediaExtensionManifest {
 
 pub fn run_media_process(
     cmd_rx: crossbeam_channel::Receiver<ipc::IpcIncoming<MediaCommand>>,
-    event_tx: ipc::IpcSender<MediaEvent>,
+    event_tx: crossbeam_channel::Sender<MediaEvent>,
 ) {
     // On macOS, ensure NSApplication is set up on the main thread before any
     // GStreamer GL elements are created. This avoids the "An NSApplication needs
@@ -80,7 +80,7 @@ fn handle_bus_message(
     pipeline_id: &MediaPipelineId,
     msg: &gst::Message,
     pipelines: &HashMap<MediaPipelineId, ManagedPipeline>,
-    event_tx: &ipc::IpcSender<MediaEvent>,
+    event_tx: &crossbeam_channel::Sender<MediaEvent>,
 ) {
     match msg.view() {
         gst::MessageView::Eos(..) => {
@@ -112,7 +112,7 @@ fn handle_bus_message(
 fn handle_command(
     cmd: MediaCommand,
     pipelines: &mut HashMap<MediaPipelineId, ManagedPipeline>,
-    event_tx: &ipc::IpcSender<MediaEvent>,
+    event_tx: &crossbeam_channel::Sender<MediaEvent>,
     bus_msg_sender: &crossbeam_channel::Sender<(MediaPipelineId, gst::Message)>,
 ) -> bool {
     match cmd {
@@ -198,6 +198,18 @@ pub fn run_media_process_from_args() -> Result<(), String> {
     )
     .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
-    run_media_process(server.rx, server.tx);
+    // Bridge: GStreamer callbacks push to a crossbeam channel (non-blocking),
+    // a dedicated thread forwards to the IPC sender.
+    let ipc_event_tx = server.tx;
+    let (crossbeam_event_tx, crossbeam_event_rx) = crossbeam_channel::unbounded::<MediaEvent>();
+    std::thread::spawn(move || {
+        while let Ok(event) = crossbeam_event_rx.recv() {
+            if ipc_event_tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+
+    run_media_process(server.rx, crossbeam_event_tx);
     Ok(())
 }

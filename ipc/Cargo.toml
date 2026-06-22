@@ -5,8 +5,9 @@ edition = "2024"
 publish = false
 
 [features]
-# When enabled, uses ipc-channel for ALL extensions (net, media, content).
-# When disabled (default), uses a mixed backend:
+default = ["ipc-channel-backend"]
+# When enabled (default), uses ipc-channel for ALL extensions (net, media, content).
+# When disabled, uses a mixed backend:
 #   - Native XPC for net and media (launchd services)
 #   - ipc-channel for content (Unix domain sockets; XPC not usable —
 #     macOS AMFI rejects ad-hoc-signed embedded XPC services).

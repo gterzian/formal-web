@@ -7,7 +7,6 @@ autobins = false
 
 [features]
 default = []
-ipc-channel-backend = ["ipc/ipc-channel-backend"]
 
 [lib]
 path = "src/main.rs"

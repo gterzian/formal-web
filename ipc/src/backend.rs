@@ -2,10 +2,11 @@
 //!
 //! ## Backend selection
 //!
-//! When the `ipc-channel-backend` feature is enabled, all extensions use
-//! ipc-channel (Unix domain sockets + Mach ports). This works on all platforms.
+//! When the `ipc-channel-backend` feature is enabled (default), all extensions
+//! use ipc-channel (Unix domain sockets + Mach ports). This works on all
+//! platforms.
 //!
-//! When the feature is disabled (default), a mixed backend is used:
+//! When the feature is disabled, a mixed backend is used:
 //!
 //! | Extension | Endpoint      | Backend      | Transport          |
 //! |-----------|---------------|--------------|--------------------|
@@ -24,7 +25,7 @@
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::IpcError;
-use crate::types::{ExtensionClient, ExtensionEndpoint, ExtensionManifest, ExtensionServer};
+use crate::types::{ExtensionClient, ExtensionManifest, ExtensionServer};
 
 // Always compiled — used by content in mixed mode, and all extensions in
 // ipc-channel-backend mode.
@@ -33,6 +34,9 @@ mod ipc_channel;
 // Only on Apple when NOT using ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
 mod xpc;
+
+#[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+use crate::types::ExtensionEndpoint;
 
 // No backend available on non-Apple without ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), not(target_vendor = "apple")))]
