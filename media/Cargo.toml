@@ -6,7 +6,7 @@ publish = false
 autobins = false
 
 [features]
-default = ["ipc-channel-backend"]
+default = []
 ipc-channel-backend = ["ipc/ipc-channel-backend"]
 
 [lib]
