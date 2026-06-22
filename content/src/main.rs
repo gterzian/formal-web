@@ -33,7 +33,7 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 
-use ipc::{ExtensionEndpoint, ExtensionManifest, run_extension};
+use ipc::{ExtensionEndpoint, ExtensionManifest, IpcSharedRegion, run_extension};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
@@ -1384,8 +1384,10 @@ impl ContentProcess {
             paint_frame
         };
 
+        let scene_bytes = paint_frame.scene_bytes.clone();
+        let shmem = IpcSharedRegion::from_bytes(&scene_bytes);
         event_sender
-            .send(ContentEvent::PaintReady(paint_frame))
+            .send_with_shmem(ContentEvent::PaintReady(paint_frame), shmem)
             .map_err(|error| format!("failed to send paint frame: {error}"))
     }
 

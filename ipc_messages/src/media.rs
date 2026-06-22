@@ -69,7 +69,8 @@ pub struct VideoFrame {
     pub height: u32,
     /// RGBA8 pixel data, width * height * 4 bytes.
     /// Carried as a byte buffer for cross-backend compatibility.
-    /// Backends can transfer this as shared memory via `send_with_shmem`.
+    /// On the ipc-channel backend this is sent as shared memory via the
+    /// `send_with_shmem` API; on XPC this is serialized as postcard bytes.
     pub data: Vec<u8>,
 }
 

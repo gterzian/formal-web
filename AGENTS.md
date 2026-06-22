@@ -165,6 +165,40 @@ anyrender_svg, wgpu_context) are sourced from crates.io at the versions
 required by the blitz workspace (0.10, 0.10.1, 0.12.1, 0.11.0, 0.6.0
 respectively).
 
+### IPC wire format consistency
+
+The helper processes (`formal-web-content`, `formal-web-net`,
+`formal-web-media`) are separate workspace member binaries, **not** in
+the root binary's dependency tree.  `cargo run --release` rebuilds only
+the root binary and its transitive library deps — it does **not** rebuild
+the helper binaries.
+
+As long as Rust types (`IpcSender<T>`, message enums) stay the same,
+stale helper binaries are harmless — parent and child share the same
+serde-driven wire format.  But changes to the `ipc/` crate that alter
+the **wire envelope** (e.g. wrapping messages in a new tuple, changing
+the channel type parameter) change the serialization format.  After such
+a change, old helper binaries will fail to deserialize, producing
+`DeserializeUnexpectedEnd` errors.  Cargo cannot detect this because the
+wire format is an implicit protocol, not a type-level dependency.
+
+**To recover from protocol mismatch:** `cargo clean` the affected
+member packages and rebuild:
+
+```bash
+cargo clean -p content -p net -p media -p ipc -p user_agent -p embedder
+cargo build --release
+cargo run --release
+```
+
+To avoid the issue entirely after a protocol-changing edit, run a full
+build before running:
+
+```bash
+cargo build --release   # rebuilds EVERY workspace binary
+cargo run --release     # all processes are in sync
+```
+
 ### Process binary search paths
 
 When the embedder spawns a helper process, it searches the directory

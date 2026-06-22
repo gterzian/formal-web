@@ -356,9 +356,8 @@ impl FontIdentifier {
 pub struct RegisteredFont {
     pub id: FontIdentifier,
     /// Font binary data, copied into this buffer for transport.
-    /// On the native XPC backend, this is serialized as postcard bytes.
-    /// On the ipc-channel backend, `send_with_shmem` can carry it as
-    /// shared memory instead.
+    /// On the ipc-channel backend, the data is sent as shared memory via the
+    /// `send_with_shmem` API; on XPC this is serialized as postcard bytes.
     data: Vec<u8>,
 }
 
@@ -642,8 +641,9 @@ pub struct PaintFrame {
     pub composition: FrameCompositionMetadata,
     font_registrations: Vec<RegisteredFont>,
     /// Serialized scene data. Carried as bytes for cross-backend compatibility.
-    /// Backends can transfer this as shared memory via `send_with_shmem`.
-    scene_bytes: Vec<u8>,
+    /// On the ipc-channel backend this is sent as shared memory via the
+    /// `send_with_shmem` API; on XPC this is serialized as postcard bytes.
+    pub scene_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

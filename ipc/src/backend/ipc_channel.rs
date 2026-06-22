@@ -6,21 +6,30 @@
 use crossbeam_channel::unbounded;
 use ipc_channel::ipc::{
     self as ipc_ipc, IpcOneShotServer, IpcReceiver, IpcSender as IpcChannelSender,
+    IpcSharedMemory,
 };
 use ipc_channel::router::ROUTER;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::types::{
-    BootstrapToken, ExtensionClient, ExtensionManifest, ExtensionServer, IpcTransport,
+    BootstrapToken, ExtensionClient, ExtensionManifest, ExtensionServer, IpcSharedRegion,
+    IpcTransport,
 };
 use crate::{IpcError, IpcIncoming, IpcSender};
+
+/// The ipc-channel backend wraps `(payload, Option<shmem>)` as a single
+/// serde message so that shared memory regions are transferred through
+/// ipc-channel's native serde machinery (which serializes the handle as
+/// an index into a thread-local vector).  On the receiving side the
+/// ROUTER callback unwraps the tuple into `IpcIncoming { payload, shmem }`.
+type ChannelMessage<T> = (T, Option<IpcSharedMemory>);
 
 // ── Bootstrap message ──────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
 struct BootstrapMessage<Out, In> {
-    parent_to_child_tx: IpcChannelSender<Out>,
-    child_to_parent_rx: IpcReceiver<In>,
+    parent_to_child_tx: IpcChannelSender<ChannelMessage<Out>>,
+    child_to_parent_rx: IpcReceiver<ChannelMessage<In>>,
 }
 
 // ── start_extension ─────────────────────────────────────────────────────────
@@ -59,9 +68,17 @@ where
     let (crossbeam_in_tx, crossbeam_in_rx) = unbounded();
     ROUTER.add_typed_route(
         child_to_parent_rx,
-        Box::new(move |message| {
-            if let Ok(payload) = message {
-                let _ = crossbeam_in_tx.send(IpcIncoming::new(payload));
+        Box::new(move |message: Result<(In, Option<IpcSharedMemory>), _>| {
+            if let Ok((payload, shmem)) = message {
+                let incoming = if let Some(shmem) = shmem {
+                    IpcIncoming {
+                        payload,
+                        shmem: Some(IpcSharedRegion::from_ipc_shmem(shmem)),
+                    }
+                } else {
+                    IpcIncoming::new(payload)
+                };
+                let _ = crossbeam_in_tx.send(incoming);
             }
         }),
     );
@@ -88,14 +105,18 @@ where
     Out: Serialize + DeserializeOwned + Send + 'static,
     In: Serialize + DeserializeOwned + Send + 'static,
 {
-    let (parent_to_child_tx, parent_to_child_rx): (IpcChannelSender<Out>, IpcReceiver<Out>) =
-        ipc_ipc::channel().map_err(|error| {
-            IpcError::Transport(format!("failed to create IPC channel: {error}"))
-        })?;
-    let (child_to_parent_tx, child_to_parent_rx): (IpcChannelSender<In>, IpcReceiver<In>) =
-        ipc_ipc::channel().map_err(|error| {
-            IpcError::Transport(format!("failed to create IPC channel: {error}"))
-        })?;
+    let (parent_to_child_tx, parent_to_child_rx): (
+        IpcChannelSender<ChannelMessage<Out>>,
+        IpcReceiver<ChannelMessage<Out>>,
+    ) = ipc_ipc::channel().map_err(|error| {
+        IpcError::Transport(format!("failed to create IPC channel: {error}"))
+    })?;
+    let (child_to_parent_tx, child_to_parent_rx): (
+        IpcChannelSender<ChannelMessage<In>>,
+        IpcReceiver<ChannelMessage<In>>,
+    ) = ipc_ipc::channel().map_err(|error| {
+        IpcError::Transport(format!("failed to create IPC channel: {error}"))
+    })?;
 
     log::info!(
         "ipc-channel backend: child connecting to bootstrap token='{}'",
@@ -116,21 +137,22 @@ where
 
     let (crossbeam_in_tx, crossbeam_in_rx) = unbounded();
 
-    // Spawn a thread to forward IPC messages to the crossbeam channel.
-    // Directly recv() from the IpcReceiver (not RouterProxy), because
-    // RouterProxy would be dropped when this function returns.
-    std::thread::spawn(move || {
-        loop {
-            match parent_to_child_rx.recv() {
-                Ok(payload) => {
-                    if crossbeam_in_tx.send(IpcIncoming::new(payload)).is_err() {
-                        break;
+    ROUTER.add_typed_route(
+        parent_to_child_rx,
+        Box::new(move |message: Result<(Out, Option<IpcSharedMemory>), _>| {
+            if let Ok((payload, shmem)) = message {
+                let incoming = if let Some(shmem) = shmem {
+                    IpcIncoming {
+                        payload,
+                        shmem: Some(IpcSharedRegion::from_ipc_shmem(shmem)),
                     }
-                }
-                Err(_) => break,
+                } else {
+                    IpcIncoming::new(payload)
+                };
+                let _ = crossbeam_in_tx.send(incoming);
             }
-        }
-    });
+        }),
+    );
 
     Ok(ExtensionServer {
         tx: IpcSender {

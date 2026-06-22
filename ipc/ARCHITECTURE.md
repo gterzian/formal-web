@@ -130,15 +130,6 @@ Message serialization uses `serde` + `postcard` on both backends. All shared mem
 was migrated from `IpcSharedMemory` to `Vec<u8>` in message types for cross-backend
 compatibility.
 
-## Clipboard
-
-Clipboard operations no longer use blocking IPC round-trips:
-
-- **Paste**: Content reads the system clipboard directly via `arboard::Clipboard`
-  (with a prefetch cache for embedder-dispatched paste events).
-- **Copy/Cut**: Fire-and-forget `ClipboardWriteRequested { text }` message — no
-  reply expected.
-
 ## XPC Backend — Status
 
 The native XPC backend is now the default on macOS. All three helper processes
