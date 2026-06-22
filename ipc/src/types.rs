@@ -3,6 +3,8 @@
 //! These types are backend-agnostic. Both backends use serde + postcard
 //! for serialization.
 
+use std::collections::HashMap;
+
 use crossbeam_channel::Receiver;
 use ipc_channel::ipc::IpcSharedMemory;
 use serde::{Serialize, de::DeserializeOwned};
@@ -60,10 +62,11 @@ pub struct IpcSender<T: Serialize + DeserializeOwned> {
     pub(crate) transport: IpcTransport<T>,
 }
 
-/// Wrapped IPC message that may carry optional shared memory.
-/// On the ipc-channel backend the payload and shared memory are sent as
-/// a single serde message; the receiver unwraps them into `IpcIncoming`.
-pub(crate) type IpcChannelMessage<T> = (T, Option<IpcSharedMemory>);
+/// Wrapped IPC message that carries a payload and a map of shared memory
+/// regions indexed by `usize` keys.  On the ipc-channel backend the payload
+/// and shmem map are sent as a single serde message; the receiver unwraps
+/// them into `IpcIncoming`.
+pub(crate) type IpcChannelMessage<T> = (T, HashMap<usize, IpcSharedMemory>);
 
 #[derive(Clone)]
 pub(crate) enum IpcTransport<T: Serialize + DeserializeOwned> {
@@ -79,7 +82,7 @@ impl<T: Serialize + DeserializeOwned> IpcSender<T> {
     pub fn send(&self, message: T) -> Result<(), IpcError> {
         match &self.transport {
             IpcTransport::IpcChannel(sender) => sender
-                .send((message, None))
+                .send((message, HashMap::new()))
                 .map_err(|error| IpcError::Transport(error.to_string())),
             #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
             IpcTransport::Xpc { connection, .. } => {
@@ -93,21 +96,32 @@ impl<T: Serialize + DeserializeOwned> IpcSender<T> {
         }
     }
 
-    /// Send a message with an attached shared memory region.
+    /// Send a message with a map of shared memory regions.
     ///
-    /// On the ipc-channel backend, the payload and shared memory are wrapped
-    /// in a single serde message tuple `(T, Option<IpcSharedMemory>)` which
-    /// the ipc-channel infrastructure transfers as a Mach port / fd handle
-    /// (O(1) — no byte copying).
+    /// On the ipc-channel backend, the payload and shmem map are wrapped
+    /// in a single serde message tuple `(T, HashMap<usize, IpcSharedMemory>)`
+    /// which the ipc-channel infrastructure transfers as Mach port / fd
+    /// handles (O(1) — no byte copying per region).
     ///
     /// On the XPC backend this is a fallback to `send()` — XPC shared memory
     /// via `xpc_shmem_create` is unimplemented (the XPC backend is not used
-    /// for content, which is the only caller that transfers bulk scene data).
-    pub fn send_with_shmem(&self, message: T, shmem: IpcSharedRegion) -> Result<(), IpcError> {
+    /// for content or media, which are the only callers that transfer bulk
+    /// scene or video frame data).
+    pub fn send_with_shmem_map(
+        &self,
+        message: T,
+        shmem_map: HashMap<usize, IpcSharedRegion>,
+    ) -> Result<(), IpcError> {
         match &self.transport {
-            IpcTransport::IpcChannel(sender) => sender
-                .send((message, Some(shmem.into_inner())))
-                .map_err(|error| IpcError::Transport(error.to_string())),
+            IpcTransport::IpcChannel(sender) => {
+                let raw_map: HashMap<usize, IpcSharedMemory> = shmem_map
+                    .into_iter()
+                    .map(|(key, region)| (key, region.into_inner()))
+                    .collect();
+                sender
+                    .send((message, raw_map))
+                    .map_err(|error| IpcError::Transport(error.to_string()))
+            }
             #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
             IpcTransport::Xpc { .. } => {
                 // XPC shared memory via xpc_shmem_create is unimplemented.
@@ -122,14 +136,17 @@ impl<T: Serialize + DeserializeOwned> IpcSender<T> {
 /// An incoming message from an extension process.
 pub struct IpcIncoming<T> {
     pub payload: T,
-    pub shmem: Option<IpcSharedRegion>,
+    /// Shared memory regions indexed by `usize` keys.  The message payload
+    /// carries matching `usize` keys that the receiver uses to look up the
+    /// corresponding data.
+    pub shmem_regions: HashMap<usize, IpcSharedRegion>,
 }
 
 impl<T> IpcIncoming<T> {
     pub fn new(payload: T) -> Self {
         IpcIncoming {
             payload,
-            shmem: None,
+            shmem_regions: HashMap::new(),
         }
     }
 }
@@ -164,7 +181,6 @@ impl IpcSharedRegion {
     }
 
     /// Consume and return the inner `IpcSharedMemory`.
-    /// Used by `send_with_shmem` on the ipc-channel backend.
     pub(crate) fn into_inner(self) -> ipc_channel::ipc::IpcSharedMemory {
         self.0
     }

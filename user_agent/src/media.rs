@@ -130,7 +130,24 @@ impl MediaWorker {
                 }
                 recv(media_event_receiver) -> event => {
                     match event {
-                        Ok(incoming) => {
+                        Ok(mut incoming) => {
+                            match &mut incoming.payload {
+                                MediaEvent::Frame(video_frame) => {
+                                    if let Some(region) =
+                                        incoming.shmem_regions.get(&video_frame.data_shmem_key)
+                                    {
+                                        video_frame.data = region.as_slice().to_vec();
+                                    }
+                                }
+                                _ => {
+                                    if !incoming.shmem_regions.is_empty() {
+                                        log::warn!(
+                                            "unexpected shared memory on {:?}",
+                                            std::mem::discriminant(&incoming.payload)
+                                        );
+                                    }
+                                }
+                            }
                             self.handle_media_event(incoming.payload);
                         }
                         Err(_) => {

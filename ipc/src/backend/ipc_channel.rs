@@ -3,6 +3,8 @@
 //! Provides `start_extension` and `run_extension` using `ipc_channel::ipc`
 //! one-shot bootstrap servers and typed channels.
 
+use std::collections::HashMap;
+
 use crossbeam_channel::unbounded;
 use ipc_channel::ipc::{
     self as ipc_ipc, IpcOneShotServer, IpcReceiver, IpcSender as IpcChannelSender,
@@ -17,12 +19,12 @@ use crate::types::{
 };
 use crate::{IpcError, IpcIncoming, IpcSender};
 
-/// The ipc-channel backend wraps `(payload, Option<shmem>)` as a single
-/// serde message so that shared memory regions are transferred through
-/// ipc-channel's native serde machinery (which serializes the handle as
-/// an index into a thread-local vector).  On the receiving side the
-/// ROUTER callback unwraps the tuple into `IpcIncoming { payload, shmem }`.
-type ChannelMessage<T> = (T, Option<IpcSharedMemory>);
+/// The ipc-channel backend wraps `(payload, HashMap<usize, shmem>)` as a
+/// single serde message so that shared memory regions are transferred through
+/// ipc-channel's native serde machinery (which serializes each handle as
+/// an index into a thread-local vector).  On the receiving side the ROUTER
+/// callback unwraps the tuple into `IpcIncoming { payload, shmem_regions }`.
+type ChannelMessage<T> = (T, HashMap<usize, IpcSharedMemory>);
 
 // ── Bootstrap message ──────────────────────────────────────────────────────
 
@@ -68,19 +70,21 @@ where
     let (crossbeam_in_tx, crossbeam_in_rx) = unbounded();
     ROUTER.add_typed_route(
         child_to_parent_rx,
-        Box::new(move |message: Result<(In, Option<IpcSharedMemory>), _>| {
-            if let Ok((payload, shmem)) = message {
-                let incoming = if let Some(shmem) = shmem {
-                    IpcIncoming {
+        Box::new(
+            move |message: Result<(In, HashMap<usize, IpcSharedMemory>), _>| {
+                if let Ok((payload, shmem_map)) = message {
+                    let regions: HashMap<usize, IpcSharedRegion> = shmem_map
+                        .into_iter()
+                        .map(|(key, raw)| (key, IpcSharedRegion::from_ipc_shmem(raw)))
+                        .collect();
+                    let incoming = IpcIncoming {
                         payload,
-                        shmem: Some(IpcSharedRegion::from_ipc_shmem(shmem)),
-                    }
-                } else {
-                    IpcIncoming::new(payload)
-                };
-                let _ = crossbeam_in_tx.send(incoming);
-            }
-        }),
+                        shmem_regions: regions,
+                    };
+                    let _ = crossbeam_in_tx.send(incoming);
+                }
+            },
+        ),
     );
 
     Ok(ExtensionClient {
@@ -139,19 +143,21 @@ where
 
     ROUTER.add_typed_route(
         parent_to_child_rx,
-        Box::new(move |message: Result<(Out, Option<IpcSharedMemory>), _>| {
-            if let Ok((payload, shmem)) = message {
-                let incoming = if let Some(shmem) = shmem {
-                    IpcIncoming {
+        Box::new(
+            move |message: Result<(Out, HashMap<usize, IpcSharedMemory>), _>| {
+                if let Ok((payload, shmem_map)) = message {
+                    let regions: HashMap<usize, IpcSharedRegion> = shmem_map
+                        .into_iter()
+                        .map(|(key, raw)| (key, IpcSharedRegion::from_ipc_shmem(raw)))
+                        .collect();
+                    let incoming = IpcIncoming {
                         payload,
-                        shmem: Some(IpcSharedRegion::from_ipc_shmem(shmem)),
-                    }
-                } else {
-                    IpcIncoming::new(payload)
-                };
-                let _ = crossbeam_in_tx.send(incoming);
-            }
-        }),
+                        shmem_regions: regions,
+                    };
+                    let _ = crossbeam_in_tx.send(incoming);
+                }
+            },
+        ),
     );
 
     Ok(ExtensionServer {

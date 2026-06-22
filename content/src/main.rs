@@ -1366,28 +1366,35 @@ impl ContentProcess {
                     0,
                     0,
                 );
-                let scene = self.font_sender.prepare_scene(self.font_namespace, scene);
+                let mut next_shmem_key = 0usize;
+                let scene = self
+                    .font_sender
+                    .prepare_scene(self.font_namespace, scene, &mut next_shmem_key);
                 log_render_state_debug(format!(
                     "emit paint traversable={} document={} size=({}, {})",
                     traversable_id, document_id, width, height,
                 ));
-                let paint_frame = PaintFrame::new(
+                let (paint_frame, shmem_data) = PaintFrame::new(
                     WebviewId(traversable_id),
                     document.frame_id,
                     width,
                     height,
                     composition,
                     scene,
+                    &mut next_shmem_key,
                 )?;
-                paint_frame
+                (paint_frame, shmem_data)
             };
             paint_frame
         };
 
-        let scene_bytes = paint_frame.scene_bytes.clone();
-        let shmem = IpcSharedRegion::from_bytes(&scene_bytes);
+        let (paint_frame, shmem_data) = paint_frame;
+        let shmem_map: HashMap<usize, IpcSharedRegion> = shmem_data
+            .into_iter()
+            .map(|(key, data)| (key, IpcSharedRegion::from_bytes(&data)))
+            .collect();
         event_sender
-            .send_with_shmem(ContentEvent::PaintReady(paint_frame), shmem)
+            .send_with_shmem_map(ContentEvent::PaintReady(paint_frame), shmem_map)
             .map_err(|error| format!("failed to send paint frame: {error}"))
     }
 

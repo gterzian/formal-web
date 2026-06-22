@@ -355,26 +355,22 @@ impl FontIdentifier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisteredFont {
     pub id: FontIdentifier,
-    /// Font binary data, copied into this buffer for transport.
-    /// On the ipc-channel backend, the data is sent as shared memory via the
-    /// `send_with_shmem` API; on XPC this is serialized as postcard bytes.
-    data: Vec<u8>,
+    /// Key into the IPC shared memory map for this font's binary data.
+    /// Set by the sender before serialization; the receiver looks up the
+    /// font bytes from the shmem map using this key.
+    pub data_shmem_key: usize,
 }
 
 impl RegisteredFont {
-    fn from_font_data(id: FontIdentifier, font_data: &FontData) -> Self {
-        Self {
+    fn from_font_data(id: FontIdentifier, font_data: &FontData, key: usize) -> (Self, Vec<u8>) {
+        (Self {
             id,
-            data: font_data.data.data().to_vec(),
-        }
+            data_shmem_key: key,
+        }, font_data.data.data().to_vec())
     }
 
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    fn into_font_data(self) -> FontData {
-        FontData::new(self.data.into(), self.id.index)
+    fn into_font_data_from_bytes(self, data: Vec<u8>) -> FontData {
+        FontData::new(data.into(), self.id.index)
     }
 }
 
@@ -382,6 +378,10 @@ impl RegisteredFont {
 pub struct PreparedScene {
     pub scene: RecordedScene,
     pub registered_fonts: Vec<RegisteredFont>,
+    /// Font binary data indexed by each font's `data_shmem_key`.
+    /// The caller must place this data into the IPC shared memory map
+    /// before sending the `PaintFrame` message.
+    pub font_data: HashMap<usize, Vec<u8>>,
 }
 
 #[derive(Debug, Default)]
@@ -390,16 +390,25 @@ pub struct FontTransportSender {
 }
 
 impl FontTransportSender {
-    pub fn prepare_scene(&mut self, font_namespace: u64, scene: Scene) -> PreparedScene {
+    /// Assign shmem keys starting from `next_key` and return the font data
+    /// alongside the prepared scene.  The caller places the returned font data
+    /// into the IPC shared memory map under each font's `data_shmem_key`.
+    pub fn prepare_scene(
+        &mut self,
+        font_namespace: u64,
+        scene: Scene,
+        next_shmem_key: &mut usize,
+    ) -> PreparedScene {
         let mut font_ids = Vec::new();
         let mut scene_font_ids = HashMap::new();
         let mut registered_fonts = Vec::new();
+        let mut font_data: HashMap<usize, Vec<u8>> = HashMap::new();
         let commands = scene
             .commands
             .into_iter()
             .map(|command| {
-                SerializableRenderCommand::from_render_command(command, |font_data| {
-                    let font_id = FontIdentifier::from_font_data(font_namespace, font_data);
+                SerializableRenderCommand::from_render_command(command, |font_data_ref| {
+                    let font_id = FontIdentifier::from_font_data(font_namespace, font_data_ref);
                     let next_scene_font_id = font_ids.len() as u32;
                     let scene_font_id = match scene_font_ids.entry(font_id) {
                         Entry::Occupied(entry) => *entry.get(),
@@ -411,7 +420,11 @@ impl FontTransportSender {
                     };
 
                     if self.sent_fonts.insert(font_id) {
-                        registered_fonts.push(RegisteredFont::from_font_data(font_id, font_data));
+                        let (font, raw_data) =
+                            RegisteredFont::from_font_data(font_id, font_data_ref, *next_shmem_key);
+                        *next_shmem_key += 1;
+                        font_data.insert(font.data_shmem_key, raw_data);
+                        registered_fonts.push(font);
                     }
 
                     scene_font_id
@@ -426,6 +439,7 @@ impl FontTransportSender {
                 commands,
             },
             registered_fonts,
+            font_data,
         }
     }
 }
@@ -436,12 +450,17 @@ pub struct FontTransportReceiver {
 }
 
 impl FontTransportReceiver {
-    pub fn register_fonts(&mut self, registered_fonts: Vec<RegisteredFont>) {
+    /// Register fonts, reading each font's binary data from the IPC shared
+    /// memory map indexed by `data_shmem_key`.
+    pub fn register_fonts(
+        &mut self,
+        registered_fonts: Vec<RegisteredFont>,
+        font_data: &HashMap<usize, Vec<u8>>,
+    ) {
         for font in registered_fonts {
-            match self.fonts.entry(font.id) {
-                Entry::Occupied(_) => {}
-                Entry::Vacant(entry) => {
-                    entry.insert(font.into_font_data());
+            if let Entry::Vacant(entry) = self.fonts.entry(font.id) {
+                if let Some(data) = font_data.get(&font.data_shmem_key) {
+                    entry.insert(font.into_font_data_from_bytes(data.clone()));
                 }
             }
         }
@@ -640,20 +659,26 @@ pub struct PaintFrame {
     pub viewport_height: u32,
     pub composition: FrameCompositionMetadata,
     font_registrations: Vec<RegisteredFont>,
-    /// Serialized scene data. Carried as bytes for cross-backend compatibility.
-    /// On the ipc-channel backend this is sent as shared memory via the
-    /// `send_with_shmem` API; on XPC this is serialized as postcard bytes.
-    pub scene_bytes: Vec<u8>,
+    /// Key into the IPC shared memory map.  The sender serialized the paint
+    /// scene into a byte buffer and placed it under this key; the receiver
+    /// reads the bytes from the shmem map using this key and passes them to
+    /// `into_recorded_scene()`.
+    pub scene_shmem_key: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PaintTransportSummary {
     pub scene_bytes: usize,
     pub registered_fonts: usize,
-    pub registered_font_bytes: usize,
 }
 
 impl PaintFrame {
+    /// Create a `PaintFrame` and return it together with the serialised scene
+    /// bytes and font data that the caller must place into the IPC shared
+    /// memory map.
+    ///
+    /// `next_shmem_key` is used to assign unique keys for the scene bytes and
+    /// each font's data.  On return it is advanced past all assigned keys.
     pub fn new(
         traversable_id: WebviewId,
         frame_id: FrameId,
@@ -661,51 +686,77 @@ impl PaintFrame {
         viewport_height: u32,
         composition: FrameCompositionMetadata,
         scene: PreparedScene,
-    ) -> Result<Self, String> {
+        next_shmem_key: &mut usize,
+    ) -> Result<(Self, HashMap<usize, Vec<u8>>), String> {
         let PreparedScene {
             scene,
             registered_fonts,
+            font_data,
         } = scene;
-        Ok(Self {
-            traversable_id,
-            frame_id,
-            viewport_width,
-            viewport_height,
-            composition,
-            font_registrations: registered_fonts,
-            scene_bytes: serialize_scene_to_vec(&scene)?,
-        })
+
+        let mut shmem_data: HashMap<usize, Vec<u8>> = font_data;
+
+        let scene_shmem_key = *next_shmem_key;
+        *next_shmem_key += 1;
+        let scene_bytes = serialize_scene_to_vec(&scene)?;
+        shmem_data.insert(scene_shmem_key, scene_bytes);
+
+        Ok((
+            Self {
+                traversable_id,
+                frame_id,
+                viewport_width,
+                viewport_height,
+                composition,
+                font_registrations: registered_fonts,
+                scene_shmem_key,
+            },
+            shmem_data,
+        ))
     }
 
-    pub fn transport_summary(&self) -> PaintTransportSummary {
+    pub fn transport_summary(&self, shmem_data: &HashMap<usize, Vec<u8>>) -> PaintTransportSummary {
+        let scene_bytes = shmem_data
+            .get(&self.scene_shmem_key)
+            .map(|b| b.len())
+            .unwrap_or(0);
         PaintTransportSummary {
-            scene_bytes: self.scene_bytes.len(),
+            scene_bytes,
             registered_fonts: self.font_registrations.len(),
-            registered_font_bytes: self
-                .font_registrations
-                .iter()
-                .map(RegisteredFont::len)
-                .sum(),
         }
     }
 
+    /// Consume the paint frame into a `RecordedScene`.  `scene_bytes` and
+    /// `font_data` must come from the IPC shared memory map, keyed by the
+    /// values stored in this frame.
     pub fn into_recorded_scene(
         self,
         font_receiver: &mut FontTransportReceiver,
+        scene_bytes: &[u8],
+        font_data: &HashMap<usize, Vec<u8>>,
     ) -> Result<RecordedScene, String> {
         let PaintFrame {
-            font_registrations,
-            scene_bytes,
-            ..
+            font_registrations, ..
         } = self;
-        font_receiver.register_fonts(font_registrations);
-        deserialize_scene_from_slice(&scene_bytes)
+        font_receiver.register_fonts(font_registrations, font_data);
+        deserialize_scene_from_slice(scene_bytes)
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum WebviewProviderMessage {
-    PaintFrame(PaintFrame),
+    /// A paint frame with its associated scene and font data reconstructed
+    /// from the IPC shared memory map.  The webview calls
+    /// `PaintFrame::into_recorded_scene()` with `scene_bytes` and
+    /// `font_data`.
+    PaintFrame {
+        frame: PaintFrame,
+        /// Serialized scene bytes, reconstructed from the IPC shmem map.
+        scene_bytes: Vec<u8>,
+        /// Font binary data indexed by each font's `data_shmem_key`,
+        /// reconstructed from the IPC shmem map.
+        font_data: HashMap<usize, Vec<u8>>,
+    },
     RegisterChildNavigableHost {
         child_webview_id: WebviewId,
         parent_traversable_id: WebviewId,

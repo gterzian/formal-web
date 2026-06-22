@@ -67,10 +67,14 @@ pub struct VideoFrame {
     pub pipeline_id: MediaPipelineId,
     pub width: u32,
     pub height: u32,
-    /// RGBA8 pixel data, width * height * 4 bytes.
-    /// Carried as a byte buffer for cross-backend compatibility.
-    /// On the ipc-channel backend this is sent as shared memory via the
-    /// `send_with_shmem` API; on XPC this is serialized as postcard bytes.
+    /// Key into the IPC shared memory map. The sender placed the RGBA8
+    /// pixel data (width * height * 4 bytes) under this key; the receiver
+    /// looks up the data using this key.
+    pub data_shmem_key: usize,
+    /// RGBA8 pixel data. `#[serde(skip)]` — not serialized over IPC.
+    /// Carried locally within the media process (crossbeam bridge) and
+    /// extracted into the IPC shared memory map before serialization.
+    #[serde(skip)]
     pub data: Vec<u8>,
 }
 

@@ -200,12 +200,31 @@ pub fn run_media_process_from_args() -> Result<(), String> {
 
     // Bridge: GStreamer callbacks push to a crossbeam channel (non-blocking),
     // a dedicated thread forwards to the IPC sender.
+    // `MediaEvent::Frame` carries pixel data in `VideoFrame::data` (a
+    // `#[serde(skip)]` field); the bridge extracts it into the IPC shared
+    // memory map and sends the rest via `send_with_shmem_map`.
     let ipc_event_tx = server.tx;
     let (crossbeam_event_tx, crossbeam_event_rx) = crossbeam_channel::unbounded::<MediaEvent>();
     std::thread::spawn(move || {
         while let Ok(event) = crossbeam_event_rx.recv() {
-            if ipc_event_tx.send(event).is_err() {
-                break;
+            match event {
+                MediaEvent::Frame(mut video_frame) => {
+                    let key = video_frame.data_shmem_key;
+                    let data = std::mem::take(&mut video_frame.data);
+                    let mut shmem_map = std::collections::HashMap::new();
+                    shmem_map.insert(key, ipc::IpcSharedRegion::from_bytes(&data));
+                    if ipc_event_tx
+                        .send_with_shmem_map(MediaEvent::Frame(video_frame), shmem_map)
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                other_event => {
+                    if ipc_event_tx.send(other_event).is_err() {
+                        break;
+                    }
+                }
             }
         }
     });

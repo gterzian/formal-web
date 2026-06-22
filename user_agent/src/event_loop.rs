@@ -384,7 +384,11 @@ impl EventLoopWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
-    fn handle_content_event_message(&mut self, event: ContentEvent) -> Result<bool, String> {
+    fn handle_content_event_message(
+        &mut self,
+        event: ContentEvent,
+        shmem_data: &HashMap<usize, Vec<u8>>,
+    ) -> Result<bool, String> {
         match event {
             ContentEvent::DocumentFetchRequested(request) => {
                 // Keep network work off the event-loop thread and arm the timeout
@@ -534,18 +538,27 @@ impl EventLoopWorker {
                     log::error!("clipboard write failed: {error}");
                 }
             }
-            ContentEvent::PaintReady(snapshot) => {
+            ContentEvent::PaintReady(frame) => {
                 log_render_state_debug(format!(
                     "paint ready event_loop={} traversable={} frame={} size=({}, {})",
                     self.event_loop_id,
-                    snapshot.traversable_id.0,
-                    snapshot.frame_id.0,
-                    snapshot.viewport_width,
-                    snapshot.viewport_height,
+                    frame.traversable_id.0,
+                    frame.frame_id.0,
+                    frame.viewport_width,
+                    frame.viewport_height,
                 ));
+                let scene_bytes = shmem_data
+                    .get(&frame.scene_shmem_key)
+                    .cloned()
+                    .unwrap_or_default();
+                let font_data: HashMap<usize, Vec<u8>> = shmem_data.clone();
                 if let Err(error) = self
                     .webview_provider_sender
-                    .send(WebviewProviderMessage::PaintFrame(snapshot))
+                    .send(WebviewProviderMessage::PaintFrame {
+                        frame,
+                        scene_bytes,
+                        font_data,
+                    })
                 {
                     error!("failed to enqueue webview-provider paint frame: {error}");
                 } else {
@@ -661,7 +674,15 @@ impl EventLoopWorker {
                         }
                     };
 
-                    match self.handle_content_event_message(incoming.payload) {
+                    // Reconstruct the IPC shared memory map into a Vec<u8> map
+                    // for the content event handler (it doesn't depend on IpcSharedRegion).
+                    let shmem_vec: HashMap<usize, Vec<u8>> = incoming
+                        .shmem_regions
+                        .into_iter()
+                        .map(|(key, region)| (key, region.as_slice().to_vec()))
+                        .collect();
+
+                    match self.handle_content_event_message(incoming.payload, &shmem_vec) {
                         Ok(true) => {}
                         Ok(false) => {
                             if let Some(reply) = self.stop_reply.take() {
