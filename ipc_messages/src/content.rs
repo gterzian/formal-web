@@ -381,7 +381,7 @@ pub struct PreparedScene {
     /// Font binary data indexed by each font's `data_shmem_key`.
     /// The caller must place this data into the IPC shared memory map
     /// before sending the `PaintFrame` message.
-    pub font_data: HashMap<usize, Vec<u8>>,
+    pub font_shmem: HashMap<usize, ipc::IpcSharedRegion>,
 }
 
 #[derive(Debug, Default)]
@@ -402,7 +402,7 @@ impl FontTransportSender {
         let mut font_ids = Vec::new();
         let mut scene_font_ids = HashMap::new();
         let mut registered_fonts = Vec::new();
-        let mut font_data: HashMap<usize, Vec<u8>> = HashMap::new();
+        let mut font_shmem: HashMap<usize, ipc::IpcSharedRegion> = HashMap::new();
         let commands = scene
             .commands
             .into_iter()
@@ -423,7 +423,10 @@ impl FontTransportSender {
                         let (font, raw_data) =
                             RegisteredFont::from_font_data(font_id, font_data_ref, *next_shmem_key);
                         *next_shmem_key += 1;
-                        font_data.insert(font.data_shmem_key, raw_data);
+                        font_shmem.insert(
+                            font.data_shmem_key,
+                            ipc::IpcSharedRegion::from_bytes(&raw_data),
+                        );
                         registered_fonts.push(font);
                     }
 
@@ -439,7 +442,7 @@ impl FontTransportSender {
                 commands,
             },
             registered_fonts,
-            font_data,
+            font_shmem,
         }
     }
 }
@@ -687,19 +690,20 @@ impl PaintFrame {
         composition: FrameCompositionMetadata,
         scene: PreparedScene,
         next_shmem_key: &mut usize,
-    ) -> Result<(Self, HashMap<usize, Vec<u8>>), String> {
+    ) -> Result<(Self, HashMap<usize, ipc::IpcSharedRegion>), String> {
         let PreparedScene {
             scene,
             registered_fonts,
-            font_data,
+            font_shmem,
         } = scene;
 
-        let mut shmem_data: HashMap<usize, Vec<u8>> = font_data;
+        let mut shmem_map: HashMap<usize, ipc::IpcSharedRegion> = font_shmem;
 
         let scene_shmem_key = *next_shmem_key;
         *next_shmem_key += 1;
         let scene_bytes = serialize_scene_to_vec(&scene)?;
-        shmem_data.insert(scene_shmem_key, scene_bytes);
+        let scene_region = ipc::IpcSharedRegion::from_bytes(&scene_bytes);
+        shmem_map.insert(scene_shmem_key, scene_region);
 
         Ok((
             Self {
@@ -711,14 +715,17 @@ impl PaintFrame {
                 font_registrations: registered_fonts,
                 scene_shmem_key,
             },
-            shmem_data,
+            shmem_map,
         ))
     }
 
-    pub fn transport_summary(&self, shmem_data: &HashMap<usize, Vec<u8>>) -> PaintTransportSummary {
-        let scene_bytes = shmem_data
+    pub fn transport_summary(
+        &self,
+        shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
+    ) -> PaintTransportSummary {
+        let scene_bytes = shmem_regions
             .get(&self.scene_shmem_key)
-            .map(|b| b.len())
+            .map(|r| r.size())
             .unwrap_or(0);
         PaintTransportSummary {
             scene_bytes,

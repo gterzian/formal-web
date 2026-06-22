@@ -1388,11 +1388,7 @@ impl ContentProcess {
             paint_frame
         };
 
-        let (paint_frame, shmem_data) = paint_frame;
-        let shmem_map: HashMap<usize, IpcSharedRegion> = shmem_data
-            .into_iter()
-            .map(|(key, data)| (key, IpcSharedRegion::from_bytes(&data)))
-            .collect();
+        let (paint_frame, shmem_map) = paint_frame;
         event_sender
             .send_with_shmem_map(ContentEvent::PaintReady(paint_frame), shmem_map)
             .map_err(|error| format!("failed to send paint frame: {error}"))
