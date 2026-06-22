@@ -10,7 +10,7 @@ use super::environment_settings_object::EnvironmentSettingsObject;
 use blitz_dom::BaseDocument;
 use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, GcRefCell, Trace};
-use ipc_channel::ipc::IpcSender;
+use ipc::IpcSender;
 use ipc_messages::content::DocumentId;
 use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,

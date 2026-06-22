@@ -1,20 +1,13 @@
-use std::process::{Child, Command as ProcessCommand};
+use std::process::Child;
 use std::thread;
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
 use crossbeam_channel::{Receiver, Sender, select};
-use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
-use ipc_channel::router::ROUTER;
 
-use ipc_messages::media::{
-    MediaBootstrap, MediaCommand as MediaProcessCommand, MediaEvent, MediaPipelineId,
-};
+use ipc_messages::media::{MediaCommand as MediaProcessCommand, MediaEvent, MediaPipelineId};
 use log::{debug, error};
 
 use crate::UserAgentCommand;
-use crate::sidecar_executable_path;
+use crate::ipc_manifest::MediaExtensionManifest;
 
 /// Commands that the user-agent and event-loop workers can send into the dedicated media worker.
 pub enum MediaCommand {
@@ -37,40 +30,31 @@ struct MediaWorker {
     /// Sender back into the user-agent thread for non-frame media events.
     user_agent_command_sender: Sender<UserAgentCommand>,
     /// IPC sender to the dedicated media process.
-    media_process_sender: IpcSender<MediaProcessCommand>,
-    /// Crossbeam receiver for media process events routed via the IPC router.
-    media_event_receiver: Receiver<MediaEvent>,
+    media_process_sender: ipc::IpcSender<MediaProcessCommand>,
+    /// Crossbeam receiver for media process events.
+    media_event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<MediaEvent>>,
     /// Child process handle for the media process.
     child: Option<Child>,
     /// Deferred shutdown reply completed after the media process exits.
     shutdown_reply: Option<Sender<Result<(), String>>>,
 }
 
-/// Bootstrap the dedicated media process.
-fn start_media_process()
--> Result<(IpcSender<MediaProcessCommand>, Receiver<MediaEvent>, Child), String> {
-    let executable_path = sidecar_executable_path("formal-web-media")?;
+/// Bootstrap the dedicated media process using the new IPC abstraction layer.
+fn start_media_extension() -> Result<
+    (
+        ipc::IpcSender<MediaProcessCommand>,
+        crossbeam_channel::Receiver<ipc::IpcIncoming<MediaEvent>>,
+        Option<Child>,
+    ),
+    String,
+> {
+    let manifest = MediaExtensionManifest;
+    let client =
+        ipc::start_extension::<MediaExtensionManifest, MediaProcessCommand, MediaEvent>(&manifest)
+            .map_err(|error| format!("failed to start media extension: {error}"))?;
 
-    let (server, token) = IpcOneShotServer::<MediaBootstrap>::new()
-        .map_err(|error| format!("failed to create media IPC one-shot server: {error}"))?;
-
-    let mut child_process = ProcessCommand::new(&executable_path);
-    #[cfg(unix)]
-    child_process.arg0("formal-web-media");
-    child_process.arg("--media-token").arg(&token);
-
-    let child = child_process
-        .spawn()
-        .map_err(|error| format!("failed to start media process: {error}"))?;
-
-    let (_receiver, bootstrap) = server
-        .accept()
-        .map_err(|error| format!("failed to accept media bootstrap: {error}"))?;
-
-    let event_receiver =
-        ROUTER.route_ipc_receiver_to_new_crossbeam_receiver(bootstrap.event_receiver);
-
-    Ok((bootstrap.command_sender, event_receiver, child))
+    let child = client.child;
+    Ok((client.tx, client.rx, child))
 }
 
 impl MediaWorker {
@@ -78,13 +62,13 @@ impl MediaWorker {
         command_receiver: Receiver<MediaCommand>,
         user_agent_command_sender: Sender<UserAgentCommand>,
     ) -> Result<Self, String> {
-        let (media_process_sender, media_event_receiver, child) = start_media_process()?;
+        let (media_process_sender, media_event_receiver, child) = start_media_extension()?;
         Ok(Self {
             command_receiver,
             user_agent_command_sender,
             media_process_sender,
             media_event_receiver,
-            child: Some(child),
+            child,
             shutdown_reply: None,
         })
     }
@@ -145,11 +129,32 @@ impl MediaWorker {
                     }
                 }
                 recv(media_event_receiver) -> event => {
-                    let Ok(event) = event else {
-                        error!("[media] event route closed");
-                        break;
-                    };
-                    self.handle_media_event(event);
+                    match event {
+                        Ok(mut incoming) => {
+                            match &mut incoming.payload {
+                                MediaEvent::Frame(video_frame) => {
+                                    if let Some(region) =
+                                        incoming.shmem_regions.get(&0)
+                                    {
+                                        video_frame.data = region.as_slice().to_vec();
+                                    }
+                                }
+                                _ => {
+                                    if !incoming.shmem_regions.is_empty() {
+                                        log::warn!(
+                                            "unexpected shared memory on {:?}",
+                                            std::mem::discriminant(&incoming.payload)
+                                        );
+                                    }
+                                }
+                            }
+                            self.handle_media_event(incoming.payload);
+                        }
+                        Err(_) => {
+                            error!("[media] event route closed");
+                            break;
+                        }
+                    }
                 }
             }
         }

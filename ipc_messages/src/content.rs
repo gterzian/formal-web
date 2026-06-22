@@ -3,7 +3,7 @@ use anyrender::{
     Scene,
     recording::{GlyphRunCommand, RenderCommand},
 };
-use ipc_channel::ipc::{IpcReceiver, IpcSender, IpcSharedMemory};
+
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -73,15 +73,6 @@ pub struct TraversableViewport {
     pub viewport: ViewportSnapshot,
     pub offset_x: f32,
     pub offset_y: f32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Bootstrap {
-    pub command_sender: IpcSender<Command>,
-    pub event_receiver: IpcReceiver<Event>,
-    /// The `EventLoopId` assigned by the user agent for this content process.
-    /// Used by `window.open` to include the correct event loop id in new traversable info.
-    pub event_loop_id: EventLoopId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,21 +223,24 @@ pub struct ElementClickResult {
     pub error: Option<String>,
 }
 
+/// Fire-and-forget clipboard write request.
+/// No reply expected — the embedder writes to the system clipboard
+/// and does not need to acknowledge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClipboardReadRequest {
-    pub reply_sender: IpcSender<Result<String, String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClipboardWriteRequest {
+pub struct ClipboardWriteRequested {
     pub text: String,
-    pub reply_sender: IpcSender<Result<(), String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchEventEntry {
     pub document_id: DocumentId,
     pub event: String,
+    /// Prefetched clipboard text attached by the embedder when it detects
+    /// a paste shortcut before forwarding the event to content.
+    /// Content stores this in a local cache so `ShellProvider::get_clipboard_text`
+    /// can return it without a blocking IPC round-trip.
+    #[serde(default)]
+    pub prefetched_clipboard_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,23 +355,22 @@ impl FontIdentifier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisteredFont {
     pub id: FontIdentifier,
-    data: IpcSharedMemory,
+    /// Key into the IPC shared memory map for this font's binary data.
+    /// Set by the sender before serialization; the receiver looks up the
+    /// font bytes from the shmem map using this key.
+    pub data_shmem_key: usize,
 }
 
 impl RegisteredFont {
-    fn from_font_data(id: FontIdentifier, font_data: &FontData) -> Self {
-        Self {
+    fn from_font_data(id: FontIdentifier, font_data: &FontData, key: usize) -> (Self, Vec<u8>) {
+        (Self {
             id,
-            data: IpcSharedMemory::from_bytes(font_data.data.data()),
-        }
+            data_shmem_key: key,
+        }, font_data.data.data().to_vec())
     }
 
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    fn into_font_data(self) -> FontData {
-        FontData::new(self.data.take().unwrap_or_default().into(), self.id.index)
+    fn into_font_data_from_bytes(self, data: Vec<u8>) -> FontData {
+        FontData::new(data.into(), self.id.index)
     }
 }
 
@@ -385,6 +378,10 @@ impl RegisteredFont {
 pub struct PreparedScene {
     pub scene: RecordedScene,
     pub registered_fonts: Vec<RegisteredFont>,
+    /// Font binary data indexed by each font's `data_shmem_key`.
+    /// The caller must place this data into the IPC shared memory map
+    /// before sending the `PaintFrame` message.
+    pub font_shmem: HashMap<usize, ipc::IpcSharedRegion>,
 }
 
 #[derive(Debug, Default)]
@@ -393,16 +390,25 @@ pub struct FontTransportSender {
 }
 
 impl FontTransportSender {
-    pub fn prepare_scene(&mut self, font_namespace: u64, scene: Scene) -> PreparedScene {
+    /// Assign shmem keys starting from `next_key` and return the font data
+    /// alongside the prepared scene.  The caller places the returned font data
+    /// into the IPC shared memory map under each font's `data_shmem_key`.
+    pub fn prepare_scene(
+        &mut self,
+        font_namespace: u64,
+        scene: Scene,
+        next_shmem_key: &mut usize,
+    ) -> PreparedScene {
         let mut font_ids = Vec::new();
         let mut scene_font_ids = HashMap::new();
         let mut registered_fonts = Vec::new();
+        let mut font_shmem: HashMap<usize, ipc::IpcSharedRegion> = HashMap::new();
         let commands = scene
             .commands
             .into_iter()
             .map(|command| {
-                SerializableRenderCommand::from_render_command(command, |font_data| {
-                    let font_id = FontIdentifier::from_font_data(font_namespace, font_data);
+                SerializableRenderCommand::from_render_command(command, |font_data_ref| {
+                    let font_id = FontIdentifier::from_font_data(font_namespace, font_data_ref);
                     let next_scene_font_id = font_ids.len() as u32;
                     let scene_font_id = match scene_font_ids.entry(font_id) {
                         Entry::Occupied(entry) => *entry.get(),
@@ -414,7 +420,14 @@ impl FontTransportSender {
                     };
 
                     if self.sent_fonts.insert(font_id) {
-                        registered_fonts.push(RegisteredFont::from_font_data(font_id, font_data));
+                        let (font, raw_data) =
+                            RegisteredFont::from_font_data(font_id, font_data_ref, *next_shmem_key);
+                        *next_shmem_key += 1;
+                        font_shmem.insert(
+                            font.data_shmem_key,
+                            ipc::IpcSharedRegion::from_bytes(&raw_data),
+                        );
+                        registered_fonts.push(font);
                     }
 
                     scene_font_id
@@ -429,6 +442,7 @@ impl FontTransportSender {
                 commands,
             },
             registered_fonts,
+            font_shmem,
         }
     }
 }
@@ -439,12 +453,17 @@ pub struct FontTransportReceiver {
 }
 
 impl FontTransportReceiver {
-    pub fn register_fonts(&mut self, registered_fonts: Vec<RegisteredFont>) {
+    /// Register fonts, reading each font's binary data from the IPC shared
+    /// memory map indexed by `data_shmem_key`.
+    pub fn register_fonts(
+        &mut self,
+        registered_fonts: Vec<RegisteredFont>,
+        font_data: &HashMap<usize, Vec<u8>>,
+    ) {
         for font in registered_fonts {
-            match self.fonts.entry(font.id) {
-                Entry::Occupied(_) => {}
-                Entry::Vacant(entry) => {
-                    entry.insert(font.into_font_data());
+            if let Entry::Vacant(entry) = self.fonts.entry(font.id) {
+                if let Some(data) = font_data.get(&font.data_shmem_key) {
+                    entry.insert(font.into_font_data_from_bytes(data.clone()));
                 }
             }
         }
@@ -625,22 +644,12 @@ impl RecordedScene {
     }
 }
 
-fn serialize_scene_to_shared_memory(scene: &RecordedScene) -> Result<IpcSharedMemory, String> {
-    let byte_len = postcard::experimental::serialized_size(scene)
-        .map_err(|error| format!("failed to measure paint scene: {error}"))?;
-    let mut bytes = IpcSharedMemory::from_byte(0, byte_len);
-    {
-        let buffer = unsafe { bytes.deref_mut() };
-        let written = postcard::to_slice(scene, buffer)
-            .map_err(|error| format!("failed to serialize paint scene: {error}"))?;
-        debug_assert_eq!(written.len(), byte_len);
-    }
-    Ok(bytes)
+fn serialize_scene_to_vec(scene: &RecordedScene) -> Result<Vec<u8>, String> {
+    postcard::to_allocvec(scene)
+        .map_err(|error| format!("failed to serialize paint scene: {error}"))
 }
 
-fn deserialize_scene_from_shared_memory(
-    scene_bytes: &IpcSharedMemory,
-) -> Result<RecordedScene, String> {
+fn deserialize_scene_from_slice(scene_bytes: &[u8]) -> Result<RecordedScene, String> {
     postcard::from_bytes(scene_bytes)
         .map_err(|error| format!("failed to deserialize paint scene: {error}"))
 }
@@ -653,17 +662,26 @@ pub struct PaintFrame {
     pub viewport_height: u32,
     pub composition: FrameCompositionMetadata,
     font_registrations: Vec<RegisteredFont>,
-    scene_bytes: IpcSharedMemory,
+    /// Key into the IPC shared memory map.  The sender serialized the paint
+    /// scene into a byte buffer and placed it under this key; the receiver
+    /// reads the bytes from the shmem map using this key and passes them to
+    /// `into_recorded_scene()`.
+    pub scene_shmem_key: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PaintTransportSummary {
     pub scene_bytes: usize,
     pub registered_fonts: usize,
-    pub registered_font_bytes: usize,
 }
 
 impl PaintFrame {
+    /// Create a `PaintFrame` and return it together with the serialised scene
+    /// bytes and font data that the caller must place into the IPC shared
+    /// memory map.
+    ///
+    /// `next_shmem_key` is used to assign unique keys for the scene bytes and
+    /// each font's data.  On return it is advanced past all assigned keys.
     pub fn new(
         traversable_id: WebviewId,
         frame_id: FrameId,
@@ -671,51 +689,94 @@ impl PaintFrame {
         viewport_height: u32,
         composition: FrameCompositionMetadata,
         scene: PreparedScene,
-    ) -> Result<Self, String> {
+        next_shmem_key: &mut usize,
+    ) -> Result<(Self, HashMap<usize, ipc::IpcSharedRegion>), String> {
         let PreparedScene {
             scene,
             registered_fonts,
+            font_shmem,
         } = scene;
-        Ok(Self {
-            traversable_id,
-            frame_id,
-            viewport_width,
-            viewport_height,
-            composition,
-            font_registrations: registered_fonts,
-            scene_bytes: serialize_scene_to_shared_memory(&scene)?,
-        })
+
+        let mut shmem_map: HashMap<usize, ipc::IpcSharedRegion> = font_shmem;
+
+        let scene_shmem_key = *next_shmem_key;
+        *next_shmem_key += 1;
+        let scene_bytes = serialize_scene_to_vec(&scene)?;
+        let scene_region = ipc::IpcSharedRegion::from_bytes(&scene_bytes);
+        shmem_map.insert(scene_shmem_key, scene_region);
+
+        Ok((
+            Self {
+                traversable_id,
+                frame_id,
+                viewport_width,
+                viewport_height,
+                composition,
+                font_registrations: registered_fonts,
+                scene_shmem_key,
+            },
+            shmem_map,
+        ))
     }
 
-    pub fn transport_summary(&self) -> PaintTransportSummary {
+    pub fn transport_summary(
+        &self,
+        shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
+    ) -> PaintTransportSummary {
+        let scene_bytes = shmem_regions
+            .get(&self.scene_shmem_key)
+            .map(|r| r.size())
+            .unwrap_or(0);
         PaintTransportSummary {
-            scene_bytes: self.scene_bytes.len(),
+            scene_bytes,
             registered_fonts: self.font_registrations.len(),
-            registered_font_bytes: self
-                .font_registrations
-                .iter()
-                .map(RegisteredFont::len)
-                .sum(),
         }
     }
 
+    /// Consume the paint frame into a `RecordedScene`.  The scene bytes and
+    /// font data are read from the IPC shmem regions map, keyed by the
+    /// values stored in this frame.  No copy is made beyond the final
+    /// deserialization.
     pub fn into_recorded_scene(
         self,
         font_receiver: &mut FontTransportReceiver,
+        shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
     ) -> Result<RecordedScene, String> {
         let PaintFrame {
-            font_registrations,
-            scene_bytes,
-            ..
+            font_registrations, ..
         } = self;
-        font_receiver.register_fonts(font_registrations);
-        deserialize_scene_from_shared_memory(&scene_bytes)
+
+        // Reconstruct font data from the shmem regions for the receiver.
+        let mut font_data: HashMap<usize, Vec<u8>> = HashMap::new();
+        for font in &font_registrations {
+            if let Some(region) = shmem_regions.get(&font.data_shmem_key) {
+                font_data.insert(font.data_shmem_key, region.as_slice().to_vec());
+            }
+        }
+        font_receiver.register_fonts(font_registrations, &font_data);
+
+        let scene_bytes = shmem_regions
+            .get(&self.scene_shmem_key)
+            .map(|r| r.as_slice())
+            .unwrap_or_default();
+        deserialize_scene_from_slice(scene_bytes)
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum WebviewProviderMessage {
-    PaintFrame(PaintFrame),
+    /// A paint frame with its associated scene and font data reconstructed
+    /// from the IPC shared memory map.  The webview calls
+    /// `PaintFrame::into_recorded_scene()` with `scene_bytes` and
+    /// `font_data`.
+    PaintFrame {
+        frame: PaintFrame,
+        /// IPC shared memory regions. The caller passes this to
+        /// `PaintFrame::into_recorded_scene()`, which reads scene bytes
+        /// and font data from the regions keyed by `scene_shmem_key` and
+        /// each font's `data_shmem_key`.
+        shmem_regions: HashMap<usize, ipc::IpcSharedRegion>,
+    },
     RegisterChildNavigableHost {
         child_webview_id: WebviewId,
         parent_traversable_id: WebviewId,
@@ -812,8 +873,9 @@ pub enum Event {
     IframeTraversableRemoved(IframeTraversableRemoval),
     ScriptEvaluated(ScriptEvaluationResult),
     ElementClicked(ElementClickResult),
-    ClipboardReadRequested(ClipboardReadRequest),
-    ClipboardWriteRequested(ClipboardWriteRequest),
+    /// A request from content to write text to the system clipboard.
+    /// This is fire-and-forget — no reply is sent.
+    ClipboardWriteRequested(ClipboardWriteRequested),
     CommandCompleted,
     MediaLoadRequested(MediaLoadRequest),
     PaintReady(PaintFrame),

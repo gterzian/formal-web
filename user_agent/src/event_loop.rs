@@ -1,17 +1,13 @@
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
-use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
-use ipc_channel::router::ROUTER;
 use ipc_messages::content::{
-    Bootstrap, ClipboardReadRequest, ClipboardWriteRequest, ColorScheme as MessageColorScheme,
-    Command as ContentCommand, ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId,
-    TraversableViewport, ViewportSnapshot, WebviewProviderMessage,
+    ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command as ContentCommand,
+    ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport,
+    ViewportSnapshot, WebviewProviderMessage,
 };
 use log::{debug, error};
 use std::collections::{HashMap, HashSet, VecDeque};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command as ProcessCommand};
+use std::process::Child;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -19,7 +15,7 @@ use verification::TraceSender;
 
 use crate::fetch::FetchCommand;
 use crate::timer::{TimerCommand, TimerCompletion};
-use crate::{Embedder, UserAgentCommand, sidecar_executable_path};
+use crate::{Embedder, UserAgentCommand};
 
 /// graceful shutdown of the content process owned by one HTML event loop.
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
@@ -151,10 +147,10 @@ struct EventLoopWorker {
     /// <https://html.spec.whatwg.org/multipage/#event-loop>
     event_loop_id: EventLoopId,
     /// IPC sender for commands routed into the dedicated content process.
-    command_sender: IpcSender<ContentCommand>,
+    command_sender: ipc::IpcSender<ContentCommand>,
     /// IPC receiver for content-originated events, including fetch requests, timers, and
     /// navigation continuations.
-    event_receiver: Receiver<Result<ContentEvent, String>>,
+    event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<ContentEvent>>,
     /// Child process handle for the content sidecar tied to this event loop.
     child: Option<Child>,
     /// Sender back into the owning user-agent worker for navigation and lifecycle coordination.
@@ -215,50 +211,19 @@ impl EventLoopWorker {
         command_receiver: Receiver<EventLoopCommand>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
-        let (server, token) = IpcOneShotServer::<Bootstrap>::new()
-            .map_err(|error| format!("failed to create IPC one-shot server: {error}"))?;
-
-        let executable_path = sidecar_executable_path("formal-web-content")?;
-
-        let sanitized_label = process_label
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || matches!(ch, ':' | '-' | '_' | '.') {
-                    ch
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-
-        let mut child_process = ProcessCommand::new(&executable_path);
-        #[cfg(unix)]
-        child_process.arg0(format!("formal-web-content:{sanitized_label}"));
-        child_process.arg("--content-token").arg(&token);
-        child_process.arg("--content-label").arg(&process_label);
-
-        let child = child_process
-            .spawn()
-            .map_err(|error| format!("failed to start content: {error}"))?;
-        let (_receiver, bootstrap) = server
-            .accept()
-            .map_err(|error| format!("failed to accept content bootstrap: {error}"))?;
-
-        let (event_sender, event_receiver) = unbounded();
-        ROUTER.add_typed_route(
-            bootstrap.event_receiver,
-            Box::new(move |message| {
-                let _ = event_sender.send(
-                    message.map_err(|error| format!("failed to decode content IPC event: {error}")),
-                );
-            }),
-        );
+        let manifest = crate::ipc_manifest::ContentExtensionManifest::new(process_label);
+        let client = ipc::start_extension::<
+            crate::ipc_manifest::ContentExtensionManifest,
+            ContentCommand,
+            ContentEvent,
+        >(&manifest)
+        .map_err(|error| format!("failed to start content extension: {error}"))?;
 
         let worker = Self {
             event_loop_id,
-            command_sender: bootstrap.command_sender,
-            event_receiver,
-            child: Some(child),
+            command_sender: client.tx,
+            event_receiver: client.rx,
+            child: client.child,
             user_agent_command_sender,
             fetch_command_sender,
             timer_command_sender,
@@ -279,8 +244,6 @@ impl EventLoopWorker {
         worker.send_command_inner(&ContentCommand::SetTraceSender(trace_sender))?;
 
         if let Some(snapshot) = worker.host.window_viewport_snapshot() {
-            // Initial viewport state is host configuration, not an HTML task, so it seeds the
-            // content process immediately after bootstrap.
             let command = viewport_command(snapshot);
             if let Err(error) = worker.send_command_inner(&command) {
                 error!("failed to send initial viewport command: {error}");
@@ -421,7 +384,11 @@ impl EventLoopWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
-    fn handle_content_event_message(&mut self, event: ContentEvent) -> Result<bool, String> {
+    fn handle_content_event_message(
+        &mut self,
+        event: ContentEvent,
+        incoming_shmem: &HashMap<usize, ipc::IpcSharedRegion>,
+    ) -> Result<bool, String> {
         match event {
             ContentEvent::DocumentFetchRequested(request) => {
                 // Keep network work off the event-loop thread and arm the timeout
@@ -560,28 +527,32 @@ impl EventLoopWorker {
                     let _ = waiter.send(error.map_or(Ok(()), Err));
                 }
             }
-            ContentEvent::ClipboardReadRequested(ClipboardReadRequest { reply_sender }) => {
-                let response = self.host.clipboard_get_text(CONTENT_CLIPBOARD_TIMEOUT);
-                let _ = reply_sender.send(response);
-            }
-            ContentEvent::ClipboardWriteRequested(ClipboardWriteRequest { text, reply_sender }) => {
-                let response = self
+            ContentEvent::ClipboardWriteRequested(ClipboardWriteRequested { text }) => {
+                // Fire-and-forget: write to system clipboard, no reply expected.
+                // The host writes the text; any error is logged but not propagated
+                // since content does not wait for a response.
+                if let Err(error) = self
                     .host
-                    .clipboard_set_text(text, CONTENT_CLIPBOARD_TIMEOUT);
-                let _ = reply_sender.send(response);
+                    .clipboard_set_text(text, CONTENT_CLIPBOARD_TIMEOUT)
+                {
+                    log::error!("clipboard write failed: {error}");
+                }
             }
-            ContentEvent::PaintReady(snapshot) => {
+            ContentEvent::PaintReady(frame) => {
                 log_render_state_debug(format!(
                     "paint ready event_loop={} traversable={} frame={} size=({}, {})",
                     self.event_loop_id,
-                    snapshot.traversable_id.0,
-                    snapshot.frame_id.0,
-                    snapshot.viewport_width,
-                    snapshot.viewport_height,
+                    frame.traversable_id.0,
+                    frame.frame_id.0,
+                    frame.viewport_width,
+                    frame.viewport_height,
                 ));
                 if let Err(error) = self
                     .webview_provider_sender
-                    .send(WebviewProviderMessage::PaintFrame(snapshot))
+                    .send(WebviewProviderMessage::PaintFrame {
+                        frame,
+                        shmem_regions: incoming_shmem.clone(),
+                    })
                 {
                     error!("failed to enqueue webview-provider paint frame: {error}");
                 } else {
@@ -670,15 +641,8 @@ impl EventLoopWorker {
                     }
                 }
                 recv(event_receiver) -> event => {
-                    let event = match event {
-                        Ok(Ok(event)) => event,
-                        Ok(Err(error)) => {
-                            if let Some(reply) = self.stop_reply.take() {
-                                let _ = reply.send(Err(error.clone()));
-                            }
-                            error!("content bridge route error: {error}");
-                            break;
-                        }
+                    let incoming = match event {
+                        Ok(incoming) => incoming,
                         Err(error) => {
                             let child_status = if let Some(child) = self.child.as_mut() {
                                 let deadline = Instant::now() + Duration::from_millis(500);
@@ -704,7 +668,9 @@ impl EventLoopWorker {
                         }
                     };
 
-                    match self.handle_content_event_message(event) {
+                    match self
+                        .handle_content_event_message(incoming.payload, &incoming.shmem_regions)
+                    {
                         Ok(true) => {}
                         Ok(false) => {
                             if let Some(reply) = self.stop_reply.take() {

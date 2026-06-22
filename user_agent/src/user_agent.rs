@@ -1,5 +1,6 @@
 mod event_loop;
 mod fetch;
+pub(crate) mod ipc_manifest;
 pub(crate) mod media;
 mod timer;
 
@@ -3174,6 +3175,7 @@ impl UserAgentWorker {
             events: vec![DispatchEventEntry {
                 document_id: *document_id,
                 event,
+                prefetched_clipboard_text: None,
             }],
         };
         let _ = entry

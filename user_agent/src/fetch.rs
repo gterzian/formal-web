@@ -1,23 +1,19 @@
-use crossbeam_channel::{Receiver, Sender, select, unbounded};
-use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
-use ipc_channel::router::ROUTER;
+use crossbeam_channel::{Receiver, Sender, select};
 use ipc_messages::content::{
     DocumentFetchId, EventLoopId, FetchRequest as ContentFetchRequest,
     FetchResponse as ContentFetchResponse, NavigationFetchId,
 };
-use ipc_messages::network::{
-    Bootstrap as NetworkBootstrap, Request as NetworkRequest, Response as NetworkResponse,
-};
+use ipc_messages::network::{Request as NetworkRequest, Response as NetworkResponse};
 use log::error;
 use std::collections::HashMap;
 #[cfg(unix)]
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command};
+use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant};
 use verification::TraceSender;
 
-use crate::{UserAgentCommand, sidecar_executable_path};
+use crate::UserAgentCommand;
+use crate::ipc_manifest::NetExtensionManifest;
 
 /// graceful shutdown of the network sidecar owned by the fetch worker.
 const FETCH_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
@@ -463,9 +459,9 @@ struct FetchWorker {
     /// Sender back into the user-agent thread for navigation/document fetch completions.
     user_agent_command_sender: Sender<UserAgentCommand>,
     /// IPC sender to the dedicated network sidecar process.
-    network_request_sender: IpcSender<NetworkRequest>,
+    network_request_sender: ipc::IpcSender<NetworkRequest>,
     /// IPC receiver for network sidecar responses.
-    network_event_receiver: Receiver<Result<NetworkResponse, String>>,
+    network_event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<NetworkResponse>>,
     /// Child process handle for the network sidecar.
     child: Option<Child>,
     /// Transport-local request id allocator for the network IPC bridge.
@@ -515,53 +511,32 @@ fn finish_shutdown(mut child: Option<Child>) {
     }
 }
 
-/// bootstrapping the dedicated network sidecar process used by
-/// fetch-backed navigation and document fetch continuations.
-pub fn start_network_bridge(
+/// Start the net extension using the new IPC abstraction layer.
+pub fn start_net_extension(
     trace_sender: Option<TraceSender>,
 ) -> Result<
     (
-        IpcSender<NetworkRequest>,
-        Receiver<Result<NetworkResponse, String>>,
-        Child,
+        ipc::IpcSender<NetworkRequest>,
+        crossbeam_channel::Receiver<ipc::IpcIncoming<NetworkResponse>>,
+        Option<std::process::Child>,
     ),
     String,
 > {
-    let (server, token) = IpcOneShotServer::<NetworkBootstrap>::new()
-        .map_err(|error| format!("failed to create network IPC one-shot server: {error}"))?;
+    let manifest = NetExtensionManifest;
+    let client =
+        ipc::start_extension::<NetExtensionManifest, NetworkRequest, NetworkResponse>(&manifest)
+            .map_err(|error| format!("failed to start net extension: {error}"))?;
 
-    let executable_path = sidecar_executable_path("formal-web-net")?;
+    // Send initial trace sender if set
+    if let Some(trace_sender) = trace_sender {
+        client
+            .tx
+            .send(NetworkRequest::SetTraceSender(Some(trace_sender)))
+            .map_err(|error| format!("failed to send trace sender to net: {error}"))?;
+    }
 
-    let mut child_process = Command::new(&executable_path);
-    #[cfg(unix)]
-    child_process.arg0("formal-web-net");
-    child_process.arg("--net-token").arg(&token);
-
-    let child = child_process
-        .spawn()
-        .map_err(|error| format!("failed to start network process: {error}"))?;
-    let (_receiver, bootstrap) = server
-        .accept()
-        .map_err(|error| format!("failed to accept network bootstrap: {error}"))?;
-
-    bootstrap
-        .request_sender
-        .send(NetworkRequest::SetTraceSender(trace_sender))
-        .map_err(|error| format!("failed to send trace sender to network process: {error}"))?;
-
-    let (event_sender, event_receiver) = unbounded();
-    ROUTER.add_typed_route(
-        bootstrap.response_receiver,
-        Box::new(move |message| {
-            let _ =
-                event_sender
-                    .send(message.map_err(|error| {
-                        format!("failed to decode network IPC response: {error}")
-                    }));
-        }),
-    );
-
-    Ok((bootstrap.request_sender, event_receiver, child))
+    let child = client.child;
+    Ok((client.tx, client.rx, child))
 }
 
 impl FetchWorker {
@@ -572,13 +547,13 @@ impl FetchWorker {
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (network_request_sender, network_event_receiver, child) =
-            start_network_bridge(trace_sender)?;
+            start_net_extension(trace_sender)?;
         Ok(Self {
             command_receiver,
             user_agent_command_sender,
             network_request_sender,
             network_event_receiver,
-            child: Some(child),
+            child,
             next_request_id: 1,
             fetch_group: FetchGroup::new(),
             shutdown_reply: None,
@@ -771,18 +746,15 @@ impl FetchWorker {
                     }
                 }
                 recv(network_event_receiver) -> response => {
-                    let response = match response {
-                        Ok(Ok(response)) => response,
-                        Ok(Err(error)) => {
-                            error!("network process route error: {error}");
-                            break;
+                    match response {
+                        Ok(incoming) => {
+                            self.handle_network_response(incoming.payload);
                         }
                         Err(error) => {
                             error!("network response route closed: {error}");
                             break;
                         }
-                    };
-                    self.handle_network_response(response);
+                    }
                 }
             }
         }

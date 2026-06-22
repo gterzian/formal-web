@@ -148,7 +148,10 @@ impl WebviewProvider {
 
     fn handle_provider_message(&mut self, message: WebviewProviderMessage) -> Result<(), String> {
         match message {
-            WebviewProviderMessage::PaintFrame(frame) => self.on_paint_frame(frame),
+            WebviewProviderMessage::PaintFrame {
+                frame,
+                shmem_regions,
+            } => self.on_paint_frame(frame, &shmem_regions),
             WebviewProviderMessage::RegisterChildNavigableHost {
                 child_webview_id,
                 parent_traversable_id,
@@ -174,8 +177,8 @@ impl WebviewProvider {
                     "[webview] received video frame: {}x{} paint={:?} webview={:?}",
                     video_frame.width, video_frame.height, paint_id, webview_id,
                 );
-                // Convert the IpcSharedMemory to Arc<[u8]> for the compositor.
-                let pixel_bytes: Arc<[u8]> = video_frame.data.take().unwrap_or_default().into();
+                // Convert the video frame data to Arc<[u8]> for the compositor.
+                let pixel_bytes: Arc<[u8]> = video_frame.data.into();
                 let compositor_frame = CompositorVideoFrame {
                     video_paint_id: paint_id,
                     width: video_frame.width,
@@ -336,7 +339,11 @@ impl WebviewProvider {
         self.embedder.request_redraw(parent_traversable_id);
     }
 
-    pub fn on_paint_frame(&mut self, mut frame: PaintFrame) -> Result<(), String> {
+    pub fn on_paint_frame(
+        &mut self,
+        mut frame: PaintFrame,
+        shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
+    ) -> Result<(), String> {
         let _source_webview_id = frame.traversable_id;
         let is_root_candidate = !self
             .child_navigable_hosts_by_webview
@@ -361,7 +368,8 @@ impl WebviewProvider {
                 composition.embed_sites.len()
             );
         }
-        let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver)?;
+        let recorded_scene =
+            frame.into_recorded_scene(&mut self.font_receiver, shmem_regions)?;
 
         let state = self.webviews.entry(traversable_id).or_default();
         state.compositor.store_frame(

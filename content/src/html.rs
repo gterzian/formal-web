@@ -19,7 +19,7 @@ mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
 
 use boa_engine::object::JsObject;
-use ipc_channel::ipc::IpcSender;
+use ipc::IpcSender;
 use ipc_messages::content::{
     DocumentId, Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,
     NewChildNavigableInfo, NewTraversableInfo, UserNavigationInvolvement,

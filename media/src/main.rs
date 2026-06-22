@@ -2,16 +2,27 @@ mod managed_pipeline;
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
-use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
-use ipc_channel::router::RouterProxy;
-use ipc_messages::media::{MediaBootstrap, MediaCommand, MediaEvent, MediaPipelineId};
+use ipc::ExtensionEndpoint;
+use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
 use managed_pipeline::ManagedPipeline;
 use std::collections::HashMap;
 use std::env;
 
+struct MediaExtensionManifest;
+
+impl ipc::ExtensionManifest for MediaExtensionManifest {
+    fn endpoint(&self) -> ExtensionEndpoint {
+        ExtensionEndpoint::Singleton {
+            service_name: "formal-web.media",
+        }
+    }
+}
+
 pub fn run_media_process(
-    cmd_receiver: IpcReceiver<MediaCommand>,
-    event_sender: IpcSender<MediaEvent>,
+    cmd_rx: crossbeam_channel::Receiver<ipc::IpcIncoming<MediaCommand>>,
+    event_tx: crossbeam_channel::Sender<MediaEvent>,
+    event_rx: crossbeam_channel::Receiver<MediaEvent>,
+    ipc_event_tx: ipc::IpcSender<MediaEvent>,
 ) {
     // On macOS, ensure NSApplication is set up on the main thread before any
     // GStreamer GL elements are created. This avoids the "An NSApplication needs
@@ -24,10 +35,6 @@ pub fn run_media_process(
         return;
     }
 
-    // Route the IPC command receiver through the router to get a crossbeam receiver.
-    let router = RouterProxy::new();
-    let cmd_rx = router.route_ipc_receiver_to_new_crossbeam_receiver(cmd_receiver);
-
     // Shared channel for GStreamer bus messages from all pipelines.
     // Each pipeline's sync handler sends (pipeline_id, message) here.
     let (bus_msg_sender, bus_msg_receiver) =
@@ -39,8 +46,13 @@ pub fn run_media_process(
         crossbeam_channel::select! {
             recv(cmd_rx) -> cmd => {
                 match cmd {
-                    Ok(command) => {
-                        if handle_command(command, &mut pipelines, &event_sender, &bus_msg_sender) {
+                    Ok(incoming) => {
+                        if handle_command(
+                            incoming.payload,
+                            &mut pipelines,
+                            &event_tx,
+                            &bus_msg_sender,
+                        ) {
                             break; // Shutdown received
                         }
                     }
@@ -50,9 +62,30 @@ pub fn run_media_process(
             recv(bus_msg_receiver) -> msg => {
                 match msg {
                     Ok((pipeline_id, bus_msg)) => {
-                        handle_bus_message(&pipeline_id, &bus_msg, &pipelines, &event_sender);
+                        handle_bus_message(&pipeline_id, &bus_msg, &pipelines, &event_tx);
                     }
                     Err(_) => {} // bus message channel disconnected (should not happen)
+                }
+            }
+            recv(event_rx) -> event => {
+                let Ok(event) = event else { break; };
+                match event {
+                    MediaEvent::Frame(mut video_frame) => {
+                        let data = std::mem::take(&mut video_frame.data);
+                        let mut shmem_map = std::collections::HashMap::new();
+                        shmem_map.insert(0, ipc::IpcSharedRegion::from_bytes(&data));
+                        if ipc_event_tx
+                            .send_with_shmem_map(MediaEvent::Frame(video_frame), shmem_map)
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    other_event => {
+                        if ipc_event_tx.send(other_event).is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -70,17 +103,16 @@ fn handle_bus_message(
     pipeline_id: &MediaPipelineId,
     msg: &gst::Message,
     pipelines: &HashMap<MediaPipelineId, ManagedPipeline>,
-    event_sender: &IpcSender<MediaEvent>,
+    event_tx: &crossbeam_channel::Sender<MediaEvent>,
 ) {
     match msg.view() {
         gst::MessageView::Eos(..) => {
-            // EOS does not destroy the pipeline; the user may want to replay or seek.
-            let _ = event_sender.send(MediaEvent::Eos {
+            let _ = event_tx.send(MediaEvent::Eos {
                 pipeline_id: *pipeline_id,
             });
         }
         gst::MessageView::Error(error) => {
-            let _ = event_sender.send(MediaEvent::Error {
+            let _ = event_tx.send(MediaEvent::Error {
                 pipeline_id: *pipeline_id,
                 message: error.error().to_string(),
             });
@@ -88,7 +120,7 @@ fn handle_bus_message(
         gst::MessageView::DurationChanged(..) => {
             if let Some(pipeline) = pipelines.get(pipeline_id) {
                 if let Some(dur) = pipeline.element.query_duration::<gst::ClockTime>() {
-                    let _ = event_sender.send(MediaEvent::DurationChanged {
+                    let _ = event_tx.send(MediaEvent::DurationChanged {
                         pipeline_id: *pipeline_id,
                         duration_secs: dur.seconds_f64(),
                     });
@@ -103,25 +135,20 @@ fn handle_bus_message(
 fn handle_command(
     cmd: MediaCommand,
     pipelines: &mut HashMap<MediaPipelineId, ManagedPipeline>,
-    event_sender: &IpcSender<MediaEvent>,
+    event_tx: &crossbeam_channel::Sender<MediaEvent>,
     bus_msg_sender: &crossbeam_channel::Sender<(MediaPipelineId, gst::Message)>,
 ) -> bool {
     match cmd {
         MediaCommand::CreatePipeline { pipeline_id, url } => {
             log::info!("[media] creating pipeline id={:?} url={}", pipeline_id, url);
-            match ManagedPipeline::new(
-                pipeline_id,
-                url,
-                event_sender.clone(),
-                bus_msg_sender.clone(),
-            ) {
+            match ManagedPipeline::new(pipeline_id, url, event_tx.clone(), bus_msg_sender.clone()) {
                 Ok(p) => {
                     log::info!("[media] pipeline created id={:?}", pipeline_id);
                     pipelines.insert(pipeline_id, p);
                 }
                 Err(error) => {
                     log::error!("[media] failed to create media pipeline {pipeline_id:?}: {error}");
-                    let _ = event_sender.send(MediaEvent::Error {
+                    let _ = event_tx.send(MediaEvent::Error {
                         pipeline_id,
                         message: format!("pipeline creation failed: {error}"),
                     });
@@ -185,24 +212,20 @@ fn media_token_from_args() -> Result<Option<String>, String> {
 }
 
 pub fn run_media_process_from_args() -> Result<(), String> {
-    let token =
-        media_token_from_args()?.ok_or_else(|| String::from("missing --media-token argument"))?;
-    run_media_process_with_token(token)
-}
+    let token = media_token_from_args()?;
+    let manifest = MediaExtensionManifest;
+    let server = ipc::run_extension::<MediaExtensionManifest, MediaCommand, MediaEvent>(
+        &manifest,
+        &token.unwrap_or_default(),
+        "formal-web.media",
+    )
+    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
-pub fn run_media_process_with_token(token: String) -> Result<(), String> {
-    let (command_sender, command_receiver) =
-        ipc::channel::<MediaCommand>().map_err(|error| error.to_string())?;
-    let (event_sender, event_receiver) =
-        ipc::channel::<MediaEvent>().map_err(|error| error.to_string())?;
-    let bootstrap = IpcSender::<MediaBootstrap>::connect(token)
-        .map_err(|error| format!("failed to connect media bootstrap: {error}"))?;
-    bootstrap
-        .send(MediaBootstrap {
-            command_sender,
-            event_receiver,
-        })
-        .map_err(|error| format!("failed to send media bootstrap: {error}"))?;
-    run_media_process(command_receiver, event_sender);
+    // GStreamer callbacks push events to a crossbeam channel (non-blocking);
+    // the main thread's select loop forwards them to the IPC sender.
+    let ipc_event_tx = server.tx;
+    let (crossbeam_event_tx, crossbeam_event_rx) = crossbeam_channel::unbounded::<MediaEvent>();
+
+    run_media_process(server.rx, crossbeam_event_tx, crossbeam_event_rx, ipc_event_tx);
     Ok(())
 }

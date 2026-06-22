@@ -4,7 +4,7 @@ use std::mem;
 
 use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
-use ipc_channel::ipc::IpcSender;
+use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
 
 use crate::dom::Element;

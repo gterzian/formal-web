@@ -165,6 +165,40 @@ anyrender_svg, wgpu_context) are sourced from crates.io at the versions
 required by the blitz workspace (0.10, 0.10.1, 0.12.1, 0.11.0, 0.6.0
 respectively).
 
+### IPC wire format consistency
+
+The helper processes (`formal-web-content`, `formal-web-net`,
+`formal-web-media`) are separate workspace member binaries, **not** in
+the root binary's dependency tree.  `cargo run --release` rebuilds only
+the root binary and its transitive library deps — it does **not** rebuild
+the helper binaries.
+
+As long as Rust types (`IpcSender<T>`, message enums) stay the same,
+stale helper binaries are harmless — parent and child share the same
+serde-driven wire format.  But changes to the `ipc/` crate that alter
+the **wire envelope** (e.g. wrapping messages in a new tuple, changing
+the channel type parameter) change the serialization format.  After such
+a change, old helper binaries will fail to deserialize, producing
+`DeserializeUnexpectedEnd` errors.  Cargo cannot detect this because the
+wire format is an implicit protocol, not a type-level dependency.
+
+**To recover from protocol mismatch:** `cargo clean` the affected
+member packages and rebuild:
+
+```bash
+cargo clean -p content -p net -p media -p ipc -p user_agent -p embedder
+cargo build --release
+cargo run --release
+```
+
+To avoid the issue entirely after a protocol-changing edit, run a full
+build before running:
+
+```bash
+cargo build --release   # rebuilds EVERY workspace binary
+cargo run --release     # all processes are in sync
+```
+
 ### Process binary search paths
 
 When the embedder spawns a helper process, it searches the directory
@@ -234,6 +268,16 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - Do not bulk-rename existing code with scripts — it creates merge conflicts, breaks history,
   and introduces subtle bugs when renames are inconsistent. Rename incrementally when
   modifying nearby code.
+- **No wildcard imports** — `use foo::bar::*` is prohibited. Every import must list the
+  specific types or traits used. This makes dependencies clear at every module boundary.
+
+# Statics and Atomics
+
+Never use a `static` or atomic when a local variable or parameter will do.
+Statics and atomics are only justified for genuinely cross-thread shared
+mutable state (e.g. a counter accessed from multiple OS threads).  Do not
+reach for them as a convenience — a plain local is simpler, testable, and
+ever correct.
 
 # Spec Fidelity
 

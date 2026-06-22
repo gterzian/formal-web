@@ -871,6 +871,7 @@ name = "content"
 version = "0.1.0"
 dependencies = [
  "anyrender",
+ "arboard",
  "blitz-dom",
  "blitz-paint",
  "blitz-traits",
@@ -881,7 +882,7 @@ dependencies = [
  "data-url",
  "env_logger",
  "html5ever 0.39.0",
- "ipc-channel",
+ "ipc",
  "ipc_messages",
  "keyboard-types",
  "log",
@@ -2708,6 +2709,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "ipc-channel",
+ "log",
+ "postcard",
+ "serde",
+ "xpc-sys",
+]
+
+[[package]]
 name = "ipc-channel"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2731,6 +2744,7 @@ name = "ipc_messages"
 version = "0.1.0"
 dependencies = [
  "anyrender",
+ "ipc",
  "ipc-channel",
  "peniko",
  "postcard",
@@ -3076,7 +3090,7 @@ dependencies = [
  "env_logger",
  "gstreamer",
  "gstreamer-app",
- "ipc-channel",
+ "ipc",
  "ipc_messages",
  "log",
  "serde",
@@ -3220,7 +3234,7 @@ name = "net"
 version = "0.1.0"
 dependencies = [
  "env_logger",
- "ipc-channel",
+ "ipc",
  "ipc_messages",
  "log",
  "mime_guess",
@@ -5771,7 +5785,7 @@ version = "0.1.0"
 dependencies = [
  "blitz-traits",
  "crossbeam-channel",
- "ipc-channel",
+ "ipc",
  "ipc_messages",
  "log",
  "psl",
@@ -6552,6 +6566,7 @@ dependencies = [
  "anyrender",
  "blitz-traits",
  "crossbeam-channel",
+ "ipc",
  "ipc-channel",
  "ipc_messages",
  "keyboard-types",
@@ -7356,6 +7371,15 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "xpc-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+ "log",
+]
 
 [[package]]
 name = "yeslogic-fontconfig-sys"
