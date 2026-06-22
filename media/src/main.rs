@@ -71,10 +71,9 @@ pub fn run_media_process(
                 let Ok(event) = event else { break; };
                 match event {
                     MediaEvent::Frame(mut video_frame) => {
-                        let key = video_frame.data_shmem_key;
                         let data = std::mem::take(&mut video_frame.data);
                         let mut shmem_map = std::collections::HashMap::new();
-                        shmem_map.insert(key, ipc::IpcSharedRegion::from_bytes(&data));
+                        shmem_map.insert(0, ipc::IpcSharedRegion::from_bytes(&data));
                         if ipc_event_tx
                             .send_with_shmem_map(MediaEvent::Frame(video_frame), shmem_map)
                             .is_err()

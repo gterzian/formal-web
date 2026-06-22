@@ -2124,9 +2124,6 @@ impl ExtensionManifest for ContentExtensionManifest {
 pub fn run_content_process(token: String) -> Result<(), String> {
     let manifest = ContentExtensionManifest;
 
-    // If the token starts with "xpc-ep:", it's an anonymous XPC endpoint.
-    // Use the multi-instance endpoint pattern instead of the listen-based
-    // extension (which triggers launchd's watchdog for the 42MB binary).
     let server = run_extension::<ContentExtensionManifest, Command, ContentEvent>(
         &manifest,
         &token,

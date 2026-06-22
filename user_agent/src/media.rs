@@ -134,7 +134,7 @@ impl MediaWorker {
                             match &mut incoming.payload {
                                 MediaEvent::Frame(video_frame) => {
                                     if let Some(region) =
-                                        incoming.shmem_regions.get(&video_frame.data_shmem_key)
+                                        incoming.shmem_regions.get(&0)
                                     {
                                         video_frame.data = region.as_slice().to_vec();
                                     }

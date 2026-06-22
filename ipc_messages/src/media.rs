@@ -67,10 +67,6 @@ pub struct VideoFrame {
     pub pipeline_id: MediaPipelineId,
     pub width: u32,
     pub height: u32,
-    /// Key into the IPC shared memory map. The sender placed the RGBA8
-    /// pixel data (width * height * 4 bytes) under this key; the receiver
-    /// looks up the data using this key.
-    pub data_shmem_key: usize,
     /// RGBA8 pixel data. `#[serde(skip)]` — not serialized over IPC.
     /// Carried locally within the media process (crossbeam bridge) and
     /// extracted into the IPC shared memory map before serialization.

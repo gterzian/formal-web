@@ -271,6 +271,14 @@ The `.pi/extensions/web_standards/` extension lazily loads and caches web standa
 - **No wildcard imports** — `use foo::bar::*` is prohibited. Every import must list the
   specific types or traits used. This makes dependencies clear at every module boundary.
 
+# Statics and Atomics
+
+Never use a `static` or atomic when a local variable or parameter will do.
+Statics and atomics are only justified for genuinely cross-thread shared
+mutable state (e.g. a counter accessed from multiple OS threads).  Do not
+reach for them as a convenience — a plain local is simpler, testable, and
+ever correct.
+
 # Spec Fidelity
 
 - Describe current architecture and behavior; keep task history out of repository docs.

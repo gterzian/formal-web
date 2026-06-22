@@ -1,13 +1,8 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use crossbeam_channel::Sender;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use ipc_messages::media::{MediaEvent, MediaPipelineId, VideoFrame};
-
-/// Global counter for assigning unique IPC shared memory keys to video frames.
-static NEXT_VIDEO_SHMEM_KEY: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct ManagedPipeline {
     pub element: gst::Pipeline,
@@ -91,13 +86,10 @@ impl ManagedPipeline {
                     let height: i32 = s.get("height").map_err(|_| gst::FlowError::Error)?;
                     let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
 
-                    let data_shmem_key =
-                        NEXT_VIDEO_SHMEM_KEY.fetch_add(1, Ordering::Relaxed);
                     let frame = VideoFrame {
                         pipeline_id: id,
                         width: width as u32,
                         height: height as u32,
-                        data_shmem_key,
                         data: map.as_slice().to_vec(),
                     };
 
