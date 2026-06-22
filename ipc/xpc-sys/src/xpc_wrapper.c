@@ -4,18 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Context structs for callback storage.
-struct listener_ctx {
-    xpc_listener_event_callback callback;
-    void* context;
-};
-
-struct peer_ctx {
-    xpc_peer_message_callback callback;
-    void* context;
-};
-
 // ── Listener connection creation ────────────────────────────────────────────
+//
+// All events (including XPC_TYPE_ERROR) are forwarded to the callback.
+// The block captures callback and context by value — no malloc needed.
 
 xpc_connection_t fw_xpc_create_listener(
     const char* service_name,
@@ -23,10 +15,6 @@ xpc_connection_t fw_xpc_create_listener(
     xpc_listener_event_callback callback,
     void* context)
 {
-    struct listener_ctx* ctx = malloc(sizeof(struct listener_ctx));
-    ctx->callback = callback;
-    ctx->context = context;
-
     xpc_connection_t listener = xpc_connection_create_mach_service(
         service_name,
         queue,
@@ -34,13 +22,20 @@ xpc_connection_t fw_xpc_create_listener(
     );
 
     xpc_connection_set_event_handler(listener, ^(xpc_object_t event) {
-        ctx->callback(event, ctx->context);
+        if (callback) {
+            callback(event, context);
+        }
     });
 
     return listener;
 }
 
 // ── Client connection creation ──────────────────────────────────────────────
+//
+// Forward ALL event types (XPC_TYPE_DICTIONARY and XPC_TYPE_ERROR) to Rust.
+// The Rust layer parses XPCErrorDescription from error objects to detect
+// invalidation and close crossbeam channels. Swallowing errors here causes
+// the parent process to deadlock when a helper exits unexpectedly.
 
 xpc_connection_t fw_xpc_create_client(
     const char* service_name,
@@ -48,10 +43,6 @@ xpc_connection_t fw_xpc_create_client(
     xpc_peer_message_callback callback,
     void* context)
 {
-    struct peer_ctx* ctx = malloc(sizeof(struct peer_ctx));
-    ctx->callback = callback;
-    ctx->context = context;
-
     xpc_connection_t conn = xpc_connection_create_mach_service(
         service_name,
         queue,
@@ -59,15 +50,8 @@ xpc_connection_t fw_xpc_create_client(
     );
 
     xpc_connection_set_event_handler(conn, ^(xpc_object_t object) {
-        xpc_type_t type = xpc_get_type(object);
-        if (type == XPC_TYPE_DICTIONARY) {
-            ctx->callback(object, ctx->context);
-        } else if (type == XPC_TYPE_ERROR) {
-            const char* desc = xpc_dictionary_get_string(object, "XPCErrorDescription");
-            if (desc) {
-                // Error events are handled by checking the error description.
-                // Don't forward to the message callback.
-            }
+        if (callback) {
+            callback(object, context);
         }
     });
 
@@ -82,13 +66,11 @@ void fw_xpc_set_listener_handler(
     xpc_listener_event_callback callback,
     void* context)
 {
-    struct listener_ctx* ctx = malloc(sizeof(struct listener_ctx));
-    ctx->callback = callback;
-    ctx->context = context;
-
     xpc_connection_set_target_queue(listener, queue);
     xpc_connection_set_event_handler(listener, ^(xpc_object_t event) {
-        ctx->callback(event, ctx->context);
+        if (callback) {
+            callback(event, context);
+        }
     });
 }
 
@@ -98,15 +80,10 @@ void fw_xpc_set_peer_handler(
     xpc_peer_message_callback callback,
     void* context)
 {
-    struct peer_ctx* ctx = malloc(sizeof(struct peer_ctx));
-    ctx->callback = callback;
-    ctx->context = context;
-
     xpc_connection_set_target_queue(peer, queue);
     xpc_connection_set_event_handler(peer, ^(xpc_object_t object) {
-        xpc_type_t type = xpc_get_type(object);
-        if (type == XPC_TYPE_DICTIONARY) {
-            ctx->callback(object, ctx->context);
+        if (callback) {
+            callback(object, context);
         }
     });
 }

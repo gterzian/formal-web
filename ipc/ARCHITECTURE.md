@@ -14,9 +14,26 @@ with its three helper processes:
 
 ## Two Backend Architecture
 
-The crate `ipc/` provides an abstract IPC layer with two selectable backends:
+The crate `ipc/` provides an abstract IPC layer with two selectable backends.
+On macOS, **native XPC is the default**. The ipc-channel backend remains
+available via the `ipc-channel-backend` Cargo feature (used by WPT and
+verification tooling on all platforms).
 
-### 1. `ipc-channel` backend (CURRENT DEFAULT)
+### 1. Native XPC backend (macOS default)
+
+Uses Apple's XPC framework directly for:
+
+- **Bootstrap**: Parent connects to a launchd-registered XPC service name.
+  launchd starts the helper process and delivers the peer connection.
+- **Transport**: Postcard-serialized payloads carried as `_p` data fields in XPC
+  dictionaries (`xpc_dictionary_set_data` / `xpc_dictionary_get_data`).
+- **Shared memory**: `xpc_shmem_create` / `xpc_shmem_map` (stub — not yet wired to
+  the message pipeline).
+
+**Selection**: Default on `target_vendor = "apple"` when `ipc-channel-backend`
+feature is not enabled.
+
+### 2. `ipc-channel` backend (testing, verification)
 
 Uses Servo's [`ipc-channel`](https://crates.io/crates/ipc-channel) crate for:
 
@@ -27,21 +44,8 @@ Uses Servo's [`ipc-channel`](https://crates.io/crates/ipc-channel) crate for:
 - **Routing**: `RouterProxy` / `ROUTER` to bridge ipc-channel receivers to crossbeam
   channels on both parent and child sides.
 
-**Selection**: `ipc-channel-backend` Cargo feature on `ipc/`.
-
-### 2. Native XPC backend (macOS only, EXPERIMENTAL)
-
-Uses Apple's XPC framework directly for:
-
-- **Bootstrap**: Parent creates a unique temporary XPC listener, passes the service
-  name to the child via the same `--<name>-token <uuid>` argv mechanism. Child connects
-  as an XPC client to the bootstrap listener.
-- **Transport**: Postcard-serialized payloads carried as `_p` data fields in XPC
-  dictionaries (`xpc_dictionary_set_data` / `xpc_dictionary_get_data`).
-- **Shared memory**: `xpc_shmem_create` / `xpc_shmem_map` (stub — not yet wired to
-  the message pipeline).
-
-**Selection**: Compiled when `ipc-channel-backend` is NOT enabled and `target_vendor = "apple"`.
+**Selection**: `ipc-channel-backend` Cargo feature on individual crates.
+`cargo build --release -p content --features ipc-channel-backend` etc.
 
 ## Crate Structure
 
@@ -95,21 +99,24 @@ server.tx.send(NetResponse { ... })?;              // send to parent
 ## Feature Selection
 
 ```bash
-# Default (ipc-channel backend, works on all platforms):
+# Default (XPC on macOS, requires launchd plists):
 cargo build --release
+./ipc/xpc-services/install.sh $(pwd)/target/release
+launchctl load ~/Library/LaunchAgents/formal-web.net.plist
+launchctl load ~/Library/LaunchAgents/formal-web.media.plist
+launchctl load ~/Library/LaunchAgents/formal-web.content.plist
 cargo run --release
 
-# Native XPC backend (macOS only, experimental):
-# Requires helper binaries and launchd plists (see xpc-services/README.md)
-cargo build --release --no-default-features --features media
+# ipc-channel backend (testing, WPT, verification):
+cargo build --release -p content --features ipc-channel-backend
+cargo build --release -p net --features ipc-channel-backend
+cargo build --release -p media --features ipc-channel-backend
+cargo run --release --features ipc-channel-backend
 ```
 
-| Crate | How ipc-channel-backend is enabled |
+| Crate | How backend is selected |
 |---|---|
-| `user_agent` | Via default feature `ipc-channel-backend` |
-| `net` | `features = ["ipc-channel-backend"]` on ipc dep |
-| `content` | `features = ["ipc-channel-backend"]` on ipc dep |
-| `media` | `features = ["ipc-channel-backend"]` on ipc dep |
+| All | The `ipc-channel-backend` feature on each crate enables `ipc/ipc-channel-backend`. By default this feature is disabled → native XPC (macOS). Enable it for the ipc-channel transport.|
 
 ## Message Types
 
@@ -132,51 +139,36 @@ Clipboard operations no longer use blocking IPC round-trips:
 - **Copy/Cut**: Fire-and-forget `ClipboardWriteRequested { text }` message — no
   reply expected.
 
-## XPC Backend — Remaining Work
+## XPC Backend — Status
 
-The native XPC backend infrastructure is complete but the **content process crashes**
-during launchd XPC service initialization (exit code -5 / SIGTRAP). Likely causes:
+The native XPC backend is now the default on macOS. All three helper processes
+(content, net, media) work correctly with exit code 0.
 
-1. **XPC service lifecycle**: When launchd starts an XPC service with
-   `ServiceType = Application`, the process must signal readiness to launchd.
-   Our `run_extension` creates a listener via `xpc_connection_create_mach_service`,
-   which might not be the correct pattern for launchd-started services.
+### Requirements
 
-2. **Listener on registered name**: The child creates an XPC listener on the same
-   name that launchd registered (e.g. `formal-web.content`). This might conflict
-   with launchd's ownership of the Mach service name.
-
-3. **Startup race**: The child process might need to call `xpc_connection_resume`
-   on the listener before the parent's connection arrives, or launchd might deliver
-   the connection through a different mechanism (e.g. `xpc_main`).
-
-### To debug:
-
-```bash
-# Build helpers
-cargo build --release
-
-# Install and load XPC services
-./xpc-services/install.sh $(pwd)/target/release
-launchctl load ~/Library/LaunchAgents/formal-web.net.plist
-launchctl load ~/Library/LaunchAgents/formal-web.media.plist
-launchctl load ~/Library/LaunchAgents/formal-web.content.plist
-
-# Run with native XPC backend
-cargo run --release --no-default-features --features media
-```
+1. Build all helper binaries: `cargo build --release`
+2. Install XPC service plists: `./ipc/xpc-services/install.sh $(pwd)/target/release`
+3. Load services: `launchctl load ~/Library/LaunchAgents/formal-web.*.plist`
+4. Run: `cargo run --release` (or `cargo run --release cdp --port 9222` for CDP)
 
 Check `launchctl list | grep formal-web` for exit codes:
-- `-5` = SIGTRAP (content crash — needs investigation)
-- `0` = clean exit (net/media work)
-- `-11` = SIGSEGV (memory issue)
+- `0` = clean exit ✅
+- Non-zero = investigate `log show --predicate 'process == "formal-web-*"'`
 
-Check system logs: `log show --predicate 'process == "formal-web-content"' --last 30s`
+### Previous issues resolved
 
-### Known working:
-- ✅ Net process XPC service (exit code 0)
-- ✅ Media process XPC service (exit code 0)
-- ❌ Content process XPC service (exit code -5, SIGTRAP)
+| Issue | Fix |
+|---|---|
+| Content process crash (SIGTRAP) — hardcoded `features = ["ipc-channel-backend"]` in Cargo.toml | Made `ipc-channel-backend` an opt-in feature; default is XPC |
+| C-side memory leaks in `xpc_wrapper.c` (`malloc` / never freed) | Replaced manual `malloc` with Clang block capture by value |
+| Error events swallowed for client/peer connections (deadlock) | Forward all XPC events (errors + dictionaries) to Rust callbacks |
+| Fat pointer segfault (thin→fat pointer cast) | Double-indirection: `Box<Box<dyn Fn(...)>>` |
+| Double `munmap` on XPC shared memory | `needs_munmap` flag to track ownership |
+| Listener dropped immediately in `run_extension` | Store `_listener` in `ExtensionServer` |
+| Peer not configured before listener callback returns (XPC contract violation) | Configure + resume peer inside listener callback, per Apple docs |
+| Closure context leaked when no invalidation fires | Shared `Arc<Mutex<Option<ContextEntry>>>` between callback and `Drop` |
+| Missing `fw_xpc_cancel` in `XpcConnection::drop` | Call `cancel` before `release` |
+| `Clone` for `XpcConnection` missing `context` field | Clone `Arc`, skip cleanup on clones |
 
 ## Broken: Verification & WPT
 

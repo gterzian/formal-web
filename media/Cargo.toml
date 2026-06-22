@@ -6,6 +6,8 @@ publish = false
 autobins = false
 
 [features]
+default = ["ipc-channel-backend"]
+ipc-channel-backend = ["ipc/ipc-channel-backend"]
 
 [lib]
 path = "src/main.rs"
@@ -17,8 +19,7 @@ path = "src/bin/media_process.rs"
 [dependencies]
 gstreamer = { version = "0.23", features = ["v1_22"] }
 gstreamer-app = "0.23"
-ipc = { path = "../ipc", features = ["ipc-channel-backend"] }
-ipc-channel = "0.21"
+ipc = { path = "../ipc" }
 ipc_messages = { path = "../ipc_messages" }
 serde = { version = "1", features = ["derive"] }
 log = "0.4"

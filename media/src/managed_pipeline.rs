@@ -1,7 +1,6 @@
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use ipc_channel::ipc::IpcSender;
 use ipc_messages::media::{MediaEvent, MediaPipelineId, VideoFrame};
 
 pub(crate) struct ManagedPipeline {
@@ -12,7 +11,7 @@ impl ManagedPipeline {
     pub fn new(
         id: MediaPipelineId,
         url: String,
-        event_sender: IpcSender<MediaEvent>,
+        event_sender: crossbeam_channel::Sender<MediaEvent>,
         bus_msg_sender: crossbeam_channel::Sender<(MediaPipelineId, gst::Message)>,
     ) -> Result<Self, String> {
         let pipeline = gst::Pipeline::new();

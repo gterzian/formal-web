@@ -8,6 +8,7 @@ autobins = false
 [features]
 default = ["media"]
 media = []
+ipc-channel-backend = ["ipc/ipc-channel-backend"]
 
 [lib]
 path = "src/main.rs"
@@ -28,7 +29,7 @@ cssparser = "0.37"
 ipc_messages = { path = "../ipc_messages" }
 data-url = "0.3"
 html5ever = "0.39.0"
-ipc = { path = "../ipc", features = ["ipc-channel-backend"] }
+ipc = { path = "../ipc" }
 keyboard-types = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

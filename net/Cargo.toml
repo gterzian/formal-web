@@ -6,6 +6,8 @@ publish = false
 autobins = false
 
 [features]
+default = []
+ipc-channel-backend = ["ipc/ipc-channel-backend"]
 
 [lib]
 path = "src/main.rs"
@@ -15,7 +17,7 @@ name = "formal-web-net"
 path = "src/bin/net_process.rs"
 
 [dependencies]
-ipc = { path = "../ipc", features = ["ipc-channel-backend"] }
+ipc = { path = "../ipc" }
 ipc_messages = { path = "../ipc_messages" }
 mime_guess = "2"
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }

@@ -186,4 +186,9 @@ pub struct ExtensionServer<
 > {
     pub tx: IpcSender<Out>,
     pub rx: Receiver<IpcIncoming<In>>,
+    /// On the native XPC backend, the listener connection must be kept alive
+    /// for the lifetime of the extension server. The ipc-channel backend
+    /// does not use a listener.
+    #[cfg(not(feature = "ipc-channel-backend"))]
+    pub(crate) _listener: Option<xpc_sys::XpcConnection>,
 }

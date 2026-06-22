@@ -93,6 +93,11 @@ where
 }
 
 // ── run_extension (child side) ──────────────────────────────────────────────
+//
+// Apple's XPC contract requires that the listener's event handler configure
+// the new peer connection (set its event handler + resume) BEFORE the listener
+// callback returns. If we defer configuration via a channel, libdispatch
+// considers the connection unhandled and drops incoming messages.
 
 pub fn run_extension<M, Out, In>(
     _manifest: &M,
@@ -111,59 +116,67 @@ where
     let msg_tx: std::sync::Arc<std::sync::Mutex<Option<Sender<IpcIncoming<Out>>>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Some(crossbeam_in_tx)));
 
-    // Channel to receive the first peer connection.
+    // Channel to hand back the fully-configured peer to the main thread.
     let (peer_tx, peer_rx) = std::sync::mpsc::sync_channel::<XpcConnection>(1);
     let owned_name = service_name.to_owned();
 
     // Listen on the service name. launchd delivers the parent's connection here.
-    let listener = XpcConnection::listen(service_name, move |event| match event {
-        XpcListenerEvent::NewPeer(peer) => {
-            log::info!("native backend: new peer connected to {owned_name}");
-            let _ = peer_tx.send(peer);
-        }
-        XpcListenerEvent::Error(desc) => {
-            log::warn!("native backend: listener error for {owned_name}: {desc}");
-        }
-    });
-    listener.resume();
+    let listener = XpcConnection::listen(service_name, move |event| {
+        // Clone msg_tx for this peer's message handler.
+        let dead_tx = msg_tx.clone();
 
-    // Wait for the first peer connection from launchd.
-    let peer_conn = peer_rx.recv().map_err(|error| {
-        IpcError::Transport(format!("failed to receive peer connection: {error}"))
-    })?;
+        match event {
+            XpcListenerEvent::NewPeer(peer) => {
+                log::info!("native backend: new peer connected to {owned_name}");
 
-    // Set up message handler on the peer connection.
-    // When connection is invalidated, close crossbeam channel to unblock the event loop.
-    let dead_tx = msg_tx.clone();
-    peer_conn.set_message_handler(move |msg_event| match msg_event {
-        XpcMessageEvent::Message(dict) => {
-            if let Some(data) = dict.get_data("_p") {
-                match postcard::from_bytes::<Out>(data) {
-                    Ok(payload) => {
-                        if let Ok(guard) = dead_tx.lock() {
-                            if let Some(ref tx) = *guard {
-                                let _ = tx.send(IpcIncoming::new(payload));
+                // Configure the peer IMMEDIATELY inside the listener callback,
+                // per Apple's XPC lifecycle contract.
+                peer.set_message_handler(move |msg_event| match msg_event {
+                    XpcMessageEvent::Message(dict) => {
+                        if let Some(data) = dict.get_data("_p") {
+                            match postcard::from_bytes::<Out>(data) {
+                                Ok(payload) => {
+                                    if let Ok(guard) = dead_tx.lock() {
+                                        if let Some(ref tx) = *guard {
+                                            let _ = tx.send(IpcIncoming::new(payload));
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    log::error!("native backend: child deserialize error: {error}");
+                                }
                             }
                         }
                     }
-                    Err(error) => {
-                        log::error!("native backend: child deserialize error: {error}");
+                    XpcMessageEvent::Invalidated => {
+                        log::info!("native backend: child peer invalidated — closing channel");
+                        if let Ok(mut guard) = dead_tx.lock() {
+                            guard.take();
+                        }
                     }
-                }
+                    XpcMessageEvent::Error(desc) => {
+                        log::warn!("native backend: child peer error: {desc}");
+                    }
+                });
+
+                // Resume the peer BEFORE returning from the listener callback.
+                peer.resume();
+
+                // Hand the fully-configured peer back to the main thread.
+                let _ = peer_tx.send(peer);
             }
-        }
-        XpcMessageEvent::Invalidated => {
-            log::info!("native backend: child peer invalidated — closing channel");
-            if let Ok(mut guard) = dead_tx.lock() {
-                guard.take();
+            XpcListenerEvent::Error(desc) => {
+                log::warn!("native backend: listener error for {owned_name}: {desc}");
             }
-        }
-        XpcMessageEvent::Error(desc) => {
-            log::warn!("native backend: child peer error: {desc}");
         }
     });
 
-    peer_conn.resume();
+    listener.resume();
+
+    // Wait for the listener to finish configuring the peer connection.
+    let peer_conn = peer_rx.recv().map_err(|error| {
+        IpcError::Transport(format!("failed to receive peer connection: {error}"))
+    })?;
 
     let tx = IpcSender {
         connection: peer_conn,
@@ -173,5 +186,8 @@ where
     Ok(ExtensionServer {
         tx,
         rx: crossbeam_in_rx,
+        // Keep the listener alive for the server's lifetime so new peers can
+        // still connect (e.g. parent reconnects after restart).
+        _listener: Some(listener),
     })
 }

@@ -3090,7 +3090,6 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "ipc",
- "ipc-channel",
  "ipc_messages",
  "log",
  "serde",

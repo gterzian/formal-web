@@ -6,6 +6,7 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 pub enum xpc_object_t_private {}
 pub type xpc_object_t = *mut xpc_object_t_private;
@@ -257,10 +258,16 @@ impl XpcDictionary {
     }
 }
 
+// ── XpcSharedMemory ─────────────────────────────────────────────────────────
+
 pub struct XpcSharedMemory {
     pub(crate) object: XpcObject,
     ptr: *mut u8,
     size: usize,
+    // Tracks ownership of the mmap region:
+    // - `false` for `allocate()`:   XPC owns the mapping (xpc_release unmaps it).
+    // - `true`  for `map_object()`: caller must munmap.
+    needs_munmap: bool,
 }
 impl XpcSharedMemory {
     pub fn allocate(size: usize) -> Result<Self, String> {
@@ -285,6 +292,7 @@ impl XpcSharedMemory {
                 object: XpcObject::from_raw(s),
                 ptr: p as *mut u8,
                 size,
+                needs_munmap: false,
             })
         }
     }
@@ -298,6 +306,7 @@ impl XpcSharedMemory {
             object,
             ptr: p as *mut u8,
             size: s,
+            needs_munmap: true,
         })
     }
     pub fn as_slice(&self) -> &[u8] {
@@ -312,15 +321,126 @@ impl XpcSharedMemory {
 }
 impl Drop for XpcSharedMemory {
     fn drop(&mut self) {
-        unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.size);
+        if self.needs_munmap {
+            unsafe {
+                libc::munmap(self.ptr as *mut libc::c_void, self.size);
+            }
         }
     }
 }
 
+// ── Shared context for callback closures ────────────────────────────────────
+
+/// A type-erased closure pointer and its cleanup function.
+struct ContextEntry {
+    ptr: *mut c_void,
+    cleanup: unsafe fn(*mut c_void),
+}
+
+/// Shared context slot between the C callback and `XpcConnection::drop`.
+/// The Mutex ensures exclusive access: while the callback holds the lock,
+/// Drop cannot free the context, and vice versa.
+struct SharedContext(Arc<Mutex<Option<ContextEntry>>>);
+
+impl SharedContext {
+    fn new(ptr: *mut c_void, cleanup: unsafe fn(*mut c_void)) -> Self {
+        SharedContext(Arc::new(Mutex::new(Some(ContextEntry { ptr, cleanup }))))
+    }
+}
+
+unsafe fn cleanup_msg_handler(ptr: *mut c_void) {
+    unsafe {
+        let _ = Box::from_raw(ptr as *mut Box<dyn Fn(XpcMessageEvent) + Send>);
+    }
+}
+
+unsafe fn cleanup_listener_handler(ptr: *mut c_void) {
+    unsafe {
+        let _ = Box::from_raw(ptr as *mut Box<dyn Fn(XpcListenerEvent) + Send>);
+    }
+}
+
+/// Internal callback shared by `connect()` and `set_message_handler()`.
+/// The XPC error description is parsed from the event object to detect
+/// invalidation. The context cleanup runs while the lock is held to prevent
+/// races with `Drop`.
+unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_void) {
+    let shared = unsafe { &*(context as *const SharedContext) };
+    let mut guard = match shared.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let handler_ptr = match guard.as_ref().map(|e| e.ptr) {
+        Some(p) => p,
+        None => return, // Context already freed
+    };
+    let handler = unsafe { &*(handler_ptr as *mut Box<dyn Fn(XpcMessageEvent) + Send>) };
+
+    let error_key = CString::new("XPCErrorDescription").unwrap();
+    let error_str = unsafe { xpc_dictionary_get_string(object, error_key.as_ptr()) };
+    if !error_str.is_null() {
+        let msg = unsafe { CStr::from_ptr(error_str) }
+            .to_string_lossy()
+            .into_owned();
+        if msg.contains("invalidated") || msg.contains("Interrupted") {
+            handler(XpcMessageEvent::Invalidated);
+            // Free the context while still holding the lock.
+            if let Some(entry) = guard.take() {
+                unsafe {
+                    (entry.cleanup)(entry.ptr);
+                }
+            }
+        } else {
+            handler(XpcMessageEvent::Error(msg));
+        }
+        return;
+    }
+    let dict = unsafe { XpcObject::from_raw(xpc_retain(object)) };
+    handler(XpcMessageEvent::Message(XpcDictionary { object: dict }));
+    // guard dropped — lock released, Drop can now safely clean up
+}
+
+/// Internal callback for listener events.
+unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_void) {
+    let shared = unsafe { &*(context as *const SharedContext) };
+    let guard = match shared.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let handler_ptr = match guard.as_ref().map(|e| e.ptr) {
+        Some(p) => p,
+        None => return,
+    };
+    let handler = unsafe { &*(handler_ptr as *mut Box<dyn Fn(XpcListenerEvent) + Send>) };
+
+    let error_key = CString::new("XPCErrorDescription").unwrap();
+    let error_str = unsafe { xpc_dictionary_get_string(event, error_key.as_ptr()) };
+    if !error_str.is_null() {
+        let msg = unsafe { CStr::from_ptr(error_str) }
+            .to_string_lossy()
+            .into_owned();
+        handler(XpcListenerEvent::Error(msg));
+        return;
+    }
+    let peer_inner = unsafe { fw_xpc_peer_from_event(event) };
+    let peer_queue = create_queue("com.formal-web.xpc-peer");
+    handler(XpcListenerEvent::NewPeer(XpcConnection {
+        inner: peer_inner,
+        _queue: peer_queue,
+        context: Arc::new(Mutex::new(None)),
+    }));
+    // guard dropped
+}
+
+// ── XpcConnection ───────────────────────────────────────────────────────────
+
 pub struct XpcConnection {
     inner: xpc_connection_t,
     _queue: XpcQueue,
+    /// The C callback context slot. Shared via Arc so that clones (which share
+    /// the same underlying XPC connection via xpc_retain) also share the
+    /// cleanup lifecycle.
+    context: Arc<Mutex<Option<ContextEntry>>>,
 }
 unsafe impl Send for XpcConnection {}
 unsafe impl Sync for XpcConnection {}
@@ -329,14 +449,155 @@ impl Clone for XpcConnection {
         XpcConnection {
             inner: unsafe { xpc_retain(self.inner as xpc_object_t) as xpc_connection_t },
             _queue: self._queue.clone(),
+            context: self.context.clone(),
         }
     }
 }
 impl Drop for XpcConnection {
     fn drop(&mut self) {
-        unsafe { xpc_release(self.inner as xpc_object_t) }
+        unsafe {
+            // Cancel first — after this no more callbacks will fire.
+            fw_xpc_cancel(self.inner);
+        }
+        // Try to clean up the context. If the invalidation callback already
+        // freed it (while holding the lock), `take()` returns None.
+        if let Ok(mut guard) = self.context.lock() {
+            if let Some(entry) = guard.take() {
+                unsafe {
+                    (entry.cleanup)(entry.ptr);
+                }
+            }
+        }
+        unsafe {
+            xpc_release(self.inner as xpc_object_t);
+        }
     }
 }
+
+impl XpcConnection {
+    // ── connect ──────────────────────────────────────────────────────────
+
+    pub fn connect<F: Fn(XpcMessageEvent) + Send + 'static>(
+        service_name: &str,
+        handler: F,
+    ) -> Self {
+        let c_name = CString::new(service_name).unwrap();
+        let queue = create_queue(&format!("com.formal-web.xpc-client.{}", service_name));
+        // Double-indirection: Box the closure as a trait object (fat pointer),
+        // then box the fat pointer so C sees a thin pointer.
+        let trait_obj: Box<dyn Fn(XpcMessageEvent) + Send> = Box::new(handler);
+        let closure_ptr = Box::into_raw(Box::new(trait_obj)) as *mut c_void;
+
+        let shared = SharedContext::new(closure_ptr, cleanup_msg_handler);
+        let c_context = Box::into_raw(Box::new(shared)) as *mut c_void;
+
+        let inner = unsafe {
+            fw_xpc_create_client(
+                c_name.as_ptr(),
+                queue.inner,
+                Some(xpc_peer_callback as XpcPeerMessageCallback),
+                c_context,
+            )
+        };
+        XpcConnection {
+            inner,
+            _queue: queue,
+            context: Arc::new(Mutex::new(Some(ContextEntry {
+                ptr: c_context,
+                cleanup: |p| {
+                    let _ = unsafe { Box::from_raw(p as *mut SharedContext) };
+                },
+            }))),
+        }
+    }
+
+    // ── listen ───────────────────────────────────────────────────────────
+
+    pub fn listen<F: Fn(XpcListenerEvent) + Send + 'static>(
+        service_name: &str,
+        handler: F,
+    ) -> Self {
+        let c_name = CString::new(service_name).unwrap();
+        let queue = create_queue(&format!("com.formal-web.xpc-listener.{}", service_name));
+        // Double-indirection: Box the closure as a trait object (fat pointer),
+        // then box the fat pointer so C sees a thin pointer.
+        let trait_obj: Box<dyn Fn(XpcListenerEvent) + Send> = Box::new(handler);
+        let closure_ptr = Box::into_raw(Box::new(trait_obj)) as *mut c_void;
+
+        let shared = SharedContext::new(closure_ptr, cleanup_listener_handler);
+        let c_context = Box::into_raw(Box::new(shared)) as *mut c_void;
+
+        let inner = unsafe {
+            fw_xpc_create_listener(
+                c_name.as_ptr(),
+                queue.inner,
+                Some(xpc_listener_callback as XpcListenerEventCallback),
+                c_context,
+            )
+        };
+        XpcConnection {
+            inner,
+            _queue: queue,
+            context: Arc::new(Mutex::new(Some(ContextEntry {
+                ptr: c_context,
+                cleanup: |p| {
+                    let _ = unsafe { Box::from_raw(p as *mut SharedContext) };
+                },
+            }))),
+        }
+    }
+
+    // ── set_message_handler ──────────────────────────────────────────────
+
+    pub fn set_message_handler<F: Fn(XpcMessageEvent) + Send + 'static>(&self, handler: F) {
+        let queue = create_queue("com.formal-web.xpc-peer-msg");
+        // Double-indirection.
+        let trait_obj: Box<dyn Fn(XpcMessageEvent) + Send> = Box::new(handler);
+        let closure_ptr = Box::into_raw(Box::new(trait_obj)) as *mut c_void;
+
+        let shared = SharedContext::new(closure_ptr, cleanup_msg_handler);
+        let c_context = Box::into_raw(Box::new(shared)) as *mut c_void;
+
+        unsafe {
+            fw_xpc_set_peer_handler(
+                self.inner,
+                queue.inner,
+                Some(xpc_peer_callback as XpcPeerMessageCallback),
+                c_context,
+            );
+        }
+
+        // Replace the old context with the new one.
+        let mut guard = self.context.lock().unwrap();
+        if let Some(old) = guard.take() {
+            unsafe {
+                (old.cleanup)(old.ptr);
+            }
+        }
+        *guard = Some(ContextEntry {
+            ptr: c_context,
+            cleanup: |p| {
+                let _ = unsafe { Box::from_raw(p as *mut SharedContext) };
+            },
+        });
+    }
+
+    // ── lifecycle ────────────────────────────────────────────────────────
+
+    pub fn resume(&self) {
+        unsafe { fw_xpc_resume(self.inner) }
+    }
+    pub fn send_message(&self, message: &XpcDictionary) {
+        unsafe {
+            xpc_connection_send_message(self.inner, message.as_raw());
+        }
+    }
+    pub fn cancel(&self) {
+        unsafe { fw_xpc_cancel(self.inner) }
+    }
+}
+
+// ── XpcQueue ────────────────────────────────────────────────────────────────
 
 struct XpcQueue {
     inner: dispatch_queue_t,
@@ -364,6 +625,8 @@ fn create_queue(label: &str) -> XpcQueue {
     }
 }
 
+// ── Event types ─────────────────────────────────────────────────────────────
+
 pub enum XpcListenerEvent {
     NewPeer(XpcConnection),
     Error(String),
@@ -372,133 +635,4 @@ pub enum XpcMessageEvent {
     Message(XpcDictionary),
     Invalidated,
     Error(String),
-}
-
-unsafe fn drop_context(ptr: *mut c_void) {
-    if !ptr.is_null() {
-        let _ = unsafe { Box::from_raw(ptr as *mut Box<dyn Fn(XpcMessageEvent) + Send>) };
-    }
-}
-
-impl XpcConnection {
-    pub fn connect<F: Fn(XpcMessageEvent) + Send + 'static>(
-        service_name: &str,
-        handler: F,
-    ) -> Self {
-        let c_name = CString::new(service_name).unwrap();
-        let queue = create_queue(&format!("com.formal-web.xpc-client.{}", service_name));
-        let context = Box::into_raw(Box::new(handler));
-        unsafe extern "C" fn cb(object: xpc_object_t, context: *mut c_void) {
-            let handler = unsafe { &*(context as *mut Box<dyn Fn(XpcMessageEvent) + Send>) };
-            let ek = CString::new("XPCErrorDescription").unwrap();
-            let es = unsafe { xpc_dictionary_get_string(object, ek.as_ptr()) };
-            if !es.is_null() {
-                let msg = unsafe { CStr::from_ptr(es) }.to_string_lossy().into_owned();
-                if msg.contains("invalidated") || msg.contains("Interrupted") {
-                    handler(XpcMessageEvent::Invalidated);
-                    unsafe {
-                        drop_context(context);
-                    }
-                } else {
-                    handler(XpcMessageEvent::Error(msg));
-                }
-                return;
-            }
-            let d = unsafe { XpcObject::from_raw(xpc_retain(object)) };
-            handler(XpcMessageEvent::Message(XpcDictionary { object: d }));
-        }
-        let inner = unsafe {
-            fw_xpc_create_client(
-                c_name.as_ptr(),
-                queue.inner,
-                Some(cb as XpcPeerMessageCallback),
-                context as *mut c_void,
-            )
-        };
-        XpcConnection {
-            inner,
-            _queue: queue,
-        }
-    }
-
-    pub fn listen<F: Fn(XpcListenerEvent) + Send + 'static>(
-        service_name: &str,
-        handler: F,
-    ) -> Self {
-        let c_name = CString::new(service_name).unwrap();
-        let queue = create_queue(&format!("com.formal-web.xpc-listener.{}", service_name));
-        let context = Box::into_raw(Box::new(handler));
-        unsafe extern "C" fn cb(event: xpc_object_t, context: *mut c_void) {
-            let handler = unsafe { &*(context as *mut Box<dyn Fn(XpcListenerEvent) + Send>) };
-            let ek = CString::new("XPCErrorDescription").unwrap();
-            let es = unsafe { xpc_dictionary_get_string(event, ek.as_ptr()) };
-            if !es.is_null() {
-                let msg = unsafe { CStr::from_ptr(es) }.to_string_lossy().into_owned();
-                handler(XpcListenerEvent::Error(msg));
-                return;
-            }
-            let peer_inner = unsafe { fw_xpc_peer_from_event(event) };
-            let peer_queue = create_queue("com.formal-web.xpc-peer");
-            handler(XpcListenerEvent::NewPeer(XpcConnection {
-                inner: peer_inner,
-                _queue: peer_queue,
-            }));
-        }
-        let inner = unsafe {
-            fw_xpc_create_listener(
-                c_name.as_ptr(),
-                queue.inner,
-                Some(cb as XpcListenerEventCallback),
-                context as *mut c_void,
-            )
-        };
-        XpcConnection {
-            inner,
-            _queue: queue,
-        }
-    }
-
-    pub fn set_message_handler<F: Fn(XpcMessageEvent) + Send + 'static>(&self, handler: F) {
-        let queue = create_queue("com.formal-web.xpc-peer-msg");
-        let context = Box::into_raw(Box::new(handler));
-        unsafe extern "C" fn cb(object: xpc_object_t, context: *mut c_void) {
-            let handler = unsafe { &*(context as *mut Box<dyn Fn(XpcMessageEvent) + Send>) };
-            let ek = CString::new("XPCErrorDescription").unwrap();
-            let es = unsafe { xpc_dictionary_get_string(object, ek.as_ptr()) };
-            if !es.is_null() {
-                let msg = unsafe { CStr::from_ptr(es) }.to_string_lossy().into_owned();
-                if msg.contains("invalidated") || msg.contains("Interrupted") {
-                    handler(XpcMessageEvent::Invalidated);
-                    unsafe {
-                        drop_context(context);
-                    }
-                } else {
-                    handler(XpcMessageEvent::Error(msg));
-                }
-                return;
-            }
-            let d = unsafe { XpcObject::from_raw(xpc_retain(object)) };
-            handler(XpcMessageEvent::Message(XpcDictionary { object: d }));
-        }
-        unsafe {
-            fw_xpc_set_peer_handler(
-                self.inner,
-                queue.inner,
-                Some(cb as XpcPeerMessageCallback),
-                context as *mut c_void,
-            );
-        }
-    }
-
-    pub fn resume(&self) {
-        unsafe { fw_xpc_resume(self.inner) }
-    }
-    pub fn send_message(&self, message: &XpcDictionary) {
-        unsafe {
-            xpc_connection_send_message(self.inner, message.as_raw());
-        }
-    }
-    pub fn cancel(&self) {
-        unsafe { fw_xpc_cancel(self.inner) }
-    }
 }
