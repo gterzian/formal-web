@@ -12,8 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use verification::TraceSender;
 
-use crate::ipc_manifest::NetExtensionManifest;
 use crate::UserAgentCommand;
+use crate::ipc_manifest::NetExtensionManifest;
 
 /// graceful shutdown of the network sidecar owned by the fetch worker.
 const FETCH_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
@@ -523,10 +523,9 @@ pub fn start_net_extension(
     String,
 > {
     let manifest = NetExtensionManifest;
-    let client = ipc::start_extension::<NetExtensionManifest, NetworkRequest, NetworkResponse>(
-        &manifest,
-    )
-    .map_err(|error| format!("failed to start net extension: {error}"))?;
+    let client =
+        ipc::start_extension::<NetExtensionManifest, NetworkRequest, NetworkResponse>(&manifest)
+            .map_err(|error| format!("failed to start net extension: {error}"))?;
 
     // Send initial trace sender if set
     if let Some(trace_sender) = trace_sender {

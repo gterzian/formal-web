@@ -8,7 +8,6 @@ autobins = false
 [features]
 default = ["media"]
 media = []
-extension-bin = []
 
 [lib]
 path = "src/main.rs"
@@ -16,7 +15,6 @@ path = "src/main.rs"
 [[bin]]
 name = "formal-web-content"
 path = "src/bin/content_process.rs"
-required-features = ["extension-bin"]
 
 [dependencies]
 arboard = { version = "3.6.1", default-features = false }
@@ -30,7 +28,7 @@ cssparser = "0.37"
 ipc_messages = { path = "../ipc_messages" }
 data-url = "0.3"
 html5ever = "0.39.0"
-ipc = { path = "../crates/ipc" }
+ipc = { path = "../ipc", features = ["ipc-channel-backend"] }
 keyboard-types = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

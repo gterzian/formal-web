@@ -6,8 +6,8 @@ use crossbeam_channel::{Receiver, Sender, select};
 use ipc_messages::media::{MediaCommand as MediaProcessCommand, MediaEvent, MediaPipelineId};
 use log::{debug, error};
 
-use crate::ipc_manifest::MediaExtensionManifest;
 use crate::UserAgentCommand;
+use crate::ipc_manifest::MediaExtensionManifest;
 
 /// Commands that the user-agent and event-loop workers can send into the dedicated media worker.
 pub enum MediaCommand {
@@ -40,13 +40,18 @@ struct MediaWorker {
 }
 
 /// Bootstrap the dedicated media process using the new IPC abstraction layer.
-fn start_media_extension()
--> Result<(ipc::IpcSender<MediaProcessCommand>, crossbeam_channel::Receiver<ipc::IpcIncoming<MediaEvent>>, Option<Child>), String> {
+fn start_media_extension() -> Result<
+    (
+        ipc::IpcSender<MediaProcessCommand>,
+        crossbeam_channel::Receiver<ipc::IpcIncoming<MediaEvent>>,
+        Option<Child>,
+    ),
+    String,
+> {
     let manifest = MediaExtensionManifest;
-    let client = ipc::start_extension::<MediaExtensionManifest, MediaProcessCommand, MediaEvent>(
-        &manifest,
-    )
-    .map_err(|error| format!("failed to start media extension: {error}"))?;
+    let client =
+        ipc::start_extension::<MediaExtensionManifest, MediaProcessCommand, MediaEvent>(&manifest)
+            .map_err(|error| format!("failed to start media extension: {error}"))?;
 
     let child = client.child;
     Ok((client.tx, client.rx, child))

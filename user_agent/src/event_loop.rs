@@ -1,9 +1,9 @@
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
 use ipc_messages::content::{
-    ClipboardWriteRequested, ColorScheme as MessageColorScheme,
-    Command as ContentCommand, ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId,
-    TraversableViewport, ViewportSnapshot, WebviewProviderMessage,
+    ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command as ContentCommand,
+    ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport,
+    ViewportSnapshot, WebviewProviderMessage,
 };
 use log::{debug, error};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -196,7 +196,6 @@ fn requires_command_completed_wakeup(command: &ContentCommand) -> bool {
             | ContentCommand::FailDocumentFetch { .. }
     )
 }
-
 
 impl EventLoopWorker {
     /// bootstrapping the content process owned by one
@@ -528,7 +527,10 @@ impl EventLoopWorker {
                 // Fire-and-forget: write to system clipboard, no reply expected.
                 // The host writes the text; any error is logged but not propagated
                 // since content does not wait for a response.
-                if let Err(error) = self.host.clipboard_set_text(text, CONTENT_CLIPBOARD_TIMEOUT) {
+                if let Err(error) = self
+                    .host
+                    .clipboard_set_text(text, CONTENT_CLIPBOARD_TIMEOUT)
+                {
                     log::error!("clipboard write failed: {error}");
                 }
             }

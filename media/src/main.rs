@@ -1,10 +1,10 @@
 mod managed_pipeline;
 
+use ::ipc_channel::ipc::{self as ipc_channel, IpcReceiver, IpcSender};
+use ::ipc_channel::router::RouterProxy;
 use gstreamer as gst;
 use gstreamer::prelude::*;
-use ::ipc_channel::ipc::{self as ipc_channel, IpcReceiver, IpcSender};
 use ipc::{ExtensionEndpoint, ExtensionManifest};
-use ::ipc_channel::router::RouterProxy;
 use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
 use managed_pipeline::ManagedPipeline;
 use std::collections::HashMap;

@@ -102,5 +102,3 @@ pub struct VideoEmbedData {
     /// 0.0 means rectangular (no rounding).
     pub clip_radius: f64,
 }
-
-

@@ -23,8 +23,8 @@ impl ExtensionManifest for NetExtensionManifest {
     }
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
-        let executable_path =
-            sidecar_executable_path("formal-web-net").map_err(|error| IpcError::Transport(error))?;
+        let executable_path = sidecar_executable_path("formal-web-net")
+            .map_err(|error| IpcError::Transport(error))?;
 
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
@@ -49,8 +49,8 @@ impl ExtensionManifest for MediaExtensionManifest {
     }
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
-        let executable_path =
-            sidecar_executable_path("formal-web-media").map_err(|error| IpcError::Transport(error))?;
+        let executable_path = sidecar_executable_path("formal-web-media")
+            .map_err(|error| IpcError::Transport(error))?;
 
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
@@ -102,15 +102,13 @@ impl ExtensionManifest for ContentExtensionManifest {
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
         child_process.arg0(format!("formal-web-content:{sanitized_label}"));
-        child_process
-            .arg("--content-token")
-            .arg(&token.to_string());
+        child_process.arg("--content-token").arg(&token.to_string());
         child_process
             .arg("--content-label")
             .arg(&self.process_label);
 
-        child_process
-            .spawn()
-            .map_err(|error| IpcError::Transport(format!("failed to start content process: {error}")))
+        child_process.spawn().map_err(|error| {
+            IpcError::Transport(format!("failed to start content process: {error}"))
+        })
     }
 }

@@ -5,14 +5,15 @@ edition = "2024"
 publish = false
 
 [features]
-default = ["media"]
+default = ["media", "ipc-channel-backend"]
 media = []
+ipc-channel-backend = ["ipc/ipc-channel-backend"]
 
 [dependencies]
 blitz-traits = { workspace = true }
 crossbeam-channel = "0.5"
 ipc_messages = { path = "../ipc_messages" }
-ipc = { path = "../crates/ipc" }
+ipc = { path = "../ipc" }
 serde_json = "1"
 psl = "2"
 url = "2"

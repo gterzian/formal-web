@@ -33,20 +33,19 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 
-
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
     SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
-    BeforeUnloadCheckId, ClipboardWriteRequested,
-    ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
-    ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
-    Event as ContentEvent, EventLoopId, FetchRequest as ContentFetchRequest,
-    FetchResponse as ContentFetchResponse, FontTransportSender, FrameCompositionMetadata, FrameId,
-    IframeEmbedSite, LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame,
-    ScriptEvaluationResult, TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
+    BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
+    DispatchEventEntry, DocumentFetchId, DocumentId, ElementClickResult, EmbedBackgroundPolicy,
+    EmbedLayout, EmbedSite, EmbedSiteId, Event as ContentEvent, EventLoopId,
+    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
+    FontTransportSender, FrameCompositionMetadata, FrameId, IframeEmbedSite,
+    LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, ScriptEvaluationResult,
+    TraversableViewport, ViewportSnapshot, WebviewId, WindowTimerKey,
 };
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use log::{debug, error, trace, warn};
@@ -144,7 +143,10 @@ struct ContentShellProvider {
 
 impl ContentShellProvider {
     fn new(event_sender: ipc::IpcSender<ContentEvent>, clipboard_cache: ClipboardCache) -> Self {
-        Self { event_sender, clipboard_cache }
+        Self {
+            event_sender,
+            clipboard_cache,
+        }
     }
 }
 
@@ -181,12 +183,10 @@ fn clipboard_direct_read() -> Result<String, ClipboardError> {
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     {
         match arboard::Clipboard::new() {
-            Ok(mut clipboard) => {
-                match clipboard.get_text() {
-                    Ok(text) => Ok(text),
-                    Err(_) => Ok(String::new()),
-                }
-            }
+            Ok(mut clipboard) => match clipboard.get_text() {
+                Ok(text) => Ok(text),
+                Err(_) => Ok(String::new()),
+            },
             Err(_) => Ok(String::new()),
         }
     }
@@ -1186,7 +1186,12 @@ impl ContentProcess {
     }
 
     fn dispatch_events(&mut self, events: Vec<DispatchEventEntry>) -> Result<(), String> {
-        for DispatchEventEntry { document_id, event, prefetched_clipboard_text } in events {
+        for DispatchEventEntry {
+            document_id,
+            event,
+            prefetched_clipboard_text,
+        } in events
+        {
             // Store prefetched clipboard text before dispatching the event
             // so that `ShellProvider::get_clipboard_text` can return it
             // without a blocking IPC round-trip.

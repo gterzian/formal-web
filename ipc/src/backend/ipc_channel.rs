@@ -3,13 +3,15 @@
 //! Provides `start_extension` and `run_extension` using `ipc_channel::ipc`
 //! one-shot bootstrap servers and typed channels.
 
-use crossbeam_channel::{Receiver, unbounded};
-use ipc_channel::ipc::{self as ipc_ipc, IpcOneShotServer, IpcReceiver, IpcSender as IpcChannelSender};
+use crossbeam_channel::unbounded;
+use ipc_channel::ipc::{
+    self as ipc_ipc, IpcOneShotServer, IpcReceiver, IpcSender as IpcChannelSender,
+};
 use ipc_channel::router::ROUTER;
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::types::*;
 use crate::IpcError;
+use crate::types::*;
 
 // ── Bootstrap message ──────────────────────────────────────────────────────
 
@@ -22,26 +24,31 @@ struct BootstrapMessage<Out, In> {
 // ── start_extension ─────────────────────────────────────────────────────────
 
 /// Start an extension process and return a client handle.
-pub fn start_extension<M, Out, In>(
-    manifest: &M,
-) -> Result<ExtensionClient<Out, In>, IpcError>
+pub fn start_extension<M, Out, In>(manifest: &M) -> Result<ExtensionClient<Out, In>, IpcError>
 where
     M: ExtensionManifest,
     Out: Serialize + DeserializeOwned + Send + 'static,
     In: Serialize + DeserializeOwned + Send + 'static,
 {
     let (server, token): (IpcOneShotServer<BootstrapMessage<Out, In>>, String) =
-        IpcOneShotServer::<BootstrapMessage<Out, In>>::new()
-            .map_err(|error| IpcError::Transport(format!("failed to create IPC one-shot server: {error}")))?;
+        IpcOneShotServer::<BootstrapMessage<Out, In>>::new().map_err(|error| {
+            IpcError::Transport(format!("failed to create IPC one-shot server: {error}"))
+        })?;
 
     let bootstrap_token = BootstrapToken { inner: token };
     let child = manifest.spawn(&bootstrap_token)?;
 
-    let (_receiver, bootstrap): (IpcReceiver<BootstrapMessage<Out, In>>, BootstrapMessage<Out, In>) =
-        server.accept()
-            .map_err(|error| IpcError::Transport(format!("failed to accept extension bootstrap: {error}")))?;
+    let (_receiver, bootstrap): (
+        IpcReceiver<BootstrapMessage<Out, In>>,
+        BootstrapMessage<Out, In>,
+    ) = server.accept().map_err(|error| {
+        IpcError::Transport(format!("failed to accept extension bootstrap: {error}"))
+    })?;
 
-    let BootstrapMessage { parent_to_child_tx, child_to_parent_rx } = bootstrap;
+    let BootstrapMessage {
+        parent_to_child_tx,
+        child_to_parent_rx,
+    } = bootstrap;
 
     let out_tx = IpcSender(parent_to_child_tx);
 
@@ -78,30 +85,45 @@ where
     In: Serialize + DeserializeOwned + Send + 'static,
 {
     let (parent_to_child_tx, parent_to_child_rx): (IpcChannelSender<Out>, IpcReceiver<Out>) =
-        ipc_ipc::channel()
-            .map_err(|error| IpcError::Transport(format!("failed to create IPC channel: {error}")))?;
+        ipc_ipc::channel().map_err(|error| {
+            IpcError::Transport(format!("failed to create IPC channel: {error}"))
+        })?;
     let (child_to_parent_tx, child_to_parent_rx): (IpcChannelSender<In>, IpcReceiver<In>) =
-        ipc_ipc::channel()
-            .map_err(|error| IpcError::Transport(format!("failed to create IPC channel: {error}")))?;
+        ipc_ipc::channel().map_err(|error| {
+            IpcError::Transport(format!("failed to create IPC channel: {error}"))
+        })?;
 
+    log::info!(
+        "ipc-channel backend: child connecting to bootstrap token='{}'",
+        token
+    );
     let bootstrap_sender: IpcChannelSender<BootstrapMessage<Out, In>> =
-        IpcChannelSender::<BootstrapMessage<Out, In>>::connect(token.to_string())
-            .map_err(|error| IpcError::Transport(format!("failed to connect to bootstrap: {error}")))?;
+        IpcChannelSender::<BootstrapMessage<Out, In>>::connect(token.to_string()).map_err(
+            |error| IpcError::Transport(format!("failed to connect to bootstrap: {error}")),
+        )?;
+    log::info!("ipc-channel backend: child connected to bootstrap");
 
     bootstrap_sender
-        .send(BootstrapMessage { parent_to_child_tx, child_to_parent_rx })
+        .send(BootstrapMessage {
+            parent_to_child_tx,
+            child_to_parent_rx,
+        })
         .map_err(|error| IpcError::Transport(format!("failed to send bootstrap: {error}")))?;
 
     let (crossbeam_in_tx, crossbeam_in_rx) = unbounded();
 
-    let router = ipc_channel::router::RouterProxy::new();
-    let child_crossbeam_rx: Receiver<Out> =
-        router.route_ipc_receiver_to_new_crossbeam_receiver(parent_to_child_rx);
-
+    // Spawn a thread to forward IPC messages to the crossbeam channel.
+    // Directly recv() from the IpcReceiver (not RouterProxy), because
+    // RouterProxy would be dropped when this function returns.
     std::thread::spawn(move || {
-        while let Ok(payload) = child_crossbeam_rx.recv() {
-            if crossbeam_in_tx.send(IpcIncoming::new(payload)).is_err() {
-                break;
+        loop {
+            match parent_to_child_rx.recv() {
+                Ok(payload) => {
+                    if crossbeam_in_tx.send(IpcIncoming::new(payload)).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
             }
         }
     });

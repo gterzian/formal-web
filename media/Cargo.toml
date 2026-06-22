@@ -6,7 +6,6 @@ publish = false
 autobins = false
 
 [features]
-extension-bin = []
 
 [lib]
 path = "src/main.rs"
@@ -14,12 +13,11 @@ path = "src/main.rs"
 [[bin]]
 name = "formal-web-media"
 path = "src/bin/media_process.rs"
-required-features = ["extension-bin"]
 
 [dependencies]
 gstreamer = { version = "0.23", features = ["v1_22"] }
 gstreamer-app = "0.23"
-ipc = { path = "../crates/ipc" }
+ipc = { path = "../ipc", features = ["ipc-channel-backend"] }
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 serde = { version = "1", features = ["derive"] }

@@ -56,9 +56,7 @@ pub trait ExtensionManifest {
 /// messages as postcard bytes in XPC dictionaries.
 #[cfg(feature = "ipc-channel-backend")]
 #[derive(Clone)]
-pub struct IpcSender<T: Serialize + DeserializeOwned>(
-    pub(crate) ipc_channel::ipc::IpcSender<T>,
-);
+pub struct IpcSender<T: Serialize + DeserializeOwned>(pub(crate) ipc_channel::ipc::IpcSender<T>);
 
 #[cfg(feature = "ipc-channel-backend")]
 impl<T: Serialize + DeserializeOwned> IpcSender<T> {
@@ -112,7 +110,10 @@ pub struct IpcIncoming<T> {
 
 impl<T> IpcIncoming<T> {
     pub fn new(payload: T) -> Self {
-        IpcIncoming { payload, shmem: None }
+        IpcIncoming {
+            payload,
+            shmem: None,
+        }
     }
 }
 
@@ -149,17 +150,28 @@ pub struct IpcSharedRegion;
 #[cfg(not(feature = "ipc-channel-backend"))]
 impl IpcSharedRegion {
     pub fn allocate(_size: usize) -> Result<Self, IpcError> {
-        Err(IpcError::Transport("native backend: shared memory not yet implemented".into()))
+        Err(IpcError::Transport(
+            "native backend: shared memory not yet implemented".into(),
+        ))
     }
-    pub fn as_slice(&self) -> &[u8] { &[] }
-    pub fn as_mut_slice(&mut self) -> &mut [u8] { &mut [] }
-    pub fn size(&self) -> usize { 0 }
+    pub fn as_slice(&self) -> &[u8] {
+        &[]
+    }
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut []
+    }
+    pub fn size(&self) -> usize {
+        0
+    }
 }
 
 // ── ExtensionClient ─────────────────────────────────────────────────────────
 
 /// Client handle obtained by the parent process after starting an extension.
-pub struct ExtensionClient<Out: Serialize + DeserializeOwned + 'static, In: DeserializeOwned + Serialize + 'static> {
+pub struct ExtensionClient<
+    Out: Serialize + DeserializeOwned + 'static,
+    In: DeserializeOwned + Serialize + 'static,
+> {
     pub tx: IpcSender<Out>,
     pub rx: Receiver<IpcIncoming<In>>,
     pub child: Option<std::process::Child>,
@@ -168,7 +180,10 @@ pub struct ExtensionClient<Out: Serialize + DeserializeOwned + 'static, In: Dese
 // ── ExtensionServer ─────────────────────────────────────────────────────────
 
 /// Server handle obtained by the extension process on startup.
-pub struct ExtensionServer<Out: Serialize + DeserializeOwned + 'static, In: DeserializeOwned + Serialize + 'static> {
+pub struct ExtensionServer<
+    Out: Serialize + DeserializeOwned + 'static,
+    In: DeserializeOwned + Serialize + 'static,
+> {
     pub tx: IpcSender<Out>,
     pub rx: Receiver<IpcIncoming<In>>,
 }

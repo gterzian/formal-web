@@ -19,7 +19,7 @@ ipc-channel = { version = "0.21", optional = true }
 # Cargo cfg-gated dependencies don't support feature selectors in the
 # target table, so we add it unconditionally for now. The crate is a
 # no-op stub on non-Apple targets.
-xpc-sys = { path = "../xpc-sys" }
+xpc-sys = { path = "xpc-sys" }
 
 [lib]
 path = "src/lib.rs"
