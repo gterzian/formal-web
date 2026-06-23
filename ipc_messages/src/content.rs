@@ -363,10 +363,13 @@ pub struct RegisteredFont {
 
 impl RegisteredFont {
     fn from_font_data(id: FontIdentifier, font_data: &FontData, key: usize) -> (Self, Vec<u8>) {
-        (Self {
-            id,
-            data_shmem_key: key,
-        }, font_data.data.data().to_vec())
+        (
+            Self {
+                id,
+                data_shmem_key: key,
+            },
+            font_data.data.data().to_vec(),
+        )
     }
 
     fn into_font_data_from_bytes(self, data: Vec<u8>) -> FontData {

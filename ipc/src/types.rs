@@ -70,6 +70,7 @@ pub(crate) type IpcChannelMessage<T> = (T, HashMap<usize, IpcSharedMemory>);
 
 #[derive(Clone)]
 pub(crate) enum IpcTransport<T: Serialize + DeserializeOwned> {
+    #[cfg_attr(not(feature = "ipc-channel-backend"), allow(dead_code))]
     IpcChannel(ipc_channel::ipc::IpcSender<IpcChannelMessage<T>>),
     #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
     Xpc {
@@ -187,6 +188,7 @@ impl IpcSharedRegion {
     }
 
     /// Wrap an `IpcSharedMemory` received from the ipc-channel backend.
+    #[cfg_attr(not(feature = "ipc-channel-backend"), allow(dead_code))]
     pub(crate) fn from_ipc_shmem(shmem: ipc_channel::ipc::IpcSharedMemory) -> Self {
         IpcSharedRegion(shmem)
     }

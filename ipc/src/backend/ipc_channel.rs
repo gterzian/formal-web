@@ -7,8 +7,7 @@ use std::collections::HashMap;
 
 use crossbeam_channel::unbounded;
 use ipc_channel::ipc::{
-    self as ipc_ipc, IpcOneShotServer, IpcReceiver, IpcSender as IpcChannelSender,
-    IpcSharedMemory,
+    self as ipc_ipc, IpcOneShotServer, IpcReceiver, IpcSender as IpcChannelSender, IpcSharedMemory,
 };
 use ipc_channel::router::ROUTER;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -112,15 +111,13 @@ where
     let (parent_to_child_tx, parent_to_child_rx): (
         IpcChannelSender<ChannelMessage<Out>>,
         IpcReceiver<ChannelMessage<Out>>,
-    ) = ipc_ipc::channel().map_err(|error| {
-        IpcError::Transport(format!("failed to create IPC channel: {error}"))
-    })?;
+    ) = ipc_ipc::channel()
+        .map_err(|error| IpcError::Transport(format!("failed to create IPC channel: {error}")))?;
     let (child_to_parent_tx, child_to_parent_rx): (
         IpcChannelSender<ChannelMessage<In>>,
         IpcReceiver<ChannelMessage<In>>,
-    ) = ipc_ipc::channel().map_err(|error| {
-        IpcError::Transport(format!("failed to create IPC channel: {error}"))
-    })?;
+    ) = ipc_ipc::channel()
+        .map_err(|error| IpcError::Transport(format!("failed to create IPC channel: {error}")))?;
 
     log::info!(
         "ipc-channel backend: child connecting to bootstrap token='{}'",

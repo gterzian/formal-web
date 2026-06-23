@@ -1,29 +1,27 @@
 //! Native XPC backend for the abstract IPC API.
 //!
-//! On the native XPC backend, the helper processes are registered as launchd
-//! XPC services (see `xpc-services/`). The parent connects to the service,
-//! launchd starts the helper process, and the helper creates a listener that
-//! receives the parent's connection.
+//! Only Singleton launchd services (net, media) are supported. Content
+//! (MultiInstance) cannot use XPC because macOS AMFI rejects ad-hoc-signed
+//! embedded XPC services.
 //!
-//! ## Usage
+//! See `xpc-services/README.md` for setup instructions.
 //!
-//! 1. Build & install helper binaries + plists:
-//!    ```
-//!    ./xpc-services/install.sh ./target/release
-//!    launchctl load ~/Library/LaunchAgents/formal-web.net.plist
-//!    launchctl load ~/Library/LaunchAgents/formal-web.media.plist
-//!    launchctl load ~/Library/LaunchAgents/formal-web.content.plist
-//!    ```
-//! 2. Run:
-//!    ```
-//!    cargo run --release
-//!    ```
+//! ## Architecture
+//!
+//! Parent: connects to the launchd-registered XPC service name. launchd
+//! starts the helper process on first connection and delivers the peer.
+//!
+//! Child: creates a listener on the XPC service name. launchd delivers
+//! the parent's connection to the listener callback.
 
 use crossbeam_channel::unbounded;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::types::IpcTransport;
 use crate::types::{ExtensionClient, ExtensionEndpoint, ExtensionManifest, ExtensionServer};
+
+// ExtensionEndpoint::MultiInstance is unreachable from the backend dispatch;
+// only Singleton launchd services (net, media) reach this module.
 use crate::{IpcError, IpcIncoming, IpcSender};
 
 use xpc_sys::{XpcConnection, XpcListenerEvent, XpcMessageEvent};
@@ -36,12 +34,10 @@ where
     Out: Serialize + DeserializeOwned + Send + 'static,
     In: Serialize + DeserializeOwned + Send + 'static,
 {
-    let service_name = match manifest.endpoint() {
-        ExtensionEndpoint::Singleton { service_name } => service_name,
-        ExtensionEndpoint::MultiInstance { service_name } => service_name,
+    // Only Singleton (launchd-registered) services reach this module.
+    let ExtensionEndpoint::Singleton { service_name } = manifest.endpoint() else {
+        unreachable!("MultiInstance should be handled before reaching xpc::start_extension")
     };
-
-    let is_multi_instance = matches!(manifest.endpoint(), ExtensionEndpoint::MultiInstance { .. });
 
     let (crossbeam_in_tx, crossbeam_in_rx) = unbounded();
     let handler = move |event| match event {
@@ -69,15 +65,8 @@ where
         }
     };
 
-    let connection = if is_multi_instance {
-        // Embedded XPC service in app bundle's XPCServices/.
-        // Uses xpc_connection_create to bypass launchd and its watchdog.
-        XpcConnection::connect_embedded(service_name, handler)
-    } else {
-        // Global launchd-registered Mach service.
-        XpcConnection::connect(service_name, handler)
-    };
-
+    // Global launchd-registered Mach service.
+    let connection = XpcConnection::connect(service_name, handler);
     connection.resume();
 
     let tx = IpcSender {
@@ -95,12 +84,9 @@ where
 }
 
 // ── run_extension (child side) ──────────────────────────────────────────────
-//
-// Dispatches to `listen()`-based approach for Singleton (launchd) services,
-// and to `xpc_main`-based approach for MultiInstance (embedded XPC) services.
 
 pub fn run_extension<M, Out, In>(
-    _manifest: &M,
+    manifest: &M,
     _token: &str,
     service_name: &str,
 ) -> Result<ExtensionServer<In, Out>, IpcError>
@@ -109,6 +95,11 @@ where
     Out: Serialize + DeserializeOwned + Send + 'static,
     In: Serialize + DeserializeOwned + Send + 'static,
 {
+    // Only Singleton (launchd-registered) services reach this module.
+    let ExtensionEndpoint::Singleton { .. } = manifest.endpoint() else {
+        unreachable!("MultiInstance should be handled before reaching xpc::run_extension")
+    };
+
     run_listen_extension::<Out, In>(service_name)
 }
 

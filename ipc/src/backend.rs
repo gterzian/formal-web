@@ -6,37 +6,22 @@
 //! use ipc-channel (Unix domain sockets + Mach ports). This works on all
 //! platforms.
 //!
-//! When the feature is disabled, a mixed backend is used:
-//!
-//! | Extension | Endpoint      | Backend      | Transport          |
-//! |-----------|---------------|--------------|--------------------|
-//! | net       | Singleton     | XPC          | launchd Mach service |
-//! | media     | Singleton     | XPC          | launchd Mach service |
-//! | content   | MultiInstance | ipc-channel  | Unix domain socket   |
-//!
-//! Content cannot use embedded XPC services because macOS AMFI rejects
-//! ad-hoc-signed binaries in XPCServices/ (error -423: "The file is adhoc
-//! signed or signed by an unknown certificate chain"). A paid Apple
-//! Developer certificate would be required.
-//!
-//! The ipc-channel module is always compiled so it is available for content
-//! in mixed mode.
+//! When the feature is disabled, only the native XPC backend is available
+//! (macOS only). Only Singleton launchd services (net, media) are supported.
+//! MultiInstance extensions (content) cannot use XPC because macOS AMFI
+//! rejects ad-hoc-signed embedded XPC services (error -423).
 
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::IpcError;
 use crate::types::{ExtensionClient, ExtensionManifest, ExtensionServer};
 
-// Always compiled — used by content in mixed mode, and all extensions in
-// ipc-channel-backend mode.
+#[cfg(feature = "ipc-channel-backend")]
 mod ipc_channel;
 
 // Only on Apple when NOT using ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
 mod xpc;
-
-#[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-use crate::types::ExtensionEndpoint;
 
 // No backend available on non-Apple without ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), not(target_vendor = "apple")))]
@@ -59,9 +44,17 @@ where
     }
     #[cfg(not(feature = "ipc-channel-backend"))]
     {
+        // XPC backend only supports Singleton launchd services (net, media).
+        // Content (MultiInstance) would require embedded XPC, which macOS
+        // AMFI rejects for ad-hoc-signed binaries.
         match manifest.endpoint() {
-            ExtensionEndpoint::Singleton { .. } => xpc::start_extension(manifest),
-            ExtensionEndpoint::MultiInstance { .. } => ipc_channel::start_extension(manifest),
+            crate::types::ExtensionEndpoint::Singleton { .. } => xpc::start_extension(manifest),
+            crate::types::ExtensionEndpoint::MultiInstance { .. } => {
+                unimplemented!(
+                    "XPC backend does not support MultiInstance (content) \
+                     extensions; use --features ipc-channel-backend"
+                )
+            }
         }
     }
 }
@@ -85,11 +78,14 @@ where
     #[cfg(not(feature = "ipc-channel-backend"))]
     {
         match manifest.endpoint() {
-            ExtensionEndpoint::Singleton { .. } => {
+            crate::types::ExtensionEndpoint::Singleton { .. } => {
                 xpc::run_extension(manifest, token, service_name)
             }
-            ExtensionEndpoint::MultiInstance { .. } => {
-                ipc_channel::run_extension(manifest, token, service_name)
+            crate::types::ExtensionEndpoint::MultiInstance { .. } => {
+                unimplemented!(
+                    "XPC backend does not support MultiInstance (content) \
+                     extensions; use --features ipc-channel-backend"
+                )
             }
         }
     }

@@ -226,6 +226,11 @@ pub fn run_media_process_from_args() -> Result<(), String> {
     let ipc_event_tx = server.tx;
     let (crossbeam_event_tx, crossbeam_event_rx) = crossbeam_channel::unbounded::<MediaEvent>();
 
-    run_media_process(server.rx, crossbeam_event_tx, crossbeam_event_rx, ipc_event_tx);
+    run_media_process(
+        server.rx,
+        crossbeam_event_tx,
+        crossbeam_event_rx,
+        ipc_event_tx,
+    );
     Ok(())
 }
