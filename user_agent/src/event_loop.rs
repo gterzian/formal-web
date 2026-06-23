@@ -547,12 +547,12 @@ impl EventLoopWorker {
                     frame.viewport_width,
                     frame.viewport_height,
                 ));
-                if let Err(error) = self
-                    .webview_provider_sender
-                    .send(WebviewProviderMessage::PaintFrame {
-                        frame,
-                        shmem_regions: incoming_shmem.clone(),
-                    })
+                if let Err(error) =
+                    self.webview_provider_sender
+                        .send(WebviewProviderMessage::PaintFrame {
+                            frame,
+                            shmem_regions: incoming_shmem.clone(),
+                        })
                 {
                     error!("failed to enqueue webview-provider paint frame: {error}");
                 } else {

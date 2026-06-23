@@ -2,12 +2,12 @@
 
 ## Overview
 
-The IPC (Inter-Process Communication) system connects the main `formal-web` process
-with its three helper processes:
+The IPC (Inter-Process Communication) system connects the browser main process
+(embedder / user agent) with its three helper processes:
 
 | Process | Role | Binary |
 |---|---|---|
-| `formal-web` | Browser main process (embedder, window, chrome) | `src/main.rs` |
+| `formal-web-embedder` | Browser main process (window, chrome, routing) | `embedder/src/main.rs` |
 | `formal-web-content` | One per webview — HTML rendering, JS, DOM | `content/src/bin/content_process.rs` |
 | `formal-web-net` | Singleton — HTTP networking | `net/src/bin/net_process.rs` |
 | `formal-web-media` | Singleton — GStreamer media playback | `media/src/bin/media_process.rs` |
@@ -15,11 +15,30 @@ with its three helper processes:
 ## Two Backend Architecture
 
 The crate `ipc/` provides an abstract IPC layer with two selectable backends.
-On macOS, **native XPC is the default**. The ipc-channel backend remains
-available via the `ipc-channel-backend` Cargo feature (used by WPT and
-verification tooling on all platforms).
+**`ipc-channel` is the default** (`default = ["ipc-channel-backend"]` in
+`ipc/Cargo.toml`). The native XPC backend remains available on macOS when the
+feature is disabled.
 
-### 1. Native XPC backend (macOS default)
+### 1. `ipc-channel` backend (default, works everywhere)
+
+Uses Servo's [`ipc-channel`](https://crates.io/crates/ipc-channel) crate for:
+
+- **Bootstrap**: `IpcOneShotServer<T>` — parent creates a named Mach port (macOS)
+  or Unix domain socket (Linux), passes the name to the child via
+  `--<name>-token <uuid>` argv, child connects back.
+- **Transport**: Typed channels (`IpcSender<T>` / `IpcReceiver<T>`) with serde
+  serialization. Mach port rights (macOS) and file descriptors (Linux) are
+  transferred natively by ipc-channel.
+- **Shared memory**: `IpcSharedMemory` regions carried as `HashMap<usize, IpcSharedMemory>`
+  alongside each message, enabling zero-copy bulk data transport for paint scenes
+  and video frames.
+- **Routing**: `RouterProxy` / `ROUTER` to bridge ipc-channel receivers to crossbeam
+  channels on both parent and child sides.
+
+**Selection**: Enabled by `default = ["ipc-channel-backend"]` in `ipc/Cargo.toml`.
+All extensions (content, net, media) use ipc-channel by default.
+
+### 2. Native XPC backend (macOS-only, experimental)
 
 Uses Apple's XPC framework directly for:
 
@@ -30,28 +49,19 @@ Uses Apple's XPC framework directly for:
 - **Shared memory**: `xpc_shmem_create` / `xpc_shmem_map` (stub — not yet wired to
   the message pipeline).
 
-**Selection**: Default on `target_vendor = "apple"` when `ipc-channel-backend`
-feature is not enabled.
+**Selection**: Enabled on `target_vendor = "apple"` when the `ipc-channel-backend`
+feature is disabled (`--no-default-features`).
 
-### 2. `ipc-channel` backend (testing, verification)
-
-Uses Servo's [`ipc-channel`](https://crates.io/crates/ipc-channel) crate for:
-
-- **Bootstrap**: `IpcOneShotServer<T>` — parent creates a named Mach port, passes the
-  name to the child via `--<name>-token <uuid>` argv, child connects back.
-- **Transport**: Typed channels (`IpcSender<T>` / `IpcReceiver<T>`) with serde+postcard
-  serialization. Shared memory via `IpcSharedMemory`.
-- **Routing**: `RouterProxy` / `ROUTER` to bridge ipc-channel receivers to crossbeam
-  channels on both parent and child sides.
-
-**Selection**: `ipc-channel-backend` Cargo feature on individual crates.
-`cargo build --release -p content --features ipc-channel-backend` etc.
+**Mixed-mode fallback**: When the feature is disabled, only `net` and `media`
+use XPC. The `content` process always uses ipc-channel (Unix domain sockets)
+because macOS AMFI rejects ad-hoc-signed embedded XPC services — a paid Apple
+Developer certificate would be required.
 
 ## Crate Structure
 
 ```
 ipc/                          # Abstract IPC API
-├── Cargo.toml                # Feature: ipc-channel-backend
+├── Cargo.toml                # default = ["ipc-channel-backend"]
 ├── src/
 │   ├── lib.rs                # Re-exports
 │   ├── types.rs              # IpcSender, IpcIncoming, IpcSharedRegion,
@@ -61,7 +71,7 @@ ipc/                          # Abstract IPC API
 │   ├── backend.rs            # Feature-gated backend selection
 │   └── backend/
 │       ├── ipc_channel.rs    # ipc-channel backend: IpcOneShotServer bootstrap
-│       └── native.rs         # XPC backend: unique bootstrap listener + postcard
+│       └── xpc.rs            # XPC backend: launchd listener + postcard
 
 xpc-sys/                      # Minimal XPC FFI bindings (Apple only)
 ├── Cargo.toml
@@ -72,12 +82,12 @@ xpc-sys/                      # Minimal XPC FFI bindings (Apple only)
 │   │                         # XpcSharedMemory, callback wrappers
 │   └── xpc_wrapper.c         # C shim: block-based XPC → callback-based FFI
 
-xpc-services/                 # Launchd XPC service configuration
-├── formal-web.net.plist      # Singleton XPC service for net helper
-├── formal-web.media.plist    # Singleton XPC service for media helper
-├── formal-web.content.plist  # MultipleInstances XPC service for content helper
-├── install.sh                # Installs plists with correct binary paths
-└── README.md                 # XPC setup instructions
+xpc-services/                 # Launchd XPC service configuration (XPC backend only)
+├── formal-web.net.plist
+├── formal-web.media.plist
+├── formal-web.content.plist
+├── install.sh
+└── README.md
 ```
 
 ## Public API
@@ -98,25 +108,26 @@ server.tx.send(NetResponse { ... })?;              // send to parent
 
 ## Feature Selection
 
+The `ipc-channel-backend` feature is defined in `ipc/Cargo.toml` and inherited
+transitively by all crates that depend on `ipc`.
+
 ```bash
-# Default (XPC on macOS, requires launchd plists):
+# Default (ipc-channel everywhere — works on all platforms):
 cargo build --release
+cargo run --release
+
+# Mixed: XPC for net/media, ipc-channel for content (macOS only):
+cargo build --release --no-default-features --features media
+# Requires XPC service setup first:
 ./ipc/xpc-services/install.sh $(pwd)/target/release
 launchctl load ~/Library/LaunchAgents/formal-web.net.plist
 launchctl load ~/Library/LaunchAgents/formal-web.media.plist
-launchctl load ~/Library/LaunchAgents/formal-web.content.plist
-cargo run --release
-
-# ipc-channel backend (testing, WPT, verification):
-cargo build --release -p content --features ipc-channel-backend
-cargo build --release -p net --features ipc-channel-backend
-cargo build --release -p media --features ipc-channel-backend
-cargo run --release --features ipc-channel-backend
+cargo run --release --no-default-features --features media
 ```
 
-| Crate | How backend is selected |
-|---|---|
-| All | The `ipc-channel-backend` feature on each crate enables `ipc/ipc-channel-backend`. By default this feature is disabled → native XPC (macOS). Enable it for the ipc-channel transport.|
+| Crate | Default backend | Alternative |
+|---|---|---|
+| All (content, net, media) | ipc-channel (`ipc-channel-backend` feature enabled) | XPC (macOS only, `--no-default-features`)| 
 
 ## Message Types
 
@@ -126,82 +137,83 @@ IPC message types live in `ipc_messages/src/`:
 - `network.rs` — `Request` and `Response` for net-process HTTP fetching
 - `media.rs` — `MediaCommand` and `MediaEvent` for media-process playback
 
-Message serialization uses `serde` + `postcard` on both backends. All shared memory
-was migrated from `IpcSharedMemory` to `Vec<u8>` in message types for cross-backend
-compatibility.
+Serialization uses `serde` + `postcard` on both backends.
+
+## Shared Memory Transport
+
+Bulk data (paint scenes, video frames) is transferred through shared memory regions
+carried alongside each message. On the ipc-channel backend, `HashMap<usize, IpcSharedMemory>`
+is serialized alongside the payload — ipc-channel transfers each `IpcSharedMemory` as a
+Mach port (macOS) or fd (Linux) with zero-copy semantics.
+
+### Font deduplication
+
+`FontTransportSender`/`FontTransportReceiver` avoid re-sending font binary data that
+was already shipped in a previous paint frame. Each font is identified by a unique
+`FontIdentifier`; the sender tracks which fonts have been sent and omits duplicates.
+The receiver caches font data by identifier.
 
 ## XPC Backend — Status
 
-The native XPC backend is now the default on macOS. All three helper processes
-(content, net, media) work correctly with exit code 0.
+The XPC backend is experimental and requires additional setup (launchd plists,
+ad-hoc code signing). It is disabled by default.
 
-### Requirements
+### Requirements (XPC mode only)
 
-1. Build all helper binaries: `cargo build --release`
-2. Install XPC service plists: `./ipc/xpc-services/install.sh $(pwd)/target/release`
-3. Load services: `launchctl load ~/Library/LaunchAgents/formal-web.*.plist`
-4. Run: `cargo run --release` (or `cargo run --release cdp --port 9222` for CDP)
+1. Disable the default feature: `--no-default-features --features media`
+2. Build all helper binaries: `cargo build --release --no-default-features --features media`
+3. Install XPC service plists: `./ipc/xpc-services/install.sh $(pwd)/target/release`
+4. Load services: `launchctl load ~/Library/LaunchAgents/formal-web.net.plist`
+                               `~/Library/LaunchAgents/formal-web.media.plist`
+5. Run: `cargo run --release --no-default-features --features media`
 
 Check `launchctl list | grep formal-web` for exit codes:
 - `0` = clean exit ✅
 - Non-zero = investigate `log show --predicate 'process == "formal-web-*"'`
 
-### Previous issues resolved
+### Known limitations
 
-| Issue | Fix |
-|---|---|
-| Content process crash (SIGTRAP) — hardcoded `features = ["ipc-channel-backend"]` in Cargo.toml | Made `ipc-channel-backend` an opt-in feature; default is XPC |
-| C-side memory leaks in `xpc_wrapper.c` (`malloc` / never freed) | Replaced manual `malloc` with Clang block capture by value |
-| Error events swallowed for client/peer connections (deadlock) | Forward all XPC events (errors + dictionaries) to Rust callbacks |
-| Fat pointer segfault (thin→fat pointer cast) | Double-indirection: `Box<Box<dyn Fn(...)>>` |
-| Double `munmap` on XPC shared memory | `needs_munmap` flag to track ownership |
-| Listener dropped immediately in `run_extension` | Store `_listener` in `ExtensionServer` |
-| Peer not configured before listener callback returns (XPC contract violation) | Configure + resume peer inside listener callback, per Apple docs |
-| Closure context leaked when no invalidation fires | Shared `Arc<Mutex<Option<ContextEntry>>>` between callback and `Drop` |
-| Missing `fw_xpc_cancel` in `XpcConnection::drop` | Call `cancel` before `release` |
-| `Clone` for `XpcConnection` missing `context` field | Clone `Arc`, skip cleanup on clones |
+- Content process cannot use XPC (macOS AMFI rejects ad-hoc-signed embedded
+  XPC services). Content always uses ipc-channel even in mixed mode.
+- Shared memory via `xpc_shmem_create` / `xpc_shmem_map` is not yet wired to
+  the message pipeline.
+- The anonymous XPC endpoint approach (`xpc_connection_create(NULL, queue)` +
+  `xpc_endpoint_create`) was explored for content multi-instance mode but
+  abandoned for the same AMFI reason. The `start_multi_instance`/`run_multi_instance`
+  code was removed in favour of always using ipc-channel for content.
 
-## Broken: Verification & WPT
+### macOS 26 XPC quirks
 
-The verification tracer (`verification::tracer`) and WPT runner (`wpt_runner`) are
-broken after the IPC switch. Both use `TraceSender = IpcSender<LogEntry>` embedded
-in `Command::SetTraceSender`, which fails with:
+Developers debugging the native XPC backend should be aware of these platform
+behaviours observed on macOS 26:
 
-```
-Error in IO: Bogus destination port
-```
+- **Listener events are `XPC_TYPE_CONNECTION` directly**, not dictionaries.
+  The peer connection is the event object itself — use `fw_xpc_peer_from_event()`
+  and never call `xpc_dictionary_get_string` on a connection object (that
+  triggers `_xpc_api_misuse` → SIGTRAP).
+- **Mach cancel events deliver garbage pointers** (e.g., `0x10d8`, `0x1a0c`)
+  after the connection is closed. Rust callbacks must check pointer validity
+  before dereferencing. An `alive` flag in `SharedContext` prevents
+  use-after-free.
+- **`xpc_main` requires the main thread** — it calls `dispatch_main()`
+  internally and never returns. A C wrapper (`fw_xpc_run_service`) exists
+  but is currently unused; the XPC backend uses `listen()` + `resume()`
+  directly on a dedicated dispatch queue instead.
+- **Error events must never be swallowed.** XPC delivers `XPC_TYPE_ERROR`
+  events on connection invalidation. If these are not forwarded to Rust,
+  the parent process deadlocks waiting for a response from a dead helper.
+  The C wrapper and Rust callbacks both forward all event types.
 
-The `IpcSender<LogEntry>` Mach port is invalidated during the bootstrap handshake.
-Likely cause: the ipc-channel `IpcOneShotServer::accept()` transfers Mach port
-rights that the embedded `TraceSender` depends on, and the rights are consumed
-or invalidated during the new `start_extension`/`run_extension` flow.
+## Verification Trace Support
 
-### Symptoms
+The verification tracer (`verification::tracer`) sends `LogEntry` records to a
+`TraceMonitor` via `TraceSender = ipc_channel::ipc::IpcSender<LogEntry>`. The sender
+is embedded in `Command::SetTraceSender(Option<TraceSender>)` and forwarded to the
+content and net processes on startup.
 
-- WPT tests hang or exit with code 1 (runner starts wptserve + WebDriver but
-  tests never complete)
-- `verify-navigation.sh` reports `formal-web exited with a failure status`
-  with many `verification trace send failed` errors
-- `bogus destination port` errors from the content process
-
-### Possible fix
-
-The `TraceSender` in `Command::SetTraceSender(Option<TraceSender>)` is
-serialized through `ipc_channel::ipc::IpcSender<Command>`, which should handle
-`IpcSender<LogEntry>` port transfer natively. The issue might be in how
-`send_command_inner` clones the Command before sending, or the Mach port
-namespace of the child process differs from the parent's.
-
-### To restore
-
-1. Run a simple verification test to reproduce:
-   ```bash
-   target/release/formal-web --verify --headless
-   ```
-2. Check for `bogus destination port` errors in the output
-3. Debug the Mach port transfer in `Command::SetTraceSender` — verify that
-   the `IpcSender<LogEntry>` survives the round-trip through `BootstrapMessage`
-   and into the child's `TLATracer`
+With the ipc-channel backend (default), Mach port rights for the embedded
+`IpcSender<LogEntry>` are transferred natively by ipc-channel's serde
+serialization — no special handling is needed.
 
 See `verification/src/tracer.rs` and `verification/src/monitor.rs` for the
 trace sender/receiver setup.

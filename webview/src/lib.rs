@@ -368,8 +368,7 @@ impl WebviewProvider {
                 composition.embed_sites.len()
             );
         }
-        let recorded_scene =
-            frame.into_recorded_scene(&mut self.font_receiver, shmem_regions)?;
+        let recorded_scene = frame.into_recorded_scene(&mut self.font_receiver, shmem_regions)?;
 
         let state = self.webviews.entry(traversable_id).or_default();
         state.compositor.store_frame(

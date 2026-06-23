@@ -1367,9 +1367,9 @@ impl ContentProcess {
                     0,
                 );
                 let mut next_shmem_key = 0usize;
-                let scene = self
-                    .font_sender
-                    .prepare_scene(self.font_namespace, scene, &mut next_shmem_key);
+                let scene =
+                    self.font_sender
+                        .prepare_scene(self.font_namespace, scene, &mut next_shmem_key);
                 log_render_state_debug(format!(
                     "emit paint traversable={} document={} size=({}, {})",
                     traversable_id, document_id, width, height,
