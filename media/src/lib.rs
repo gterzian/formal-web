@@ -5,7 +5,6 @@ use ipc::ExtensionEndpoint;
 use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
 use std::collections::HashMap;
 use std::env;
-use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // IPC manifest
@@ -21,9 +20,6 @@ impl ipc::ExtensionManifest for MediaExtensionManifest {
     }
 }
 
-/// Maximum time between select-loop ticks.
-const TICK_INTERVAL: Duration = Duration::from_millis(8);
-
 // ---------------------------------------------------------------------------
 // Generic run loop
 // ---------------------------------------------------------------------------
@@ -37,32 +33,39 @@ pub fn run_media_process<B: MediaBackend>(
     let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
 
     loop {
-        // Tick backends and pipelines (run-loop drain, frame poll, etc.).
+        crossbeam_channel::select! {
+            recv(cmd_rx) -> cmd => {
+                match cmd {
+                    Ok(incoming) => {
+                        if handle_command(
+                            incoming.payload,
+                            &mut backend,
+                            &mut pipelines,
+                        ) {
+                            break; // Shutdown received
+                        }
+                    }
+                    Err(_) => break, // command channel disconnected
+                }
+            }
+            recv(backend_event_rx) -> event => {
+                match event {
+                    Ok(backend_event) => {
+                        if forward_backend_event(backend_event, &ipc_event_tx).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+
+        // Allow backends to tick (run-loop drain, frame poll, etc.) after
+        // each message is processed.
         backend.tick();
         for pipeline in pipelines.values() {
             pipeline.tick();
         }
-
-        // Process one message from any channel.
-        match try_recv_cmd(&cmd_rx) {
-            Ok(Some(incoming)) => {
-                if handle_command(incoming.payload, &mut backend, &mut pipelines) {
-                    break; // Shutdown
-                }
-                continue;
-            }
-            Ok(None) => {} // no command
-            Err(()) => break,
-        }
-
-        match try_recv_backend(&backend_event_rx, &ipc_event_tx) {
-            Ok(true) => continue,
-            Ok(false) => {} // no event
-            Err(()) => break,
-        }
-
-        // Nothing available — sleep briefly so we don't busy-wait.
-        std::thread::sleep(TICK_INTERVAL);
     }
 
     // Clean up remaining pipelines on shutdown.
@@ -73,37 +76,19 @@ pub fn run_media_process<B: MediaBackend>(
     }
 }
 
-/// Try to receive one command.
-/// Returns `Ok(Some(cmd))` on success, `Ok(None)` if queue empty,
-/// `Err(())` if disconnected.
-fn try_recv_cmd(
-    cmd_rx: &crossbeam_channel::Receiver<ipc::IpcIncoming<MediaCommand>>,
-) -> Result<Option<ipc::IpcIncoming<MediaCommand>>, ()> {
-    match cmd_rx.try_recv() {
-        Ok(incoming) => Ok(Some(incoming)),
-        Err(crossbeam_channel::TryRecvError::Empty) => Ok(None),
-        Err(crossbeam_channel::TryRecvError::Disconnected) => Err(()),
-    }
-}
+// ---------------------------------------------------------------------------
+// Backend event → IPC forwarding
+// ---------------------------------------------------------------------------
 
-/// Try to receive one backend event and forward it as a MediaEvent via IPC.
-/// Returns `Ok(true)` if an event was processed, `Ok(false)` if empty,
-/// `Err(())` if disconnected.
-fn try_recv_backend(
-    backend_event_rx: &crossbeam_channel::Receiver<BackendEvent>,
+fn forward_backend_event(
+    event: BackendEvent,
     ipc_event_tx: &ipc::IpcSender<MediaEvent>,
-) -> Result<bool, ()> {
-    let event = match backend_event_rx.try_recv() {
-        Ok(event) => event,
-        Err(crossbeam_channel::TryRecvError::Empty) => return Ok(false),
-        Err(crossbeam_channel::TryRecvError::Disconnected) => return Err(()),
-    };
-
+) -> Result<(), ()> {
     match event {
-        BackendEvent::Frame(video_frame) => {
-            // Frame data goes via shared memory.
+        BackendEvent::Frame(mut video_frame) => {
+            let data = std::mem::take(&mut video_frame.data);
             let mut shmem_map = std::collections::HashMap::new();
-            shmem_map.insert(0, ipc::IpcSharedRegion::from_bytes(&video_frame.data));
+            shmem_map.insert(0, ipc::IpcSharedRegion::from_bytes(&data));
             if ipc_event_tx
                 .send_with_shmem_map(MediaEvent::Frame(video_frame), shmem_map)
                 .is_err()
@@ -145,7 +130,7 @@ fn try_recv_backend(
             }
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
