@@ -1,4 +1,3 @@
-use ipc_messages::media::MediaEvent;
 use ipc_messages::media::MediaPipelineId;
 
 // ---------------------------------------------------------------------------
@@ -23,8 +22,12 @@ compile_error!(
 // the generic dispatch loop.
 // ---------------------------------------------------------------------------
 
+use ipc_messages::media::VideoFrame;
+
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
+    /// A decoded video frame is ready.
+    Frame(VideoFrame),
     /// The pipeline reached end of stream.
     Eos { pipeline_id: MediaPipelineId },
     /// An unrecoverable error occurred in the backend.
@@ -53,6 +56,10 @@ pub trait PipelineHandle: Send + 'static {
     /// Seek to an absolute position in seconds.
     fn seek(&self, position_secs: f64) -> Result<(), String>;
 
+    /// Called once per select-loop iteration.  Backends can pump run loops,
+    /// poll for frames, etc.  Default is a no-op.
+    fn tick(&self) {}
+
     /// Tear down cleanly. Takes self by value so the backend's drop logic applies
     /// without Option gymnastics in the pipeline map.
     fn destroy(self) -> Result<(), String>;
@@ -72,17 +79,20 @@ pub trait MediaBackend: Send + 'static {
         Self: Sized;
 
     /// Create a pipeline for the given URL. The pipeline should start in the
-    /// Paused state. Decoded video frames are sent on `frame_tx`.
+    /// Paused state. Decoded video frames are sent via `event_receiver`
+    /// as `BackendEvent::Frame`.
     fn create_pipeline(
         &mut self,
         id: MediaPipelineId,
         url: String,
-        frame_tx: crossbeam_channel::Sender<MediaEvent>,
     ) -> Result<Self::Pipeline, String>;
 
     /// Returns the receiver for backend-originated events (BusEvent → BackendEvent
     /// conversion happens inside the backend). Called once before the select loop.
     fn event_receiver(&self) -> crossbeam_channel::Receiver<BackendEvent>;
+
+    /// Called once per select-loop iteration.  Default is a no-op.
+    fn tick(&mut self) {}
 }
 
 // ---------------------------------------------------------------------------

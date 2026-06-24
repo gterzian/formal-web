@@ -2,9 +2,9 @@ use crossbeam_channel::Sender;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use ipc_messages::media::{MediaEvent, MediaPipelineId, VideoFrame};
+use ipc_messages::media::{MediaPipelineId, VideoFrame};
 
-use crate::backend::PipelineHandle;
+use crate::backend::{BackendEvent, PipelineHandle};
 
 pub struct GstPipeline {
     element: gst::Pipeline,
@@ -14,8 +14,7 @@ impl GstPipeline {
     pub fn new(
         id: MediaPipelineId,
         url: String,
-        event_sender: Sender<MediaEvent>,
-        backend_event_sender: crossbeam_channel::Sender<crate::backend::BackendEvent>,
+        backend_event_tx: Sender<BackendEvent>,
     ) -> Result<Self, String> {
         let pipeline = gst::Pipeline::new();
 
@@ -67,6 +66,7 @@ impl GstPipeline {
         });
 
         // Frame callback — fires on the GStreamer streaming thread.
+        let frame_tx = backend_event_tx.clone();
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -107,14 +107,13 @@ impl GstPipeline {
                             height,
                         );
                     }
-                    let _ = event_sender.send(MediaEvent::Frame(frame));
+                    let _ = frame_tx.send(BackendEvent::Frame(frame));
                     Ok(gst::FlowSuccess::Ok)
                 })
                 .build(),
         );
 
         // Route bus messages to BackendEvent via sync handler.
-        // Clone the pipeline element so the closure can query duration.
         let pipeline_for_bus = pipeline.clone();
         let bus = pipeline
             .bus()
@@ -122,23 +121,20 @@ impl GstPipeline {
         bus.set_sync_handler(move |_bus, message| {
             match message.view() {
                 gst::MessageView::Eos(..) => {
-                    let _ = backend_event_sender
-                        .send(crate::backend::BackendEvent::Eos { pipeline_id: id });
+                    let _ = backend_event_tx.send(BackendEvent::Eos { pipeline_id: id });
                 }
                 gst::MessageView::Error(error) => {
-                    let _ = backend_event_sender.send(crate::backend::BackendEvent::Error {
+                    let _ = backend_event_tx.send(BackendEvent::Error {
                         pipeline_id: id,
                         message: error.error().to_string(),
                     });
                 }
                 gst::MessageView::DurationChanged(..) => {
                     if let Some(duration) = pipeline_for_bus.query_duration::<gst::ClockTime>() {
-                        let _ = backend_event_sender.send(
-                            crate::backend::BackendEvent::DurationChanged {
-                                pipeline_id: id,
-                                duration_secs: duration.seconds_f64(),
-                            },
-                        );
+                        let _ = backend_event_tx.send(BackendEvent::DurationChanged {
+                            pipeline_id: id,
+                            duration_secs: duration.seconds_f64(),
+                        });
                     }
                 }
                 _ => {}

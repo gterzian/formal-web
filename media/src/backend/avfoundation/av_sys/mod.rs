@@ -9,8 +9,8 @@
 mod player;
 pub(crate) use player::AvPlayer;
 
-// AvPlayerItem is used internally by AvPlayer::current_item().
 mod item;
+pub(crate) use item::AvPlayerItem;
 
 mod video_output;
 pub(crate) use video_output::AvVideoOutput;

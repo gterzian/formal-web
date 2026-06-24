@@ -2,9 +2,8 @@ mod pipeline;
 pub use pipeline::GstPipeline;
 
 use crate::backend::{BackendEvent, MediaBackend};
-use crossbeam_channel::Sender;
 use gstreamer as gst;
-use ipc_messages::media::{MediaEvent, MediaPipelineId};
+use ipc_messages::media::MediaPipelineId;
 
 pub struct GStreamerBackend {
     event_tx: crossbeam_channel::Sender<BackendEvent>,
@@ -32,9 +31,8 @@ impl MediaBackend for GStreamerBackend {
         &mut self,
         id: MediaPipelineId,
         url: String,
-        frame_tx: Sender<MediaEvent>,
     ) -> Result<Self::Pipeline, String> {
-        GstPipeline::new(id, url, frame_tx, self.event_tx.clone())
+        GstPipeline::new(id, url, self.event_tx.clone())
     }
 
     fn event_receiver(&self) -> crossbeam_channel::Receiver<BackendEvent> {
