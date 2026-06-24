@@ -16,10 +16,8 @@ mod video_output;
 pub(crate) use video_output::AvVideoOutput;
 
 pub(crate) mod pixel_buffer;
-pub(crate) use pixel_buffer::{PixelBufferLock, pixel_buffer_to_frame};
 
-mod time;
-pub(crate) use time::host_time_seconds;
+pub(crate) mod time;
 
 mod url;
 pub(crate) use url::url_from_string;

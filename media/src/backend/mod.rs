@@ -56,9 +56,9 @@ pub trait PipelineHandle: Send + 'static {
     /// Seek to an absolute position in seconds.
     fn seek(&self, position_secs: f64) -> Result<(), String>;
 
-    /// Called once per select-loop iteration.  Backends can pump run loops,
-    /// poll for frames, etc.  Default is a no-op.
-    fn tick(&self) {}
+    /// Called at a fixed rate by the select loop.  Backends use this to
+    /// pump run loops, poll for frames, etc.  Default is a no-op.
+    fn sample(&self) {}
 
     /// Tear down cleanly. Takes self by value so the backend's drop logic applies
     /// without Option gymnastics in the pipeline map.
@@ -90,9 +90,6 @@ pub trait MediaBackend: Send + 'static {
     /// Returns the receiver for backend-originated events (BusEvent → BackendEvent
     /// conversion happens inside the backend). Called once before the select loop.
     fn event_receiver(&self) -> crossbeam_channel::Receiver<BackendEvent>;
-
-    /// Called once per select-loop iteration.  Default is a no-op.
-    fn tick(&mut self) {}
 }
 
 // ---------------------------------------------------------------------------

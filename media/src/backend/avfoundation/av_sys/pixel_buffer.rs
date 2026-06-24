@@ -10,49 +10,39 @@ use objc2_core_video::{
 use ipc_messages::media::{MediaPipelineId, VideoFrame};
 
 /// Scoped lock on a CVPixelBuffer.  The buffer is unlocked on drop.
+///
+/// Takes ownership of a `Retained<CVPixelBuffer>` (from
+/// `copyPixelBufferForItemTime:`) and holds it locked for the lifetime of
+/// this lock.
 pub(crate) struct PixelBufferLock {
-    // Holding the Retained keeps the buffer alive while locked.
-    #[allow(dead_code)]
-    buf: Retained<CVPixelBuffer>,
+    _buf: Retained<CVPixelBuffer>,
 }
 
 impl PixelBufferLock {
-    /// Lock the pixel buffer for read-only access.
-    ///
-    /// Returns `None` if locking fails (e.g. the buffer is not in system
-    /// memory).
-    pub(crate) fn new(buf: &CVPixelBuffer) -> Option<Self> {
+    /// Lock a CVPixelBuffer for read-only access.
+    pub(crate) fn new(buf: Retained<CVPixelBuffer>) -> Option<Self> {
         let lock = CVPixelBufferLockFlags::ReadOnly;
-        // SAFETY: buf is a valid CVPixelBuffer, and ReadOnly locking is
-        // safe for read-only access from any thread.
-        if unsafe { CVPixelBufferLockBaseAddress(buf, lock) } != kCVReturnSuccess {
+        // SAFETY: buf is valid and the lock is read-only.
+        if unsafe { CVPixelBufferLockBaseAddress(&buf, lock) } != kCVReturnSuccess {
             return None;
         }
-        // Retain so the buffer stays alive while locked.
-        // SAFETY: buf points to a valid Objective-C object, and we hold
-        // a reference from the caller.
-        let retained = unsafe { Retained::retain(buf as *const _ as *mut _) }?;
-        Some(Self { buf: retained })
+        Some(Self { _buf: buf })
     }
 
-    /// Width in pixels.
     pub(crate) fn width(&self) -> usize {
-        CVPixelBufferGetWidth(&*self.buf)
+        CVPixelBufferGetWidth(&self._buf)
     }
 
-    /// Height in pixels.
     pub(crate) fn height(&self) -> usize {
-        CVPixelBufferGetHeight(&*self.buf)
+        CVPixelBufferGetHeight(&self._buf)
     }
 
-    /// Bytes per row (may include padding beyond width × 4).
     pub(crate) fn bytes_per_row(&self) -> usize {
-        CVPixelBufferGetBytesPerRow(&*self.buf)
+        CVPixelBufferGetBytesPerRow(&self._buf)
     }
 
-    /// Pointer to the first byte of pixel data.
     pub(crate) fn base_address(&self) -> *const u8 {
-        CVPixelBufferGetBaseAddress(&*self.buf) as *const u8
+        CVPixelBufferGetBaseAddress(&self._buf) as *const u8
     }
 }
 
@@ -60,15 +50,13 @@ impl Drop for PixelBufferLock {
     fn drop(&mut self) {
         let lock = CVPixelBufferLockFlags::ReadOnly;
         // SAFETY: Matches the lock call above.
-        unsafe { CVPixelBufferUnlockBaseAddress(&*self.buf, lock) };
+        unsafe { CVPixelBufferUnlockBaseAddress(&self._buf, lock) };
     }
 }
 
-/// Convert a locked `CVPixelBuffer` to a tightly-packed `VideoFrame`.
+/// Convert a locked CVPixelBuffer to a tightly-packed VideoFrame.
 ///
-/// The buffer is assumed to have 4 bytes per pixel (BGRA). Row padding
-/// (bytes_per_row may be larger than width × 4) is stripped so the output
-/// is tightly packed W×H×4.
+/// The buffer is assumed to have 4 bytes per pixel (BGRA).
 pub(crate) fn pixel_buffer_to_frame(
     pipeline_id: MediaPipelineId,
     lock: &PixelBufferLock,
@@ -85,10 +73,15 @@ pub(crate) fn pixel_buffer_to_frame(
     let row_bytes = width * 4;
     let mut data = Vec::with_capacity(height * row_bytes);
     for row in 0..height {
-        // SAFETY: The pixel buffer is locked for the lifetime of `lock`,
-        // so the memory at `base + row * bpr` is valid and accessible.
         let src = unsafe { std::slice::from_raw_parts(base.add(row * bpr), row_bytes) };
-        data.extend_from_slice(src);
+        // The pixel buffer is BGRA but the compositor expects RGBA.
+        // Swap byte 0 (B) with byte 2 (R) in each 4-byte pixel.
+        for chunk in src.chunks_exact(4) {
+            data.push(chunk[2]); // R
+            data.push(chunk[1]); // G
+            data.push(chunk[0]); // B
+            data.push(chunk[3]); // A
+        }
     }
 
     Some(VideoFrame {

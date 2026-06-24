@@ -31,6 +31,8 @@ pub fn run_media_process<B: MediaBackend>(
 ) {
     let backend_event_rx = backend.event_receiver();
     let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
+    // Timer at ≈120 Hz drives backend sampling (run-loop drain, frame poll).
+    let sample_tick = crossbeam_channel::tick(std::time::Duration::from_millis(8));
 
     loop {
         crossbeam_channel::select! {
@@ -58,13 +60,11 @@ pub fn run_media_process<B: MediaBackend>(
                     Err(_) => break,
                 }
             }
-        }
-
-        // Allow backends to tick (run-loop drain, frame poll, etc.) after
-        // each message is processed.
-        backend.tick();
-        for pipeline in pipelines.values() {
-            pipeline.tick();
+            recv(sample_tick) -> _ => {
+                for pipeline in pipelines.values() {
+                    pipeline.sample();
+                }
+            }
         }
     }
 

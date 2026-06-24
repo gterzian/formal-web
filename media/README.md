@@ -30,7 +30,7 @@ cargo build --release
 cargo run --release
 ```
 
-### AVFoundation backend (macOS only, NOT WORKING)
+### AVFoundation backend (macOS only)
 
 ```bash
 # Build the media binary
@@ -40,7 +40,9 @@ cargo build --release -p media --bin formal-web-media \
 # Run
 cargo run --release
 ```
-Currently does not deliver frames (always returns `AVPlayerItemStatusUnknown`).
+
+> `cargo run --release` does **not** rebuild the media binary.  Always build
+> the media binary explicitly with `--features backend-avfoundation` first.
 
 ### Without media (no video playback)
 
@@ -166,102 +168,82 @@ use gstreamer_app as gst_app;
 use gstreamer_app::prelude::*;
 ```
 
-## AVFoundation backend — current state
+## AVFoundation backend
 
 ### Pipeline topology
 
 ```
-AVPlayer ──▶ AVPlayerItem ──▶ AVPlayerItemVideoOutput ──▶ poll loop
+AVPlayer ──▶ AVPlayerItem ──▶ AVPlayerItemVideoOutput ──▶ sample() poll loop
 ```
 
-### Frame extraction (poll model)
+The pipeline runs **on the select-loop thread** (the main thread of the
+media process).  No background thread is used.
 
-```
+### Frame extraction
+
+Frame polling happens inside `PipelineHandle::sample()`, which is called
+at ≈120 Hz via a `crossbeam_channel::tick(8ms)` timer arm in the generic
+`select!` loop:
+
+```rust
+// lib.rs: the select loop drives sampling independently of message traffic
+let sample_tick = crossbeam_channel::tick(Duration::from_millis(8));
+
 loop {
-    NSRunLoop::currentRunLoop().runUntilDate(…33ms…);
-    drain commands via try_recv;
-    check item status;
-    poll video_output.hasNewPixelBufferForItemTime(…);
-    drain more commands;
+    crossbeam_channel::select! {
+        recv(cmd_rx) -> cmd => { ... },
+        recv(backend_event_rx) -> event => { ... },
+        recv(sample_tick) -> _ => {
+            for pipeline in pipelines.values() {
+                pipeline.sample();
+            }
+        },
+    }
 }
 ```
 
-### Status: NOT WORKING — always `AVPlayerItemStatusUnknown`
+`sample()` does:
+1. **Drain the run loop** via `NSRunLoop::currentRunLoop().runUntilDate(8ms)`
+   — this lets AVFoundation service URL loading, KVO, and video output
+   timing.
+2. **Check item status** (once) — wait for `AVPlayerItemStatus::ReadyToPlay`
+   before reporting duration.
+3. **Poll for frames** via `AVPlayerItemVideoOutput`:
+   - Convert `CVGetCurrentHostTime()` to item time via `itemTimeForHostTime`
+   - Check `hasNewPixelBufferForItemTime`
+   - Copy pixel buffer and convert to `VideoFrame` (BGRA → RGBA swap)
+   - Send as `BackendEvent::Frame` through the backend event channel
 
-The AVFoundation backend creates the pipeline and play() is called, but
-`AVPlayerItem.status` is always `Unknown` (0) and never transitions to
-`ReadyToPlay` (1). No frames are ever extracted.
+### Key design decisions
 
-#### Symptoms
+| Decision | Why |
+|---|---|
+| No background thread | AVFoundation objects require `MainThreadMarker`. The select loop
+  provides the main thread. |
+| Timer-driven `sample()`, not message-driven | Without a timer, `sample()` only runs when a command or event arrives,
+  starving AVFoundation of CPU time. |
+| `BackendEvent::Frame` instead of separate `frame_tx` | Frames flow through the same channel as EOS/error/duration. Eliminates
+  the `frame_tx`/`frame_rx` pair from the generic loop. |
+| BGRA pixel buffer with RGBA swap in software | AVFoundation's decoder outputs BGRA natively; the compositor expects
+  RGBA. Requesting RGBA from the decoder fails silently for some files. |
 
-```
-[avf] p0: status=0     ← repeated forever, never becomes 1
-```
+### Pixel format
 
-#### Root cause analysis
+The video output requests `kCVPixelFormatType_32BGRA` via the pixel-buffer
+attributes dictionary.  The `pixel_buffer_to_frame` function then swaps
+bytes 0 and 2 in each 4-byte pixel to produce RGBA output matching the
+compositor's expectations.
 
-`NSRunLoop::runUntilDate()` on a bare background thread with no input
-sources returns **immediately** instead of blocking. AVFoundation's URL
-loading machinery relies on the run loop being serviced — when it isn't,
-the `AVPlayerItem` never loads its media, so it never becomes
-`ReadyToPlay`.
-
-The original fix (adding a `recv_timeout`-based sleep) is the pacing
-mechanism, but the first 33 ms loop iterations happen before any run
-loop time is given to AVFoundation. By the time `runUntilDate` runs,
-the item has been given <1 ms of cumulative run loop time from the very
-first drain call, which is insufficient to even begin URL loading.
-
-#### Attempted fixes (all failed)
-
-| Attempt | What changed | Result |
-|---|---|---|
-| 1. `recv_timeout` only, no run loop drain | Removed `runUntilDate` entirely | Status always 0, no change |
-| 2. `try_recv` + `runUntilDate(8ms)` | Run loop 8ms then try_recv | 100% CPU (run loop returned instantly) |
-| 3. `recv_timeout(33ms)` first, then `runUntilDate(8ms)` | Two sequential sleeps totalling 41ms | Status always 0, AVFoundation starved |
-| 4. `runUntilDate(33ms)` + `try_recv` (current) | Run loop owns full cadence | Status always 0 — run loop still returns instantly |
-| 5. Create `AVPlayer` on main thread before `spawn` | Pipeline.init() uses `MainThreadMarker` | `AvPlayer` is `!Send`, can't move into closure |
-
-#### Why NSRunLoop returns immediately on background threads
-
-`NSRunLoop` has two modes:
-- **With sources/timers**: blocks until the next timer fire or input source
-  event, up to the specified timeout.
-- **Without sources/timers**: returns immediately, regardless of the timeout.
-
-A freshly-created background thread has no automatic run loop sources.
-`AVFoundation` does NOT automatically register its URL loading with a
-background thread's run loop — it registers with the **main thread's**
-run loop (or a thread that the `AVPlayer`/`AVPlayerItem` was created on).
-
-Hypothesis: `AVPlayer::playerWithURL:` registers URL loading callbacks
-on the creating thread's run loop. If that thread never has its run loop
-serviced, the callbacks never fire.
-
-#### What would be needed to fix
-
-1. **Run the AVFoundation worker on the main thread** — swap the generic
-   select loop to a background thread and keep the main thread for
-   `NSRunLoop` + AVFoundation operations. This requires restructuring
-   `run_media_process` or having the backend own its own threading.
-
-2. **Or: create a `CFRunLoopTimer` or `dispatch_source` on the worker
-   thread** so `runUntilDate` actually has something to wait on. This
-   would keep run loop occupied and let AVFoundation callbacks fire.
-
-3. **Or: use `dispatch_async` to the main queue** for all AVFoundation
-   operations, keeping the worker thread purely as a command router.
-
-Option 1 is the most architecturally sound but requires non-trivial
-refactoring of the generic run loop.
-
-### Common pitfalls (when it does work)
+### Common pitfalls
 
 | Pitfall | Symptom | Fix |
 |---|---|---|
 | Using `currentTime()` instead of `itemTimeForHostTime` | Only first frame ever delivered | Use `CVGetCurrentHostTime()` → `itemTimeForHostTime` |
 | Using unix wall clock for host time | Item time doesn't match video timeline | Use `CVGetCurrentHostTime()` / `CVGetHostClockFrequency()` |
 | Reading duration before asset loads | `kCMTimeIndefinite`, `seconds()` returns `NaN` | Poll `item.status() == ReadyToPlay` first |
+| `kCVPixelBufferPixelFormatTypeKey` double-ref | Crash during pipeline creation | Use `kCVPixelBufferPixelFormatTypeKey` directly (it's already `&CFString`), not `&kCVPixelBufferPixelFormatTypeKey` |
+| No timer driving `sample()` | No frames delivered | Add `crossbeam_channel::tick()` arm to `select!` |
+| BGRA data sent as RGBA | Blue-tinted video | Swap bytes 0 and 2 in `pixel_buffer_to_frame` |
 
 ### What does NOT change
 

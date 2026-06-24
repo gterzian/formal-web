@@ -2,31 +2,18 @@ use std::cell::Cell;
 
 use crossbeam_channel::Sender;
 use objc2::MainThreadMarker;
-use objc2_foundation::{NSDate, NSRunLoop};
 
 use ipc_messages::media::MediaPipelineId;
 
-use objc2_av_foundation::AVPlayerItemStatus;
-
 use crate::backend::{BackendEvent, PipelineHandle};
 
-use super::av_sys::{
-    AvPlayer, AvVideoOutput, PixelBufferLock, host_time_seconds, pixel_buffer_to_frame,
-    url_from_string,
-};
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const TICK_SECS: f64 = 0.008;
+use super::av_sys::{AvPlayer, AvVideoOutput, url_from_string};
 
 // ---------------------------------------------------------------------------
 // AvfPipeline
 //
-// Runs inside the select loop on the main thread.  tick() drains the run
-// loop so AVFoundation can service URL loading, KVO, and video output
-// timing.  Frames are sent as BackendEvent::Frame.
+// Runs inside the select loop on the main thread.
+// Frames are sent as BackendEvent::Frame.
 // ---------------------------------------------------------------------------
 
 pub struct AvfPipeline {
@@ -38,8 +25,6 @@ pub struct AvfPipeline {
     destroyed: Cell<bool>,
     duration_reported: Cell<bool>,
 }
-
-static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl AvfPipeline {
     pub fn new(
@@ -95,19 +80,20 @@ impl PipelineHandle for AvfPipeline {
         Ok(())
     }
 
-    fn tick(&self) {
+    fn sample(&self) {
         if self.destroyed.get() {
             return;
         }
 
-        // Drain run loop so AVFoundation can service URL loading etc.
-        let rl = NSRunLoop::currentRunLoop();
-        let until = NSDate::dateWithTimeIntervalSinceNow(TICK_SECS);
+        // Drain run loop so AVFoundation can service URL loading,
+        // KVO, and video output timing.
+        let rl = objc2_foundation::NSRunLoop::currentRunLoop();
+        let until = objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.008);
         rl.runUntilDate(&until);
 
         // Duration check (once).
         if !self.duration_reported.get() {
-            if self.item.status() == AVPlayerItemStatus::ReadyToPlay {
+            if self.item.status() == objc2_av_foundation::AVPlayerItemStatus::ReadyToPlay {
                 let secs = self.item.duration_secs();
                 if secs > 0.0 {
                     log::info!("[avf] p{}: duration = {secs}s", self.id.0);
@@ -116,24 +102,18 @@ impl PipelineHandle for AvfPipeline {
             }
         }
 
-        // Frame poll.
-        let host_secs = host_time_seconds();
+        // Poll for frames.
+        let host_secs = super::av_sys::time::host_time_seconds();
         let item_time = self.video_output.item_time_for_host_time(host_secs);
-
         if self.video_output.has_new_pixel_buffer(item_time) {
             if let Some(pixel_buf) = self.video_output.copy_pixel_buffer(item_time) {
-                if let Some(lock) = PixelBufferLock::new(&pixel_buf) {
-                    if let Some(frame) = pixel_buffer_to_frame(self.id, &lock) {
-                        let c = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if c % 30 == 0 {
-                            log::debug!(
-                                "[avf] p{}: frame #{c} ({}x{})",
-                                self.id.0,
-                                frame.width,
-                                frame.height,
-                            );
-                        }
-                        let _ = self.event_tx.send(BackendEvent::Frame(frame));
+                if let Some(lock) = super::av_sys::pixel_buffer::PixelBufferLock::new(pixel_buf) {
+                    if let Some(frame) =
+                        super::av_sys::pixel_buffer::pixel_buffer_to_frame(self.id, &lock)
+                    {
+                        let _ = self
+                            .event_tx
+                            .send(crate::backend::BackendEvent::Frame(frame));
                     }
                 }
             }
