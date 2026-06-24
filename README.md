@@ -30,19 +30,25 @@ rustup run 1.94.0 cargo run --release
 ### AVFoundation media backend (macOS, no GStreamer required)
 
 ```bash
-# 1. Build the media binary with AVFoundation
+# 1. Build the media binary (separate step — `cargo run` won't do this)
 rustup run 1.94.0 cargo build --release -p media --bin formal-web-media \
   --no-default-features --features backend-avfoundation
 
-# 2. Build the root binary (media features aren't linked into root)
-rustup run 1.94.0 cargo build --release
-
-# 3. Run — the embedder spawns the AVFoundation-based media process
+# 2. Run — the embedder spawns the AVFoundation-based media process
 rustup run 1.94.0 cargo run --release
 ```
 
-> `cargo run --release` does **not** rebuild the media binary.  Always run
-> step 1 (`cargo build -p media --bin formal-web-media …`) before step 3.
+> `cargo run --release` builds only the root `formal-web` binary — it does
+> **not** rebuild the `formal-web-media` binary.  Always run step 1 before
+> step 2.  The root crate's `backend-avfoundation` feature (which implies
+> `media`) is provided for symmetry but is not strictly required since
+> `media` is enabled by default anyway.
+
+To switch back to GStreamer, just rebuild the media binary:
+```bash
+cargo build --release -p media --bin formal-web-media
+# then `cargo run --release` as usual
+```
 
 ### Without media (no video playback)
 

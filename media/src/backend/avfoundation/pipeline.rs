@@ -1,26 +1,24 @@
-use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use crossbeam_channel::Sender;
-use objc2::AnyThread;
-use objc2::MainThreadMarker;
-use objc2::rc::Retained;
-use objc2_av_foundation::{AVPlayer, AVPlayerItemStatus, AVPlayerItemVideoOutput};
-use objc2_core_media::CMTime;
-use objc2_core_video::{CVGetCurrentHostTime, CVGetHostClockFrequency, CVPixelBuffer};
-use objc2_foundation::{NSDate, NSRunLoop, NSString, NSURL};
+use objc2_foundation::{NSDate, NSRunLoop};
 
-use ipc_messages::media::{MediaEvent, MediaPipelineId, VideoFrame};
+use ipc_messages::media::{MediaEvent, MediaPipelineId};
 
 use crate::backend::PipelineHandle;
+
+use super::av_sys::{
+    AvPlayer, AvVideoOutput, PixelBufferLock, host_time_seconds, pixel_buffer_to_frame,
+    url_from_string,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const CM_TIME_SCALE: i32 = 600;
+/// Frame poll interval — the run loop drains for this long each iteration.
+const POLL_SECS: f64 = 0.033; // ≈30 fps
 
 // ---------------------------------------------------------------------------
 // Command queue
@@ -59,133 +57,97 @@ impl AvfPipeline {
         let thread = std::thread::Builder::new()
             .name("formal-web-avf-worker".into())
             .spawn(move || {
-                let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                // SAFETY: All AVPlayer/AVPlayerItem access is serialized on
+                // this dedicated thread via the command queue below.
+                let ns_url = url_from_string(&url_string).expect("NSURL creation failed");
+                let mut player = unsafe { AvPlayer::new(&ns_url) };
+                let item = player.current_item().expect("AVPlayer::currentItem");
+                let video_output = AvVideoOutput::new();
+                video_output.suppress_rendering();
+                item.add_output(&video_output);
+                player.pause();
 
-                // ── NSURL from string ──
-                let c_string = match CString::new(url_string.as_str()) {
-                    Ok(cs) => cs,
-                    Err(_) => {
-                        log::error!("[avf] p{}: URL has null byte", id.0);
-                        return;
-                    }
-                };
-                let ns_string_ptr = std::ptr::NonNull::new(c_string.as_ptr() as *mut _);
-                let ns_string: Retained<NSString> = (unsafe {
-                    ns_string_ptr.and_then(|pointer| NSString::stringWithUTF8String(pointer))
-                })
-                .expect("NSString::stringWithUTF8String failed");
-                let ns_url = NSURL::initWithString(NSURL::alloc(), &ns_string)
-                    .unwrap_or_else(|| panic!("NSURL::initWithString failed for {url_string}"));
-
-                // ── AVPlayer + item ──
-                let player = unsafe { AVPlayer::playerWithURL(&ns_url, mtm) };
-                let Some(item) = (unsafe { player.currentItem() }) else {
-                    log::error!("[avf] p{}: no AVPlayerItem", id.0);
-                    return;
-                };
-
-                // ── AVPlayerItemVideoOutput ──
-                let video_output = unsafe {
-                    AVPlayerItemVideoOutput::initWithPixelBufferAttributes(
-                        AVPlayerItemVideoOutput::alloc(),
-                        None,
-                    )
-                };
-                unsafe { item.addOutput(&video_output) };
-                unsafe { video_output.setSuppressesPlayerRendering(true) };
-
-                // ── Start paused ──
-                unsafe { player.pause() };
                 log::info!("[avf] p{}: ready", id.0);
 
-                // ── State ──
                 let mut duration_reported = false;
 
-                // ── Combined command + frame polling loop ──
                 loop {
-                    // ── Fix 3: Poll item status for duration ──
+                    // ── Run loop drives ALL timing ──
+                    // AVFoundation URL loading, KVO, and video output timing
+                    // all need continuous run loop time. Drain for POLL_SECS,
+                    // then process commands and poll frames.
+                    let rl = NSRunLoop::currentRunLoop();
+                    let until = NSDate::dateWithTimeIntervalSinceNow(POLL_SECS);
+                    rl.runUntilDate(&until);
+
+                    // ── Drain all pending commands ──
+                    loop {
+                        match cmd_rx.try_recv() {
+                            Ok(cmd) => match cmd {
+                                AvfCommand::Play => {
+                                    log::info!("[avf] p{}: play", id.0);
+                                    player.play();
+                                }
+                                AvfCommand::Pause => {
+                                    log::info!("[avf] p{}: pause", id.0);
+                                    player.pause();
+                                }
+                                AvfCommand::Seek(pos) => {
+                                    log::info!("[avf] p{}: seek to {pos}s", id.0);
+                                    player.seek(pos);
+                                }
+                                AvfCommand::Destroy => {
+                                    log::info!("[avf] p{}: destroy", id.0);
+                                    destroyed_clone.store(true, Ordering::SeqCst);
+                                    player.pause();
+                                    item.remove_output(&video_output);
+                                    player.clear_item();
+                                    return;
+                                }
+                            },
+                            Err(crossbeam_channel::TryRecvError::Empty) => break,
+                            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                log::info!("[avf] p{}: cmd channel closed", id.0);
+                                return;
+                            }
+                        }
+                    }
+
+                    // ── Duration check (once) ──
                     if !duration_reported {
-                        let status = unsafe { item.status() };
-                        if status == AVPlayerItemStatus::ReadyToPlay {
-                            let duration = unsafe { item.duration() };
-                            let secs = unsafe { duration.seconds() };
-                            if secs.is_finite() && secs > 0.0 {
+                        use objc2_av_foundation::AVPlayerItemStatus;
+                        let st = item.status();
+                        let st_num: i32 = st.0 as i32;
+                        log::info!("[avf] p{}: status={st_num}", id.0);
+                        if st == AVPlayerItemStatus::ReadyToPlay {
+                            let secs = item.duration_secs();
+                            if secs > 0.0 {
                                 log::info!("[avf] p{}: duration = {secs}s", id.0);
                             }
                             duration_reported = true;
                         }
                     }
 
-                    // ── Convert Mach absolute host time to seconds ──
-                    // itemTimeForHostTime expects the CoreVideo host time
-                    // base (mach_absolute_time), not unix wall clock.
-                    let host_ticks = unsafe { CVGetCurrentHostTime() };
-                    let freq = unsafe { CVGetHostClockFrequency() };
-                    let host_secs = host_ticks as f64 / freq;
-                    let item_time = unsafe { video_output.itemTimeForHostTime(host_secs) };
+                    // ── Frame poll ──
+                    let host_secs = host_time_seconds();
+                    let item_time = video_output.item_time_for_host_time(host_secs);
 
-                    let has_new = unsafe { video_output.hasNewPixelBufferForItemTime(item_time) };
-                    if has_new {
-                        let pixel_buf = unsafe {
-                            video_output.copyPixelBufferForItemTime_itemTimeForDisplay(
-                                item_time,
-                                std::ptr::null_mut(),
-                            )
-                        };
-                        if let Some(ref pb) = pixel_buf {
-                            if let Some(frame) = pixel_buffer_to_frame(id, pb) {
-                                let c = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-                                if c % 30 == 0 {
-                                    log::debug!(
-                                        "[avf] p{}: frame #{c} ({}x{})",
-                                        id.0,
-                                        frame.width,
-                                        frame.height,
-                                    );
+                    if video_output.has_new_pixel_buffer(item_time) {
+                        if let Some(pixel_buf) = video_output.copy_pixel_buffer(item_time) {
+                            if let Some(lock) = PixelBufferLock::new(&pixel_buf) {
+                                if let Some(frame) = pixel_buffer_to_frame(id, &lock) {
+                                    let c = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+                                    if c % 30 == 0 {
+                                        log::debug!(
+                                            "[avf] p{}: frame #{c} ({}x{})",
+                                            id.0,
+                                            frame.width,
+                                            frame.height,
+                                        );
+                                    }
+                                    let _ = frame_tx.send(MediaEvent::Frame(frame));
                                 }
-                                let _ = frame_tx.send(MediaEvent::Frame(frame));
                             }
-                        }
-                    }
-
-                    // ── Fix 2: Drain run loop ──
-                    // AVPlayerItemVideoOutput's internal timing machinery
-                    // needs a run loop to advance. Drain it briefly.
-                    let rl = NSRunLoop::currentRunLoop();
-                    let until = NSDate::dateWithTimeIntervalSinceNow(0.008);
-                    rl.runUntilDate(&until);
-
-                    // Process one command (non-blocking).
-                    match cmd_rx.try_recv() {
-                        Ok(cmd) => match cmd {
-                            AvfCommand::Play => {
-                                log::info!("[avf] p{}: play", id.0);
-                                unsafe { player.play() };
-                            }
-                            AvfCommand::Pause => {
-                                log::info!("[avf] p{}: pause", id.0);
-                                unsafe { player.pause() };
-                            }
-                            AvfCommand::Seek(pos) => {
-                                log::info!("[avf] p{}: seek to {pos}s", id.0);
-                                let time = unsafe { CMTime::with_seconds(pos, CM_TIME_SCALE) };
-                                unsafe { player.seekToTime(time) };
-                            }
-                            AvfCommand::Destroy => {
-                                log::info!("[avf] p{}: destroy", id.0);
-                                destroyed_clone.store(true, Ordering::SeqCst);
-                                unsafe {
-                                    player.pause();
-                                    item.removeOutput(&video_output);
-                                    player.replaceCurrentItemWithPlayerItem(None);
-                                }
-                                return;
-                            }
-                        },
-                        Err(crossbeam_channel::TryRecvError::Empty) => {}
-                        Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                            log::info!("[avf] p{}: cmd channel closed", id.0);
-                            return;
                         }
                     }
                 }
@@ -222,51 +184,5 @@ impl PipelineHandle for AvfPipeline {
             let _ = thread.join();
         }
         Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CVPixelBuffer → VideoFrame
-// ---------------------------------------------------------------------------
-
-fn pixel_buffer_to_frame(pipeline_id: MediaPipelineId, buf: &CVPixelBuffer) -> Option<VideoFrame> {
-    use objc2_core_video::{
-        CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
-        CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
-        CVPixelBufferUnlockBaseAddress, kCVReturnSuccess,
-    };
-
-    unsafe {
-        let lock = CVPixelBufferLockFlags::ReadOnly;
-        if CVPixelBufferLockBaseAddress(buf, lock) != kCVReturnSuccess {
-            log::warn!("[avf] CVPixelBuffer lock failed");
-            return None;
-        }
-
-        let width = CVPixelBufferGetWidth(buf);
-        let height = CVPixelBufferGetHeight(buf);
-        let bpr = CVPixelBufferGetBytesPerRow(buf);
-        let base = CVPixelBufferGetBaseAddress(buf) as *const u8;
-
-        if width == 0 || height == 0 || base.is_null() {
-            let _ = CVPixelBufferUnlockBaseAddress(buf, CVPixelBufferLockFlags::ReadOnly);
-            return None;
-        }
-
-        let row_bytes = width * 4;
-        let mut data = Vec::with_capacity(height * row_bytes);
-        for row in 0..height {
-            let src = std::slice::from_raw_parts(base.add(row * bpr), row_bytes);
-            data.extend_from_slice(src);
-        }
-
-        CVPixelBufferUnlockBaseAddress(buf, CVPixelBufferLockFlags::ReadOnly);
-
-        Some(VideoFrame {
-            pipeline_id,
-            width: width as u32,
-            height: height as u32,
-            data,
-        })
     }
 }

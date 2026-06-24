@@ -30,26 +30,23 @@ cargo build --release
 cargo run --release
 ```
 
-### AVFoundation backend (macOS)
+### AVFoundation backend (macOS only, NOT WORKING)
 
 ```bash
-# Build the media binary with AVFoundation
+# Build the media binary
 cargo build --release -p media --bin formal-web-media \
   --no-default-features --features backend-avfoundation
 
-# Run (uses the AVFoundation media binary)
+# Run
 cargo run --release
 ```
+Currently does not deliver frames (always returns `AVPlayerItemStatusUnknown`).
 
-> **Note:** `cargo run --release` does NOT rebuild the media binary. Build it
-> separately with `--features backend-avfoundation` first.
-
-### Verify which backend is active
+### Without media (no video playback)
 
 ```bash
-RUST_LOG=info cargo run --release 2>&1 | grep "creating pipeline"
-# GStreamer: no "[avf]" prefix
-# AVFoundation: "[avf] p0: ready"
+cargo build --release --no-default-features
+cargo run --release
 ```
 
 ## Module layout
@@ -66,7 +63,15 @@ media/
 │   │   │   └── pipeline.rs          # GstPipeline (uridecodebin → videoconvert → appsink)
 │   │   └── avfoundation/
 │   │       ├── mod.rs               # AvfBackend impl
-│   │       └── pipeline.rs          # AvfPipeline (AVPlayer + AVPlayerItemVideoOutput)
+│   │       ├── pipeline.rs          # AvfPipeline (AVPlayer + AVPlayerItemVideoOutput)
+│   │       └── av_sys/              # Safe wrappers around AVFoundation FFI
+│   │           ├── mod.rs
+│   │           ├── player.rs        # AvPlayer (wraps AVPlayer)
+│   │           ├── item.rs          # AvPlayerItem (wraps AVPlayerItem)
+│   │           ├── video_output.rs  # AvVideoOutput (wraps AVPlayerItemVideoOutput)
+│   │           ├── pixel_buffer.rs  # PixelBufferLock, pixel_buffer_to_frame
+│   │           ├── time.rs          # host_time_seconds()
+│   │           └── url.rs           # url_from_string()
 │   └── bin/
 │       └── media_process.rs         # binary entrypoint
 ```
@@ -149,7 +154,8 @@ uridecodebin ──▶ videoconvert ──▶ appsink (format=RGBA)
 ### Frame extraction (push model)
 
 The `new_sample` callback fires for every decoded frame. This is a push model —
-GStreamer calls us when a frame is ready. Compare with AVFoundation (poll model).
+GStreamer calls us when a frame is ready. No polling, run loop, or timing
+infrastructure required.
 
 ### Required imports (GStreamer 0.23 / 1.28)
 
@@ -160,19 +166,7 @@ use gstreamer_app as gst_app;
 use gstreamer_app::prelude::*;
 ```
 
-### Key API patterns
-
-| Concept | v0.23 API |
-|---|---|
-| `ElementFactory::make(name)` | Returns `ElementBuilder`, call `.build()` |
-| Object properties | `element.set_property_from_str("name", "value")` |
-| `set_state(state)` | Returns `Result<StateChangeSuccess, BoolError>` |
-| `query_duration::<ClockTime>()` | On `ElementExtManual` trait |
-| `add_many(&[elements])` | On `GstBinExtManual` trait |
-| `dynamic_cast::<T>()` | On `Cast` trait |
-| `connect_pad_added()` | On `ElementExt` trait |
-
-## AVFoundation backend
+## AVFoundation backend — current state
 
 ### Pipeline topology
 
@@ -180,68 +174,96 @@ use gstreamer_app::prelude::*;
 AVPlayer ──▶ AVPlayerItem ──▶ AVPlayerItemVideoOutput ──▶ poll loop
 ```
 
-- `AVPlayer` created via `playerWithURL:` (implicitly creates an `AVPlayerItem`).
-- `AVPlayerItemVideoOutput` is added to the item to extract raw pixel buffers.
-- `suppressesPlayerRendering` is set to `true` — we handle display ourselves.
-- A polling loop runs at ~33 ms intervals using `try_recv` + `NSRunLoop` drain.
-- Frame data is converted from `CVPixelBuffer` to packed `Vec<u8>` (row-padding
-  stripped) and sent as `MediaEvent::Frame(VideoFrame)`.
-
-### Threading model
-
-All AVFoundation objects are `MainThreadOnly` (enforced by `objc2`'s
-`MainThreadMarker`). The pipeline runs on a dedicated background thread
-("formal-web-avf-worker") with an unsafely-obtained marker. This is safe
-because all AVPlayer/AVPlayerItem access is serialized on this single thread
-via the command queue.
-
 ### Frame extraction (poll model)
-
-Unlike GStreamer's push model, `AVPlayerItemVideoOutput` requires polling:
 
 ```
 loop {
-    // 1. Convert Mach host time to item timeline
-    let host_ticks = CVGetCurrentHostTime();
-    let freq = CVGetHostClockFrequency();
-    let host_secs = host_ticks as f64 / freq;
-    let item_time = video_output.itemTimeForHostTime(host_secs);
-
-    // 2. Check for new pixel buffer at that time
-    if video_output.hasNewPixelBufferForItemTime(item_time) {
-        let pixel_buf = video_output.copyPixelBufferForItemTime(…);
-        // 3. Convert CVPixelBuffer → VideoFrame
-    }
-
-    // 4. Drain the run loop so AVFoundation's internal timing advances
-    NSRunLoop::currentRunLoop().runUntilDate(…);
-
-    // 5. Process any pending commands (non-blocking)
-    match cmd_rx.try_recv() { … }
+    NSRunLoop::currentRunLoop().runUntilDate(…33ms…);
+    drain commands via try_recv;
+    check item status;
+    poll video_output.hasNewPixelBufferForItemTime(…);
+    drain more commands;
 }
 ```
 
-### Common pitfalls
+### Status: NOT WORKING — always `AVPlayerItemStatusUnknown`
+
+The AVFoundation backend creates the pipeline and play() is called, but
+`AVPlayerItem.status` is always `Unknown` (0) and never transitions to
+`ReadyToPlay` (1). No frames are ever extracted.
+
+#### Symptoms
+
+```
+[avf] p0: status=0     ← repeated forever, never becomes 1
+```
+
+#### Root cause analysis
+
+`NSRunLoop::runUntilDate()` on a bare background thread with no input
+sources returns **immediately** instead of blocking. AVFoundation's URL
+loading machinery relies on the run loop being serviced — when it isn't,
+the `AVPlayerItem` never loads its media, so it never becomes
+`ReadyToPlay`.
+
+The original fix (adding a `recv_timeout`-based sleep) is the pacing
+mechanism, but the first 33 ms loop iterations happen before any run
+loop time is given to AVFoundation. By the time `runUntilDate` runs,
+the item has been given <1 ms of cumulative run loop time from the very
+first drain call, which is insufficient to even begin URL loading.
+
+#### Attempted fixes (all failed)
+
+| Attempt | What changed | Result |
+|---|---|---|
+| 1. `recv_timeout` only, no run loop drain | Removed `runUntilDate` entirely | Status always 0, no change |
+| 2. `try_recv` + `runUntilDate(8ms)` | Run loop 8ms then try_recv | 100% CPU (run loop returned instantly) |
+| 3. `recv_timeout(33ms)` first, then `runUntilDate(8ms)` | Two sequential sleeps totalling 41ms | Status always 0, AVFoundation starved |
+| 4. `runUntilDate(33ms)` + `try_recv` (current) | Run loop owns full cadence | Status always 0 — run loop still returns instantly |
+| 5. Create `AVPlayer` on main thread before `spawn` | Pipeline.init() uses `MainThreadMarker` | `AvPlayer` is `!Send`, can't move into closure |
+
+#### Why NSRunLoop returns immediately on background threads
+
+`NSRunLoop` has two modes:
+- **With sources/timers**: blocks until the next timer fire or input source
+  event, up to the specified timeout.
+- **Without sources/timers**: returns immediately, regardless of the timeout.
+
+A freshly-created background thread has no automatic run loop sources.
+`AVFoundation` does NOT automatically register its URL loading with a
+background thread's run loop — it registers with the **main thread's**
+run loop (or a thread that the `AVPlayer`/`AVPlayerItem` was created on).
+
+Hypothesis: `AVPlayer::playerWithURL:` registers URL loading callbacks
+on the creating thread's run loop. If that thread never has its run loop
+serviced, the callbacks never fire.
+
+#### What would be needed to fix
+
+1. **Run the AVFoundation worker on the main thread** — swap the generic
+   select loop to a background thread and keep the main thread for
+   `NSRunLoop` + AVFoundation operations. This requires restructuring
+   `run_media_process` or having the backend own its own threading.
+
+2. **Or: create a `CFRunLoopTimer` or `dispatch_source` on the worker
+   thread** so `runUntilDate` actually has something to wait on. This
+   would keep run loop occupied and let AVFoundation callbacks fire.
+
+3. **Or: use `dispatch_async` to the main queue** for all AVFoundation
+   operations, keeping the worker thread purely as a command router.
+
+Option 1 is the most architecturally sound but requires non-trivial
+refactoring of the generic run loop.
+
+### Common pitfalls (when it does work)
 
 | Pitfall | Symptom | Fix |
 |---|---|---|
-| Using `currentTime()` instead of `itemTimeForHostTime` | Only first frame ever delivered; repeated calls with same timestamp | Use `CVGetCurrentHostTime()` → `itemTimeForHostTime` |
-| No run loop drain | `hasNewPixelBufferForItemTime` always returns `false` | `NSRunLoop::currentRunLoop().runUntilDate()` each iteration |
-| Using unix wall clock for host time | Item time doesn't match video timeline | Use `CVGetCurrentHostTime()` divided by `CVGetHostClockFrequency()` |
+| Using `currentTime()` instead of `itemTimeForHostTime` | Only first frame ever delivered | Use `CVGetCurrentHostTime()` → `itemTimeForHostTime` |
+| Using unix wall clock for host time | Item time doesn't match video timeline | Use `CVGetCurrentHostTime()` / `CVGetHostClockFrequency()` |
 | Reading duration before asset loads | `kCMTimeIndefinite`, `seconds()` returns `NaN` | Poll `item.status() == ReadyToPlay` first |
-| Creating AVPlayer off main thread without marker | Compile error (missing `MainThreadMarker`) | Use `unsafe { MainThreadMarker::new_unchecked() }` on the dedicated thread |
 
-### Future improvements
-
-- Replace the polling loop with `CVDisplayLink` for vsync-aligned callbacks
-  (lower CPU usage, better frame timing).
-- Add `AVPlayerItemDidPlayToEndTimeNotification` observer for EOS events.
-- Add `AVPlayerItemFailedToPlayToEndTimeNotification` observer for error events.
-- Add KVO on `AVPlayerItem.status` → `ReadyToPlay` for duration reporting.
-- Request `kCVPixelFormatType_32BGRA` via pixel-buffer-attributes dictionary
-  to guarantee the compositor's preferred pixel format.
-
-## What does NOT change
+### What does NOT change
 
 - `MediaCommand` / `MediaEvent` / `MediaPipelineId` / `VideoFrame` in `ipc_messages::media`.
 - The frame forwarding loop (crossbeam → shmem mapping → IPC send).
@@ -255,5 +277,3 @@ loop {
 - **Seek optimization** — Initial single-keyframe seek is fine.
 - **Live streams** — Not tested.
 - **Text tracks** — Not implemented.
-- **AVFoundation notifications** — EOS, error, and duration-changed back-events
-  are not yet wired. Frame delivery and play/pause/seek/destroy work in full.
