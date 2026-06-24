@@ -1,12 +1,14 @@
-mod managed_pipeline;
+pub mod backend;
 
-use gstreamer as gst;
-use gstreamer::prelude::*;
+use backend::{BackendEvent, MediaBackend, PipelineHandle};
 use ipc::ExtensionEndpoint;
 use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
-use managed_pipeline::ManagedPipeline;
 use std::collections::HashMap;
 use std::env;
+
+// ---------------------------------------------------------------------------
+// IPC manifest
+// ---------------------------------------------------------------------------
 
 struct MediaExtensionManifest;
 
@@ -18,29 +20,19 @@ impl ipc::ExtensionManifest for MediaExtensionManifest {
     }
 }
 
-pub fn run_media_process(
+// ---------------------------------------------------------------------------
+// Generic run loop
+// ---------------------------------------------------------------------------
+
+pub fn run_media_process<B: MediaBackend>(
+    mut backend: B,
     cmd_rx: crossbeam_channel::Receiver<ipc::IpcIncoming<MediaCommand>>,
-    event_tx: crossbeam_channel::Sender<MediaEvent>,
-    event_rx: crossbeam_channel::Receiver<MediaEvent>,
+    frame_tx: crossbeam_channel::Sender<MediaEvent>,
+    frame_rx: crossbeam_channel::Receiver<MediaEvent>,
     ipc_event_tx: ipc::IpcSender<MediaEvent>,
 ) {
-    // On macOS, ensure NSApplication is set up on the main thread before any
-    // GStreamer GL elements are created. This avoids the "An NSApplication needs
-    // to be running on the main thread" warning.
-    #[cfg(target_os = "macos")]
-    gst::macos_main(|| {});
-
-    if gst::init().is_err() {
-        log::error!("GStreamer initialization failed");
-        return;
-    }
-
-    // Shared channel for GStreamer bus messages from all pipelines.
-    // Each pipeline's sync handler sends (pipeline_id, message) here.
-    let (bus_msg_sender, bus_msg_receiver) =
-        crossbeam_channel::unbounded::<(MediaPipelineId, gst::Message)>();
-
-    let mut pipelines: HashMap<MediaPipelineId, ManagedPipeline> = HashMap::new();
+    let backend_event_rx = backend.event_receiver();
+    let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
 
     loop {
         crossbeam_channel::select! {
@@ -49,9 +41,9 @@ pub fn run_media_process(
                     Ok(incoming) => {
                         if handle_command(
                             incoming.payload,
+                            &mut backend,
                             &mut pipelines,
-                            &event_tx,
-                            &bus_msg_sender,
+                            &frame_tx,
                         ) {
                             break; // Shutdown received
                         }
@@ -59,15 +51,12 @@ pub fn run_media_process(
                     Err(_) => break, // command channel disconnected
                 }
             }
-            recv(bus_msg_receiver) -> msg => {
-                match msg {
-                    Ok((pipeline_id, bus_msg)) => {
-                        handle_bus_message(&pipeline_id, &bus_msg, &pipelines, &event_tx);
-                    }
-                    Err(_) => {} // bus message channel disconnected (should not happen)
+            recv(backend_event_rx) -> event => {
+                if let Ok(backend_event) = event {
+                    handle_backend_event(backend_event, &frame_tx);
                 }
             }
-            recv(event_rx) -> event => {
+            recv(frame_rx) -> event => {
                 let Ok(event) = event else { break; };
                 match event {
                     MediaEvent::Frame(mut video_frame) => {
@@ -93,58 +82,60 @@ pub fn run_media_process(
 
     // Clean up remaining pipelines on shutdown.
     for (_, pipeline) in pipelines.drain() {
-        if let Err(error) = pipeline.element.set_state(gst::State::Null) {
+        if let Err(error) = pipeline.destroy() {
             log::error!("failed to destroy pipeline during shutdown: {error}");
         }
     }
 }
 
-fn handle_bus_message(
-    pipeline_id: &MediaPipelineId,
-    msg: &gst::Message,
-    pipelines: &HashMap<MediaPipelineId, ManagedPipeline>,
-    event_tx: &crossbeam_channel::Sender<MediaEvent>,
-) {
-    match msg.view() {
-        gst::MessageView::Eos(..) => {
-            let _ = event_tx.send(MediaEvent::Eos {
-                pipeline_id: *pipeline_id,
-            });
+// ---------------------------------------------------------------------------
+// Backend event dispatch
+// ---------------------------------------------------------------------------
+
+fn handle_backend_event(event: BackendEvent, event_tx: &crossbeam_channel::Sender<MediaEvent>) {
+    match event {
+        BackendEvent::Eos { pipeline_id } => {
+            let _ = event_tx.send(MediaEvent::Eos { pipeline_id });
         }
-        gst::MessageView::Error(error) => {
+        BackendEvent::Error {
+            pipeline_id,
+            message,
+        } => {
             let _ = event_tx.send(MediaEvent::Error {
-                pipeline_id: *pipeline_id,
-                message: error.error().to_string(),
+                pipeline_id,
+                message,
             });
         }
-        gst::MessageView::DurationChanged(..) => {
-            if let Some(pipeline) = pipelines.get(pipeline_id) {
-                if let Some(dur) = pipeline.element.query_duration::<gst::ClockTime>() {
-                    let _ = event_tx.send(MediaEvent::DurationChanged {
-                        pipeline_id: *pipeline_id,
-                        duration_secs: dur.seconds_f64(),
-                    });
-                }
-            }
+        BackendEvent::DurationChanged {
+            pipeline_id,
+            duration_secs,
+        } => {
+            let _ = event_tx.send(MediaEvent::DurationChanged {
+                pipeline_id,
+                duration_secs,
+            });
         }
-        _ => {}
     }
 }
 
+// ---------------------------------------------------------------------------
+// Command dispatch
+// ---------------------------------------------------------------------------
+
 /// Returns `true` if the loop should exit (Shutdown received).
-fn handle_command(
+fn handle_command<B: MediaBackend>(
     cmd: MediaCommand,
-    pipelines: &mut HashMap<MediaPipelineId, ManagedPipeline>,
+    backend: &mut B,
+    pipelines: &mut HashMap<MediaPipelineId, B::Pipeline>,
     event_tx: &crossbeam_channel::Sender<MediaEvent>,
-    bus_msg_sender: &crossbeam_channel::Sender<(MediaPipelineId, gst::Message)>,
 ) -> bool {
     match cmd {
         MediaCommand::CreatePipeline { pipeline_id, url } => {
             log::info!("[media] creating pipeline id={:?} url={}", pipeline_id, url);
-            match ManagedPipeline::new(pipeline_id, url, event_tx.clone(), bus_msg_sender.clone()) {
-                Ok(p) => {
+            match backend.create_pipeline(pipeline_id, url, event_tx.clone()) {
+                Ok(pipeline) => {
                     log::info!("[media] pipeline created id={:?}", pipeline_id);
-                    pipelines.insert(pipeline_id, p);
+                    pipelines.insert(pipeline_id, pipeline);
                 }
                 Err(error) => {
                     log::error!("[media] failed to create media pipeline {pipeline_id:?}: {error}");
@@ -157,38 +148,34 @@ fn handle_command(
         }
         MediaCommand::Play { pipeline_id } => {
             log::info!("[media] playing pipeline id={:?}", pipeline_id);
-            if let Some(p) = pipelines.get(&pipeline_id) {
-                if let Err(error) = p.element.set_state(gst::State::Playing) {
-                    log::error!("[media] failed to play pipeline {pipeline_id:?}: {error}");
-                }
+            if let Some(pipeline) = pipelines.get(&pipeline_id)
+                && let Err(error) = pipeline.play()
+            {
+                log::error!("[media] failed to play pipeline {pipeline_id:?}: {error}");
             }
         }
         MediaCommand::Pause { pipeline_id } => {
-            if let Some(p) = pipelines.get(&pipeline_id) {
-                if let Err(error) = p.element.set_state(gst::State::Paused) {
-                    log::error!("failed to pause pipeline {pipeline_id:?}: {error}");
-                }
+            if let Some(pipeline) = pipelines.get(&pipeline_id)
+                && let Err(error) = pipeline.pause()
+            {
+                log::error!("failed to pause pipeline {pipeline_id:?}: {error}");
             }
         }
         MediaCommand::Seek {
             pipeline_id,
             position_secs,
         } => {
-            if let Some(p) = pipelines.get(&pipeline_id) {
-                let pos = gst::ClockTime::from_seconds_f64(position_secs);
-                if let Err(error) = p
-                    .element
-                    .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, pos)
-                {
-                    log::error!("failed to seek pipeline {pipeline_id:?}: {error}");
-                }
+            if let Some(pipeline) = pipelines.get(&pipeline_id)
+                && let Err(error) = pipeline.seek(position_secs)
+            {
+                log::error!("failed to seek pipeline {pipeline_id:?}: {error}");
             }
         }
         MediaCommand::Destroy { pipeline_id } => {
-            if let Some(p) = pipelines.remove(&pipeline_id) {
-                if let Err(error) = p.element.set_state(gst::State::Null) {
-                    log::error!("failed to destroy pipeline {pipeline_id:?}: {error}");
-                }
+            if let Some(pipeline) = pipelines.remove(&pipeline_id)
+                && let Err(error) = pipeline.destroy()
+            {
+                log::error!("failed to destroy pipeline {pipeline_id:?}: {error}");
             }
         }
         MediaCommand::Shutdown => {
@@ -197,6 +184,10 @@ fn handle_command(
     }
     false
 }
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
 
 fn media_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
@@ -211,6 +202,10 @@ fn media_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
+// ---------------------------------------------------------------------------
+// Entry point — select backend at compile time via Cargo features
+// ---------------------------------------------------------------------------
+
 pub fn run_media_process_from_args() -> Result<(), String> {
     let token = media_token_from_args()?;
     let manifest = MediaExtensionManifest;
@@ -221,15 +216,22 @@ pub fn run_media_process_from_args() -> Result<(), String> {
     )
     .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
-    // GStreamer callbacks push events to a crossbeam channel (non-blocking);
-    // the main thread's select loop forwards them to the IPC sender.
     let ipc_event_tx = server.tx;
-    let (crossbeam_event_tx, crossbeam_event_rx) = crossbeam_channel::unbounded::<MediaEvent>();
+    let (crossbeam_frame_tx, crossbeam_frame_rx) = crossbeam_channel::unbounded::<MediaEvent>();
+
+    #[cfg(feature = "backend-gstreamer")]
+    let backend = backend::gstreamer::GStreamerBackend::init()
+        .map_err(|error| format!("GStreamer init failed: {error}"))?;
+
+    #[cfg(feature = "backend-avfoundation")]
+    let backend = backend::avfoundation::AvfBackend::init()
+        .map_err(|error| format!("AVFoundation init failed: {error}"))?;
 
     run_media_process(
+        backend,
         server.rx,
-        crossbeam_event_tx,
-        crossbeam_event_rx,
+        crossbeam_frame_tx,
+        crossbeam_frame_rx,
         ipc_event_tx,
     );
     Ok(())

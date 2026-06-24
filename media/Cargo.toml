@@ -6,19 +6,25 @@ publish = false
 autobins = false
 
 [features]
-default = []
+default = ["backend-gstreamer"]
+backend-gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
+backend-avfoundation = [
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-av-foundation",
+    "dep:objc2-core-media",
+    "dep:objc2-core-video",
+]
 ipc-channel-backend = ["ipc/ipc-channel-backend"]
 
 [lib]
-path = "src/main.rs"
+path = "src/lib.rs"
 
 [[bin]]
 name = "formal-web-media"
 path = "src/bin/media_process.rs"
 
 [dependencies]
-gstreamer = { version = "0.23", features = ["v1_22"] }
-gstreamer-app = "0.23"
 ipc = { path = "../ipc" }
 ipc_messages = { path = "../ipc_messages" }
 serde = { version = "1", features = ["derive"] }
@@ -26,3 +32,10 @@ log = "0.4"
 env_logger = "0.11"
 url = "2"
 crossbeam-channel = "0.5"
+gstreamer = { version = "0.23", features = ["v1_22"], optional = true }
+gstreamer-app = { version = "0.23", optional = true }
+objc2 = { version = "0.6.4", optional = true }
+objc2-foundation = { version = "0.3.2", optional = true }
+objc2-av-foundation = { version = "0.3.2", optional = true, features = ["objc2-core-media"] }
+objc2-core-media = { version = "0.3.2", optional = true }
+objc2-core-video = { version = "0.3.2", optional = true }
