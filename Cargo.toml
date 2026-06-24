@@ -13,6 +13,12 @@ path = "src/main.rs"
 default = ["media"]
 media = []
 
+# Select the AVFoundation media backend (macOS, no GStreamer required).
+# You must also build the media binary separately:
+#   cargo build --release -p media --bin formal-web-media \
+#       --no-default-features --features backend-avfoundation
+backend-avfoundation = ["media"]
+
 [dependencies]
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
