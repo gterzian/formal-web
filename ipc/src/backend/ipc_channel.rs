@@ -16,9 +16,6 @@ type ChannelMessage<T> = (T, HashMap<usize, IpcSharedMemory>);
 #[derive(Serialize, Deserialize)]
 struct BootstrapMessage<Out, In> {
     parent_to_child_tx: IpcChannelSender<ChannelMessage<Out>>,
-    /// Child→parent receiver end.  The parent keeps the sender; the child
-    /// holds the receiver (ipc_channel::ipc::IpcReceiver is actually the
-    /// receiving end despite the name "IpcReceiver").
     child_to_parent_rx: ipc::IpcReceiver<ChannelMessage<In>>,
 }
 
@@ -110,18 +107,4 @@ where
     );
 
     Ok(ExtensionServer::new(connection))
-}
-
-pub fn create_connection<Out, In>(
-    _bootstrap_token: &str,
-) -> Result<IpcConnection<Out, In>, IpcError>
-where
-    Out: IpcSerialize + DeserializeOwned + Send + 'static,
-    In: IpcSerialize + DeserializeOwned + Send + 'static,
-{
-    Err(IpcError::Transport(
-        "ipc-channel: create_connection not yet implemented; \
-         use the initial connection from launch_extension instead"
-            .into(),
-    ))
 }

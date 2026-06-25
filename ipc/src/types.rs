@@ -341,39 +341,6 @@ impl ExtensionHandle {
         }
     }
 
-    /// Create a new connection to this extension.
-    pub fn create_connection<Out, In>(&self) -> Result<IpcConnection<Out, In>, IpcError>
-    where
-        Out: IpcSerialize + IpcDeserialize + Send + 'static,
-        In: IpcSerialize + IpcDeserialize + Send + 'static,
-    {
-        match &self.inner {
-            ExtensionHandleImpl::IpcChannel { bootstrap_token, .. } => {
-                #[cfg(feature = "ipc-channel-backend")]
-                {
-                    crate::backend::ipc_channel::create_connection::<Out, In>(bootstrap_token)
-                }
-                #[cfg(not(feature = "ipc-channel-backend"))]
-                {
-                    let _ = bootstrap_token;
-                    Err(IpcError::Transport(
-                        "create_connection not supported on this backend".into(),
-                    ))
-                }
-            }
-            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-            ExtensionHandleImpl::XpcSingleton { service_name } => {
-                crate::backend::xpc::create_connection::<Out, In>(service_name)
-            }
-            #[cfg(feature = "bek")]
-            ExtensionHandleImpl::Bek => {
-                Err(IpcError::Transport(
-                    "BEK connection creation not yet implemented".into(),
-                ))
-            }
-        }
-    }
-
     /// Extract the child process handle, if any.
     pub fn take_child(&mut self) -> Option<std::process::Child> {
         match &mut self.inner {

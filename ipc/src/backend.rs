@@ -40,14 +40,6 @@ where
 }
 
 /// Run an extension process.
-///
-/// Connects to the parent's bootstrap rendezvous, establishes the IPC channel,
-/// then calls `run` with the resulting [`ExtensionServer`].  The `run`
-/// callback implements the business logic of the extension (event loop,
-/// request handling, etc.).
-///
-/// This is the entry point for the child process — called from `main()` or
-/// from a C FFI bridge on BEK.
 pub fn run_extension<Out, In>(
     token: &str,
     run: impl FnOnce(ExtensionServer<In, Out>) -> Result<(), String>,
