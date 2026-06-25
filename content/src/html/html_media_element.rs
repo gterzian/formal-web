@@ -10,7 +10,7 @@ use log::{debug, error};
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
-use ipc_messages::content::{Event as ContentEvent, MediaLoadRequest};
+use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::media::VideoPaintId;
 
 /// <https://html.spec.whatwg.org/#media-elements>
@@ -419,7 +419,7 @@ impl HTMLMediaElement {
                         }
 
                         // Notify the UA of the pipeline→webview mapping.
-                        let request = MediaLoadRequest {
+                        let request = RegisterMediaPipeline {
                             url: resolved_url.clone(),
                             document_id,
                             traversable_id,
@@ -427,13 +427,13 @@ impl HTMLMediaElement {
                             video_paint_id,
                         };
                         debug!(
-                            "[media] sending MediaLoadRequested url={} traversable={}",
+                            "[media] registering pipeline with UA url={} traversable={}",
                             resolved_url, traversable_id
                         );
                         if let Err(error) =
-                            event_sender.send(ContentEvent::MediaLoadRequested(request))
+                            event_sender.send(ContentEvent::RegisterMediaPipeline(request))
                         {
-                            error!("[media] failed to send MediaLoadRequested: {error}");
+                            error!("[media] failed to send RegisterMediaPipeline: {error}");
                         }
                     }
                 }

@@ -249,8 +249,7 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     video_paint_registry: RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>,
 
-    /// Direct sender to the media extension. Content sends CreatePipeline+Play
-    /// directly to media without going through the user agent.
+    /// Direct sender to the media extension.
     #[unsafe_ignore_trace]
     media_extension_sender: RefCell<Option<IpcSender<MediaCommand>>>,
 

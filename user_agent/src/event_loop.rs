@@ -549,9 +549,9 @@ impl EventLoopWorker {
                     let _ = self.host.new_frame_rendered();
                 }
             }
-            ContentEvent::MediaLoadRequested(request) => {
+            ContentEvent::RegisterMediaPipeline(request) => {
                 debug!(
-                    "[media] event loop forwarding MediaLoadRequested url={}",
+                    "[media] event loop forwarding RegisterMediaPipeline url={}",
                     request.url
                 );
                 self.user_agent_command_sender

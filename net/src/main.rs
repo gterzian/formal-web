@@ -1,4 +1,6 @@
-use ipc_messages::content::{Command as ContentCommand, FetchRequest, FetchResponse};
+use ipc_messages::content::{
+    Command as ContentCommand, DocumentFetchId, FetchRequest, FetchResponse,
+};
 use ipc_messages::network::{Request, Response, ResponseRecipient};
 use reqwest::Method;
 use reqwest::blocking::Client;
@@ -142,6 +144,26 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                             reply_to,
                         } => {
                             let result = fetch_request(&client, &request);
+                            if let Err(error) =
+                                route_response(request_id, reply_to, result, &response_sender)
+                            {
+                                log::error!("{error}");
+                                break;
+                            }
+                        }
+                        Request::NavigationFetch {
+                            request_id,
+                            request,
+                            reply_to,
+                        } => {
+                            // Convert NavigationFetchRequest to FetchRequest for HTTP transport.
+                            let fetch_req = FetchRequest {
+                                handler_id: DocumentFetchId::new(),
+                                url: request.url,
+                                method: request.method,
+                                body: request.body.unwrap_or_default(),
+                            };
+                            let result = fetch_request(&client, &fetch_req);
                             if let Err(error) =
                                 route_response(request_id, reply_to, result, &response_sender)
                             {

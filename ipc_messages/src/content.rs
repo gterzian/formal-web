@@ -244,8 +244,10 @@ pub struct DispatchEventEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// <https://html.spec.whatwg.org/#loading-the-media-resource>
-pub struct MediaLoadRequest {
+/// Notifies the user agent of a media pipeline that content already created
+/// directly with the media extension. The UA uses this mapping to route
+/// incoming video frames to the correct compositor slot.
+pub struct RegisterMediaPipeline {
     /// The URL of the media resource to load.
     pub url: String,
     /// The document requesting the load.
@@ -896,7 +898,7 @@ pub enum Event {
     /// This is fire-and-forget — no reply is sent.
     ClipboardWriteRequested(ClipboardWriteRequested),
     CommandCompleted,
-    MediaLoadRequested(MediaLoadRequest),
+    RegisterMediaPipeline(RegisterMediaPipeline),
     PaintReady(PaintFrame),
     ShutdownCompleted,
 }

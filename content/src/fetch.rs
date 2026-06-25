@@ -1,9 +1,7 @@
 // ── Fetch Standard domain model ────────────────────────────────────────────
 //
-// These types model the Fetch Standard state machine that the content process
-// uses when implementing the Fetch API.  They live in the content crate because
-// the Fetch Standard is a content-side concept — the net extension is a thin
-// HTTP transport layer.
+// Event-loop side implementation.
+// <https://fetch.spec.whatwg.org/>
 //
 // Some items are marked `#[allow(dead_code)]` because they implement spec
 // algorithms (abort, terminate, fetch-group management) that will be wired

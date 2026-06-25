@@ -394,15 +394,14 @@ impl NavigationRequest {
         }
     }
 
-    /// translating the user-agent's navigation request model into the
-    /// content-side fetch request transport. The handler_id in ContentFetchRequest is
-    /// unused for navigation fetches; a placeholder DocumentFetchId is generated.
-    fn to_content_fetch_request(&self) -> ContentFetchRequest {
-        ContentFetchRequest {
-            handler_id: DocumentFetchId::new(),
+    /// Convert to the navigation fetch request type used for IPC with the net extension.
+    fn to_navigation_fetch_request(&self) -> ipc_messages::network::NavigationFetchRequest {
+        ipc_messages::network::NavigationFetchRequest {
             url: self.url.clone(),
             method: self.method.clone(),
-            body: self.body.clone().unwrap_or_default(),
+            body: self.body.clone(),
+            referrer: self.referrer.clone(),
+            referrer_policy: self.referrer_policy.clone(),
         }
     }
 }
@@ -1235,18 +1234,10 @@ struct UserAgentWorker {
     state: UserAgentState,
     command_sender: Sender<UserAgentCommand>,
     command_receiver: Receiver<UserAgentCommand>,
-    /// Crossbeam proxy for net process responses (navigation fetch results).
-    net_response_receiver:
-        crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::network::Response>>,
-    /// Child process handle for the net process.
-    net_child: Option<std::process::Child>,
-    /// Maps net request_id (Uuid) to NavigationFetchId for response routing.
-    pending_navigation_fetches_by_request_id:
-        std::collections::HashMap<uuid::Uuid, NavigationFetchId>,
+    /// Owns the IPC connection to the net extension and tracks pending navigation fetches.
+    net_connection: crate::fetch::NetConnection,
     timer_command_sender: Sender<TimerCommand>,
     timer_join_handle: Option<JoinHandle<()>>,
-    /// IPC sender to the net extension (for direct content connections).
-    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     /// Crossbeam proxy for media extension events.
     media_event_receiver:
         crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
@@ -1280,10 +1271,8 @@ impl UserAgentWorker {
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
-        // Start net extension directly (no fetch worker intermediary).
-        let (network_extension_sender, net_rx, net_child) =
-            crate::fetch::start_net_extension(trace_sender.clone())
-                .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
+        let net_connection = crate::fetch::NetConnection::new(trace_sender.clone())
+            .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
         let (timer_command_sender, timer_command_receiver) = unbounded();
         let timer_user_agent_command_sender = user_agent_command_sender.clone();
         let timer_trace_sender = trace_sender.clone();
@@ -1327,9 +1316,7 @@ impl UserAgentWorker {
             state: UserAgentState::default(),
             command_sender: user_agent_command_sender.clone(),
             command_receiver,
-            net_response_receiver: net_rx,
-            net_child,
-            pending_navigation_fetches_by_request_id: HashMap::new(),
+            net_connection,
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
             media_event_receiver,
@@ -1344,7 +1331,6 @@ impl UserAgentWorker {
             ),
             trace_sender,
             next_automation_request_id: 1,
-            network_extension_sender,
             media_extension_sender,
         }
     }
@@ -1442,10 +1428,10 @@ impl UserAgentWorker {
                         video_paint_id,
                     } => {
                         debug!(
-                            "[media] UA received MediaLoadRequested url={} traversable={}",
+                            "[media] registering pipeline url={} traversable={}",
                             url, traversable_id
                         );
-                        self.handle_media_load_requested(
+                        self.register_media_pipeline(
                             pipeline_id,
                             traversable_id,
                             video_paint_id,
@@ -1470,7 +1456,7 @@ impl UserAgentWorker {
                     }
                 }
             }
-                    recv(self.net_response_receiver) -> response => {
+                    recv(self.net_connection.receiver()) -> response => {
                         let Ok(incoming) = response else { break; };
                         self.handle_net_navigation_response(incoming.payload);
                     }
@@ -1490,14 +1476,11 @@ impl UserAgentWorker {
 
     /// Handle a navigation fetch response received directly from the net process.
     fn handle_net_navigation_response(&mut self, response: ipc_messages::network::Response) {
-        let Some(fetch_id) = self
-            .pending_navigation_fetches_by_request_id
-            .remove(&response.request_id)
-        else {
+        let Some((fetch_id, result)) = self.net_connection.handle_response(response) else {
             return;
         };
 
-        match response.result {
+        match result {
             Ok(fetch_response) => {
                 self.handle_navigation_fetch_completed(fetch_id, fetch_response);
             }
@@ -1564,7 +1547,7 @@ impl UserAgentWorker {
             self.host.clone(),
             self.webview_provider_sender.clone(),
             self.trace_sender.clone(),
-            self.network_extension_sender.clone(),
+            self.net_connection.sender(),
             self.media_extension_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
@@ -2033,25 +2016,16 @@ impl UserAgentWorker {
                 allow_post: false,
                 user_involvement: user_involvement.clone(),
             });
-        let request_id = uuid::Uuid::new_v4();
-        self.pending_navigation_fetches_by_request_id
-            .insert(request_id, fetch_id);
-        if let Err(error) =
-            self.network_extension_sender
-                .send(ipc_messages::network::Request::Fetch {
-                    request_id,
-                    request: request.to_content_fetch_request(),
-                    reply_to: ipc_messages::network::ResponseRecipient::UserAgent,
-                })
+        if let Err(error) = self
+            .net_connection
+            .start_navigation_fetch(fetch_id, request.to_navigation_fetch_request())
         {
-            self.pending_navigation_fetches_by_request_id
-                .remove(&request_id);
             let _ = self
                 .state
                 .take_pending_navigation_fetch_by_navigation_id(navigation_id);
             self.state
                 .set_navigable_ongoing_navigation(traversable_id, None);
-            return Err(format!("failed to start navigation fetch: {error}"));
+            return Err(error);
         }
 
         Ok(())
@@ -3561,36 +3535,7 @@ impl UserAgentWorker {
             }
         }
 
-        // Shut down the net process directly.
-        if let Err(error) = self
-            .network_extension_sender
-            .send(ipc_messages::network::Request::Shutdown)
-        {
-            shutdown_result = Err(format!("failed to request net shutdown: {error}"));
-        }
-
-        if let Some(mut child) = self.net_child.take() {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) => {
-                        if std::time::Instant::now() >= deadline {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                    Err(error) => {
-                        log::error!("failed to poll net process exit: {error}");
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break;
-                    }
-                }
-            }
-        }
+        self.net_connection.shutdown();
 
         let (timer_reply_sender, timer_reply_receiver) = bounded(1);
         if let Err(error) = self.timer_command_sender.send(TimerCommand::Shutdown {
@@ -3641,8 +3586,7 @@ impl UserAgentWorker {
     }
 
     /// Register the pipeline→webview mapping for video frame routing.
-    /// Content has already sent CreatePipeline+Play directly to the media extension.
-    fn handle_media_load_requested(
+    fn register_media_pipeline(
         &mut self,
         pipeline_id: MediaPipelineId,
         traversable_id: NavigableId,

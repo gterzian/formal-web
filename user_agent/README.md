@@ -5,8 +5,10 @@ The `user_agent` crate owns all browser-global coordination: navigables and trav
 - `user_agent.rs` owns the top-level user-agent state and command loop (uses `select!` to also process net and media responses directly).
 - `event_loop.rs` owns content event loops and manages the content process.
 - `timer.rs` owns the timer worker.
-- `fetch.rs` provides `start_net_extension()` — net process bootstrap only (no fetch worker thread).
-- The UA and content processes send requests directly to the net and media extensions; there are no intermediary fetch or media worker threads.
+- `fetch.rs` provides `NetConnection` — owns the IPC connection to the net extension,
+  tracks pending navigation fetches, and routes responses back to the user agent.
+- The UA and content processes send requests directly to the net and media extensions;
+  there are no intermediary fetch or media worker threads.
 - Key cross-worker ownership with UUID newtypes such as `EventLoopId`, `NavigableId`, and related ids from `ipc_messages`.
 - Keep spec-facing algorithms and continuations as named worker methods on the owning type instead of as transport-oriented helper functions.
 - Route browser, embedder, automation, and webview requests through this crate instead of through synchronous cross-thread bridges.
