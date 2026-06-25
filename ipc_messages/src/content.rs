@@ -879,7 +879,6 @@ pub enum Command {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
-    DocumentFetchRequested(FetchRequest),
     WindowTimerRequested(WindowTimerRequest),
     WindowTimerCleared(WindowTimerClearRequest),
     NavigationRequested(NavigateRequest),

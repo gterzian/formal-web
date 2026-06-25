@@ -5,7 +5,7 @@ pub(crate) mod media;
 mod timer;
 
 use blitz_traits::shell::ColorScheme;
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
 use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
     BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentFetchId, DocumentId,
@@ -32,7 +32,6 @@ use crate::event_loop::{
     EventLoopCommand, EventLoopEntry, spawn_event_loop_entry, stop_event_loop_entry,
     traversable_viewport_command,
 };
-use crate::fetch::{FetchCommand, run_fetch_thread};
 use crate::media::{MediaCommand, run_media_thread};
 use crate::timer::{TimerCommand, run_timer_thread};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
@@ -875,15 +874,6 @@ pub enum UserAgentCommand {
     RenderingOpportunityFor {
         traversable_id: NavigableId,
     },
-    DocumentFetchCompleted {
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-        response: ContentFetchResponse,
-    },
-    DocumentFetchFailed {
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-    },
     NavigationFetchCompleted {
         fetch_id: NavigationFetchId,
         response: ContentFetchResponse,
@@ -896,10 +886,6 @@ pub enum UserAgentCommand {
     },
     NavigationFetchFailed {
         fetch_id: NavigationFetchId,
-    },
-    DocumentFetchTimeout {
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
     },
     WindowTimerTask {
         event_loop_id: EventLoopId,
@@ -1252,8 +1238,14 @@ struct UserAgentWorker {
     state: UserAgentState,
     command_sender: Sender<UserAgentCommand>,
     command_receiver: Receiver<UserAgentCommand>,
-    fetch_command_sender: Sender<FetchCommand>,
-    fetch_join_handle: Option<JoinHandle<()>>,
+    /// Crossbeam proxy for net process responses (navigation fetch results).
+    net_response_receiver:
+        crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::network::Response>>,
+    /// Child process handle for the net process.
+    net_child: Option<std::process::Child>,
+    /// Maps net request_id (Uuid) to NavigationFetchId for response routing.
+    pending_navigation_fetches_by_request_id:
+        std::collections::HashMap<uuid::Uuid, NavigationFetchId>,
     timer_command_sender: Sender<TimerCommand>,
     timer_join_handle: Option<JoinHandle<()>>,
     media_command_sender: Sender<MediaCommand>,
@@ -1290,26 +1282,10 @@ impl UserAgentWorker {
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
-        // Start net extension (must happen before spawning fetch worker).
+        // Start net extension directly (no fetch worker intermediary).
         let (network_extension_sender, net_rx, net_child) =
             crate::fetch::start_net_extension(trace_sender.clone())
                 .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
-
-        let (fetch_command_sender, fetch_command_receiver) = unbounded();
-        let fetch_user_agent_command_sender = user_agent_command_sender.clone();
-        let fetch_network_extension_sender = network_extension_sender.clone();
-        let fetch_join_handle = thread::Builder::new()
-            .name(String::from("formal-web:fetch"))
-            .spawn(move || {
-                run_fetch_thread(
-                    fetch_command_receiver,
-                    fetch_user_agent_command_sender,
-                    fetch_network_extension_sender,
-                    net_rx,
-                    net_child,
-                )
-            })
-            .unwrap_or_else(|error| panic!("failed to spawn formal-web-fetch thread: {error}"));
         let (timer_command_sender, timer_command_receiver) = unbounded();
         let timer_user_agent_command_sender = user_agent_command_sender.clone();
         let timer_trace_sender = trace_sender.clone();
@@ -1356,8 +1332,9 @@ impl UserAgentWorker {
             state: UserAgentState::default(),
             command_sender: user_agent_command_sender.clone(),
             command_receiver,
-            fetch_command_sender,
-            fetch_join_handle: Some(fetch_join_handle),
+            net_response_receiver: net_rx,
+            net_child,
+            pending_navigation_fetches_by_request_id: HashMap::new(),
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
             media_command_sender,
@@ -1379,9 +1356,13 @@ impl UserAgentWorker {
     }
 
     /// the top-level command loop that owns browser-global coordination.
+    /// Also processes net responses (navigation fetch results) via `select!`.
     fn run(&mut self) {
-        while let Ok(command) = self.command_receiver.recv() {
-            match command {
+        loop {
+            select! {
+                recv(self.command_receiver) -> command => {
+                    let Ok(command) = command else { break; };
+                    match command {
                 UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
                     self.create_a_fresh_top_level_traversable(destination_url);
                 }
@@ -1437,30 +1418,11 @@ impl UserAgentWorker {
                 UserAgentCommand::RenderingOpportunityFor { traversable_id } => {
                     self.handle_rendering_opportunity_for(traversable_id);
                 }
-                UserAgentCommand::DocumentFetchCompleted {
-                    event_loop_id,
-                    handler_id,
-                    response,
-                } => {
-                    self.handle_document_fetch_completed(event_loop_id, handler_id, response);
-                }
-                UserAgentCommand::DocumentFetchFailed {
-                    event_loop_id,
-                    handler_id,
-                } => {
-                    self.handle_document_fetch_failed(event_loop_id, handler_id);
-                }
                 UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
                     self.handle_navigation_fetch_completed(fetch_id, response);
                 }
                 UserAgentCommand::NavigationFetchFailed { fetch_id } => {
                     self.handle_navigation_fetch_failed(fetch_id);
-                }
-                UserAgentCommand::DocumentFetchTimeout {
-                    event_loop_id,
-                    handler_id,
-                } => {
-                    self.handle_document_fetch_timeout(event_loop_id, handler_id);
                 }
                 UserAgentCommand::WindowTimerTask {
                     event_loop_id,
@@ -1510,6 +1472,35 @@ impl UserAgentWorker {
                 UserAgentCommand::MediaEvent(event) => {
                     self.handle_media_event(event);
                 }
+            }
+        }
+                recv(self.net_response_receiver) -> response => {
+                    let Ok(incoming) = response else { break; };
+                    self.handle_net_navigation_response(incoming.payload);
+                }
+            }
+        }
+    }
+
+    /// Handle a navigation fetch response received directly from the net process.
+    fn handle_net_navigation_response(
+        &mut self,
+        response: ipc_messages::network::Response,
+    ) {
+        let Some(fetch_id) = self
+            .pending_navigation_fetches_by_request_id
+            .remove(&response.request_id)
+        else {
+            return;
+        };
+
+        match response.result {
+            Ok(fetch_response) => {
+                self.handle_navigation_fetch_completed(fetch_id, fetch_response);
+            }
+            Err(error) => {
+                log::error!("navigation fetch failed: {error}");
+                self.handle_navigation_fetch_failed(fetch_id);
             }
         }
     }
@@ -1566,7 +1557,6 @@ impl UserAgentWorker {
             event_loop_id,
             process_label,
             self.command_sender.clone(),
-            self.fetch_command_sender.clone(),
             self.timer_command_sender.clone(),
             self.host.clone(),
             self.webview_provider_sender.clone(),
@@ -2040,13 +2030,18 @@ impl UserAgentWorker {
                 allow_post: false,
                 user_involvement: user_involvement.clone(),
             });
-        if let Err(error) = self
-            .fetch_command_sender
-            .send(FetchCommand::StartNavigationFetch {
-                fetch_id,
+        let request_id = uuid::Uuid::new_v4();
+        self.pending_navigation_fetches_by_request_id
+            .insert(request_id, fetch_id);
+        if let Err(error) = self.network_extension_sender.send(
+            ipc_messages::network::Request::Fetch {
+                request_id,
                 request: request.to_content_fetch_request(),
-            })
-        {
+                reply_to: ipc_messages::network::ResponseRecipient::UserAgent,
+            },
+        ) {
+            self.pending_navigation_fetches_by_request_id
+                .remove(&request_id);
             let _ = self
                 .state
                 .take_pending_navigation_fetch_by_navigation_id(navigation_id);
@@ -3234,45 +3229,6 @@ impl UserAgentWorker {
     }
 
     /// resuming an event-loop-local document fetch after the fetch worker succeeds.
-    fn handle_document_fetch_completed(
-        &mut self,
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-        response: ContentFetchResponse,
-    ) {
-        let _ = self.timer_command_sender.send(TimerCommand::Clear {
-            timer_key: handler_id.0,
-        });
-        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
-            return;
-        };
-        let command = ContentCommand::CompleteDocumentFetch {
-            handler_id,
-            response,
-        };
-        let _ = entry
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
-    }
-
-    /// failing an event-loop-local document fetch after the fetch worker fails.
-    fn handle_document_fetch_failed(
-        &mut self,
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-    ) {
-        let _ = self.timer_command_sender.send(TimerCommand::Clear {
-            timer_key: handler_id.0,
-        });
-        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
-            return;
-        };
-        let command = ContentCommand::FailDocumentFetch { handler_id };
-        let _ = entry
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
-    }
-
     /// <https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document>
     fn handle_navigation_fetch_completed(
         &mut self,
@@ -3452,20 +3408,6 @@ impl UserAgentWorker {
     }
 
     /// the document-fetch watchdog fired by the timer worker.
-    fn handle_document_fetch_timeout(
-        &mut self,
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-    ) {
-        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
-            return;
-        };
-        let command = ContentCommand::FailDocumentFetch { handler_id };
-        let _ = entry
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
-    }
-
     /// <https://html.spec.whatwg.org/multipage/#timers>
     fn handle_window_timer_task(
         &mut self,
@@ -3615,19 +3557,35 @@ impl UserAgentWorker {
             }
         }
 
-        let (fetch_reply_sender, fetch_reply_receiver) = bounded(1);
-        if let Err(error) = self.fetch_command_sender.send(FetchCommand::Shutdown {
-            reply: fetch_reply_sender,
-        }) {
-            shutdown_result = Err(format!("failed to request fetch shutdown: {error}"));
-        } else if let Err(error) = fetch_reply_receiver.recv() {
-            shutdown_result = Err(format!("fetch shutdown reply channel closed: {error}"));
+        // Shut down the net process directly.
+        if let Err(error) = self
+            .network_extension_sender
+            .send(ipc_messages::network::Request::Shutdown)
+        {
+            shutdown_result = Err(format!("failed to request net shutdown: {error}"));
         }
 
-        if let Some(fetch_join_handle) = self.fetch_join_handle.take()
-            && fetch_join_handle.join().is_err()
-        {
-            shutdown_result = Err(String::from("fetch thread panicked"));
+        if let Some(mut child) = self.net_child.take() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => {
+                        if std::time::Instant::now() >= deadline {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => {
+                        log::error!("failed to poll net process exit: {error}");
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                }
+            }
         }
 
         let (timer_reply_sender, timer_reply_receiver) = bounded(1);

@@ -5,7 +5,7 @@ use ipc_messages::content::{
     ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport,
     ViewportSnapshot, WebviewProviderMessage,
 };
-use log::{debug, error, warn};
+use log::{debug, error};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Child;
 use std::sync::Arc;
@@ -13,7 +13,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use verification::TraceSender;
 
-use crate::fetch::FetchCommand;
 use crate::timer::{TimerCommand, TimerCompletion};
 use crate::{Embedder, UserAgentCommand};
 
@@ -155,8 +154,6 @@ struct EventLoopWorker {
     child: Option<Child>,
     /// Sender back into the owning user-agent worker for navigation and lifecycle coordination.
     user_agent_command_sender: Sender<UserAgentCommand>,
-    /// Sender into the dedicated fetch worker for document fetch requests.
-    fetch_command_sender: Sender<FetchCommand>,
     /// Sender into the dedicated timer worker for window timers and fetch timeouts.
     timer_command_sender: Sender<TimerCommand>,
     /// Pending script evaluation replies keyed by request ids.
@@ -207,7 +204,6 @@ impl EventLoopWorker {
         event_loop_id: EventLoopId,
         process_label: String,
         user_agent_command_sender: Sender<UserAgentCommand>,
-        fetch_command_sender: Sender<FetchCommand>,
         timer_command_sender: Sender<TimerCommand>,
         host: Arc<dyn Embedder>,
         webview_provider_sender: Sender<WebviewProviderMessage>,
@@ -239,7 +235,6 @@ impl EventLoopWorker {
             event_receiver,
             child,
             user_agent_command_sender,
-            fetch_command_sender,
             timer_command_sender,
             script_waiters: HashMap::new(),
             click_waiters: HashMap::new(),
@@ -406,14 +401,7 @@ impl EventLoopWorker {
         incoming_shmem: &HashMap<usize, ipc::IpcSharedRegion>,
     ) -> Result<bool, String> {
         match event {
-            ContentEvent::DocumentFetchRequested(_request) => {
-                // Content now sends fetch requests directly to net via
-                // `ResponseRecipient::ContentProcess`. This event is no longer
-                // emitted by content and should not be received here.
-                warn!(
-                    "unexpected DocumentFetchRequested — content should now send directly to net"
-                );
-            }
+
             ContentEvent::WindowTimerRequested(request) => {
                 // Content already ran the timer initialization algorithm far enough to assign
                 // the timer id, key, and nesting level; the timer worker owns the host-side wait.
@@ -722,7 +710,6 @@ pub fn spawn_event_loop_entry(
     event_loop_id: EventLoopId,
     process_label: String,
     user_agent_command_sender: Sender<UserAgentCommand>,
-    fetch_command_sender: Sender<FetchCommand>,
     timer_command_sender: Sender<TimerCommand>,
     host: Arc<dyn Embedder>,
     webview_provider_sender: Sender<WebviewProviderMessage>,
@@ -735,7 +722,6 @@ pub fn spawn_event_loop_entry(
         event_loop_id,
         process_label,
         user_agent_command_sender,
-        fetch_command_sender,
         timer_command_sender,
         host,
         webview_provider_sender,
