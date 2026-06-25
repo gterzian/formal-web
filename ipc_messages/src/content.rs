@@ -1,13 +1,13 @@
 use crate::media::VideoEmbedData;
 use anyrender::{
-    Scene,
     recording::{GlyphRunCommand, RenderCommand},
+    Scene,
 };
 
+use ipc::IpcSender;
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
-use ipc::IpcSender;
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::fmt;
 use uuid::Uuid;
 use verification::TraceSender;
@@ -865,10 +865,14 @@ pub enum Command {
     },
     /// Combined bootstrap message, sent as the first command.
     /// Content blocks on `cmd_rx` for this before entering its event loop.
-    /// Carries net/media senders plus initial configuration.
+    /// Carries net/media senders, the content process's own command sender (for
+    /// direct net→content response routing), plus initial configuration.
     DirectChannelsSetup {
         net_sender: ipc::IpcSender<crate::network::Request>,
         media_sender: Option<ipc::IpcSender<crate::media::MediaCommand>>,
+        /// The content process's own command sender. Net uses this to route
+        /// `CompleteDocumentFetch` directly to this content process.
+        content_command_sender: ipc::IpcSender<Command>,
     },
     Shutdown,
 }
@@ -900,8 +904,8 @@ mod tests {
         FrameCompositionMetadata, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
         PaintTransportSummary, SceneSummary, WebviewId,
     };
-    use anyrender::{Glyph, PaintScene, Scene, recording::RenderCommand};
-    use peniko::{Color, Fill, FontData, kurbo::Affine};
+    use anyrender::{recording::RenderCommand, Glyph, PaintScene, Scene};
+    use peniko::{kurbo::Affine, Color, Fill, FontData};
 
     fn scene_with_glyph(font: &FontData, glyph_id: u16, x: f32, y: f32) -> Scene {
         let mut scene = Scene::new();

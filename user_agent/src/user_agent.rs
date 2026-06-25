@@ -1291,8 +1291,9 @@ impl UserAgentWorker {
         trace_sender: Option<TraceSender>,
     ) -> Self {
         // Start net extension (must happen before spawning fetch worker).
-        let (network_extension_sender, net_rx, net_child) = crate::fetch::start_net_extension(trace_sender.clone())
-            .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
+        let (network_extension_sender, net_rx, net_child) =
+            crate::fetch::start_net_extension(trace_sender.clone())
+                .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
 
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
         let fetch_user_agent_command_sender = user_agent_command_sender.clone();
@@ -1342,13 +1343,14 @@ impl UserAgentWorker {
                         media_child,
                     )
                 })
-                .unwrap_or_else(|error| {
-                    panic!("failed to spawn formal-web-media thread: {error}")
-                });
+                .unwrap_or_else(|error| panic!("failed to spawn formal-web-media thread: {error}"));
             (Some(media_extension_sender), Some(handle))
         };
         #[cfg(not(feature = "media"))]
-        let (media_extension_sender, media_join_handle): (Option<_>, Option<thread::JoinHandle<()>>) = (None, None);
+        let (media_extension_sender, media_join_handle): (
+            Option<_>,
+            Option<thread::JoinHandle<()>>,
+        ) = (None, None);
 
         Self {
             state: UserAgentState::default(),

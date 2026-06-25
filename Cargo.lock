@@ -891,6 +891,7 @@ dependencies = [
  "stylo",
  "stylo_traits",
  "url",
+ "uuid",
  "verification",
  "wasmtime",
  "xml5ever",
@@ -3246,6 +3247,7 @@ dependencies = [
  "mime_guess",
  "reqwest",
  "url",
+ "uuid",
  "verification",
 ]
 

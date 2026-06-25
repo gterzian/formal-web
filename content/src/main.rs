@@ -302,12 +302,6 @@ fn maybe_log_input_layout_debug(document_id: DocumentId, document: &BaseDocument
     }
 }
 
-static NEXT_DIRECT_REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-fn new_direct_request_id() -> u64 {
-    NEXT_DIRECT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
 #[derive(Clone)]
 struct ContentNetProvider {
     event_sender: ipc::IpcSender<ContentEvent>,
@@ -315,6 +309,7 @@ struct ContentNetProvider {
     content_document_id: DocumentId,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    content_command_sender: ipc::IpcSender<Command>,
 }
 
 impl NetProvider for ContentNetProvider {
@@ -351,12 +346,15 @@ impl NetProvider for ContentNetProvider {
                     method: request.method.to_string(),
                     body: request_body_string(&request.body),
                 };
-                if let Err(error) = self.network_extension_sender.send(
-                    ipc_messages::network::Request::Fetch {
-                        request_id: new_direct_request_id(),
-                        request: fetch_request,
+                let network_request = ipc_messages::network::Request::Fetch {
+                    request_id: uuid::Uuid::new_v4(),
+                    request: fetch_request,
+                    reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
+                        content_command_sender: self.content_command_sender.clone(),
+                        handler_id,
                     },
-                ) {
+                };
+                if let Err(error) = self.network_extension_sender.send(network_request) {
                     error!("failed to send direct fetch request to net: {error}");
                 }
             }
@@ -422,6 +420,8 @@ pub(crate) struct ContentProcess {
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     /// Direct sender to the media extension.
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    /// This content process's own command sender, used by net for direct response routing.
+    content_command_sender: ipc::IpcSender<Command>,
 }
 
 impl ContentProcess {
@@ -431,6 +431,7 @@ impl ContentProcess {
         event_loop_id: EventLoopId,
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
         media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+        content_command_sender: ipc::IpcSender<Command>,
     ) -> Self {
         let clipboard_cache = new_clipboard_cache();
         Self {
@@ -454,6 +455,7 @@ impl ContentProcess {
             pending_wasm_modules: HashMap::new(),
             network_extension_sender,
             media_extension_sender,
+            content_command_sender,
         }
     }
 
@@ -505,6 +507,7 @@ impl ContentProcess {
                 content_document_id: document_id,
                 network_extension_sender: self.network_extension_sender.clone(),
                 media_extension_sender: self.media_extension_sender.clone(),
+                content_command_sender: self.content_command_sender.clone(),
             })),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
@@ -591,16 +594,23 @@ impl ContentProcess {
             "request remote fetch handler={} method={} url={}",
             handler_id, request.method, request.url,
         ));
-        self.event_sender
-            .send(ContentEvent::DocumentFetchRequested(ContentFetchRequest {
+        let fetch_request = ContentFetchRequest {
+            handler_id,
+            url: request.url.to_string(),
+            method: request.method.to_string(),
+            body: request_body_string(&request.body),
+        };
+        let network_request = ipc_messages::network::Request::Fetch {
+            request_id: uuid::Uuid::new_v4(),
+            request: fetch_request,
+            reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
+                content_command_sender: self.content_command_sender.clone(),
                 handler_id,
-                url: request.url.to_string(),
-                method: request.method.to_string(),
-                body: request_body_string(&request.body),
-            }))
-            .map_err(|error| {
-                format!("failed to send document fetch request to the embedder: {error}")
-            })
+            },
+        };
+        self.network_extension_sender
+            .send(network_request)
+            .map_err(|error| format!("failed to send document fetch request to net: {error}"))
     }
 
     fn deferred_script_state(script: PendingParserScript) -> DeferredScriptState {
@@ -2142,23 +2152,24 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
         // First message must be DirectChannelsSetup.
-        let (network_extension_sender, media_extension_sender) = match cmd_rx.recv() {
-            Ok(incoming) => {
-                match incoming.payload {
-                    DirectChannelsSetup { net_sender, media_sender } => {
-                        (net_sender, media_sender)
-                    }
-                other => {
-                    error!(
-                        "first message must be DirectChannelsSetup, got: {other:?}"
-                    );
-                    debug_assert!(false, "wrong first message: {other:?}");
-                    return Err("wrong first message, expected DirectChannelsSetup".into());
-                }
-            }  // closes match incoming.payload
-        },  // closes Ok arm
-        Err(_) => return Err("command channel closed before DirectChannelsSetup".into()),
-        };
+        let (network_extension_sender, media_extension_sender, content_command_sender) =
+            match cmd_rx.recv() {
+                Ok(incoming) => {
+                    match incoming.payload {
+                        DirectChannelsSetup {
+                            net_sender,
+                            media_sender,
+                            content_command_sender,
+                        } => (net_sender, media_sender, content_command_sender),
+                        other => {
+                            error!("first message must be DirectChannelsSetup, got: {other:?}");
+                            debug_assert!(false, "wrong first message: {other:?}");
+                            return Err("wrong first message, expected DirectChannelsSetup".into());
+                        }
+                    } // closes match incoming.payload
+                } // closes Ok arm
+                Err(_) => return Err("command channel closed before DirectChannelsSetup".into()),
+            };
 
         // Notify the user agent that the bootstrap command was handled.
         let _ = event_sender.send(ContentEvent::CommandCompleted);
@@ -2170,6 +2181,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             event_loop_id,
             network_extension_sender,
             media_extension_sender,
+            content_command_sender,
         );
 
         loop {

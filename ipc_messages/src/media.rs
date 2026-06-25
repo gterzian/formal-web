@@ -61,9 +61,7 @@ pub enum MediaCommand {
     /// Shut down the media process.
     Shutdown,
     /// Sender for sending media events directly to a content process.
-    SetContentEventSender {
-        sender: ipc::IpcSender<MediaEvent>,
-    },
+    SetContentEventSender { sender: ipc::IpcSender<MediaEvent> },
 }
 
 /// A decoded video frame shipped over shared memory.

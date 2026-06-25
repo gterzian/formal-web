@@ -23,4 +23,5 @@ reqwest = { version = "0.12.28", default-features = false, features = ["blocking
 log = "0.4"
 env_logger = "0.11"
 url = "2"
+uuid = { version = "1", features = ["serde", "v4"] }
 verification = { path = "../verification" }

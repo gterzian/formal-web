@@ -56,7 +56,7 @@ where
     let handle = ExtensionHandle {
         inner: ExtensionHandleImpl::IpcChannel {
             child: Some(child),
-            bootstrap_token: token,
+            _bootstrap_token: token,
         },
     };
 

@@ -1,14 +1,12 @@
-use ipc::run_extension;
 use ipc_messages::content::{Command as ContentCommand, FetchRequest, FetchResponse};
-use ipc_messages::network::{Request, Response};
-use reqwest::Method;
+use ipc_messages::network::{Request, Response, ResponseRecipient};
 use reqwest::blocking::Client;
 use reqwest::header::CONTENT_TYPE;
+use reqwest::Method;
 use std::env;
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use url::Url;
-use verification::TraceSender;
 
 fn net_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
@@ -89,16 +87,56 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
     })
 }
 
+/// Route a fetch result to the caller based on `ResponseRecipient`.
+///
+/// `ipc_response_sender` is the bidirectional IPC response sender; it is used
+/// for `ResponseRecipient::UserAgent` (navigation fetches from the UA's fetch
+/// worker that listen on the IPC response channel).
+fn route_response(
+    request_id: uuid::Uuid,
+    reply_to: ResponseRecipient,
+    result: Result<FetchResponse, String>,
+    ipc_response_sender: &ipc::IpcSender<Response>,
+) -> Result<(), String> {
+    match reply_to {
+        ResponseRecipient::ContentProcess {
+            content_command_sender,
+            handler_id,
+        } => match result {
+            Ok(response) => content_command_sender
+                .send(ContentCommand::CompleteDocumentFetch {
+                    handler_id,
+                    response,
+                })
+                .map_err(|error| format!("failed to route response to content: {error}")),
+            Err(error) => {
+                log::error!("fetch failed: {error}");
+                content_command_sender
+                    .send(ContentCommand::FailDocumentFetch { handler_id })
+                    .map_err(|error| format!("failed to route fetch failure to content: {error}"))
+            }
+        },
+        ResponseRecipient::UserAgent => {
+            // Navigation fetch: send Response back through the bidirectional IPC channel
+            // that the UA's fetch worker listens on.
+            ipc_response_sender
+                .send(Response { request_id, result })
+                .map_err(|error| format!("failed to route response to UA: {error}"))
+        }
+    }
+}
+
 pub fn run_net_process_v2(token: String) -> Result<(), String> {
     let client = Client::builder()
         .resolve("localhost", SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .build()
         .map_err(|error| format!("failed to build reqwest client: {error}"))?;
 
+    let mut _trace_sender: Option<verification::TraceSender> = None;
+
     ipc::run_extension::<Request, Response>(&token, move |server| {
-        let mut _trace_sender: Option<TraceSender> = None;
         let request_receiver = ipc::crossbeam_proxy(server.connection.receiver);
-        let mut content_command_sender: Option<ipc::IpcSender<ContentCommand>> = None;
+        let response_sender = server.connection.sender.clone();
 
         loop {
             match request_receiver.recv() {
@@ -109,43 +147,17 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                             _trace_sender = trace_sender;
                         }
                         Request::Fetch {
-                            request_id: _request_id,
+                            request_id,
                             request,
+                            reply_to,
                         } => {
-                            let handler_id = request.handler_id;
-                            let content_tx = match content_command_sender.as_ref() {
-                                Some(s) => s,
-                                None => {
-                                    log::error!("SetContentSender not set before fetch");
-                                    debug_assert!(false, "SetContentSender must arrive before fetch");
-                                    break;
-                                }
-                            };
                             let result = fetch_request(&client, &request);
-                            match result {
-                                Ok(fetch_resp) => {
-                                    if let Err(error) = content_tx.send(
-                                        ContentCommand::CompleteDocumentFetch {
-                                            handler_id,
-                                            response: fetch_resp,
-                                        },
-                                    ) {
-                                        log::error!("failed to send direct fetch response: {error}");
-                                        break;
-                                    }
-                                }
-                                Err(error) => {
-                                    if let Err(e) = content_tx.send(
-                                        ContentCommand::FailDocumentFetch { handler_id },
-                                    ) {
-                                        log::error!("failed to send direct fetch failure: {e}");
-                                        break;
-                                    }
-                                }
+                            if let Err(error) =
+                                route_response(request_id, reply_to, result, &response_sender)
+                            {
+                                log::error!("{error}");
+                                break;
                             }
-                        }
-                        Request::SetContentSender { sender } => {
-                            content_command_sender = Some(sender);
                         }
                         Request::Shutdown => break,
                     }
@@ -160,7 +172,5 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
 
 pub fn run_net_process_from_args() -> Result<(), String> {
     let token = net_token_from_args()?;
-    // If a token was provided (ipc-channel mode), use it.
-    // Otherwise, use the native XPC backend (process launched by launchd).
     run_net_process_v2(token.unwrap_or_default())
 }

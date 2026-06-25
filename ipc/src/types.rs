@@ -395,7 +395,7 @@ pub struct ExtensionHandle {
 pub(crate) enum ExtensionHandleImpl {
     IpcChannel {
         child: Option<std::process::Child>,
-        bootstrap_token: String,
+        _bootstrap_token: String,
     },
     #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
     XpcSingleton {

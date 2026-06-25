@@ -5,7 +5,7 @@ use ipc_messages::content::{
     ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport,
     ViewportSnapshot, WebviewProviderMessage,
 };
-use log::{debug, error};
+use log::{debug, error, warn};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Child;
 use std::sync::Arc;
@@ -227,18 +227,9 @@ impl EventLoopWorker {
         let command_sender = connection.sender.clone();
         let event_receiver = ipc::crossbeam_proxy(connection.receiver);
         let child = handle.take_child();
-        // Clone command sender for net (net sends responses as commands).
+        // Clone the content command sender for `DirectChannelsSetup` so net can
+        // route responses directly via `ResponseRecipient::ContentProcess`.
         let content_command_sender = connection.sender.clone();
-        // Give net a clone of the content command sender so it can send
-        // responses directly as Command::CompleteDocumentFetch.
-        // Must happen before `network_extension_sender` is moved into Self below.
-        if let Err(error) = network_extension_sender.send(
-            ipc_messages::network::Request::SetContentSender {
-                sender: content_command_sender,
-            },
-        ) {
-            error!("failed to send content sender to net: {error}");
-        }
         // Clone senders for forwarding before they're moved into Self.
         let network_extension_sender_fwd = network_extension_sender.clone();
         let media_extension_sender_fwd = media_extension_sender.clone();
@@ -265,6 +256,7 @@ impl EventLoopWorker {
         worker.send_command_inner(&ContentCommand::DirectChannelsSetup {
             net_sender: network_extension_sender_fwd,
             media_sender: media_extension_sender_fwd,
+            content_command_sender,
         })?;
 
         if let Some(snapshot) = worker.host.window_viewport_snapshot() {
@@ -414,27 +406,13 @@ impl EventLoopWorker {
         incoming_shmem: &HashMap<usize, ipc::IpcSharedRegion>,
     ) -> Result<bool, String> {
         match event {
-            ContentEvent::DocumentFetchRequested(request) => {
-                // Keep network work off the event-loop thread and arm the timeout
-                // that will reenter this event loop if content never receives a response.
-                self.fetch_command_sender
-                    .send(FetchCommand::StartDocumentFetch {
-                        event_loop_id: self.event_loop_id,
-                        request: request.clone(),
-                    })
-                    .map_err(|error| format!("failed to start document fetch: {error}"))?;
-                self.timer_command_sender
-                    .send(TimerCommand::Schedule {
-                        timer_key: request.handler_id.0,
-                        delay: Duration::from_millis(5000),
-                        completion: TimerCompletion::DocumentFetchTimeout {
-                            event_loop_id: self.event_loop_id,
-                            handler_id: request.handler_id,
-                        },
-                    })
-                    .map_err(|error| {
-                        format!("failed to schedule document fetch timeout: {error}")
-                    })?;
+            ContentEvent::DocumentFetchRequested(_request) => {
+                // Content now sends fetch requests directly to net via
+                // `ResponseRecipient::ContentProcess`. This event is no longer
+                // emitted by content and should not be received here.
+                warn!(
+                    "unexpected DocumentFetchRequested — content should now send directly to net"
+                );
             }
             ContentEvent::WindowTimerRequested(request) => {
                 // Content already ran the timer initialization algorithm far enough to assign
