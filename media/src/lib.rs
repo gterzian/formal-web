@@ -1,24 +1,9 @@
 pub mod backend;
 
 use backend::{BackendEvent, MediaBackend, PipelineHandle};
-use ipc::ExtensionEndpoint;
 use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
 use std::collections::HashMap;
 use std::env;
-
-// ---------------------------------------------------------------------------
-// IPC manifest
-// ---------------------------------------------------------------------------
-
-struct MediaExtensionManifest;
-
-impl ipc::ExtensionManifest for MediaExtensionManifest {
-    fn endpoint(&self) -> ExtensionEndpoint {
-        ExtensionEndpoint::Singleton {
-            service_name: "formal-web.media",
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Generic run loop
@@ -188,6 +173,11 @@ fn handle_command<B: MediaBackend>(
                 log::error!("failed to destroy pipeline {pipeline_id:?}: {error}");
             }
         }
+        MediaCommand::SetContentEventSender { sender } => {
+            log::info!("media: received direct content event sender");
+            // TODO: store sender and send events directly
+            let _ = sender;
+        }
         MediaCommand::Shutdown => {
             return true;
         }
@@ -218,13 +208,6 @@ fn media_token_from_args() -> Result<Option<String>, String> {
 
 pub fn run_media_process_from_args() -> Result<(), String> {
     let token = media_token_from_args()?;
-    let manifest = MediaExtensionManifest;
-    let server = ipc::run_extension::<MediaExtensionManifest, MediaCommand, MediaEvent>(
-        &manifest,
-        &token.unwrap_or_default(),
-        "formal-web.media",
-    )
-    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
     #[cfg(feature = "backend-gstreamer")]
     let backend = backend::gstreamer::GStreamerBackend::init()
@@ -234,6 +217,10 @@ pub fn run_media_process_from_args() -> Result<(), String> {
     let backend = backend::avfoundation::AvfBackend::init()
         .map_err(|error| format!("AVFoundation init failed: {error}"))?;
 
-    run_media_process(backend, server.rx, server.tx);
-    Ok(())
+    ipc::run_extension::<MediaCommand, MediaEvent>(&token.unwrap_or_default(), |server| {
+        let receiver = ipc::crossbeam_proxy(server.connection.receiver);
+        let sender = server.connection.sender.clone();
+        run_media_process(backend, receiver, sender);
+        Ok(())
+    })
 }

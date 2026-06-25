@@ -13,7 +13,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use verification::TraceSender;
 
-use crate::fetch::FetchCommand;
 use crate::timer::{TimerCommand, TimerCompletion};
 use crate::{Embedder, UserAgentCommand};
 
@@ -155,8 +154,6 @@ struct EventLoopWorker {
     child: Option<Child>,
     /// Sender back into the owning user-agent worker for navigation and lifecycle coordination.
     user_agent_command_sender: Sender<UserAgentCommand>,
-    /// Sender into the dedicated fetch worker for document fetch requests.
-    fetch_command_sender: Sender<FetchCommand>,
     /// Sender into the dedicated timer worker for window timers and fetch timeouts.
     timer_command_sender: Sender<TimerCommand>,
     /// Pending script evaluation replies keyed by request ids.
@@ -174,9 +171,10 @@ struct EventLoopWorker {
     /// flag that mirrors the single in-flight task step in the HTML event loop
     /// processing model.
     awaiting_task_completion: bool,
-    /// FIFO queue of commands that must observe `CommandCompleted` before the next task-bearing
-    /// step can run.
     pending_task_commands: VecDeque<PendingTaskCommand>,
+    /// IPC sender to the media extension.
+    #[allow(dead_code)]
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
@@ -204,28 +202,37 @@ impl EventLoopWorker {
         event_loop_id: EventLoopId,
         process_label: String,
         user_agent_command_sender: Sender<UserAgentCommand>,
-        fetch_command_sender: Sender<FetchCommand>,
         timer_command_sender: Sender<TimerCommand>,
         host: Arc<dyn Embedder>,
         webview_provider_sender: Sender<WebviewProviderMessage>,
         command_receiver: Receiver<EventLoopCommand>,
         trace_sender: Option<TraceSender>,
+        network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+        media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     ) -> Result<Self, String> {
         let manifest = crate::ipc_manifest::ContentExtensionManifest::new(process_label);
-        let client = ipc::start_extension::<
+        let (mut handle, connection) = ipc::ExtensionHandle::launch::<
             crate::ipc_manifest::ContentExtensionManifest,
             ContentCommand,
             ContentEvent,
         >(&manifest)
         .map_err(|error| format!("failed to start content extension: {error}"))?;
 
+        let command_sender = connection.sender.clone();
+        let event_receiver = ipc::crossbeam_proxy(connection.receiver);
+        let child = handle.take_child();
+        // Clone the content command sender for `DirectChannelsSetup` so net can
+        // route responses directly via `ResponseRecipient::ContentProcess`.
+        let content_command_sender = connection.sender.clone();
+        // Clone senders for forwarding before they're moved into Self.
+        let network_extension_sender_fwd = network_extension_sender.clone();
+        let media_extension_sender_fwd = media_extension_sender.clone();
         let worker = Self {
             event_loop_id,
-            command_sender: client.tx,
-            event_receiver: client.rx,
-            child: client.child,
+            command_sender,
+            event_receiver,
+            child,
             user_agent_command_sender,
-            fetch_command_sender,
             timer_command_sender,
             script_waiters: HashMap::new(),
             click_waiters: HashMap::new(),
@@ -235,13 +242,15 @@ impl EventLoopWorker {
             stop_reply: None,
             awaiting_task_completion: false,
             pending_task_commands: VecDeque::new(),
+            media_extension_sender,
         };
 
-        // Send the event loop id to the content process so it can include it in
-        // `new_traversable_info` for window.open.
-        worker.send_command_inner(&ContentCommand::SetEventLoopId(event_loop_id))?;
-
-        worker.send_command_inner(&ContentCommand::SetTraceSender(trace_sender))?;
+        worker.send_command_inner(&ContentCommand::ContentBootstrap {
+            net_sender: network_extension_sender_fwd,
+            media_sender: media_extension_sender_fwd,
+            content_command_sender,
+            trace_sender,
+        })?;
 
         if let Some(snapshot) = worker.host.window_viewport_snapshot() {
             let command = viewport_command(snapshot);
@@ -390,28 +399,6 @@ impl EventLoopWorker {
         incoming_shmem: &HashMap<usize, ipc::IpcSharedRegion>,
     ) -> Result<bool, String> {
         match event {
-            ContentEvent::DocumentFetchRequested(request) => {
-                // Keep network work off the event-loop thread and arm the timeout
-                // that will reenter this event loop if content never receives a response.
-                self.fetch_command_sender
-                    .send(FetchCommand::StartDocumentFetch {
-                        event_loop_id: self.event_loop_id,
-                        request: request.clone(),
-                    })
-                    .map_err(|error| format!("failed to start document fetch: {error}"))?;
-                self.timer_command_sender
-                    .send(TimerCommand::Schedule {
-                        timer_key: request.handler_id.0,
-                        delay: Duration::from_millis(5000),
-                        completion: TimerCompletion::DocumentFetchTimeout {
-                            event_loop_id: self.event_loop_id,
-                            handler_id: request.handler_id,
-                        },
-                    })
-                    .map_err(|error| {
-                        format!("failed to schedule document fetch timeout: {error}")
-                    })?;
-            }
             ContentEvent::WindowTimerRequested(request) => {
                 // Content already ran the timer initialization algorithm far enough to assign
                 // the timer id, key, and nesting level; the timer worker owns the host-side wait.
@@ -562,9 +549,9 @@ impl EventLoopWorker {
                     let _ = self.host.new_frame_rendered();
                 }
             }
-            ContentEvent::MediaLoadRequested(request) => {
+            ContentEvent::RegisterMediaPipeline(request) => {
                 debug!(
-                    "[media] event loop forwarding MediaLoadRequested url={}",
+                    "[media] event loop forwarding RegisterMediaPipeline url={}",
                     request.url
                 );
                 self.user_agent_command_sender
@@ -572,10 +559,12 @@ impl EventLoopWorker {
                         url: request.url,
                         document_id: request.document_id,
                         traversable_id: request.traversable_id,
+                        pipeline_id: request.pipeline_id,
                         video_paint_id: request.video_paint_id,
                     })
                     .map_err(|error| format!("failed to send media load request: {error}"))?;
             }
+
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
 
@@ -719,23 +708,25 @@ pub fn spawn_event_loop_entry(
     event_loop_id: EventLoopId,
     process_label: String,
     user_agent_command_sender: Sender<UserAgentCommand>,
-    fetch_command_sender: Sender<FetchCommand>,
     timer_command_sender: Sender<TimerCommand>,
     host: Arc<dyn Embedder>,
     webview_provider_sender: Sender<WebviewProviderMessage>,
     trace_sender: Option<TraceSender>,
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();
     let mut worker = EventLoopWorker::new(
         event_loop_id,
         process_label,
         user_agent_command_sender,
-        fetch_command_sender,
         timer_command_sender,
         host,
         webview_provider_sender,
         command_receiver,
         trace_sender,
+        network_extension_sender,
+        media_extension_sender,
     )?;
     let join_handle = thread::Builder::new()
         .name(format!("formal-web-event-loop-{event_loop_id}"))

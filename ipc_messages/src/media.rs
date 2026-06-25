@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Identifies a pipeline within the media process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct MediaPipelineId(pub u64);
+pub struct MediaPipelineId(pub Uuid);
 
 /// Opaque paint-layer identifier for a video element.
 /// <https://html.spec.whatwg.org/#the-video-element>
@@ -59,6 +59,8 @@ pub enum MediaCommand {
     Destroy { pipeline_id: MediaPipelineId },
     /// Shut down the media process.
     Shutdown,
+    /// Sender for sending media events directly to a content process.
+    SetContentEventSender { sender: ipc::IpcSender<MediaEvent> },
 }
 
 /// A decoded video frame shipped over shared memory.

@@ -1,6 +1,7 @@
-use ipc::{ExtensionEndpoint, ExtensionManifest, run_extension};
-use ipc_messages::content::{FetchRequest, FetchResponse};
-use ipc_messages::network::{Request, Response};
+use ipc_messages::content::{
+    Command as ContentCommand, DocumentFetchId, FetchRequest, FetchResponse,
+};
+use ipc_messages::network::{Request, Response, ResponseRecipient};
 use reqwest::Method;
 use reqwest::blocking::Client;
 use reqwest::header::CONTENT_TYPE;
@@ -8,17 +9,6 @@ use std::env;
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use url::Url;
-use verification::TraceSender;
-
-struct NetExtensionManifest;
-
-impl ExtensionManifest for NetExtensionManifest {
-    fn endpoint(&self) -> ExtensionEndpoint {
-        ExtensionEndpoint::Singleton {
-            service_name: "formal-web.net",
-        }
-    }
-}
 
 fn net_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
@@ -99,58 +89,100 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
     })
 }
 
+/// Route a fetch result to the caller based on `ResponseRecipient`.
+fn route_response(
+    request_id: uuid::Uuid,
+    reply_to: ResponseRecipient,
+    result: Result<FetchResponse, String>,
+    ipc_response_sender: &ipc::IpcSender<Response>,
+) -> Result<(), String> {
+    match reply_to {
+        ResponseRecipient::ContentProcess {
+            content_command_sender,
+            handler_id,
+        } => match result {
+            Ok(response) => content_command_sender
+                .send(ContentCommand::CompleteDocumentFetch {
+                    handler_id,
+                    response,
+                })
+                .map_err(|error| format!("failed to route response to content: {error}")),
+            Err(error) => {
+                log::error!("fetch failed: {error}");
+                content_command_sender
+                    .send(ContentCommand::FailDocumentFetch { handler_id })
+                    .map_err(|error| format!("failed to route fetch failure to content: {error}"))
+            }
+        },
+        ResponseRecipient::UserAgent => ipc_response_sender
+            .send(Response { request_id, result })
+            .map_err(|error| format!("failed to route response to UA: {error}")),
+    }
+}
+
 pub fn run_net_process_v2(token: String) -> Result<(), String> {
-    let manifest = NetExtensionManifest;
-    let server = run_extension::<NetExtensionManifest, Request, Response>(
-        &manifest,
-        &token,
-        "formal-web.net",
-    )
-    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
-
-    let mut _trace_sender: Option<TraceSender> = None;
-
     let client = Client::builder()
         .resolve("localhost", SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .build()
         .map_err(|error| format!("failed to build reqwest client: {error}"))?;
 
-    // server.tx sends Response to parent (server's Out = parent's In)
-    // server.rx receives Request from parent (server's In = parent's Out)
-    let response_sender = server.tx;
-    let request_receiver = server.rx;
+    ipc::run_extension::<Request, Response>(&token, move |server| {
+        let request_receiver = ipc::crossbeam_proxy(server.connection.receiver);
+        let response_sender = server.connection.sender.clone();
 
-    loop {
-        match request_receiver.recv() {
-            Ok(incoming) => {
-                let request = incoming.payload;
-                match request {
-                    Request::SetTraceSender(trace_sender) => {
-                        _trace_sender = trace_sender;
-                    }
-                    Request::Fetch {
-                        request_id,
-                        request,
-                    } => {
-                        let result = fetch_request(&client, &request);
-                        if let Err(error) = response_sender.send(Response { request_id, result }) {
-                            log::error!("failed to send fetch response: {error}");
-                            break;
+        loop {
+            match request_receiver.recv() {
+                Ok(incoming) => {
+                    let request = incoming.payload;
+                    match request {
+                        Request::SetTraceSender(trace_sender) => {
+                            let _ = trace_sender;
                         }
+                        Request::Fetch {
+                            request_id,
+                            request,
+                            reply_to,
+                        } => {
+                            let result = fetch_request(&client, &request);
+                            if let Err(error) =
+                                route_response(request_id, reply_to, result, &response_sender)
+                            {
+                                log::error!("{error}");
+                                break;
+                            }
+                        }
+                        Request::NavigationFetch {
+                            request_id,
+                            request,
+                            reply_to,
+                        } => {
+                            // Convert NavigationFetchRequest to FetchRequest for HTTP transport.
+                            let fetch_req = FetchRequest {
+                                handler_id: DocumentFetchId::new(),
+                                url: request.url,
+                                method: request.method,
+                                body: request.body.unwrap_or_default(),
+                            };
+                            let result = fetch_request(&client, &fetch_req);
+                            if let Err(error) =
+                                route_response(request_id, reply_to, result, &response_sender)
+                            {
+                                log::error!("{error}");
+                                break;
+                            }
+                        }
+                        Request::Shutdown => break,
                     }
-                    Request::Shutdown => break,
                 }
+                Err(_) => break,
             }
-            Err(_) => break,
         }
-    }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn run_net_process_from_args() -> Result<(), String> {
     let token = net_token_from_args()?;
-    // If a token was provided (ipc-channel mode), use it.
-    // Otherwise, use the native XPC backend (process launched by launchd).
     run_net_process_v2(token.unwrap_or_default())
 }

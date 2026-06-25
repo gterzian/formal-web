@@ -1,5 +1,5 @@
 use crossbeam_channel::{Receiver, Sender, select};
-use ipc_messages::content::{DocumentFetchId, DocumentId, EventLoopId, WindowTimerKey};
+use ipc_messages::content::{DocumentId, EventLoopId, WindowTimerKey};
 use log::debug;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -26,10 +26,6 @@ pub enum TimerCommand {
 /// Completions that the timer worker routes back into the user-agent thread when a deadline expires.
 #[derive(Clone)]
 pub enum TimerCompletion {
-    DocumentFetchTimeout {
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-    },
     WindowTimerTask {
         event_loop_id: EventLoopId,
         document_id: DocumentId,
@@ -111,19 +107,6 @@ impl TimerWorker {
         for (timer_key, _deadline, _sequence_number, completion) in due_timers {
             self.active_timers.remove(&timer_key);
             match completion {
-                TimerCompletion::DocumentFetchTimeout {
-                    event_loop_id,
-                    handler_id,
-                } => {
-                    // Document fetch timeouts are a watchdog around fetches owned
-                    // by an event loop; they are not Window timers.
-                    let _ = self.user_agent_command_sender.send(
-                        UserAgentCommand::DocumentFetchTimeout {
-                            event_loop_id,
-                            handler_id,
-                        },
-                    );
-                }
                 TimerCompletion::WindowTimerTask {
                     event_loop_id,
                     document_id,

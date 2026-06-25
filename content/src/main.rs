@@ -4,6 +4,7 @@ pub(crate) mod ui_event;
 
 pub mod css;
 pub mod dom;
+pub(crate) mod fetch;
 pub mod html;
 pub mod infra;
 pub mod js;
@@ -33,11 +34,10 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 
-use ipc::{ExtensionEndpoint, ExtensionManifest, IpcSharedRegion, run_extension};
 use ipc_messages::content::Command::{
-    ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
-    DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
-    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
+    CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
+    RunWindowTimer, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
@@ -304,9 +304,10 @@ fn maybe_log_input_layout_debug(document_id: DocumentId, document: &BaseDocument
 
 #[derive(Clone)]
 struct ContentNetProvider {
-    event_sender: ipc::IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     content_document_id: DocumentId,
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+    content_command_sender: ipc::IpcSender<Command>,
 }
 
 impl NetProvider for ContentNetProvider {
@@ -336,15 +337,23 @@ impl NetProvider for ContentNetProvider {
                     },
                 );
                 drop(local_state);
-                if let Err(error) = self.event_sender.send(ContentEvent::DocumentFetchRequested(
-                    ContentFetchRequest {
+
+                let fetch_request = ContentFetchRequest {
+                    handler_id,
+                    url: request.url.to_string(),
+                    method: request.method.to_string(),
+                    body: request_body_string(&request.body),
+                };
+                let network_request = ipc_messages::network::Request::Fetch {
+                    request_id: uuid::Uuid::new_v4(),
+                    request: fetch_request,
+                    reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
+                        content_command_sender: self.content_command_sender.clone(),
                         handler_id,
-                        url: request.url.to_string(),
-                        method: request.method.to_string(),
-                        body: request_body_string(&request.body),
                     },
-                )) {
-                    error!("failed to send document fetch request to the embedder: {error}");
+                };
+                if let Err(error) = self.network_extension_sender.send(network_request) {
+                    error!("failed to send direct fetch request to net: {error}");
                 }
             }
         }
@@ -404,12 +413,13 @@ pub(crate) struct ContentProcess {
     /// Modules from instantiate requests, needed for exports creation.
     pending_wasm_modules: HashMap<u64, wasmtime::Module>,
 
-    /// Shared registry mapping (document_id, node_id) → VideoPaintId.
-    /// Populated by `resource_selection_algorithm` during JS execution
-    /// and read by `build_frame_composition_metadata` during rendering.
-    /// One Rc is kept here; clones are placed on GlobalScope during
-    /// document creation.
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+    /// Direct sender to the net extension. Set during DirectChannelsSetup.
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+    /// Direct sender to the media extension. Set during ContentBootstrap.
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    /// This content process's own command sender, used by net for direct response routing.
+    content_command_sender: ipc::IpcSender<Command>,
 }
 
 impl ContentProcess {
@@ -417,6 +427,10 @@ impl ContentProcess {
         event_sender: ipc::IpcSender<ContentEvent>,
         wasm_signal_sender: crossbeam_channel::Sender<()>,
         event_loop_id: EventLoopId,
+        network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+        media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+        content_command_sender: ipc::IpcSender<Command>,
+        trace_sender: Option<TraceSender>,
     ) -> Self {
         let clipboard_cache = new_clipboard_cache();
         Self {
@@ -431,13 +445,16 @@ impl ContentProcess {
             active_documents_by_traversable: HashMap::new(),
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
-            navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
+            navigation_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender),
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
             wasm_worker: WasmWorker::new(wasmtime::Engine::default(), wasm_signal_sender),
             pending_wasm_requests: HashMap::new(),
             pending_wasm_modules: HashMap::new(),
+            network_extension_sender,
+            media_extension_sender,
+            content_command_sender,
         }
     }
 
@@ -447,10 +464,6 @@ impl ContentProcess {
         if let Ok(mut cache) = self.clipboard_cache.lock() {
             *cache = text;
         }
-    }
-
-    fn set_trace_sender(&mut self, trace_sender: Option<TraceSender>) {
-        self.navigation_tracer.set_sender(trace_sender);
     }
 
     fn document_viewport_state(
@@ -484,9 +497,10 @@ impl ContentProcess {
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
             base_url,
             net_provider: Some(Arc::new(ContentNetProvider {
-                event_sender: self.event_sender.clone(),
                 local_state: Arc::clone(&self.local_state),
                 content_document_id: document_id,
+                network_extension_sender: self.network_extension_sender.clone(),
+                content_command_sender: self.content_command_sender.clone(),
             })),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
@@ -573,16 +587,23 @@ impl ContentProcess {
             "request remote fetch handler={} method={} url={}",
             handler_id, request.method, request.url,
         ));
-        self.event_sender
-            .send(ContentEvent::DocumentFetchRequested(ContentFetchRequest {
+        let fetch_request = ContentFetchRequest {
+            handler_id,
+            url: request.url.to_string(),
+            method: request.method.to_string(),
+            body: request_body_string(&request.body),
+        };
+        let network_request = ipc_messages::network::Request::Fetch {
+            request_id: uuid::Uuid::new_v4(),
+            request: fetch_request,
+            reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
+                content_command_sender: self.content_command_sender.clone(),
                 handler_id,
-                url: request.url.to_string(),
-                method: request.method.to_string(),
-                body: request_body_string(&request.body),
-            }))
-            .map_err(|error| {
-                format!("failed to send document fetch request to the embedder: {error}")
-            })
+            },
+        };
+        self.network_extension_sender
+            .send(network_request)
+            .map_err(|error| format!("failed to send document fetch request to net: {error}"))
     }
 
     fn deferred_script_state(script: PendingParserScript) -> DeferredScriptState {
@@ -892,6 +913,9 @@ impl ContentProcess {
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(&settings.context, |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            if let Some(ref sender) = self.media_extension_sender {
+                global_scope.set_media_extension_sender(sender.clone());
+            }
             Ok(())
         }) {
             error!("[media] failed to set video paint registry on GlobalScope: {error}");
@@ -991,6 +1015,9 @@ impl ContentProcess {
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(&settings.context, |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            if let Some(ref sender) = self.media_extension_sender {
+                global_scope.set_media_extension_sender(sender.clone());
+            }
             Ok(())
         }) {
             error!("[media] failed to set video paint registry on GlobalScope: {error}");
@@ -1959,10 +1986,7 @@ impl ContentProcess {
                 self.event_loop_id = event_loop_id;
                 Ok(true)
             }
-            Command::SetTraceSender(trace_sender) => {
-                self.set_trace_sender(trace_sender);
-                Ok(true)
-            }
+
             SetViewport(viewport) => {
                 self.set_viewport(viewport);
                 Ok(true)
@@ -2089,6 +2113,11 @@ impl ContentProcess {
                 self.fail_document_fetch(handler_id)?;
                 Ok(true)
             }
+            ContentBootstrap { .. } => {
+                // Handled before the event loop in run_content_process.
+                debug_assert!(false, "ContentBootstrap should not reach handle_command");
+                Ok(true)
+            }
             Shutdown => {
                 self.note_shutdown_completed()?;
                 Ok(false)
@@ -2110,85 +2139,100 @@ fn content_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-struct ContentExtensionManifest;
-
-impl ExtensionManifest for ContentExtensionManifest {
-    fn endpoint(&self) -> ExtensionEndpoint {
-        ExtensionEndpoint::MultiInstance {
-            service_name: "com.formal-web.app.content",
-        }
-    }
-}
-
-/// Run the content process using the new IPC abstraction layer.
+/// Run the content extension.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    let manifest = ContentExtensionManifest;
-
-    let server = run_extension::<ContentExtensionManifest, Command, ContentEvent>(
-        &manifest,
-        &token,
-        "com.formal-web.app.content",
-    )
-    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
-
-    // server.tx sends ContentEvent to parent (server's Out = parent's In)
-    // server.rx receives Command from parent (server's In = parent's Out)
-    let event_sender = server.tx;
-    let cmd_rx = server.rx;
-
-    // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
-    let placeholder_id = EventLoopId::from_u128(0);
-
-    // Set up a crossbeam channel for the wasm worker to signal results.
     let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
 
-    let mut process = ContentProcess::new(event_sender, wasm_signal_sender, placeholder_id);
+    ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
+        let event_sender = server.connection.sender.clone();
+        let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
-    loop {
-        crossbeam_channel::select! {
-            recv(cmd_rx) -> cmd => {
-                match cmd {
-                    Ok(incoming) => {
-                        let command = incoming.payload;
-                        let notify = matches!(
-                            &command,
-                            CreateEmptyDocument { .. }
-                                | CreateLoadedDocument { .. }
-                                | DestroyDocument { .. }
-                                | DispatchEvent { .. }
-                                | Command::RunBeforeUnload { .. }
-                                | UpdateTheRendering { .. }
-                                | RunWindowTimer { .. }
-                                | CompleteDocumentFetch { .. }
-                                | FailDocumentFetch { .. }
-                        );
-                        match process.handle_command(command) {
-                            Ok(true) => {
-                                if notify {
-                                    let _ = process.note_command_completed();
+        // First message must be ContentBootstrap.
+        let (network_extension_sender, media_sender, content_command_sender, trace_sender) =
+            match cmd_rx.recv() {
+                Ok(incoming) => {
+                    match incoming.payload {
+                        ContentBootstrap {
+                            net_sender,
+                            media_sender,
+                            content_command_sender,
+                            trace_sender,
+                        } => (
+                            net_sender,
+                            media_sender,
+                            content_command_sender,
+                            trace_sender,
+                        ),
+                        other => {
+                            error!("first message must be ContentBootstrap, got: {other:?}");
+                            debug_assert!(false, "wrong first message: {other:?}");
+                            return Err("wrong first message, expected ContentBootstrap".into());
+                        }
+                    } // closes match incoming.payload
+                } // closes Ok arm
+                Err(_) => return Err("command channel closed before ContentBootstrap".into()),
+            };
+
+        // Notify the user agent that the bootstrap command was handled.
+        let _ = event_sender.send(ContentEvent::CommandCompleted);
+
+        let event_loop_id = EventLoopId::from_u128(0);
+        let mut process = ContentProcess::new(
+            event_sender,
+            wasm_signal_sender,
+            event_loop_id,
+            network_extension_sender,
+            media_sender,
+            content_command_sender,
+            trace_sender,
+        );
+
+        loop {
+            crossbeam_channel::select! {
+                recv(cmd_rx) -> cmd => {
+                    match cmd {
+                        Ok(incoming) => {
+                            let command = incoming.payload;
+                            let notify = matches!(
+                                &command,
+                                CreateEmptyDocument { .. }
+                                    | CreateLoadedDocument { .. }
+                                    | DestroyDocument { .. }
+                                    | DispatchEvent { .. }
+                                    | Command::RunBeforeUnload { .. }
+                                    | UpdateTheRendering { .. }
+                                    | RunWindowTimer { .. }
+                                    | CompleteDocumentFetch { .. }
+                                    | FailDocumentFetch { .. }
+                            );
+                            match process.handle_command(command) {
+                                Ok(true) => {
+                                    if notify {
+                                        let _ = process.note_command_completed();
+                                    }
                                 }
-                            }
-                            Ok(false) => break,
-                            Err(error) => {
-                                error!("content error: {error}");
-                                if notify {
-                                    let _ = process.note_command_completed();
+                                Ok(false) => break,
+                                Err(error) => {
+                                    error!("content error: {error}");
+                                    if notify {
+                                        let _ = process.note_command_completed();
+                                    }
                                 }
                             }
                         }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
+                }
+                recv(wasm_rx) -> _ => {
+                    process.drain_all_pending_wasm_requests();
+                    process.drain_wasm_results();
                 }
             }
-            recv(wasm_rx) -> _ => {
-                process.drain_all_pending_wasm_requests();
-                process.drain_wasm_results();
-            }
         }
-    }
 
-    process.drain_wasm_results();
-    Ok(())
+        process.drain_wasm_results();
+        Ok(())
+    })
 }
 
 pub fn run_content_process_from_args() -> Result<(), String> {

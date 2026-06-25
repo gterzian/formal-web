@@ -1,15 +1,14 @@
 mod event_loop;
 mod fetch;
 pub(crate) mod ipc_manifest;
-pub(crate) mod media;
 mod timer;
 
 use blitz_traits::shell::ColorScheme;
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
 use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
-    BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentFetchId, DocumentId,
-    EventLoopId, FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
+    BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentId,
+    EventLoopId, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
     NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage, WindowTimerKey,
@@ -32,8 +31,6 @@ use crate::event_loop::{
     EventLoopCommand, EventLoopEntry, spawn_event_loop_entry, stop_event_loop_entry,
     traversable_viewport_command,
 };
-use crate::fetch::{FetchCommand, run_fetch_thread};
-use crate::media::{MediaCommand, run_media_thread};
 use crate::timer::{TimerCommand, run_timer_thread};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 
@@ -397,15 +394,14 @@ impl NavigationRequest {
         }
     }
 
-    /// translating the user-agent's navigation request model into the
-    /// content-side fetch request transport. The handler_id in ContentFetchRequest is
-    /// unused for navigation fetches; a placeholder DocumentFetchId is generated.
-    fn to_content_fetch_request(&self) -> ContentFetchRequest {
-        ContentFetchRequest {
-            handler_id: DocumentFetchId::new(),
+    /// Convert to the navigation fetch request type used for IPC with the net extension.
+    fn to_navigation_fetch_request(&self) -> ipc_messages::network::NavigationFetchRequest {
+        ipc_messages::network::NavigationFetchRequest {
             url: self.url.clone(),
             method: self.method.clone(),
-            body: self.body.clone().unwrap_or_default(),
+            body: self.body.clone(),
+            referrer: self.referrer.clone(),
+            referrer_policy: self.referrer_policy.clone(),
         }
     }
 }
@@ -875,15 +871,6 @@ pub enum UserAgentCommand {
     RenderingOpportunityFor {
         traversable_id: NavigableId,
     },
-    DocumentFetchCompleted {
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-        response: ContentFetchResponse,
-    },
-    DocumentFetchFailed {
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-    },
     NavigationFetchCompleted {
         fetch_id: NavigationFetchId,
         response: ContentFetchResponse,
@@ -892,14 +879,11 @@ pub enum UserAgentCommand {
         url: String,
         document_id: DocumentId,
         traversable_id: NavigableId,
+        pipeline_id: MediaPipelineId,
         video_paint_id: VideoPaintId,
     },
     NavigationFetchFailed {
         fetch_id: NavigationFetchId,
-    },
-    DocumentFetchTimeout {
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
     },
     WindowTimerTask {
         event_loop_id: EventLoopId,
@@ -918,8 +902,6 @@ pub enum UserAgentCommand {
     Shutdown {
         reply: Sender<Result<(), String>>,
     },
-    /// A media event from the media process (frames, EOS, errors, duration changes).
-    MediaEvent(ipc_messages::media::MediaEvent),
 }
 
 /// Public handle to the dedicated user-agent thread that owns browser-global state and worker
@@ -1249,31 +1231,24 @@ fn find_navigable_by_target_name(state: &UserAgentState, target_name: &str) -> O
 
 /// user-agent thread coordinates.
 struct UserAgentWorker {
-    /// Spec-facing browser state plus the indices that make the implementation route
-    /// commands quickly.
     state: UserAgentState,
-    /// Sender cloned into worker threads and embedder handles so all browser coordination funnels
-    /// back through the single user-agent command loop.
     command_sender: Sender<UserAgentCommand>,
-    /// Receiver for browser, embedder, automation, fetch, timer, and content-originated commands.
     command_receiver: Receiver<UserAgentCommand>,
-    /// Sender for the dedicated fetch worker that owns the network sidecar bridge.
-    fetch_command_sender: Sender<FetchCommand>,
-    /// Join handle for the fetch worker thread during shutdown.
-    fetch_join_handle: Option<JoinHandle<()>>,
-    /// Sender for the dedicated timer worker that owns the timer heap/map state.
+    /// Owns the IPC connection to the net extension and tracks pending navigation fetches.
+    net_connection: crate::fetch::NetConnection,
     timer_command_sender: Sender<TimerCommand>,
-    /// Join handle for the timer worker thread during shutdown.
     timer_join_handle: Option<JoinHandle<()>>,
-    /// Sender for the dedicated media worker that owns the media sidecar bridge.
-    media_command_sender: Sender<MediaCommand>,
-    /// Join handle for the media worker thread during shutdown.
-    media_join_handle: Option<JoinHandle<()>>,
+    /// Crossbeam proxy for media extension events.
+    media_event_receiver:
+        crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
+    /// Child process handle for the media process.
+    media_child: Option<std::process::Child>,
+    /// IPC sender to the media extension (for direct content connections).
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// Maps media pipeline IDs to their owning webview and paint ID, so that
     /// incoming video frames can be routed to the correct compositor slot.
     pipeline_to_webview: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
-    /// Monotonic counter for assigning pipeline IDs.
-    next_pipeline_id: u64,
+
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
     /// Sender for webview-provider updates that must be drained by host sync calls.
@@ -1296,19 +1271,8 @@ impl UserAgentWorker {
         webview_provider_sender: Sender<WebviewProviderMessage>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
-        let (fetch_command_sender, fetch_command_receiver) = unbounded();
-        let fetch_user_agent_command_sender = user_agent_command_sender.clone();
-        let fetch_trace_sender = trace_sender.clone();
-        let fetch_join_handle = thread::Builder::new()
-            .name(String::from("formal-web:fetch"))
-            .spawn(move || {
-                run_fetch_thread(
-                    fetch_command_receiver,
-                    fetch_user_agent_command_sender,
-                    fetch_trace_sender,
-                )
-            })
-            .unwrap_or_else(|error| panic!("failed to spawn formal-web-fetch thread: {error}"));
+        let net_connection = crate::fetch::NetConnection::new(trace_sender.clone())
+            .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
         let (timer_command_sender, timer_command_receiver) = unbounded();
         let timer_user_agent_command_sender = user_agent_command_sender.clone();
         let timer_trace_sender = trace_sender.clone();
@@ -1323,37 +1287,41 @@ impl UserAgentWorker {
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
-        let (media_command_sender, media_command_receiver) = unbounded();
         #[cfg(feature = "media")]
-        let media_join_handle = {
-            let media_user_agent_command_sender = user_agent_command_sender.clone();
-            Some(
-                thread::Builder::new()
-                    .name(String::from("formal-web:media"))
-                    .spawn(move || {
-                        run_media_thread(media_command_receiver, media_user_agent_command_sender)
-                    })
-                    .unwrap_or_else(|error| {
-                        panic!("failed to spawn formal-web-media thread: {error}")
-                    }),
-            )
+        let (media_extension_sender, media_event_receiver, media_child) = {
+            use crate::ipc_manifest::MediaExtensionManifest;
+            let (mut handle, connection) = ipc::ExtensionHandle::launch::<
+                MediaExtensionManifest,
+                ipc_messages::media::MediaCommand,
+                ipc_messages::media::MediaEvent,
+            >(&MediaExtensionManifest)
+            .unwrap_or_else(|error| panic!("failed to start media extension: {error}"));
+            let sender = connection.sender.clone();
+            let receiver = connection.receiver;
+            let child = handle.take_child();
+            (Some(sender), ipc::crossbeam_proxy(receiver), child)
         };
-        // When media feature is disabled, never start the media thread.
         #[cfg(not(feature = "media"))]
-        let media_join_handle: Option<thread::JoinHandle<()>> = None;
+        let (media_extension_sender, media_event_receiver, media_child): (
+            Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+            crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
+            Option<std::process::Child>,
+        ) = {
+            let (dummy_tx, dummy_rx) = crossbeam_channel::unbounded();
+            drop(dummy_tx);
+            (None, dummy_rx, None)
+        };
 
         Self {
             state: UserAgentState::default(),
             command_sender: user_agent_command_sender.clone(),
             command_receiver,
-            fetch_command_sender,
-            fetch_join_handle: Some(fetch_join_handle),
+            net_connection,
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
-            media_command_sender,
+            media_event_receiver,
+            media_child,
             pipeline_to_webview: HashMap::new(),
-            next_pipeline_id: 0,
-            media_join_handle,
             host,
             webview_provider_sender,
             navigation_tracer: TLATracer::new(
@@ -1363,141 +1331,162 @@ impl UserAgentWorker {
             ),
             trace_sender,
             next_automation_request_id: 1,
+            media_extension_sender,
         }
     }
 
     /// the top-level command loop that owns browser-global coordination.
+    /// Also processes net responses (navigation fetch results) via `select!`.
     fn run(&mut self) {
-        while let Ok(command) = self.command_receiver.recv() {
-            match command {
-                UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
-                    self.create_a_fresh_top_level_traversable(destination_url);
-                }
-                UserAgentCommand::Navigate {
-                    event_loop_id,
-                    request,
-                } => {
-                    self.handle_navigate(event_loop_id, request);
-                }
-                UserAgentCommand::CompleteBeforeUnload { result } => {
-                    self.handle_complete_before_unload(result);
-                }
-                UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
-                    self.handle_finalize_cross_document_navigation(finalized);
-                }
-                UserAgentCommand::ClickElement {
-                    traversable_id,
-                    selector,
-                    reply,
-                } => {
-                    self.handle_click_element(traversable_id, selector, reply);
-                }
-                UserAgentCommand::EvaluateScript {
-                    traversable_id,
-                    source,
-                    timeout,
-                    reply,
-                } => {
-                    self.handle_evaluate_script(traversable_id, source, timeout, reply);
-                }
-                UserAgentCommand::BroadcastViewport { snapshot } => {
-                    self.handle_set_default_viewport(snapshot);
-                }
-                UserAgentCommand::SetTraversableViewport {
-                    traversable_id,
-                    snapshot,
-                    offset_x,
-                    offset_y,
-                } => {
-                    self.handle_set_traversable_viewport(
+        loop {
+            select! {
+                    recv(self.command_receiver) -> command => {
+                        let Ok(command) = command else { break; };
+                        match command {
+                    UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
+                        self.create_a_fresh_top_level_traversable(destination_url);
+                    }
+                    UserAgentCommand::Navigate {
+                        event_loop_id,
+                        request,
+                    } => {
+                        self.handle_navigate(event_loop_id, request);
+                    }
+                    UserAgentCommand::CompleteBeforeUnload { result } => {
+                        self.handle_complete_before_unload(result);
+                    }
+                    UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
+                        self.handle_finalize_cross_document_navigation(finalized);
+                    }
+                    UserAgentCommand::ClickElement {
+                        traversable_id,
+                        selector,
+                        reply,
+                    } => {
+                        self.handle_click_element(traversable_id, selector, reply);
+                    }
+                    UserAgentCommand::EvaluateScript {
+                        traversable_id,
+                        source,
+                        timeout,
+                        reply,
+                    } => {
+                        self.handle_evaluate_script(traversable_id, source, timeout, reply);
+                    }
+                    UserAgentCommand::BroadcastViewport { snapshot } => {
+                        self.handle_set_default_viewport(snapshot);
+                    }
+                    UserAgentCommand::SetTraversableViewport {
                         traversable_id,
                         snapshot,
                         offset_x,
                         offset_y,
-                    );
-                }
-                UserAgentCommand::DispatchEventFor {
-                    traversable_id,
-                    event,
-                } => {
-                    self.handle_dispatch_event_for(traversable_id, event);
-                }
-                UserAgentCommand::RenderingOpportunityFor { traversable_id } => {
-                    self.handle_rendering_opportunity_for(traversable_id);
-                }
-                UserAgentCommand::DocumentFetchCompleted {
-                    event_loop_id,
-                    handler_id,
-                    response,
-                } => {
-                    self.handle_document_fetch_completed(event_loop_id, handler_id, response);
-                }
-                UserAgentCommand::DocumentFetchFailed {
-                    event_loop_id,
-                    handler_id,
-                } => {
-                    self.handle_document_fetch_failed(event_loop_id, handler_id);
-                }
-                UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
-                    self.handle_navigation_fetch_completed(fetch_id, response);
-                }
-                UserAgentCommand::NavigationFetchFailed { fetch_id } => {
-                    self.handle_navigation_fetch_failed(fetch_id);
-                }
-                UserAgentCommand::DocumentFetchTimeout {
-                    event_loop_id,
-                    handler_id,
-                } => {
-                    self.handle_document_fetch_timeout(event_loop_id, handler_id);
-                }
-                UserAgentCommand::WindowTimerTask {
-                    event_loop_id,
-                    document_id,
-                    timer_id,
-                    timer_key,
-                    nesting_level,
-                } => {
-                    self.handle_window_timer_task(
+                    } => {
+                        self.handle_set_traversable_viewport(
+                            traversable_id,
+                            snapshot,
+                            offset_x,
+                            offset_y,
+                        );
+                    }
+                    UserAgentCommand::DispatchEventFor {
+                        traversable_id,
+                        event,
+                    } => {
+                        self.handle_dispatch_event_for(traversable_id, event);
+                    }
+                    UserAgentCommand::RenderingOpportunityFor { traversable_id } => {
+                        self.handle_rendering_opportunity_for(traversable_id);
+                    }
+                    UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
+                        self.handle_navigation_fetch_completed(fetch_id, response);
+                    }
+                    UserAgentCommand::NavigationFetchFailed { fetch_id } => {
+                        self.handle_navigation_fetch_failed(fetch_id);
+                    }
+                    UserAgentCommand::WindowTimerTask {
                         event_loop_id,
                         document_id,
                         timer_id,
                         timer_key,
                         nesting_level,
-                    );
-                }
+                    } => {
+                        self.handle_window_timer_task(
+                            event_loop_id,
+                            document_id,
+                            timer_id,
+                            timer_key,
+                            nesting_level,
+                        );
+                    }
 
-                UserAgentCommand::MediaLoadRequested {
-                    url,
-                    document_id: _document_id,
-                    traversable_id,
-                    video_paint_id,
-                } => {
-                    debug!(
-                        "[media] UA received MediaLoadRequested url={} traversable={}",
-                        url, traversable_id
-                    );
-                    self.handle_media_load_requested(url, traversable_id, video_paint_id);
-                }
-                UserAgentCommand::IframeTraversableRemoved {
-                    parent_traversable_id,
-                    content_navigable_id,
-                    content_frame_id,
-                    reply,
-                } => {
-                    self.handle_iframe_traversable_removed(
+                    UserAgentCommand::MediaLoadRequested {
+                        url,
+                        document_id: _document_id,
+                        traversable_id,
+                        pipeline_id,
+                        video_paint_id,
+                    } => {
+                        debug!(
+                            "[media] registering pipeline url={} traversable={}",
+                            url, traversable_id
+                        );
+                        self.register_media_pipeline(
+                            pipeline_id,
+                            traversable_id,
+                            video_paint_id,
+                        );
+                    }
+                    UserAgentCommand::IframeTraversableRemoved {
                         parent_traversable_id,
                         content_navigable_id,
                         content_frame_id,
                         reply,
-                    );
+                    } => {
+                        self.handle_iframe_traversable_removed(
+                            parent_traversable_id,
+                            content_navigable_id,
+                            content_frame_id,
+                            reply,
+                        );
+                    }
+                    UserAgentCommand::Shutdown { reply } => {
+                        self.handle_shutdown(reply);
+                        break;
+                    }
                 }
-                UserAgentCommand::Shutdown { reply } => {
-                    self.handle_shutdown(reply);
-                    break;
+            }
+                    recv(self.net_connection.receiver()) -> response => {
+                        let Ok(incoming) = response else { break; };
+                        self.handle_net_navigation_response(incoming.payload);
+                    }
+                    recv(self.media_event_receiver) -> event => {
+                        let Ok(mut incoming) = event else { break; };
+                        // Extract video frame data from shared memory before forwarding.
+                        if let ipc_messages::media::MediaEvent::Frame(video_frame) = &mut incoming.payload {
+                            if let Some(region) = incoming.shmem_regions.get(&0) {
+                                video_frame.data = region.as_slice().to_vec();
+                            }
+                        }
+                        self.handle_media_event(incoming.payload);
+                    }
                 }
-                UserAgentCommand::MediaEvent(event) => {
-                    self.handle_media_event(event);
-                }
+        }
+    }
+
+    /// Handle a navigation fetch response received directly from the net process.
+    fn handle_net_navigation_response(&mut self, response: ipc_messages::network::Response) {
+        let Some((fetch_id, result)) = self.net_connection.handle_response(response) else {
+            return;
+        };
+
+        match result {
+            Ok(fetch_response) => {
+                self.handle_navigation_fetch_completed(fetch_id, fetch_response);
+            }
+            Err(error) => {
+                log::error!("navigation fetch failed: {error}");
+                self.handle_navigation_fetch_failed(fetch_id);
             }
         }
     }
@@ -1554,11 +1543,12 @@ impl UserAgentWorker {
             event_loop_id,
             process_label,
             self.command_sender.clone(),
-            self.fetch_command_sender.clone(),
             self.timer_command_sender.clone(),
             self.host.clone(),
             self.webview_provider_sender.clone(),
             self.trace_sender.clone(),
+            self.net_connection.sender(),
+            self.media_extension_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
@@ -2027,18 +2017,15 @@ impl UserAgentWorker {
                 user_involvement: user_involvement.clone(),
             });
         if let Err(error) = self
-            .fetch_command_sender
-            .send(FetchCommand::StartNavigationFetch {
-                fetch_id,
-                request: request.to_content_fetch_request(),
-            })
+            .net_connection
+            .start_navigation_fetch(fetch_id, request.to_navigation_fetch_request())
         {
             let _ = self
                 .state
                 .take_pending_navigation_fetch_by_navigation_id(navigation_id);
             self.state
                 .set_navigable_ongoing_navigation(traversable_id, None);
-            return Err(format!("failed to start navigation fetch: {error}"));
+            return Err(error);
         }
 
         Ok(())
@@ -3220,45 +3207,6 @@ impl UserAgentWorker {
     }
 
     /// resuming an event-loop-local document fetch after the fetch worker succeeds.
-    fn handle_document_fetch_completed(
-        &mut self,
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-        response: ContentFetchResponse,
-    ) {
-        let _ = self.timer_command_sender.send(TimerCommand::Clear {
-            timer_key: handler_id.0,
-        });
-        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
-            return;
-        };
-        let command = ContentCommand::CompleteDocumentFetch {
-            handler_id,
-            response,
-        };
-        let _ = entry
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
-    }
-
-    /// failing an event-loop-local document fetch after the fetch worker fails.
-    fn handle_document_fetch_failed(
-        &mut self,
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-    ) {
-        let _ = self.timer_command_sender.send(TimerCommand::Clear {
-            timer_key: handler_id.0,
-        });
-        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
-            return;
-        };
-        let command = ContentCommand::FailDocumentFetch { handler_id };
-        let _ = entry
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
-    }
-
     /// <https://html.spec.whatwg.org/multipage/#attempt-to-populate-the-history-entry's-document>
     fn handle_navigation_fetch_completed(
         &mut self,
@@ -3438,20 +3386,6 @@ impl UserAgentWorker {
     }
 
     /// the document-fetch watchdog fired by the timer worker.
-    fn handle_document_fetch_timeout(
-        &mut self,
-        event_loop_id: EventLoopId,
-        handler_id: DocumentFetchId,
-    ) {
-        let Some(entry) = self.state.event_loops.get(&event_loop_id) else {
-            return;
-        };
-        let command = ContentCommand::FailDocumentFetch { handler_id };
-        let _ = entry
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
-    }
-
     /// <https://html.spec.whatwg.org/multipage/#timers>
     fn handle_window_timer_task(
         &mut self,
@@ -3601,20 +3535,7 @@ impl UserAgentWorker {
             }
         }
 
-        let (fetch_reply_sender, fetch_reply_receiver) = bounded(1);
-        if let Err(error) = self.fetch_command_sender.send(FetchCommand::Shutdown {
-            reply: fetch_reply_sender,
-        }) {
-            shutdown_result = Err(format!("failed to request fetch shutdown: {error}"));
-        } else if let Err(error) = fetch_reply_receiver.recv() {
-            shutdown_result = Err(format!("fetch shutdown reply channel closed: {error}"));
-        }
-
-        if let Some(fetch_join_handle) = self.fetch_join_handle.take()
-            && fetch_join_handle.join().is_err()
-        {
-            shutdown_result = Err(String::from("fetch thread panicked"));
-        }
+        self.net_connection.shutdown();
 
         let (timer_reply_sender, timer_reply_receiver) = bounded(1);
         if let Err(error) = self.timer_command_sender.send(TimerCommand::Shutdown {
@@ -3631,68 +3552,53 @@ impl UserAgentWorker {
             shutdown_result = Err(String::from("timer thread panicked"));
         }
 
-        // Shut down the media thread if it was started.
-        if self.media_join_handle.is_some() {
-            let (media_reply_sender, media_reply_receiver) = bounded(1);
-            if let Err(error) = self.media_command_sender.send(MediaCommand::Shutdown {
-                reply: media_reply_sender,
-            }) {
+        // Shut down the media extension directly.
+        if let Some(media_sender) = &self.media_extension_sender {
+            if let Err(error) = media_sender.send(ipc_messages::media::MediaCommand::Shutdown) {
                 shutdown_result = Err(format!("failed to request media shutdown: {error}"));
-            } else if let Err(error) = media_reply_receiver.recv() {
-                shutdown_result = Err(format!("media shutdown reply channel closed: {error}"));
             }
 
-            if let Some(media_join_handle) = self.media_join_handle.take()
-                && media_join_handle.join().is_err()
-            {
-                shutdown_result = Err(String::from("media thread panicked"));
+            if let Some(mut media_child) = self.media_child.take() {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+                loop {
+                    match media_child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {
+                            if std::time::Instant::now() >= deadline {
+                                let _ = media_child.kill();
+                                let _ = media_child.wait();
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(error) => {
+                            log::error!("failed to poll media process exit: {error}");
+                            let _ = media_child.kill();
+                            let _ = media_child.wait();
+                            break;
+                        }
+                    }
+                }
             }
         }
 
         let _ = reply.send(shutdown_result);
     }
 
-    /// Handle a MediaLoadRequested from the content process.
-    /// Creates a pipeline in the media process for the given URL.
-    ///
-    /// Note: Pipeline ID assignment is a placeholder — a proper allocator should
-    /// be added when multiple concurrent pipelines are supported.
-    fn handle_media_load_requested(
+    /// Register the pipeline→webview mapping for video frame routing.
+    fn register_media_pipeline(
         &mut self,
-        url: String,
+        pipeline_id: MediaPipelineId,
         traversable_id: NavigableId,
         video_paint_id: VideoPaintId,
     ) {
-        if self.media_join_handle.is_none() {
-            // No media worker thread — media support is disabled (media feature
-            // compiled out). Silently ignore.
-            debug!(
-                "[media] load requested but media disabled url={} traversable={}",
-                url, traversable_id.0,
-            );
-            return;
-        }
-        let pipeline_id = MediaPipelineId(self.next_pipeline_id);
-        self.next_pipeline_id += 1;
+        debug!(
+            "[media] registering pipeline mapping: pipeline={:?} traversable={} paint={:?}",
+            pipeline_id, traversable_id.0, video_paint_id,
+        );
         let webview_id = WebviewId(traversable_id);
         self.pipeline_to_webview
             .insert(pipeline_id, (webview_id, video_paint_id));
-        debug!(
-            "[media] load requested url={} traversable={} pipeline={:?} paint={:?}",
-            url, traversable_id.0, pipeline_id, video_paint_id,
-        );
-        if let Err(error) = self
-            .media_command_sender
-            .send(MediaCommand::CreatePipeline { pipeline_id, url })
-        {
-            error!("failed to send CreatePipeline to media worker: {error}");
-        }
-        if let Err(error) = self
-            .media_command_sender
-            .send(MediaCommand::Play { pipeline_id })
-        {
-            error!("failed to send Play to media worker: {error}");
-        }
     }
 
     /// Handle a MediaEvent from the media process.

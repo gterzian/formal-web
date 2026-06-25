@@ -244,14 +244,19 @@ pub struct DispatchEventEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// <https://html.spec.whatwg.org/#loading-the-media-resource>
-pub struct MediaLoadRequest {
+/// Notifies the user agent of a media pipeline that content already created
+/// directly with the media extension. The UA uses this mapping to route
+/// incoming video frames to the correct compositor slot.
+pub struct RegisterMediaPipeline {
     /// The URL of the media resource to load.
     pub url: String,
     /// The document requesting the load.
     pub document_id: DocumentId,
     /// The traversable containing the media element.
     pub traversable_id: NavigableId,
+    /// Pipeline ID assigned by content. Content sends CreatePipeline+Play
+    /// directly to the media extension; the UA uses this to route video frames.
+    pub pipeline_id: crate::media::MediaPipelineId,
     /// Paint-layer identifier assigned by content for the video element.
     /// Echoed in EmbedSite::Video so the compositor can route frames.
     pub video_paint_id: crate::media::VideoPaintId,
@@ -801,7 +806,6 @@ pub enum WebviewProviderMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
-    SetTraceSender(Option<TraceSender>),
     SetEventLoopId(EventLoopId),
     SetViewport(ViewportSnapshot),
     SetTraversableViewport(TraversableViewport),
@@ -862,12 +866,26 @@ pub enum Command {
     FailDocumentFetch {
         handler_id: DocumentFetchId,
     },
+    /// Combined bootstrap message, sent as the first command.
+    /// Content blocks on `cmd_rx` for this before entering its event loop.
+    /// Carries net/media senders, the content process's own command sender (for
+    /// direct net→content response routing), the TLA trace sender, and initial
+    /// configuration.
+    ContentBootstrap {
+        net_sender: ipc::IpcSender<crate::network::Request>,
+        media_sender: Option<ipc::IpcSender<crate::media::MediaCommand>>,
+        /// The content process's own command sender. Net uses this to route
+        /// `CompleteDocumentFetch` directly to this content process.
+        content_command_sender: ipc::IpcSender<Command>,
+        /// TLA trace sender for logging spec-level events from the content process
+        /// (e.g. RunBeforeUnload).
+        trace_sender: Option<TraceSender>,
+    },
     Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
-    DocumentFetchRequested(FetchRequest),
     WindowTimerRequested(WindowTimerRequest),
     WindowTimerCleared(WindowTimerClearRequest),
     NavigationRequested(NavigateRequest),
@@ -880,7 +898,7 @@ pub enum Event {
     /// This is fire-and-forget — no reply is sent.
     ClipboardWriteRequested(ClipboardWriteRequested),
     CommandCompleted,
-    MediaLoadRequested(MediaLoadRequest),
+    RegisterMediaPipeline(RegisterMediaPipeline),
     PaintReady(PaintFrame),
     ShutdownCompleted,
 }

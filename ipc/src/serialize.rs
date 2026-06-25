@@ -1,9 +1,8 @@
 //! Serialization traits for IPC message types.
 //!
-//! On both backends, messages are serialized with postcard and carried
-//! either through typed channels (ipc-channel) or as XPC dictionary data
-//! (native XPC). This means `IpcSerialize` and `IpcDeserialize` are
-//! the same as serde's `Serialize` and `DeserializeOwned` on both backends.
+//! On both backends, messages are serialized with postcard.
+//! `IpcSerialize` and `IpcDeserialize` are re-exports of serde's
+//! `Serialize` and `DeserializeOwned` respectively.
 
 /// Trait for types that can be serialized for IPC transport.
 pub use serde::Serialize as IpcSerialize;

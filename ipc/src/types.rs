@@ -1,14 +1,8 @@
-//! Public types for the IPC abstraction layer.
-//!
-//! These types are backend-agnostic. Both backends use serde + postcard
-//! for serialization.
-
 use std::collections::HashMap;
+use std::time::Duration;
 
-use crossbeam_channel::Receiver;
-use ipc_channel::ipc::IpcSharedMemory;
-use serde::{Serialize, de::DeserializeOwned};
-
+use ipc_channel::ipc::{self as ipc_ch, IpcSharedMemory};
+use ipc_channel::router::ROUTER;
 use crate::IpcError;
 
 /// An opaque token representing a bootstrap server address.
@@ -41,8 +35,6 @@ pub enum ExtensionEndpoint {
 pub trait ExtensionManifest {
     fn endpoint(&self) -> ExtensionEndpoint;
 
-    /// Spawn the extension process, passing the bootstrap token via argv.
-    /// On the native backend, this is a no-op (launchd manages lifecycle).
     fn spawn(&self, _token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
         Err(IpcError::Transport(
             "spawn not available on this backend; launchd manages lifecycle".into(),
@@ -53,23 +45,13 @@ pub trait ExtensionManifest {
 // ── IpcSender ───────────────────────────────────────────────────────────────
 
 /// Transport-agnostic sender for messages to an extension process.
-///
-/// Wraps either an ipc-channel sender (for content in mixed mode, or all
-/// extensions in ipc-channel-backend mode) or an XPC connection (for net/media
-/// in mixed mode).
-#[derive(Clone)]
-pub struct IpcSender<T: Serialize + DeserializeOwned> {
+pub struct IpcSender<T: IpcSerialize + IpcDeserialize> {
     pub(crate) transport: IpcTransport<T>,
 }
 
-/// Wrapped IPC message that carries a payload and a map of shared memory
-/// regions indexed by `usize` keys.  On the ipc-channel backend the payload
-/// and shmem map are sent as a single serde message; the receiver unwraps
-/// them into `IpcIncoming`.
 pub(crate) type IpcChannelMessage<T> = (T, HashMap<usize, IpcSharedMemory>);
 
-#[derive(Clone)]
-pub(crate) enum IpcTransport<T: Serialize + DeserializeOwned> {
+pub(crate) enum IpcTransport<T: IpcSerialize + IpcDeserialize> {
     #[cfg_attr(not(feature = "ipc-channel-backend"), allow(dead_code))]
     IpcChannel(ipc_channel::ipc::IpcSender<IpcChannelMessage<T>>),
     #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
@@ -79,7 +61,84 @@ pub(crate) enum IpcTransport<T: Serialize + DeserializeOwned> {
     },
 }
 
-impl<T: Serialize + DeserializeOwned> IpcSender<T> {
+impl<T: IpcSerialize + IpcDeserialize + std::fmt::Debug> std::fmt::Debug for IpcTransport<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IpcTransport::IpcChannel(s) => write!(formatter, "IpcChannel({s:?})"),
+            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+            IpcTransport::Xpc { .. } => write!(formatter, "Xpc"),
+        }
+    }
+}
+
+impl<T: IpcSerialize + IpcDeserialize> Clone for IpcTransport<T> {
+    fn clone(&self) -> Self {
+        match self {
+            IpcTransport::IpcChannel(s) => IpcTransport::IpcChannel(s.clone()),
+            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+            IpcTransport::Xpc { connection, .. } => IpcTransport::Xpc {
+                connection: connection.clone(),
+                _marker: std::marker::PhantomData,
+            },
+        }
+    }
+}
+
+impl<T: IpcSerialize + IpcDeserialize + std::fmt::Debug> std::fmt::Debug for IpcSender<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.transport {
+            IpcTransport::IpcChannel(sender) => write!(formatter, "IpcSender({sender:?})"),
+        }
+    }
+}
+
+impl<T: IpcSerialize + IpcDeserialize> Clone for IpcSender<T> {
+    fn clone(&self) -> Self {
+        IpcSender {
+            transport: self.transport.clone(),
+        }
+    }
+}
+
+// IpcSender is serializable on the ipc-channel backend: the inner
+// ipc-channel IpcSender serializes its Mach port right, which the
+// receiver deserializes into a working sender in the target process.
+#[cfg(feature = "ipc-channel-backend")]
+impl<T: IpcSerialize + IpcDeserialize> serde::Serialize for IpcSender<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.transport {
+            IpcTransport::IpcChannel(sender) => sender.serialize(serializer),
+        }
+    }
+}
+
+#[cfg(feature = "ipc-channel-backend")]
+impl<'de, T: IpcSerialize + IpcDeserialize> serde::Deserialize<'de> for IpcSender<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let sender = ipc_channel::ipc::IpcSender::<IpcChannelMessage<T>>::deserialize(deserializer)?;
+        Ok(IpcSender {
+            transport: IpcTransport::IpcChannel(sender),
+        })
+    }
+}
+
+/// Create a paired sender and receiver for direct inter-process communication.
+///
+/// The sender and receiver form a channel pair.  One end can be sent
+/// to another process via `IpcSender`'s Serialize impl (Mach port rights
+/// are transferred through ipc-channel's serde layer).
+pub fn channel<T: IpcSerialize + IpcDeserialize>() -> Result<(IpcSender<T>, IpcReceiver<T>), IpcError> {
+    let (tx, rx) = ipc_ch::channel::<IpcChannelMessage<T>>().map_err(|error| {
+        IpcError::Transport(format!("failed to create IPC channel: {error}"))
+    })?;
+    let sender = IpcSender {
+        transport: IpcTransport::IpcChannel(tx),
+    };
+    let receiver = IpcReceiver::from_ipc_channel(rx);
+    Ok((sender, receiver))
+}
+
+impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
     pub fn send(&self, message: T) -> Result<(), IpcError> {
         match &self.transport {
             IpcTransport::IpcChannel(sender) => sender
@@ -97,17 +156,6 @@ impl<T: Serialize + DeserializeOwned> IpcSender<T> {
         }
     }
 
-    /// Send a message with a map of shared memory regions.
-    ///
-    /// On the ipc-channel backend, the payload and shmem map are wrapped
-    /// in a single serde message tuple `(T, HashMap<usize, IpcSharedMemory>)`
-    /// which the ipc-channel infrastructure transfers as Mach port / fd
-    /// handles (O(1) — no byte copying per region).
-    ///
-    /// On the XPC backend this is a fallback to `send()` — XPC shared memory
-    /// via `xpc_shmem_create` is unimplemented (the XPC backend is not used
-    /// for content or media, which are the only callers that transfer bulk
-    /// scene or video frame data).
     pub fn send_with_shmem_map(
         &self,
         message: T,
@@ -124,10 +172,292 @@ impl<T: Serialize + DeserializeOwned> IpcSender<T> {
                     .map_err(|error| IpcError::Transport(error.to_string()))
             }
             #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-            IpcTransport::Xpc { .. } => {
-                // XPC shared memory via xpc_shmem_create is unimplemented.
-                self.send(message)
+            IpcTransport::Xpc { .. } => self.send(message),
+        }
+    }
+}
+
+// ── IpcReceiver ─────────────────────────────────────────────────────────────
+
+/// Transport-agnostic receiver for messages from an extension process.
+///
+/// On the ipc-channel backend this wraps the raw ipc-channel receiver.
+/// Use [`crate::crossbeam_proxy`] to bridge to a crossbeam channel
+/// if you need `select!`.
+pub struct IpcReceiver<T: IpcSerialize + IpcDeserialize> {
+    #[cfg(feature = "ipc-channel-backend")]
+    inner: ipc_channel::ipc::IpcReceiver<IpcChannelMessage<T>>,
+    #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+    _xpc_unimplemented: std::marker::PhantomData<T>,
+}
+
+impl<T: IpcSerialize + IpcDeserialize> std::fmt::Debug for IpcReceiver<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(feature = "ipc-channel-backend")]
+        {
+            write!(formatter, "IpcReceiver(<ipc-channel>)")
+        }
+        #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+        {
+            write!(formatter, "IpcReceiver(<xpc-unimplemented>)")
+        }
+    }
+}
+
+// SAFETY: wraps a Mach port handle which is trivially Send.
+#[cfg(feature = "ipc-channel-backend")]
+unsafe impl<T: IpcSerialize + IpcDeserialize> Send for IpcReceiver<T> {}
+
+impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
+    /// Block until a message arrives.
+    pub fn recv(&self) -> Result<IpcIncoming<T>, IpcError> {
+        #[cfg(feature = "ipc-channel-backend")]
+        {
+            let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) =
+                self.inner.recv().map_err(|_| IpcError::Disconnected)?;
+            let regions: HashMap<usize, IpcSharedRegion> = shmem_map
+                .into_iter()
+                .map(|(key, raw)| (key, IpcSharedRegion::from_ipc_shmem(raw)))
+                .collect();
+            Ok(IpcIncoming {
+                payload,
+                shmem_regions: regions,
+            })
+        }
+        #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+        {
+            Err(IpcError::Transport("XPC receiver not yet implemented".into()))
+        }
+    }
+
+    /// Block for up to `timeout`.
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<IpcIncoming<T>, IpcError> {
+        #[cfg(feature = "ipc-channel-backend")]
+        {
+            let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) =
+                self.inner.try_recv_timeout(timeout).map_err(|_| IpcError::Disconnected)?;
+            let regions: HashMap<usize, IpcSharedRegion> = shmem_map
+                .into_iter()
+                .map(|(key, raw)| (key, IpcSharedRegion::from_ipc_shmem(raw)))
+                .collect();
+            Ok(IpcIncoming {
+                payload,
+                shmem_regions: regions,
+            })
+        }
+        #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+        {
+            Err(IpcError::Transport("XPC receiver not yet implemented".into()))
+        }
+    }
+
+    /// Non-blocking receive.
+    pub fn try_recv(&self) -> Result<IpcIncoming<T>, IpcError> {
+        #[cfg(feature = "ipc-channel-backend")]
+        {
+            let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) =
+                self.inner.try_recv().map_err(|_| IpcError::Disconnected)?;
+            let regions: HashMap<usize, IpcSharedRegion> = shmem_map
+                .into_iter()
+                .map(|(key, raw)| (key, IpcSharedRegion::from_ipc_shmem(raw)))
+                .collect();
+            Ok(IpcIncoming {
+                payload,
+                shmem_regions: regions,
+            })
+        }
+        #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+        {
+            Err(IpcError::Transport("XPC receiver not yet implemented".into()))
+        }
+    }
+
+    /// Internal: create from a raw ipc-channel receiver.
+    #[cfg(feature = "ipc-channel-backend")]
+    pub(crate) fn from_ipc_channel(rx: ipc_channel::ipc::IpcReceiver<IpcChannelMessage<T>>) -> Self {
+        IpcReceiver { inner: rx }
+    }
+
+    /// Consume and return the inner ipc-channel receiver.
+    #[cfg(feature = "ipc-channel-backend")]
+    pub(crate) fn into_inner(self) -> ipc_channel::ipc::IpcReceiver<IpcChannelMessage<T>> {
+        self.inner
+    }
+}
+
+#[cfg(feature = "ipc-channel-backend")]
+impl<T: IpcSerialize + IpcDeserialize> serde::Serialize for IpcReceiver<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.inner.serialize(serializer)
+    }
+}
+
+#[cfg(feature = "ipc-channel-backend")]
+impl<'de, T: IpcSerialize + IpcDeserialize> serde::Deserialize<'de> for IpcReceiver<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let rx = ipc_channel::ipc::IpcReceiver::<IpcChannelMessage<T>>::deserialize(deserializer)?;
+        Ok(IpcReceiver { inner: rx })
+    }
+}
+
+/// Bridge an [`IpcReceiver`] to a `crossbeam_channel::Receiver` for use
+/// with `select!`.
+///
+/// On the ipc-channel backend this uses the ipc-channel ROUTER to forward
+/// messages without spawning a thread.  On the XPC backend this is not yet
+/// implemented and panics.
+/// Bridge an [`IpcReceiver`] to a `crossbeam_channel::Receiver` for use
+/// with `select!`.
+///
+/// On the ipc-channel backend this registers the raw ipc-channel receiver
+/// with the ipc-channel ROUTER (no thread).  On other backends a forwarding
+/// thread is spawned.
+#[cfg(feature = "ipc-channel-backend")]
+pub fn crossbeam_proxy<T: IpcSerialize + IpcDeserialize + Send + 'static>(
+    receiver: IpcReceiver<T>,
+) -> crossbeam_channel::Receiver<IpcIncoming<T>> {
+    let rx = receiver.into_inner();
+    let (crossbeam_tx, crossbeam_rx) = crossbeam_channel::unbounded();
+    ROUTER.add_typed_route(
+        rx,
+        Box::new(
+            move |message: Result<
+                (T, std::collections::HashMap<usize, IpcSharedMemory>),
+                _,
+            >| {
+                if let Ok((payload, shmem_map)) = message {
+                    let regions: std::collections::HashMap<usize, IpcSharedRegion> = shmem_map
+                        .into_iter()
+                        .map(|(key, raw)| (key, IpcSharedRegion::from_ipc_shmem(raw)))
+                        .collect();
+                    let incoming = IpcIncoming {
+                        payload,
+                        shmem_regions: regions,
+                    };
+                    let _ = crossbeam_tx.send(incoming);
+                }
+            },
+        ),
+    );
+    crossbeam_rx
+}
+
+/// Bridge an [`IpcReceiver`] to a `crossbeam_channel::Receiver` for use
+/// with `select!`.
+///
+/// On non-ipc-channel backends this spawns a forwarding thread.
+#[cfg(not(feature = "ipc-channel-backend"))]
+pub fn crossbeam_proxy<T: IpcSerialize + IpcDeserialize + Send + 'static>(
+    receiver: IpcReceiver<T>,
+) -> crossbeam_channel::Receiver<IpcIncoming<T>> {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    std::thread::Builder::new()
+        .name("formal-web:ipc-crossbeam-proxy".into())
+        .spawn(move || loop {
+            match receiver.recv() {
+                Ok(msg) => {
+                    if tx.send(msg).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
             }
+        })
+        .expect("failed to spawn crossbeam proxy thread");
+    rx
+}
+
+// ── IpcConnection ──────────────────────────────────────────────────────────
+
+/// A single bidirectional IPC connection to an extension process.
+pub struct IpcConnection<Out: IpcSerialize + IpcDeserialize, In: IpcSerialize + IpcDeserialize> {
+    pub sender: IpcSender<Out>,
+    pub receiver: IpcReceiver<In>,
+}
+
+impl<Out: IpcSerialize + IpcDeserialize, In: IpcSerialize + IpcDeserialize> IpcConnection<Out, In> {
+    pub fn new(sender: IpcSender<Out>, receiver: IpcReceiver<In>) -> Self {
+        IpcConnection { sender, receiver }
+    }
+
+    pub fn into_split(self) -> (IpcSender<Out>, IpcReceiver<In>) {
+        (self.sender, self.receiver)
+    }
+}
+
+// ── ExtensionHandle ─────────────────────────────────────────────────────────
+
+/// A handle to a launched extension process.
+pub struct ExtensionHandle {
+    pub(crate) inner: ExtensionHandleImpl,
+}
+
+pub(crate) enum ExtensionHandleImpl {
+    IpcChannel {
+        child: Option<std::process::Child>,
+        _bootstrap_token: String,
+    },
+    #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+    XpcSingleton {
+        service_name: &'static str,
+    },
+    #[cfg(feature = "bek")]
+    Bek,
+}
+
+impl ExtensionHandle {
+    /// Start an extension process from its manifest.
+    pub fn launch<M, Out, In>(
+        manifest: &M,
+    ) -> Result<(Self, IpcConnection<Out, In>), IpcError>
+    where
+        M: ExtensionManifest,
+        Out: IpcSerialize + IpcDeserialize + Send + 'static,
+        In: IpcSerialize + IpcDeserialize + Send + 'static,
+    {
+        #[cfg(feature = "ipc-channel-backend")]
+        {
+            crate::backend::ipc_channel::launch_extension(manifest)
+        }
+        #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+        {
+            crate::backend::xpc::launch_extension(manifest)
+        }
+        #[cfg(all(not(feature = "ipc-channel-backend"), not(target_vendor = "apple")))]
+        {
+            let _ = manifest;
+            Err(IpcError::Transport(
+                "no IPC backend available on this platform".into(),
+            ))
+        }
+    }
+
+    /// Extract the child process handle, if any.
+    ///
+    /// Note: prefer using [`invalidate`](Self::invalidate) for shutdown.
+    /// This method exists because some callers need the raw `Child` handle
+    /// for status polling during error recovery.
+    pub fn take_child(&mut self) -> Option<std::process::Child> {
+        match &mut self.inner {
+            ExtensionHandleImpl::IpcChannel { child, .. } => child.take(),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+
+    /// Stop the extension process.
+    pub fn invalidate(self) {
+        match self.inner {
+            ExtensionHandleImpl::IpcChannel { child, .. } => {
+                if let Some(mut child) = child {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+            ExtensionHandleImpl::XpcSingleton { .. } => {}
+            #[cfg(feature = "bek")]
+            ExtensionHandleImpl::Bek => {}
         }
     }
 }
@@ -137,9 +467,6 @@ impl<T: Serialize + DeserializeOwned> IpcSender<T> {
 /// An incoming message from an extension process.
 pub struct IpcIncoming<T> {
     pub payload: T,
-    /// Shared memory regions indexed by `usize` keys.  The message payload
-    /// carries matching `usize` keys that the receiver uses to look up the
-    /// corresponding data.
     pub shmem_regions: HashMap<usize, IpcSharedRegion>,
 }
 
@@ -154,7 +481,6 @@ impl<T> IpcIncoming<T> {
 
 // ── IpcSharedRegion ─────────────────────────────────────────────────────────
 
-/// A shared memory region for bulk data transport.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IpcSharedRegion(ipc_channel::ipc::IpcSharedMemory);
 
@@ -164,7 +490,6 @@ impl IpcSharedRegion {
         Ok(IpcSharedRegion(shmem))
     }
 
-    /// Create from bytes by copying into a new shared memory region.
     pub fn from_bytes(bytes: &[u8]) -> Self {
         IpcSharedRegion(ipc_channel::ipc::IpcSharedMemory::from_bytes(bytes))
     }
@@ -174,50 +499,48 @@ impl IpcSharedRegion {
         self.0.deref()
     }
 
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { self.0.deref_mut() }
-    }
-
     pub fn size(&self) -> usize {
         self.0.len()
     }
 
-    /// Consume and return the inner `IpcSharedMemory`.
     pub(crate) fn into_inner(self) -> ipc_channel::ipc::IpcSharedMemory {
         self.0
     }
 
-    /// Wrap an `IpcSharedMemory` received from the ipc-channel backend.
     #[cfg_attr(not(feature = "ipc-channel-backend"), allow(dead_code))]
     pub(crate) fn from_ipc_shmem(shmem: ipc_channel::ipc::IpcSharedMemory) -> Self {
         IpcSharedRegion(shmem)
     }
 }
 
-// ── ExtensionClient ─────────────────────────────────────────────────────────
-
-/// Client handle obtained by the parent process after starting an extension.
-pub struct ExtensionClient<
-    Out: Serialize + DeserializeOwned + 'static,
-    In: DeserializeOwned + Serialize + 'static,
-> {
-    pub tx: IpcSender<Out>,
-    pub rx: Receiver<IpcIncoming<In>>,
-    pub child: Option<std::process::Child>,
-}
-
 // ── ExtensionServer ─────────────────────────────────────────────────────────
 
 /// Server handle obtained by the extension process on startup.
 pub struct ExtensionServer<
-    Out: Serialize + DeserializeOwned + 'static,
-    In: DeserializeOwned + Serialize + 'static,
+    In: IpcSerialize + IpcDeserialize + 'static,
+    Out: IpcSerialize + IpcDeserialize + 'static,
 > {
-    pub tx: IpcSender<Out>,
-    pub rx: Receiver<IpcIncoming<In>>,
-    /// On the XPC backend, the listener connection must be kept alive
-    /// for the lifetime of the extension server. The ipc-channel backend
-    /// leaves this as None.
-    #[allow(dead_code)]
-    pub(crate) _listener: Option<xpc_sys::XpcConnection>,
+    pub connection: IpcConnection<In, Out>,
 }
+
+impl<
+        In: IpcSerialize + IpcDeserialize + 'static,
+        Out: IpcSerialize + IpcDeserialize + 'static,
+    > ExtensionServer<In, Out>
+{
+    pub fn new(connection: IpcConnection<In, Out>) -> Self {
+        ExtensionServer { connection }
+    }
+
+    pub fn sender(&self) -> &IpcSender<In> {
+        &self.connection.sender
+    }
+
+    pub fn receiver(&self) -> &IpcReceiver<Out> {
+        &self.connection.receiver
+    }
+}
+
+// Re-export serde traits.
+pub use serde::Serialize as IpcSerialize;
+pub use serde::de::DeserializeOwned as IpcDeserialize;

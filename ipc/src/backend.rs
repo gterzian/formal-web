@@ -1,92 +1,71 @@
-//! Backend implementations for the IPC abstraction.
-//!
-//! ## Backend selection
-//!
-//! When the `ipc-channel-backend` feature is enabled (default), all extensions
-//! use ipc-channel (Unix domain sockets + Mach ports). This works on all
-//! platforms.
-//!
-//! When the feature is disabled, only the native XPC backend is available
-//! (macOS only). Only Singleton launchd services (net, media) are supported.
-//! MultiInstance extensions (content) cannot use XPC because macOS AMFI
-//! rejects ad-hoc-signed embedded XPC services (error -423).
-
-use serde::{Serialize, de::DeserializeOwned};
-
+use crate::types::{
+    ExtensionHandle, ExtensionManifest, ExtensionServer, IpcConnection, IpcSerialize,
+};
 use crate::IpcError;
-use crate::types::{ExtensionClient, ExtensionManifest, ExtensionServer};
+use serde::de::DeserializeOwned;
 
-#[cfg(feature = "ipc-channel-backend")]
-mod ipc_channel;
+pub(crate) mod ipc_channel;
 
-// Only on Apple when NOT using ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-mod xpc;
+pub(crate) mod xpc;
 
-// No backend available on non-Apple without ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), not(target_vendor = "apple")))]
 compile_error!(
     "non-Apple builds require --features ipc-channel-backend \
      until a native Linux transport exists"
 );
 
-// ── start_extension ─────────────────────────────────────────────────────────
-
-pub fn start_extension<M, Out, In>(manifest: &M) -> Result<ExtensionClient<Out, In>, IpcError>
+/// Launch an extension process and return its handle plus the first connection.
+pub fn launch_extension<M, Out, In>(
+    manifest: &M,
+) -> Result<(ExtensionHandle, IpcConnection<Out, In>), IpcError>
 where
     M: ExtensionManifest,
-    Out: Serialize + DeserializeOwned + Send + 'static,
-    In: Serialize + DeserializeOwned + Send + 'static,
+    Out: IpcSerialize + DeserializeOwned + Send + 'static,
+    In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
     #[cfg(feature = "ipc-channel-backend")]
     {
-        ipc_channel::start_extension(manifest)
+        ipc_channel::launch_extension(manifest)
     }
     #[cfg(not(feature = "ipc-channel-backend"))]
     {
-        // XPC backend only supports Singleton launchd services (net, media).
-        // Content (MultiInstance) would require embedded XPC, which macOS
-        // AMFI rejects for ad-hoc-signed binaries.
         match manifest.endpoint() {
-            crate::types::ExtensionEndpoint::Singleton { .. } => xpc::start_extension(manifest),
+            crate::types::ExtensionEndpoint::Singleton { .. } => xpc::launch_extension(manifest),
             crate::types::ExtensionEndpoint::MultiInstance { .. } => {
-                unimplemented!(
-                    "XPC backend does not support MultiInstance (content) \
-                     extensions; use --features ipc-channel-backend"
-                )
+                unimplemented!("XPC backend does not support MultiInstance (content) extensions")
             }
         }
     }
 }
 
-// ── run_extension ───────────────────────────────────────────────────────────
-
-pub fn run_extension<M, Out, In>(
-    manifest: &M,
+/// Run an extension process.
+pub fn run_extension<Out, In>(
     token: &str,
-    service_name: &str,
+    run: impl FnOnce(ExtensionServer<In, Out>) -> Result<(), String>,
+) -> Result<(), String>
+where
+    Out: IpcSerialize + DeserializeOwned + Send + 'static,
+    In: IpcSerialize + DeserializeOwned + Send + 'static,
+{
+    let server = bootstrap_extension::<Out, In>(token)
+        .map_err(|error| format!("ipc bootstrap failed: {error}"))?;
+    run(server)
+}
+
+fn bootstrap_extension<Out, In>(
+    token: &str,
 ) -> Result<ExtensionServer<In, Out>, IpcError>
 where
-    M: ExtensionManifest,
-    Out: Serialize + DeserializeOwned + Send + 'static,
-    In: Serialize + DeserializeOwned + Send + 'static,
+    Out: IpcSerialize + DeserializeOwned + Send + 'static,
+    In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
     #[cfg(feature = "ipc-channel-backend")]
     {
-        ipc_channel::run_extension(manifest, token, service_name)
+        ipc_channel::run_extension::<Out, In>(token)
     }
-    #[cfg(not(feature = "ipc-channel-backend"))]
+    #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
     {
-        match manifest.endpoint() {
-            crate::types::ExtensionEndpoint::Singleton { .. } => {
-                xpc::run_extension(manifest, token, service_name)
-            }
-            crate::types::ExtensionEndpoint::MultiInstance { .. } => {
-                unimplemented!(
-                    "XPC backend does not support MultiInstance (content) \
-                     extensions; use --features ipc-channel-backend"
-                )
-            }
-        }
+        xpc::run_extension::<Out, In>(token)
     }
 }

@@ -10,7 +10,7 @@ use log::{debug, error};
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
-use ipc_messages::content::{Event as ContentEvent, MediaLoadRequest};
+use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::media::VideoPaintId;
 
 /// <https://html.spec.whatwg.org/#media-elements>
@@ -383,23 +383,58 @@ impl HTMLMediaElement {
                 // Note: Deferred to event dispatch — media element event task source not wired.
 
                 // Step 9 (mode = attribute): Fetch the media resource via the user agent.
-                // Send MediaLoadRequested IPC to start the in-parallel media resource fetch.
+                // Send CreatePipeline directly to the media extension, then notify the
+                // user agent of the pipeline→webview mapping for video frame routing.
                 if let (Some(event_sender), Some(traversable_id), Some(document_id)) =
                     (event_sender, traversable_id, document_id)
                 {
-                    let request = MediaLoadRequest {
-                        url: resolved_url.clone(),
-                        document_id,
-                        traversable_id,
-                        video_paint_id,
-                    };
-                    debug!(
-                        "[media] sending MediaLoadRequested url={} traversable={}",
-                        resolved_url, traversable_id
-                    );
-                    if let Err(error) = event_sender.send(ContentEvent::MediaLoadRequested(request))
-                    {
-                        error!("[media] failed to send MediaLoadRequested: {error}");
+                    // Allocate pipeline ID and send CreatePipeline+Play directly to media.
+                    let pipeline_id = with_global_scope(_ctx, |global_scope| {
+                        Ok(global_scope.allocate_media_pipeline_id())
+                    })
+                    .ok();
+
+                    if let Some(pipeline_id) = pipeline_id {
+                        // Send CreatePipeline + Play directly to the media extension.
+                        let media_sender = with_global_scope(_ctx, |global_scope| {
+                            Ok(global_scope.media_extension_sender())
+                        })
+                        .ok()
+                        .flatten();
+
+                        if let Some(ref media_sender) = media_sender {
+                            if let Err(error) = media_sender.send(
+                                ipc_messages::media::MediaCommand::CreatePipeline {
+                                    pipeline_id,
+                                    url: resolved_url.clone(),
+                                },
+                            ) {
+                                error!("[media] failed to send CreatePipeline: {error}");
+                            }
+                            if let Err(error) = media_sender
+                                .send(ipc_messages::media::MediaCommand::Play { pipeline_id })
+                            {
+                                error!("[media] failed to send Play: {error}");
+                            }
+                        }
+
+                        // Notify the UA of the pipeline→webview mapping.
+                        let request = RegisterMediaPipeline {
+                            url: resolved_url.clone(),
+                            document_id,
+                            traversable_id,
+                            pipeline_id,
+                            video_paint_id,
+                        };
+                        debug!(
+                            "[media] registering pipeline with UA url={} traversable={}",
+                            resolved_url, traversable_id
+                        );
+                        if let Err(error) =
+                            event_sender.send(ContentEvent::RegisterMediaPipeline(request))
+                        {
+                            error!("[media] failed to send RegisterMediaPipeline: {error}");
+                        }
                     }
                 }
             } else {
