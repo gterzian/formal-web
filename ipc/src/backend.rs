@@ -11,17 +11,16 @@
 //! MultiInstance extensions (content) cannot use XPC because macOS AMFI
 //! rejects ad-hoc-signed embedded XPC services (error -423).
 
-use serde::{Serialize, de::DeserializeOwned};
+use crate::types::{
+    BootstrapPayload, ExtensionClient, ExtensionHandle, ExtensionManifest, ExtensionServer,
+    IpcConnection, IpcSerialize,
+};
 
-use crate::IpcError;
-use crate::types::{ExtensionClient, ExtensionManifest, ExtensionServer};
-
-#[cfg(feature = "ipc-channel-backend")]
-mod ipc_channel;
+pub(crate) mod ipc_channel;
 
 // Only on Apple when NOT using ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-mod xpc;
+pub(crate) mod xpc;
 
 // No backend available on non-Apple without ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), not(target_vendor = "apple")))]
@@ -30,25 +29,34 @@ compile_error!(
      until a native Linux transport exists"
 );
 
-// ── start_extension ─────────────────────────────────────────────────────────
+use serde::de::DeserializeOwned;
 
-pub fn start_extension<M, Out, In>(manifest: &M) -> Result<ExtensionClient<Out, In>, IpcError>
+// ── Launch extension (new API) ───────────────────────────────────────────────
+
+/// Launch an extension process and return its handle plus the first connection.
+///
+/// This is the standard entry point for the parent process. The `bootstrap`
+/// payload carries named endpoints for additional channels (e.g., content
+/// receives "net" and "media" endpoints).
+pub fn launch_extension<M, Out, In>(
+    manifest: &M,
+    bootstrap: BootstrapPayload,
+) -> Result<(ExtensionHandle, IpcConnection<Out, In>), IpcError>
 where
     M: ExtensionManifest,
-    Out: Serialize + DeserializeOwned + Send + 'static,
-    In: Serialize + DeserializeOwned + Send + 'static,
+    Out: IpcSerialize + DeserializeOwned + Send + 'static,
+    In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
     #[cfg(feature = "ipc-channel-backend")]
     {
-        ipc_channel::start_extension(manifest)
+        ipc_channel::launch_extension(manifest, bootstrap)
     }
     #[cfg(not(feature = "ipc-channel-backend"))]
     {
-        // XPC backend only supports Singleton launchd services (net, media).
-        // Content (MultiInstance) would require embedded XPC, which macOS
-        // AMFI rejects for ad-hoc-signed binaries.
         match manifest.endpoint() {
-            crate::types::ExtensionEndpoint::Singleton { .. } => xpc::start_extension(manifest),
+            crate::types::ExtensionEndpoint::Singleton { .. } => {
+                xpc::launch_extension(manifest, bootstrap)
+            }
             crate::types::ExtensionEndpoint::MultiInstance { .. } => {
                 unimplemented!(
                     "XPC backend does not support MultiInstance (content) \
@@ -59,8 +67,29 @@ where
     }
 }
 
-// ── run_extension ───────────────────────────────────────────────────────────
+// ── start_extension (legacy) ────────────────────────────────────────────────
 
+/// Legacy: start an extension and return a client handle.
+///
+/// Equivalent to [`launch_extension`] with an empty bootstrap. Retained
+/// for backward compatibility. New code should prefer [`launch_extension`].
+pub fn start_extension<M, Out, In>(manifest: &M) -> Result<ExtensionClient<Out, In>, IpcError>
+where
+    M: ExtensionManifest,
+    Out: IpcSerialize + DeserializeOwned + Send + 'static,
+    In: IpcSerialize + DeserializeOwned + Send + 'static,
+{
+    let (handle, connection) = launch_extension(manifest, BootstrapPayload::new())?;
+    Ok(ExtensionClient { handle, connection })
+}
+
+// ── run_extension (child side) ─────────────────────────────────────────────
+
+/// Run as an extension process. Called by the child process on startup.
+///
+/// Accepts the primary bootstrap connection and any additional endpoints
+/// embedded in the bootstrap payload. Returns an [`ExtensionServer`]
+/// with the primary channel and any named extra channels.
 pub fn run_extension<M, Out, In>(
     manifest: &M,
     token: &str,
@@ -68,8 +97,8 @@ pub fn run_extension<M, Out, In>(
 ) -> Result<ExtensionServer<In, Out>, IpcError>
 where
     M: ExtensionManifest,
-    Out: Serialize + DeserializeOwned + Send + 'static,
-    In: Serialize + DeserializeOwned + Send + 'static,
+    Out: IpcSerialize + DeserializeOwned + Send + 'static,
+    In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
     #[cfg(feature = "ipc-channel-backend")]
     {
@@ -90,3 +119,5 @@ where
         }
     }
 }
+
+use crate::IpcError;

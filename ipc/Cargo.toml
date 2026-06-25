@@ -12,6 +12,7 @@ default = ["ipc-channel-backend"]
 #   - ipc-channel for content (Unix domain sockets; XPC not usable —
 #     macOS AMFI rejects ad-hoc-signed embedded XPC services).
 ipc-channel-backend = []
+bek = []
 
 [dependencies]
 crossbeam-channel = "0.5"

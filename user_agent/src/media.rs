@@ -49,12 +49,16 @@ fn start_media_extension() -> Result<
     String,
 > {
     let manifest = MediaExtensionManifest;
-    let client =
+    let mut client =
         ipc::start_extension::<MediaExtensionManifest, MediaProcessCommand, MediaEvent>(&manifest)
             .map_err(|error| format!("failed to start media extension: {error}"))?;
 
-    let child = client.child;
-    Ok((client.tx, client.rx, child))
+    let child = client.take_child();
+    Ok((
+        client.sender.clone(),
+        client.receiver.clone().into_crossbeam(),
+        child,
+    ))
 }
 
 impl MediaWorker {

@@ -234,6 +234,10 @@ pub fn run_media_process_from_args() -> Result<(), String> {
     let backend = backend::avfoundation::AvfBackend::init()
         .map_err(|error| format!("AVFoundation init failed: {error}"))?;
 
-    run_media_process(backend, server.rx, server.tx);
+    run_media_process(
+        backend,
+        server.receiver().clone().into_crossbeam(),
+        server.sender().clone(),
+    );
     Ok(())
 }

@@ -212,7 +212,7 @@ impl EventLoopWorker {
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let manifest = crate::ipc_manifest::ContentExtensionManifest::new(process_label);
-        let client = ipc::start_extension::<
+        let mut client = ipc::start_extension::<
             crate::ipc_manifest::ContentExtensionManifest,
             ContentCommand,
             ContentEvent,
@@ -221,9 +221,9 @@ impl EventLoopWorker {
 
         let worker = Self {
             event_loop_id,
-            command_sender: client.tx,
-            event_receiver: client.rx,
-            child: client.child,
+            command_sender: client.sender.clone(),
+            event_receiver: client.receiver.clone().into_crossbeam(),
+            child: client.take_child(),
             user_agent_command_sender,
             fetch_command_sender,
             timer_command_sender,

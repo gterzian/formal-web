@@ -117,8 +117,8 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
 
     // server.tx sends Response to parent (server's Out = parent's In)
     // server.rx receives Request from parent (server's In = parent's Out)
-    let response_sender = server.tx;
-    let request_receiver = server.rx;
+    let response_sender = server.sender().clone();
+    let request_receiver = server.receiver().clone().into_crossbeam();
 
     loop {
         match request_receiver.recv() {

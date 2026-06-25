@@ -33,7 +33,7 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 
-use ipc::{ExtensionEndpoint, ExtensionManifest, IpcSharedRegion, run_extension};
+use ipc::{ExtensionEndpoint, ExtensionManifest, run_extension};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
@@ -2133,8 +2133,8 @@ pub fn run_content_process(token: String) -> Result<(), String> {
 
     // server.tx sends ContentEvent to parent (server's Out = parent's In)
     // server.rx receives Command from parent (server's In = parent's Out)
-    let event_sender = server.tx;
-    let cmd_rx = server.rx;
+    let event_sender = server.sender().clone();
+    let cmd_rx = server.receiver().clone().into_crossbeam();
 
     // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
     let placeholder_id = EventLoopId::from_u128(0);
