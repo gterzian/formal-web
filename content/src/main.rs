@@ -33,7 +33,6 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 
-use ipc::run_extension;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
@@ -304,11 +303,9 @@ fn maybe_log_input_layout_debug(document_id: DocumentId, document: &BaseDocument
 
 #[derive(Clone)]
 struct ContentNetProvider {
-    event_sender: ipc::IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     content_document_id: DocumentId,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     content_command_sender: ipc::IpcSender<Command>,
 }
 
@@ -418,8 +415,6 @@ pub(crate) struct ContentProcess {
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
     /// Direct sender to the net extension. Set during DirectChannelsSetup.
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-    /// Direct sender to the media extension.
-    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// This content process's own command sender, used by net for direct response routing.
     content_command_sender: ipc::IpcSender<Command>,
 }
@@ -430,7 +425,6 @@ impl ContentProcess {
         wasm_signal_sender: crossbeam_channel::Sender<()>,
         event_loop_id: EventLoopId,
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-        media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
         content_command_sender: ipc::IpcSender<Command>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
@@ -455,7 +449,6 @@ impl ContentProcess {
             pending_wasm_requests: HashMap::new(),
             pending_wasm_modules: HashMap::new(),
             network_extension_sender,
-            media_extension_sender,
             content_command_sender,
         }
     }
@@ -499,11 +492,9 @@ impl ContentProcess {
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
             base_url,
             net_provider: Some(Arc::new(ContentNetProvider {
-                event_sender: self.event_sender.clone(),
                 local_state: Arc::clone(&self.local_state),
                 content_document_id: document_id,
                 network_extension_sender: self.network_extension_sender.clone(),
-                media_extension_sender: self.media_extension_sender.clone(),
                 content_command_sender: self.content_command_sender.clone(),
             })),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
@@ -2146,7 +2137,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
         // First message must be ContentBootstrap.
-        let (network_extension_sender, media_extension_sender, content_command_sender,
+        let (network_extension_sender, _media_sender, content_command_sender,
              trace_sender) =
             match cmd_rx.recv() {
                 Ok(incoming) => {
@@ -2176,7 +2167,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             wasm_signal_sender,
             event_loop_id,
             network_extension_sender,
-            media_extension_sender,
+            // media_extension_sender was removed from ContentProcess
             content_command_sender,
             trace_sender,
         );

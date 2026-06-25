@@ -132,8 +132,6 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
         .build()
         .map_err(|error| format!("failed to build reqwest client: {error}"))?;
 
-    let mut _trace_sender: Option<verification::TraceSender> = None;
-
     ipc::run_extension::<Request, Response>(&token, move |server| {
         let request_receiver = ipc::crossbeam_proxy(server.connection.receiver);
         let response_sender = server.connection.sender.clone();
@@ -144,7 +142,8 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                     let request = incoming.payload;
                     match request {
                         Request::SetTraceSender(trace_sender) => {
-                            _trace_sender = trace_sender;
+                            // trace_sender is silently dropped — no one reads it
+                            let _ = trace_sender;
                         }
                         Request::Fetch {
                             request_id,

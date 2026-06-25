@@ -172,8 +172,6 @@ struct EventLoopWorker {
     /// processing model.
     awaiting_task_completion: bool,
     pending_task_commands: VecDeque<PendingTaskCommand>,
-    /// IPC sender to the net extension (for forwarding response channels).
-    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     /// IPC sender to the media extension.
     #[allow(dead_code)]
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
@@ -244,7 +242,6 @@ impl EventLoopWorker {
             stop_reply: None,
             awaiting_task_completion: false,
             pending_task_commands: VecDeque::new(),
-            network_extension_sender,
             media_extension_sender,
         };
 

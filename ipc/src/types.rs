@@ -499,10 +499,6 @@ impl IpcSharedRegion {
         self.0.deref()
     }
 
-    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
-        self.0.deref_mut()
-    }
-
     pub fn size(&self) -> usize {
         self.0.len()
     }

@@ -1,6 +1,5 @@
 use crate::content::EmbedLayout;
 
-use ipc::IpcSender;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

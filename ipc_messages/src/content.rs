@@ -4,7 +4,6 @@ use anyrender::{
     Scene,
 };
 
-use ipc::IpcSender;
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
 use std::collections::{hash_map::Entry, HashMap, HashSet};
