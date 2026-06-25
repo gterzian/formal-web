@@ -8,5 +8,5 @@ pub use types::*;
 
 pub(crate) mod backend;
 
-pub use backend::{launch_extension, run_extension, start_extension};
+pub use backend::{launch_extension, run_extension};
 pub use types::crossbeam_proxy;

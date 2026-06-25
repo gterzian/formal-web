@@ -49,14 +49,16 @@ fn start_media_extension() -> Result<
     String,
 > {
     let manifest = MediaExtensionManifest;
-    let mut client =
-        ipc::start_extension::<MediaExtensionManifest, MediaProcessCommand, MediaEvent>(&manifest)
-            .map_err(|error| format!("failed to start media extension: {error}"))?;
+    let (mut handle, connection) =
+        ipc::ExtensionHandle::launch::<MediaExtensionManifest, MediaProcessCommand, MediaEvent>(
+            &manifest,
+        )
+        .map_err(|error| format!("failed to start media extension: {error}"))?;
 
-    let child = client.take_child();
+    let child = handle.take_child();
     Ok((
-        client.sender.clone(),
-        ipc::crossbeam_proxy(client.receiver.clone()),
+        connection.sender.clone(),
+        ipc::crossbeam_proxy(connection.receiver.clone()),
         child,
     ))
 }

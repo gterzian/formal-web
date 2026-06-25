@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::types::{
     BootstrapToken, ExtensionHandle, ExtensionHandleImpl, ExtensionManifest, ExtensionServer,
-    IpcConnection, IpcIncoming, IpcReceiver, IpcReceiverImpl, IpcSender, IpcSerialize,
+    IpcConnection, IpcIncoming, IpcReceiver, IpcSender, IpcSerialize,
     IpcTransport,
 };
 
@@ -52,9 +52,7 @@ where
 
     IpcConnection::new(
         sender,
-        IpcReceiver {
-            inner: IpcReceiverImpl::Crossbeam(crossbeam_rx),
-        },
+        IpcReceiver::from_crossbeam(crossbeam_rx),
     )
 }
 
@@ -159,9 +157,7 @@ where
         IpcSender {
             transport: IpcTransport::IpcChannel(child_to_parent_tx),
         },
-        IpcReceiver {
-            inner: IpcReceiverImpl::Crossbeam(crossbeam_rx),
-        },
+        IpcReceiver::from_crossbeam(crossbeam_rx),
     );
 
     Ok(ExtensionServer {

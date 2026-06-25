@@ -1,6 +1,5 @@
 use crate::types::{
-    ExtensionClient, ExtensionHandle, ExtensionManifest, ExtensionServer, IpcConnection,
-    IpcSerialize,
+    ExtensionHandle, ExtensionManifest, ExtensionServer, IpcConnection, IpcSerialize,
 };
 use crate::IpcError;
 use serde::de::DeserializeOwned;
@@ -42,18 +41,6 @@ where
             }
         }
     }
-}
-
-/// Legacy: start an extension and return a client handle.
-/// Prefer [`launch_extension`] in new code.
-pub fn start_extension<M, Out, In>(manifest: &M) -> Result<ExtensionClient<Out, In>, IpcError>
-where
-    M: ExtensionManifest,
-    Out: IpcSerialize + DeserializeOwned + Send + 'static,
-    In: IpcSerialize + DeserializeOwned + Send + 'static,
-{
-    let (handle, connection) = launch_extension(manifest)?;
-    Ok(ExtensionClient { handle, connection })
 }
 
 /// Run as an extension process. Called by the child process on startup.

@@ -523,22 +523,24 @@ pub fn start_net_extension(
     String,
 > {
     let manifest = NetExtensionManifest;
-    let mut client =
-        ipc::start_extension::<NetExtensionManifest, NetworkRequest, NetworkResponse>(&manifest)
-            .map_err(|error| format!("failed to start net extension: {error}"))?;
+    let (mut handle, connection) =
+        ipc::ExtensionHandle::launch::<NetExtensionManifest, NetworkRequest, NetworkResponse>(
+            &manifest,
+        )
+        .map_err(|error| format!("failed to start net extension: {error}"))?;
 
     // Send initial trace sender if set
     if let Some(trace_sender) = trace_sender {
-        client
+        connection
             .sender
             .send(NetworkRequest::SetTraceSender(Some(trace_sender)))
             .map_err(|error| format!("failed to send trace sender to net: {error}"))?;
     }
 
-    let child = client.take_child();
+    let child = handle.take_child();
     Ok((
-        client.sender.clone(),
-        ipc::crossbeam_proxy(client.receiver.clone()),
+        connection.sender.clone(),
+        ipc::crossbeam_proxy(connection.receiver.clone()),
         child,
     ))
 }

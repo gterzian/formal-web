@@ -145,6 +145,13 @@ pub(crate) enum IpcReceiverImpl<T> {
 }
 
 impl<T> IpcReceiver<T> {
+    /// Internal constructor used by backends.
+    pub(crate) fn from_crossbeam(ch: crossbeam_channel::Receiver<IpcIncoming<T>>) -> Self {
+        IpcReceiver {
+            inner: IpcReceiverImpl::Crossbeam(ch),
+        }
+    }
+
     /// Block until a message arrives.
     pub fn recv(&self) -> Result<IpcIncoming<T>, IpcError> {
         match &self.inner {
@@ -352,6 +359,15 @@ impl ExtensionHandle {
         }
     }
 
+    /// Extract the child process handle, if any (ipc-channel backend).
+    pub fn take_child(&mut self) -> Option<std::process::Child> {
+        match &mut self.inner {
+            ExtensionHandleImpl::IpcChannel { child, .. } => child.take(),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+
     /// Stop the extension process.
     pub fn invalidate(self) {
         match self.inner {
@@ -432,56 +448,6 @@ impl IpcSharedRegion {
 ///
 /// Provides accessors for the primary connection and child handle.
 /// Will be removed once all callers migrate to [`ExtensionHandle::launch`].
-pub struct ExtensionClient<
-    Out: IpcSerialize + IpcDeserialize + 'static,
-    In: IpcSerialize + IpcDeserialize + 'static,
-> {
-    pub handle: ExtensionHandle,
-    pub connection: IpcConnection<Out, In>,
-}
-
-impl<
-        Out: IpcSerialize + IpcDeserialize + 'static,
-        In: IpcSerialize + IpcDeserialize + 'static,
-    > ExtensionClient<Out, In>
-{
-    pub fn sender(&self) -> &IpcSender<Out> {
-        &self.connection.sender
-    }
-
-    pub fn receiver(&self) -> &IpcReceiver<In> {
-        &self.connection.receiver
-    }
-
-    pub fn child(&self) -> Option<&std::process::Child> {
-        match &self.handle.inner {
-            ExtensionHandleImpl::IpcChannel { child, .. } => child.as_ref(),
-            #[allow(unreachable_patterns)]
-            _ => None,
-        }
-    }
-
-    pub fn take_child(&mut self) -> Option<std::process::Child> {
-        match &mut self.handle.inner {
-            ExtensionHandleImpl::IpcChannel { child, .. } => child.take(),
-            #[allow(unreachable_patterns)]
-            _ => None,
-        }
-    }
-}
-
-impl<
-        Out: IpcSerialize + IpcDeserialize + 'static,
-        In: IpcSerialize + IpcDeserialize + 'static,
-    > std::ops::Deref for ExtensionClient<Out, In>
-{
-    type Target = IpcConnection<Out, In>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.connection
-    }
-}
-
 // ── ExtensionServer ─────────────────────────────────────────────────────────
 
 /// Server handle obtained by the extension process on startup.
