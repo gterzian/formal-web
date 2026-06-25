@@ -6,15 +6,17 @@ publish = false
 autobins = false
 
 [features]
-default = ["backend-gstreamer"]
+default = []
+# GStreamer backend — available on all platforms.
+# On non-Apple platforms, GStreamer deps are always compiled (see
+# [target.'cfg(not(...))'.dependencies] below); the feature flag acts
+# as a marker, enabling the code module and (on Apple) the optional deps.
 backend-gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
-backend-avfoundation = [
-    "dep:objc2",
-    "dep:objc2-foundation",
-    "dep:objc2-av-foundation",
-    "dep:objc2-core-media",
-    "dep:objc2-core-video",
-]
+# AVFoundation backend — macOS/iOS only.
+# The objc2 dependencies are always present on Apple platforms (see
+# [target.'cfg(any(...))'.dependencies] below); this feature flag
+# just gates the code module. On non-Apple the flag is a no-op.
+backend-avfoundation = []
 ipc-channel-backend = ["ipc/ipc-channel-backend"]
 
 [lib]
@@ -32,10 +34,20 @@ log = "0.4"
 env_logger = "0.11"
 url = "2"
 crossbeam-channel = "0.5"
+
+# --- GStreamer backend ---
+# On non-Apple platforms, GStreamer is always compiled (non-optional).
+# On Apple platforms, GStreamer is optional — the user opts in via
+# the backend-gstreamer feature (which enables these deps).
+[target.'cfg(not(any(target_os = "macos", target_os = "ios")))'.dependencies]
+gstreamer = { version = "0.23", features = ["v1_22"] }
+gstreamer-app = { version = "0.23" }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 gstreamer = { version = "0.23", features = ["v1_22"], optional = true }
 gstreamer-app = { version = "0.23", optional = true }
-objc2 = { version = "0.6.4", optional = true }
-objc2-foundation = { version = "0.3.2", optional = true }
-objc2-av-foundation = { version = "0.3.2", optional = true, features = ["objc2-core-media"] }
-objc2-core-media = { version = "0.3.2", optional = true }
-objc2-core-video = { version = "0.3.2", optional = true }
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media"] }
+objc2-core-media = "0.3.2"
+objc2-core-video = "0.3.2"

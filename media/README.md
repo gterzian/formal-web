@@ -20,7 +20,10 @@ user agent (MediaHandler)  ──IPC──▶  media process (run_media_process<
 
 ## Quick Start
 
-### GStreamer backend (default)
+### macOS / iOS (AVFoundation backend, default)
+
+AVFoundation is the default backend on Apple platforms.  No additional
+libraries required.
 
 ```bash
 # Build everything
@@ -30,19 +33,30 @@ cargo build --release
 cargo run --release
 ```
 
-### AVFoundation backend (macOS only)
+> **Note:** `cargo run --release` only rebuilds the root binary (embedder).
+> The `formal-web-media` process must be built separately when switching
+> between backends.  Use `cargo build --release -p media --bin formal-web-media`
+> after changing the backend feature.
+
+### macOS (GStreamer backend, opt-in)
+
+On macOS, GStreamer can be used instead of AVFoundation by explicitly
+selecting the `backend-gstreamer` feature:
 
 ```bash
-# Build the media binary
 cargo build --release -p media --bin formal-web-media \
-  --no-default-features --features backend-avfoundation
-
-# Run
-cargo run --release
+  --no-default-features --features backend-gstreamer
 ```
 
-> `cargo run --release` does **not** rebuild the media binary.  Always build
-> the media binary explicitly with `--features backend-avfoundation` first.
+### Linux (GStreamer backend)
+
+On Linux, GStreamer is the only available backend and is always compiled.
+Build the full workspace as usual:
+
+```bash
+cargo build --release
+cargo run --release
+```
 
 ### Without media (no video playback)
 

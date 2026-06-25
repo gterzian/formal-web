@@ -5,49 +5,42 @@ formal-web is a Rust web-engine prototype in alpha status, with an embedding API
 ## Prerequisites
 
 - **Rust toolchain**: `rustup toolchain install 1.94.0`
-- **GStreamer** (for the GStreamer media backend — default):
-  see [gstreamer docs](https://docs.rs/gstreamer/latest/gstreamer/) for
-  platform-specific installation.  On macOS:
-  ```bash
-  brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
-  ```
+- **macOS**: No additional system libraries required.  AVFoundation is the
+  default media backend (system framework, always available).
 
 ## Commands
 
-### Default (GStreamer media backend)
+### macOS (AVFoundation — default)
+
+AVFoundation is used automatically.  No extra build steps needed.
 
 ```bash
 # Check all    (type-check every package without producing binaries)
 rustup run 1.94.0 cargo check
 
-# Build all    (root + embedder + content + net + media)
+# Build all    (root + embedder + content + net + media with AVFoundation)
 rustup run 1.94.0 cargo build --release
 
 # Run all      (launches the embedder, which spawns content/net/media)
 rustup run 1.94.0 cargo run --release
 ```
 
-### AVFoundation media backend (macOS, no GStreamer required)
+> `cargo run --release` only rebuilds the root binary — it does **not**
+> rebuild the `formal-web-media` binary.  When switching between backends,
+> rebuild the media binary explicitly with the desired feature flags.
 
+### macOS (GStreamer — opt-in)
+
+GStreamer is available on macOS for users who prefer it over AVFoundation.
+Requires GStreamer libraries:
 ```bash
-# 1. Build the media binary (separate step — `cargo run` won't do this)
-rustup run 1.94.0 cargo build --release -p media --bin formal-web-media \
-  --no-default-features --features backend-avfoundation
-
-# 2. Run — the embedder spawns the AVFoundation-based media process
-rustup run 1.94.0 cargo run --release
+brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
 ```
 
-> `cargo run --release` builds only the root `formal-web` binary — it does
-> **not** rebuild the `formal-web-media` binary.  Always run step 1 before
-> step 2.  The root crate's `backend-avfoundation` feature (which implies
-> `media`) is provided for symmetry but is not strictly required since
-> `media` is enabled by default anyway.
-
-To switch back to GStreamer, just rebuild the media binary:
+Build the media binary with the GStreamer backend:
 ```bash
-cargo build --release -p media --bin formal-web-media
-# then `cargo run --release` as usual
+cargo build --release -p media --bin formal-web-media \
+  --no-default-features --features backend-gstreamer
 ```
 
 ### Without media (no video playback)
@@ -74,9 +67,10 @@ The following procesess are used:
 - Main: running the `embedder`, `webview`, and `user_agent` crates. The process is started in `src/main.rs`.
 - Content: running the `content` crate, and started in `user_agent/src/event_loop.rs`, because each process is running what is essentially a window event loop. In the future it will also run dedicated worker event loops. Service workers will likely run in their own process, and for shared worker the issue hasn't been decided yet (it seems there is a move towards isolating them per top-level sites). There is one process per [similar origin window agent](https://html.spec.whatwg.org/#similar-origin-window-agent); this is the only type of process of which there can be more than one.
 - Net: running the `net` crate. That process is owned by the fetch worker in `user_agent/src/fetch.rs`, and the code in the process will essentially be the part of the fetch standard that starts at https://fetch.spec.whatwg.org/#http-network-or-cache-fetch.
-- Media: running the `media` crate, started and owned by the media worker in `user_agent/src/media.rs`. The media binary uses one of two backends, selected at compile time via Cargo features:
-  - `backend-gstreamer` (default) — GStreamer pipeline (uridecodebin → videoconvert → appsink). Requires GStreamer libraries at build time.
-  - `backend-avfoundation` — AVFoundation (AVPlayer + AVPlayerItemVideoOutput). macOS only, no external dependencies.
+- Media: running the `media` crate, started and owned by the media worker in `user_agent/src/media.rs`. The media binary uses one of two backends, selected at compile time. Backend selection is platform-dependent:
+  - **macOS/iOS**: AVFoundation (AVPlayer + AVPlayerItemVideoOutput) by default.
+    GStreamer available opt-in via the `backend-gstreamer` feature.
+  - **Linux**: GStreamer (uridecodebin → videoconvert → appsink).
   See [`media/README.md`](./media/README.md) for backend-specific details.
 
 ## Project structure

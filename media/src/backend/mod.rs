@@ -1,25 +1,16 @@
 use ipc_messages::media::MediaPipelineId;
 
 // ---------------------------------------------------------------------------
-// Compile-time guard: exactly one backend feature must be active.
-// ---------------------------------------------------------------------------
-
-#[cfg(not(any(feature = "backend-gstreamer", feature = "backend-avfoundation")))]
-compile_error!(
-    "Exactly one media backend feature must be enabled: \
-     backend-gstreamer or backend-avfoundation"
-);
-
-#[cfg(all(feature = "backend-gstreamer", feature = "backend-avfoundation"))]
-compile_error!(
-    "Only one media backend feature can be enabled at a time: \
-     backend-gstreamer or backend-avfoundation"
-);
-
-// ---------------------------------------------------------------------------
 // BackendEvent — backend-agnostic event delivered from the backend's
 // notification mechanism (GStreamer bus, AVFoundation KVO/notifications) to
 // the generic dispatch loop.
+// ---------------------------------------------------------------------------
+
+// No compile-time guard for mutual exclusion: the library compiles with 0, 1,
+// or 2 backends. Backend selection happens at runtime in
+// `run_media_process_from_args` via cfg-based priority (see lib.rs).
+// The `avf_default` cfg is emitted by build.rs on Apple platforms when no
+// explicit backend feature is selected.
 // ---------------------------------------------------------------------------
 
 use ipc_messages::media::VideoFrame;
@@ -96,8 +87,17 @@ pub trait MediaBackend: Send + 'static {
 // Backend modules — gated by Cargo features.
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "backend-gstreamer")]
+// GStreamer: always included on non-Apple platforms (dep is non-optional there).
+// On Apple, gated by the `backend-gstreamer` feature (dep is optional).
+#[cfg(any(
+    feature = "backend-gstreamer",
+    not(any(target_os = "macos", target_os = "ios"))
+))]
 pub mod gstreamer;
 
-#[cfg(feature = "backend-avfoundation")]
+// AVFoundation: Apple only; gated by explicit feature or build.rs avf_default.
+#[cfg(all(
+    any(feature = "backend-avfoundation", avf_default),
+    any(target_os = "macos", target_os = "ios")
+))]
 pub mod avfoundation;
