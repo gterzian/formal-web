@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use ipc_channel::ipc::IpcSharedMemory;
+use ipc_channel::ipc::{self as ipc_ch, IpcSharedMemory};
 use ipc_channel::router::ROUTER;
 use crate::IpcError;
 
@@ -122,6 +122,22 @@ impl<'de, T: IpcSerialize + IpcDeserialize> serde::Deserialize<'de> for IpcSende
     }
 }
 
+/// Create a paired sender and receiver for direct inter-process communication.
+///
+/// The sender and receiver form a channel pair.  One end can be sent
+/// to another process via `IpcSender`'s Serialize impl (Mach port rights
+/// are transferred through ipc-channel's serde layer).
+pub fn channel<T: IpcSerialize + IpcDeserialize>() -> Result<(IpcSender<T>, IpcReceiver<T>), IpcError> {
+    let (tx, rx) = ipc_ch::channel::<IpcChannelMessage<T>>().map_err(|error| {
+        IpcError::Transport(format!("failed to create IPC channel: {error}"))
+    })?;
+    let sender = IpcSender {
+        transport: IpcTransport::IpcChannel(tx),
+    };
+    let receiver = IpcReceiver::from_ipc_channel(rx);
+    Ok((sender, receiver))
+}
+
 impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
     pub fn send(&self, message: T) -> Result<(), IpcError> {
         match &self.transport {
@@ -175,11 +191,11 @@ pub struct IpcReceiver<T: IpcSerialize + IpcDeserialize> {
     _xpc_unimplemented: std::marker::PhantomData<T>,
 }
 
-impl<T: IpcSerialize + IpcDeserialize + std::fmt::Debug> std::fmt::Debug for IpcReceiver<T> {
+impl<T: IpcSerialize + IpcDeserialize> std::fmt::Debug for IpcReceiver<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         #[cfg(feature = "ipc-channel-backend")]
         {
-            write!(formatter, "IpcReceiver({:?})", self.inner)
+            write!(formatter, "IpcReceiver(<ipc-channel>)")
         }
         #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
         {

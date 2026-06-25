@@ -40,7 +40,7 @@ struct MediaWorker {
 }
 
 /// Bootstrap the dedicated media process using the new IPC abstraction layer.
-fn start_media_extension() -> Result<
+pub fn start_media_extension() -> Result<
     (
         ipc::IpcSender<MediaProcessCommand>,
         crossbeam_channel::Receiver<ipc::IpcIncoming<MediaEvent>>,
@@ -65,8 +65,10 @@ impl MediaWorker {
     fn new(
         command_receiver: Receiver<MediaCommand>,
         user_agent_command_sender: Sender<UserAgentCommand>,
+        media_process_sender: ipc::IpcSender<MediaProcessCommand>,
+        media_event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<MediaEvent>>,
+        child: Option<std::process::Child>,
     ) -> Result<Self, String> {
-        let (media_process_sender, media_event_receiver, child) = start_media_extension()?;
         Ok(Self {
             command_receiver,
             user_agent_command_sender,
@@ -198,8 +200,17 @@ impl MediaWorker {
 pub fn run_media_thread(
     command_receiver: Receiver<MediaCommand>,
     user_agent_command_sender: Sender<UserAgentCommand>,
+    media_process_sender: ipc::IpcSender<MediaProcessCommand>,
+    media_event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<MediaEvent>>,
+    child: Option<std::process::Child>,
 ) {
-    let mut worker = match MediaWorker::new(command_receiver, user_agent_command_sender) {
+    let mut worker = match MediaWorker::new(
+        command_receiver,
+        user_agent_command_sender,
+        media_process_sender,
+        media_event_receiver,
+        child,
+    ) {
         Ok(worker) => worker,
         Err(error) => {
             error!("[media] worker startup failed: {error}");

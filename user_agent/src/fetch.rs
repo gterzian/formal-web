@@ -548,10 +548,10 @@ impl FetchWorker {
     fn new(
         command_receiver: Receiver<FetchCommand>,
         user_agent_command_sender: Sender<UserAgentCommand>,
-        trace_sender: Option<TraceSender>,
+        network_request_sender: ipc::IpcSender<NetworkRequest>,
+        network_event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<NetworkResponse>>,
+        child: Option<std::process::Child>,
     ) -> Result<Self, String> {
-        let (network_request_sender, network_event_receiver, child) =
-            start_net_extension(trace_sender)?;
         Ok(Self {
             command_receiver,
             user_agent_command_sender,
@@ -775,10 +775,18 @@ impl FetchWorker {
 pub fn run_fetch_thread(
     command_receiver: Receiver<FetchCommand>,
     user_agent_command_sender: Sender<UserAgentCommand>,
-    trace_sender: Option<TraceSender>,
+    network_request_sender: ipc::IpcSender<NetworkRequest>,
+    network_event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<NetworkResponse>>,
+    child: Option<std::process::Child>,
 ) {
     let mut worker =
-        match FetchWorker::new(command_receiver, user_agent_command_sender, trace_sender) {
+        match FetchWorker::new(
+            command_receiver,
+            user_agent_command_sender,
+            network_request_sender,
+            network_event_receiver,
+            child,
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 error!("fetch thread startup failed: {error}");

@@ -863,12 +863,12 @@ pub enum Command {
     FailDocumentFetch {
         handler_id: DocumentFetchId,
     },
-    /// Direct sender to the net extension.
-    /// Content sends fetch requests directly to net via this sender,
-    /// bypassing the user agent.  Responses arrive on a channel that
-    /// content sets up separately.
-    SetNetRequestSender {
-        sender: ipc::IpcSender<crate::network::Request>,
+    /// Set up direct connections to net and media extensions.
+    /// Sent as the first message after bootstrap so content never needs
+    /// a fallback path for network requests.
+    SetDirectChannels {
+        net_sender: ipc::IpcSender<crate::network::Request>,
+        media_sender: Option<ipc::IpcSender<crate::media::MediaCommand>>,
     },
     Shutdown,
 }
@@ -890,11 +890,14 @@ pub enum Event {
     CommandCompleted,
     MediaLoadRequested(MediaLoadRequest),
     PaintReady(PaintFrame),
-    /// Content registers its direct-response channel with the net extension.
-    /// The user agent forwards this sender to net so responses arrive
-    /// directly at content without routing through the user agent.
+    /// Content registers its net response channel (content→net direction).
+    /// The user agent forwards the sender to net so responses arrive directly.
     RegisterNetResponseChannel {
         sender: ipc::IpcSender<crate::network::Response>,
+    },
+    /// Content registers its media event channel.
+    RegisterMediaEventChannel {
+        sender: ipc::IpcSender<crate::media::MediaEvent>,
     },
     ShutdownCompleted,
 }

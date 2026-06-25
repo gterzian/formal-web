@@ -99,8 +99,7 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
         let mut _trace_sender: Option<TraceSender> = None;
         let response_sender = server.connection.sender.clone();
         let request_receiver = ipc::crossbeam_proxy(server.connection.receiver);
-        // Note: the clone above would fail once IpcReceiver stops being Clone.
-        // For now it works via the Clone impl. TODO: move receiver instead.
+        let mut content_sender: Option<ipc::IpcSender<Response>> = None;
 
         loop {
             match request_receiver.recv() {
@@ -115,14 +114,15 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                             request,
                         } => {
                             let result = fetch_request(&client, &request);
-                            if let Err(error) = response_sender.send(Response { request_id, result }) {
+                            let target = content_sender.as_ref().unwrap_or(&response_sender);
+                            if let Err(error) = target.send(Response { request_id, result }) {
                                 log::error!("failed to send fetch response: {error}");
                                 break;
                             }
                         }
-                        Request::SetContentSender { .. } => {
-                            log::info!("net: received SetContentSender (direct response channel)");
-                            // TODO: store sender and use for direct responses
+                        Request::SetContentSender { sender } => {
+                            log::info!("net: received direct content response sender");
+                            content_sender = Some(sender);
                         }
                         Request::Shutdown => break,
                     }

@@ -174,9 +174,12 @@ struct EventLoopWorker {
     /// flag that mirrors the single in-flight task step in the HTML event loop
     /// processing model.
     awaiting_task_completion: bool,
-    /// FIFO queue of commands that must observe `CommandCompleted` before the next task-bearing
-    /// step can run.
     pending_task_commands: VecDeque<PendingTaskCommand>,
+    /// IPC sender to the net extension (for forwarding response channels).
+    net_tx: ipc::IpcSender<ipc_messages::network::Request>,
+    /// IPC sender to the media extension.
+    #[allow(dead_code)]
+    media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
@@ -210,6 +213,8 @@ impl EventLoopWorker {
         webview_provider_sender: Sender<WebviewProviderMessage>,
         command_receiver: Receiver<EventLoopCommand>,
         trace_sender: Option<TraceSender>,
+        net_tx: ipc::IpcSender<ipc_messages::network::Request>,
+        media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     ) -> Result<Self, String> {
         let manifest = crate::ipc_manifest::ContentExtensionManifest::new(process_label);
         let (mut handle, connection) = ipc::ExtensionHandle::launch::<
@@ -222,6 +227,9 @@ impl EventLoopWorker {
         let command_sender = connection.sender.clone();
         let event_receiver = ipc::crossbeam_proxy(connection.receiver);
         let child = handle.take_child();
+        // Clone senders for forwarding before they're moved into Self.
+        let net_tx_fwd = net_tx.clone();
+        let media_tx_fwd = media_tx.clone();
         let worker = Self {
             event_loop_id,
             command_sender,
@@ -238,10 +246,19 @@ impl EventLoopWorker {
             stop_reply: None,
             awaiting_task_completion: false,
             pending_task_commands: VecDeque::new(),
+            net_tx,
+            media_tx,
         };
 
         // Send the event loop id to the content process so it can include it in
         // `new_traversable_info` for window.open.
+        // First message: set up direct connections to net and media.
+        // Content asserts these are present before any fetch request.
+        worker.send_command_inner(&ContentCommand::SetDirectChannels {
+            net_sender: net_tx_fwd,
+            media_sender: media_tx_fwd,
+        })?;
+
         worker.send_command_inner(&ContentCommand::SetEventLoopId(event_loop_id))?;
 
         worker.send_command_inner(&ContentCommand::SetTraceSender(trace_sender))?;
@@ -579,9 +596,21 @@ impl EventLoopWorker {
                     })
                     .map_err(|error| format!("failed to send media load request: {error}"))?;
             }
-            ContentEvent::RegisterNetResponseChannel { .. } => {
-                log::info!("event loop: received RegisterNetResponseChannel");
-                // TODO: forward sender to net extension
+            ContentEvent::RegisterNetResponseChannel { sender } => {
+                if let Err(error) = self.net_tx.send(
+                    ipc_messages::network::Request::SetContentSender { sender },
+                ) {
+                    error!("failed to forward content response channel to net: {error}");
+                }
+            }
+            ContentEvent::RegisterMediaEventChannel { sender } => {
+                if let Some(ref media_tx) = self.media_tx {
+                    if let Err(error) = media_tx.send(
+                        ipc_messages::media::MediaCommand::SetContentEventSender { sender },
+                    ) {
+                        error!("failed to forward content media channel to media: {error}");
+                    }
+                }
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
@@ -731,6 +760,8 @@ pub fn spawn_event_loop_entry(
     host: Arc<dyn Embedder>,
     webview_provider_sender: Sender<WebviewProviderMessage>,
     trace_sender: Option<TraceSender>,
+    net_tx: ipc::IpcSender<ipc_messages::network::Request>,
+    media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();
     let mut worker = EventLoopWorker::new(
@@ -743,6 +774,8 @@ pub fn spawn_event_loop_entry(
         webview_provider_sender,
         command_receiver,
         trace_sender,
+        net_tx,
+        media_tx,
     )?;
     let join_handle = thread::Builder::new()
         .name(format!("formal-web-event-loop-{event_loop_id}"))

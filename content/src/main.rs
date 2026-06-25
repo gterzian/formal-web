@@ -37,7 +37,7 @@ use ipc::run_extension;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
-    SetNetRequestSender, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    SetDirectChannels, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
@@ -302,11 +302,19 @@ fn maybe_log_input_layout_debug(document_id: DocumentId, document: &BaseDocument
     }
 }
 
+static NEXT_DIRECT_REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn new_direct_request_id() -> u64 {
+    NEXT_DIRECT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Clone)]
 struct ContentNetProvider {
     event_sender: ipc::IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     content_document_id: DocumentId,
+    net_tx: Option<ipc::IpcSender<ipc_messages::network::Request>>,
+    direct_pending: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, PendingNetworkHandler>>>>,
 }
 
 impl NetProvider for ContentNetProvider {
@@ -322,29 +330,30 @@ impl NetProvider for ContentNetProvider {
                 Err(_error) => {}
             },
             _scheme => {
-                let handler_id = new_document_fetch_id();
-                let mut local_state = self
-                    .local_state
-                    .lock()
-                    .expect("local content state mutex poisoned");
-                local_state.pending_handlers.insert(
-                    handler_id,
-                    PendingNetworkHandler::Resource {
+                let net_tx = self.net_tx.as_ref()
+                    .expect("net_tx must be set before any fetch requests — user agent should send SetNetRequestSender on startup");
+                let pending = self.direct_pending.as_ref()
+                    .expect("direct_pending must be set");
+
+                let request_id = new_direct_request_id();
+                if let Ok(mut map) = pending.lock() {
+                    map.insert(request_id, PendingNetworkHandler::Resource {
                         document_id: self.content_document_id,
                         request_url: request.url.to_string(),
                         handler,
-                    },
-                );
-                drop(local_state);
-                if let Err(error) = self.event_sender.send(ContentEvent::DocumentFetchRequested(
-                    ContentFetchRequest {
-                        handler_id,
-                        url: request.url.to_string(),
-                        method: request.method.to_string(),
-                        body: request_body_string(&request.body),
-                    },
-                )) {
-                    error!("failed to send document fetch request to the embedder: {error}");
+                    });
+                }
+
+                let fetch_request = ContentFetchRequest {
+                    handler_id: new_document_fetch_id(),
+                    url: request.url.to_string(),
+                    method: request.method.to_string(),
+                    body: request_body_string(&request.body),
+                };
+                if let Err(error) = net_tx.send(
+                    ipc_messages::network::Request::Fetch { request_id, request: fetch_request }
+                ) {
+                    error!("failed to send direct fetch request to net: {error}");
                 }
             }
         }
@@ -404,12 +413,14 @@ pub(crate) struct ContentProcess {
     /// Modules from instantiate requests, needed for exports creation.
     pending_wasm_modules: HashMap<u64, wasmtime::Module>,
 
-    /// Shared registry mapping (document_id, node_id) → VideoPaintId.
-    /// Populated by `resource_selection_algorithm` during JS execution
-    /// and read by `build_frame_composition_metadata` during rendering.
-    /// One Rc is kept here; clones are placed on GlobalScope during
-    /// document creation.
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+    /// Direct sender to the net extension.
+    net_tx: Option<ipc::IpcSender<ipc_messages::network::Request>>,
+    /// Direct sender to the media extension.
+    media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    /// Pending handlers for direct net requests (keyed by request_id).
+    direct_pending_handlers:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, PendingNetworkHandler>>>,
 }
 
 impl ContentProcess {
@@ -438,6 +449,11 @@ impl ContentProcess {
             wasm_worker: WasmWorker::new(wasmtime::Engine::default(), wasm_signal_sender),
             pending_wasm_requests: HashMap::new(),
             pending_wasm_modules: HashMap::new(),
+            net_tx: None,
+            media_tx: None,
+            direct_pending_handlers: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -487,6 +503,8 @@ impl ContentProcess {
                 event_sender: self.event_sender.clone(),
                 local_state: Arc::clone(&self.local_state),
                 content_document_id: document_id,
+                net_tx: self.net_tx.clone(),
+                direct_pending: Some(self.direct_pending_handlers.clone()),
             })),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
@@ -2082,6 +2100,10 @@ impl ContentProcess {
                 handler_id,
                 response,
             } => {
+                // Fallback path: response arrived via user agent (before
+                // SetContentSender was registered at net).  Once the direct
+                // channel is set up, all subsequent responses arrive via
+                // the direct listener thread instead.
                 self.complete_document_fetch(handler_id, response)?;
                 Ok(true)
             }
@@ -2089,9 +2111,11 @@ impl ContentProcess {
                 self.fail_document_fetch(handler_id)?;
                 Ok(true)
             }
-            SetNetRequestSender { sender } => {
-                log::info!("content: received direct net sender");
-                // TODO: store sender and use ContentNetProvider directly
+            SetDirectChannels { net_sender, media_sender } => {
+                self.setup_direct_net(net_sender)?;
+                if let Some(media_tx) = media_sender {
+                    self.media_tx = Some(media_tx);
+                }
                 Ok(true)
             }
             Shutdown => {
@@ -2100,6 +2124,61 @@ impl ContentProcess {
             }
         }
     }
+}
+
+impl ContentProcess {
+    fn setup_direct_net(
+        &mut self,
+        net_tx: ipc::IpcSender<ipc_messages::network::Request>,
+    ) -> Result<(), String> {
+        self.net_tx = Some(net_tx);
+
+        // Create response channel.  Sender goes to user agent (→ net);
+        // receiver stays local for the listener thread.
+        let (resp_tx, resp_rx) = ipc::channel::<ipc_messages::network::Response>()
+            .map_err(|error| format!("failed to create net response channel: {error}"))?;
+
+        if let Err(error) = self
+            .event_sender
+            .send(ContentEvent::RegisterNetResponseChannel { sender: resp_tx })
+        {
+            error!("failed to register net response channel: {error}");
+        }
+
+        let pending = self.direct_pending_handlers.clone();
+        std::thread::Builder::new()
+            .name("formal-web:direct-net-resp".into())
+            .spawn(move || loop {
+                match resp_rx.recv() {
+                    Ok(incoming) => {
+                        let response = incoming.payload;
+                        if let Ok(mut map) = pending.lock() {
+                            if let Some(pending_handler) = map.remove(&response.request_id) {
+                                drop(map);
+                                if let PendingNetworkHandler::Resource { request_url, handler, .. } = pending_handler {
+                                    match response.result {
+                                        Ok(fetch_resp) => {
+                                            handler.bytes(
+                                                fetch_resp.final_url,
+                                                Bytes::from(fetch_resp.body),
+                                            );
+                                        }
+                                        Err(_) => {
+                                            handler.bytes(request_url, Bytes::new());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            })
+            .map_err(|error| format!("failed to spawn net response listener: {error}"))?;
+
+        Ok(())
+    }
+
 }
 
 fn content_token_from_args() -> Result<Option<String>, String> {

@@ -10,11 +10,9 @@ pub enum Request {
         request_id: u64,
         request: FetchRequest,
     },
-    /// Direct-response channel from content process.
-    /// Net sends fetch responses directly to content instead of
-    /// routing through the user agent.
+    /// Sender for sending fetch responses directly to a content process.
     SetContentSender {
-        response_sender: ipc::IpcSender<FetchResponse>,
+        sender: ipc::IpcSender<Response>,
     },
     Shutdown,
 }

@@ -173,6 +173,11 @@ fn handle_command<B: MediaBackend>(
                 log::error!("failed to destroy pipeline {pipeline_id:?}: {error}");
             }
         }
+        MediaCommand::SetContentEventSender { sender } => {
+            log::info!("media: received direct content event sender");
+            // TODO: store sender and send events directly
+            let _ = sender;
+        }
         MediaCommand::Shutdown => {
             return true;
         }
