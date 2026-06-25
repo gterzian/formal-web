@@ -1,5 +1,5 @@
 use ipc::run_extension;
-use ipc_messages::content::{FetchRequest, FetchResponse};
+use ipc_messages::content::{Command as ContentCommand, FetchRequest, FetchResponse};
 use ipc_messages::network::{Request, Response};
 use reqwest::Method;
 use reqwest::blocking::Client;
@@ -97,9 +97,8 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
 
     ipc::run_extension::<Request, Response>(&token, move |server| {
         let mut _trace_sender: Option<TraceSender> = None;
-        let response_sender = server.connection.sender.clone();
         let request_receiver = ipc::crossbeam_proxy(server.connection.receiver);
-        let mut content_sender: Option<ipc::IpcSender<Response>> = None;
+        let mut content_command_sender: Option<ipc::IpcSender<ContentCommand>> = None;
 
         loop {
             match request_receiver.recv() {
@@ -110,19 +109,39 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                             _trace_sender = trace_sender;
                         }
                         Request::Fetch {
-                            request_id,
+                            request_id: _request_id,
                             request,
                         } => {
+                            let handler_id = request.handler_id;
+                            let content_tx = content_command_sender.as_ref().expect(
+                                "SetContentSender must arrive before any fetch requests"
+                            );
                             let result = fetch_request(&client, &request);
-                            let target = content_sender.as_ref().unwrap_or(&response_sender);
-                            if let Err(error) = target.send(Response { request_id, result }) {
-                                log::error!("failed to send fetch response: {error}");
-                                break;
+                            match result {
+                                Ok(fetch_resp) => {
+                                    if let Err(error) = content_tx.send(
+                                        ContentCommand::CompleteDocumentFetch {
+                                            handler_id,
+                                            response: fetch_resp,
+                                        },
+                                    ) {
+                                        log::error!("failed to send direct fetch response: {error}");
+                                        break;
+                                    }
+                                }
+                                Err(error) => {
+                                    if let Err(e) = content_tx.send(
+                                        ContentCommand::FailDocumentFetch { handler_id },
+                                    ) {
+                                        log::error!("failed to send direct fetch failure: {e}");
+                                        break;
+                                    }
+                                }
                             }
                         }
                         Request::SetContentSender { sender } => {
-                            log::info!("net: received direct content response sender");
-                            content_sender = Some(sender);
+                            log::info!("net: received direct content command sender");
+                            content_command_sender = Some(sender);
                         }
                         Request::Shutdown => break,
                     }

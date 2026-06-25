@@ -1,4 +1,4 @@
-use crate::content::{FetchRequest, FetchResponse};
+use crate::content::{Command, FetchRequest, FetchResponse};
 use ipc::IpcSender;
 use serde::{Deserialize, Serialize};
 use verification::TraceSender;
@@ -10,9 +10,10 @@ pub enum Request {
         request_id: u64,
         request: FetchRequest,
     },
-    /// Sender for sending fetch responses directly to a content process.
+    /// Sender for sending commands directly to a content process.
+    /// Net sends Command::CompleteDocumentFetch directly to content.
     SetContentSender {
-        sender: ipc::IpcSender<Response>,
+        sender: ipc::IpcSender<Command>,
     },
     Shutdown,
 }

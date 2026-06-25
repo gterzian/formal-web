@@ -227,6 +227,18 @@ impl EventLoopWorker {
         let command_sender = connection.sender.clone();
         let event_receiver = ipc::crossbeam_proxy(connection.receiver);
         let child = handle.take_child();
+        // Clone command sender for net (net sends responses as commands).
+        let content_command_sender = connection.sender.clone();
+        // Give net a clone of the content command sender so it can send
+        // responses directly as Command::CompleteDocumentFetch.
+        // Must happen before `net_tx` is moved into Self below.
+        if let Err(error) = net_tx.send(
+            ipc_messages::network::Request::SetContentSender {
+                sender: content_command_sender,
+            },
+        ) {
+            error!("failed to send content sender to net: {error}");
+        }
         // Clone senders for forwarding before they're moved into Self.
         let net_tx_fwd = net_tx.clone();
         let media_tx_fwd = media_tx.clone();
@@ -250,18 +262,10 @@ impl EventLoopWorker {
             media_tx,
         };
 
-        // Send the event loop id to the content process so it can include it in
-        // `new_traversable_info` for window.open.
-        // First message: set up direct connections to net and media.
-        // Content asserts these are present before any fetch request.
-        worker.send_command_inner(&ContentCommand::SetDirectChannels {
+        worker.send_command_inner(&ContentCommand::DirectChannelsSetup {
             net_sender: net_tx_fwd,
             media_sender: media_tx_fwd,
         })?;
-
-        worker.send_command_inner(&ContentCommand::SetEventLoopId(event_loop_id))?;
-
-        worker.send_command_inner(&ContentCommand::SetTraceSender(trace_sender))?;
 
         if let Some(snapshot) = worker.host.window_viewport_snapshot() {
             let command = viewport_command(snapshot);
@@ -596,22 +600,7 @@ impl EventLoopWorker {
                     })
                     .map_err(|error| format!("failed to send media load request: {error}"))?;
             }
-            ContentEvent::RegisterNetResponseChannel { sender } => {
-                if let Err(error) = self.net_tx.send(
-                    ipc_messages::network::Request::SetContentSender { sender },
-                ) {
-                    error!("failed to forward content response channel to net: {error}");
-                }
-            }
-            ContentEvent::RegisterMediaEventChannel { sender } => {
-                if let Some(ref media_tx) = self.media_tx {
-                    if let Err(error) = media_tx.send(
-                        ipc_messages::media::MediaCommand::SetContentEventSender { sender },
-                    ) {
-                        error!("failed to forward content media channel to media: {error}");
-                    }
-                }
-            }
+
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
 

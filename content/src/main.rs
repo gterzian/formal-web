@@ -36,8 +36,8 @@ use html5ever::local_name;
 use ipc::run_extension;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
-    DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
-    SetDirectChannels, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    DestroyDocument, DirectChannelsSetup, DispatchEvent, EvaluateScript, FailDocumentFetch,
+    RunWindowTimer, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
@@ -2111,11 +2111,9 @@ impl ContentProcess {
                 self.fail_document_fetch(handler_id)?;
                 Ok(true)
             }
-            SetDirectChannels { net_sender, media_sender } => {
-                self.setup_direct_net(net_sender)?;
-                if let Some(media_tx) = media_sender {
-                    self.media_tx = Some(media_tx);
-                }
+            DirectChannelsSetup { .. } => {
+                // Handled before the event loop in run_content_process.
+                debug_assert!(false, "DirectChannelsSetup should not reach handle_command");
                 Ok(true)
             }
             Shutdown => {
@@ -2124,61 +2122,6 @@ impl ContentProcess {
             }
         }
     }
-}
-
-impl ContentProcess {
-    fn setup_direct_net(
-        &mut self,
-        net_tx: ipc::IpcSender<ipc_messages::network::Request>,
-    ) -> Result<(), String> {
-        self.net_tx = Some(net_tx);
-
-        // Create response channel.  Sender goes to user agent (→ net);
-        // receiver stays local for the listener thread.
-        let (resp_tx, resp_rx) = ipc::channel::<ipc_messages::network::Response>()
-            .map_err(|error| format!("failed to create net response channel: {error}"))?;
-
-        if let Err(error) = self
-            .event_sender
-            .send(ContentEvent::RegisterNetResponseChannel { sender: resp_tx })
-        {
-            error!("failed to register net response channel: {error}");
-        }
-
-        let pending = self.direct_pending_handlers.clone();
-        std::thread::Builder::new()
-            .name("formal-web:direct-net-resp".into())
-            .spawn(move || loop {
-                match resp_rx.recv() {
-                    Ok(incoming) => {
-                        let response = incoming.payload;
-                        if let Ok(mut map) = pending.lock() {
-                            if let Some(pending_handler) = map.remove(&response.request_id) {
-                                drop(map);
-                                if let PendingNetworkHandler::Resource { request_url, handler, .. } = pending_handler {
-                                    match response.result {
-                                        Ok(fetch_resp) => {
-                                            handler.bytes(
-                                                fetch_resp.final_url,
-                                                Bytes::from(fetch_resp.body),
-                                            );
-                                        }
-                                        Err(_) => {
-                                            handler.bytes(request_url, Bytes::new());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => break,
-                }
-            })
-            .map_err(|error| format!("failed to spawn net response listener: {error}"))?;
-
-        Ok(())
-    }
-
 }
 
 fn content_token_from_args() -> Result<Option<String>, String> {
@@ -2202,10 +2145,28 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         let event_sender = server.connection.sender.clone();
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
-        // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
-        let placeholder_id = EventLoopId::from_u128(0);
+        // Block on the first message — must be DirectChannelsSetup.
+        let (net_tx, media_tx, event_loop_id) = match cmd_rx.recv() {
+            Ok(incoming) => match incoming.payload {
+                DirectChannelsSetup { net_sender, media_sender } => {
+                    (Some(net_sender), media_sender, EventLoopId::from_u128(0))
+                }
+                other => {
+                    panic!(
+                        "first message must be DirectChannelsSetup, got: {other:?}"
+                    );
+                }
+            },
+            Err(_) => return Err("command channel closed before DirectChannelsSetup".into()),
+        };
 
-        let mut process = ContentProcess::new(event_sender, wasm_signal_sender, placeholder_id);
+        let mut process = ContentProcess::new(event_sender, wasm_signal_sender, event_loop_id);
+        process.net_tx = net_tx;
+        process.media_tx = media_tx;
+        // Create direct pending handlers map for request_id → handler lookup.
+        process.direct_pending_handlers = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
 
         loop {
             crossbeam_channel::select! {
