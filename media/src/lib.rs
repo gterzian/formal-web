@@ -203,8 +203,6 @@ fn media_token_from_args() -> Result<Option<String>, String> {
 
 pub fn run_media_process_from_args() -> Result<(), String> {
     let token = media_token_from_args()?;
-    let server = ipc::run_extension::<MediaCommand, MediaEvent>(&token.unwrap_or_default())
-    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
     #[cfg(feature = "backend-gstreamer")]
     let backend = backend::gstreamer::GStreamerBackend::init()
@@ -214,10 +212,12 @@ pub fn run_media_process_from_args() -> Result<(), String> {
     let backend = backend::avfoundation::AvfBackend::init()
         .map_err(|error| format!("AVFoundation init failed: {error}"))?;
 
-    run_media_process(
-        backend,
-        ipc::crossbeam_proxy(server.receiver().clone()),
-        server.sender().clone(),
-    );
-    Ok(())
+    ipc::run_extension::<MediaCommand, MediaEvent>(&token.unwrap_or_default(), |server| {
+        run_media_process(
+            backend,
+            ipc::crossbeam_proxy(server.receiver().clone()),
+            server.sender().clone(),
+        );
+        Ok(())
+    })
 }

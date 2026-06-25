@@ -16,10 +16,6 @@ compile_error!(
 );
 
 /// Launch an extension process and return its handle plus the first connection.
-///
-/// The parent side: creates the bootstrap rendezvous, spawns the child
-/// process via [`ExtensionManifest::spawn`], and waits for the child to
-/// connect.
 pub fn launch_extension<M, Out, In>(
     manifest: &M,
 ) -> Result<(ExtensionHandle, IpcConnection<Out, In>), IpcError>
@@ -43,14 +39,29 @@ where
     }
 }
 
-/// Run as an extension process. Called by the child process on startup.
+/// Run an extension process.
 ///
-/// The child side: connects back to the parent's bootstrap rendezvous and
-/// returns an [`ExtensionServer`] with the established channel pair.
+/// Connects to the parent's bootstrap rendezvous, establishes the IPC channel,
+/// then calls `run` with the resulting [`ExtensionServer`].  The `run`
+/// callback implements the business logic of the extension (event loop,
+/// request handling, etc.).
 ///
-/// No manifest needed — the child doesn't spawn anything, it only
-/// connects.  The transport backend is selected at compile time.
+/// This is the entry point for the child process — called from `main()` or
+/// from a C FFI bridge on BEK.
 pub fn run_extension<Out, In>(
+    token: &str,
+    run: impl FnOnce(ExtensionServer<In, Out>) -> Result<(), String>,
+) -> Result<(), String>
+where
+    Out: IpcSerialize + DeserializeOwned + Send + 'static,
+    In: IpcSerialize + DeserializeOwned + Send + 'static,
+{
+    let server = bootstrap_extension::<Out, In>(token)
+        .map_err(|error| format!("ipc bootstrap failed: {error}"))?;
+    run(server)
+}
+
+fn bootstrap_extension<Out, In>(
     token: &str,
 ) -> Result<ExtensionServer<In, Out>, IpcError>
 where

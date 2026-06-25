@@ -2110,67 +2110,65 @@ fn content_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// Run the content process using the new IPC abstraction layer.
+/// Run the content extension.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    let server = run_extension::<Command, ContentEvent>(&token)
-    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
-
-    let event_sender = server.sender().clone();
-    let cmd_rx = ipc::crossbeam_proxy(server.receiver().clone());
-
-    // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
-    let placeholder_id = EventLoopId::from_u128(0);
-
-    // Set up a crossbeam channel for the wasm worker to signal results.
     let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
 
-    let mut process = ContentProcess::new(event_sender, wasm_signal_sender, placeholder_id);
+    ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
+        let event_sender = server.sender().clone();
+        let cmd_rx = ipc::crossbeam_proxy(server.receiver().clone());
 
-    loop {
-        crossbeam_channel::select! {
-            recv(cmd_rx) -> cmd => {
-                match cmd {
-                    Ok(incoming) => {
-                        let command = incoming.payload;
-                        let notify = matches!(
-                            &command,
-                            CreateEmptyDocument { .. }
-                                | CreateLoadedDocument { .. }
-                                | DestroyDocument { .. }
-                                | DispatchEvent { .. }
-                                | Command::RunBeforeUnload { .. }
-                                | UpdateTheRendering { .. }
-                                | RunWindowTimer { .. }
-                                | CompleteDocumentFetch { .. }
-                                | FailDocumentFetch { .. }
-                        );
-                        match process.handle_command(command) {
-                            Ok(true) => {
-                                if notify {
-                                    let _ = process.note_command_completed();
+        // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
+        let placeholder_id = EventLoopId::from_u128(0);
+
+        let mut process = ContentProcess::new(event_sender, wasm_signal_sender, placeholder_id);
+
+        loop {
+            crossbeam_channel::select! {
+                recv(cmd_rx) -> cmd => {
+                    match cmd {
+                        Ok(incoming) => {
+                            let command = incoming.payload;
+                            let notify = matches!(
+                                &command,
+                                CreateEmptyDocument { .. }
+                                    | CreateLoadedDocument { .. }
+                                    | DestroyDocument { .. }
+                                    | DispatchEvent { .. }
+                                    | Command::RunBeforeUnload { .. }
+                                    | UpdateTheRendering { .. }
+                                    | RunWindowTimer { .. }
+                                    | CompleteDocumentFetch { .. }
+                                    | FailDocumentFetch { .. }
+                            );
+                            match process.handle_command(command) {
+                                Ok(true) => {
+                                    if notify {
+                                        let _ = process.note_command_completed();
+                                    }
                                 }
-                            }
-                            Ok(false) => break,
-                            Err(error) => {
-                                error!("content error: {error}");
-                                if notify {
-                                    let _ = process.note_command_completed();
+                                Ok(false) => break,
+                                Err(error) => {
+                                    error!("content error: {error}");
+                                    if notify {
+                                        let _ = process.note_command_completed();
+                                    }
                                 }
                             }
                         }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
+                }
+                recv(wasm_rx) -> _ => {
+                    process.drain_all_pending_wasm_requests();
+                    process.drain_wasm_results();
                 }
             }
-            recv(wasm_rx) -> _ => {
-                process.drain_all_pending_wasm_requests();
-                process.drain_wasm_results();
-            }
         }
-    }
 
-    process.drain_wasm_results();
-    Ok(())
+        process.drain_wasm_results();
+        Ok(())
+    })
 }
 
 pub fn run_content_process_from_args() -> Result<(), String> {

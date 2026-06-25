@@ -90,45 +90,43 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
 }
 
 pub fn run_net_process_v2(token: String) -> Result<(), String> {
-    let server = run_extension::<Request, Response>(&token)
-        .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
-
-    let mut _trace_sender: Option<TraceSender> = None;
-
     let client = Client::builder()
         .resolve("localhost", SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .build()
         .map_err(|error| format!("failed to build reqwest client: {error}"))?;
 
-    let response_sender = server.sender().clone();
-    let request_receiver = ipc::crossbeam_proxy(server.receiver().clone());
+    ipc::run_extension::<Request, Response>(&token, move |server| {
+        let mut _trace_sender: Option<TraceSender> = None;
+        let response_sender = server.sender().clone();
+        let request_receiver = ipc::crossbeam_proxy(server.receiver().clone());
 
-    loop {
-        match request_receiver.recv() {
-            Ok(incoming) => {
-                let request = incoming.payload;
-                match request {
-                    Request::SetTraceSender(trace_sender) => {
-                        _trace_sender = trace_sender;
-                    }
-                    Request::Fetch {
-                        request_id,
-                        request,
-                    } => {
-                        let result = fetch_request(&client, &request);
-                        if let Err(error) = response_sender.send(Response { request_id, result }) {
-                            log::error!("failed to send fetch response: {error}");
-                            break;
+        loop {
+            match request_receiver.recv() {
+                Ok(incoming) => {
+                    let request = incoming.payload;
+                    match request {
+                        Request::SetTraceSender(trace_sender) => {
+                            _trace_sender = trace_sender;
                         }
+                        Request::Fetch {
+                            request_id,
+                            request,
+                        } => {
+                            let result = fetch_request(&client, &request);
+                            if let Err(error) = response_sender.send(Response { request_id, result }) {
+                                log::error!("failed to send fetch response: {error}");
+                                break;
+                            }
+                        }
+                        Request::Shutdown => break,
                     }
-                    Request::Shutdown => break,
                 }
+                Err(_) => break,
             }
-            Err(_) => break,
         }
-    }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn run_net_process_from_args() -> Result<(), String> {
