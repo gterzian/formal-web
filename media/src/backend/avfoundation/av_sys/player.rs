@@ -23,18 +23,6 @@ impl AvPlayer {
         Self { inner }
     }
 
-    /// Create an AVPlayer using new_unchecked.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure all AVPlayer access is serialized on a
-    /// single thread.
-    pub(crate) unsafe fn new(url: &NSURL) -> Self {
-        let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let inner = unsafe { AVPlayer::playerWithURL(url, mtm) };
-        Self { inner }
-    }
-
     /// Start or resume playback.
     pub(crate) fn play(&self) {
         unsafe { self.inner.play() };
