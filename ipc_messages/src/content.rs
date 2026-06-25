@@ -1,12 +1,12 @@
 use crate::media::VideoEmbedData;
 use anyrender::{
-    recording::{GlyphRunCommand, RenderCommand},
     Scene,
+    recording::{GlyphRunCommand, RenderCommand},
 };
 
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fmt;
 use uuid::Uuid;
 use verification::TraceSender;
@@ -905,8 +905,8 @@ mod tests {
         FrameCompositionMetadata, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
         PaintTransportSummary, SceneSummary, WebviewId,
     };
-    use anyrender::{recording::RenderCommand, Glyph, PaintScene, Scene};
-    use peniko::{kurbo::Affine, Color, Fill, FontData};
+    use anyrender::{Glyph, PaintScene, Scene, recording::RenderCommand};
+    use peniko::{Color, Fill, FontData, kurbo::Affine};
 
     fn scene_with_glyph(font: &FontData, glyph_id: u16, x: f32, y: f32) -> Scene {
         let mut scene = Scene::new();

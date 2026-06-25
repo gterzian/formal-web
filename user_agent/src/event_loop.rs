@@ -399,7 +399,6 @@ impl EventLoopWorker {
         incoming_shmem: &HashMap<usize, ipc::IpcSharedRegion>,
     ) -> Result<bool, String> {
         match event {
-
             ContentEvent::WindowTimerRequested(request) => {
                 // Content already ran the timer initialization algorithm far enough to assign
                 // the timer id, key, and nesting level; the timer worker owns the host-side wait.

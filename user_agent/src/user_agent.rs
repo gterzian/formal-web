@@ -902,7 +902,6 @@ pub enum UserAgentCommand {
     Shutdown {
         reply: Sender<Result<(), String>>,
     },
-
 }
 
 /// Public handle to the dedicated user-agent thread that owns browser-global state and worker
@@ -1356,140 +1355,137 @@ impl UserAgentWorker {
     fn run(&mut self) {
         loop {
             select! {
-                recv(self.command_receiver) -> command => {
-                    let Ok(command) = command else { break; };
-                    match command {
-                UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
-                    self.create_a_fresh_top_level_traversable(destination_url);
-                }
-                UserAgentCommand::Navigate {
-                    event_loop_id,
-                    request,
-                } => {
-                    self.handle_navigate(event_loop_id, request);
-                }
-                UserAgentCommand::CompleteBeforeUnload { result } => {
-                    self.handle_complete_before_unload(result);
-                }
-                UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
-                    self.handle_finalize_cross_document_navigation(finalized);
-                }
-                UserAgentCommand::ClickElement {
-                    traversable_id,
-                    selector,
-                    reply,
-                } => {
-                    self.handle_click_element(traversable_id, selector, reply);
-                }
-                UserAgentCommand::EvaluateScript {
-                    traversable_id,
-                    source,
-                    timeout,
-                    reply,
-                } => {
-                    self.handle_evaluate_script(traversable_id, source, timeout, reply);
-                }
-                UserAgentCommand::BroadcastViewport { snapshot } => {
-                    self.handle_set_default_viewport(snapshot);
-                }
-                UserAgentCommand::SetTraversableViewport {
-                    traversable_id,
-                    snapshot,
-                    offset_x,
-                    offset_y,
-                } => {
-                    self.handle_set_traversable_viewport(
+                    recv(self.command_receiver) -> command => {
+                        let Ok(command) = command else { break; };
+                        match command {
+                    UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
+                        self.create_a_fresh_top_level_traversable(destination_url);
+                    }
+                    UserAgentCommand::Navigate {
+                        event_loop_id,
+                        request,
+                    } => {
+                        self.handle_navigate(event_loop_id, request);
+                    }
+                    UserAgentCommand::CompleteBeforeUnload { result } => {
+                        self.handle_complete_before_unload(result);
+                    }
+                    UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
+                        self.handle_finalize_cross_document_navigation(finalized);
+                    }
+                    UserAgentCommand::ClickElement {
+                        traversable_id,
+                        selector,
+                        reply,
+                    } => {
+                        self.handle_click_element(traversable_id, selector, reply);
+                    }
+                    UserAgentCommand::EvaluateScript {
+                        traversable_id,
+                        source,
+                        timeout,
+                        reply,
+                    } => {
+                        self.handle_evaluate_script(traversable_id, source, timeout, reply);
+                    }
+                    UserAgentCommand::BroadcastViewport { snapshot } => {
+                        self.handle_set_default_viewport(snapshot);
+                    }
+                    UserAgentCommand::SetTraversableViewport {
                         traversable_id,
                         snapshot,
                         offset_x,
                         offset_y,
-                    );
-                }
-                UserAgentCommand::DispatchEventFor {
-                    traversable_id,
-                    event,
-                } => {
-                    self.handle_dispatch_event_for(traversable_id, event);
-                }
-                UserAgentCommand::RenderingOpportunityFor { traversable_id } => {
-                    self.handle_rendering_opportunity_for(traversable_id);
-                }
-                UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
-                    self.handle_navigation_fetch_completed(fetch_id, response);
-                }
-                UserAgentCommand::NavigationFetchFailed { fetch_id } => {
-                    self.handle_navigation_fetch_failed(fetch_id);
-                }
-                UserAgentCommand::WindowTimerTask {
-                    event_loop_id,
-                    document_id,
-                    timer_id,
-                    timer_key,
-                    nesting_level,
-                } => {
-                    self.handle_window_timer_task(
+                    } => {
+                        self.handle_set_traversable_viewport(
+                            traversable_id,
+                            snapshot,
+                            offset_x,
+                            offset_y,
+                        );
+                    }
+                    UserAgentCommand::DispatchEventFor {
+                        traversable_id,
+                        event,
+                    } => {
+                        self.handle_dispatch_event_for(traversable_id, event);
+                    }
+                    UserAgentCommand::RenderingOpportunityFor { traversable_id } => {
+                        self.handle_rendering_opportunity_for(traversable_id);
+                    }
+                    UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
+                        self.handle_navigation_fetch_completed(fetch_id, response);
+                    }
+                    UserAgentCommand::NavigationFetchFailed { fetch_id } => {
+                        self.handle_navigation_fetch_failed(fetch_id);
+                    }
+                    UserAgentCommand::WindowTimerTask {
                         event_loop_id,
                         document_id,
                         timer_id,
                         timer_key,
                         nesting_level,
-                    );
-                }
+                    } => {
+                        self.handle_window_timer_task(
+                            event_loop_id,
+                            document_id,
+                            timer_id,
+                            timer_key,
+                            nesting_level,
+                        );
+                    }
 
-                UserAgentCommand::MediaLoadRequested {
-                    url,
-                    document_id: _document_id,
-                    traversable_id,
-                    video_paint_id,
-                } => {
-                    debug!(
-                        "[media] UA received MediaLoadRequested url={} traversable={}",
-                        url, traversable_id
-                    );
-                    self.handle_media_load_requested(url, traversable_id, video_paint_id);
-                }
-                UserAgentCommand::IframeTraversableRemoved {
-                    parent_traversable_id,
-                    content_navigable_id,
-                    content_frame_id,
-                    reply,
-                } => {
-                    self.handle_iframe_traversable_removed(
+                    UserAgentCommand::MediaLoadRequested {
+                        url,
+                        document_id: _document_id,
+                        traversable_id,
+                        video_paint_id,
+                    } => {
+                        debug!(
+                            "[media] UA received MediaLoadRequested url={} traversable={}",
+                            url, traversable_id
+                        );
+                        self.handle_media_load_requested(url, traversable_id, video_paint_id);
+                    }
+                    UserAgentCommand::IframeTraversableRemoved {
                         parent_traversable_id,
                         content_navigable_id,
                         content_frame_id,
                         reply,
-                    );
-                }
-                UserAgentCommand::Shutdown { reply } => {
-                    self.handle_shutdown(reply);
-                    break;
-                }
-            }
-        }
-                recv(self.net_response_receiver) -> response => {
-                    let Ok(incoming) = response else { break; };
-                    self.handle_net_navigation_response(incoming.payload);
-                }
-                recv(self.media_event_receiver) -> event => {
-                    let Ok(mut incoming) = event else { break; };
-                    // Extract video frame data from shared memory before forwarding.
-                    if let ipc_messages::media::MediaEvent::Frame(video_frame) = &mut incoming.payload {
-                        if let Some(region) = incoming.shmem_regions.get(&0) {
-                            video_frame.data = region.as_slice().to_vec();
-                        }
+                    } => {
+                        self.handle_iframe_traversable_removed(
+                            parent_traversable_id,
+                            content_navigable_id,
+                            content_frame_id,
+                            reply,
+                        );
                     }
-                    self.handle_media_event(incoming.payload);
+                    UserAgentCommand::Shutdown { reply } => {
+                        self.handle_shutdown(reply);
+                        break;
+                    }
                 }
             }
+                    recv(self.net_response_receiver) -> response => {
+                        let Ok(incoming) = response else { break; };
+                        self.handle_net_navigation_response(incoming.payload);
+                    }
+                    recv(self.media_event_receiver) -> event => {
+                        let Ok(mut incoming) = event else { break; };
+                        // Extract video frame data from shared memory before forwarding.
+                        if let ipc_messages::media::MediaEvent::Frame(video_frame) = &mut incoming.payload {
+                            if let Some(region) = incoming.shmem_regions.get(&0) {
+                                video_frame.data = region.as_slice().to_vec();
+                            }
+                        }
+                        self.handle_media_event(incoming.payload);
+                    }
+                }
         }
     }
 
     /// Handle a navigation fetch response received directly from the net process.
-    fn handle_net_navigation_response(
-        &mut self,
-        response: ipc_messages::network::Response,
-    ) {
+    fn handle_net_navigation_response(&mut self, response: ipc_messages::network::Response) {
         let Some(fetch_id) = self
             .pending_navigation_fetches_by_request_id
             .remove(&response.request_id)
@@ -2036,13 +2032,14 @@ impl UserAgentWorker {
         let request_id = uuid::Uuid::new_v4();
         self.pending_navigation_fetches_by_request_id
             .insert(request_id, fetch_id);
-        if let Err(error) = self.network_extension_sender.send(
-            ipc_messages::network::Request::Fetch {
-                request_id,
-                request: request.to_content_fetch_request(),
-                reply_to: ipc_messages::network::ResponseRecipient::UserAgent,
-            },
-        ) {
+        if let Err(error) =
+            self.network_extension_sender
+                .send(ipc_messages::network::Request::Fetch {
+                    request_id,
+                    request: request.to_content_fetch_request(),
+                    reply_to: ipc_messages::network::ResponseRecipient::UserAgent,
+                })
+        {
             self.pending_navigation_fetches_by_request_id
                 .remove(&request_id);
             let _ = self
@@ -3608,9 +3605,7 @@ impl UserAgentWorker {
 
         // Shut down the media extension directly.
         if let Some(media_sender) = &self.media_extension_sender {
-            if let Err(error) = media_sender.send(
-                ipc_messages::media::MediaCommand::Shutdown,
-            ) {
+            if let Err(error) = media_sender.send(ipc_messages::media::MediaCommand::Shutdown) {
                 shutdown_result = Err(format!("failed to request media shutdown: {error}"));
             }
 
@@ -3669,14 +3664,14 @@ impl UserAgentWorker {
             "[media] load requested url={} traversable={} pipeline={:?} paint={:?}",
             url, traversable_id.0, pipeline_id, video_paint_id,
         );
-        if let Err(error) = media_sender.send(
-            ipc_messages::media::MediaCommand::CreatePipeline { pipeline_id, url }
-        ) {
+        if let Err(error) = media_sender
+            .send(ipc_messages::media::MediaCommand::CreatePipeline { pipeline_id, url })
+        {
             error!("failed to send CreatePipeline to media extension: {error}");
         }
-        if let Err(error) = media_sender.send(
-            ipc_messages::media::MediaCommand::Play { pipeline_id }
-        ) {
+        if let Err(error) =
+            media_sender.send(ipc_messages::media::MediaCommand::Play { pipeline_id })
+        {
             error!("failed to send Play to media worker: {error}");
         }
     }

@@ -4,6 +4,7 @@ pub(crate) mod ui_event;
 
 pub mod css;
 pub mod dom;
+pub(crate) mod fetch;
 pub mod html;
 pub mod infra;
 pub mod js;
@@ -2137,8 +2138,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
         // First message must be ContentBootstrap.
-        let (network_extension_sender, _media_sender, content_command_sender,
-             trace_sender) =
+        let (network_extension_sender, _media_sender, content_command_sender, trace_sender) =
             match cmd_rx.recv() {
                 Ok(incoming) => {
                     match incoming.payload {
@@ -2147,7 +2147,12 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                             media_sender,
                             content_command_sender,
                             trace_sender,
-                        } => (net_sender, media_sender, content_command_sender, trace_sender),
+                        } => (
+                            net_sender,
+                            media_sender,
+                            content_command_sender,
+                            trace_sender,
+                        ),
                         other => {
                             error!("first message must be ContentBootstrap, got: {other:?}");
                             debug_assert!(false, "wrong first message: {other:?}");

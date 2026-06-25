@@ -13,7 +13,7 @@ pub enum ResponseRecipient {
         handler_id: DocumentFetchId,
     },
     /// Net sends Response through the bidirectional IPC response channel
-    /// (the UA's fetch worker listens on this channel).
+    /// (the user agent's event loop receives on this channel).
     UserAgent,
 }
 

@@ -1,8 +1,8 @@
 use ipc_messages::content::{Command as ContentCommand, FetchRequest, FetchResponse};
 use ipc_messages::network::{Request, Response, ResponseRecipient};
+use reqwest::Method;
 use reqwest::blocking::Client;
 use reqwest::header::CONTENT_TYPE;
-use reqwest::Method;
 use std::env;
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -88,10 +88,6 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
 }
 
 /// Route a fetch result to the caller based on `ResponseRecipient`.
-///
-/// `ipc_response_sender` is the bidirectional IPC response sender; it is used
-/// for `ResponseRecipient::UserAgent` (navigation fetches from the UA's fetch
-/// worker that listen on the IPC response channel).
 fn route_response(
     request_id: uuid::Uuid,
     reply_to: ResponseRecipient,
@@ -116,13 +112,9 @@ fn route_response(
                     .map_err(|error| format!("failed to route fetch failure to content: {error}"))
             }
         },
-        ResponseRecipient::UserAgent => {
-            // Navigation fetch: send Response back through the bidirectional IPC channel
-            // that the UA's fetch worker listens on.
-            ipc_response_sender
-                .send(Response { request_id, result })
-                .map_err(|error| format!("failed to route response to UA: {error}"))
-        }
+        ResponseRecipient::UserAgent => ipc_response_sender
+            .send(Response { request_id, result })
+            .map_err(|error| format!("failed to route response to UA: {error}")),
     }
 }
 
@@ -142,7 +134,6 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                     let request = incoming.payload;
                     match request {
                         Request::SetTraceSender(trace_sender) => {
-                            // trace_sender is silently dropped — no one reads it
                             let _ = trace_sender;
                         }
                         Request::Fetch {
