@@ -313,8 +313,8 @@ struct ContentNetProvider {
     event_sender: ipc::IpcSender<ContentEvent>,
     local_state: LocalContentStateRef,
     content_document_id: DocumentId,
-    net_tx: Option<ipc::IpcSender<ipc_messages::network::Request>>,
-    direct_pending: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, PendingNetworkHandler>>>>,
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
 }
 
 impl NetProvider for ContentNetProvider {
@@ -330,28 +330,32 @@ impl NetProvider for ContentNetProvider {
                 Err(_error) => {}
             },
             _scheme => {
-                let net_tx = self.net_tx.as_ref()
-                    .expect("net_tx must be set before any fetch requests — user agent should send SetNetRequestSender on startup");
-                let pending = self.direct_pending.as_ref()
-                    .expect("direct_pending must be set");
-
-                let request_id = new_direct_request_id();
-                if let Ok(mut map) = pending.lock() {
-                    map.insert(request_id, PendingNetworkHandler::Resource {
+                let handler_id = new_document_fetch_id();
+                let mut local_state = self
+                    .local_state
+                    .lock()
+                    .expect("local content state mutex poisoned");
+                local_state.pending_handlers.insert(
+                    handler_id,
+                    PendingNetworkHandler::Resource {
                         document_id: self.content_document_id,
                         request_url: request.url.to_string(),
                         handler,
-                    });
-                }
+                    },
+                );
+                drop(local_state);
 
                 let fetch_request = ContentFetchRequest {
-                    handler_id: new_document_fetch_id(),
+                    handler_id,
                     url: request.url.to_string(),
                     method: request.method.to_string(),
                     body: request_body_string(&request.body),
                 };
-                if let Err(error) = net_tx.send(
-                    ipc_messages::network::Request::Fetch { request_id, request: fetch_request }
+                if let Err(error) = self.network_extension_sender.send(
+                    ipc_messages::network::Request::Fetch {
+                        request_id: new_direct_request_id(),
+                        request: fetch_request,
+                    },
                 ) {
                     error!("failed to send direct fetch request to net: {error}");
                 }
@@ -414,13 +418,10 @@ pub(crate) struct ContentProcess {
     pending_wasm_modules: HashMap<u64, wasmtime::Module>,
 
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
-    /// Direct sender to the net extension.
-    net_tx: Option<ipc::IpcSender<ipc_messages::network::Request>>,
+    /// Direct sender to the net extension. Set during DirectChannelsSetup.
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     /// Direct sender to the media extension.
-    media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
-    /// Pending handlers for direct net requests (keyed by request_id).
-    direct_pending_handlers:
-        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, PendingNetworkHandler>>>,
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
 }
 
 impl ContentProcess {
@@ -428,6 +429,8 @@ impl ContentProcess {
         event_sender: ipc::IpcSender<ContentEvent>,
         wasm_signal_sender: crossbeam_channel::Sender<()>,
         event_loop_id: EventLoopId,
+        network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+        media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     ) -> Self {
         let clipboard_cache = new_clipboard_cache();
         Self {
@@ -449,11 +452,8 @@ impl ContentProcess {
             wasm_worker: WasmWorker::new(wasmtime::Engine::default(), wasm_signal_sender),
             pending_wasm_requests: HashMap::new(),
             pending_wasm_modules: HashMap::new(),
-            net_tx: None,
-            media_tx: None,
-            direct_pending_handlers: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            network_extension_sender,
+            media_extension_sender,
         }
     }
 
@@ -503,8 +503,8 @@ impl ContentProcess {
                 event_sender: self.event_sender.clone(),
                 local_state: Arc::clone(&self.local_state),
                 content_document_id: document_id,
-                net_tx: self.net_tx.clone(),
-                direct_pending: Some(self.direct_pending_handlers.clone()),
+                network_extension_sender: self.network_extension_sender.clone(),
+                media_extension_sender: self.media_extension_sender.clone(),
             })),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
@@ -2100,10 +2100,6 @@ impl ContentProcess {
                 handler_id,
                 response,
             } => {
-                // Fallback path: response arrived via user agent (before
-                // SetContentSender was registered at net).  Once the direct
-                // channel is set up, all subsequent responses arrive via
-                // the direct listener thread instead.
                 self.complete_document_fetch(handler_id, response)?;
                 Ok(true)
             }
@@ -2145,28 +2141,36 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         let event_sender = server.connection.sender.clone();
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
-        // Block on the first message — must be DirectChannelsSetup.
-        let (net_tx, media_tx, event_loop_id) = match cmd_rx.recv() {
-            Ok(incoming) => match incoming.payload {
-                DirectChannelsSetup { net_sender, media_sender } => {
-                    (Some(net_sender), media_sender, EventLoopId::from_u128(0))
-                }
+        // First message must be DirectChannelsSetup.
+        let (network_extension_sender, media_extension_sender) = match cmd_rx.recv() {
+            Ok(incoming) => {
+                match incoming.payload {
+                    DirectChannelsSetup { net_sender, media_sender } => {
+                        (net_sender, media_sender)
+                    }
                 other => {
-                    panic!(
+                    error!(
                         "first message must be DirectChannelsSetup, got: {other:?}"
                     );
+                    debug_assert!(false, "wrong first message: {other:?}");
+                    return Err("wrong first message, expected DirectChannelsSetup".into());
                 }
-            },
-            Err(_) => return Err("command channel closed before DirectChannelsSetup".into()),
+            }  // closes match incoming.payload
+        },  // closes Ok arm
+        Err(_) => return Err("command channel closed before DirectChannelsSetup".into()),
         };
 
-        let mut process = ContentProcess::new(event_sender, wasm_signal_sender, event_loop_id);
-        process.net_tx = net_tx;
-        process.media_tx = media_tx;
-        // Create direct pending handlers map for request_id → handler lookup.
-        process.direct_pending_handlers = std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        ));
+        // Notify the user agent that the bootstrap command was handled.
+        let _ = event_sender.send(ContentEvent::CommandCompleted);
+
+        let event_loop_id = EventLoopId::from_u128(0);
+        let mut process = ContentProcess::new(
+            event_sender,
+            wasm_signal_sender,
+            event_loop_id,
+            network_extension_sender,
+            media_extension_sender,
+        );
 
         loop {
             crossbeam_channel::select! {

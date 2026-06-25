@@ -1259,10 +1259,10 @@ struct UserAgentWorker {
     media_command_sender: Sender<MediaCommand>,
     media_join_handle: Option<JoinHandle<()>>,
     /// IPC sender to the net extension (for direct content connections).
-    net_tx: ipc::IpcSender<ipc_messages::network::Request>,
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     /// IPC sender to the media extension (for direct content connections).
     #[allow(dead_code)]
-    media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// Maps media pipeline IDs to their owning webview and paint ID, so that
     /// incoming video frames can be routed to the correct compositor slot.
     pipeline_to_webview: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
@@ -1291,19 +1291,19 @@ impl UserAgentWorker {
         trace_sender: Option<TraceSender>,
     ) -> Self {
         // Start net extension (must happen before spawning fetch worker).
-        let (net_tx, net_rx, net_child) = crate::fetch::start_net_extension(trace_sender.clone())
+        let (network_extension_sender, net_rx, net_child) = crate::fetch::start_net_extension(trace_sender.clone())
             .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
 
         let (fetch_command_sender, fetch_command_receiver) = unbounded();
         let fetch_user_agent_command_sender = user_agent_command_sender.clone();
-        let fetch_net_tx = net_tx.clone();
+        let fetch_network_extension_sender = network_extension_sender.clone();
         let fetch_join_handle = thread::Builder::new()
             .name(String::from("formal-web:fetch"))
             .spawn(move || {
                 run_fetch_thread(
                     fetch_command_receiver,
                     fetch_user_agent_command_sender,
-                    fetch_net_tx,
+                    fetch_network_extension_sender,
                     net_rx,
                     net_child,
                 )
@@ -1325,19 +1325,19 @@ impl UserAgentWorker {
 
         let (media_command_sender, media_command_receiver) = unbounded();
         #[cfg(feature = "media")]
-        let (media_tx, media_join_handle) = {
-            let (media_tx, media_rx, media_child) =
+        let (media_extension_sender, media_join_handle) = {
+            let (media_extension_sender, media_rx, media_child) =
                 crate::media::start_media_extension()
                     .unwrap_or_else(|error| panic!("failed to start media extension: {error}"));
             let media_ua_sender = user_agent_command_sender.clone();
-            let media_tx_for_thread = media_tx.clone();
+            let media_extension_sender_for_thread = media_extension_sender.clone();
             let handle = thread::Builder::new()
                 .name(String::from("formal-web:media"))
                 .spawn(move || {
                     run_media_thread(
                         media_command_receiver,
                         media_ua_sender,
-                        media_tx_for_thread,
+                        media_extension_sender_for_thread,
                         media_rx,
                         media_child,
                     )
@@ -1345,10 +1345,10 @@ impl UserAgentWorker {
                 .unwrap_or_else(|error| {
                     panic!("failed to spawn formal-web-media thread: {error}")
                 });
-            (Some(media_tx), Some(handle))
+            (Some(media_extension_sender), Some(handle))
         };
         #[cfg(not(feature = "media"))]
-        let (media_tx, media_join_handle): (Option<_>, Option<thread::JoinHandle<()>>) = (None, None);
+        let (media_extension_sender, media_join_handle): (Option<_>, Option<thread::JoinHandle<()>>) = (None, None);
 
         Self {
             state: UserAgentState::default(),
@@ -1371,8 +1371,8 @@ impl UserAgentWorker {
             ),
             trace_sender,
             next_automation_request_id: 1,
-            net_tx,
-            media_tx,
+            network_extension_sender,
+            media_extension_sender,
         }
     }
 
@@ -1569,8 +1569,8 @@ impl UserAgentWorker {
             self.host.clone(),
             self.webview_provider_sender.clone(),
             self.trace_sender.clone(),
-            self.net_tx.clone(),
-            self.media_tx.clone(),
+            self.network_extension_sender.clone(),
+            self.media_extension_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is

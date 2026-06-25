@@ -113,9 +113,14 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                             request,
                         } => {
                             let handler_id = request.handler_id;
-                            let content_tx = content_command_sender.as_ref().expect(
-                                "SetContentSender must arrive before any fetch requests"
-                            );
+                            let content_tx = match content_command_sender.as_ref() {
+                                Some(s) => s,
+                                None => {
+                                    log::error!("SetContentSender not set before fetch");
+                                    debug_assert!(false, "SetContentSender must arrive before fetch");
+                                    break;
+                                }
+                            };
                             let result = fetch_request(&client, &request);
                             match result {
                                 Ok(fetch_resp) => {
@@ -140,7 +145,6 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                             }
                         }
                         Request::SetContentSender { sender } => {
-                            log::info!("net: received direct content command sender");
                             content_command_sender = Some(sender);
                         }
                         Request::Shutdown => break,

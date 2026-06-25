@@ -176,10 +176,10 @@ struct EventLoopWorker {
     awaiting_task_completion: bool,
     pending_task_commands: VecDeque<PendingTaskCommand>,
     /// IPC sender to the net extension (for forwarding response channels).
-    net_tx: ipc::IpcSender<ipc_messages::network::Request>,
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     /// IPC sender to the media extension.
     #[allow(dead_code)]
-    media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
@@ -213,8 +213,8 @@ impl EventLoopWorker {
         webview_provider_sender: Sender<WebviewProviderMessage>,
         command_receiver: Receiver<EventLoopCommand>,
         trace_sender: Option<TraceSender>,
-        net_tx: ipc::IpcSender<ipc_messages::network::Request>,
-        media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+        network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+        media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     ) -> Result<Self, String> {
         let manifest = crate::ipc_manifest::ContentExtensionManifest::new(process_label);
         let (mut handle, connection) = ipc::ExtensionHandle::launch::<
@@ -231,8 +231,8 @@ impl EventLoopWorker {
         let content_command_sender = connection.sender.clone();
         // Give net a clone of the content command sender so it can send
         // responses directly as Command::CompleteDocumentFetch.
-        // Must happen before `net_tx` is moved into Self below.
-        if let Err(error) = net_tx.send(
+        // Must happen before `network_extension_sender` is moved into Self below.
+        if let Err(error) = network_extension_sender.send(
             ipc_messages::network::Request::SetContentSender {
                 sender: content_command_sender,
             },
@@ -240,8 +240,8 @@ impl EventLoopWorker {
             error!("failed to send content sender to net: {error}");
         }
         // Clone senders for forwarding before they're moved into Self.
-        let net_tx_fwd = net_tx.clone();
-        let media_tx_fwd = media_tx.clone();
+        let network_extension_sender_fwd = network_extension_sender.clone();
+        let media_extension_sender_fwd = media_extension_sender.clone();
         let worker = Self {
             event_loop_id,
             command_sender,
@@ -258,13 +258,13 @@ impl EventLoopWorker {
             stop_reply: None,
             awaiting_task_completion: false,
             pending_task_commands: VecDeque::new(),
-            net_tx,
-            media_tx,
+            network_extension_sender,
+            media_extension_sender,
         };
 
         worker.send_command_inner(&ContentCommand::DirectChannelsSetup {
-            net_sender: net_tx_fwd,
-            media_sender: media_tx_fwd,
+            net_sender: network_extension_sender_fwd,
+            media_sender: media_extension_sender_fwd,
         })?;
 
         if let Some(snapshot) = worker.host.window_viewport_snapshot() {
@@ -749,8 +749,8 @@ pub fn spawn_event_loop_entry(
     host: Arc<dyn Embedder>,
     webview_provider_sender: Sender<WebviewProviderMessage>,
     trace_sender: Option<TraceSender>,
-    net_tx: ipc::IpcSender<ipc_messages::network::Request>,
-    media_tx: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();
     let mut worker = EventLoopWorker::new(
@@ -763,8 +763,8 @@ pub fn spawn_event_loop_entry(
         webview_provider_sender,
         command_receiver,
         trace_sender,
-        net_tx,
-        media_tx,
+        network_extension_sender,
+        media_extension_sender,
     )?;
     let join_handle = thread::Builder::new()
         .name(format!("formal-web-event-loop-{event_loop_id}"))
