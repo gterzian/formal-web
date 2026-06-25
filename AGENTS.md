@@ -138,7 +138,11 @@ rustup run 1.94.0 cargo build --release
 rustup run 1.94.0 cargo run --release
 ```
 
-Without media:
+On macOS, `cargo build --release` uses AVFoundation by default (no GStreamer
+required).  GStreamer is still available as an opt-in (see `media/README.md`).
+On Linux, GStreamer is the only available backend.
+
+Without media (no video playback):
 
 ```bash
 rustup run 1.94.0 cargo build --release --no-default-features
@@ -151,7 +155,21 @@ rustup run 1.94.0 cargo run --release -- --no-default-features
 cargo build --release -p content --bin formal-web-content
 cargo build --release -p net     --bin formal-web-net
 cargo build --release -p embedder --bin formal-web-embedder
-cargo build --release -p media   --bin formal-web-media
+```
+
+Media binary (built implicitly by `cargo build --release` with the default
+platform backend; override explicitly when switching backends):
+
+```bash
+# macOS: AVFoundation (default) — no special flags needed
+cargo build --release -p media --bin formal-web-media
+
+# macOS: GStreamer (opt-in)
+cargo build --release -p media --bin formal-web-media \
+  --no-default-features --features backend-gstreamer
+
+# Linux: GStreamer (only backend) — no special flags needed
+cargo build --release -p media --bin formal-web-media
 ```
 
 ### External dependencies: blitz and anyrender

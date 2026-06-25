@@ -209,13 +209,44 @@ fn media_token_from_args() -> Result<Option<String>, String> {
 pub fn run_media_process_from_args() -> Result<(), String> {
     let token = media_token_from_args()?;
 
-    #[cfg(feature = "backend-gstreamer")]
+    // Backend selection priority:
+    //   1. Apple platforms → AVFoundation (when available — always on Apple)
+    //   2. Non-Apple or explicit GStreamer → GStreamer
+    //
+    // On Apple the `avf_default` cfg is emitted by build.rs when no backend
+    // feature is explicitly selected.  If both features are enabled (e.g.
+    // during a unified workspace build where defaults leak), the first `let`
+    // wins (AVFoundation) because Rust evaluates `#[cfg]` in source order
+    // and the last matching block shadows earlier ones.
+
+    #[cfg(all(
+        any(feature = "backend-avfoundation", avf_default),
+        any(target_os = "macos", target_os = "ios")
+    ))]
+    let backend = backend::avfoundation::AvfBackend::init()
+        .map_err(|error| format!("AVFoundation init failed: {error}"))?;
+
+    #[cfg(any(
+        feature = "backend-gstreamer",
+        not(any(target_os = "macos", target_os = "ios"))
+    ))]
     let backend = backend::gstreamer::GStreamerBackend::init()
         .map_err(|error| format!("GStreamer init failed: {error}"))?;
 
-    #[cfg(feature = "backend-avfoundation")]
-    let backend = backend::avfoundation::AvfBackend::init()
-        .map_err(|error| format!("AVFoundation init failed: {error}"))?;
+    #[cfg(not(any(
+        all(
+            any(feature = "backend-avfoundation", avf_default),
+            any(target_os = "macos", target_os = "ios")
+        ),
+        any(
+            feature = "backend-gstreamer",
+            not(any(target_os = "macos", target_os = "ios"))
+        )
+    )))]
+    compile_error!(
+        "No media backend available. Enable backend-avfoundation (macOS) \
+         or backend-gstreamer (Linux)."
+    );
 
     ipc::run_extension::<MediaCommand, MediaEvent>(&token.unwrap_or_default(), |server| {
         let receiver = ipc::crossbeam_proxy(server.connection.receiver);
