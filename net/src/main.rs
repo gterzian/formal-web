@@ -97,8 +97,10 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
 
     ipc::run_extension::<Request, Response>(&token, move |server| {
         let mut _trace_sender: Option<TraceSender> = None;
-        let response_sender = server.sender().clone();
-        let request_receiver = ipc::crossbeam_proxy(server.receiver().clone());
+        let response_sender = server.connection.sender.clone();
+        let request_receiver = ipc::crossbeam_proxy(server.connection.receiver);
+        // Note: the clone above would fail once IpcReceiver stops being Clone.
+        // For now it works via the Clone impl. TODO: move receiver instead.
 
         loop {
             match request_receiver.recv() {
@@ -117,6 +119,10 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                                 log::error!("failed to send fetch response: {error}");
                                 break;
                             }
+                        }
+                        Request::SetContentSender { .. } => {
+                            log::info!("net: received SetContentSender (direct response channel)");
+                            // TODO: store sender and use for direct responses
                         }
                         Request::Shutdown => break,
                     }

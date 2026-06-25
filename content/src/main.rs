@@ -37,7 +37,7 @@ use ipc::run_extension;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
-    SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    SetNetRequestSender, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
@@ -2089,6 +2089,11 @@ impl ContentProcess {
                 self.fail_document_fetch(handler_id)?;
                 Ok(true)
             }
+            SetNetRequestSender { sender } => {
+                log::info!("content: received direct net sender");
+                // TODO: store sender and use ContentNetProvider directly
+                Ok(true)
+            }
             Shutdown => {
                 self.note_shutdown_completed()?;
                 Ok(false)
@@ -2115,8 +2120,8 @@ pub fn run_content_process(token: String) -> Result<(), String> {
     let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
 
     ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
-        let event_sender = server.sender().clone();
-        let cmd_rx = ipc::crossbeam_proxy(server.receiver().clone());
+        let event_sender = server.connection.sender.clone();
+        let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
         // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
         let placeholder_id = EventLoopId::from_u128(0);

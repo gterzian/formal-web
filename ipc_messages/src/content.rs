@@ -6,6 +6,7 @@ use anyrender::{
 
 use peniko::FontData;
 use serde::{Deserialize, Serialize};
+use ipc::IpcSender;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fmt;
 use uuid::Uuid;
@@ -862,6 +863,13 @@ pub enum Command {
     FailDocumentFetch {
         handler_id: DocumentFetchId,
     },
+    /// Direct sender to the net extension.
+    /// Content sends fetch requests directly to net via this sender,
+    /// bypassing the user agent.  Responses arrive on a channel that
+    /// content sets up separately.
+    SetNetRequestSender {
+        sender: ipc::IpcSender<crate::network::Request>,
+    },
     Shutdown,
 }
 
@@ -882,6 +890,12 @@ pub enum Event {
     CommandCompleted,
     MediaLoadRequested(MediaLoadRequest),
     PaintReady(PaintFrame),
+    /// Content registers its direct-response channel with the net extension.
+    /// The user agent forwards this sender to net so responses arrive
+    /// directly at content without routing through the user agent.
+    RegisterNetResponseChannel {
+        sender: ipc::IpcSender<crate::network::Response>,
+    },
     ShutdownCompleted,
 }
 

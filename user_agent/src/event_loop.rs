@@ -219,11 +219,14 @@ impl EventLoopWorker {
         >(&manifest)
         .map_err(|error| format!("failed to start content extension: {error}"))?;
 
+        let command_sender = connection.sender.clone();
+        let event_receiver = ipc::crossbeam_proxy(connection.receiver);
+        let child = handle.take_child();
         let worker = Self {
             event_loop_id,
-            command_sender: connection.sender.clone(),
-            event_receiver: ipc::crossbeam_proxy(connection.receiver.clone()),
-            child: handle.take_child(),
+            command_sender,
+            event_receiver,
+            child,
             user_agent_command_sender,
             fetch_command_sender,
             timer_command_sender,
@@ -575,6 +578,10 @@ impl EventLoopWorker {
                         video_paint_id: request.video_paint_id,
                     })
                     .map_err(|error| format!("failed to send media load request: {error}"))?;
+            }
+            ContentEvent::RegisterNetResponseChannel { .. } => {
+                log::info!("event loop: received RegisterNetResponseChannel");
+                // TODO: forward sender to net extension
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }

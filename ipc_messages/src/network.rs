@@ -1,4 +1,5 @@
 use crate::content::{FetchRequest, FetchResponse};
+use ipc::IpcSender;
 use serde::{Deserialize, Serialize};
 use verification::TraceSender;
 
@@ -8,6 +9,12 @@ pub enum Request {
     Fetch {
         request_id: u64,
         request: FetchRequest,
+    },
+    /// Direct-response channel from content process.
+    /// Net sends fetch responses directly to content instead of
+    /// routing through the user agent.
+    SetContentSender {
+        response_sender: ipc::IpcSender<FetchResponse>,
     },
     Shutdown,
 }

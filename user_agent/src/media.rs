@@ -55,12 +55,10 @@ fn start_media_extension() -> Result<
         )
         .map_err(|error| format!("failed to start media extension: {error}"))?;
 
+    let sender = connection.sender.clone();
+    let receiver = connection.receiver;
     let child = handle.take_child();
-    Ok((
-        connection.sender.clone(),
-        ipc::crossbeam_proxy(connection.receiver.clone()),
-        child,
-    ))
+    Ok((sender, ipc::crossbeam_proxy(receiver), child))
 }
 
 impl MediaWorker {

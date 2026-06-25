@@ -213,11 +213,9 @@ pub fn run_media_process_from_args() -> Result<(), String> {
         .map_err(|error| format!("AVFoundation init failed: {error}"))?;
 
     ipc::run_extension::<MediaCommand, MediaEvent>(&token.unwrap_or_default(), |server| {
-        run_media_process(
-            backend,
-            ipc::crossbeam_proxy(server.receiver().clone()),
-            server.sender().clone(),
-        );
+        let receiver = ipc::crossbeam_proxy(server.connection.receiver);
+        let sender = server.connection.sender.clone();
+        run_media_process(backend, receiver, sender);
         Ok(())
     })
 }
