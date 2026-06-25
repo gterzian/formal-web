@@ -102,21 +102,14 @@ where
 
 // ── run_extension (child side) ──────────────────────────────────────────────
 
-pub fn run_extension<M, Out, In>(
-    manifest: &M,
+pub fn run_extension<Out, In>(
     _token: &str,
     service_name: &str,
 ) -> Result<ExtensionServer<In, Out>, IpcError>
 where
-    M: ExtensionManifest,
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
     In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
-    // Only Singleton (launchd-registered) services reach this module.
-    let ExtensionEndpoint::Singleton { .. } = manifest.endpoint() else {
-        unreachable!("MultiInstance should be handled before reaching xpc::run_extension")
-    };
-
     run_listen_extension::<Out, In>(service_name)
 }
 

@@ -1,24 +1,9 @@
 pub mod backend;
 
 use backend::{BackendEvent, MediaBackend, PipelineHandle};
-use ipc::ExtensionEndpoint;
 use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
 use std::collections::HashMap;
 use std::env;
-
-// ---------------------------------------------------------------------------
-// IPC manifest
-// ---------------------------------------------------------------------------
-
-struct MediaExtensionManifest;
-
-impl ipc::ExtensionManifest for MediaExtensionManifest {
-    fn endpoint(&self) -> ExtensionEndpoint {
-        ExtensionEndpoint::Singleton {
-            service_name: "formal-web.media",
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Generic run loop
@@ -218,9 +203,7 @@ fn media_token_from_args() -> Result<Option<String>, String> {
 
 pub fn run_media_process_from_args() -> Result<(), String> {
     let token = media_token_from_args()?;
-    let manifest = MediaExtensionManifest;
-    let server = ipc::run_extension::<MediaExtensionManifest, MediaCommand, MediaEvent>(
-        &manifest,
+    let server = ipc::run_extension::<MediaCommand, MediaEvent>(
         &token.unwrap_or_default(),
         "formal-web.media",
     )
@@ -236,7 +219,7 @@ pub fn run_media_process_from_args() -> Result<(), String> {
 
     run_media_process(
         backend,
-        server.receiver().clone().into_crossbeam(),
+        ipc::crossbeam_proxy(server.receiver().clone()),
         server.sender().clone(),
     );
     Ok(())

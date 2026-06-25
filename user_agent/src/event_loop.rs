@@ -222,7 +222,7 @@ impl EventLoopWorker {
         let worker = Self {
             event_loop_id,
             command_sender: client.sender.clone(),
-            event_receiver: client.receiver.clone().into_crossbeam(),
+            event_receiver: ipc::crossbeam_proxy(client.receiver.clone()),
             child: client.take_child(),
             user_agent_command_sender,
             fetch_command_sender,

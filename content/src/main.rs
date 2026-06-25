@@ -33,7 +33,7 @@ use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 
-use ipc::{ExtensionEndpoint, ExtensionManifest, run_extension};
+use ipc::run_extension;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
     DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch, RunWindowTimer,
@@ -2110,31 +2110,16 @@ fn content_token_from_args() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-struct ContentExtensionManifest;
-
-impl ExtensionManifest for ContentExtensionManifest {
-    fn endpoint(&self) -> ExtensionEndpoint {
-        ExtensionEndpoint::MultiInstance {
-            service_name: "com.formal-web.app.content",
-        }
-    }
-}
-
 /// Run the content process using the new IPC abstraction layer.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    let manifest = ContentExtensionManifest;
-
-    let server = run_extension::<ContentExtensionManifest, Command, ContentEvent>(
-        &manifest,
+    let server = run_extension::<Command, ContentEvent>(
         &token,
         "com.formal-web.app.content",
     )
     .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
-    // server.tx sends ContentEvent to parent (server's Out = parent's In)
-    // server.rx receives Command from parent (server's In = parent's Out)
     let event_sender = server.sender().clone();
-    let cmd_rx = server.receiver().clone().into_crossbeam();
+    let cmd_rx = ipc::crossbeam_proxy(server.receiver().clone());
 
     // The event loop id is sent by the UA via SetEventLoopId command after bootstrap.
     let placeholder_id = EventLoopId::from_u128(0);

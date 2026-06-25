@@ -1,83 +1,10 @@
-//! Public types for the IPC abstraction layer.
-//!
-//! Each extension starts as an [`ExtensionHandle`] representing the launched
-//! process. From the handle you create [`IpcConnection`]s — one per
-//! bidirectional channel. The first connection carries the
-//! [`BootstrapPayload`] with named endpoints for additional channels.
-//!
-//! ## Backend comparison
-//!
-//! | Concept | ipc-channel | XPC | BEK (future) |
-//! |---|---|---|---|
-//! | `ExtensionHandle` | `Option<Child>` + listener set | N/A (launchd) | BEWebContentProcess |
-//! | `create_connection()` | new one-shot server handshake | `makeLibXPCConnection()` | BEK's system call |
-//! | `IpcEndpoint` | bootstrap token string | `xpc_endpoint_t` bytes | `xpc_endpoint_t` bytes |
-//!
-//! ## Direct connections architecture
-//!
-//! Content processes talk directly to net and media processes instead of
-//! routing through the user_agent. The user_agent owns all extension
-//! handles and creates the connections, then sends net/media endpoints to
-//! content via the bootstrap message on the first connection.
-
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crossbeam_channel::Receiver;
 use ipc_channel::ipc::IpcSharedMemory;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
 
 use crate::IpcError;
-
-/// A serializable token that represents one end of an anonymous IPC
-/// connection. The creator's handle holds the listener end; the recipient
-/// calls [`IpcEndpoint::accept()`] to get the connecting end.
-///
-/// Backend-specific:
-/// - **ipc-channel**: wraps a one-shot bootstrap server name.
-/// - **XPC**: wraps serialized `xpc_endpoint_t` bytes.
-/// - **BEK**: same as XPC.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IpcEndpoint {
-    pub(crate) data: Vec<u8>,
-}
-
-impl IpcEndpoint {
-    /// Serialize this endpoint to bytes for transport inside a bootstrap
-    /// message.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.data.clone()
-    }
-
-    /// Deserialize an endpoint from bytes received in a bootstrap message.
-    pub fn from_bytes(data: Vec<u8>) -> Self {
-        IpcEndpoint { data }
-    }
-
-    /// Accept the connecting end of this endpoint, establishing a
-    /// bidirectional connection to the creator. Called by the child
-    /// process that received the endpoint in a bootstrap message.
-    pub fn accept<Out, In>(&self) -> Result<IpcConnection<Out, In>, IpcError>
-    where
-        Out: IpcSerialize + DeserializeOwned + Send + 'static,
-        In: IpcSerialize + DeserializeOwned + Send + 'static,
-    {
-        #[cfg(feature = "ipc-channel-backend")]
-        {
-            crate::backend::ipc_channel::accept_endpoint(self)
-        }
-        #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-        {
-            crate::backend::xpc::accept_endpoint(self)
-        }
-        #[cfg(all(not(feature = "ipc-channel-backend"), not(target_vendor = "apple")))]
-        {
-            Err(IpcError::Transport("no IPC backend available".into()))
-        }
-    }
-}
-
-// ── BootstrapToken ──────────────────────────────────────────────────────────
 
 /// An opaque token representing a bootstrap server address.
 #[derive(Debug, Clone)]
@@ -91,47 +18,6 @@ impl std::fmt::Display for BootstrapToken {
     }
 }
 
-// ── BootstrapPayload ─────────────────────────────────────────────────────────
-
-/// Data sent on the first connection to an extension process.
-///
-/// Contains named [`IpcEndpoint`]s that the child should connect to for
-/// additional channels (e.g., content needs net and media endpoints).
-///
-/// The primary channel is already implicitly established by the connection
-/// that carries this payload — only *extra* channels are listed here.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BootstrapPayload {
-    /// Named endpoints for additional connections.
-    /// Common names: "net", "media", "rendering".
-    pub endpoints: HashMap<String, IpcEndpoint>,
-    /// Protocol compatibility version.
-    pub protocol_version: u32,
-}
-
-impl BootstrapPayload {
-    pub fn new() -> Self {
-        BootstrapPayload {
-            endpoints: HashMap::new(),
-            protocol_version: 1,
-        }
-    }
-
-    /// Insert a named endpoint.
-    pub fn with_endpoint(mut self, name: &str, endpoint: IpcEndpoint) -> Self {
-        self.endpoints.insert(name.to_owned(), endpoint);
-        self
-    }
-}
-
-impl Default for BootstrapPayload {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ── Identifiers ─────────────────────────────────────────────────────────────
-
 /// Identifies one content process instance among many.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ContentInstanceId {
@@ -140,22 +26,17 @@ pub struct ContentInstanceId {
     pub event_loop_id: u64,
 }
 
-// ── ExtensionEndpoint ────────────────────────────────────────────────────────
-
 /// Describes the IPC topology for an extension process.
 pub enum ExtensionEndpoint {
     Singleton { service_name: &'static str },
     MultiInstance { service_name: &'static str },
 }
 
-// ── ExtensionManifest ────────────────────────────────────────────────────────
-
 /// Manifest that describes how to start and connect to an extension process.
 pub trait ExtensionManifest {
     fn endpoint(&self) -> ExtensionEndpoint;
 
     /// Spawn the extension process, passing the bootstrap token via argv.
-    /// On the native backend, this is a no-op (launchd manages lifecycle).
     fn spawn(&self, _token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
         Err(IpcError::Transport(
             "spawn not available on this backend; launchd manages lifecycle".into(),
@@ -170,8 +51,6 @@ pub struct IpcSender<T: IpcSerialize + IpcDeserialize> {
     pub(crate) transport: IpcTransport<T>,
 }
 
-/// Wrapped IPC message that carries a payload and a map of shared memory
-/// regions indexed by `usize` keys.
 pub(crate) type IpcChannelMessage<T> = (T, HashMap<usize, IpcSharedMemory>);
 
 pub(crate) enum IpcTransport<T: IpcSerialize + IpcDeserialize> {
@@ -184,11 +63,10 @@ pub(crate) enum IpcTransport<T: IpcSerialize + IpcDeserialize> {
     },
 }
 
-// Manual Clone — the inner channel/connection types are Clone without T: Clone.
 impl<T: IpcSerialize + IpcDeserialize> Clone for IpcTransport<T> {
     fn clone(&self) -> Self {
         match self {
-            IpcTransport::IpcChannel(sender) => IpcTransport::IpcChannel(sender.clone()),
+            IpcTransport::IpcChannel(s) => IpcTransport::IpcChannel(s.clone()),
             #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
             IpcTransport::Xpc { connection, .. } => IpcTransport::Xpc {
                 connection: connection.clone(),
@@ -224,14 +102,8 @@ impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
         }
     }
 
-    /// Send a message with a map of shared memory regions.
-    ///
-    /// On the ipc-channel backend, the payload and shmem map are wrapped
-    /// in a single serde message tuple which the ipc-channel infrastructure
-    /// transfers as Mach port / fd handles (O(1) — no byte copying per region).
-    ///
-    /// On the XPC backend this is a fallback to `send()` — XPC shared memory
-    /// via `xpc_shmem_create` is unimplemented.
+    /// Send a message with shared memory regions (ipc-channel backend only;
+    /// XPC falls back to plain send).
     pub fn send_with_shmem_map(
         &self,
         message: T,
@@ -253,59 +125,94 @@ impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
     }
 }
 
-// ── IpcReceiver ─────────────────────────────────────────────────────────────
-
 /// Transport-agnostic receiver for messages from an extension process.
 ///
-/// Not tied to any particular concurrency primitive. Callers that need
-/// `crossbeam_channel::select!` convert with [`IpcReceiver::into_crossbeam`].
+/// Provides blocking and non-blocking receive.  Use
+/// [`ipc::crossbeam_proxy`](crate::crossbeam_proxy) to convert into a
+/// `crossbeam_channel::Receiver` for use with `select!`.
 pub struct IpcReceiver<T> {
-    inner: Receiver<IpcIncoming<T>>,
+    pub(crate) inner: IpcReceiverImpl<T>,
+}
+
+pub(crate) enum IpcReceiverImpl<T> {
+    /// ipc-channel backend: backed by a crossbeam channel internally
+    /// (the ROUTER callback pushes to it).
+    #[cfg(feature = "ipc-channel-backend")]
+    Crossbeam(crossbeam_channel::Receiver<IpcIncoming<T>>),
+    /// XPC backend: backed by a crossbeam channel (handler pushes to it).
+    #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+    Crossbeam(crossbeam_channel::Receiver<IpcIncoming<T>>),
 }
 
 impl<T> IpcReceiver<T> {
-    /// Create from a crossbeam channel (used by backends).
-    pub(crate) fn from_crossbeam(rx: Receiver<IpcIncoming<T>>) -> Self {
-        IpcReceiver { inner: rx }
-    }
-
     /// Block until a message arrives.
     pub fn recv(&self) -> Result<IpcIncoming<T>, IpcError> {
-        self.inner.recv().map_err(|_| IpcError::Disconnected)
+        match &self.inner {
+            #[cfg(feature = "ipc-channel-backend")]
+            IpcReceiverImpl::Crossbeam(ch) => ch.recv().map_err(|_| IpcError::Disconnected),
+            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+            IpcReceiverImpl::Crossbeam(ch) => ch.recv().map_err(|_| IpcError::Disconnected),
+        }
     }
 
-    /// Block for up to `timeout` duration.
+    /// Block for up to `timeout`.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<IpcIncoming<T>, IpcError> {
-        self.inner
-            .recv_timeout(timeout)
-            .map_err(|_| IpcError::Disconnected)
+        match &self.inner {
+            #[cfg(feature = "ipc-channel-backend")]
+            IpcReceiverImpl::Crossbeam(ch) => ch
+                .recv_timeout(timeout)
+                .map_err(|_| IpcError::Disconnected),
+            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+            IpcReceiverImpl::Crossbeam(ch) => ch
+                .recv_timeout(timeout)
+                .map_err(|_| IpcError::Disconnected),
+        }
     }
 
-    /// Try to receive without blocking.
+    /// Non-blocking receive.
     pub fn try_recv(&self) -> Result<IpcIncoming<T>, IpcError> {
-        self.inner.try_recv().map_err(|error| match error {
-            crossbeam_channel::TryRecvError::Empty => IpcError::Disconnected,
-            crossbeam_channel::TryRecvError::Disconnected => IpcError::Disconnected,
-        })
-    }
-
-    /// Convert to a crossbeam channel for use in `select!`.
-    /// Consumes the receiver.
-    pub fn into_crossbeam(self) -> Receiver<IpcIncoming<T>> {
-        self.inner
-    }
-
-    /// Borrow the inner crossbeam channel without consuming.
-    pub fn crossbeam(&self) -> &Receiver<IpcIncoming<T>> {
-        &self.inner
+        match &self.inner {
+            #[cfg(feature = "ipc-channel-backend")]
+            IpcReceiverImpl::Crossbeam(ch) => ch.try_recv().map_err(|e| match e {
+                crossbeam_channel::TryRecvError::Empty => IpcError::Disconnected,
+                crossbeam_channel::TryRecvError::Disconnected => IpcError::Disconnected,
+            }),
+            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+            IpcReceiverImpl::Crossbeam(ch) => ch.try_recv().map_err(|e| match e {
+                crossbeam_channel::TryRecvError::Empty => IpcError::Disconnected,
+                crossbeam_channel::TryRecvError::Disconnected => IpcError::Disconnected,
+            }),
+        }
     }
 }
 
 impl<T> Clone for IpcReceiver<T> {
     fn clone(&self) -> Self {
-        IpcReceiver {
-            inner: self.inner.clone(),
+        match &self.inner {
+            #[cfg(feature = "ipc-channel-backend")]
+            IpcReceiverImpl::Crossbeam(ch) => IpcReceiver {
+                inner: IpcReceiverImpl::Crossbeam(ch.clone()),
+            },
+            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+            IpcReceiverImpl::Crossbeam(ch) => IpcReceiver {
+                inner: IpcReceiverImpl::Crossbeam(ch.clone()),
+            },
         }
+    }
+}
+
+/// Convert an [`IpcReceiver`] into a `crossbeam_channel::Receiver` for use
+/// with `select!`.
+///
+/// On the ipc-channel backend the conversion is zero-cost: the inner
+/// crossbeam channel is extracted directly.  On the XPC backend a
+/// background thread is spawned to bridge the XPC event handler.
+pub fn crossbeam_proxy<T>(receiver: IpcReceiver<T>) -> crossbeam_channel::Receiver<IpcIncoming<T>> {
+    match receiver.inner {
+        #[cfg(feature = "ipc-channel-backend")]
+        IpcReceiverImpl::Crossbeam(ch) => ch,
+        #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
+        IpcReceiverImpl::Crossbeam(ch) => ch,
     }
 }
 
@@ -314,23 +221,11 @@ impl<T> Clone for IpcReceiver<T> {
 /// A single bidirectional IPC connection to an extension process.
 ///
 /// On BEK this wraps one `xpc_connection_t` obtained from
-/// `makeLibXPCConnection()`. On ipc-channel it wraps a pair of
+/// `makeLibXPCConnection()`.  On ipc-channel it wraps a pair of
 /// `IpcSender`/`IpcReceiver` established through a bootstrap handshake.
 pub struct IpcConnection<Out: IpcSerialize + IpcDeserialize, In: IpcSerialize + IpcDeserialize> {
     pub sender: IpcSender<Out>,
     pub receiver: IpcReceiver<In>,
-}
-
-// Manual Clone impl — the type params are phantom at the Clone level.
-impl<Out: IpcSerialize + IpcDeserialize, In: IpcSerialize + IpcDeserialize> Clone
-    for IpcConnection<Out, In>
-{
-    fn clone(&self) -> Self {
-        IpcConnection {
-            sender: self.sender.clone(),
-            receiver: self.receiver.clone(),
-        }
-    }
 }
 
 impl<Out: IpcSerialize + IpcDeserialize, In: IpcSerialize + IpcDeserialize> IpcConnection<Out, In> {
@@ -344,6 +239,17 @@ impl<Out: IpcSerialize + IpcDeserialize, In: IpcSerialize + IpcDeserialize> IpcC
     }
 }
 
+impl<Out: IpcSerialize + IpcDeserialize, In: IpcSerialize + IpcDeserialize> Clone
+    for IpcConnection<Out, In>
+{
+    fn clone(&self) -> Self {
+        IpcConnection {
+            sender: self.sender.clone(),
+            receiver: self.receiver.clone(),
+        }
+    }
+}
+
 // ── ExtensionHandle ─────────────────────────────────────────────────────────
 
 /// A handle to a launched extension process.
@@ -352,23 +258,25 @@ impl<Out: IpcSerialize + IpcDeserialize, In: IpcSerialize + IpcDeserialize> IpcC
 /// `BENetworkingProcess`.  On ipc-channel it holds the child process handle.
 /// On launchd XPC it is a unit type (launchd manages lifecycle).
 ///
-/// The handle can create multiple [`IpcConnection`]s to the same extension.
-/// The first connection typically carries the [`BootstrapPayload`] with
-/// named endpoints for additional channels.
+/// The handle can create additional [`IpcConnection`]s to the same extension
+/// by sending a connection request message over an existing connection.
 pub struct ExtensionHandle {
     pub(crate) inner: ExtensionHandleImpl,
 }
 
 pub(crate) enum ExtensionHandleImpl {
     /// ipc-channel backend: child process handle.
-    /// The child was spawned with a bootstrap token; the first connection
-    /// has already been established.
-    IpcChannel { child: Option<std::process::Child> },
-    /// XPC backend (launchd singleton): no process handle, launchd
-    /// manages lifecycle. Connection creation re-connects to the
-    /// Mach service.
+    IpcChannel {
+        child: Option<std::process::Child>,
+        /// The bootstrap token used for the initial connection, reused for
+        /// additional connection requests sent over the existing connection.
+        bootstrap_token: String,
+    },
+    /// XPC backend (launchd singleton): no process handle.
     #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-    XpcSingleton { service_name: &'static str },
+    XpcSingleton {
+        service_name: &'static str,
+    },
     /// BEK: opaque process handle (future).
     #[cfg(feature = "bek")]
     Bek,
@@ -376,11 +284,9 @@ pub(crate) enum ExtensionHandleImpl {
 
 impl ExtensionHandle {
     /// Start an extension process from its manifest.
-    /// This is the primary entry point for the parent process.
     /// Returns a handle and the first connection to the extension.
     pub fn launch<M, Out, In>(
         manifest: &M,
-        bootstrap: BootstrapPayload,
     ) -> Result<(Self, IpcConnection<Out, In>), IpcError>
     where
         M: ExtensionManifest,
@@ -389,16 +295,15 @@ impl ExtensionHandle {
     {
         #[cfg(feature = "ipc-channel-backend")]
         {
-            crate::backend::ipc_channel::launch_extension(manifest, bootstrap)
+            crate::backend::ipc_channel::launch_extension(manifest)
         }
         #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
         {
-            crate::backend::xpc::launch_extension(manifest, bootstrap)
+            crate::backend::xpc::launch_extension(manifest)
         }
         #[cfg(all(not(feature = "ipc-channel-backend"), not(target_vendor = "apple")))]
         {
             let _ = manifest;
-            let _ = bootstrap;
             Err(IpcError::Transport(
                 "no IPC backend available on this platform".into(),
             ))
@@ -407,32 +312,30 @@ impl ExtensionHandle {
 
     /// Create a new connection to this extension.
     ///
-    /// BEK: calls `makeLibXPCConnection()` and wraps the returned
-    /// `xpc_connection_t`.
+    /// On XPC this creates a new `xpc_connection_t` to the same Mach service.
+    /// On ipc-channel this sends a new one-shot bootstrap token over an
+    /// existing connection to the child process.
     ///
-    /// ipc-channel: creates a new one-shot bootstrap handshake. The child
-    /// must be listening for additional connections (set up during the
-    /// initial bootstrap).
+    /// # Panics
     ///
-    /// XPC launchd: creates a new connection to the Mach service by calling
-    /// `xpc_connection_create`.  The child process receives a new call to
-    /// its `handle(xpcConnection:)` entry point.
+    /// Panics if no existing connection exists to send the bootstrap request
+    /// over.  Call [`Self::launch`] first to establish at least one connection.
     pub fn create_connection<Out, In>(&self) -> Result<IpcConnection<Out, In>, IpcError>
     where
         Out: IpcSerialize + IpcDeserialize + Send + 'static,
         In: IpcSerialize + IpcDeserialize + Send + 'static,
     {
         match &self.inner {
-            ExtensionHandleImpl::IpcChannel { .. } => {
+            ExtensionHandleImpl::IpcChannel { bootstrap_token, .. } => {
                 #[cfg(feature = "ipc-channel-backend")]
                 {
-                    crate::backend::ipc_channel::create_connection(self)
+                    crate::backend::ipc_channel::create_connection::<Out, In>(bootstrap_token)
                 }
                 #[cfg(not(feature = "ipc-channel-backend"))]
                 {
-                    let _ = self;
+                    let _ = bootstrap_token;
                     Err(IpcError::Transport(
-                        "create_connection not supported with this backend".into(),
+                        "create_connection not supported on this backend".into(),
                     ))
                 }
             }
@@ -441,71 +344,25 @@ impl ExtensionHandle {
                 crate::backend::xpc::create_connection::<Out, In>(service_name)
             }
             #[cfg(feature = "bek")]
-            ExtensionHandleImpl::Bek => Err(IpcError::Transport(
-                "BEK connection creation not yet implemented".into(),
-            )),
-        }
-    }
-
-    /// Create an anonymous endpoint that another process can connect to.
-    ///
-    /// Returns a connection on the caller's side and a serializable
-    /// endpoint that can be sent to a child process. The child calls
-    /// [`IpcEndpoint::accept()`] to obtain the other end.
-    ///
-    /// Used to give content processes direct connections to net and media
-    /// processes: the user_agent creates an endpoint from the net handle,
-    /// sends it in the bootstrap payload to content, and content accepts it.
-    pub fn create_endpoint<Out, In>(
-        &self,
-    ) -> Result<(IpcConnection<Out, In>, IpcEndpoint), IpcError>
-    where
-        Out: IpcSerialize + IpcDeserialize + Send + 'static,
-        In: IpcSerialize + IpcDeserialize + Send + 'static,
-    {
-        match &self.inner {
-            ExtensionHandleImpl::IpcChannel { .. } => {
-                #[cfg(feature = "ipc-channel-backend")]
-                {
-                    crate::backend::ipc_channel::create_endpoint::<Out, In>(self)
-                }
-                #[cfg(not(feature = "ipc-channel-backend"))]
-                {
-                    let _ = self;
-                    Err(IpcError::Transport(
-                        "create_endpoint not supported with this backend".into(),
-                    ))
-                }
+            ExtensionHandleImpl::Bek => {
+                Err(IpcError::Transport(
+                    "BEK connection creation not yet implemented".into(),
+                ))
             }
-            #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-            ExtensionHandleImpl::XpcSingleton { .. } => {
-                crate::backend::xpc::create_endpoint::<Out, In>()
-            }
-            #[cfg(feature = "bek")]
-            ExtensionHandleImpl::Bek => Err(IpcError::Transport(
-                "BEK endpoint creation not yet implemented".into(),
-            )),
         }
     }
 
     /// Stop the extension process.
-    ///
-    /// BEK: calls `invalidate()` on the process handle.
-    /// ipc-channel: sends SIGTERM and waits for the child to exit.
-    /// XPC launchd: sends the Shutdown message on the connection;
-    /// the process terminates when it is done.
     pub fn invalidate(self) {
         match self.inner {
-            ExtensionHandleImpl::IpcChannel { child } => {
+            ExtensionHandleImpl::IpcChannel { child, .. } => {
                 if let Some(mut child) = child {
                     let _ = child.kill();
                     let _ = child.wait();
                 }
             }
             #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-            ExtensionHandleImpl::XpcSingleton { .. } => {
-                // launchd-managed; nothing to do.
-            }
+            ExtensionHandleImpl::XpcSingleton { .. } => {}
             #[cfg(feature = "bek")]
             ExtensionHandleImpl::Bek => {}
         }
@@ -542,7 +399,6 @@ impl IpcSharedRegion {
         Ok(IpcSharedRegion(shmem))
     }
 
-    /// Create from bytes by copying into a new shared memory region.
     pub fn from_bytes(bytes: &[u8]) -> Self {
         IpcSharedRegion(ipc_channel::ipc::IpcSharedMemory::from_bytes(bytes))
     }
@@ -552,32 +408,30 @@ impl IpcSharedRegion {
         self.0.deref()
     }
 
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { self.0.deref_mut() }
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.0.deref_mut()
     }
 
     pub fn size(&self) -> usize {
         self.0.len()
     }
 
-    /// Consume and return the inner `IpcSharedMemory`.
     pub(crate) fn into_inner(self) -> ipc_channel::ipc::IpcSharedMemory {
         self.0
     }
 
-    /// Wrap an `IpcSharedMemory` received from the ipc-channel backend.
     #[cfg_attr(not(feature = "ipc-channel-backend"), allow(dead_code))]
     pub(crate) fn from_ipc_shmem(shmem: ipc_channel::ipc::IpcSharedMemory) -> Self {
         IpcSharedRegion(shmem)
     }
 }
 
-// ── ExtensionClient (legacy adapter) ────────────────────────────────────────
+// ── ExtensionClient (temporary adapter) ─────────────────────────────────────
 
-/// Adapter returned by the legacy [`crate::start_extension`] function.
+/// Adapter returned by [`crate::start_extension`] (legacy).
 ///
-/// Wraps the new [`ExtensionHandle`] + [`IpcConnection`] into the
-/// old shape for callers that have not yet migrated.
+/// Provides accessors for the primary connection and child handle.
+/// Will be removed once all callers migrate to [`ExtensionHandle::launch`].
 pub struct ExtensionClient<
     Out: IpcSerialize + IpcDeserialize + 'static,
     In: IpcSerialize + IpcDeserialize + 'static,
@@ -586,41 +440,40 @@ pub struct ExtensionClient<
     pub connection: IpcConnection<Out, In>,
 }
 
-impl<Out: IpcSerialize + IpcDeserialize + 'static, In: IpcSerialize + IpcDeserialize + 'static>
-    ExtensionClient<Out, In>
+impl<
+        Out: IpcSerialize + IpcDeserialize + 'static,
+        In: IpcSerialize + IpcDeserialize + 'static,
+    > ExtensionClient<Out, In>
 {
-    /// The sender half of the primary connection.
     pub fn sender(&self) -> &IpcSender<Out> {
         &self.connection.sender
     }
 
-    /// The receiver half of the primary connection.
     pub fn receiver(&self) -> &IpcReceiver<In> {
         &self.connection.receiver
     }
 
-    /// The child process handle, if any.
     pub fn child(&self) -> Option<&std::process::Child> {
         match &self.handle.inner {
-            ExtensionHandleImpl::IpcChannel { child } => child.as_ref(),
+            ExtensionHandleImpl::IpcChannel { child, .. } => child.as_ref(),
             #[allow(unreachable_patterns)]
             _ => None,
         }
     }
 
-    /// Consume and return the child process handle, if any.
     pub fn take_child(&mut self) -> Option<std::process::Child> {
         match &mut self.handle.inner {
-            ExtensionHandleImpl::IpcChannel { child } => child.take(),
+            ExtensionHandleImpl::IpcChannel { child, .. } => child.take(),
             #[allow(unreachable_patterns)]
             _ => None,
         }
     }
 }
 
-// Deref to IpcConnection so `client.sender` and `client.receiver` still work.
-impl<Out: IpcSerialize + IpcDeserialize + 'static, In: IpcSerialize + IpcDeserialize + 'static>
-    std::ops::Deref for ExtensionClient<Out, In>
+impl<
+        Out: IpcSerialize + IpcDeserialize + 'static,
+        In: IpcSerialize + IpcDeserialize + 'static,
+    > std::ops::Deref for ExtensionClient<Out, In>
 {
     type Target = IpcConnection<Out, In>;
 
@@ -632,42 +485,35 @@ impl<Out: IpcSerialize + IpcDeserialize + 'static, In: IpcSerialize + IpcDeseria
 // ── ExtensionServer ─────────────────────────────────────────────────────────
 
 /// Server handle obtained by the extension process on startup.
-///
-/// Wraps the primary channel plus a map of named connections established
-/// from bootstrap endpoints (e.g., content's direct net and media channels).
 pub struct ExtensionServer<
     In: IpcSerialize + IpcDeserialize + 'static,
     Out: IpcSerialize + IpcDeserialize + 'static,
 > {
     /// Primary connection to the parent process.
     pub connection: IpcConnection<In, Out>,
-    /// Additional connections established from bootstrap endpoints.
-    /// Keyed by the name from [`BootstrapPayload::endpoints`].
-    /// Common keys: "net", "media", "rendering".
-    pub endpoints: HashMap<String, IpcConnection<In, Out>>,
     /// On the XPC backend, the listener connection must be kept alive.
     #[allow(dead_code)]
     pub(crate) _listener: Option<xpc_sys::XpcConnection>,
 }
 
-impl<In: IpcSerialize + IpcDeserialize + 'static, Out: IpcSerialize + IpcDeserialize + 'static>
-    ExtensionServer<In, Out>
+impl<
+        In: IpcSerialize + IpcDeserialize + 'static,
+        Out: IpcSerialize + IpcDeserialize + 'static,
+    > ExtensionServer<In, Out>
 {
-    /// Create a new extension server with only the primary connection.
     pub fn new(connection: IpcConnection<In, Out>) -> Self {
         ExtensionServer {
             connection,
-            endpoints: HashMap::new(),
             _listener: None,
         }
     }
 
-    /// Convenience accessor: sender to the parent (sends `In`-typed messages).
+    /// Sender to the parent (sends `In`-typed messages).
     pub fn sender(&self) -> &IpcSender<In> {
         &self.connection.sender
     }
 
-    /// Convenience accessor: receiver from the parent (receives `Out`-typed messages).
+    /// Receiver from the parent (receives `Out`-typed messages).
     pub fn receiver(&self) -> &IpcReceiver<Out> {
         &self.connection.receiver
     }

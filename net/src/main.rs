@@ -1,4 +1,4 @@
-use ipc::{ExtensionEndpoint, ExtensionManifest, run_extension};
+use ipc::run_extension;
 use ipc_messages::content::{FetchRequest, FetchResponse};
 use ipc_messages::network::{Request, Response};
 use reqwest::Method;
@@ -9,16 +9,6 @@ use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use url::Url;
 use verification::TraceSender;
-
-struct NetExtensionManifest;
-
-impl ExtensionManifest for NetExtensionManifest {
-    fn endpoint(&self) -> ExtensionEndpoint {
-        ExtensionEndpoint::Singleton {
-            service_name: "formal-web.net",
-        }
-    }
-}
 
 fn net_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
@@ -100,13 +90,8 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
 }
 
 pub fn run_net_process_v2(token: String) -> Result<(), String> {
-    let manifest = NetExtensionManifest;
-    let server = run_extension::<NetExtensionManifest, Request, Response>(
-        &manifest,
-        &token,
-        "formal-web.net",
-    )
-    .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
+    let server = run_extension::<Request, Response>(&token, "formal-web.net")
+        .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
     let mut _trace_sender: Option<TraceSender> = None;
 
@@ -115,10 +100,8 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
         .build()
         .map_err(|error| format!("failed to build reqwest client: {error}"))?;
 
-    // server.tx sends Response to parent (server's Out = parent's In)
-    // server.rx receives Request from parent (server's In = parent's Out)
     let response_sender = server.sender().clone();
-    let request_receiver = server.receiver().clone().into_crossbeam();
+    let request_receiver = ipc::crossbeam_proxy(server.receiver().clone());
 
     loop {
         match request_receiver.recv() {

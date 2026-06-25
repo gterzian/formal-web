@@ -56,7 +56,7 @@ fn start_media_extension() -> Result<
     let child = client.take_child();
     Ok((
         client.sender.clone(),
-        client.receiver.clone().into_crossbeam(),
+        ipc::crossbeam_proxy(client.receiver.clone()),
         child,
     ))
 }

@@ -1,46 +1,28 @@
-//! Backend implementations for the IPC abstraction.
-//!
-//! ## Backend selection
-//!
-//! When the `ipc-channel-backend` feature is enabled (default), all extensions
-//! use ipc-channel (Unix domain sockets + Mach ports). This works on all
-//! platforms.
-//!
-//! When the feature is disabled, only the native XPC backend is available
-//! (macOS only). Only Singleton launchd services (net, media) are supported.
-//! MultiInstance extensions (content) cannot use XPC because macOS AMFI
-//! rejects ad-hoc-signed embedded XPC services (error -423).
-
 use crate::types::{
-    BootstrapPayload, ExtensionClient, ExtensionHandle, ExtensionManifest, ExtensionServer,
-    IpcConnection, IpcSerialize,
+    ExtensionClient, ExtensionHandle, ExtensionManifest, ExtensionServer, IpcConnection,
+    IpcSerialize,
 };
+use crate::IpcError;
+use serde::de::DeserializeOwned;
 
 pub(crate) mod ipc_channel;
 
-// Only on Apple when NOT using ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
 pub(crate) mod xpc;
 
-// No backend available on non-Apple without ipc-channel-backend.
 #[cfg(all(not(feature = "ipc-channel-backend"), not(target_vendor = "apple")))]
 compile_error!(
     "non-Apple builds require --features ipc-channel-backend \
      until a native Linux transport exists"
 );
 
-use serde::de::DeserializeOwned;
-
-// ── Launch extension (new API) ───────────────────────────────────────────────
-
 /// Launch an extension process and return its handle plus the first connection.
 ///
-/// This is the standard entry point for the parent process. The `bootstrap`
-/// payload carries named endpoints for additional channels (e.g., content
-/// receives "net" and "media" endpoints).
+/// The parent side: creates the bootstrap rendezvous, spawns the child
+/// process via [`ExtensionManifest::spawn`], and waits for the child to
+/// connect.
 pub fn launch_extension<M, Out, In>(
     manifest: &M,
-    bootstrap: BootstrapPayload,
 ) -> Result<(ExtensionHandle, IpcConnection<Out, In>), IpcError>
 where
     M: ExtensionManifest,
@@ -49,75 +31,52 @@ where
 {
     #[cfg(feature = "ipc-channel-backend")]
     {
-        ipc_channel::launch_extension(manifest, bootstrap)
+        ipc_channel::launch_extension(manifest)
     }
     #[cfg(not(feature = "ipc-channel-backend"))]
     {
         match manifest.endpoint() {
-            crate::types::ExtensionEndpoint::Singleton { .. } => {
-                xpc::launch_extension(manifest, bootstrap)
-            }
+            crate::types::ExtensionEndpoint::Singleton { .. } => xpc::launch_extension(manifest),
             crate::types::ExtensionEndpoint::MultiInstance { .. } => {
-                unimplemented!(
-                    "XPC backend does not support MultiInstance (content) \
-                     extensions; use --features ipc-channel-backend"
-                )
+                unimplemented!("XPC backend does not support MultiInstance (content) extensions")
             }
         }
     }
 }
 
-// ── start_extension (legacy) ────────────────────────────────────────────────
-
 /// Legacy: start an extension and return a client handle.
-///
-/// Equivalent to [`launch_extension`] with an empty bootstrap. Retained
-/// for backward compatibility. New code should prefer [`launch_extension`].
+/// Prefer [`launch_extension`] in new code.
 pub fn start_extension<M, Out, In>(manifest: &M) -> Result<ExtensionClient<Out, In>, IpcError>
 where
     M: ExtensionManifest,
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
     In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
-    let (handle, connection) = launch_extension(manifest, BootstrapPayload::new())?;
+    let (handle, connection) = launch_extension(manifest)?;
     Ok(ExtensionClient { handle, connection })
 }
 
-// ── run_extension (child side) ─────────────────────────────────────────────
-
 /// Run as an extension process. Called by the child process on startup.
 ///
-/// Accepts the primary bootstrap connection and any additional endpoints
-/// embedded in the bootstrap payload. Returns an [`ExtensionServer`]
-/// with the primary channel and any named extra channels.
-pub fn run_extension<M, Out, In>(
-    manifest: &M,
+/// The child side: connects back to the parent's bootstrap rendezvous and
+/// returns an [`ExtensionServer`] with the established channel pair.
+///
+/// No manifest needed — the child doesn't spawn anything, it only
+/// connects.  The transport backend is selected at compile time.
+pub fn run_extension<Out, In>(
     token: &str,
     service_name: &str,
 ) -> Result<ExtensionServer<In, Out>, IpcError>
 where
-    M: ExtensionManifest,
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
     In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
     #[cfg(feature = "ipc-channel-backend")]
     {
-        ipc_channel::run_extension(manifest, token, service_name)
+        ipc_channel::run_extension::<Out, In>(token, service_name)
     }
-    #[cfg(not(feature = "ipc-channel-backend"))]
+    #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
     {
-        match manifest.endpoint() {
-            crate::types::ExtensionEndpoint::Singleton { .. } => {
-                xpc::run_extension(manifest, token, service_name)
-            }
-            crate::types::ExtensionEndpoint::MultiInstance { .. } => {
-                unimplemented!(
-                    "XPC backend does not support MultiInstance (content) \
-                     extensions; use --features ipc-channel-backend"
-                )
-            }
-        }
+        xpc::run_extension::<Out, In>(token, service_name)
     }
 }
-
-use crate::IpcError;
