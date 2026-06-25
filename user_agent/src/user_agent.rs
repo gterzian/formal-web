@@ -7,8 +7,8 @@ use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
 use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
-    BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentFetchId, DocumentId,
-    EventLoopId, FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
+    BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentId,
+    EventLoopId, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
     NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage, WindowTimerKey,
