@@ -802,7 +802,6 @@ pub enum WebviewProviderMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
-    SetTraceSender(Option<TraceSender>),
     SetEventLoopId(EventLoopId),
     SetViewport(ViewportSnapshot),
     SetTraversableViewport(TraversableViewport),
@@ -866,13 +865,17 @@ pub enum Command {
     /// Combined bootstrap message, sent as the first command.
     /// Content blocks on `cmd_rx` for this before entering its event loop.
     /// Carries net/media senders, the content process's own command sender (for
-    /// direct net→content response routing), plus initial configuration.
-    DirectChannelsSetup {
+    /// direct net→content response routing), the TLA trace sender, and initial
+    /// configuration.
+    ContentBootstrap {
         net_sender: ipc::IpcSender<crate::network::Request>,
         media_sender: Option<ipc::IpcSender<crate::media::MediaCommand>>,
         /// The content process's own command sender. Net uses this to route
         /// `CompleteDocumentFetch` directly to this content process.
         content_command_sender: ipc::IpcSender<Command>,
+        /// TLA trace sender for logging spec-level events from the content process
+        /// (e.g. RunBeforeUnload).
+        trace_sender: Option<TraceSender>,
     },
     Shutdown,
 }

@@ -248,10 +248,11 @@ impl EventLoopWorker {
             media_extension_sender,
         };
 
-        worker.send_command_inner(&ContentCommand::DirectChannelsSetup {
+        worker.send_command_inner(&ContentCommand::ContentBootstrap {
             net_sender: network_extension_sender_fwd,
             media_sender: media_extension_sender_fwd,
             content_command_sender,
+            trace_sender,
         })?;
 
         if let Some(snapshot) = worker.host.window_viewport_snapshot() {

@@ -35,8 +35,8 @@ use html5ever::local_name;
 
 use ipc::run_extension;
 use ipc_messages::content::Command::{
-    ClickElement, CompleteDocumentFetch, CreateEmptyDocument, CreateLoadedDocument,
-    DestroyDocument, DirectChannelsSetup, DispatchEvent, EvaluateScript, FailDocumentFetch,
+    ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
+    CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
     RunWindowTimer, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
@@ -432,6 +432,7 @@ impl ContentProcess {
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
         media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
         content_command_sender: ipc::IpcSender<Command>,
+        trace_sender: Option<TraceSender>,
     ) -> Self {
         let clipboard_cache = new_clipboard_cache();
         Self {
@@ -446,7 +447,7 @@ impl ContentProcess {
             active_documents_by_traversable: HashMap::new(),
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
-            navigation_tracer: TLATracer::new("Navigation", "formal-web:content", None),
+            navigation_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender),
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
@@ -465,10 +466,6 @@ impl ContentProcess {
         if let Ok(mut cache) = self.clipboard_cache.lock() {
             *cache = text;
         }
-    }
-
-    fn set_trace_sender(&mut self, trace_sender: Option<TraceSender>) {
-        self.navigation_tracer.set_sender(trace_sender);
     }
 
     fn document_viewport_state(
@@ -1987,10 +1984,7 @@ impl ContentProcess {
                 self.event_loop_id = event_loop_id;
                 Ok(true)
             }
-            Command::SetTraceSender(trace_sender) => {
-                self.set_trace_sender(trace_sender);
-                Ok(true)
-            }
+
             SetViewport(viewport) => {
                 self.set_viewport(viewport);
                 Ok(true)
@@ -2117,9 +2111,9 @@ impl ContentProcess {
                 self.fail_document_fetch(handler_id)?;
                 Ok(true)
             }
-            DirectChannelsSetup { .. } => {
+            ContentBootstrap { .. } => {
                 // Handled before the event loop in run_content_process.
-                debug_assert!(false, "DirectChannelsSetup should not reach handle_command");
+                debug_assert!(false, "ContentBootstrap should not reach handle_command");
                 Ok(true)
             }
             Shutdown => {
@@ -2151,24 +2145,26 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         let event_sender = server.connection.sender.clone();
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
-        // First message must be DirectChannelsSetup.
-        let (network_extension_sender, media_extension_sender, content_command_sender) =
+        // First message must be ContentBootstrap.
+        let (network_extension_sender, media_extension_sender, content_command_sender,
+             trace_sender) =
             match cmd_rx.recv() {
                 Ok(incoming) => {
                     match incoming.payload {
-                        DirectChannelsSetup {
+                        ContentBootstrap {
                             net_sender,
                             media_sender,
                             content_command_sender,
-                        } => (net_sender, media_sender, content_command_sender),
+                            trace_sender,
+                        } => (net_sender, media_sender, content_command_sender, trace_sender),
                         other => {
-                            error!("first message must be DirectChannelsSetup, got: {other:?}");
+                            error!("first message must be ContentBootstrap, got: {other:?}");
                             debug_assert!(false, "wrong first message: {other:?}");
-                            return Err("wrong first message, expected DirectChannelsSetup".into());
+                            return Err("wrong first message, expected ContentBootstrap".into());
                         }
                     } // closes match incoming.payload
                 } // closes Ok arm
-                Err(_) => return Err("command channel closed before DirectChannelsSetup".into()),
+                Err(_) => return Err("command channel closed before ContentBootstrap".into()),
             };
 
         // Notify the user agent that the bootstrap command was handled.
@@ -2182,6 +2178,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             network_extension_sender,
             media_extension_sender,
             content_command_sender,
+            trace_sender,
         );
 
         loop {

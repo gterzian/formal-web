@@ -1,7 +1,6 @@
 mod event_loop;
 mod fetch;
 pub(crate) mod ipc_manifest;
-pub(crate) mod media;
 mod timer;
 
 use blitz_traits::shell::ColorScheme;
@@ -32,7 +31,6 @@ use crate::event_loop::{
     EventLoopCommand, EventLoopEntry, spawn_event_loop_entry, stop_event_loop_entry,
     traversable_viewport_command,
 };
-use crate::media::{MediaCommand, run_media_thread};
 use crate::timer::{TimerCommand, run_timer_thread};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 
@@ -904,8 +902,7 @@ pub enum UserAgentCommand {
     Shutdown {
         reply: Sender<Result<(), String>>,
     },
-    /// A media event from the media process (frames, EOS, errors, duration changes).
-    MediaEvent(ipc_messages::media::MediaEvent),
+
 }
 
 /// Public handle to the dedicated user-agent thread that owns browser-global state and worker
@@ -1248,12 +1245,14 @@ struct UserAgentWorker {
         std::collections::HashMap<uuid::Uuid, NavigationFetchId>,
     timer_command_sender: Sender<TimerCommand>,
     timer_join_handle: Option<JoinHandle<()>>,
-    media_command_sender: Sender<MediaCommand>,
-    media_join_handle: Option<JoinHandle<()>>,
     /// IPC sender to the net extension (for direct content connections).
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+    /// Crossbeam proxy for media extension events.
+    media_event_receiver:
+        crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
+    /// Child process handle for the media process.
+    media_child: Option<std::process::Child>,
     /// IPC sender to the media extension (for direct content connections).
-    #[allow(dead_code)]
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// Maps media pipeline IDs to their owning webview and paint ID, so that
     /// incoming video frames can be routed to the correct compositor slot.
@@ -1300,33 +1299,30 @@ impl UserAgentWorker {
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
-        let (media_command_sender, media_command_receiver) = unbounded();
         #[cfg(feature = "media")]
-        let (media_extension_sender, media_join_handle) = {
-            let (media_extension_sender, media_rx, media_child) =
-                crate::media::start_media_extension()
-                    .unwrap_or_else(|error| panic!("failed to start media extension: {error}"));
-            let media_ua_sender = user_agent_command_sender.clone();
-            let media_extension_sender_for_thread = media_extension_sender.clone();
-            let handle = thread::Builder::new()
-                .name(String::from("formal-web:media"))
-                .spawn(move || {
-                    run_media_thread(
-                        media_command_receiver,
-                        media_ua_sender,
-                        media_extension_sender_for_thread,
-                        media_rx,
-                        media_child,
-                    )
-                })
-                .unwrap_or_else(|error| panic!("failed to spawn formal-web-media thread: {error}"));
-            (Some(media_extension_sender), Some(handle))
+        let (media_extension_sender, media_event_receiver, media_child) = {
+            use crate::ipc_manifest::MediaExtensionManifest;
+            let (mut handle, connection) = ipc::ExtensionHandle::launch::<
+                MediaExtensionManifest,
+                ipc_messages::media::MediaCommand,
+                ipc_messages::media::MediaEvent,
+            >(&MediaExtensionManifest)
+            .unwrap_or_else(|error| panic!("failed to start media extension: {error}"));
+            let sender = connection.sender.clone();
+            let receiver = connection.receiver;
+            let child = handle.take_child();
+            (Some(sender), ipc::crossbeam_proxy(receiver), child)
         };
         #[cfg(not(feature = "media"))]
-        let (media_extension_sender, media_join_handle): (
-            Option<_>,
-            Option<thread::JoinHandle<()>>,
-        ) = (None, None);
+        let (media_extension_sender, media_event_receiver, media_child): (
+            Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+            crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
+            Option<std::process::Child>,
+        ) = {
+            let (dummy_tx, dummy_rx) = crossbeam_channel::unbounded();
+            drop(dummy_tx);
+            (None, dummy_rx, None)
+        };
 
         Self {
             state: UserAgentState::default(),
@@ -1337,10 +1333,10 @@ impl UserAgentWorker {
             pending_navigation_fetches_by_request_id: HashMap::new(),
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
-            media_command_sender,
+            media_event_receiver,
+            media_child,
             pipeline_to_webview: HashMap::new(),
             next_pipeline_id: 0,
-            media_join_handle,
             host,
             webview_provider_sender,
             navigation_tracer: TLATracer::new(
@@ -1469,14 +1465,21 @@ impl UserAgentWorker {
                     self.handle_shutdown(reply);
                     break;
                 }
-                UserAgentCommand::MediaEvent(event) => {
-                    self.handle_media_event(event);
-                }
             }
         }
                 recv(self.net_response_receiver) -> response => {
                     let Ok(incoming) = response else { break; };
                     self.handle_net_navigation_response(incoming.payload);
+                }
+                recv(self.media_event_receiver) -> event => {
+                    let Ok(mut incoming) = event else { break; };
+                    // Extract video frame data from shared memory before forwarding.
+                    if let ipc_messages::media::MediaEvent::Frame(video_frame) = &mut incoming.payload {
+                        if let Some(region) = incoming.shmem_regions.get(&0) {
+                            video_frame.data = region.as_slice().to_vec();
+                        }
+                    }
+                    self.handle_media_event(incoming.payload);
                 }
             }
         }
@@ -3603,21 +3606,35 @@ impl UserAgentWorker {
             shutdown_result = Err(String::from("timer thread panicked"));
         }
 
-        // Shut down the media thread if it was started.
-        if self.media_join_handle.is_some() {
-            let (media_reply_sender, media_reply_receiver) = bounded(1);
-            if let Err(error) = self.media_command_sender.send(MediaCommand::Shutdown {
-                reply: media_reply_sender,
-            }) {
+        // Shut down the media extension directly.
+        if let Some(media_sender) = &self.media_extension_sender {
+            if let Err(error) = media_sender.send(
+                ipc_messages::media::MediaCommand::Shutdown,
+            ) {
                 shutdown_result = Err(format!("failed to request media shutdown: {error}"));
-            } else if let Err(error) = media_reply_receiver.recv() {
-                shutdown_result = Err(format!("media shutdown reply channel closed: {error}"));
             }
 
-            if let Some(media_join_handle) = self.media_join_handle.take()
-                && media_join_handle.join().is_err()
-            {
-                shutdown_result = Err(String::from("media thread panicked"));
+            if let Some(mut media_child) = self.media_child.take() {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+                loop {
+                    match media_child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {
+                            if std::time::Instant::now() >= deadline {
+                                let _ = media_child.kill();
+                                let _ = media_child.wait();
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(error) => {
+                            log::error!("failed to poll media process exit: {error}");
+                            let _ = media_child.kill();
+                            let _ = media_child.wait();
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -3635,15 +3652,14 @@ impl UserAgentWorker {
         traversable_id: NavigableId,
         video_paint_id: VideoPaintId,
     ) {
-        if self.media_join_handle.is_none() {
-            // No media worker thread — media support is disabled (media feature
-            // compiled out). Silently ignore.
+        let Some(media_sender) = &self.media_extension_sender else {
+            // No media extension — media support is disabled.
             debug!(
                 "[media] load requested but media disabled url={} traversable={}",
                 url, traversable_id.0,
             );
             return;
-        }
+        };
         let pipeline_id = MediaPipelineId(self.next_pipeline_id);
         self.next_pipeline_id += 1;
         let webview_id = WebviewId(traversable_id);
@@ -3653,16 +3669,14 @@ impl UserAgentWorker {
             "[media] load requested url={} traversable={} pipeline={:?} paint={:?}",
             url, traversable_id.0, pipeline_id, video_paint_id,
         );
-        if let Err(error) = self
-            .media_command_sender
-            .send(MediaCommand::CreatePipeline { pipeline_id, url })
-        {
-            error!("failed to send CreatePipeline to media worker: {error}");
+        if let Err(error) = media_sender.send(
+            ipc_messages::media::MediaCommand::CreatePipeline { pipeline_id, url }
+        ) {
+            error!("failed to send CreatePipeline to media extension: {error}");
         }
-        if let Err(error) = self
-            .media_command_sender
-            .send(MediaCommand::Play { pipeline_id })
-        {
+        if let Err(error) = media_sender.send(
+            ipc_messages::media::MediaCommand::Play { pipeline_id }
+        ) {
             error!("failed to send Play to media worker: {error}");
         }
     }
