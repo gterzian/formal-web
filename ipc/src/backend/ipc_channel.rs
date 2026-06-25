@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use ipc_channel::ipc::{
-    self as ipc_ipc, IpcOneShotServer, IpcSender as IpcChannelSender, IpcSharedMemory,
+    self as ipc, IpcOneShotServer, IpcSender as IpcChannelSender, IpcSharedMemory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -19,7 +19,7 @@ struct BootstrapMessage<Out, In> {
     /// Child→parent receiver end.  The parent keeps the sender; the child
     /// holds the receiver (ipc_channel::ipc::IpcReceiver is actually the
     /// receiving end despite the name "IpcReceiver").
-    child_to_parent_rx: ipc_ipc::IpcReceiver<ChannelMessage<In>>,
+    child_to_parent_rx: ipc::IpcReceiver<ChannelMessage<In>>,
 }
 
 pub fn launch_extension<M, Out, In>(
@@ -44,7 +44,7 @@ where
     let child = manifest.spawn(&bootstrap_token)?;
 
     let (_receiver, bootstrap): (
-        ipc_ipc::IpcReceiver<BootstrapMessage<Out, In>>,
+        ipc::IpcReceiver<BootstrapMessage<Out, In>>,
         BootstrapMessage<Out, In>,
     ) = server.accept().map_err(|error| {
         IpcError::Transport(format!("failed to accept extension bootstrap: {error}"))
@@ -68,7 +68,6 @@ where
 
 pub fn run_extension<Out, In>(
     token: &str,
-    _service_name: &str,
 ) -> Result<ExtensionServer<In, Out>, IpcError>
 where
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
@@ -76,14 +75,14 @@ where
 {
     let (parent_to_child_tx, parent_to_child_rx): (
         IpcChannelSender<ChannelMessage<Out>>,
-        ipc_ipc::IpcReceiver<ChannelMessage<Out>>,
-    ) = ipc_ipc::channel().map_err(|error| {
+        ipc::IpcReceiver<ChannelMessage<Out>>,
+    ) = ipc::channel().map_err(|error| {
         IpcError::Transport(format!("failed to create primary IPC channel: {error}"))
     })?;
     let (child_to_parent_tx, child_to_parent_rx): (
         IpcChannelSender<ChannelMessage<In>>,
-        ipc_ipc::IpcReceiver<ChannelMessage<In>>,
-    ) = ipc_ipc::channel().map_err(|error| {
+        ipc::IpcReceiver<ChannelMessage<In>>,
+    ) = ipc::channel().map_err(|error| {
         IpcError::Transport(format!("failed to create primary IPC channel: {error}"))
     })?;
 
@@ -110,10 +109,7 @@ where
         IpcReceiver::from_ipc_channel(parent_to_child_rx),
     );
 
-    Ok(ExtensionServer {
-        connection,
-        _listener: None,
-    })
+    Ok(ExtensionServer::new(connection))
 }
 
 pub fn create_connection<Out, In>(

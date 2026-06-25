@@ -90,7 +90,7 @@ fn fetch_request(client: &Client, request: &FetchRequest) -> Result<FetchRespons
 }
 
 pub fn run_net_process_v2(token: String) -> Result<(), String> {
-    let server = run_extension::<Request, Response>(&token, "formal-web.net")
+    let server = run_extension::<Request, Response>(&token)
         .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
     let mut _trace_sender: Option<TraceSender> = None;

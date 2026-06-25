@@ -2112,10 +2112,7 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 
 /// Run the content process using the new IPC abstraction layer.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    let server = run_extension::<Command, ContentEvent>(
-        &token,
-        "com.formal-web.app.content",
-    )
+    let server = run_extension::<Command, ContentEvent>(&token)
     .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
     let event_sender = server.sender().clone();

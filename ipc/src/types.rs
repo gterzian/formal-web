@@ -463,8 +463,6 @@ pub struct ExtensionServer<
     Out: IpcSerialize + IpcDeserialize + 'static,
 > {
     pub connection: IpcConnection<In, Out>,
-    #[allow(dead_code)]
-    pub(crate) _listener: Option<xpc_sys::XpcConnection>,
 }
 
 impl<
@@ -473,10 +471,7 @@ impl<
     > ExtensionServer<In, Out>
 {
     pub fn new(connection: IpcConnection<In, Out>) -> Self {
-        ExtensionServer {
-            connection,
-            _listener: None,
-        }
+        ExtensionServer { connection }
     }
 
     pub fn sender(&self) -> &IpcSender<In> {

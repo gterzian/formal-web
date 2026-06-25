@@ -203,10 +203,7 @@ fn media_token_from_args() -> Result<Option<String>, String> {
 
 pub fn run_media_process_from_args() -> Result<(), String> {
     let token = media_token_from_args()?;
-    let server = ipc::run_extension::<MediaCommand, MediaEvent>(
-        &token.unwrap_or_default(),
-        "formal-web.media",
-    )
+    let server = ipc::run_extension::<MediaCommand, MediaEvent>(&token.unwrap_or_default())
     .map_err(|error| format!("ipc extension bootstrap failed: {error}"))?;
 
     #[cfg(feature = "backend-gstreamer")]

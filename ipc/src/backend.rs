@@ -52,7 +52,6 @@ where
 /// connects.  The transport backend is selected at compile time.
 pub fn run_extension<Out, In>(
     token: &str,
-    service_name: &str,
 ) -> Result<ExtensionServer<In, Out>, IpcError>
 where
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
@@ -60,10 +59,10 @@ where
 {
     #[cfg(feature = "ipc-channel-backend")]
     {
-        ipc_channel::run_extension::<Out, In>(token, service_name)
+        ipc_channel::run_extension::<Out, In>(token)
     }
     #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
     {
-        xpc::run_extension::<Out, In>(token, service_name)
+        xpc::run_extension::<Out, In>(token)
     }
 }

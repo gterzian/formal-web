@@ -104,12 +104,12 @@ where
 
 pub fn run_extension<Out, In>(
     _token: &str,
-    service_name: &str,
 ) -> Result<ExtensionServer<In, Out>, IpcError>
 where
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
     In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
+    let service_name = "formal-web.net";
     run_listen_extension::<Out, In>(service_name)
 }
 
@@ -172,11 +172,8 @@ where
         },
     };
 
-    Ok(ExtensionServer {
-        connection: IpcConnection::new(tx, IpcReceiver::from_crossbeam(crossbeam_in_rx)),
-        endpoints: HashMap::new(),
-        _listener: Some(listener),
-    })
+    Ok(ExtensionServer::new(IpcConnection::new(tx, crossbeam_rx)))
+}
 }
 
 // ── create_connection (additional connection to the same service) ───────────
