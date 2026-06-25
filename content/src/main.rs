@@ -416,6 +416,8 @@ pub(crate) struct ContentProcess {
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
     /// Direct sender to the net extension. Set during DirectChannelsSetup.
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+    /// Direct sender to the media extension. Set during ContentBootstrap.
+    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// This content process's own command sender, used by net for direct response routing.
     content_command_sender: ipc::IpcSender<Command>,
 }
@@ -426,6 +428,7 @@ impl ContentProcess {
         wasm_signal_sender: crossbeam_channel::Sender<()>,
         event_loop_id: EventLoopId,
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+        media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
         content_command_sender: ipc::IpcSender<Command>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
@@ -450,6 +453,7 @@ impl ContentProcess {
             pending_wasm_requests: HashMap::new(),
             pending_wasm_modules: HashMap::new(),
             network_extension_sender,
+            media_extension_sender,
             content_command_sender,
         }
     }
@@ -909,6 +913,9 @@ impl ContentProcess {
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(&settings.context, |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            if let Some(ref sender) = self.media_extension_sender {
+                global_scope.set_media_extension_sender(sender.clone());
+            }
             Ok(())
         }) {
             error!("[media] failed to set video paint registry on GlobalScope: {error}");
@@ -1008,6 +1015,9 @@ impl ContentProcess {
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(&settings.context, |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            if let Some(ref sender) = self.media_extension_sender {
+                global_scope.set_media_extension_sender(sender.clone());
+            }
             Ok(())
         }) {
             error!("[media] failed to set video paint registry on GlobalScope: {error}");
@@ -2138,7 +2148,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
         // First message must be ContentBootstrap.
-        let (network_extension_sender, _media_sender, content_command_sender, trace_sender) =
+        let (network_extension_sender, media_sender, content_command_sender, trace_sender) =
             match cmd_rx.recv() {
                 Ok(incoming) => {
                     match incoming.payload {
@@ -2172,7 +2182,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             wasm_signal_sender,
             event_loop_id,
             network_extension_sender,
-            // media_extension_sender was removed from ContentProcess
+            media_sender,
             content_command_sender,
             trace_sender,
         );

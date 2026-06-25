@@ -15,7 +15,7 @@ use ipc_messages::content::DocumentId;
 use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
-use ipc_messages::media::VideoPaintId;
+use ipc_messages::media::{MediaCommand, VideoPaintId};
 use log::{debug, error};
 
 use crate::webidl::Callback;
@@ -249,6 +249,11 @@ pub struct GlobalScope {
     #[unsafe_ignore_trace]
     video_paint_registry: RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>,
 
+    /// Direct sender to the media extension. Content sends CreatePipeline+Play
+    /// directly to media without going through the user agent.
+    #[unsafe_ignore_trace]
+    media_extension_sender: RefCell<Option<IpcSender<MediaCommand>>>,
+
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
     #[unsafe_ignore_trace]
@@ -298,6 +303,7 @@ impl GlobalScope {
 
             new_document_registry: RefCell::new(None),
             video_paint_registry: RefCell::new(None),
+            media_extension_sender: RefCell::new(None),
             creation_url: RefCell::new(None),
             pending_requests: GcRefCell::new(Vec::new()),
             pending_wasm_request_id_counter: std::cell::Cell::new(0),
@@ -726,6 +732,18 @@ impl GlobalScope {
     /// ContentProcess access.  ContentProcess sets this during document
     /// creation so that `resource_selection_algorithm` can register
     /// paint IDs during JS execution.
+    pub(crate) fn set_media_extension_sender(&self, sender: IpcSender<MediaCommand>) {
+        self.media_extension_sender.borrow_mut().replace(sender);
+    }
+
+    pub(crate) fn media_extension_sender(&self) -> Option<IpcSender<MediaCommand>> {
+        self.media_extension_sender.borrow().clone()
+    }
+
+    pub(crate) fn allocate_media_pipeline_id(&self) -> ipc_messages::media::MediaPipelineId {
+        ipc_messages::media::MediaPipelineId(uuid::Uuid::new_v4())
+    }
+
     pub(crate) fn set_video_paint_registry(
         &self,
         registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,

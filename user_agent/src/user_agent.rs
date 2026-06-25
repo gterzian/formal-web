@@ -880,6 +880,7 @@ pub enum UserAgentCommand {
         url: String,
         document_id: DocumentId,
         traversable_id: NavigableId,
+        pipeline_id: MediaPipelineId,
         video_paint_id: VideoPaintId,
     },
     NavigationFetchFailed {
@@ -1256,8 +1257,7 @@ struct UserAgentWorker {
     /// Maps media pipeline IDs to their owning webview and paint ID, so that
     /// incoming video frames can be routed to the correct compositor slot.
     pipeline_to_webview: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
-    /// Monotonic counter for assigning pipeline IDs.
-    next_pipeline_id: u64,
+
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
     /// Sender for webview-provider updates that must be drained by host sync calls.
@@ -1335,7 +1335,6 @@ impl UserAgentWorker {
             media_event_receiver,
             media_child,
             pipeline_to_webview: HashMap::new(),
-            next_pipeline_id: 0,
             host,
             webview_provider_sender,
             navigation_tracer: TLATracer::new(
@@ -1439,13 +1438,18 @@ impl UserAgentWorker {
                         url,
                         document_id: _document_id,
                         traversable_id,
+                        pipeline_id,
                         video_paint_id,
                     } => {
                         debug!(
                             "[media] UA received MediaLoadRequested url={} traversable={}",
                             url, traversable_id
                         );
-                        self.handle_media_load_requested(url, traversable_id, video_paint_id);
+                        self.handle_media_load_requested(
+                            pipeline_id,
+                            traversable_id,
+                            video_paint_id,
+                        );
                     }
                     UserAgentCommand::IframeTraversableRemoved {
                         parent_traversable_id,
@@ -3636,44 +3640,21 @@ impl UserAgentWorker {
         let _ = reply.send(shutdown_result);
     }
 
-    /// Handle a MediaLoadRequested from the content process.
-    /// Creates a pipeline in the media process for the given URL.
-    ///
-    /// Note: Pipeline ID assignment is a placeholder — a proper allocator should
-    /// be added when multiple concurrent pipelines are supported.
+    /// Register the pipeline→webview mapping for video frame routing.
+    /// Content has already sent CreatePipeline+Play directly to the media extension.
     fn handle_media_load_requested(
         &mut self,
-        url: String,
+        pipeline_id: MediaPipelineId,
         traversable_id: NavigableId,
         video_paint_id: VideoPaintId,
     ) {
-        let Some(media_sender) = &self.media_extension_sender else {
-            // No media extension — media support is disabled.
-            debug!(
-                "[media] load requested but media disabled url={} traversable={}",
-                url, traversable_id.0,
-            );
-            return;
-        };
-        let pipeline_id = MediaPipelineId(self.next_pipeline_id);
-        self.next_pipeline_id += 1;
+        debug!(
+            "[media] registering pipeline mapping: pipeline={:?} traversable={} paint={:?}",
+            pipeline_id, traversable_id.0, video_paint_id,
+        );
         let webview_id = WebviewId(traversable_id);
         self.pipeline_to_webview
             .insert(pipeline_id, (webview_id, video_paint_id));
-        debug!(
-            "[media] load requested url={} traversable={} pipeline={:?} paint={:?}",
-            url, traversable_id.0, pipeline_id, video_paint_id,
-        );
-        if let Err(error) = media_sender
-            .send(ipc_messages::media::MediaCommand::CreatePipeline { pipeline_id, url })
-        {
-            error!("failed to send CreatePipeline to media extension: {error}");
-        }
-        if let Err(error) =
-            media_sender.send(ipc_messages::media::MediaCommand::Play { pipeline_id })
-        {
-            error!("failed to send Play to media worker: {error}");
-        }
     }
 
     /// Handle a MediaEvent from the media process.

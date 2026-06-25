@@ -559,6 +559,7 @@ impl EventLoopWorker {
                         url: request.url,
                         document_id: request.document_id,
                         traversable_id: request.traversable_id,
+                        pipeline_id: request.pipeline_id,
                         video_paint_id: request.video_paint_id,
                     })
                     .map_err(|error| format!("failed to send media load request: {error}"))?;

@@ -252,6 +252,9 @@ pub struct MediaLoadRequest {
     pub document_id: DocumentId,
     /// The traversable containing the media element.
     pub traversable_id: NavigableId,
+    /// Pipeline ID assigned by content. Content sends CreatePipeline+Play
+    /// directly to the media extension; the UA uses this to route video frames.
+    pub pipeline_id: crate::media::MediaPipelineId,
     /// Paint-layer identifier assigned by content for the video element.
     /// Echoed in EmbedSite::Video so the compositor can route frames.
     pub video_paint_id: crate::media::VideoPaintId,

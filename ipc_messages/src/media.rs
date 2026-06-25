@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Identifies a pipeline within the media process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct MediaPipelineId(pub u64);
+pub struct MediaPipelineId(pub Uuid);
 
 /// Opaque paint-layer identifier for a video element.
 /// <https://html.spec.whatwg.org/#the-video-element>
