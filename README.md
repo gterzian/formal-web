@@ -7,16 +7,10 @@ formal-web is a Rust web-engine prototype in alpha status, with an embedding API
 - **Rust toolchain**: `rustup toolchain install 1.94.0`
 - **macOS**: No additional system libraries required.  AVFoundation is the
   default media backend (system framework, always available).
-- **Linux**: GStreamer libraries for the GStreamer media backend:
-  see [gstreamer docs](https://docs.rs/gstreamer/latest/gstreamer/) for
-  platform-specific installation.  On Debian/Ubuntu:
-  ```bash
-  apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-  ```
 
 ## Commands
 
-### macOS (AVFoundation — default, no GStreamer required)
+### macOS (AVFoundation — default)
 
 AVFoundation is used automatically.  No extra build steps needed.
 
@@ -47,21 +41,6 @@ Build the media binary with the GStreamer backend:
 ```bash
 cargo build --release -p media --bin formal-web-media \
   --no-default-features --features backend-gstreamer
-```
-
-### Linux (GStreamer)
-
-On Linux, GStreamer is the only available backend.
-
-```bash
-# Check all
-rustup run 1.94.0 cargo check
-
-# Build all
-rustup run 1.94.0 cargo build --release
-
-# Run all
-rustup run 1.94.0 cargo run --release
 ```
 
 ### Without media (no video playback)
