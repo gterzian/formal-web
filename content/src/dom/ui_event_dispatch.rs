@@ -436,11 +436,11 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
 
 impl EcmascriptHost for BlitzJSEventHandler<'_> {
     fn context(&mut self) -> &mut Context {
-        &mut self.settings.context
+        self.settings.context()
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<boa_engine::JsValue> {
-        ContextCallbackHost::new(&mut self.settings.context, "event listener").get(object, property)
+        ContextCallbackHost::new(self.settings.context(), "event listener").get(object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
@@ -456,17 +456,17 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
         this_arg: &boa_engine::JsValue,
         args: &[boa_engine::JsValue],
     ) -> JsResult<boa_engine::JsValue> {
-        ContextCallbackHost::new(&mut self.settings.context, "event listener")
+        ContextCallbackHost::new(self.settings.context(), "event listener")
             .call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        ContextCallbackHost::new(&mut self.settings.context, "event listener")
+        ContextCallbackHost::new(self.settings.context(), "event listener")
             .perform_a_microtask_checkpoint()
     }
 
     fn report_exception(&mut self, error: boa_engine::JsError, callback: &Callback) {
-        ContextCallbackHost::new(&mut self.settings.context, "event listener")
+        ContextCallbackHost::new(self.settings.context(), "event listener")
             .report_exception(error, callback)
     }
 }
@@ -501,10 +501,10 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         }
 
         let time_stamp = self.settings.current_time_millis();
-        let view = Some(self.settings.context.global_object());
+        let view = Some(self.settings.context().global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
         let event_object =
-            create_interface_instance::<JsUiEvent>(ui_event, &mut self.settings.context)
+            create_interface_instance::<JsUiEvent>(ui_event, self.settings.context())
                 .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
             error!("failed to dispatch UI event through JavaScript listeners: {error}");

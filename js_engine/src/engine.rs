@@ -1,3 +1,5 @@
+use log::error;
+
 use crate::enums::{
     IntegrityLevel, IteratorKind, PromiseRejectionOperation, SharedMemoryOrder,
     TypedArrayElementType,
@@ -435,6 +437,18 @@ pub trait JsEngine<T: JsTypes>: Sized {
 
     /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
     fn value_null(&mut self) -> T::JsValue;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Error Reporting
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Reports an exception to the host environment.
+    ///
+    /// The default implementation logs via the `log` crate.  Engines may
+    /// override to integrate with a host-specific error reporting mechanism.
+    fn report_error(&mut self, message: &str) {
+        error!("unhandled engine exception: {message}");
+    }
 
     // ────────────────────────────────────────────────────────────────────────
     // HTML host hooks

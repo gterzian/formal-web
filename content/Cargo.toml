@@ -21,6 +21,7 @@ arboard = { version = "3.6.1", default-features = false }
 anyrender = { version = "0.10", features = ["serde"] }
 boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", default-features = false }
 boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"] }
+js_engine = { path = "../js_engine" }
 blitz-dom = { workspace = true, features = ["svg", "system_fonts"] }
 blitz-paint = { workspace = true, features = ["svg"] }
 blitz-traits = { workspace = true }

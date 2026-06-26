@@ -116,7 +116,16 @@ impl BoaEngine {
         Self { context: Context::default() }
     }
 
+    /// Wrap an existing `Context` into a `BoaEngine`.
+    ///
+    /// Used during migration from direct `Context` ownership to `BoaEngine`
+    /// in `content/`.  The context is moved into the engine wrapper.
+    pub fn from_context(context: Context) -> Self {
+        Self { context }
+    }
+
     pub fn context(&mut self) -> &mut Context { &mut self.context }
+    pub fn context_ref(&self) -> &Context { &self.context }
     pub fn into_context(self) -> Context { self.context }
 }
 

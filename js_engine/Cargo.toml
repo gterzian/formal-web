@@ -11,5 +11,6 @@ boa = ["dep:boa_engine", "dep:boa_gc"]
 jsc = []
 
 [dependencies]
+log = "0.4"
 boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", default-features = false, optional = true }
 boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"], optional = true }

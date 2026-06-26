@@ -884,6 +884,7 @@ dependencies = [
  "html5ever 0.39.0",
  "ipc",
  "ipc_messages",
+ "js_engine",
  "keyboard-types",
  "log",
  "serde",
@@ -2912,6 +2913,7 @@ version = "0.1.0"
 dependencies = [
  "boa_engine",
  "boa_gc",
+ "log",
 ]
 
 [[package]]
