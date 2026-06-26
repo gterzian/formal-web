@@ -83,13 +83,8 @@ pub trait JsTypes: Sized + 'static {
     fn object_from_constructor(c: Self::Constructor) -> Self::JsObject;
 
     fn value_from_object(o: Self::JsObject) -> Self::JsValue;
-    fn value_from_string(s: Self::JsString) -> Self::JsValue;
     fn value_from_symbol(sym: Self::JsSymbol) -> Self::JsValue;
-    fn value_from_bool(b: bool) -> Self::JsValue;
-    fn value_from_number(n: f64) -> Self::JsValue;
     fn value_from_bigint(n: Self::JsBigInt) -> Self::JsValue;
-    fn value_undefined() -> Self::JsValue;
-    fn value_null() -> Self::JsValue;
 
     // ── Fallible downcasts ──────────────────────────────────────────────
 

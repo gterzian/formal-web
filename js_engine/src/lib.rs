@@ -18,6 +18,7 @@
 
 pub mod engine;
 pub mod enums;
+pub mod gc;
 pub mod records;
 pub mod types;
 
@@ -32,6 +33,7 @@ pub use enums::{
     IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation,
     SharedMemoryOrder, TypedArrayElementType,
 };
+pub use gc::{Finalize, GcRootHandle, JsEngineGcExt, JsTypesGcExt, Trace};
 pub use records::{
     IteratorRecord, ModuleRequest, PromiseCapability, PropertyDescriptor, RealmIntrinsics,
 };
