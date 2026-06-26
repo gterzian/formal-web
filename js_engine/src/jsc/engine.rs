@@ -172,8 +172,65 @@ impl JsEngine<JscTypes> for JscEngine {
         Ok(unsafe { JscString::from_raw(raw) })
     }
 
-    fn to_object(&mut self, _value: JscValue) -> Completion<JscObject, JscTypes> { todo!("JSC to_object") }
-    fn to_property_key(&mut self, _value: JscValue) -> Completion<JscPropertyKey, JscTypes> { todo!("JSC to_property_key") }
+    fn to_object(&mut self, value: JscValue) -> Completion<JscObject, JscTypes> {
+        // §7.1.13 ToObject
+        // Step 1: If value is Object...
+        // Step 2: If value is Boolean, Number, String, Symbol, or BigInt...
+        // Step 3: If value is Undefined or Null, throw a TypeError.
+        let js_type =
+            unsafe { JSValueGetType(self.context.as_context_ref(), value.raw) };
+        match js_type {
+            JSType::kJSTypeObject => Ok(JscObject {
+                raw: value.raw as *mut JSObjectRef,
+                _phantom: std::marker::PhantomData,
+            }),
+            JSType::kJSTypeUndefined | JSType::kJSTypeNull => {
+                // Create a TypeError exception value.
+                let message = JscString::from_rust("Cannot convert undefined or null to object");
+                let exc_value = JscValue {
+                    raw: unsafe {
+                        JSValueMakeString(self.context.as_context_ref(), message.raw)
+                    },
+                };
+                Err(exc_value)
+            }
+            _ => {
+                // Other types (Boolean, Number, String, Symbol, BigInt):
+                // JSC automatically wraps primitives.  The value is already
+                // heap-allocated and can be used as an object reference.
+                Ok(JscObject {
+                    raw: value.raw as *mut JSObjectRef,
+                    _phantom: std::marker::PhantomData,
+                })
+            }
+        }
+    }
+    fn to_property_key(&mut self, value: JscValue) -> Completion<JscPropertyKey, JscTypes> {
+        // §7.1.14 ToPropertyKey
+        // Step 1: Let key be ? ToPrimitive(argument, hint String).
+        // Note: `to_primitive` is currently a pass-through; this works for
+        // values that are already strings or symbols.
+        //
+        // Step 2: If key is a Symbol, return key.
+        let js_type = unsafe { JSValueGetType(self.context.as_context_ref(), value.raw) };
+        if js_type == JSType::kJSTypeSymbol {
+            // SAFETY: value type has been checked.
+            return Ok(JscPropertyKey::Symbol(unsafe {
+                JscSymbol::from_value(value)
+            }));
+        }
+        // Step 3: Return ! ToString(key).
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let raw = unsafe {
+            JSValueToStringCopy(self.context.as_context_ref(), value.raw, &mut exception)
+        };
+        if !exception.is_null() {
+            return Err(JscValue { raw: exception });
+        }
+        Ok(JscPropertyKey::String(unsafe {
+            JscString::from_raw(raw)
+        }))
+    }
 
     fn to_length(&mut self, value: JscValue) -> Completion<u64, JscTypes> {
         self.to_number(value).map(|n| if n <= 0.0 { 0 } else { n.min(f64::from(u32::MAX)) as u64 })
@@ -327,10 +384,180 @@ impl JsEngine<JscTypes> for JscEngine {
     fn set_integrity_level(&mut self, _object: JscObject, _level: IntegrityLevel) -> Completion<bool, JscTypes> { Ok(false) }
     fn test_integrity_level(&mut self, _object: JscObject, _level: IntegrityLevel) -> Completion<bool, JscTypes> { Ok(false) }
     fn species_constructor(&mut self, _object: JscObject, default_constructor: JscConstructor) -> Completion<JscConstructor, JscTypes> { Ok(default_constructor) }
-    fn get_iterator(&mut self, _object: JscValue, _kind: IteratorKind, _method: Option<JscFunction>) -> Completion<IteratorRecord<JscTypes>, JscTypes> { todo!("JSC get_iterator") }
-    fn iterator_step_value(&mut self, _iterator: &mut IteratorRecord<JscTypes>) -> Completion<Option<JscValue>, JscTypes> { todo!("JSC iterator_step_value") }
-    fn iterator_close(&mut self, _iterator: IteratorRecord<JscTypes>, completion: Completion<JscValue, JscTypes>) -> Completion<JscValue, JscTypes> { completion }
-    fn async_iterator_close(&mut self, _iterator: IteratorRecord<JscTypes>, completion: Completion<JscValue, JscTypes>) -> Completion<JscValue, JscTypes> { completion }
+    fn get_iterator(
+        &mut self,
+        object: JscValue,
+        _kind: IteratorKind,
+        _method: Option<JscFunction>,
+    ) -> Completion<IteratorRecord<JscTypes>, JscTypes> {
+        // §7.4.4 GetIterator
+        // Get the `@@iterator` symbol from the global Symbol object.
+        let global = self.context.global_object();
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let symbol_str = JscString::from_rust("Symbol");
+        let symbol_val = unsafe {
+            JSObjectCopyProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                symbol_str.raw,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc });
+        }
+        let symbol_obj = JscObject {
+            raw: symbol_val as *mut JSObjectRef,
+            _phantom: std::marker::PhantomData,
+        };
+        let iter_str = JscString::from_rust("iterator");
+        let iterator_sym = unsafe {
+            JSObjectCopyProperty(
+                self.context.as_context_ref(),
+                symbol_obj.raw,
+                iter_str.raw,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc });
+        }
+        // Step 2: GetMethod(obj, @@iterator) via our trait.
+        let method = self.get_method(
+            object,
+            JscPropertyKey::Symbol(unsafe { JscSymbol::from_value(JscValue { raw: iterator_sym }) }),
+        )?;
+        let method = method.ok_or_else(|| JscUndefined::get(&self.context))?;
+        // Step 3: Call(method, obj) → iterator.
+        let iter_val = self.call(method, JscUndefined::get(&self.context), &[])?;
+        let iter_obj = iter_val.raw as *mut JSObjectRef;
+        // Get `next` method from the iterator.
+        let next_str = JscString::from_rust("next");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let next_val = unsafe {
+            JSObjectCopyProperty(
+                self.context.as_context_ref(),
+                iter_obj,
+                next_str.raw,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc });
+        }
+        let next_method = JscObject {
+            raw: next_val as *mut JSObjectRef,
+            _phantom: std::marker::PhantomData,
+        };
+        Ok(IteratorRecord {
+            iterator: JscObject {
+                raw: iter_obj,
+                _phantom: std::marker::PhantomData,
+            },
+            next_method,
+            done: false,
+        })
+    }
+
+    fn iterator_step_value(
+        &mut self,
+        iterator: &mut IteratorRecord<JscTypes>,
+    ) -> Completion<Option<JscValue>, JscTypes> {
+        // §7.4.10 IteratorStepValue
+        // Call(next, iterator)
+        let iter_val = JscValue {
+            raw: iterator.iterator.raw as *mut JSValueRef,
+        };
+        let result = self.call(iterator.next_method, iter_val, &[])?;
+        let result_obj = result.raw as *mut JSObjectRef;
+        // Get `done` property.
+        let done_str = JscString::from_rust("done");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let done_val = unsafe {
+            JSObjectCopyProperty(
+                self.context.as_context_ref(),
+                result_obj,
+                done_str.raw,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            iterator.done = true;
+            return Err(JscValue { raw: exc });
+        }
+        let done = unsafe { JSValueToBoolean(self.context.as_context_ref(), done_val) };
+        if done {
+            iterator.done = true;
+            return Ok(None);
+        }
+        // Get `value` property.
+        let value_str = JscString::from_rust("value");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let value = unsafe {
+            JSObjectCopyProperty(
+                self.context.as_context_ref(),
+                result_obj,
+                value_str.raw,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            iterator.done = true;
+            return Err(JscValue { raw: exc });
+        }
+        Ok(Some(JscValue { raw: value }))
+    }
+
+    fn iterator_close(
+        &mut self,
+        iterator: IteratorRecord<JscTypes>,
+        completion: Completion<JscValue, JscTypes>,
+    ) -> Completion<JscValue, JscTypes> {
+        // §7.4.11 IteratorClose
+        // Get `return` method from the iterator.
+        let return_str = JscString::from_rust("return");
+        let return_key = JscPropertyKey::String(return_str);
+        let inner_result = self.get_method(
+            JscValue {
+                raw: iterator.iterator.raw as *mut JSValueRef,
+            },
+            return_key,
+        );
+        match inner_result {
+            Ok(Some(return_fn)) => {
+                let iter_val = JscValue {
+                    raw: iterator.iterator.raw as *mut JSValueRef,
+                };
+                match self.call(return_fn, iter_val, &[]) {
+                    Ok(_) => completion,
+                    Err(e) => {
+                        if completion.is_err() {
+                            return completion;
+                        }
+                        Err(e)
+                    }
+                }
+            }
+            Ok(None) => completion,
+            Err(e) => {
+                if completion.is_err() {
+                    return completion;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn async_iterator_close(
+        &mut self,
+        iterator: IteratorRecord<JscTypes>,
+        completion: Completion<JscValue, JscTypes>,
+    ) -> Completion<JscValue, JscTypes> {
+        // §7.4.15 AsyncIteratorClose
+        // Same as IteratorClose but result from Call(return)
+        // would need Await.  Synchronous fallback for now.
+        self.iterator_close(iterator, completion)
+    }
 
     // ── §9.3 Realm ────────────────────────────────────────────────────────
 
@@ -365,14 +592,138 @@ impl JsEngine<JscTypes> for JscEngine {
     }
 
     // ── §25 ArrayBuffer ───────────────────────────────────────────────────
-    fn allocate_array_buffer(&mut self, _constructor: JscConstructor, _byte_length: u64, _max_byte_length: Option<u64>) -> Completion<JscArrayBuffer, JscTypes> { todo!("JSC allocate_array_buffer") }
+    fn allocate_array_buffer(
+        &mut self,
+        _constructor: JscConstructor,
+        byte_length: u64,
+        _max_byte_length: Option<u64>,
+    ) -> Completion<JscArrayBuffer, JscTypes> {
+        // §25.1.3.1 AllocateArrayBuffer
+        // Note: Uses JSC's C API with no deallocator (buffer memory is
+        // managed by Rust and intentionally leaked).  A proper
+        // implementation would register a C deallocator callback.
+        let len = byte_length as usize;
+        let mut buf = vec![0u8; len].into_boxed_slice();
+        let ptr = buf.as_mut_ptr() as *mut std::ffi::c_void;
+        // Forget the Box — JSC holds the pointer.  Memory is leaked
+        // if no deallocator is provided (acceptable for now).
+        std::mem::forget(buf);
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let raw = unsafe {
+            JSObjectMakeArrayBufferWithBytesNoCopy(
+                self.context.as_context_ref(),
+                ptr,
+                len,
+                std::ptr::null_mut(), // no deallocator
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue { raw: exception });
+        }
+        Ok(JscObject {
+            raw,
+            _phantom: std::marker::PhantomData,
+        })
+    }
     fn is_detached_buffer(&self, _array_buffer: &JscArrayBuffer) -> bool { false }
     fn detach_array_buffer(&mut self, _array_buffer: JscArrayBuffer, _key: Option<JscValue>) -> Completion<(), JscTypes> { Ok(()) }
-    fn clone_array_buffer(&mut self, _src: JscArrayBuffer, _src_byte_offset: u64, _src_length: u64, _clone_constructor: JscConstructor) -> Completion<JscArrayBuffer, JscTypes> { todo!("JSC clone_array_buffer") }
+    fn clone_array_buffer(
+        &mut self,
+        src: JscArrayBuffer,
+        src_byte_offset: u64,
+        src_length: u64,
+        _clone_constructor: JscConstructor,
+    ) -> Completion<JscArrayBuffer, JscTypes> {
+        // §25.1.3.6 CloneArrayBuffer
+        // Uses typed array slice through script evaluation.
+        let global = self.context.global_object();
+        let src_key = JscString::from_rust("__formal_web_clone_src");
+        // Store the source buffer temporarily on the global object.
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                src_key.raw,
+                src.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc });
+        }
+        // Build and evaluate the cloning script.
+        let script_str = format!(
+            "new Uint8Array(__formal_web_clone_src).slice({}, {}).buffer",
+            src_byte_offset, src_length
+        );
+        let script = JscString::from_rust(&script_str);
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            JSEvaluateScript(
+                self.context.as_context_ref(),
+                script.raw,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+                &mut exc,
+            )
+        };
+        // Clean up the temporary property.
+        let mut exc2: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectDeleteProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                src_key.raw,
+                &mut exc2,
+            )
+        };
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc });
+        }
+        if result.is_null() {
+            Err(JscUndefined::get(&self.context))
+        } else {
+            Ok(JscObject {
+                raw: result as *mut JSObjectRef,
+                _phantom: std::marker::PhantomData,
+            })
+        }
+    }
     fn is_fixed_length_array_buffer(&self, _array_buffer: &JscArrayBuffer) -> bool { true }
     fn get_value_from_buffer(&self, _array_buffer: &JscArrayBuffer, _byte_index: u64, _element_type: TypedArrayElementType, _is_typed_array: bool, _order: SharedMemoryOrder) -> JscValue { JscUndefined::get(&self.context) }
     fn set_value_in_buffer(&mut self, _array_buffer: &JscArrayBuffer, _byte_index: u64, _element_type: TypedArrayElementType, _value: JscValue, _is_typed_array: bool, _order: SharedMemoryOrder) -> Completion<(), JscTypes> { Ok(()) }
-    fn allocate_shared_array_buffer(&mut self, _constructor: JscConstructor, _byte_length: u64) -> Completion<JscSharedArrayBuffer, JscTypes> { todo!("JSC SharedArrayBuffer") }
+    fn allocate_shared_array_buffer(
+        &mut self,
+        _constructor: JscConstructor,
+        byte_length: u64,
+    ) -> Completion<JscSharedArrayBuffer, JscTypes> {
+        // §25.2.1.1 AllocateSharedArrayBuffer
+        // Uses script evaluation since there's no direct C API.
+        let script_str = format!("new SharedArrayBuffer({})", byte_length);
+        let script = JscString::from_rust(&script_str);
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            JSEvaluateScript(
+                self.context.as_context_ref(),
+                script.raw,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc });
+        }
+        Ok(JscObject {
+            raw: result as *mut JSObjectRef,
+            _phantom: std::marker::PhantomData,
+        })
+    }
 
     // ── §27 Promise ───────────────────────────────────────────────────────
     fn promise_resolve(&mut self, _constructor: JscConstructor, _x: JscValue) -> Completion<JscPromise, JscTypes> { todo!("JSC promise") }

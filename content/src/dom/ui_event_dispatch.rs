@@ -11,8 +11,9 @@ use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
+use crate::js::engine::BoaEngineHost;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{Callback, ContextCallbackHost, EcmascriptHost};
+use crate::webidl::{Callback, EcmascriptHost};
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -440,7 +441,7 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<boa_engine::JsValue> {
-        ContextCallbackHost::new(self.settings.context(), "event listener").get(object, property)
+        BoaEngineHost::new(&mut self.settings.engine, "event listener").get(object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
@@ -456,17 +457,17 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
         this_arg: &boa_engine::JsValue,
         args: &[boa_engine::JsValue],
     ) -> JsResult<boa_engine::JsValue> {
-        ContextCallbackHost::new(self.settings.context(), "event listener")
+        BoaEngineHost::new(&mut self.settings.engine, "event listener")
             .call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        ContextCallbackHost::new(self.settings.context(), "event listener")
+        BoaEngineHost::new(&mut self.settings.engine, "event listener")
             .perform_a_microtask_checkpoint()
     }
 
     fn report_exception(&mut self, error: boa_engine::JsError, callback: &Callback) {
-        ContextCallbackHost::new(self.settings.context(), "event listener")
+        BoaEngineHost::new(&mut self.settings.engine, "event listener")
             .report_exception(error, callback)
     }
 }

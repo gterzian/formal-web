@@ -14,7 +14,7 @@ use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_boa_context;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
-use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
+use crate::js::{engine::BoaEngineHost, install_console_namespace, install_css_namespace, install_document_property};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 
 fn timer_debug_enabled() -> bool {
@@ -354,7 +354,7 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        crate::webidl::ContextCallbackHost::new(self.context(), "event listener")
+        BoaEngineHost::new(&mut self.engine, "event listener")
             .get(object, property)
     }
 
@@ -371,17 +371,17 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> JsResult<JsValue> {
-        crate::webidl::ContextCallbackHost::new(self.context(), "event listener")
+        BoaEngineHost::new(&mut self.engine, "event listener")
             .call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        crate::webidl::ContextCallbackHost::new(self.context(), "event listener")
+        BoaEngineHost::new(&mut self.engine, "event listener")
             .perform_a_microtask_checkpoint()
     }
 
     fn report_exception(&mut self, error: JsError, callback: &crate::webidl::Callback) {
-        crate::webidl::ContextCallbackHost::new(self.context(), "event listener")
+        BoaEngineHost::new(&mut self.engine, "event listener")
             .report_exception(error, callback)
     }
 }
