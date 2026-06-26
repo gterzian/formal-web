@@ -4,14 +4,13 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
 use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, DomEvent, DomEventData, EventState, UiEvent};
-use boa_engine::{Context, JsResult, JsValue, object::JsObject};
+use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string, object::{JsObject, builtins::JsFunction}};
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
-use crate::js::engine::BoaEngineHost;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{Callback, EcmascriptHost};
 
@@ -440,8 +439,8 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
         self.settings.context()
     }
 
-    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<boa_engine::JsValue> {
-        BoaEngineHost::new(&mut self.settings.engine, "event listener").get(object, property)
+    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
+        object.get(js_string!(property), self.settings.context())
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
@@ -454,21 +453,25 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
     fn call(
         &mut self,
         callable: &JsObject,
-        this_arg: &boa_engine::JsValue,
-        args: &[boa_engine::JsValue],
-    ) -> JsResult<boa_engine::JsValue> {
-        BoaEngineHost::new(&mut self.settings.engine, "event listener")
-            .call(callable, this_arg, args)
+        this_arg: &JsValue,
+        args: &[JsValue],
+    ) -> JsResult<JsValue> {
+        let function = JsFunction::from_object(callable.clone())
+            .ok_or_else(|| {
+                JsError::from(
+                    JsNativeError::typ()
+                        .with_message("callback is not callable"),
+                )
+            })?;
+        function.call(this_arg, args, self.settings.context())
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        BoaEngineHost::new(&mut self.settings.engine, "event listener")
-            .perform_a_microtask_checkpoint()
+        self.settings.context().run_jobs()
     }
 
-    fn report_exception(&mut self, error: boa_engine::JsError, callback: &Callback) {
-        BoaEngineHost::new(&mut self.settings.engine, "event listener")
-            .report_exception(error, callback)
+    fn report_exception(&mut self, error: JsError, _callback: &Callback) {
+        log::error!("uncaught event listener error: {error}");
     }
 }
 

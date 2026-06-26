@@ -3,9 +3,10 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsResult, JsValue, Source, js_string, object::JsObject, property::Attribute,
+    Context, JsError, JsNativeError, JsResult, JsValue, Source, js_string,
+    object::{JsObject, builtins::JsFunction},
+    property::Attribute,
 };
-use js_engine::BoaEngine;
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
@@ -14,7 +15,7 @@ use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_boa_context;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
-use crate::js::{engine::BoaEngineHost, install_console_namespace, install_css_namespace, install_document_property};
+use crate::js::{Engine, install_console_namespace, install_css_namespace, install_document_property};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 
 fn timer_debug_enabled() -> bool {
@@ -45,12 +46,11 @@ pub enum ReferrerPolicy {
 pub struct EnvironmentSettingsObject {
     /// <https://html.spec.whatwg.org/#realms-settings-objects-global-objects>
     ///
-    /// The `BoaEngine` wraps a `boa_engine::Context` and implements
-    /// `JsEngine<BoaTypes>`.  During migration, domain functions that
-    /// previously took `&mut Context` are changed to take `&mut BoaEngine`.
-    /// Access the underlying context via `self.context()` for Boa-specific
-    /// operations that are not yet abstracted through `JsEngine`.
-    pub engine: BoaEngine,
+    /// The engine wraps a `boa_engine::Context` and implements
+    /// `JsEngine<BoaTypes>`.  Access the underlying context via
+    /// `self.context()` for Boa-specific operations that are not yet
+    /// abstracted through `JsEngine`.
+    pub engine: Engine,
 
     /// <https://dom.spec.whatwg.org/#concept-document>
     pub document: Rc<RefCell<BaseDocument>>,
@@ -125,7 +125,7 @@ impl EnvironmentSettingsObject {
             .map_err(|error| error.to_string())?;
 
         Ok(Self {
-            engine: BoaEngine::from_context(context),
+            engine: Engine::from_context(context),
             document,
             origin: Origin {
                 serialized: creation_url.origin().unicode_serialization(),
@@ -138,8 +138,8 @@ impl EnvironmentSettingsObject {
 
     /// Access the underlying Boa context (mutable).
     ///
-    /// Temporary compatibility shim during `Context` → `BoaEngine` migration.
-    /// Prefer using `self.engine` directly and calling `JsEngine` trait methods.
+    /// Temporary compatibility shim. Prefer using `self.engine` directly
+    /// and calling `JsEngine` trait methods.
     pub fn context(&mut self) -> &mut Context {
         self.engine.context()
     }
@@ -354,8 +354,7 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
     }
 
     fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        BoaEngineHost::new(&mut self.engine, "event listener")
-            .get(object, property)
+        object.get(boa_engine::js_string!(property), self.context())
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
@@ -371,18 +370,22 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> JsResult<JsValue> {
-        BoaEngineHost::new(&mut self.engine, "event listener")
-            .call(callable, this_arg, args)
+        let function = JsFunction::from_object(callable.clone())
+            .ok_or_else(|| {
+                JsError::from(
+                    JsNativeError::typ()
+                        .with_message("callback is not callable"),
+                )
+            })?;
+        function.call(this_arg, args, self.context())
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        BoaEngineHost::new(&mut self.engine, "event listener")
-            .perform_a_microtask_checkpoint()
+        self.context().run_jobs()
     }
 
-    fn report_exception(&mut self, error: JsError, callback: &crate::webidl::Callback) {
-        BoaEngineHost::new(&mut self.engine, "event listener")
-            .report_exception(error, callback)
+    fn report_exception(&mut self, error: JsError, _callback: &crate::webidl::Callback) {
+        log::error!("uncaught event listener error: {error}");
     }
 }
 
