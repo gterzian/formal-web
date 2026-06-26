@@ -1,7 +1,7 @@
 use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 
-use crate::webidl::{Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function};
+use crate::webidl::{Callback, ContextEcmaHost, ExceptionBehavior, invoke_callback_function};
 
 /// <https://streams.spec.whatwg.org/#blqs-class>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -57,7 +57,7 @@ impl SizeAlgorithm {
             Self::ReturnOne => Ok(1.0),
             Self::Callback { callback } => {
                 let value = {
-                    let mut host = ContextCallbackHost::new(context, "size algorithm");
+                    let mut host = ContextEcmaHost { context };
                     invoke_callback_function(
                         &mut host,
                         callback,

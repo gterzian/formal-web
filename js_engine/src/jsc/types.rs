@@ -15,7 +15,7 @@ use std::ffi::CString;
 use std::marker::PhantomData;
 use std::os::raw::c_char;
 
-use super::sys::*;
+use crate::jsc_sys::*;
 
 // ── JscContext (owned) ────────────────────────────────────────────────────
 

@@ -459,6 +459,34 @@ pub trait JsEngine<T: JsTypes>: Sized {
     where T: JsTypesWithRealm;
 }
 
+/// <https://webidl.spec.whatwg.org/#ecmascript-operations>
+///
+/// Host interface for ECMAScript operations used by Web IDL callback
+/// algorithms.  Implementations should wrap `JsEngine<T>` methods for
+/// the specific call patterns that `call a user object's operation` and
+/// `invoke a callback function` require — `Get`, `IsCallable`, `Call`.
+pub trait EcmascriptHost<T: JsTypes> {
+    /// <https://tc39.es/ecma262/#sec-get-o-p>
+    fn get(&mut self, object: &T::JsObject, property: &str) -> Completion<T::JsValue, T>;
+
+    /// <https://tc39.es/ecma262/#sec-iscallable>
+    fn is_callable(&self, value: &T::JsValue) -> bool;
+
+    /// <https://tc39.es/ecma262/#sec-call>
+    fn call(
+        &mut self,
+        callable: &T::JsObject,
+        this_arg: &T::JsValue,
+        args: &[T::JsValue],
+    ) -> Completion<T::JsValue, T>;
+
+    /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+    fn perform_a_microtask_checkpoint(&mut self) -> Completion<(), T>;
+
+    /// Report an exception thrown from a callback to the host environment.
+    fn report_exception(&mut self, error: T::JsValue);
+}
+
 /// HTML §8.1.6 host hooks — implementation-defined callbacks the engine
 /// invokes internally.
 ///

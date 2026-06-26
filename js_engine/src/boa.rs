@@ -27,8 +27,8 @@ use boa_engine::{
 };
 
 use crate::{
-    Completion, HostHooks, IntegrityLevel, IteratorKind, JsEngine, JsTypes, JsTypesWithRealm,
-    Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
+    Completion, EcmascriptHost, HostHooks, IntegrityLevel, IteratorKind, JsEngine, JsTypes,
+    JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
     records::{
         IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics,
     },
@@ -491,7 +491,7 @@ impl JsEngine<BoaTypes> for BoaEngine {
             Ok(Some(return_fn)) => {
                 // a. Let return be innerResult.[[Value]].
                 // c. Set innerResult to Completion(Call(return, iterator)).
-                self.call(return_fn, iter_value, &[])
+                JsEngine::call(self, return_fn, iter_value, &[])
             }
             Ok(None) => {
                 // b. If return is undefined, return ? completion.
@@ -541,7 +541,7 @@ impl JsEngine<BoaTypes> for BoaEngine {
         match inner_result {
             Ok(Some(return_fn)) => {
                 // c. Set innerResult to Completion(Call(return, iterator)).
-                match self.call(return_fn, iter_value, &[]) {
+                match JsEngine::call(self, return_fn, iter_value, &[]) {
                     Ok(val) => {
                         // If innerResult is a normal completion, set innerResult
                         // to Completion(Await(innerResult.[[Value]])).
@@ -801,6 +801,48 @@ impl JsEngine<BoaTypes> for BoaEngine {
 
     fn set_host_hooks(&mut self, _hooks: HostHooks<BoaTypes>) where BoaTypes: JsTypesWithRealm {
         // TODO: store and call through hooks internally
+    }
+}
+
+impl EcmascriptHost<BoaTypes> for BoaEngine {
+    fn get(&mut self, object: &JsObject, property: &str) -> Completion<JsValue, BoaTypes> {
+        into_completion(
+            object.get(PropertyKey::from(boa_engine::js_string!(property)), &mut self.context),
+            &mut self.context,
+        )
+    }
+
+    fn is_callable(&self, value: &JsValue) -> bool {
+        value.as_object().is_some_and(|o| o.is_callable())
+    }
+
+    fn call(
+        &mut self,
+        callable: &JsObject,
+        this_arg: &JsValue,
+        args: &[JsValue],
+    ) -> Completion<JsValue, BoaTypes> {
+        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
+            JsValue::from(
+                JsNativeError::typ()
+                    .with_message("callback is not callable")
+                    .into_opaque(&mut self.context),
+            )
+        })?;
+        into_completion(function.call(this_arg, args, &mut self.context), &mut self.context)
+    }
+
+    fn perform_a_microtask_checkpoint(&mut self) -> Completion<(), BoaTypes> {
+        let _ = self.context.run_jobs();
+        Ok(())
+    }
+
+    fn report_exception(&mut self, error: JsValue) {
+        let message = error.to_string(&mut self.context).ok().map_or_else(
+            || "unknown error".to_string(),
+            |s| s.to_std_string_escaped(),
+        );
+        log::error!("uncaught callback error: {message}");
     }
 }
 

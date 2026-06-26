@@ -3,8 +3,8 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue, Source, js_string,
-    object::{JsObject, builtins::JsFunction},
+    Context, JsResult, JsValue, Source, js_string,
+    object::JsObject,
     property::Attribute,
 };
 use ipc::IpcSender;
@@ -196,10 +196,7 @@ impl EnvironmentSettingsObject {
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
-            let mut host = crate::webidl::ContextCallbackHost::new(
-                self.context(),
-                "animation frame callback",
-            );
+            let mut host = crate::webidl::ContextEcmaHost { context: self.context() };
             crate::webidl::invoke_callback_function(
                 &mut host,
                 &callback,
@@ -256,8 +253,7 @@ impl EnvironmentSettingsObject {
                     timer_id, timer_key
                 ));
                 let global = JsValue::from(self.context().global_object());
-                let mut host =
-                    crate::webidl::ContextCallbackHost::new(self.context(), "timer callback");
+                let mut host = crate::webidl::ContextEcmaHost { context: self.context() };
                 let callback_result = crate::webidl::invoke_callback_function(
                     &mut host,
                     callback,
@@ -348,20 +344,13 @@ impl EnvironmentSettingsObject {
     }
 }
 
-impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
-    fn context(&mut self) -> &mut boa_engine::Context {
-        self.context()
-    }
-
-    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        object.get(boa_engine::js_string!(property), self.context())
+impl js_engine::EcmascriptHost<js_engine::BoaTypes> for EnvironmentSettingsObject {
+    fn get(&mut self, object: &JsObject, property: &str) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+        self.engine.get(object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
-        match value.as_object() {
-            Some(object) => object.is_callable(),
-            None => false,
-        }
+        self.engine.is_callable(value)
     }
 
     fn call(
@@ -369,27 +358,24 @@ impl crate::webidl::EcmascriptHost for EnvironmentSettingsObject {
         callable: &JsObject,
         this_arg: &JsValue,
         args: &[JsValue],
-    ) -> JsResult<JsValue> {
-        let function = JsFunction::from_object(callable.clone())
-            .ok_or_else(|| {
-                JsError::from(
-                    JsNativeError::typ()
-                        .with_message("callback is not callable"),
-                )
-            })?;
-        function.call(this_arg, args, self.context())
+    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+        self.engine.call(callable, this_arg, args)
     }
 
-    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        self.context().run_jobs()
+    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), js_engine::BoaTypes> {
+        self.engine.perform_a_microtask_checkpoint()
     }
 
-    fn report_exception(&mut self, error: JsError, _callback: &crate::webidl::Callback) {
-        log::error!("uncaught event listener error: {error}");
+    fn report_exception(&mut self, error: JsValue) {
+        self.engine.report_exception(error)
     }
 }
 
 impl EventDispatchHost for EnvironmentSettingsObject {
+    fn context(&mut self) -> &mut boa_engine::Context {
+        self.context()
+    }
+
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
         create_interface_instance::<Event>(event, self.context())
     }

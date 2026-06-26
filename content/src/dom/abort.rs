@@ -6,7 +6,7 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use crate::js::with_event_target_mut;
 use crate::streams::PipeToState;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{Callback, EcmascriptHost};
+use crate::webidl::Callback;
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 
@@ -34,7 +34,7 @@ pub(crate) enum AbortAlgorithm {
 
 impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
-    pub(crate) fn run(&self, host: &mut impl EcmascriptHost) -> JsResult<()> {
+    pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> JsResult<()> {
         match self {
             Self::Native { callback } => callback()?,
             Self::RemoveEventListener {

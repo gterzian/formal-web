@@ -10,7 +10,7 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use log::error;
 
 use crate::webidl::{
-    Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function,
+    Callback, ContextEcmaHost, ExceptionBehavior, invoke_callback_function,
     mark_promise_as_handled, rejected_promise,
 };
 
@@ -54,7 +54,7 @@ impl SourceMethod {
 
     /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
     pub(crate) fn call(&self, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-        let mut host = ContextCallbackHost::new(context, "stream callback");
+        let mut host = ContextEcmaHost { context };
         let this_value = JsValue::from(self.this_value.clone());
         invoke_callback_function(
             &mut host,

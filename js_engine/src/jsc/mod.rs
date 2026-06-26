@@ -7,11 +7,11 @@
 //!
 //! | Module | Contents |
 //! |---|---|
-//! | [`sys`] | Raw FFI bindings to JavaScriptCore framework (34 extern functions) |
 //! | [`types`] | Safe wrapper types (`JscValue`, `JscObject`, `JscString`, etc.) |
 //! | [`engine`] | `JscTypes`, `JscEngine` — the `JsEngine<JscTypes>` implementation |
+//!
+//! Raw FFI bindings live in [`crate::jsc_sys`].
 
-pub(crate) mod sys;
 mod types;
 mod engine;
 

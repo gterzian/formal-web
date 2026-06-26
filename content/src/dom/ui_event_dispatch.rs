@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
 use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, DomEvent, DomEventData, EventState, UiEvent};
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string, object::{JsObject, builtins::JsFunction}};
+use boa_engine::{Context, JsResult, JsValue, object::JsObject};
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 #[cfg(target_os = "macos")]
@@ -12,7 +12,6 @@ use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{Callback, EcmascriptHost};
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -386,6 +385,10 @@ impl<'a> BlitzJSEventHandler<'a> {
 }
 
 impl EventDispatchHost for BlitzJSEventHandler<'_> {
+    fn context(&mut self) -> &mut Context {
+        self.settings.context()
+    }
+
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
         self.settings.create_event_object(event)
     }
@@ -434,20 +437,13 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
     }
 }
 
-impl EcmascriptHost for BlitzJSEventHandler<'_> {
-    fn context(&mut self) -> &mut Context {
-        self.settings.context()
-    }
-
-    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        object.get(js_string!(property), self.settings.context())
+impl js_engine::EcmascriptHost<js_engine::BoaTypes> for BlitzJSEventHandler<'_> {
+    fn get(&mut self, object: &JsObject, property: &str) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+        self.settings.engine.get(object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
-        match value.as_object() {
-            Some(object) => object.is_callable(),
-            None => false,
-        }
+        self.settings.engine.is_callable(value)
     }
 
     fn call(
@@ -455,23 +451,16 @@ impl EcmascriptHost for BlitzJSEventHandler<'_> {
         callable: &JsObject,
         this_arg: &JsValue,
         args: &[JsValue],
-    ) -> JsResult<JsValue> {
-        let function = JsFunction::from_object(callable.clone())
-            .ok_or_else(|| {
-                JsError::from(
-                    JsNativeError::typ()
-                        .with_message("callback is not callable"),
-                )
-            })?;
-        function.call(this_arg, args, self.settings.context())
+    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+        self.settings.engine.call(callable, this_arg, args)
     }
 
-    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        self.settings.context().run_jobs()
+    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), js_engine::BoaTypes> {
+        self.settings.engine.perform_a_microtask_checkpoint()
     }
 
-    fn report_exception(&mut self, error: JsError, _callback: &Callback) {
-        log::error!("uncaught event listener error: {error}");
+    fn report_exception(&mut self, error: JsValue) {
+        self.settings.engine.report_exception(error)
     }
 }
 

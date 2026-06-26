@@ -11,7 +11,7 @@
 
 use std::marker::PhantomData;
 
-use super::sys::*;
+use crate::jsc_sys::*;
 use super::types::*;
 use crate::{
     Completion, HostHooks, IntegrityLevel, IteratorKind, JsEngine, JsTypes, JsTypesWithRealm,

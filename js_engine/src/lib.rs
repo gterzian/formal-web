@@ -26,9 +26,12 @@ pub mod types;
 pub mod boa;
 
 #[cfg(feature = "jsc")]
+pub mod jsc_sys;
+
+#[cfg(feature = "jsc")]
 pub mod jsc;
 
-pub use engine::{Completion, HostHooks, JsEngine};
+pub use engine::{Completion, EcmascriptHost, HostHooks, JsEngine};
 pub use enums::{
     IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation,
     SharedMemoryOrder, TypedArrayElementType,
@@ -40,4 +43,4 @@ pub use records::{
 pub use types::{JsTypes, JsTypesWithRealm};
 
 #[cfg(feature = "boa")]
-pub use boa::BoaEngine;
+pub use boa::{BoaEngine, BoaTypes};
