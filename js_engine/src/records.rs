@@ -1,3 +1,17 @@
+//! Record types used by `JsEngine<T>` method signatures:
+//!
+//! | Record | ECMA-262 ref | Fields |
+//! |---|---|---|
+//! | `IteratorRecord<T>` | §7.4.1 | `iterator`, `next_method`, `done` |
+//! | `PromiseCapability<T>` | §27.2.1 | `promise`, `resolve`, `reject` |
+//! | `PropertyDescriptor<T>` | §6.2.5 | `value`, `writable`, `get`, `set`, `enumerable`, `configurable` |
+//! | `RealmIntrinsics<T>` | §9.1 (table 7) | 15 constructors/prototypes |
+//! | `ModuleRequest<T>` | HTML host hooks | `specifier`, `attributes` |
+//!
+//! `PropertyDescriptor<T>` is a concrete struct (NOT an associated type on
+//! `JsTypes`) because the spec's Property Descriptor is a plain record type
+//! with no engine-specific representation.
+
 use crate::JsTypes;
 
 /// <https://tc39.es/ecma262/#sec-iterator-record>

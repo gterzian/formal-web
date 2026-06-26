@@ -1,3 +1,16 @@
+//! # `JsTypes` — ECMAScript language type vocabulary
+//!
+//! ECMA-262 §6 defines language types (Undefined, Null, Boolean, String,
+//! Symbol, Number, BigInt, Object) and object subtypes by internal slot
+//! profile (`[[ArrayBufferData]]`, `[[PromiseState]]`, etc.).  Each distinct
+//! slot profile becomes an associated type.
+//!
+//! Upcasts (subtype → `JsObject` → `JsValue`) are infallible — every
+//! ArrayBuffer IS an Object IS a Value.  Downcasts are fallible — not every
+//! Value is a String.
+//!
+//! See `js_engine/README.md` for the design rationale.
+
 /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
 pub trait JsTypes: Sized + 'static {
     // ── Primitives (§6.1) ────────────────────────────────────────────────

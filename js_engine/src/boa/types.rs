@@ -1,3 +1,12 @@
+//! `BoaTypes` — the `JsTypes` / `JsTypesWithRealm` marker for the Boa backend.
+//!
+//! Maps every ECMAScript language type and object subtype (§6.1) to its Boa
+//! counterpart.  Upcasts use `From` impls (`JsObject::from(array_buffer)`);
+//! downcasts use `JsArrayBuffer::from_object(object).ok()`.
+//!
+//! See `js_engine/README.md` and the [`super`] module docs for the full
+//! Boa backend status.
+
 use boa_engine::{
     object::builtins::{
         JsArrayBuffer, JsAsyncGenerator, JsDataView, JsFunction, JsGenerator, JsMap, JsPromise,

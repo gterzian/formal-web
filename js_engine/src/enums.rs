@@ -1,3 +1,15 @@
+//! Enum types used by `JsEngine<T>` method signatures:
+//!
+//! | Enum | ECMA-262 ref | Values |
+//! |---|---|---|
+//! | `Numeric<T>` | §7.1.16 ToNumeric | `Number(f64) \| BigInt(T::JsBigInt)` |
+//! | `PreferredType` | §7.1.14 ToPropertyKey | `String \| Number` |
+//! | `IntegrityLevel` | §9.5.13 SetIntegrityLevel | `Sealed \| Frozen` |
+//! | `IteratorKind` | §7.4 Iterator | `Sync \| Async` |
+//! | `TypedArrayElementType` | §25.1.1 | 12 variants (Int8 … BigUint64) |
+//! | `SharedMemoryOrder` | §25.1 GetValueFromBuffer | `SeqCst \| Unordered \| Init` |
+//! | `PromiseRejectionOperation` | HTML host hooks | `Reject \| Handle` |
+
 /// <https://tc39.es/ecma262/#sec-tonumeric>
 #[derive(Debug, Clone, PartialEq)]
 pub enum Numeric<T: crate::JsTypes> {

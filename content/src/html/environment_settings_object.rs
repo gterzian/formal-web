@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
-use crate::js::bindings::html::build_boa_context;
+use crate::js::bindings::html::build_boa_engine;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
 use crate::js::{
     install_console_namespace, install_css_namespace, install_document_property, Engine,
@@ -76,15 +76,15 @@ impl EnvironmentSettingsObject {
         source_navigable_id: Option<NavigableId>,
         document_id: Option<DocumentId>,
     ) -> Result<Self, String> {
-        // Build the boa Context. WindowHostHooks creates the Window and its
+        // Build the engine. WindowHostHooks creates the Window and its
         // GlobalScope during build().
-        let mut context = build_boa_context(Rc::clone(&document))?;
+        let mut engine = build_boa_engine(Rc::clone(&document))?;
 
         // Install timer host and navigation info on the GlobalScope through the
         // safe boa API (with_global_scope — traverses the GC heap to reach the
         // Window's GlobalScope).
         if let (Some(event_sender), Some(document_id)) = (&event_sender, document_id) {
-            with_global_scope(&context, |global_scope| {
+            with_global_scope(engine.context_ref(), |global_scope| {
                 global_scope.set_timer_host(document_id, event_sender.clone());
                 Ok(())
             })
@@ -92,7 +92,7 @@ impl EnvironmentSettingsObject {
         }
         if let Some(navigable_id) = source_navigable_id {
             if let Some(event_sender) = &event_sender {
-                with_global_scope(&context, |global_scope| {
+                with_global_scope(engine.context_ref(), |global_scope| {
                     global_scope.set_navigation_info(navigable_id, event_sender.clone());
                     global_scope.set_creation_url(creation_url.clone());
                     Ok(())
@@ -103,29 +103,34 @@ impl EnvironmentSettingsObject {
 
         let document_object = create_interface_instance::<Document>(
             Document::new(document.clone(), creation_url.clone()),
-            &mut context,
+            engine.context(),
         )
         .map_err(|error| error.to_string())?;
 
-        store_document_object(&context, document_object).map_err(|error| error.to_string())?;
-        install_document_property(&mut context).map_err(|error| error.to_string())?;
-        install_console_namespace(&mut context)
+        store_document_object(engine.context_ref(), document_object)
+            .map_err(|error| error.to_string())?;
+        install_document_property(engine.context())
+            .map_err(|error| error.to_string())?;
+        install_console_namespace(engine.context())
             .map_err(|error: boa_engine::JsError| error.to_string())?;
-        install_css_namespace(&mut context).map_err(|error| error.to_string())?;
+        install_css_namespace(engine.context())
+            .map_err(|error| error.to_string())?;
 
-        let global = context.global_object();
-        if let Some(window_proto) = get_registry_prototype::<Window>(&context) {
+        let global = engine.context().global_object();
+        if let Some(window_proto) = get_registry_prototype::<Window>(engine.context_ref()) {
             global.set_prototype(Some(window_proto));
         }
-        context
+        engine
+            .context()
             .register_global_property(js_string!("window"), global.clone(), Attribute::all())
             .map_err(|error| error.to_string())?;
-        context
+        engine
+            .context()
             .register_global_property(js_string!("self"), global, Attribute::all())
             .map_err(|error| error.to_string())?;
 
         Ok(Self {
-            engine: Engine::from_context(context),
+            engine,
             document,
             origin: Origin {
                 serialized: creation_url.origin().unicode_serialization(),

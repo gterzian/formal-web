@@ -1,3 +1,22 @@
+//! `BoaEngine` — the `JsEngine<BoaTypes>` + `EcmascriptHost<BoaTypes>` impl.
+//!
+//! ## Layout safety
+//!
+//! `BoaEngine` is `#[repr(transparent)]` over `Context`.  This enables the
+//! `create_builtin_function` shim to safely cast `&mut Context` →
+//! `&mut BoaEngine` → `&mut dyn JsEngine<BoaTypes>` inside the
+//! `NativeFunction` callback, giving the behaviour closure access to all
+//! ECMA-262 operations without an external adapter.
+//!
+//! ## What's not yet implemented
+//!
+//! - `evaluate_module` — module loader not wired (`todo!()`)
+//! - `generator_start` — VM internal (`todo!()`)
+//! - `enqueue_job` — no-op (Boa job trait not wired)
+//!
+//! See `js_engine/README.md` for the migration plan and
+//! `super::mod.rs` for known Boa-specific quirks.
+
 use boa_engine::{
     builtins::array_buffer::AlignedVec,
     native_function::NativeFunction,
@@ -7,7 +26,7 @@ use boa_engine::{
     },
     property::PropertyKey,
     value::PreferredType as BoaPreferredType,
-    Context, JsError, JsNativeError, JsResult, JsString, JsSymbol, JsValue,
+    Context, JsError, JsNativeError, JsResult, JsSymbol, JsValue,
 };
 
 use crate::{
@@ -20,6 +39,13 @@ use super::types::BoaTypes;
 
 /// Boa engine wrapper.  Wraps a `boa_engine::Context` and implements
 /// `JsEngine<BoaTypes>`.
+///
+/// # Layout
+///
+/// `#[repr(transparent)]` guarantees the same memory layout as `Context`,
+/// enabling safe pointer casts from `&mut Context` to `&mut BoaEngine`
+/// inside the `create_builtin_function` shim.
+#[repr(transparent)]
 pub struct BoaEngine {
     context: Context,
 }
@@ -970,7 +996,7 @@ impl JsEngine<BoaTypes> for BoaEngine {
             dyn Fn(
                 &[JsValue],
                 JsValue,
-                &mut dyn EcmascriptHost<BoaTypes>,
+                &mut dyn JsEngine<BoaTypes>,
             ) -> Completion<JsValue, BoaTypes>,
         >,
         length: u32,
@@ -987,8 +1013,13 @@ impl JsEngine<BoaTypes> for BoaEngine {
             _ => boa_engine::js_string!(""),
         };
 
-        // SAFETY: The closure is `'static` — `behaviour` is an owned Box
-        // that does not borrow from the engine.
+        // SAFETY: BoaEngine is `#[repr(transparent)]` over Context, so
+        // a `&mut Context` pointer can be safely cast to `&mut BoaEngine`.
+        // The resulting reference has the same lifetime as the `context`
+        // parameter and does not alias any other mutable reference.
+        //
+        // The closure is `'static` — `behaviour` is an owned Box that
+        // does not borrow from the engine.
         let native = unsafe {
             NativeFunction::from_closure(
                 Box::new(
@@ -996,100 +1027,10 @@ impl JsEngine<BoaTypes> for BoaEngine {
                           args: &[JsValue],
                           context: &mut Context|
                           -> JsResult<JsValue> {
-                        // Local adapter: wraps &mut Context to implement
-                        // EcmascriptHost<BoaTypes>.  Created freshly on each
-                        // call — no persistent state.
-                        struct CtxHost<'a>(&'a mut Context);
-
-                        impl EcmascriptHost<BoaTypes> for CtxHost<'_> {
-                            fn get(
-                                &mut self,
-                                object: &JsObject,
-                                property: &str,
-                            ) -> Completion<JsValue, BoaTypes> {
-                                object
-                                    .get(JsString::from(property), self.0)
-                                    .map_err(|e| {
-                                        e.into_opaque(self.0)
-                                            .unwrap_or(JsValue::undefined())
-                                    })
-                            }
-
-                            fn is_callable(&self, value: &JsValue) -> bool {
-                                value
-                                    .as_object()
-                                    .is_some_and(|o| o.is_callable())
-                            }
-
-                            fn call(
-                                &mut self,
-                                callable: &JsObject,
-                                this_arg: &JsValue,
-                                args: &[JsValue],
-                            ) -> Completion<JsValue, BoaTypes> {
-                                let function = JsFunction::from_object(
-                                    callable.clone(),
-                                )
-                                .ok_or_else(|| {
-                                    JsValue::from(
-                                        JsNativeError::typ()
-                                            .with_message(
-                                                "callback is not callable",
-                                            )
-                                            .into_opaque(self.0),
-                                    )
-                                })?;
-                                function
-                                    .call(this_arg, args, self.0)
-                                    .map_err(|e| {
-                                        e.into_opaque(self.0).unwrap_or(
-                                            JsValue::undefined(),
-                                        )
-                                    })
-                            }
-
-                            fn perform_a_microtask_checkpoint(
-                                &mut self,
-                            ) -> Completion<(), BoaTypes> {
-                                let _ = self.0.run_jobs();
-                                Ok(())
-                            }
-
-                            fn report_exception(&mut self, error: JsValue) {
-                                log::error!(
-                                    "uncaught callback error: {error:?}"
-                                );
-                            }
-
-                            fn value_undefined(&mut self) -> JsValue {
-                                JsValue::undefined()
-                            }
-
-                            fn value_null(&mut self) -> JsValue {
-                                JsValue::null()
-                            }
-
-                            fn value_from_bool(&mut self, b: bool) -> JsValue {
-                                JsValue::from(b)
-                            }
-
-                            fn value_from_number(
-                                &mut self,
-                                n: f64,
-                            ) -> JsValue {
-                                JsValue::from(n)
-                            }
-
-                            fn value_from_string(
-                                &mut self,
-                                s: boa_engine::JsString,
-                            ) -> JsValue {
-                                JsValue::from(s)
-                            }
-                        }
-
-                        let mut host = CtxHost(context);
-                        behaviour(args, this.clone(), &mut host)
+                        // SAFETY: BoaEngine is repr(transparent) over Context.
+                        let engine: &mut BoaEngine =
+                            &mut *(context as *mut Context as *mut BoaEngine);
+                        behaviour(args, this.clone(), engine)
                             .map_err(|e| JsError::from_opaque(e))
                     },
                 ),
@@ -1246,4 +1187,47 @@ fn get_iterator_from_method(
         next_method,
         done: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::JsEngine;
+    use boa_engine::js_string;
+
+    /// Verify that `create_builtin_function` creates a JS-callable function
+    /// that can receive arguments and return values through the generic trait.
+    #[test]
+    fn create_builtin_function_doubles() {
+        let mut engine = BoaEngine::new();
+        let realm = engine.context.realm().clone();
+
+        // Create a function that doubles its first argument using
+        // generic JsEngine operations (to_number, value_from_number).
+        let double_fn = engine.create_builtin_function(
+            Box::new(|args, _this, host| {
+                let n = host.to_number(args.first().cloned().unwrap_or(JsValue::undefined()))?;
+                Ok(host.value_from_number(n * 2.0))
+            }),
+            1,
+            PropertyKey::from(js_string!("double")),
+            &realm,
+        );
+
+        // Register the function on the global object.
+        let global = engine.context.global_object();
+        let _ = global.set(
+            PropertyKey::from(js_string!("double")),
+            JsValue::from(double_fn),
+            false,
+            &mut engine.context,
+        );
+
+        // Call it from JS and check the result.
+        let result = engine
+            .context
+            .eval(boa_engine::Source::from_bytes("double(21)"))
+            .expect("eval should succeed");
+        assert_eq!(result.as_number(), Some(42.0));
+    }
 }

@@ -1,3 +1,46 @@
+//! # Core traits: `JsEngine<T>`, `EcmascriptHost<T>`, `HostHooks<T>`
+//!
+//! ## `JsEngine<T>` — standard ECMA-262 abstract operations
+//!
+//! Every method maps to a spec-defined abstract operation (§7.1, §7.2, §7.3,
+//! §9.3, §9.6, §10.3, §16, §25, §27).  The trait is intentionally flat —
+//! no layering, no wrappers.  Web standards (HTML, DOM, Streams, Web IDL)
+//! already define their behavior in terms of these operations.
+//!
+//! The trait is object-safe when monomorphized for a concrete `T` (e.g.,
+//! `dyn JsEngine<BoaTypes>`), enabling `CreateBuiltinFunction` closures to
+//! receive the engine directly.
+//!
+//! ## `EcmascriptHost<T>` — Web IDL callback operations
+//!
+//! A narrower interface covering only the ECMA-262 operations that Web IDL
+//! callback algorithms need: `Get`, `IsCallable`, `Call`, microtask
+//! checkpoint, and exception reporting.  Also includes value construction
+//! (`value_undefined`, `value_from_*`) for `CreateBuiltinFunction` closures.
+//!
+//! ## `Completion<T, Ty>`
+//!
+//! `type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>` —
+//! isomorphic to the spec's Completion Record (§6.2.4).
+//!
+//! ## `HostHooks<T>`
+//!
+//! Constructor-time configuration for HTML-specific engine hooks
+//! (`HostEnsureCanCompileStrings`, `HostPromiseRejectionTracker`, etc.).
+//! Set once during engine construction.
+//!
+//! ## Open problems
+//!
+//! - **P2: No `JsEngineErased` type.**  `enqueue_job` takes
+//!   `Box<dyn FnOnce() + Send>` — the closure can't access the engine.
+//!   Fix: create object-safe `JsEngineErased`.
+//! - **P4: `set_host_hooks` is a no-op for Boa.**  Boa host hooks are set
+//!   during `ContextBuilder::host_hooks()`, not at runtime.
+//! - **P7: `Callback` is Boa-concrete.**  Derives `boa_gc::Trace`/`Finalize`.
+//!   Fix requires abstracting GC trait derives.
+//!
+//! See `js_engine/README.md` for the full philosophy and migration plan.
+
 use log::error;
 
 use crate::enums::{
@@ -300,9 +343,12 @@ pub trait JsEngine<T: JsTypes> {
     /// Creates a JS-callable function object from native behaviour steps,
     /// following the same pattern Web IDL uses for observable arrays,
     /// callback interfaces, and other native-to-JS bridges.
+    ///
+    /// The behaviour closure receives the JS arguments, the `this` value,
+    /// and a `&mut dyn JsEngine<T>` for calling any ECMA-262 operation.
     fn create_builtin_function(
         &mut self,
-        behaviour: Box<dyn Fn(&[T::JsValue], T::JsValue, &mut dyn EcmascriptHost<T>) -> Completion<T::JsValue, T>>,
+        behaviour: Box<dyn Fn(&[T::JsValue], T::JsValue, &mut dyn JsEngine<T>) -> Completion<T::JsValue, T>>,
         length: u32,
         name: T::PropertyKey,
         realm: &T::Realm,

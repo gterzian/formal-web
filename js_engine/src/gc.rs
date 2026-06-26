@@ -1,11 +1,8 @@
 //! # GC & Lifecycle — the only engine-specific abstraction
 //!
-//! Everything else in this crate mirrors standard ECMA-262 abstract operations
-//! that Web standards (HTML, DOM, Web IDL, Streams) already define in terms of
-//! the JS specification.  GC and lifecycle are different — they have no ECMA-262
-//! equivalent.  Each JS engine offers its own internal GC API (tracing in Boa,
-//! `JSValueProtect`/`JSValueUnprotect` in JSC), and this module abstracts over
-//! those differences.
+//! Everything else in this crate mirrors standard ECMA-262 abstract operations.
+//! GC has no ECMA-262 equivalent — each JS engine has its own internal GC API.
+//! This module abstracts over those differences (see `js_engine/README.md`).
 //!
 //! ## Primitives
 //!
@@ -17,10 +14,8 @@
 //! | [`JsEngineGcExt`] | Extends [`JsEngine`] with `create_root` |
 //! | [`GcRootHandle`] | RAII guard for rooting a JS value |
 //!
-//! ## Engine backends
-//!
-//! Each backend provides its own implementations of these traits inside the
-//! per-engine module.  See the concrete engine modules for allocation details.
+//! Each backend provides its own implementations inside `#[cfg]`-gated
+//! sub-modules below.
 
 use crate::JsTypes;
 

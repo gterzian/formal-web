@@ -57,7 +57,17 @@ impl HostHooks for WindowHostHooks {
     }
 }
 
-pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
+/// Build the Boa engine, registering all native bindings.
+///
+/// Returns a fully-initialized `Engine` with all interfaces, prototypes,
+/// and native functions registered.  Access the underlying `Context` via
+/// `engine.context()` for Boa-specific operations not yet abstracted.
+pub(crate) fn build_boa_engine(document: Rc<RefCell<BaseDocument>>) -> Result<crate::js::Engine, String> {
+    let context = build_boa_context(document)?;
+    Ok(crate::js::Engine::from_context(context))
+}
+
+fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
     let mut context = ContextBuilder::new()
         .host_hooks(Rc::new(WindowHostHooks::new(document)))
         .job_executor(Rc::new(SimpleJobExecutor::new()))

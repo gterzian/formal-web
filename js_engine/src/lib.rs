@@ -1,20 +1,31 @@
-//! # `js_engine` — ECMA-262 Abstract Operation Trait
+//! # `js_engine` — the generic JS engine trait
 //!
-//! <https://tc39.es/ecma262/>
+//! Two categories of abstraction (see `js_engine/README.md` for the full
+//! philosophy):
 //!
-//! | Feature | Module | Engine |
-//! |---|---|---|
-//! | `boa` | [`boa`] | Boa (git dep) |
-//! | `jsc` | [`jsc`] | JavaScriptCore (macOS) |
+//! 1. **Standard** — `JsEngine<T>` mirrors ECMA-262 abstract operations.
+//! 2. **Weird** — `gc.rs` abstracts engine-specific GC (no spec equivalent).
 //!
-//! # Modules
+//! ## Modules
 //!
 //! | Module | Contents |
 //! |---|---|
 //! | [`types`] | `JsTypes`, `JsTypesWithRealm` |
-//! | [`engine`] | `JsEngine`, `Completion`, `HostHooks` |
-//! | [`enums`] | `Numeric`, `PreferredType`, `IntegrityLevel`, `IteratorKind`, etc. |
-//! | [`records`] | `IteratorRecord`, `PromiseCapability`, `PropertyDescriptor`, `RealmIntrinsics`, `ModuleRequest` |
+//! | [`engine`] | `JsEngine`, `Completion`, `EcmascriptHost`, `HostHooks` |
+//! | [`enums`] | `Numeric`, `PreferredType`, `IntegrityLevel`, etc. |
+//! | [`records`] | `IteratorRecord`, `PromiseCapability`, `PropertyDescriptor` |
+//! | [`gc`] | `Trace`, `Finalize`, `GcRootHandle` (engine-specific) |
+//! | [`boa`] | Boa backend (feature = "boa") |
+//! | [`jsc`] | JSC backend (feature = "jsc") |
+//!
+//! ## Feature flags
+//!
+//! | Feature | Engine | Default |
+//! |---|---|---|
+//! | `boa` | Boa (git dep) | **default** |
+//! | `jsc` | JavaScriptCore (macOS) | opt-in |
+//!
+//! At most one engine feature can be active.
 
 pub mod engine;
 pub mod enums;

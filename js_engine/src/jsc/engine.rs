@@ -15,7 +15,7 @@ use super::types::*;
 use crate::jsc_sys::*;
 use crate::{
     records::{IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics},
-    Completion, HostHooks, IntegrityLevel, IteratorKind, JsEngine, JsTypes, JsTypesWithRealm,
+    Completion, EcmascriptHost, HostHooks, IntegrityLevel, IteratorKind, JsEngine, JsTypes, JsTypesWithRealm,
     Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
 };
 
@@ -1137,6 +1137,27 @@ impl JsEngine<JscTypes> for JscEngine {
         _result_capability: Option<PromiseCapability<JscTypes>>,
     ) -> Completion<JscValue, JscTypes> {
         todo!("JSC promise")
+    }
+
+    // ── §10.3 Built-in Function Objects ──────────────────────────────────
+
+    fn create_builtin_function(
+        &mut self,
+        _behaviour: Box<
+            dyn Fn(
+                &[JscValue],
+                JscValue,
+                &mut dyn JsEngine<JscTypes>,
+            ) -> Completion<JscValue, JscTypes>,
+        >,
+        _length: u32,
+        _name: JscPropertyKey,
+        _realm: &JscRealm,
+    ) -> JscFunction
+    where
+        JscTypes: JsTypesWithRealm,
+    {
+        todo!("JSC CreateBuiltinFunction — needs JSObjectMakeFunctionWithCallback")
     }
 
     // ── §27.5 Generator ───────────────────────────────────────────────────
