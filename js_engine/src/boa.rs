@@ -13,7 +13,8 @@
 //! - **AsyncGenerator** — Not fully wired through the trait yet.
 
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue,
+    builtins::array_buffer::AlignedVec,
+    Context, JsNativeError, JsResult, JsSymbol, JsValue,
     object::{
         JsObject,
         builtins::{
@@ -72,13 +73,8 @@ impl JsTypes for BoaTypes {
     fn object_from_constructor(c: Self::Constructor) -> Self::JsObject { JsObject::from(c) }
 
     fn value_from_object(o: Self::JsObject) -> Self::JsValue { JsValue::from(o) }
-    fn value_from_string(s: Self::JsString) -> Self::JsValue { JsValue::from(s) }
     fn value_from_symbol(sym: Self::JsSymbol) -> Self::JsValue { JsValue::from(sym) }
-    fn value_from_bool(b: bool) -> Self::JsValue { JsValue::from(b) }
-    fn value_from_number(n: f64) -> Self::JsValue { JsValue::from(n) }
     fn value_from_bigint(n: Self::JsBigInt) -> Self::JsValue { JsValue::from(n) }
-    fn value_undefined() -> Self::JsValue { JsValue::undefined() }
-    fn value_null() -> Self::JsValue { JsValue::null() }
 
     // ── Downcasts ────────────────────────────────────────────────────
 
@@ -337,14 +333,247 @@ impl JsEngine<BoaTypes> for BoaEngine {
         Ok(default_constructor)
     }
 
-    fn get_iterator(&mut self, _object: JsValue, _kind: IteratorKind, _method: Option<JsFunction>) -> Completion<IteratorRecord<BoaTypes>, BoaTypes> {
-        todo!("Boa get_iterator")
+    fn get_iterator(
+        &mut self,
+        object: JsValue,
+        kind: IteratorKind,
+        method: Option<JsFunction>,
+    ) -> Completion<IteratorRecord<BoaTypes>, BoaTypes> {
+        // §7.4.4 GetIterator ( obj, kind )
+        match kind {
+            IteratorKind::Async => {
+                // Step 1: If kind is async:
+                //   a. Let method be ? GetMethod(obj, %Symbol.asyncIterator%).
+                let method = match method {
+                    Some(m) => Some(m),
+                    None => self.get_method(
+                        object.clone(),
+                        PropertyKey::from(JsSymbol::async_iterator()),
+                    )?,
+                };
+                match method {
+                    Some(m) => get_iterator_from_method(self, object, m),
+                    None => {
+                        // b. If method is undefined:
+                        //   i. Let syncMethod be ? GetMethod(obj, %Symbol.iterator%).
+                        let sync_method = self.get_method(
+                            object.clone(),
+                            PropertyKey::from(JsSymbol::iterator()),
+                        )?;
+                        // ii. If syncMethod is undefined, throw a TypeError exception.
+                        let sync_method = sync_method.ok_or_else(|| {
+                            JsValue::from(
+                                JsNativeError::typ()
+                                    .with_message("object is not iterable")
+                                    .into_opaque(&mut self.context),
+                            )
+                        })?;
+                        // iii. Let syncIteratorRecord be ? GetIteratorFromMethod(obj, syncMethod).
+                        let sync_record = get_iterator_from_method(self, object, sync_method)?;
+                        // iv. Return CreateAsyncFromSyncIterator(syncIteratorRecord).
+                        // Note: CreateAsyncFromSyncIterator is not implemented yet.
+                        // Fallback: return the sync iterator wrapped.
+                        Ok(sync_record)
+                    }
+                }
+            }
+            IteratorKind::Sync => {
+                // Step 2: Else (kind is sync):
+                //   a. Let method be ? GetMethod(obj, %Symbol.iterator%).
+                let method = match method {
+                    Some(m) => Some(m),
+                    None => self.get_method(
+                        object.clone(),
+                        PropertyKey::from(JsSymbol::iterator()),
+                    )?,
+                };
+                // Step 3: If method is undefined, throw a TypeError exception.
+                let method = method.ok_or_else(|| {
+                    JsValue::from(
+                        JsNativeError::typ()
+                            .with_message("object is not iterable")
+                            .into_opaque(&mut self.context),
+                    )
+                })?;
+                // Step 4: Return ? GetIteratorFromMethod(obj, method).
+                get_iterator_from_method(self, object, method)
+            }
+        }
     }
-    fn iterator_step_value(&mut self, _iterator: &mut IteratorRecord<BoaTypes>) -> Completion<Option<JsValue>, BoaTypes> {
-        todo!("Boa iterator_step_value")
+
+
+
+    fn iterator_step_value(
+        &mut self,
+        iterator: &mut IteratorRecord<BoaTypes>,
+    ) -> Completion<Option<JsValue>, BoaTypes> {
+        // §7.4.10 IteratorStepValue ( iteratorRecord )
+        //
+        // 1. Let result be ? IteratorStep(iteratorRecord).
+        //
+        // §7.4.9 IteratorStep ( iteratorRecord )
+        //   1. Let result be ? IteratorNext(iteratorRecord).
+        let result = into_completion(
+            iterator
+                .next_method
+                .call(&iterator.iterator.clone().into(), &[], &mut self.context),
+            &mut self.context,
+        )?;
+        //   2. If result is not an Object, throw a TypeError exception.
+        //   (IteratorNext step 5)
+        let result_obj = result.as_object().ok_or_else(|| {
+            JsValue::from(
+                JsNativeError::typ()
+                    .with_message("Iterator result is not an object")
+                    .into_opaque(&mut self.context),
+            )
+        })?;
+        //   2. Let done be Completion(IteratorComplete(result)).
+        //   §7.4.7 IteratorComplete: Return ToBoolean(? Get(iteratorResult, "done")).
+        let done_val = into_completion(
+            result_obj.get(PropertyKey::from(boa_engine::js_string!("done")), &mut self.context),
+            &mut self.context,
+        )?;
+        let done = done_val.to_boolean();
+        //   3. If done is a throw completion, then (handled by ?)
+        //   4. Set done to ! done.
+        if done {
+            //   5. If done is true:
+            //      a. Set iteratorRecord.[[Done]] to true.
+            //      b. Return done.
+            iterator.done = true;
+            return Ok(None);
+        }
+        // 2. If result is done, then (handled above)
+        //
+        // 3. Let value be Completion(IteratorValue(result)).
+        // 4. If value is a throw completion, then
+        //      a. Set iteratorRecord.[[Done]] to true.
+        //    (§7.4.8 IteratorValue: Return ? Get(iteratorResult, "value").)
+        let value = into_completion(
+            result_obj.get(PropertyKey::from(boa_engine::js_string!("value")), &mut self.context),
+            &mut self.context,
+        )
+        .map_err(|e| {
+            iterator.done = true;
+            e
+        })?;
+        // 5. Return ? value.
+        Ok(Some(value))
     }
-    fn iterator_close(&mut self, _iterator: IteratorRecord<BoaTypes>, completion: Completion<JsValue, BoaTypes>) -> Completion<JsValue, BoaTypes> { completion }
-    fn async_iterator_close(&mut self, _iterator: IteratorRecord<BoaTypes>, completion: Completion<JsValue, BoaTypes>) -> Completion<JsValue, BoaTypes> { completion }
+
+    fn iterator_close(
+        &mut self,
+        iterator: IteratorRecord<BoaTypes>,
+        completion: Completion<JsValue, BoaTypes>,
+    ) -> Completion<JsValue, BoaTypes> {
+        // §7.4.11 IteratorClose ( iteratorRecord, completion )
+        //
+        // 1. Assert: iteratorRecord.[[Iterator]] is an Object.
+        // 2. Let iterator be iteratorRecord.[[Iterator]].
+        let iter_value = JsValue::from(iterator.iterator);
+        let return_key: PropertyKey = boa_engine::js_string!("return").into();
+        //
+        // 3. Let innerResult be Completion(GetMethod(iterator, "return")).
+        let inner_result = self.get_method(iter_value.clone(), return_key);
+        //
+        // 4. If innerResult.[[Type]] is normal, then
+        let inner_result = match inner_result {
+            Ok(Some(return_fn)) => {
+                // a. Let return be innerResult.[[Value]].
+                // c. Set innerResult to Completion(Call(return, iterator)).
+                self.call(return_fn, iter_value, &[])
+            }
+            Ok(None) => {
+                // b. If return is undefined, return ? completion.
+                return completion;
+            }
+            Err(e) => {
+                // 5. If completion.[[Type]] is throw, return ? completion.
+                if completion.is_err() {
+                    return completion;
+                }
+                // 6. If innerResult.[[Type]] is throw, return ? innerResult.
+                return Err(e);
+            }
+        };
+        // 5. If completion.[[Type]] is throw, return ? completion.
+        let completion_value = completion?;
+        // 6. If innerResult.[[Type]] is throw, return ? innerResult.
+        let inner_value = inner_result?;
+        // 7. If Type(innerResult.[[Value]]) is not Object, throw a TypeError exception.
+        if !inner_value.is_object() {
+            return Err(JsValue::from(
+                JsNativeError::typ()
+                    .with_message("Iterator return result is not an object")
+                    .into_opaque(&mut self.context),
+            ));
+        }
+        // 8. Return ? completion.
+        Ok(completion_value)
+    }
+
+    fn async_iterator_close(
+        &mut self,
+        iterator: IteratorRecord<BoaTypes>,
+        completion: Completion<JsValue, BoaTypes>,
+    ) -> Completion<JsValue, BoaTypes> {
+        // §7.4.15 AsyncIteratorClose ( iteratorRecord, completion )
+        //
+        // 1. Assert: iteratorRecord.[[Iterator]] is an Object.
+        // 2. Let iterator be iteratorRecord.[[Iterator]].
+        let iter_value = JsValue::from(iterator.iterator);
+        let return_key: PropertyKey = boa_engine::js_string!("return").into();
+        //
+        // 3. Let innerResult be Completion(GetMethod(iterator, "return")).
+        let inner_result = self.get_method(iter_value.clone(), return_key);
+        //
+        // 4. If innerResult.[[Type]] is normal, then
+        match inner_result {
+            Ok(Some(return_fn)) => {
+                // c. Set innerResult to Completion(Call(return, iterator)).
+                match self.call(return_fn, iter_value, &[]) {
+                    Ok(val) => {
+                        // If innerResult is a normal completion, set innerResult
+                        // to Completion(Await(innerResult.[[Value]])).
+                        // Note: Await is async — this implementation is synchronous
+                        // and does not await.  See spec §7.4.15 step 4 sub-step 3.
+                        if !val.is_object() {
+                            return Err(JsValue::from(
+                                JsNativeError::typ()
+                                    .with_message(
+                                        "Async iterator return result is not an object",
+                                    )
+                                    .into_opaque(&mut self.context),
+                            ));
+                        }
+                        // 8. Return ? completion.
+                        completion
+                    }
+                    Err(e) => {
+                        // 5. If completion.[[Type]] is throw, return ? completion.
+                        if completion.is_err() {
+                            return completion;
+                        }
+                        // 6. If innerResult.[[Type]] is throw, return ? innerResult.
+                        Err(e)
+                    }
+                }
+            }
+            Ok(None) => {
+                // b. If return is undefined, return ? completion.
+                completion
+            }
+            Err(e) => {
+                // 5. If completion.[[Type]] is throw, return ? completion.
+                if completion.is_err() {
+                    return completion;
+                }
+                // 6. If innerResult.[[Type]] is throw, return ? innerResult.
+                Err(e)
+            }
+        }
+    }
 
     // ── §9.3 Realm ────────────────────────────────────────────────────────
 
@@ -367,7 +596,43 @@ impl JsEngine<BoaTypes> for BoaEngine {
     }
 
     fn realm_intrinsics(&self, _realm: &boa_engine::realm::Realm) -> RealmIntrinsics<BoaTypes> where BoaTypes: JsTypesWithRealm {
-        todo!("Boa realm_intrinsics")
+        // <https://tc39.es/ecma262/#table-basic-intrinsics>
+        let intrinsics = self.context.intrinsics();
+        let constructors = intrinsics.constructors();
+        RealmIntrinsics {
+            array_buffer: JsFunction::from_object(constructors.array_buffer().constructor())
+                .expect("ArrayBuffer constructor"),
+            shared_array_buffer: JsFunction::from_object(
+                constructors.shared_array_buffer().constructor(),
+            )
+            .expect("SharedArrayBuffer constructor"),
+            promise: JsFunction::from_object(constructors.promise().constructor())
+                .expect("Promise constructor"),
+            object: JsFunction::from_object(constructors.object().constructor())
+                .expect("Object constructor"),
+            function: JsFunction::from_object(constructors.function().constructor())
+                .expect("Function constructor"),
+            error: JsFunction::from_object(constructors.error().constructor())
+                .expect("Error constructor"),
+            type_error: JsFunction::from_object(constructors.type_error().constructor())
+                .expect("TypeError constructor"),
+            range_error: JsFunction::from_object(constructors.range_error().constructor())
+                .expect("RangeError constructor"),
+            syntax_error: JsFunction::from_object(constructors.syntax_error().constructor())
+                .expect("SyntaxError constructor"),
+            reference_error: JsFunction::from_object(
+                constructors.reference_error().constructor(),
+            )
+            .expect("ReferenceError constructor"),
+            uri_error: JsFunction::from_object(constructors.uri_error().constructor())
+                .expect("URIError constructor"),
+            eval_error: JsFunction::from_object(constructors.eval_error().constructor())
+                .expect("EvalError constructor"),
+            array: JsFunction::from_object(constructors.array().constructor())
+                .expect("Array constructor"),
+            object_prototype: constructors.object().prototype(),
+            function_prototype: constructors.function().prototype(),
+        }
     }
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
@@ -390,8 +655,25 @@ impl JsEngine<BoaTypes> for BoaEngine {
 
     // ── §25 ArrayBuffer ───────────────────────────────────────────────────
 
-    fn allocate_array_buffer(&mut self, _constructor: JsFunction, _byte_length: u64, _max_byte_length: Option<u64>) -> Completion<JsArrayBuffer, BoaTypes> {
-        todo!("Boa allocate_array_buffer")
+    fn allocate_array_buffer(
+        &mut self,
+        constructor: JsFunction,
+        byte_length: u64,
+        _max_byte_length: Option<u64>,
+    ) -> Completion<JsArrayBuffer, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-allocatearraybuffer>
+        // AllocateArrayBuffer via JS constructor.  The constructor
+        // internally performs OrdinaryCreateFromConstructor,
+        // CreateByteDataBlock, and slot initialization.
+        let arg = JsValue::from(byte_length as f64);
+        let obj = into_completion(
+            constructor.construct(&[arg], Some(&constructor), &mut self.context),
+            &mut self.context,
+        )?;
+        into_completion(
+            JsArrayBuffer::from_object(obj),
+            &mut self.context,
+        )
     }
 
     fn is_detached_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {
@@ -404,8 +686,38 @@ impl JsEngine<BoaTypes> for BoaEngine {
         into_completion(array_buffer.detach(detach_key).map(|_| ()), &mut self.context)
     }
 
-    fn clone_array_buffer(&mut self, _src: JsArrayBuffer, _src_byte_offset: u64, _src_length: u64, _clone_constructor: JsFunction) -> Completion<JsArrayBuffer, BoaTypes> {
-        todo!("Boa clone_array_buffer")
+    fn clone_array_buffer(
+        &mut self,
+        src: JsArrayBuffer,
+        src_byte_offset: u64,
+        src_length: u64,
+        _clone_constructor: JsFunction,
+    ) -> Completion<JsArrayBuffer, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-clonearraybuffer>
+        //
+        // Step 1: Assert: IsDetachedBuffer(sourceBuffer) is false.
+        // Step 2: Let targetBuffer be ? AllocateArrayBuffer(%ArrayBuffer%, sourceLength).
+        //
+        // Read source data.
+        let src_bytes = src.data().ok_or_else(|| {
+            JsValue::from(
+                JsNativeError::typ()
+                    .with_message("Cannot clone a detached ArrayBuffer")
+                    .into_opaque(&mut self.context),
+            )
+        })?;
+        // Step 3: Let sourceBlock be sourceBuffer.[[ArrayBufferData]].
+        let start = src_byte_offset as usize;
+        let end = start + src_length as usize;
+        let slice = &src_bytes[start..end];
+        // Step 4: Perform CopyDataBlockBytes(targetBlock, 0, sourceBlock, ...).
+        // Create an AlignedVec from the source slice and use from_byte_block.
+        let aligned = AlignedVec::from_slice(64, slice);
+        // Step 5: Return targetBuffer.
+        into_completion(
+            JsArrayBuffer::from_byte_block(aligned, &mut self.context),
+            &mut self.context,
+        )
     }
 
     fn is_fixed_length_array_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool { true }
@@ -413,8 +725,21 @@ impl JsEngine<BoaTypes> for BoaEngine {
     fn get_value_from_buffer(&self, _array_buffer: &JsArrayBuffer, _byte_index: u64, _element_type: TypedArrayElementType, _is_typed_array: bool, _order: SharedMemoryOrder) -> JsValue { JsValue::undefined() }
     fn set_value_in_buffer(&mut self, _array_buffer: &JsArrayBuffer, _byte_index: u64, _element_type: TypedArrayElementType, _value: JsValue, _is_typed_array: bool, _order: SharedMemoryOrder) -> Completion<(), BoaTypes> { Ok(()) }
 
-    fn allocate_shared_array_buffer(&mut self, _constructor: JsFunction, _byte_length: u64) -> Completion<JsSharedArrayBuffer, BoaTypes> {
-        todo!("Boa allocate_shared_array_buffer")
+    fn allocate_shared_array_buffer(
+        &mut self,
+        _constructor: JsFunction,
+        byte_length: u64,
+    ) -> Completion<JsSharedArrayBuffer, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-allocatesharedarraybuffer>
+        // Steps 1-4 are handled by JsSharedArrayBuffer::new internally.
+        //
+        // Note: The spec uses OrdinaryCreateFromConstructor(ctor, ...)
+        // to set the prototype chain via the constructor.  Using new()
+        // with the default prototype is equivalent for most use cases.
+        into_completion(
+            JsSharedArrayBuffer::new(byte_length as usize, &mut self.context),
+            &mut self.context,
+        )
     }
 
     // ── §27 Promise ───────────────────────────────────────────────────────
@@ -441,9 +766,79 @@ impl JsEngine<BoaTypes> for BoaEngine {
 
     fn generator_start(&mut self, _generator: JsGenerator, _closure: JsFunction) -> Completion<(), BoaTypes> { todo!("Boa generator_start") }
 
+    // ── Value Construction ───────────────────────────────────────────────
+
+    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+        JsValue::from(s)
+    }
+
+    fn value_from_bool(&mut self, b: bool) -> JsValue {
+        JsValue::from(b)
+    }
+
+    fn value_from_number(&mut self, n: f64) -> JsValue {
+        JsValue::from(n)
+    }
+
+    fn value_undefined(&mut self) -> JsValue {
+        JsValue::undefined()
+    }
+
+    fn value_null(&mut self) -> JsValue {
+        JsValue::null()
+    }
+
     // ── Host Hooks ────────────────────────────────────────────────────────
 
     fn set_host_hooks(&mut self, _hooks: HostHooks<BoaTypes>) where BoaTypes: JsTypesWithRealm {
         // TODO: store and call through hooks internally
     }
+}
+
+/// §7.4.3 GetIteratorFromMethod ( obj, method )
+fn get_iterator_from_method(
+    engine: &mut BoaEngine,
+    obj: JsValue,
+    method: JsFunction,
+) -> Completion<IteratorRecord<BoaTypes>, BoaTypes> {
+    let context = &mut engine.context;
+    // Step 1: Let iterator be ? Call(method, obj).
+    let iterator = into_completion(method.call(&obj, &[], context), context)?;
+    // Step 2: If iterator is not an Object, throw a TypeError exception.
+    let iterator_obj = iterator.as_object().ok_or_else(|| {
+        JsValue::from(
+            JsNativeError::typ()
+                .with_message("iterator result is not an object")
+                .into_opaque(context),
+        )
+    })?;
+    // Step 3: Let nextMethod be ? Get(iterator, "next").
+    let next_value = into_completion(
+        iterator_obj.get(PropertyKey::from(boa_engine::js_string!("next")), context),
+        context,
+    )?;
+    // Step 4: Let iteratorRecord be the Iterator Record
+    // { [[Iterator]]: iterator, [[NextMethod]]: nextMethod, [[Done]]: false }.
+    let next_method = JsFunction::from_object(
+        next_value.as_object().ok_or_else(|| {
+            JsValue::from(
+                JsNativeError::typ()
+                    .with_message("iterator next method is not a function")
+                    .into_opaque(context),
+            )
+        })?,
+    )
+    .ok_or_else(|| {
+        JsValue::from(
+            JsNativeError::typ()
+                .with_message("iterator next method is not a function")
+                .into_opaque(context),
+        )
+    })?;
+    // Step 5: Return iteratorRecord.
+    Ok(IteratorRecord {
+        iterator: iterator_obj,
+        next_method,
+        done: false,
+    })
 }

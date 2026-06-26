@@ -418,6 +418,25 @@ pub trait JsEngine<T: JsTypes>: Sized {
     ) -> Completion<(), T>;
 
     // ────────────────────────────────────────────────────────────────────────
+    // Value Construction (engine-context-requiring)
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_string(&mut self, s: T::JsString) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_bool(&mut self, b: bool) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_number(&mut self, n: f64) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_undefined(&mut self) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_null(&mut self) -> T::JsValue;
+
+    // ────────────────────────────────────────────────────────────────────────
     // HTML host hooks
     // ────────────────────────────────────────────────────────────────────────
 

@@ -56,19 +56,8 @@ impl JsTypes for JscTypes {
     fn object_from_constructor(c: Self::Constructor) -> Self::JsObject { c }
 
     fn value_from_object(o: Self::JsObject) -> Self::JsValue { o.as_value() }
-    fn value_from_string(_s: Self::JsString) -> Self::JsValue {
-        unimplemented!("value_from_string requires a context in JSC")
-    }
     fn value_from_symbol(sym: Self::JsSymbol) -> Self::JsValue { sym.as_value().clone() }
-    fn value_from_bool(_b: bool) -> Self::JsValue {
-        unimplemented!("value_from_bool requires a context in JSC")
-    }
-    fn value_from_number(_n: f64) -> Self::JsValue {
-        unimplemented!("value_from_number requires a context in JSC")
-    }
     fn value_from_bigint(n: Self::JsBigInt) -> Self::JsValue { n.as_value().clone() }
-    fn value_undefined() -> Self::JsValue { unimplemented!("requires a context in JSC") }
-    fn value_null() -> Self::JsValue { unimplemented!("requires a context in JSC") }
 
     // ── Downcasts ────────────────────────────────────────────────────
     fn value_as_object(_v: &Self::JsValue) -> Option<Self::JsObject> { None /* needs context */ }
@@ -392,6 +381,38 @@ impl JsEngine<JscTypes> for JscEngine {
 
     // ── §27.5 Generator ───────────────────────────────────────────────────
     fn generator_start(&mut self, _generator: JscGenerator, _closure: JscFunction) -> Completion<(), JscTypes> { todo!("JSC generator") }
+
+    // ── Value Construction ───────────────────────────────────────────────
+
+    fn value_from_string(&mut self, s: JscString) -> JscValue {
+        JscValue {
+            raw: unsafe { JSValueMakeString(self.context.as_context_ref(), s.raw) },
+        }
+    }
+
+    fn value_from_bool(&mut self, b: bool) -> JscValue {
+        JscValue {
+            raw: unsafe { JSValueMakeBoolean(self.context.as_context_ref(), b) },
+        }
+    }
+
+    fn value_from_number(&mut self, n: f64) -> JscValue {
+        JscValue {
+            raw: unsafe { JSValueMakeNumber(self.context.as_context_ref(), n) },
+        }
+    }
+
+    fn value_undefined(&mut self) -> JscValue {
+        JscValue {
+            raw: unsafe { JSValueMakeUndefined(self.context.as_context_ref()) },
+        }
+    }
+
+    fn value_null(&mut self) -> JscValue {
+        JscValue {
+            raw: unsafe { JSValueMakeNull(self.context.as_context_ref()) },
+        }
+    }
 
     // ── Host Hooks ────────────────────────────────────────────────────────
     fn set_host_hooks(&mut self, _hooks: HostHooks<JscTypes>) where JscTypes: JsTypesWithRealm {}
