@@ -157,7 +157,9 @@ pub(crate) fn call_user_objects_operation(
     // Note: DOM event dispatch already provides ECMAScript values, so there is no additional conversion layer here yet.
 
     // Step 12: "Let callResult be Completion(Call(X, thisArg, jsArgs))."
-    let result = host.call(&callable, &effective_this_arg, args).map_err(into_js_error)?;
+    let result = host
+        .call(&callable, &effective_this_arg, args)
+        .map_err(into_js_error)?;
 
     // Step 13: "If callResult is an abrupt completion, set completion to callResult and jump to the step labeled return."
     // Note: `?` returns the abrupt completion directly in this Rust implementation.
@@ -182,7 +184,11 @@ pub(crate) struct ContextEcmaHost<'a> {
 }
 
 impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEcmaHost<'_> {
-    fn get(&mut self, object: &JsObject, property: &str) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    fn get(
+        &mut self,
+        object: &JsObject,
+        property: &str,
+    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
         object
             .get(JsString::from(property), self.context)
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))

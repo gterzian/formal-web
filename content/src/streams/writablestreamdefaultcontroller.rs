@@ -542,7 +542,11 @@ impl<'a> ContextEventDispatchHost<'a> {
 }
 
 impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost<'_> {
-    fn get(&mut self, object: &JsObject, property: &str) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    fn get(
+        &mut self,
+        object: &JsObject,
+        property: &str,
+    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
         object
             .get(boa_engine::js_string!(property), self.context)
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
@@ -558,16 +562,14 @@ impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
-        let function =
-            boa_engine::object::builtins::JsFunction::from_object(callable.clone()).ok_or_else(
-                || {
-                    JsValue::from(
-                        JsNativeError::typ()
-                            .with_message("callback is not callable")
-                            .into_opaque(self.context),
-                    )
-                },
-            )?;
+        let function = boa_engine::object::builtins::JsFunction::from_object(callable.clone())
+            .ok_or_else(|| {
+                JsValue::from(
+                    JsNativeError::typ()
+                        .with_message("callback is not callable")
+                        .into_opaque(self.context),
+                )
+            })?;
         function
             .call(this_arg, args, self.context)
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))

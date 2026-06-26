@@ -12,8 +12,8 @@
 //!
 //! Raw FFI bindings live in [`crate::jsc_sys`].
 
-mod types;
 mod engine;
+mod types;
 
 pub use engine::{JscEngine, JscTypes};
 pub use types::*;

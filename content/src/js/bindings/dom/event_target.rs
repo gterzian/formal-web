@@ -11,9 +11,7 @@ use crate::js::platform_objects::{
     document_object, object_for_existing_node, resolve_element_object,
 };
 use crate::js::with_event_target_mut;
-use crate::webidl::{
-    callback_interface_type_value, nullable_value,
-};
+use crate::webidl::{callback_interface_type_value, nullable_value};
 
 #[derive(Clone)]
 pub(crate) struct AddEventListenerOptions {
@@ -153,7 +151,11 @@ impl<'a> ContextEventDispatchHost<'a> {
 }
 
 impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost<'_> {
-    fn get(&mut self, object: &JsObject, property: &str) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    fn get(
+        &mut self,
+        object: &JsObject,
+        property: &str,
+    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
         object
             .get(js_string!(property), self.context)
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))

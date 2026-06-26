@@ -5,8 +5,8 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::js::with_event_target_mut;
 use crate::streams::PipeToState;
-use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::Callback;
+use crate::webidl::bindings::create_interface_instance;
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 

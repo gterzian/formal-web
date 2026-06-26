@@ -1910,11 +1910,9 @@ impl ContentProcess {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = compile_rejection(
-                        &resolvers,
-                        message,
-                        content_document.settings.context(),
-                    ) {
+                    if let Err(error) =
+                        compile_rejection(&resolvers, message, content_document.settings.context())
+                    {
                         error!("WebAssembly: failed to reject compile promise: {error}");
                     }
                 }
@@ -1946,11 +1944,9 @@ impl ContentProcess {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = compile_rejection(
-                        &resolvers,
-                        message,
-                        content_document.settings.context(),
-                    ) {
+                    if let Err(error) =
+                        compile_rejection(&resolvers, message, content_document.settings.context())
+                    {
                         error!("WebAssembly: failed to reject instantiate promise: {error}");
                     }
                 }

@@ -139,8 +139,8 @@ impl<T: JsTypesGcExt> Drop for GcRootHandle<T> {
 // ── Boa backend ───────────────────────────────────────────────────────────
 #[cfg(feature = "boa")]
 mod boa_gc_impl {
-    use crate::boa::{BoaEngine, BoaTypes};
     use super::*;
+    use crate::boa::{BoaEngine, BoaTypes};
 
     impl<T: boa_gc::Finalize + ?Sized> Finalize for T {
         #[inline]
@@ -154,17 +154,16 @@ mod boa_gc_impl {
         /// safe — no cycle hazard.
         type Reflector = boa_engine::object::JsObject;
 
-        fn create_reflector(obj: &Self::JsObject) -> Self::Reflector { obj.clone() }
+        fn create_reflector(obj: &Self::JsObject) -> Self::Reflector {
+            obj.clone()
+        }
         fn upgrade_reflector(reflector: &Self::Reflector) -> Option<Self::JsObject> {
             Some(reflector.clone())
         }
     }
 
     impl JsEngineGcExt<BoaTypes> for BoaEngine {
-        fn create_root(
-            &mut self,
-            value: &boa_engine::JsValue,
-        ) -> GcRootHandle<BoaTypes> {
+        fn create_root(&mut self, value: &boa_engine::JsValue) -> GcRootHandle<BoaTypes> {
             GcRootHandle {
                 value: value.clone(),
                 // No-op: dropping the handle inherently unroots in Boa's GC.
@@ -201,12 +200,10 @@ mod jsc_gc_impl {
                 // that outlives the access.  `sys::JSObjectRef` is a ZST enum,
                 // so transmute is required (`as` cast is structurally invalid).
                 Some(unsafe {
-                    crate::jsc::JscObject::from_raw(
-                        std::mem::transmute::<
-                            *mut std::ffi::c_void,
-                            *mut crate::jsc::sys::JSObjectRef,
-                        >(*reflector),
-                    )
+                    crate::jsc::JscObject::from_raw(std::mem::transmute::<
+                        *mut std::ffi::c_void,
+                        *mut crate::jsc::sys::JSObjectRef,
+                    >(*reflector))
                 })
             }
         }
@@ -219,10 +216,7 @@ mod jsc_gc_impl {
     }
 
     impl JsEngineGcExt<JscTypes> for JscEngine {
-        fn create_root(
-            &mut self,
-            value: &crate::jsc::JscValue,
-        ) -> GcRootHandle<JscTypes> {
+        fn create_root(&mut self, value: &crate::jsc::JscValue) -> GcRootHandle<JscTypes> {
             let ctx_ptr = self.context().as_context_ref() as *mut std::ffi::c_void;
             let val_ptr = value.as_raw() as *mut std::ffi::c_void;
 
@@ -232,10 +226,8 @@ mod jsc_gc_impl {
 
             GcRootHandle {
                 value: *value,
-                unroot_action: Some(Box::new(move |_val| {
-                    unsafe {
-                        JSValueUnprotect(ctx_ptr, val_ptr);
-                    }
+                unroot_action: Some(Box::new(move |_val| unsafe {
+                    JSValueUnprotect(ctx_ptr, val_ptr);
                 })),
             }
         }

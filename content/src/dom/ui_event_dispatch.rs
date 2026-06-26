@@ -438,7 +438,11 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
 }
 
 impl js_engine::EcmascriptHost<js_engine::BoaTypes> for BlitzJSEventHandler<'_> {
-    fn get(&mut self, object: &JsObject, property: &str) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    fn get(
+        &mut self,
+        object: &JsObject,
+        property: &str,
+    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
         self.settings.engine.get(object, property)
     }
 

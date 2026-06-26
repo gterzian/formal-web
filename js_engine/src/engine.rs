@@ -264,7 +264,8 @@ pub trait JsEngine<T: JsTypes>: Sized {
 
     /// <https://tc39.es/ecma262/#sec-createrealm>
     fn create_realm(&mut self) -> T::Realm
-    where T: JsTypesWithRealm;
+    where
+        T: JsTypesWithRealm;
 
     /// <https://tc39.es/ecma262/#sec-setrealmglobalobject>
     fn set_realm_global_object(
@@ -272,19 +273,23 @@ pub trait JsEngine<T: JsTypes>: Sized {
         realm: &T::Realm,
         global: T::JsObject,
         this_value: Option<T::JsObject>,
-    ) where T: JsTypesWithRealm;
+    ) where
+        T: JsTypesWithRealm;
 
     /// <https://tc39.es/ecma262/#sec-setdefaultglobalbindings>
     fn set_default_global_bindings(&mut self, realm: &T::Realm) -> Completion<(), T>
-    where T: JsTypesWithRealm;
+    where
+        T: JsTypesWithRealm;
 
     /// <https://tc39.es/ecma262/#sec-execution-contexts>
     fn current_realm(&self) -> T::Realm
-    where T: JsTypesWithRealm;
+    where
+        T: JsTypesWithRealm;
 
     /// <https://tc39.es/ecma262/#sec-completion-record-specification-type>
     fn realm_intrinsics(&self, realm: &T::Realm) -> RealmIntrinsics<T>
-    where T: JsTypesWithRealm;
+    where
+        T: JsTypesWithRealm;
 
     // ────────────────────────────────────────────────────────────────────────
     // §9.6 / §9.7 Jobs (microtask queue)
@@ -301,20 +306,14 @@ pub trait JsEngine<T: JsTypes>: Sized {
     // ────────────────────────────────────────────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation>
-    fn evaluate_script(
-        &mut self,
-        source: &str,
-        realm: &T::Realm,
-    ) -> Completion<T::JsValue, T>
-    where T: JsTypesWithRealm;
+    fn evaluate_script(&mut self, source: &str, realm: &T::Realm) -> Completion<T::JsValue, T>
+    where
+        T: JsTypesWithRealm;
 
     /// <https://tc39.es/ecma262/#sec-evaluatemodule>
-    fn evaluate_module(
-        &mut self,
-        source: &str,
-        realm: &T::Realm,
-    ) -> Completion<T::JsObject, T>
-    where T: JsTypesWithRealm;
+    fn evaluate_module(&mut self, source: &str, realm: &T::Realm) -> Completion<T::JsObject, T>
+    where
+        T: JsTypesWithRealm;
 
     // ────────────────────────────────────────────────────────────────────────
     // §25.1 ArrayBuffer Abstract Operations
@@ -456,7 +455,8 @@ pub trait JsEngine<T: JsTypes>: Sized {
 
     /// <https://html.spec.whatwg.org/#host-hooks>
     fn set_host_hooks(&mut self, hooks: HostHooks<T>)
-    where T: JsTypesWithRealm;
+    where
+        T: JsTypesWithRealm;
 }
 
 /// <https://webidl.spec.whatwg.org/#ecmascript-operations>

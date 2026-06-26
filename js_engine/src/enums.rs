@@ -59,16 +59,28 @@ pub enum PromiseRejectionOperation {
 }
 
 impl PreferredType {
-    pub fn is_string(self) -> bool { matches!(self, PreferredType::String) }
-    pub fn is_number(self) -> bool { matches!(self, PreferredType::Number) }
+    pub fn is_string(self) -> bool {
+        matches!(self, PreferredType::String)
+    }
+    pub fn is_number(self) -> bool {
+        matches!(self, PreferredType::Number)
+    }
 }
 
 impl IntegrityLevel {
-    pub fn is_sealed(self) -> bool { matches!(self, IntegrityLevel::Sealed) }
-    pub fn is_frozen(self) -> bool { matches!(self, IntegrityLevel::Frozen) }
+    pub fn is_sealed(self) -> bool {
+        matches!(self, IntegrityLevel::Sealed)
+    }
+    pub fn is_frozen(self) -> bool {
+        matches!(self, IntegrityLevel::Frozen)
+    }
 }
 
 impl IteratorKind {
-    pub fn is_sync(self) -> bool { matches!(self, IteratorKind::Sync) }
-    pub fn is_async(self) -> bool { matches!(self, IteratorKind::Async) }
+    pub fn is_sync(self) -> bool {
+        matches!(self, IteratorKind::Sync)
+    }
+    pub fn is_async(self) -> bool {
+        matches!(self, IteratorKind::Async)
+    }
 }

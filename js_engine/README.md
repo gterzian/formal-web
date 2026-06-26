@@ -41,7 +41,10 @@ src/
   engine.rs     JsEngine<T>, Completion, HostHooks
   enums.rs      Numeric, PreferredType, IntegrityLevel, IteratorKind, etc.
   records.rs    IteratorRecord, PromiseCapability, PropertyDescriptor, etc.
-  boa.rs        BoaTypes + BoaEngine (behind feature = "boa")
+  boa/
+    mod.rs      module root
+    types.rs    BoaTypes (behind feature = "boa")
+    engine.rs   BoaEngine (behind feature = "boa")
   jsc/
     mod.rs      module root
     sys.rs      raw FFI bindings to JavaScriptCore

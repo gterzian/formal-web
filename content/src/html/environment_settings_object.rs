@@ -3,9 +3,7 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsResult, JsValue, Source, js_string,
-    object::JsObject,
-    property::Attribute,
+    Context, JsResult, JsValue, Source, js_string, object::JsObject, property::Attribute,
 };
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
@@ -15,7 +13,9 @@ use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_boa_context;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
-use crate::js::{Engine, install_console_namespace, install_css_namespace, install_document_property};
+use crate::js::{
+    Engine, install_console_namespace, install_css_namespace, install_document_property,
+};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 
 fn timer_debug_enabled() -> bool {
@@ -196,7 +196,9 @@ impl EnvironmentSettingsObject {
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
-            let mut host = crate::webidl::ContextEcmaHost { context: self.context() };
+            let mut host = crate::webidl::ContextEcmaHost {
+                context: self.context(),
+            };
             crate::webidl::invoke_callback_function(
                 &mut host,
                 &callback,
@@ -253,7 +255,9 @@ impl EnvironmentSettingsObject {
                     timer_id, timer_key
                 ));
                 let global = JsValue::from(self.context().global_object());
-                let mut host = crate::webidl::ContextEcmaHost { context: self.context() };
+                let mut host = crate::webidl::ContextEcmaHost {
+                    context: self.context(),
+                };
                 let callback_result = crate::webidl::invoke_callback_function(
                     &mut host,
                     callback,
@@ -345,7 +349,11 @@ impl EnvironmentSettingsObject {
 }
 
 impl js_engine::EcmascriptHost<js_engine::BoaTypes> for EnvironmentSettingsObject {
-    fn get(&mut self, object: &JsObject, property: &str) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    fn get(
+        &mut self,
+        object: &JsObject,
+        property: &str,
+    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
         self.engine.get(object, property)
     }
 
