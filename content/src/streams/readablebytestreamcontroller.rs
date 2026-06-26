@@ -1,14 +1,14 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    Context, JsData, JsNativeError, JsResult, JsValue,
     builtins::typed_array::TypedArrayKind,
     js_string,
     native_function::NativeFunction,
     object::{
-        JsObject,
         builtins::{JsArrayBuffer, JsDataView, JsPromise, JsTypedArray},
+        JsObject,
     },
+    Context, JsData, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -16,10 +16,11 @@ use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::resolved_promise;
 
 use super::{
-    CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest, ReadableStream,
-    ReadableStreamController, ReadableStreamState, StartAlgorithm, extract_source_method,
-    readable_stream_add_read_request, readable_stream_close, readable_stream_error,
-    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, type_error_value,
+    extract_source_method, readable_stream_add_read_request, readable_stream_close,
+    readable_stream_error, readable_stream_fulfill_read_request,
+    readable_stream_get_num_read_requests, type_error_value, CancelAlgorithm, PullAlgorithm,
+    ReadIntoRequest, ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState,
+    StartAlgorithm,
 };
 
 #[derive(Clone, Trace, Finalize)]

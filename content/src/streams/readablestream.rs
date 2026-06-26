@@ -6,7 +6,6 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::{
         iterable::create_iter_result_object,
         promise::{PromiseState, ResolvingFunctions},
@@ -14,16 +13,17 @@ use boa_engine::{
     js_string,
     native_function::NativeFunction,
     object::{
-        JsObject,
         builtins::{JsArray, JsFunction, JsPromise},
+        JsObject,
     },
     symbol::JsSymbol,
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
 
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::js::with_abort_signal_ref;
-use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
+use crate::streams::{extract_high_water_mark, extract_size_algorithm, SizeAlgorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{
     error_to_rejection_reason, mark_promise_as_handled, promise_from_completion,
@@ -32,9 +32,6 @@ use crate::webidl::{
 };
 
 use super::{
-    ArrayBufferViewDescriptor, CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest,
-    ReadableByteStreamController, ReadableStreamController, ReadableStreamDefaultReader,
-    ReadableStreamGenericReader, ReadableStreamReader, ReadableStreamState, StartAlgorithm,
     acquire_readable_stream_byob_reader, acquire_readable_stream_default_reader,
     queue_internal_stream_microtask, readable_stream_byob_reader_release,
     readable_stream_default_reader_error_read_requests, readable_stream_default_reader_release,
@@ -42,6 +39,9 @@ use super::{
     set_up_readable_stream_default_controller,
     set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
     with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
+    ArrayBufferViewDescriptor, CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest,
+    ReadableByteStreamController, ReadableStreamController, ReadableStreamDefaultReader,
+    ReadableStreamGenericReader, ReadableStreamReader, ReadableStreamState, StartAlgorithm,
 };
 
 /// <https://streams.spec.whatwg.org/#rs-class>

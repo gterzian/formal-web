@@ -5,14 +5,14 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsString, JsValue,
     native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
+    object::{builtins::JsPromise, JsObject},
+    Context, JsArgs, JsData, JsNativeError, JsResult, JsString, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::{
-    dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
+    dom::{create_abort_signal, signal_abort, AbortSignal, Event, EventDispatchHost},
     js::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
     streams::SizeAlgorithm,
     webidl::bindings::create_interface_instance,

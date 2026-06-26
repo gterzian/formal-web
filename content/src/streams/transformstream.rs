@@ -2,16 +2,16 @@ use log::debug;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
     native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
+    object::{builtins::JsPromise, JsObject},
+    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
-use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
+use crate::streams::{extract_high_water_mark, extract_size_algorithm, SizeAlgorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{promise_from_value, rejected_promise, resolved_promise};
 
@@ -22,10 +22,10 @@ use super::readablestreamdefaultcontroller::{
 use super::readablestreamsupport::SourceMethod;
 use super::writablestream::create_writable_stream;
 use super::writablestreamdefaultcontroller::{
-    AbortAlgorithm, CloseAlgorithm, StartAlgorithm as WritableStartAlgorithm, WriteAlgorithm,
-    writable_stream_default_controller_error_if_needed,
+    writable_stream_default_controller_error_if_needed, AbortAlgorithm, CloseAlgorithm,
+    StartAlgorithm as WritableStartAlgorithm, WriteAlgorithm,
 };
-use super::{ReadableStream, WritableStream, type_error_value};
+use super::{type_error_value, ReadableStream, WritableStream};
 
 fn stream_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some()

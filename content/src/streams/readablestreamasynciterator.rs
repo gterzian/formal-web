@@ -1,9 +1,9 @@
 use std::{cell::Cell, rc::Rc};
 
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
+use boa_engine::{js_string, object::JsObject, Context, JsArgs, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
-use crate::webidl::{AsyncValueIterable, rejected_promise, resolved_promise};
+use crate::webidl::{rejected_promise, resolved_promise, AsyncValueIterable};
 
 use super::{ReadableStream, ReadableStreamDefaultReader, ReadableStreamGenericReader};
 

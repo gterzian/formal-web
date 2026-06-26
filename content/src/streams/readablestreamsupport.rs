@@ -1,27 +1,28 @@
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
-    object::{JsObject, ObjectInitializer, builtins::JsPromise},
+    object::{builtins::JsPromise, JsObject, ObjectInitializer},
     property::Attribute,
+    Context, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use log::error;
 
+use super::context_host::ContextEcmaHost;
 use crate::webidl::{
-    Callback, ContextEcmaHost, ExceptionBehavior, invoke_callback_function,
-    mark_promise_as_handled, rejected_promise,
+    invoke_callback_function, mark_promise_as_handled, rejected_promise, Callback,
+    ExceptionBehavior,
 };
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestream::{
-    ByteTeeState, PipeToState, TeeState, readable_byte_stream_tee_default_reader_chunk_steps,
+    readable_byte_stream_tee_default_reader_chunk_steps,
     readable_byte_stream_tee_default_reader_close_steps,
     readable_byte_stream_tee_default_reader_error_steps,
     readable_stream_default_tee_read_request_chunk_steps,
     readable_stream_default_tee_read_request_close_steps,
-    readable_stream_default_tee_read_request_error_steps,
+    readable_stream_default_tee_read_request_error_steps, ByteTeeState, PipeToState, TeeState,
 };
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
@@ -54,7 +55,7 @@ impl SourceMethod {
 
     /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
     pub(crate) fn call(&self, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-        let mut host = ContextEcmaHost { context };
+        let mut host = ContextEcmaHost::new(context);
         let this_value = JsValue::from(self.this_value.clone());
         invoke_callback_function(
             &mut host,

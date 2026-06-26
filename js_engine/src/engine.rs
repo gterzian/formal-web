@@ -441,10 +441,6 @@ pub trait JsEngine<T: JsTypes>: Sized {
     // Error Reporting
     // ────────────────────────────────────────────────────────────────────────
 
-    /// Reports an exception to the host environment.
-    ///
-    /// The default implementation logs via the `log` crate.  Engines may
-    /// override to integrate with a host-specific error reporting mechanism.
     fn report_error(&mut self, message: &str) {
         error!("unhandled engine exception: {message}");
     }
@@ -459,12 +455,8 @@ pub trait JsEngine<T: JsTypes>: Sized {
         T: JsTypesWithRealm;
 }
 
-/// <https://webidl.spec.whatwg.org/#ecmascript-operations>
-///
-/// Host interface for ECMAScript operations used by Web IDL callback
-/// algorithms.  Implementations should wrap `JsEngine<T>` methods for
-/// the specific call patterns that `call a user object's operation` and
-/// `invoke a callback function` require — `Get`, `IsCallable`, `Call`.
+/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
+/// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
 pub trait EcmascriptHost<T: JsTypes> {
     /// <https://tc39.es/ecma262/#sec-get-o-p>
     fn get(&mut self, object: &T::JsObject, property: &str) -> Completion<T::JsValue, T>;
@@ -487,10 +479,7 @@ pub trait EcmascriptHost<T: JsTypes> {
     fn report_exception(&mut self, error: T::JsValue);
 }
 
-/// HTML §8.1.6 host hooks — implementation-defined callbacks the engine
-/// invokes internally.
-///
-/// <https://html.spec.whatwg.org/#host-hooks>
+/// <https://html.spec.whatwg.org/#javascript-specification-host-hooks>
 pub struct HostHooks<T: JsTypesWithRealm> {
     /// <https://html.spec.whatwg.org/#hostensurecancompilestrings>
     pub ensure_can_compile_strings: Option<Box<dyn Fn(&T::Realm) -> Completion<(), T>>>,

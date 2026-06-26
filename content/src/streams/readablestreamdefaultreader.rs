@@ -1,9 +1,9 @@
 use std::mem;
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
-    object::{JsObject, builtins::JsPromise},
+    object::{builtins::JsPromise, JsObject},
+    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -12,8 +12,8 @@ use crate::webidl::{mark_promise_as_handled, rejected_promise};
 
 use super::readablestream::{readable_stream_cancel, with_readable_stream_ref};
 use super::{
-    ReadRequest, ReadableStream, ReadableStreamReader, ReadableStreamState,
-    rejected_type_error_promise, type_error_value,
+    rejected_type_error_promise, type_error_value, ReadRequest, ReadableStream,
+    ReadableStreamReader, ReadableStreamState,
 };
 /// default readers and BYOB readers.
 pub(crate) trait ReadableStreamGenericReader: Clone {

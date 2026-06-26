@@ -1,10 +1,10 @@
 use boa_engine::{
-    Context, JsError, JsNativeError, JsObject, JsResult, JsValue,
     builtins::object::OrdinaryObject,
     js_string,
     native_function::NativeFunction,
-    object::{FunctionObjectBuilder, NativeObject, builtins::JsFunction},
+    object::{builtins::JsFunction, FunctionObjectBuilder, NativeObject},
     property::PropertyDescriptor,
+    Context, JsError, JsNativeError, JsObject, JsResult, JsValue,
 };
 
 use super::attribute::AttributeDef;

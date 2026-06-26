@@ -1,9 +1,9 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
     native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
+    object::{builtins::JsPromise, JsObject},
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -12,22 +12,22 @@ use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, promise_from_completion, resolved_promise};
 
 use super::readablestream::{
-    ByteTeeState, ReadableStreamFromIterableState, TeeState,
     readable_byte_stream_tee_cancel1_algorithm, readable_byte_stream_tee_cancel2_algorithm,
     readable_byte_stream_tee_pull1_algorithm, readable_byte_stream_tee_pull2_algorithm,
     readable_stream_add_read_request, readable_stream_close,
     readable_stream_default_tee_cancel1_algorithm, readable_stream_default_tee_cancel2_algorithm,
     readable_stream_default_tee_pull_algorithm, readable_stream_error,
     readable_stream_from_iterable_cancel_algorithm, readable_stream_from_iterable_pull_algorithm,
-    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
+    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, ByteTeeState,
+    ReadableStreamFromIterableState, TeeState,
 };
 use super::transformstream::{
     transform_stream_default_source_cancel_algorithm,
     transform_stream_default_source_pull_algorithm,
 };
 use super::{
-    ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState, SourceMethod,
-    TransformStream, range_error_value,
+    range_error_value, ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState,
+    SourceMethod, TransformStream,
 };
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>

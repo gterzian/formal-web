@@ -1,7 +1,4 @@
-use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsString, JsValue,
-    object::{JsObject, builtins::JsFunction},
-};
+use boa_engine::{object::JsObject, JsError, JsNativeError, JsResult, JsValue};
 use boa_gc::{Finalize, Trace};
 use js_engine::BoaTypes;
 
@@ -175,57 +172,6 @@ pub(crate) fn call_user_objects_operation(
     Ok(result)
 }
 
-/// A thin `EcmascriptHost<BoaTypes>` adapter over a `&mut Context`.
-///
-/// Used at call sites that have a `Context` without a `BoaEngine` wrapper
-/// (e.g. NativeFunction callbacks).  Delegates directly to `Context` operations.
-pub(crate) struct ContextEcmaHost<'a> {
-    pub context: &'a mut Context,
-}
-
-impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEcmaHost<'_> {
-    fn get(
-        &mut self,
-        object: &JsObject,
-        property: &str,
-    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
-        object
-            .get(JsString::from(property), self.context)
-            .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
-    }
-
-    fn is_callable(&self, value: &JsValue) -> bool {
-        value.as_object().is_some_and(|o| o.is_callable())
-    }
-
-    fn call(
-        &mut self,
-        callable: &JsObject,
-        this_arg: &JsValue,
-        args: &[JsValue],
-    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
-        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
-            JsValue::from(
-                JsNativeError::typ()
-                    .with_message("callback is not callable")
-                    .into_opaque(self.context),
-            )
-        })?;
-        function
-            .call(this_arg, args, self.context)
-            .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
-    }
-
-    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), js_engine::BoaTypes> {
-        let _ = self.context.run_jobs();
-        Ok(())
-    }
-
-    fn report_exception(&mut self, error: JsValue) {
-        log::error!("uncaught callback error: {error:?}");
-    }
-}
-
 /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
 pub(crate) fn invoke_callback_function(
     host: &mut impl EcmascriptHost<BoaTypes>,
@@ -289,10 +235,6 @@ pub(crate) fn invoke_callback_function(
 
 /// Convert a `JsValue` (from the generic `Completion` model) back into a
 /// `JsError` for compatibility with existing callers that expect `JsResult`.
-///
-/// This is a Boa-specific shim needed because `EcmascriptHost` is generic
-/// over `JsTypes` and uses `T::JsValue` as the error type of `Completion`,
-/// while the existing domain code still returns `JsResult<JsValue>`.
-fn into_js_error(value: JsValue) -> JsError {
+pub(crate) fn into_js_error(value: JsValue) -> JsError {
     JsError::from_opaque(value)
 }

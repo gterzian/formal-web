@@ -1,6 +1,6 @@
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions, object::JsObject,
+    builtins::promise::ResolvingFunctions, object::JsObject, Context, JsArgs, JsData,
+    JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -8,9 +8,9 @@ use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::rejected_promise;
 
 use super::{
-    ArrayBufferViewDescriptor, ReadIntoRequest, ReadableStream, ReadableStreamGenericReader,
-    ReadableStreamReader, ReadableStreamState, rejected_type_error_promise,
-    with_readable_stream_ref,
+    rejected_type_error_promise, with_readable_stream_ref, ArrayBufferViewDescriptor,
+    ReadIntoRequest, ReadableStream, ReadableStreamGenericReader, ReadableStreamReader,
+    ReadableStreamState,
 };
 
 /// <https://streams.spec.whatwg.org/#byob-reader-class>

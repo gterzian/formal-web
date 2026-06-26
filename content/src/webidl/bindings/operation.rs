@@ -1,6 +1,6 @@
 use boa_engine::{
-    Context, JsObject, JsResult, JsValue, js_string, native_function::NativeFunction,
-    property::PropertyDescriptor,
+    js_string, native_function::NativeFunction, property::PropertyDescriptor, Context, JsObject,
+    JsResult, JsValue,
 };
 
 /// Describes a single operation (method) on an interface.

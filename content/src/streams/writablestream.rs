@@ -4,24 +4,24 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue, js_string,
+    js_string,
     native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
+    object::{builtins::JsPromise, JsObject},
+    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
-use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
+use crate::streams::{extract_high_water_mark, extract_size_algorithm, SizeAlgorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::resolved_promise;
 
 use super::{
-    AbortAlgorithm, CloseAlgorithm, PendingAbortRequest, WritableStartAlgorithm,
-    WritableStreamController, WritableStreamState, WritableStreamWriter, WriteAlgorithm,
-    WriteRequest, acquire_writable_stream_default_writer,
-    create_writable_stream_default_controller, rejected_type_error_promise,
-    set_up_writable_stream_default_controller,
+    acquire_writable_stream_default_writer, create_writable_stream_default_controller,
+    rejected_type_error_promise, set_up_writable_stream_default_controller,
     set_up_writable_stream_default_controller_from_underlying_sink,
-    writable_stream_default_controller_close,
+    writable_stream_default_controller_close, AbortAlgorithm, CloseAlgorithm, PendingAbortRequest,
+    WritableStartAlgorithm, WritableStreamController, WritableStreamState, WritableStreamWriter,
+    WriteAlgorithm, WriteRequest,
 };
 
 /// <https://streams.spec.whatwg.org/#ws-class>

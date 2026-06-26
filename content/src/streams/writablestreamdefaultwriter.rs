@@ -1,7 +1,7 @@
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
-    object::{JsObject, builtins::JsPromise},
+    object::{builtins::JsPromise, JsObject},
+    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -9,9 +9,10 @@ use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 
 use super::{
-    WritableStream, WritableStreamState, WritableStreamWriter, rejected_type_error_promise,
-    type_error_value, with_writable_stream_ref, writable_stream_default_controller_get_chunk_size,
+    rejected_type_error_promise, type_error_value, with_writable_stream_ref,
+    writable_stream_default_controller_get_chunk_size,
     writable_stream_default_controller_get_desired_size, writable_stream_default_controller_write,
+    WritableStream, WritableStreamState, WritableStreamWriter,
 };
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>

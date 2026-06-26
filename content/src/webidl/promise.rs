@@ -1,8 +1,8 @@
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
+    object::{builtins::JsPromise, JsObject},
+    Context, JsError, JsNativeError, JsResult, JsValue,
 };
 use log::error;
 

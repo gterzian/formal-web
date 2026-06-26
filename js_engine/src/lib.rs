@@ -2,10 +2,10 @@
 //!
 //! <https://tc39.es/ecma262/>
 //!
-//! | Feature | Module | Engine | Status |
-//! |---|---|---|---|
-//! | `boa` | [`boa`] | Boa (git dep) | Most operations implemented |
-//! | `jsc` | [`jsc`] | JavaScriptCore (macOS) | Basic operations implemented |
+//! | Feature | Module | Engine |
+//! |---|---|---|
+//! | `boa` | [`boa`] | Boa (git dep) |
+//! | `jsc` | [`jsc`] | JavaScriptCore (macOS) |
 //!
 //! # Modules
 //!
