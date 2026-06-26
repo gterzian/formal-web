@@ -2,8 +2,8 @@
 ///
 /// https://drafts.csswg.org/css-conditional-3/#the-css-namespace
 use boa_engine::{
-    Context, JsResult, JsValue, js_string, native_function::NativeFunction,
-    object::ObjectInitializer, property::Attribute,
+    js_string, native_function::NativeFunction, object::ObjectInitializer, property::Attribute,
+    Context, JsResult, JsValue,
 };
 
 use crate::css::CSS;

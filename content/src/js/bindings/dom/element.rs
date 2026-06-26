@@ -1,8 +1,9 @@
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, js_string,
+    js_string,
     native_function::NativeFunction,
-    object::{FunctionObjectBuilder, ObjectInitializer, builtins::JsArray},
+    object::{builtins::JsArray, FunctionObjectBuilder, ObjectInitializer},
     property::Attribute,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
 };
 
 use crate::dom::{DOMException, Element};
@@ -12,7 +13,7 @@ use crate::html::{
 };
 use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+    create_interface_instance, AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──

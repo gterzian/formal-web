@@ -1,4 +1,4 @@
-use boa_engine::{Context, JsArgs, JsResult, JsString, JsValue, js_string};
+use boa_engine::{js_string, Context, JsArgs, JsResult, JsString, JsValue};
 
 use crate::dom::Event;
 use crate::js::with_event_mut;

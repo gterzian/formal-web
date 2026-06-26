@@ -1,16 +1,15 @@
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{object::JsObject, Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::html::{
-    Location, Window, WindowOrWorkerGlobalScope, resolve_window,
-    safe_passing_of_structured_data::StructuredCloneOptions,
-    window_computed_style_properties_for_element,
+    resolve_window, safe_passing_of_structured_data::StructuredCloneOptions,
+    window_computed_style_properties_for_element, Location, Window, WindowOrWorkerGlobalScope,
 };
 use crate::js::platform_objects::{
     location_object as cached_location_object, store_location_object,
 };
 use crate::js::with_event_target_mut;
 use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+    create_interface_instance, AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 use crate::webidl::{callback_function_value, nullable_value};
 

@@ -3,14 +3,14 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, Source,
-    context::{ContextBuilder, HostHooks, intrinsics::Intrinsics},
+    context::{intrinsics::Intrinsics, ContextBuilder, HostHooks},
     job::SimpleJobExecutor,
     js_string,
     native_function::NativeFunction,
     object::{FunctionObjectBuilder, JsObject},
     property::PropertyDescriptor,
     symbol::JsSymbol,
+    Context, Source,
 };
 
 use super::hyperlink_element_utils;

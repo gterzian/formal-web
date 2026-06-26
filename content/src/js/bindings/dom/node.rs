@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use blitz_dom::NodeData;
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, object::builtins::JsArray,
+    object::builtins::JsArray, Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
 };
 
 use crate::dom::{DOMException, Document, Element, Node};
@@ -12,8 +12,8 @@ use crate::js::platform_objects::{
     object_for_existing_node,
 };
 use crate::webidl::bindings::{
-    AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-    create_interface_instance,
+    create_interface_instance, AttributeDef, ConstantDef, InterfaceDefinition, OperationDef,
+    WebIdlInterface,
 };
 
 impl WebIdlInterface for Node {

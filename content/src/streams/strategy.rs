@@ -1,8 +1,12 @@
-use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
+use boa_engine::{
+    object::{builtins::JsFunction, JsObject},
+    Context, JsData, JsNativeError, JsResult, JsString, JsValue,
+};
 use boa_gc::{Finalize, Trace};
 
-use super::context_host::ContextEcmaHost;
-use crate::webidl::{invoke_callback_function, Callback, ExceptionBehavior};
+use js_engine::boa::BoaTypes;
+
+use crate::webidl::{invoke_callback_function, Callback, EcmascriptHost, ExceptionBehavior};
 
 /// <https://streams.spec.whatwg.org/#blqs-class>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -57,8 +61,56 @@ impl SizeAlgorithm {
         match self {
             Self::ReturnOne => Ok(1.0),
             Self::Callback { callback } => {
+                // Note: Wraps &mut Context in a temporary EcmascriptHost adapter.
+                // This adapter will be eliminated in Phase 4 when the call chain
+                // threads Engine instead of Context.  The NativeFunction barrier
+                // (P3) currently prevents passing Engine through JS binding callbacks.
+                struct CtxHost<'a>(&'a mut Context);
+                impl EcmascriptHost<BoaTypes> for CtxHost<'_> {
+                    fn get(
+                        &mut self,
+                        object: &JsObject,
+                        property: &str,
+                    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes>
+                    {
+                        object
+                            .get(JsString::from(property), self.0)
+                            .map_err(|e| e.into_opaque(self.0).unwrap_or(JsValue::undefined()))
+                    }
+                    fn is_callable(&self, value: &JsValue) -> bool {
+                        value.as_object().is_some_and(|o| o.is_callable())
+                    }
+                    fn call(
+                        &mut self,
+                        callable: &JsObject,
+                        this_arg: &JsValue,
+                        args: &[JsValue],
+                    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes>
+                    {
+                        let function =
+                            JsFunction::from_object(callable.clone()).ok_or_else(|| {
+                                JsValue::from(
+                                    JsNativeError::typ()
+                                        .with_message("callback is not callable")
+                                        .into_opaque(self.0),
+                                )
+                            })?;
+                        function
+                            .call(this_arg, args, self.0)
+                            .map_err(|e| e.into_opaque(self.0).unwrap_or(JsValue::undefined()))
+                    }
+                    fn perform_a_microtask_checkpoint(
+                        &mut self,
+                    ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
+                        let _ = self.0.run_jobs();
+                        Ok(())
+                    }
+                    fn report_exception(&mut self, error: JsValue) {
+                        log::error!("uncaught callback error: {error:?}");
+                    }
+                }
                 let value = {
-                    let mut host = ContextEcmaHost::new(context);
+                    let mut host = CtxHost(context);
                     invoke_callback_function(
                         &mut host,
                         callback,

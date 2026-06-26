@@ -14,9 +14,9 @@ use std::marker::PhantomData;
 use super::types::*;
 use crate::jsc_sys::*;
 use crate::{
+    records::{IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics},
     Completion, HostHooks, IntegrityLevel, IteratorKind, JsEngine, JsTypes, JsTypesWithRealm,
     Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
-    records::{IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics},
 };
 
 /// Marker type for JSC engine implementations.

@@ -1,6 +1,6 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, js_string,
-    native_function::NativeFunction, object::JsObject, property::PropertyDescriptor,
+    js_string, native_function::NativeFunction, object::JsObject, property::PropertyDescriptor,
+    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
 };
 use url::Url;
 

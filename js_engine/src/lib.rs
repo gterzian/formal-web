@@ -41,6 +41,3 @@ pub use records::{
     IteratorRecord, ModuleRequest, PromiseCapability, PropertyDescriptor, RealmIntrinsics,
 };
 pub use types::{JsTypes, JsTypesWithRealm};
-
-#[cfg(feature = "boa")]
-pub use boa::{BoaEngine, BoaTypes};

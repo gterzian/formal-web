@@ -2,11 +2,12 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string,
-    object::{JsObject, builtins::JsFunction},
+    js_string,
+    object::{builtins::JsFunction, JsObject},
+    Context, JsArgs, JsNativeError, JsResult, JsValue,
 };
 
-use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
+use crate::dom::{dispatch, AbortSignal, Event, EventDispatchHost, EventTarget};
 use crate::js::platform_objects::{
     document_object, object_for_existing_node, resolve_element_object,
 };
@@ -24,7 +25,7 @@ pub(crate) struct AddEventListenerOptions {
 // ── WebIDL interface definition (§3) ──
 
 use crate::webidl::bindings::{
-    InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+    create_interface_instance, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 impl WebIdlInterface for EventTarget {
@@ -150,12 +151,12 @@ impl<'a> ContextEventDispatchHost<'a> {
     }
 }
 
-impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost<'_> {
+impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for ContextEventDispatchHost<'_> {
     fn get(
         &mut self,
         object: &JsObject,
         property: &str,
-    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
         object
             .get(js_string!(property), self.context)
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
@@ -170,7 +171,7 @@ impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost
         callable: &JsObject,
         this_arg: &JsValue,
         args: &[JsValue],
-    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
         let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
             JsValue::from(
                 JsNativeError::typ()
@@ -183,7 +184,9 @@ impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
     }
 
-    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), js_engine::BoaTypes> {
+    fn perform_a_microtask_checkpoint(
+        &mut self,
+    ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
         let _ = self.context.run_jobs();
         Ok(())
     }

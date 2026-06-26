@@ -2,14 +2,14 @@ use log::trace;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{JsResult, JsValue, object::JsObject};
+use boa_engine::{object::JsObject, JsResult, JsValue};
 
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
 use crate::js::{with_event_mut, with_event_target_mut, with_event_target_ref};
-use crate::webidl::{EcmascriptHost, call_user_objects_operation};
+use crate::webidl::{call_user_objects_operation, EcmascriptHost};
 
 use super::event::{EventListener, NONE};
-use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};
+use super::{Document, Element, Event, Node, BUBBLING_PHASE, CAPTURING_PHASE};
 
 fn dispatch_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
@@ -46,7 +46,7 @@ fn debug_target_label(object: &JsObject) -> String {
     String::from("UnknownTarget")
 }
 
-pub(crate) trait EventDispatchHost: EcmascriptHost<js_engine::BoaTypes> {
+pub(crate) trait EventDispatchHost: EcmascriptHost<js_engine::boa::BoaTypes> {
     fn context(&mut self) -> &mut boa_engine::Context;
 
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject>;

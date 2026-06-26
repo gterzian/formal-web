@@ -3,8 +3,8 @@ use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 use crate::streams::{
-    TransformStream, TransformStreamDefaultController, construct_transform_stream,
-    with_transform_stream_default_controller_ref, with_transform_stream_ref,
+    construct_transform_stream, with_transform_stream_default_controller_ref,
+    with_transform_stream_ref, TransformStream, TransformStreamDefaultController,
 };
 
 impl WebIdlInterface for TransformStream {

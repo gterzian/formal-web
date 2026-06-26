@@ -1,10 +1,10 @@
 use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::streams::{
-    WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
     construct_writable_stream, construct_writable_stream_default_writer,
     with_writable_stream_default_controller_ref, with_writable_stream_default_writer_ref,
-    with_writable_stream_ref,
+    with_writable_stream_ref, WritableStream, WritableStreamDefaultController,
+    WritableStreamDefaultWriter,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 

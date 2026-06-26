@@ -2,16 +2,20 @@ use boa_engine::{
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
-    object::{builtins::JsPromise, JsObject, ObjectInitializer},
+    object::{
+        builtins::{JsFunction, JsPromise},
+        JsObject, ObjectInitializer,
+    },
     property::Attribute,
-    Context, JsNativeError, JsResult, JsValue,
+    Context, JsNativeError, JsResult, JsString, JsValue,
 };
+use js_engine::boa::BoaTypes;
+
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use log::error;
 
-use super::context_host::ContextEcmaHost;
 use crate::webidl::{
-    invoke_callback_function, mark_promise_as_handled, rejected_promise, Callback,
+    invoke_callback_function, mark_promise_as_handled, rejected_promise, Callback, EcmascriptHost,
     ExceptionBehavior,
 };
 
@@ -54,8 +58,51 @@ impl SourceMethod {
     }
 
     /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
+    // Note: The local CtxHost adapter wraps &mut Context to implement EcmascriptHost.
+    // This is a migration artifact — Phase 4 will thread Engine directly.
     pub(crate) fn call(&self, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-        let mut host = ContextEcmaHost::new(context);
+        struct CtxHost<'a>(&'a mut Context);
+        impl EcmascriptHost<BoaTypes> for CtxHost<'_> {
+            fn get(
+                &mut self,
+                object: &JsObject,
+                property: &str,
+            ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+                object
+                    .get(JsString::from(property), self.0)
+                    .map_err(|e| e.into_opaque(self.0).unwrap_or(JsValue::undefined()))
+            }
+            fn is_callable(&self, value: &JsValue) -> bool {
+                value.as_object().is_some_and(|o| o.is_callable())
+            }
+            fn call(
+                &mut self,
+                callable: &JsObject,
+                this_arg: &JsValue,
+                args: &[JsValue],
+            ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+                let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
+                    JsValue::from(
+                        JsNativeError::typ()
+                            .with_message("callback is not callable")
+                            .into_opaque(self.0),
+                    )
+                })?;
+                function
+                    .call(this_arg, args, self.0)
+                    .map_err(|e| e.into_opaque(self.0).unwrap_or(JsValue::undefined()))
+            }
+            fn perform_a_microtask_checkpoint(
+                &mut self,
+            ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
+                let _ = self.0.run_jobs();
+                Ok(())
+            }
+            fn report_exception(&mut self, error: JsValue) {
+                log::error!("uncaught callback error: {error:?}");
+            }
+        }
+        let mut host = CtxHost(context);
         let this_value = JsValue::from(self.this_value.clone());
         invoke_callback_function(
             &mut host,

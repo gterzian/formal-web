@@ -11,4 +11,4 @@ pub(crate) use downcast::{
 
 // Content-local alias for the concrete engine type.
 // This is the only place `BoaEngine` is imported by name from `js_engine`.
-pub(crate) use js_engine::BoaEngine as Engine;
+pub(crate) use js_engine::boa::BoaEngine as Engine;

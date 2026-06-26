@@ -13,21 +13,20 @@
 mod interfaces;
 
 use crate::wasm::{
-    WasmInstance, WasmModule,
     namespace::{
         asynchronously_compile_a_webassembly_module,
         asynchronously_instantiate_a_webassembly_module, instantiate_bytes,
     },
-    validate_wasm_module,
+    validate_wasm_module, WasmInstance, WasmModule,
 };
 use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlNamespace, register_interface_spec,
-    register_namespace_spec,
+    register_interface_spec, register_namespace_spec, AttributeDef, InterfaceDefinition,
+    OperationDef, WebIdlNamespace,
 };
 use crate::webidl::{
     get_a_copy_of_the_buffer_source, is_buffer_source, rejected_promise_from_error,
 };
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
+use boa_engine::{js_string, object::JsObject, Context, JsError, JsNativeError, JsResult, JsValue};
 
 // ── Namespace type ──
 

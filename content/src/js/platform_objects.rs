@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
-use boa_engine::{Context, JsError, JsNativeError, JsResult, object::JsObject};
+use boa_engine::{object::JsObject, Context, JsError, JsNativeError, JsResult};
 use html5ever::{local_name, ns};
 
 use crate::dom::{Element, Node};

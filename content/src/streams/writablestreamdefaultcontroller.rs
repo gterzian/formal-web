@@ -541,12 +541,12 @@ impl<'a> ContextEventDispatchHost<'a> {
     }
 }
 
-impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost<'_> {
+impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for ContextEventDispatchHost<'_> {
     fn get(
         &mut self,
         object: &JsObject,
         property: &str,
-    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
         object
             .get(boa_engine::js_string!(property), self.context)
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
@@ -561,7 +561,7 @@ impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost
         callable: &JsObject,
         this_arg: &JsValue,
         args: &[JsValue],
-    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
         let function = boa_engine::object::builtins::JsFunction::from_object(callable.clone())
             .ok_or_else(|| {
                 JsValue::from(
@@ -575,7 +575,9 @@ impl js_engine::EcmascriptHost<js_engine::BoaTypes> for ContextEventDispatchHost
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
     }
 
-    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), js_engine::BoaTypes> {
+    fn perform_a_microtask_checkpoint(
+        &mut self,
+    ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
         let _ = self.context.run_jobs();
         Ok(())
     }

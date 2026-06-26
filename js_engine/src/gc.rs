@@ -1,8 +1,11 @@
-//! # Engine-Agnostic Garbage Collection & Lifecycle Management
+//! # GC & Lifecycle — the only engine-specific abstraction
 //!
-//! Provides traits for managing the GC reachability graph and rooting JS values
-//! across asynchronous execution boundaries, without engine-specific types
-//! leaking into domain code.
+//! Everything else in this crate mirrors standard ECMA-262 abstract operations
+//! that Web standards (HTML, DOM, Web IDL, Streams) already define in terms of
+//! the JS specification.  GC and lifecycle are different — they have no ECMA-262
+//! equivalent.  Each JS engine offers its own internal GC API (tracing in Boa,
+//! `JSValueProtect`/`JSValueUnprotect` in JSC), and this module abstracts over
+//! those differences.
 //!
 //! ## Primitives
 //!

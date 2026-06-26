@@ -1,15 +1,15 @@
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string,
-    native_function::NativeFunction,
+    js_string, native_function::NativeFunction, Context, JsArgs, JsError, JsNativeError, JsResult,
+    JsValue,
 };
 
 use crate::dom::{
-    AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal, signal_abort,
+    create_abort_signal, initialize_dependent_abort_signal, signal_abort, AbortSignal, DOMException,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 use crate::js::{with_abort_signal_mut, with_abort_signal_ref, with_event_target_mut};
 use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+    create_interface_instance, AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 use crate::webidl::{callback_function_value, nullable_value};
 

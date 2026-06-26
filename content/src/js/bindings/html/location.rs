@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, object::builtins::JsArray,
+    object::builtins::JsArray, Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
 };
 
 use crate::dom::DOMException;
@@ -16,7 +16,7 @@ struct EntrySettingsObject {
 }
 
 use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+    create_interface_instance, AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 // ── WebIDL interface definition (§3) ──

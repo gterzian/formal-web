@@ -1,4 +1,3 @@
-mod context_host;
 mod readablebytestreamcontroller;
 mod readablestream;
 mod readablestreamasynciterator;

@@ -437,12 +437,12 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
     }
 }
 
-impl js_engine::EcmascriptHost<js_engine::BoaTypes> for BlitzJSEventHandler<'_> {
+impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for BlitzJSEventHandler<'_> {
     fn get(
         &mut self,
         object: &JsObject,
         property: &str,
-    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
         self.settings.engine.get(object, property)
     }
 
@@ -455,11 +455,11 @@ impl js_engine::EcmascriptHost<js_engine::BoaTypes> for BlitzJSEventHandler<'_> 
         callable: &JsObject,
         this_arg: &JsValue,
         args: &[JsValue],
-    ) -> js_engine::Completion<JsValue, js_engine::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
         self.settings.engine.call(callable, this_arg, args)
     }
 
-    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), js_engine::BoaTypes> {
+    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
         self.settings.engine.perform_a_microtask_checkpoint()
     }
 

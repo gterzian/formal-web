@@ -1,9 +1,10 @@
 use std::rc::Rc;
 
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, js_string,
-    object::{JsObject, builtins::JsArray},
+    js_string,
+    object::{builtins::JsArray, JsObject},
     property::Attribute,
+    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
 };
 
 use crate::dom::Document;

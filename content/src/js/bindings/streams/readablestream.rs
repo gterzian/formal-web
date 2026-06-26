@@ -1,13 +1,13 @@
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{object::JsObject, Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::streams::{
-    ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader,
-    ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader,
     construct_readable_stream, construct_readable_stream_byob_reader,
     construct_readable_stream_default_reader, readable_stream_from_iterable,
     with_readable_byte_stream_controller_ref, with_readable_stream_byob_reader_ref,
     with_readable_stream_byob_request_ref, with_readable_stream_default_reader_ref,
-    with_readable_stream_ref,
+    with_readable_stream_ref, ReadableByteStreamController, ReadableStream,
+    ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableStreamDefaultController,
+    ReadableStreamDefaultReader,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::{create_value_async_iterator, rejected_promise};

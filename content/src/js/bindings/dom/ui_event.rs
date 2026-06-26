@@ -1,4 +1,4 @@
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string};
+use boa_engine::{js_string, Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::dom::{Event, UIEvent};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};

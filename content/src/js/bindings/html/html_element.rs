@@ -1,16 +1,17 @@
 use std::collections::BTreeMap;
 
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, js_string,
+    js_string,
     native_function::NativeFunction,
     object::{FunctionObjectBuilder, JsObject, ObjectInitializer},
     property::Attribute,
+    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
 };
 
 use crate::dom::Element;
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement, inline_style_properties_for_element,
+    inline_style_properties_for_element, HTMLAnchorElement, HTMLElement, HTMLIFrameElement,
+    HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 

@@ -1,6 +1,6 @@
 use boa_engine::{Context, JsNativeError, JsResult, JsValue};
 
-use crate::dom::{AbortController, AbortSignal, create_abort_signal};
+use crate::dom::{create_abort_signal, AbortController, AbortSignal};
 use crate::js::with_abort_controller_ref;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
