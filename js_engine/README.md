@@ -360,18 +360,27 @@ engine.  Promise reactions need to call engine operations when the job runs.
 **Fix**: Create object-safe `JsEngineErased`, change `enqueue_job` to
 `Box<dyn FnOnce(&mut dyn JsEngineErased) + Send>`.
 
-### P3: `NativeFunction` barrier
+### P3: `CreateBuiltinFunction` — replacing `NativeFunction`
 
-Boa's `NativeFunction` callback type has signature `fn(&JsValue, &[JsValue], &mut Context)`
-— fixed by Boa's FFI.  Callbacks receive `&mut Context` directly and cannot pass
-`&mut BoaEngine` (or `&mut impl JsEngine<T>`) to domain code.
+Web IDL registers native steps as JS-callable functions using ECMA-262's
+`CreateBuiltinFunction` — see observable array exotic objects, callback
+interfaces, etc.  This is the standard way to bridge native code and JS,
+not Boa-specific `NativeFunction::from_fn_ptr`.
 
-**Approach:** Wrap through a thin shim that stores a `*mut BoaEngine` in a
-thread-local, retrieves it inside the `NativeFunction` callback, and calls
-through `JsEngine<BoaTypes>`.  The shim lives in `js_engine/src/boa/engine.rs`.
+**Fix:** Add `CreateBuiltinFunction` to `JsEngine<T>`.  The behaviour closure
+receives `(&[T::JsValue], &mut dyn JsEngine<T>)` — no engine-specific types.
+Internally:
 
-For JSC, the callback API already provides a `*mut c_void` user data pointer —
-no workaround needed.
+- **Boa**: wraps a shim `NativeFunction` that retrieves the engine from a
+  thread-local `*mut BoaEngine` (set at each entry point) and forwards to
+  the behaviour closure with `&mut dyn EcmascriptHost<T>`.
+- **JSC**: the callback API already provides a `*mut c_void` user data
+  pointer — no thread-local needed.
+
+Once `CreateBuiltinFunction` is on the trait, every binding function in
+`content/src/js/bindings/` can migrate from `NativeFunction::from_fn_ptr(f)`
+to `engine.create_builtin_function(length, name, behaviour)`.  The closure
+body uses only generic `JsEngine` / `EcmascriptHost` operations.
 
 ### P4: `set_host_hooks` integration with Boa's ContextBuilder
 

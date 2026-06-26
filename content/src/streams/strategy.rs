@@ -108,6 +108,11 @@ impl SizeAlgorithm {
                     fn report_exception(&mut self, error: JsValue) {
                         log::error!("uncaught callback error: {error:?}");
                     }
+                    fn value_undefined(&mut self) -> JsValue { JsValue::undefined() }
+                    fn value_null(&mut self) -> JsValue { JsValue::null() }
+                    fn value_from_bool(&mut self, b: bool) -> JsValue { JsValue::from(b) }
+                    fn value_from_number(&mut self, n: f64) -> JsValue { JsValue::from(n) }
+                    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue { JsValue::from(s) }
                 }
                 let value = {
                     let mut host = CtxHost(context);

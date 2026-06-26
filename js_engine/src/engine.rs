@@ -19,7 +19,7 @@ use crate::{Numeric, PreferredType, PropertyDescriptor};
 pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
 
 /// <https://tc39.es/ecma262/>
-pub trait JsEngine<T: JsTypes>: Sized {
+pub trait JsEngine<T: JsTypes> {
     // ────────────────────────────────────────────────────────────────────────
     // §7.1 Type Conversion
     // ────────────────────────────────────────────────────────────────────────
@@ -292,6 +292,25 @@ pub trait JsEngine<T: JsTypes>: Sized {
         T: JsTypesWithRealm;
 
     // ────────────────────────────────────────────────────────────────────────
+    // §10.3 Built-in Function Objects
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    ///
+    /// Creates a JS-callable function object from native behaviour steps,
+    /// following the same pattern Web IDL uses for observable arrays,
+    /// callback interfaces, and other native-to-JS bridges.
+    fn create_builtin_function(
+        &mut self,
+        behaviour: Box<dyn Fn(&[T::JsValue], T::JsValue, &mut dyn EcmascriptHost<T>) -> Completion<T::JsValue, T>>,
+        length: u32,
+        name: T::PropertyKey,
+        realm: &T::Realm,
+    ) -> T::Function
+    where
+        T: JsTypesWithRealm;
+
+    // ────────────────────────────────────────────────────────────────────────
     // §9.6 / §9.7 Jobs (microtask queue)
     // ────────────────────────────────────────────────────────────────────────
 
@@ -477,6 +496,23 @@ pub trait EcmascriptHost<T: JsTypes> {
 
     /// Report an exception thrown from a callback to the host environment.
     fn report_exception(&mut self, error: T::JsValue);
+
+    // ── Value construction — needed by CreateBuiltinFunction closures ────
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_undefined(&mut self) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_null(&mut self) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_bool(&mut self, b: bool) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_number(&mut self, n: f64) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_string(&mut self, s: T::JsString) -> T::JsValue;
 }
 
 /// <https://html.spec.whatwg.org/#javascript-specification-host-hooks>

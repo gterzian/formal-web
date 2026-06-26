@@ -373,6 +373,12 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for EnvironmentSettings
     fn report_exception(&mut self, error: JsValue) {
         self.engine.report_exception(error)
     }
+
+    fn value_undefined(&mut self) -> JsValue { self.engine.value_undefined() }
+    fn value_null(&mut self) -> JsValue { self.engine.value_null() }
+    fn value_from_bool(&mut self, b: bool) -> JsValue { self.engine.value_from_bool(b) }
+    fn value_from_number(&mut self, n: f64) -> JsValue { self.engine.value_from_number(n) }
+    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue { self.engine.value_from_string(s) }
 }
 
 impl EventDispatchHost for EnvironmentSettingsObject {

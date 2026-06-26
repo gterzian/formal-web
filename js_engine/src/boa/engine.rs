@@ -1,10 +1,13 @@
 use boa_engine::{
     builtins::array_buffer::AlignedVec,
-    object::builtins::{JsArrayBuffer, JsFunction, JsGenerator, JsPromise, JsSharedArrayBuffer},
-    object::JsObject,
+    native_function::NativeFunction,
+    object::{
+        builtins::{JsArrayBuffer, JsFunction, JsGenerator, JsPromise, JsSharedArrayBuffer},
+        FunctionObjectBuilder, JsObject,
+    },
     property::PropertyKey,
     value::PreferredType as BoaPreferredType,
-    Context, JsNativeError, JsResult, JsSymbol, JsValue,
+    Context, JsError, JsNativeError, JsResult, JsString, JsSymbol, JsValue,
 };
 
 use crate::{
@@ -958,6 +961,147 @@ impl JsEngine<BoaTypes> for BoaEngine {
         todo!("Boa generator_start")
     }
 
+    // ── §10.3 Built-in Function Objects ──────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JsValue],
+                JsValue,
+                &mut dyn EcmascriptHost<BoaTypes>,
+            ) -> Completion<JsValue, BoaTypes>,
+        >,
+        length: u32,
+        name: PropertyKey,
+        realm: &boa_engine::realm::Realm,
+    ) -> JsFunction
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        // Extract the name string for FunctionObjectBuilder.
+        let name_str = match &name {
+            PropertyKey::String(s) => s.clone(),
+            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
+            _ => boa_engine::js_string!(""),
+        };
+
+        // SAFETY: The closure is `'static` — `behaviour` is an owned Box
+        // that does not borrow from the engine.
+        let native = unsafe {
+            NativeFunction::from_closure(
+                Box::new(
+                    move |this: &JsValue,
+                          args: &[JsValue],
+                          context: &mut Context|
+                          -> JsResult<JsValue> {
+                        // Local adapter: wraps &mut Context to implement
+                        // EcmascriptHost<BoaTypes>.  Created freshly on each
+                        // call — no persistent state.
+                        struct CtxHost<'a>(&'a mut Context);
+
+                        impl EcmascriptHost<BoaTypes> for CtxHost<'_> {
+                            fn get(
+                                &mut self,
+                                object: &JsObject,
+                                property: &str,
+                            ) -> Completion<JsValue, BoaTypes> {
+                                object
+                                    .get(JsString::from(property), self.0)
+                                    .map_err(|e| {
+                                        e.into_opaque(self.0)
+                                            .unwrap_or(JsValue::undefined())
+                                    })
+                            }
+
+                            fn is_callable(&self, value: &JsValue) -> bool {
+                                value
+                                    .as_object()
+                                    .is_some_and(|o| o.is_callable())
+                            }
+
+                            fn call(
+                                &mut self,
+                                callable: &JsObject,
+                                this_arg: &JsValue,
+                                args: &[JsValue],
+                            ) -> Completion<JsValue, BoaTypes> {
+                                let function = JsFunction::from_object(
+                                    callable.clone(),
+                                )
+                                .ok_or_else(|| {
+                                    JsValue::from(
+                                        JsNativeError::typ()
+                                            .with_message(
+                                                "callback is not callable",
+                                            )
+                                            .into_opaque(self.0),
+                                    )
+                                })?;
+                                function
+                                    .call(this_arg, args, self.0)
+                                    .map_err(|e| {
+                                        e.into_opaque(self.0).unwrap_or(
+                                            JsValue::undefined(),
+                                        )
+                                    })
+                            }
+
+                            fn perform_a_microtask_checkpoint(
+                                &mut self,
+                            ) -> Completion<(), BoaTypes> {
+                                let _ = self.0.run_jobs();
+                                Ok(())
+                            }
+
+                            fn report_exception(&mut self, error: JsValue) {
+                                log::error!(
+                                    "uncaught callback error: {error:?}"
+                                );
+                            }
+
+                            fn value_undefined(&mut self) -> JsValue {
+                                JsValue::undefined()
+                            }
+
+                            fn value_null(&mut self) -> JsValue {
+                                JsValue::null()
+                            }
+
+                            fn value_from_bool(&mut self, b: bool) -> JsValue {
+                                JsValue::from(b)
+                            }
+
+                            fn value_from_number(
+                                &mut self,
+                                n: f64,
+                            ) -> JsValue {
+                                JsValue::from(n)
+                            }
+
+                            fn value_from_string(
+                                &mut self,
+                                s: boa_engine::JsString,
+                            ) -> JsValue {
+                                JsValue::from(s)
+                            }
+                        }
+
+                        let mut host = CtxHost(context);
+                        behaviour(args, this.clone(), &mut host)
+                            .map_err(|e| JsError::from_opaque(e))
+                    },
+                ),
+            )
+        };
+
+        FunctionObjectBuilder::new(realm, native)
+            .name(name_str)
+            .length(length as usize)
+            .build()
+    }
+
     // ── Value Construction ───────────────────────────────────────────────
 
     fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
@@ -1035,6 +1179,26 @@ impl EcmascriptHost<BoaTypes> for BoaEngine {
             |s| s.to_std_string_escaped(),
         );
         log::error!("uncaught callback error: {message}");
+    }
+
+    fn value_undefined(&mut self) -> JsValue {
+        JsValue::undefined()
+    }
+
+    fn value_null(&mut self) -> JsValue {
+        JsValue::null()
+    }
+
+    fn value_from_bool(&mut self, b: bool) -> JsValue {
+        JsValue::from(b)
+    }
+
+    fn value_from_number(&mut self, n: f64) -> JsValue {
+        JsValue::from(n)
+    }
+
+    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+        JsValue::from(s)
     }
 }
 
