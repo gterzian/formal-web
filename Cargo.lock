@@ -2907,6 +2907,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "js_engine"
+version = "0.1.0"
+dependencies = [
+ "boa_engine",
+ "boa_gc",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

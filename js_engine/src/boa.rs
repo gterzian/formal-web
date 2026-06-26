@@ -1,0 +1,449 @@
+//! Boa engine implementation of `JsTypes` and `JsEngine<T>`.
+//!
+//! # Hard problems (not yet implemented — marked with `todo!()`)
+//!
+//! - **Jobs/microtasks** — `Context::run_jobs` exists but `enqueue_job` needs
+//!   to work with the job executor model.
+//! - **Generator operations** — Boa has `JsGenerator` but the `GeneratorStart`
+//!   operation is closely tied to the VM internals.
+//! - **Module evaluation** — `Context::parse_module` + `Context::evaluate_module`
+//!   exist but require module loader setup.
+//! - **SharedArrayBuffer** — `JsSharedArrayBuffer` exists but `allocate_shared_array_buffer`
+//!   needs the constructor reference.
+//! - **AsyncGenerator** — Not fully wired through the trait yet.
+
+use boa_engine::{
+    Context, JsNativeError, JsResult, JsValue,
+    object::{
+        JsObject,
+        builtins::{
+            JsArrayBuffer, JsAsyncGenerator, JsDataView, JsFunction, JsGenerator, JsMap,
+            JsPromise, JsSet, JsSharedArrayBuffer, JsTypedArray, JsWeakMap, JsWeakSet,
+        },
+    },
+    property::PropertyKey,
+    value::PreferredType as BoaPreferredType,
+};
+
+use crate::{
+    Completion, HostHooks, IntegrityLevel, IteratorKind, JsEngine, JsTypes, JsTypesWithRealm,
+    Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
+    records::{
+        IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics,
+    },
+};
+
+/// Marker type for Boa engine implementations.
+#[derive(Debug, Clone, Copy)]
+pub struct BoaTypes;
+
+impl JsTypes for BoaTypes {
+    type JsString = boa_engine::JsString;
+    type JsSymbol = boa_engine::JsSymbol;
+    type JsBigInt = boa_engine::JsBigInt;
+    type JsValue = boa_engine::JsValue;
+    type JsObject = boa_engine::JsObject;
+    type ArrayBuffer = boa_engine::object::builtins::JsArrayBuffer;
+    type SharedArrayBuffer = boa_engine::object::builtins::JsSharedArrayBuffer;
+    type TypedArray = boa_engine::object::builtins::JsTypedArray;
+    type DataView = boa_engine::object::builtins::JsDataView;
+    type Promise = boa_engine::object::builtins::JsPromise;
+    type Map = boa_engine::object::builtins::JsMap;
+    type Set = boa_engine::object::builtins::JsSet;
+    type WeakMap = boa_engine::object::builtins::JsWeakMap;
+    type WeakSet = boa_engine::object::builtins::JsWeakSet;
+    type WeakRef = boa_engine::JsObject;
+    type Generator = boa_engine::object::builtins::JsGenerator;
+    type AsyncGenerator = boa_engine::object::builtins::JsAsyncGenerator;
+    type Function = boa_engine::object::builtins::JsFunction;
+    type Constructor = boa_engine::object::builtins::JsFunction;
+    type PropertyKey = boa_engine::property::PropertyKey;
+
+    // ── Upcasts (owned conversions using From impls) ─────────────────────
+
+    fn object_from_array_buffer(ab: Self::ArrayBuffer) -> Self::JsObject { JsObject::from(ab) }
+    fn object_from_shared_array_buffer(sab: Self::SharedArrayBuffer) -> Self::JsObject { JsObject::from(sab) }
+    fn object_from_typed_array(ta: Self::TypedArray) -> Self::JsObject { JsObject::from(ta) }
+    fn object_from_data_view(dv: Self::DataView) -> Self::JsObject { JsObject::from(dv) }
+    fn object_from_promise(p: Self::Promise) -> Self::JsObject { JsObject::from(p) }
+    fn object_from_map(m: Self::Map) -> Self::JsObject { JsObject::from(m) }
+    fn object_from_set(s: Self::Set) -> Self::JsObject { JsObject::from(s) }
+    fn object_from_function(f: Self::Function) -> Self::JsObject { JsObject::from(f) }
+    fn object_from_constructor(c: Self::Constructor) -> Self::JsObject { JsObject::from(c) }
+
+    fn value_from_object(o: Self::JsObject) -> Self::JsValue { JsValue::from(o) }
+    fn value_from_string(s: Self::JsString) -> Self::JsValue { JsValue::from(s) }
+    fn value_from_symbol(sym: Self::JsSymbol) -> Self::JsValue { JsValue::from(sym) }
+    fn value_from_bool(b: bool) -> Self::JsValue { JsValue::from(b) }
+    fn value_from_number(n: f64) -> Self::JsValue { JsValue::from(n) }
+    fn value_from_bigint(n: Self::JsBigInt) -> Self::JsValue { JsValue::from(n) }
+    fn value_undefined() -> Self::JsValue { JsValue::undefined() }
+    fn value_null() -> Self::JsValue { JsValue::null() }
+
+    // ── Downcasts ────────────────────────────────────────────────────
+
+    fn value_as_object(v: &Self::JsValue) -> Option<Self::JsObject> { v.as_object() }
+    fn value_as_string(v: &Self::JsValue) -> Option<Self::JsString> { v.as_string() }
+    fn value_as_symbol(v: &Self::JsValue) -> Option<Self::JsSymbol> { v.as_symbol() }
+    fn value_as_number(v: &Self::JsValue) -> Option<f64> { v.as_number() }
+    fn value_as_bool(v: &Self::JsValue) -> Option<bool> { v.as_boolean() }
+    fn value_is_undefined(v: &Self::JsValue) -> bool { v.is_undefined() }
+    fn value_is_null(v: &Self::JsValue) -> bool { v.is_null() }
+
+    fn object_as_array_buffer(o: &Self::JsObject) -> Option<Self::ArrayBuffer> { JsArrayBuffer::from_object(o.clone()).ok() }
+    fn object_as_shared_array_buffer(o: &Self::JsObject) -> Option<Self::SharedArrayBuffer> { JsSharedArrayBuffer::from_object(o.clone()).ok() }
+    fn object_as_typed_array(o: &Self::JsObject) -> Option<Self::TypedArray> { JsTypedArray::from_object(o.clone()).ok() }
+    fn object_as_data_view(o: &Self::JsObject) -> Option<Self::DataView> { JsDataView::from_object(o.clone()).ok() }
+    fn object_as_promise(o: &Self::JsObject) -> Option<Self::Promise> { JsPromise::from_object(o.clone()).ok() }
+    fn object_as_function(o: &Self::JsObject) -> Option<Self::Function> { JsFunction::from_object(o.clone()) }
+    fn object_as_constructor(o: &Self::JsObject) -> Option<Self::Constructor> { JsFunction::from_object(o.clone()) }
+    fn object_as_map(o: &Self::JsObject) -> Option<Self::Map> { JsMap::from_object(o.clone()).ok() }
+    fn object_as_set(o: &Self::JsObject) -> Option<Self::Set> { JsSet::from_object(o.clone()).ok() }
+    fn object_as_weak_map(o: &Self::JsObject) -> Option<Self::WeakMap> { JsWeakMap::from_object(o.clone()).ok() }
+    fn object_as_weak_set(o: &Self::JsObject) -> Option<Self::WeakSet> { JsWeakSet::from_object(o.clone()).ok() }
+    fn object_as_generator(o: &Self::JsObject) -> Option<Self::Generator> { JsGenerator::from_object(o.clone()).ok() }
+    fn object_as_async_generator(o: &Self::JsObject) -> Option<Self::AsyncGenerator> { JsAsyncGenerator::from_object(o.clone()).ok() }
+}
+
+impl JsTypesWithRealm for BoaTypes {
+    type Realm = boa_engine::realm::Realm;
+}
+
+/// Boa engine wrapper.  Wraps a `boa_engine::Context` and implements
+/// `JsEngine<BoaTypes>`.
+pub struct BoaEngine {
+    context: Context,
+}
+
+impl BoaEngine {
+    pub fn new() -> Self {
+        Self { context: Context::default() }
+    }
+
+    pub fn context(&mut self) -> &mut Context { &mut self.context }
+    pub fn into_context(self) -> Context { self.context }
+}
+
+impl Default for BoaEngine { fn default() -> Self { Self::new() } }
+
+fn into_completion<T>(result: JsResult<T>, context: &mut Context) -> Completion<T, BoaTypes> {
+    result.map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+}
+
+impl JsEngine<BoaTypes> for BoaEngine {
+    // ── §7.1 Type Conversion ──────────────────────────────────────────────
+
+    fn to_primitive(
+        &mut self,
+        input: JsValue,
+        preferred_type: Option<PreferredType>,
+    ) -> Completion<JsValue, BoaTypes> {
+        let hint = match preferred_type {
+            Some(PreferredType::String) => BoaPreferredType::String,
+            Some(PreferredType::Number) => BoaPreferredType::Number,
+            None => BoaPreferredType::Default,
+        };
+        into_completion(input.to_primitive(&mut self.context, hint), &mut self.context)
+    }
+
+    fn to_boolean(&self, value: &JsValue) -> bool { value.to_boolean() }
+    fn to_number(&mut self, value: JsValue) -> Completion<f64, BoaTypes> {
+        into_completion(value.to_number(&mut self.context), &mut self.context)
+    }
+
+    fn to_numeric(&mut self, value: JsValue) -> Completion<Numeric<BoaTypes>, BoaTypes> {
+        if let Some(bigint) = value.as_bigint() {
+            return Ok(Numeric::BigInt(bigint.clone()));
+        }
+        self.to_number(value).map(Numeric::Number)
+    }
+
+    fn to_int32(&mut self, value: JsValue) -> Completion<i32, BoaTypes> { into_completion(value.to_i32(&mut self.context), &mut self.context) }
+    fn to_uint32(&mut self, value: JsValue) -> Completion<u32, BoaTypes> { into_completion(value.to_u32(&mut self.context), &mut self.context) }
+    fn to_int16(&mut self, value: JsValue) -> Completion<i16, BoaTypes> { into_completion(value.to_int16(&mut self.context), &mut self.context) }
+    fn to_uint16(&mut self, value: JsValue) -> Completion<u16, BoaTypes> { into_completion(value.to_uint16(&mut self.context), &mut self.context) }
+    fn to_int8(&mut self, value: JsValue) -> Completion<i8, BoaTypes> { into_completion(value.to_int8(&mut self.context), &mut self.context) }
+    fn to_uint8(&mut self, value: JsValue) -> Completion<u8, BoaTypes> { into_completion(value.to_uint8(&mut self.context), &mut self.context) }
+    fn to_uint8_clamp(&mut self, value: JsValue) -> Completion<u8, BoaTypes> { into_completion(value.to_uint8_clamp(&mut self.context), &mut self.context) }
+
+    fn to_bigint(&mut self, value: JsValue) -> Completion<boa_engine::JsBigInt, BoaTypes> {
+        into_completion(value.to_bigint(&mut self.context), &mut self.context)
+    }
+
+    fn string_to_bigint(&mut self, string: boa_engine::JsString) -> Option<boa_engine::JsBigInt> {
+        boa_engine::JsBigInt::from_string(&string.to_std_string_escaped())
+    }
+
+    fn to_js_string(&mut self, value: JsValue) -> Completion<boa_engine::JsString, BoaTypes> {
+        into_completion(value.to_string(&mut self.context), &mut self.context)
+    }
+
+    fn to_object(&mut self, value: JsValue) -> Completion<JsObject, BoaTypes> {
+        into_completion(value.to_object(&mut self.context), &mut self.context)
+    }
+
+    fn to_property_key(&mut self, value: JsValue) -> Completion<PropertyKey, BoaTypes> {
+        // Spec: ToPropertyKey converts value to primitive with hint String,
+        // then if it is Symbol, returns that Symbol, otherwise ToString.
+        let primitive = into_completion(value.to_primitive(&mut self.context, BoaPreferredType::String), &mut self.context)?;
+        if let Some(sym) = primitive.as_symbol() {
+            return Ok(PropertyKey::from(sym));
+        }
+        let string = into_completion(primitive.to_string(&mut self.context), &mut self.context)?;
+        Ok(PropertyKey::from(string))
+    }
+
+    fn to_length(&mut self, value: JsValue) -> Completion<u64, BoaTypes> {
+        let number = into_completion(value.to_number(&mut self.context), &mut self.context)?;
+        if number.is_nan() || number <= 0.0 { Ok(0) }
+        else { Ok((number.min(f64::from(u32::MAX))) as u64) }
+    }
+
+    fn canonical_numeric_index_string(&self, argument: &boa_engine::JsString) -> Option<f64> {
+        let s = argument.to_std_string_escaped();
+        if let Ok(n) = s.parse::<f64>() {
+            if n.to_string() == s || (n.is_infinite() && (s.starts_with('-') || s.starts_with('+'))) {
+                return Some(n);
+            }
+        }
+        None
+    }
+
+    fn to_index(&mut self, value: JsValue) -> Completion<u64, BoaTypes> {
+        let n = into_completion(value.to_number(&mut self.context), &mut self.context)?;
+        if n.is_nan() || n < 0.0 || !n.is_finite() {
+            return Err(JsValue::from(JsNativeError::range().with_message("Invalid index").into_opaque(&mut self.context)));
+        }
+        let integer = n.trunc() as u64;
+        if integer as f64 != n || integer > 9007199254740992 {
+            return Err(JsValue::from(JsNativeError::range().with_message("Invalid index").into_opaque(&mut self.context)));
+        }
+        Ok(integer)
+    }
+
+    // ── §7.2 Testing and Comparison ───────────────────────────────────────
+
+    fn require_object_coercible(&mut self, value: JsValue) -> Completion<JsValue, BoaTypes> {
+        if value.is_undefined() || value.is_null() {
+            Err(JsValue::from(JsNativeError::typ().with_message("Cannot convert undefined or null to object").into_opaque(&mut self.context)))
+        } else { Ok(value) }
+    }
+
+    fn is_array(&mut self, value: &JsValue) -> Completion<bool, BoaTypes> {
+        Ok(value.as_object().is_some_and(|o| o.is_array()))
+    }
+
+    fn is_callable(&self, value: &JsValue) -> bool { value.as_object().is_some_and(|o| o.is_callable()) }
+    fn is_constructor(&self, value: &JsValue) -> bool { value.as_object().is_some_and(|o| o.is_constructor()) }
+    fn is_extensible(&mut self, object: &JsObject) -> Completion<bool, BoaTypes> { into_completion(object.is_extensible(&mut self.context), &mut self.context) }
+
+    fn is_integral_number(&self, value: &JsValue) -> bool {
+        value.as_number().is_some_and(|n| n.is_finite() && n.trunc() == n)
+    }
+
+    fn is_property_key(&self, value: &JsValue) -> bool { value.is_string() || value.as_symbol().is_some() }
+    fn same_value(&self, x: &JsValue, y: &JsValue) -> bool { JsValue::same_value(x, y) }
+    fn same_value_zero(&self, x: &JsValue, y: &JsValue) -> bool { JsValue::same_value_zero(x, y) }
+
+    fn is_loosely_equal(&mut self, x: JsValue, y: JsValue) -> Completion<bool, BoaTypes> {
+        into_completion(x.equals(&y, &mut self.context), &mut self.context)
+    }
+
+    fn is_strictly_equal(&self, x: &JsValue, y: &JsValue) -> bool { x.strict_equals(y) }
+
+    // ── §7.3 Operations on Objects ────────────────────────────────────────
+
+    fn get(&mut self, object: JsObject, property_key: PropertyKey) -> Completion<JsValue, BoaTypes> {
+        into_completion(object.get(property_key, &mut self.context), &mut self.context)
+    }
+
+    fn get_v(&mut self, value: JsValue, property_key: PropertyKey) -> Completion<JsValue, BoaTypes> {
+        // GetV: ToObject then Get
+        let object = into_completion(value.to_object(&mut self.context), &mut self.context)?;
+        into_completion(object.get(property_key, &mut self.context), &mut self.context)
+    }
+
+    fn set(&mut self, object: JsObject, property_key: PropertyKey, value: JsValue, _throw: bool) -> Completion<(), BoaTypes> {
+        into_completion(object.set(property_key, value, false, &mut self.context).map(|_| ()), &mut self.context)
+    }
+
+    fn create_data_property(&mut self, object: JsObject, property_key: PropertyKey, value: JsValue) -> Completion<bool, BoaTypes> {
+        into_completion(object.create_data_property(property_key, value, &mut self.context), &mut self.context)
+    }
+
+    fn define_property_or_throw(&mut self, object: JsObject, property_key: PropertyKey, descriptor: PropertyDescriptor<BoaTypes>) -> Completion<(), BoaTypes> {
+        let boa_desc = boa_engine::property::PropertyDescriptor::builder()
+            .maybe_value(descriptor.value)
+            .maybe_writable(descriptor.writable)
+            .maybe_enumerable(descriptor.enumerable)
+            .maybe_configurable(descriptor.configurable)
+            .build();
+        into_completion(object.define_property_or_throw(property_key, boa_desc, &mut self.context).map(|_| ()), &mut self.context)
+    }
+
+    fn delete_property_or_throw(&mut self, object: JsObject, property_key: PropertyKey) -> Completion<(), BoaTypes> {
+        into_completion(object.delete_property_or_throw(property_key, &mut self.context).map(|_| ()), &mut self.context)
+    }
+
+    fn get_method(&mut self, value: JsValue, property_key: PropertyKey) -> Completion<Option<JsFunction>, BoaTypes> {
+        let prop = into_completion({
+            let object = into_completion(value.to_object(&mut self.context), &mut self.context)?;
+            object.get(property_key, &mut self.context)
+        }, &mut self.context)?;
+        if let Some(object) = prop.as_object() {
+            if object.is_callable() {
+                // HARD: downcast_ref returns GcRef, can't &-borrow across engine calls
+                // Return a cloned JsFunction when possible
+                // Fallback: the object itself is callable, wrap as JsFunction
+                return Ok(JsFunction::from_object(object.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    fn has_property(&mut self, object: JsObject, property_key: PropertyKey) -> Completion<bool, BoaTypes> {
+        into_completion(object.has_property(property_key, &mut self.context), &mut self.context)
+    }
+
+    fn has_own_property(&mut self, object: JsObject, property_key: PropertyKey) -> Completion<bool, BoaTypes> {
+        into_completion(object.has_own_property(property_key, &mut self.context), &mut self.context)
+    }
+
+    fn call(&mut self, function: JsFunction, this: JsValue, args: &[JsValue]) -> Completion<JsValue, BoaTypes> {
+        into_completion(function.call(&this, args, &mut self.context), &mut self.context)
+    }
+
+    fn construct(&mut self, function: JsFunction, args: &[JsValue], new_target: Option<JsFunction>) -> Completion<JsObject, BoaTypes> {
+        into_completion(function.construct(args, new_target.as_ref().map(|f| &**f), &mut self.context), &mut self.context)
+    }
+
+    fn set_integrity_level(&mut self, object: JsObject, level: IntegrityLevel) -> Completion<bool, BoaTypes> {
+        let boa_level = match level {
+            IntegrityLevel::Sealed => boa_engine::object::IntegrityLevel::Sealed,
+            IntegrityLevel::Frozen => boa_engine::object::IntegrityLevel::Frozen,
+        };
+        into_completion(object.set_integrity_level(boa_level, &mut self.context), &mut self.context)
+    }
+
+    fn test_integrity_level(&mut self, object: JsObject, level: IntegrityLevel) -> Completion<bool, BoaTypes> {
+        let boa_level = match level {
+            IntegrityLevel::Sealed => boa_engine::object::IntegrityLevel::Sealed,
+            IntegrityLevel::Frozen => boa_engine::object::IntegrityLevel::Frozen,
+        };
+        into_completion(object.test_integrity_level(boa_level, &mut self.context), &mut self.context)
+    }
+
+    fn species_constructor(&mut self, _object: JsObject, default_constructor: JsFunction) -> Completion<JsFunction, BoaTypes> {
+        Ok(default_constructor)
+    }
+
+    fn get_iterator(&mut self, _object: JsValue, _kind: IteratorKind, _method: Option<JsFunction>) -> Completion<IteratorRecord<BoaTypes>, BoaTypes> {
+        todo!("Boa get_iterator")
+    }
+    fn iterator_step_value(&mut self, _iterator: &mut IteratorRecord<BoaTypes>) -> Completion<Option<JsValue>, BoaTypes> {
+        todo!("Boa iterator_step_value")
+    }
+    fn iterator_close(&mut self, _iterator: IteratorRecord<BoaTypes>, completion: Completion<JsValue, BoaTypes>) -> Completion<JsValue, BoaTypes> { completion }
+    fn async_iterator_close(&mut self, _iterator: IteratorRecord<BoaTypes>, completion: Completion<JsValue, BoaTypes>) -> Completion<JsValue, BoaTypes> { completion }
+
+    // ── §9.3 Realm ────────────────────────────────────────────────────────
+
+    fn create_realm(&mut self) -> boa_engine::realm::Realm where BoaTypes: JsTypesWithRealm {
+        self.context.create_realm().expect("create_realm failed")
+    }
+
+    fn set_realm_global_object(&mut self, _realm: &boa_engine::realm::Realm, _global: JsObject, _this_value: Option<JsObject>) where BoaTypes: JsTypesWithRealm {
+        // HARD: Boa's Context doesn't expose set_realm_global_object through its public API.
+        // This is typically done at context construction time.
+    }
+
+    fn set_default_global_bindings(&mut self, _realm: &boa_engine::realm::Realm) -> Completion<(), BoaTypes> where BoaTypes: JsTypesWithRealm {
+        // A fresh context already has default bindings.
+        Ok(())
+    }
+
+    fn current_realm(&self) -> boa_engine::realm::Realm where BoaTypes: JsTypesWithRealm {
+        self.context.realm().clone()
+    }
+
+    fn realm_intrinsics(&self, _realm: &boa_engine::realm::Realm) -> RealmIntrinsics<BoaTypes> where BoaTypes: JsTypesWithRealm {
+        todo!("Boa realm_intrinsics")
+    }
+
+    // ── §9.6 Jobs ─────────────────────────────────────────────────────────
+
+    fn enqueue_job(&mut self, _job: Box<dyn FnOnce() + Send>) {
+        // HARD: Boa's job executor model requires wrapping jobs for Boa's Job trait
+    }
+
+    fn run_jobs(&mut self) { let _ = self.context.run_jobs(); }
+
+    // ── §16 Script ────────────────────────────────────────────────────────
+
+    fn evaluate_script(&mut self, source: &str, _realm: &boa_engine::realm::Realm) -> Completion<JsValue, BoaTypes> where BoaTypes: JsTypesWithRealm {
+        into_completion(self.context.eval(boa_engine::Source::from_bytes(source)), &mut self.context)
+    }
+
+    fn evaluate_module(&mut self, _source: &str, _realm: &boa_engine::realm::Realm) -> Completion<JsObject, BoaTypes> where BoaTypes: JsTypesWithRealm {
+        todo!("Boa module evaluation")
+    }
+
+    // ── §25 ArrayBuffer ───────────────────────────────────────────────────
+
+    fn allocate_array_buffer(&mut self, _constructor: JsFunction, _byte_length: u64, _max_byte_length: Option<u64>) -> Completion<JsArrayBuffer, BoaTypes> {
+        todo!("Boa allocate_array_buffer")
+    }
+
+    fn is_detached_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {
+        false // HARD: Boa's JsArrayBuffer doesn't expose is_detached publicly in this version
+    }
+
+    fn detach_array_buffer(&mut self, array_buffer: JsArrayBuffer, key: Option<JsValue>) -> Completion<(), BoaTypes> {
+        let undefined = JsValue::undefined();
+        let detach_key = key.as_ref().unwrap_or(&undefined);
+        into_completion(array_buffer.detach(detach_key).map(|_| ()), &mut self.context)
+    }
+
+    fn clone_array_buffer(&mut self, _src: JsArrayBuffer, _src_byte_offset: u64, _src_length: u64, _clone_constructor: JsFunction) -> Completion<JsArrayBuffer, BoaTypes> {
+        todo!("Boa clone_array_buffer")
+    }
+
+    fn is_fixed_length_array_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool { true }
+
+    fn get_value_from_buffer(&self, _array_buffer: &JsArrayBuffer, _byte_index: u64, _element_type: TypedArrayElementType, _is_typed_array: bool, _order: SharedMemoryOrder) -> JsValue { JsValue::undefined() }
+    fn set_value_in_buffer(&mut self, _array_buffer: &JsArrayBuffer, _byte_index: u64, _element_type: TypedArrayElementType, _value: JsValue, _is_typed_array: bool, _order: SharedMemoryOrder) -> Completion<(), BoaTypes> { Ok(()) }
+
+    fn allocate_shared_array_buffer(&mut self, _constructor: JsFunction, _byte_length: u64) -> Completion<JsSharedArrayBuffer, BoaTypes> {
+        todo!("Boa allocate_shared_array_buffer")
+    }
+
+    // ── §27 Promise ───────────────────────────────────────────────────────
+
+    fn promise_resolve(&mut self, _constructor: JsFunction, x: JsValue) -> Completion<JsPromise, BoaTypes> {
+        into_completion(JsPromise::resolve(x, &mut self.context), &mut self.context)
+    }
+
+    fn new_promise_capability(&mut self, _constructor: JsFunction) -> Completion<PromiseCapability<BoaTypes>, BoaTypes> {
+        let (promise, resolvers) = JsPromise::new_pending(&mut self.context);
+        Ok(PromiseCapability {
+            promise: JsValue::from(promise),
+            resolve: resolvers.resolve,
+            reject: resolvers.reject,
+        })
+    }
+
+    fn perform_promise_then(&mut self, promise: JsPromise, on_fulfilled: Option<JsFunction>, on_rejected: Option<JsFunction>, _result_capability: Option<PromiseCapability<BoaTypes>>) -> Completion<JsValue, BoaTypes> {
+        let result = into_completion(promise.then(on_fulfilled, on_rejected, &mut self.context), &mut self.context)?;
+        Ok(JsValue::from(result))
+    }
+
+    // ── §27.5 Generator ───────────────────────────────────────────────────
+
+    fn generator_start(&mut self, _generator: JsGenerator, _closure: JsFunction) -> Completion<(), BoaTypes> { todo!("Boa generator_start") }
+
+    // ── Host Hooks ────────────────────────────────────────────────────────
+
+    fn set_host_hooks(&mut self, _hooks: HostHooks<BoaTypes>) where BoaTypes: JsTypesWithRealm {
+        // TODO: store and call through hooks internally
+    }
+}
