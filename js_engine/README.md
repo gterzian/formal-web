@@ -85,6 +85,36 @@ See module docs for implementation status and quirks:
 | JSC | `src/jsc/mod.rs` | FFI coverage, `todo!()` items |
 | GC | `src/gc.rs` | The one engine-specific abstraction |
 
+## Next steps (in priority order)
+
+### 1. Migrate one binding to `engine.create_builtin_function()`
+
+The mechanism works (tested).  Pick a simple `NativeFunction::from_fn_ptr`
+callsite in `content/src/js/bindings/*.rs` and replace it with
+`engine.create_builtin_function(...)`.  The closure body uses only generic
+`JsEngine`/`EcmascriptHost` operations — no `&mut Context`.
+
+Migration order (easiest first):
+1. Console bindings (`console.rs`) — pure functions, no engine interaction
+2. `ReadableStream.values()` — single `Get`/`Call` through `EcmascriptHost`
+3. `pipeTo` — involves promise creation through `JsEngine`
+
+Depends on: nothing — `build_boa_engine` already returns the engine.
+
+### 2. Make `Callback` generic over `JsTypes`
+
+`content/src/webidl/callback.rs` derives `boa_gc::Trace`/`Finalize`.
+Requires abstracting GC trait derives — touches the one non-standard part.
+
+### 3. Phase 4: Replace `context()` calls with `JsEngine<T>`
+
+Hundreds of call sites call `value.to_number(context)?` instead of
+`engine.to_number(value)?`.  Mechanical but large.
+
+### 4. JSC feature parity
+
+Implement missing JSC methods (promises, modules, etc.) behind `todo!()`.
+
 ## Migration status
 
 | Phase | What | Status |
@@ -95,6 +125,3 @@ See module docs for implementation status and quirks:
 | 4. Domain layer | Replace `context()` calls with `JsEngine<T>` | ❌ |
 | 5. JS bindings | `CreateBuiltinFunction` on trait + Boa impl | ⏳ |
 | 6. Full generics | Parameterize content/ over `T: JsTypes` | ❌ |
-
-Open problems and their fixes are documented in `src/engine.rs` module docs
-and the per-backend module docs.
