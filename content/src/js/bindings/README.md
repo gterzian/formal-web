@@ -10,9 +10,9 @@ From inside out:
 
 | Layer | Location | What it contains | Signature convention |
 |---|---|---|---|
-| **Domain** | `content/src/<domain>/` | Rust struct + spec-algorithm methods and functions. Domain code implements the algorithm — it may import Boa types when needed (e.g., `Context` for promise creation). Prefer `crate::webidl` helpers over raw Boa calls when possible. | `fn domain_method(&self) -> RustType` for pure-computation methods; `fn namespace_op(ctx, arg) -> JsResult<JsValue>` for promise-returning namespace functions |
-| **Web IDL bindings infra** | `content/src/webidl/bindings/` | Generic traits (`WebIdlInterface`, `WebIdlNamespace`), registration (`register_interface_spec`), and member definitions (`OperationDef`, `AttributeDef`). NOT domain-specific. | `register_interface_spec::<T>(context)` |
-| **JS bindings glue** | `content/src/js/bindings/<domain>/` | `WebIdlInterface` impl + thin function pointers that extract JS arguments, call domain functions, and wrap results. | `fn binding_fn(this, args, ctx) -> JsResult<JsValue>` — must be thin, no algorithm logic |
+| **Domain** | `content/src/<domain>/` | Rust struct + spec-algorithm methods and functions. Domain code implements the algorithm. Receives `&mut dyn ExecutionContext<T>` for all ECMA-262 operations. | `fn domain_method(&self) -> RustType` for pure-computation methods; `fn namespace_op(ec, arg) -> Completion<T::JsValue, T>` for promise-returning functions |
+| **Web IDL bindings infra** | `content/src/webidl/bindings/` | Generic traits (`WebIdlInterface`, `WebIdlNamespace`), registration (`register_interface_spec`), and member definitions (`OperationDef`, `AttributeDef`). NOT domain-specific. `OperationDef` and `AttributeDef` are parameterized over `T: JsTypes`. | `register_interface_spec::<T>(ec)` |
+| **JS bindings glue** | `content/src/js/bindings/<domain>/` | `WebIdlInterface` impl + thin function pointers that extract JS arguments, call domain functions, and wrap results. | `fn binding_fn(this, args, ec: &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>` — must be thin, no algorithm logic |
 
 ### Rules of thumb
 
@@ -22,7 +22,7 @@ From inside out:
 
 2. **JS bindings functions downcast then delegate.**  A binding function looks like:
    ```rust
-   fn my_method_binding(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+   fn my_method_binding(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> Completion<JsValue, BoaTypes> {
        let obj = this.as_object().ok_or_else(|| /* TypeError */)?;
        let domain = obj.downcast_ref::<MyDomainType>().ok_or_else(|| /* TypeError */)?;
        let result: RustType = domain.my_method(arg1, arg2);
@@ -76,16 +76,16 @@ pub(crate) fn export_descriptors(&self) -> Vec<(String, &'static str)> {
 **JS binding function — NO annotations:**
 
 ```rust
-fn module_exports_binding(
-    _this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn module_exports_binding<T: JsTypes>(
+    _this: &T::JsValue,
+    args: &[T::JsValue],
+    ec: &mut dyn ExecutionContext<T>,
+) -> Completion<T::JsValue, T> {
     // No doc comment, no step comments.  This is plumbing:
     // downcast -> call domain method -> wrap result.
     let wasm_module = downcast_arg::<WasmModule>(args)?;
     let descriptors = wasm_module.export_descriptors();
-    Ok(build_js_array(context, descriptors))
+    Ok(build_js_array(ec, descriptors))
 }
 ```
 
@@ -125,18 +125,18 @@ Spec says:  compile(bytes)
 
 Bindings (arg extraction + webidl conversion):
   content/src/js/bindings/wasm/mod.rs
-  fn compile_fn(this, args, ctx) -> JsResult<JsValue> {
+  fn compile_fn(this, args, ec: &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T> {
       let val = args.first()?;
-      let bytes: Vec<u8> = get_stable_bytes(val, ctx)?;   // webidl helper
-      crate::wasm::namespace::compile_fn(bytes, ctx)       // domain call
+      let bytes: Vec<u8> = get_stable_bytes(val, ec)?;   // webidl helper
+      crate::wasm::namespace::compile_fn(bytes, ec)       // domain call
   }
 
 Domain (algorithm):
   content/src/wasm/namespace.rs
-  fn compile_fn(bytes: Vec<u8>, ctx) -> JsResult<JsValue> {
-      let (promise, resolvers) = a_new_promise(ctx); // webidl helper
+  fn compile_fn(bytes: Vec<u8>, ec: &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T> {
+      let (promise, resolvers) = a_new_promise(ec); // webidl helper
       // ... push pending request, store resolvers ...
-      Ok(JsValue::from(promise))
+      Ok(T::Types::value_from_object(promise))
   }
 ```
 
@@ -157,10 +157,10 @@ Domain                           content/src/wasm/functions.rs
   }
 
 JS bindings glue                 content/src/js/bindings/wasm/interfaces.rs
-  impl WebIdlInterface for WasmModule {
+  impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
       fn define_members(def) { def.add_operation(OperationDef { method: binding_fn, … }) }
   }
-  fn binding_fn(this, args, ctx) -> JsResult<JsValue> {
+  fn binding_fn(this, args, ec: &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T> {
       // 1. downcast this to WasmModule
       // 2. call domain.export_descriptors()
       // 3. wrap Vec in JsArray

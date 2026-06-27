@@ -43,6 +43,7 @@ use super::{
     set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
     with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
 };
+use js_engine::boa::BoaTypes;
 
 /// <https://streams.spec.whatwg.org/#rs-class>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -1094,10 +1095,11 @@ pub(crate) fn create_readable_stream(
 
     // Step 6: "Let controller be a new ReadableStreamDefaultController."
     let controller = super::ReadableStreamDefaultController::new();
-    let controller_object = create_interface_instance::<super::ReadableStreamDefaultController>(
-        controller.clone(),
-        context,
-    )?;
+    let controller_object = create_interface_instance::<
+        BoaTypes,
+        super::ReadableStreamDefaultController,
+    >(controller.clone(), crate::js::context_as_ec(context))
+    .map_err(JsError::from_opaque)?;
 
     // Step 7: "Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm)."
     set_up_readable_stream_default_controller(
@@ -1117,8 +1119,12 @@ pub(crate) fn create_readable_stream(
 }
 fn create_readable_stream_object(context: &mut Context) -> JsResult<(ReadableStream, JsObject)> {
     let stream = ReadableStream::new();
-    let stream_object: JsObject =
-        create_interface_instance::<ReadableStream>(stream.clone(), context)?.into();
+    let stream_object: JsObject = create_interface_instance::<BoaTypes, ReadableStream>(
+        stream.clone(),
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?
+    .into();
     Ok((stream, stream_object))
 }
 
@@ -1137,8 +1143,11 @@ fn create_readable_byte_stream(
 
     // Step 3: "Let controller be a new ReadableByteStreamController."
     let controller = ReadableByteStreamController::new();
-    let controller_object =
-        create_interface_instance::<ReadableByteStreamController>(controller.clone(), context)?;
+    let controller_object = create_interface_instance::<BoaTypes, ReadableByteStreamController>(
+        controller.clone(),
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?;
 
     // Step 4: "Perform ? SetUpReadableByteStreamController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, 0, undefined)."
     super::set_up_readable_byte_stream_controller(

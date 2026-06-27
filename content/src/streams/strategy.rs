@@ -1,7 +1,12 @@
-use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
+use boa_engine::{
+    Context, JsData, JsNativeError, JsResult, JsString, JsValue,
+    object::{JsObject, builtins::JsFunction},
+};
 use boa_gc::{Finalize, Trace};
 
-use crate::webidl::{Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function};
+use js_engine::boa::BoaTypes;
+
+use crate::webidl::{Callback, EcmascriptHost, ExceptionBehavior, invoke_callback_function};
 
 /// <https://streams.spec.whatwg.org/#blqs-class>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -56,8 +61,74 @@ impl SizeAlgorithm {
         match self {
             Self::ReturnOne => Ok(1.0),
             Self::Callback { callback } => {
+                // Note: Wraps &mut Context in a temporary EcmascriptHost adapter.
+                // This adapter will be eliminated in Phase 4 when the call chain
+                // threads Engine instead of Context.  The NativeFunction barrier
+                // (P3) currently prevents passing Engine through JS binding callbacks.
+                struct CtxHost<'a>(&'a mut Context);
+                impl EcmascriptHost<BoaTypes> for CtxHost<'_> {
+                    fn get(
+                        &mut self,
+                        object: &JsObject,
+                        property: &str,
+                    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes>
+                    {
+                        object
+                            .get(JsString::from(property), self.0)
+                            .map_err(|e| e.into_opaque(self.0).unwrap_or(JsValue::undefined()))
+                    }
+                    fn is_callable(&self, value: &JsValue) -> bool {
+                        value.as_object().is_some_and(|o| o.is_callable())
+                    }
+                    fn call(
+                        &mut self,
+                        callable: &JsObject,
+                        this_arg: &JsValue,
+                        args: &[JsValue],
+                    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes>
+                    {
+                        let function =
+                            JsFunction::from_object(callable.clone()).ok_or_else(|| {
+                                JsValue::from(
+                                    JsNativeError::typ()
+                                        .with_message("callback is not callable")
+                                        .into_opaque(self.0),
+                                )
+                            })?;
+                        function
+                            .call(this_arg, args, self.0)
+                            .map_err(|e| e.into_opaque(self.0).unwrap_or(JsValue::undefined()))
+                    }
+                    fn perform_a_microtask_checkpoint(
+                        &mut self,
+                    ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
+                        let _ = self.0.run_jobs();
+                        Ok(())
+                    }
+                    fn report_exception(&mut self, error: JsValue) {
+                        log::error!("uncaught callback error: {error:?}");
+                    }
+                    fn value_undefined(&mut self) -> JsValue {
+                        JsValue::undefined()
+                    }
+                    fn value_null(&mut self) -> JsValue {
+                        JsValue::null()
+                    }
+                    fn value_from_bool(&mut self, b: bool) -> JsValue {
+                        JsValue::from(b)
+                    }
+                    fn value_from_number(&mut self, n: f64) -> JsValue {
+                        JsValue::from(n)
+                    }
+                    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+                        JsValue::from(s)
+                    }
+                    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+                        boa_engine::js_string!(s)
+                    }
+                }
                 let value = {
-                    let mut host = ContextCallbackHost::new(context, "size algorithm");
+                    let mut host = CtxHost(context);
                     invoke_callback_function(
                         &mut host,
                         callback,

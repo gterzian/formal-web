@@ -604,7 +604,7 @@ fn run_iframe_load_event_steps(
 
     let iframe_object = crate::js::platform_objects::resolve_element_object(
         iframe_node_id,
-        &mut content_document.settings.context,
+        content_document.settings.context(),
     )
     .map_err(|error| error.to_string())?;
 

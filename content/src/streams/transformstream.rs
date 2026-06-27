@@ -2,7 +2,7 @@ use log::debug;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
@@ -10,6 +10,7 @@ use boa_engine::{
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use js_engine::boa::BoaTypes;
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
@@ -1214,9 +1215,12 @@ fn create_transform_stream_default_controller(
     context: &mut Context,
 ) -> JsResult<(TransformStreamDefaultController, JsObject)> {
     let controller = TransformStreamDefaultController::new();
-    let controller_object: JsObject =
-        create_interface_instance::<TransformStreamDefaultController>(controller.clone(), context)?
-            .into();
+    let controller_object: JsObject = create_interface_instance::<
+        BoaTypes,
+        TransformStreamDefaultController,
+    >(controller.clone(), crate::js::context_as_ec(context))
+    .map_err(JsError::from_opaque)?
+    .into();
     Ok((controller, controller_object))
 }
 

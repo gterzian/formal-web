@@ -12,7 +12,7 @@ use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{Callback, ContextCallbackHost, EcmascriptHost};
+use js_engine::boa::BoaTypes;
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -386,6 +386,10 @@ impl<'a> BlitzJSEventHandler<'a> {
 }
 
 impl EventDispatchHost for BlitzJSEventHandler<'_> {
+    fn context(&mut self) -> &mut Context {
+        self.settings.context()
+    }
+
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
         self.settings.create_event_object(event)
     }
@@ -434,40 +438,55 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
     }
 }
 
-impl EcmascriptHost for BlitzJSEventHandler<'_> {
-    fn context(&mut self) -> &mut Context {
-        &mut self.settings.context
-    }
-
-    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<boa_engine::JsValue> {
-        ContextCallbackHost::new(&mut self.settings.context, "event listener").get(object, property)
+impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for BlitzJSEventHandler<'_> {
+    fn get(
+        &mut self,
+        object: &JsObject,
+        property: &str,
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+        self.settings.engine.get(object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
-        match value.as_object() {
-            Some(object) => object.is_callable(),
-            None => false,
-        }
+        self.settings.engine.is_callable(value)
     }
 
     fn call(
         &mut self,
         callable: &JsObject,
-        this_arg: &boa_engine::JsValue,
-        args: &[boa_engine::JsValue],
-    ) -> JsResult<boa_engine::JsValue> {
-        ContextCallbackHost::new(&mut self.settings.context, "event listener")
-            .call(callable, this_arg, args)
+        this_arg: &JsValue,
+        args: &[JsValue],
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+        self.settings.engine.call(callable, this_arg, args)
     }
 
-    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        ContextCallbackHost::new(&mut self.settings.context, "event listener")
-            .perform_a_microtask_checkpoint()
+    fn perform_a_microtask_checkpoint(
+        &mut self,
+    ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
+        self.settings.engine.perform_a_microtask_checkpoint()
     }
 
-    fn report_exception(&mut self, error: boa_engine::JsError, callback: &Callback) {
-        ContextCallbackHost::new(&mut self.settings.context, "event listener")
-            .report_exception(error, callback)
+    fn report_exception(&mut self, error: JsValue) {
+        self.settings.engine.report_exception(error)
+    }
+
+    fn value_undefined(&mut self) -> JsValue {
+        self.settings.engine.value_undefined()
+    }
+    fn value_null(&mut self) -> JsValue {
+        self.settings.engine.value_null()
+    }
+    fn value_from_bool(&mut self, b: bool) -> JsValue {
+        self.settings.engine.value_from_bool(b)
+    }
+    fn value_from_number(&mut self, n: f64) -> JsValue {
+        self.settings.engine.value_from_number(n)
+    }
+    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+        self.settings.engine.value_from_string(s)
+    }
+    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+        self.settings.engine.js_string_from_str(s)
     }
 }
 
@@ -501,11 +520,13 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         }
 
         let time_stamp = self.settings.current_time_millis();
-        let view = Some(self.settings.context.global_object());
+        let view = Some(self.settings.context().global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
-        let event_object =
-            create_interface_instance::<JsUiEvent>(ui_event, &mut self.settings.context)
-                .expect("UIEvent construction must succeed");
+        let event_object = create_interface_instance::<BoaTypes, JsUiEvent>(
+            ui_event,
+            crate::js::context_as_ec(self.settings.context()),
+        )
+        .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
             error!("failed to dispatch UI event through JavaScript listeners: {error}");
             return;

@@ -1,7 +1,7 @@
+use crate::IpcError;
 use crate::types::{
     ExtensionHandle, ExtensionManifest, ExtensionServer, IpcConnection, IpcSerialize,
 };
-use crate::IpcError;
 use serde::de::DeserializeOwned;
 
 pub(crate) mod ipc_channel;
@@ -53,9 +53,7 @@ where
     run(server)
 }
 
-fn bootstrap_extension<Out, In>(
-    token: &str,
-) -> Result<ExtensionServer<In, Out>, IpcError>
+fn bootstrap_extension<Out, In>(token: &str) -> Result<ExtensionServer<In, Out>, IpcError>
 where
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
     In: IpcSerialize + DeserializeOwned + Send + 'static,

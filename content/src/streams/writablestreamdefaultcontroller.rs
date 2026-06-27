@@ -10,16 +10,14 @@ use boa_engine::{
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use js_engine::boa::BoaTypes;
 
 use crate::{
     dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
     js::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
     streams::SizeAlgorithm,
     webidl::bindings::create_interface_instance,
-    webidl::{
-        Callback, ContextCallbackHost, EcmascriptHost, promise_from_value, rejected_promise,
-        resolved_promise,
-    },
+    webidl::{promise_from_value, rejected_promise, resolved_promise},
 };
 
 use super::{SourceMethod, WritableStream, WritableStreamController, WritableStreamState};
@@ -533,30 +531,30 @@ impl WritableStreamDefaultController {
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
-// Note: This helper keeps the DOM event-dispatch pieces needed for `AbortSignal` dispatch inside Streams, while delegating generic ECMAScript callback operations to the shared Web IDL `ContextCallbackHost`.
+// Note: This helper keeps the DOM event-dispatch pieces needed for `AbortSignal` dispatch inside Streams, while delegating generic ECMAScript callback operations through `EcmascriptHost<BoaTypes>`.
 struct ContextEventDispatchHost<'a> {
-    callback_host: ContextCallbackHost<'a>,
+    context: &'a mut Context,
 }
 
 impl<'a> ContextEventDispatchHost<'a> {
     fn new(context: &'a mut Context) -> Self {
-        Self {
-            callback_host: ContextCallbackHost::new(context, "abort listener"),
-        }
+        Self { context }
     }
 }
 
-impl EcmascriptHost for ContextEventDispatchHost<'_> {
-    fn context(&mut self) -> &mut Context {
-        self.callback_host.context()
-    }
-
-    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        self.callback_host.get(object, property)
+impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for ContextEventDispatchHost<'_> {
+    fn get(
+        &mut self,
+        object: &JsObject,
+        property: &str,
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+        object
+            .get(boa_engine::js_string!(property), self.context)
+            .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
-        self.callback_host.is_callable(value)
+        value.as_object().is_some_and(|o| o.is_callable())
     }
 
     fn call(
@@ -564,34 +562,71 @@ impl EcmascriptHost for ContextEventDispatchHost<'_> {
         callable: &JsObject,
         this_arg: &JsValue,
         args: &[JsValue],
-    ) -> JsResult<JsValue> {
-        self.callback_host.call(callable, this_arg, args)
+    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+        let function = boa_engine::object::builtins::JsFunction::from_object(callable.clone())
+            .ok_or_else(|| {
+                JsValue::from(
+                    JsNativeError::typ()
+                        .with_message("callback is not callable")
+                        .into_opaque(self.context),
+                )
+            })?;
+        function
+            .call(this_arg, args, self.context)
+            .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
     }
 
-    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        self.callback_host.perform_a_microtask_checkpoint()
+    fn perform_a_microtask_checkpoint(
+        &mut self,
+    ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
+        let _ = self.context.run_jobs();
+        Ok(())
     }
 
-    fn report_exception(&mut self, error: JsError, callback: &Callback) {
-        self.callback_host.report_exception(error, callback)
+    fn report_exception(&mut self, error: JsValue) {
+        log::error!("uncaught abort callback error: {error:?}");
+    }
+
+    fn value_undefined(&mut self) -> JsValue {
+        JsValue::undefined()
+    }
+    fn value_null(&mut self) -> JsValue {
+        JsValue::null()
+    }
+    fn value_from_bool(&mut self, b: bool) -> JsValue {
+        JsValue::from(b)
+    }
+    fn value_from_number(&mut self, n: f64) -> JsValue {
+        JsValue::from(n)
+    }
+    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+        JsValue::from(s)
+    }
+    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+        boa_engine::js_string!(s)
     }
 }
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
+    fn context(&mut self) -> &mut Context {
+        self.context
+    }
+
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        create_interface_instance::<Event>(event, self.callback_host.context())
+        create_interface_instance::<BoaTypes, Event>(event, crate::js::context_as_ec(self.context))
+            .map_err(JsError::from_opaque)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
-        document_object(self.callback_host.context())
+        document_object(self.context)
     }
 
     fn global_object(&mut self) -> JsObject {
-        self.callback_host.context().global_object()
+        self.context.global_object()
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        resolve_element_object(node_id, self.callback_host.context())
+        resolve_element_object(node_id, self.context)
     }
 
     fn resolve_existing_node_object(
@@ -599,7 +634,7 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> JsResult<JsObject> {
-        object_for_existing_node(document, node_id, self.callback_host.context())
+        object_for_existing_node(document, node_id, self.context)
     }
 
     fn current_time_millis(&self) -> f64 {
@@ -611,9 +646,12 @@ pub(crate) fn create_writable_stream_default_controller(
     context: &mut Context,
 ) -> JsResult<(WritableStreamDefaultController, JsObject)> {
     let controller = WritableStreamDefaultController::new();
-    let controller_object: JsObject =
-        create_interface_instance::<WritableStreamDefaultController>(controller.clone(), context)?
-            .into();
+    let controller_object: JsObject = create_interface_instance::<
+        BoaTypes,
+        WritableStreamDefaultController,
+    >(controller.clone(), crate::js::context_as_ec(context))
+    .map_err(JsError::from_opaque)?
+    .into();
     Ok((controller, controller_object))
 }
 

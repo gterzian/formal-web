@@ -57,14 +57,26 @@ impl HostHooks for WindowHostHooks {
     }
 }
 
-pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
+/// Build the Boa engine, registering all native bindings.
+///
+/// Returns a fully-initialized `Engine` with all interfaces, prototypes,
+/// and native functions registered.  Access the underlying `Context` via
+/// `engine.context()` for Boa-specific operations not yet abstracted.
+pub(crate) fn build_boa_engine(
+    document: Rc<RefCell<BaseDocument>>,
+) -> Result<crate::js::Engine, String> {
+    let context = build_boa_context(document)?;
+    Ok(crate::js::Engine::from_context(context))
+}
+
+fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
     let mut context = ContextBuilder::new()
         .host_hooks(Rc::new(WindowHostHooks::new(document)))
         .job_executor(Rc::new(SimpleJobExecutor::new()))
         .build()
         .map_err(|error| error.to_string())?;
 
-    initialize_registry(&mut context);
+    initialize_registry::<js_engine::boa::BoaTypes>(crate::js::context_as_ec(&mut context));
 
     // ── Install WebAssembly namespace ──
     if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut context) {
@@ -73,7 +85,15 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
 
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<$ty>(&mut context).map_err(|error| error.to_string())?;
+            register_interface_spec::<js_engine::boa::BoaTypes, $ty, _>(
+                crate::js::context_as_engine(&mut context),
+            )
+            .map_err(|error| {
+                error
+                    .to_string(&mut context)
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_else(|_| String::from("unknown error"))
+            })?;
         };
     }
 
@@ -133,9 +153,9 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
     if let Some(proto) = get_registry_prototype::<HTMLAnchorElement>(&context) {
         hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(
             &proto,
-            &mut context,
+            crate::js::context_as_ec(&mut context),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.display().to_string())?;
     }
 
     // ReadableStream: async iterator, pipeTo (§ReadableStream)

@@ -1,9 +1,6 @@
-use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsString, JsValue,
-    object::{JsObject, builtins::JsFunction},
-};
+use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
-use log::error;
+use js_engine::boa::BoaTypes;
 
 /// <https://webidl.spec.whatwg.org/#idl-callback-function>
 // Note: The content process reuses `Callback` for both [callback function](https://webidl.spec.whatwg.org/#idl-callback-function) type values and objects implementing a [callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) because both Web IDL representations are a tuple of (object reference, callback context).
@@ -29,81 +26,9 @@ impl Callback {
     }
 }
 
-// Note: This internal trait abstracts the ECMAScript operations used by the Web IDL callback algorithms in this module.
-// Note: It remains necessary because those algorithms are reused both from the shared context-backed host below and from richer hosts such as DOM event-dispatch adapters that carry additional spec-owned state.
-pub(crate) trait EcmascriptHost {
-    fn context(&mut self) -> &mut Context;
-
-    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue>;
-
-    fn is_callable(&self, value: &JsValue) -> bool;
-
-    fn call(
-        &mut self,
-        callable: &JsObject,
-        this_arg: &JsValue,
-        args: &[JsValue],
-    ) -> JsResult<JsValue>;
-
-    #[allow(dead_code)]
-    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()>;
-
-    fn report_exception(&mut self, error: JsError, callback: &Callback);
-}
-
-/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
-// Note: This context-backed host provides the ECMAScript `Get`, `Call`, and exception-reporting hooks shared by `call a user object's operation` and `invoke a callback function`.
-// Note: Callers keep the surrounding DOM, HTML, or Streams algorithm locally and choose the uncaught-exception label when they construct this host.
-pub(crate) struct ContextCallbackHost<'a> {
-    context: &'a mut Context,
-    exception_context: &'static str,
-}
-
-impl<'a> ContextCallbackHost<'a> {
-    pub(crate) fn new(context: &'a mut Context, exception_context: &'static str) -> Self {
-        Self {
-            context,
-            exception_context,
-        }
-    }
-}
-
-impl EcmascriptHost for ContextCallbackHost<'_> {
-    fn context(&mut self) -> &mut Context {
-        self.context
-    }
-
-    fn get(&mut self, object: &JsObject, property: &str) -> JsResult<JsValue> {
-        object.get(JsString::from(property), self.context)
-    }
-
-    fn is_callable(&self, value: &JsValue) -> bool {
-        match value.as_object() {
-            Some(object) => object.is_callable(),
-            None => false,
-        }
-    }
-
-    fn call(
-        &mut self,
-        callable: &JsObject,
-        this_arg: &JsValue,
-        args: &[JsValue],
-    ) -> JsResult<JsValue> {
-        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
-            JsError::from(JsNativeError::typ().with_message("callback is not callable"))
-        })?;
-        function.call(this_arg, args, self.context)
-    }
-
-    fn perform_a_microtask_checkpoint(&mut self) -> JsResult<()> {
-        self.context.run_jobs()
-    }
-
-    fn report_exception(&mut self, error: JsError, _callback: &Callback) {
-        error!("uncaught {} error: {error}", self.exception_context);
-    }
-}
+// Re-export the generic `EcmascriptHost` trait from `js_engine` so that
+// content/ code uses a consistent import path regardless of engine backend.
+pub(crate) use js_engine::EcmascriptHost;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ExceptionBehavior {
@@ -167,7 +92,7 @@ pub(crate) fn nullable_value<T>(
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 pub(crate) fn call_user_objects_operation(
-    host: &mut impl EcmascriptHost,
+    host: &mut impl EcmascriptHost<BoaTypes>,
     value: &Callback,
     op_name: &str,
     args: &[JsValue],
@@ -195,7 +120,7 @@ pub(crate) fn call_user_objects_operation(
     // Step 10: "If IsCallable(O) is false, then:"
     if !host.is_callable(&object_value) {
         // Step 10.1: "Let getResult be Completion(Get(O, opName))."
-        let operation = host.get(&object, op_name)?;
+        let operation = host.get(&object, op_name).map_err(into_js_error)?;
 
         // Step 10.2: "If getResult is an abrupt completion, set completion to getResult and jump to the step labeled return."
         // Note: `?` returns the abrupt completion directly in this Rust implementation.
@@ -229,9 +154,9 @@ pub(crate) fn call_user_objects_operation(
     // Note: DOM event dispatch already provides ECMAScript values, so there is no additional conversion layer here yet.
 
     // Step 12: "Let callResult be Completion(Call(X, thisArg, jsArgs))."
-    let result = host.call(&callable, &effective_this_arg, args);
-
-    let result = result?;
+    let result = host
+        .call(&callable, &effective_this_arg, args)
+        .map_err(into_js_error)?;
 
     // Step 13: "If callResult is an abrupt completion, set completion to callResult and jump to the step labeled return."
     // Note: `?` returns the abrupt completion directly in this Rust implementation.
@@ -249,7 +174,7 @@ pub(crate) fn call_user_objects_operation(
 
 /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
 pub(crate) fn invoke_callback_function(
-    host: &mut impl EcmascriptHost,
+    host: &mut impl EcmascriptHost<BoaTypes>,
     callable: &Callback,
     args: &[JsValue],
     exception_behavior: ExceptionBehavior,
@@ -296,14 +221,20 @@ pub(crate) fn invoke_callback_function(
 
             // Return.5: "If exceptionBehavior is \"rethrow\", throw completion.[[Value]]."
             if exception_behavior == ExceptionBehavior::Rethrow {
-                return Err(error);
+                return Err(into_js_error(error));
             }
 
             // Return.6.2: "Report an exception completion.[[Value]] for realm's global object."
-            host.report_exception(error, callable);
+            host.report_exception(error);
 
             // Return.6.3: "Return the unique undefined IDL value."
             Ok(JsValue::undefined())
         }
     }
+}
+
+/// Convert a `JsValue` (from the generic `Completion` model) back into a
+/// `JsError` for compatibility with existing callers that expect `JsResult`.
+pub(crate) fn into_js_error(value: JsValue) -> JsError {
+    JsError::from_opaque(value)
 }

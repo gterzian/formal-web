@@ -29,6 +29,7 @@ use super::{
     ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState, SourceMethod,
     TransformStream, range_error_value,
 };
+use js_engine::boa::BoaTypes;
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
 #[derive(Clone, Trace, Finalize)]
@@ -742,8 +743,11 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
 ) -> JsResult<()> {
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
-    let controller_object =
-        create_interface_instance::<ReadableStreamDefaultController>(controller.clone(), context)?;
+    let controller_object = create_interface_instance::<BoaTypes, ReadableStreamDefaultController>(
+        controller.clone(),
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;

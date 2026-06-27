@@ -9,7 +9,7 @@ pub(crate) use array_index::is_array_index_key;
 pub(crate) use async_iterable::{AsyncValueIterable, create_value_async_iterator};
 pub(crate) use buffer_source::{get_a_copy_of_the_buffer_source, is_buffer_source};
 pub(crate) use callback::{
-    Callback, ContextCallbackHost, EcmascriptHost, ExceptionBehavior, call_user_objects_operation,
+    Callback, EcmascriptHost, ExceptionBehavior, call_user_objects_operation,
     callback_function_value, callback_interface_type_value, invoke_callback_function,
     nullable_value,
 };

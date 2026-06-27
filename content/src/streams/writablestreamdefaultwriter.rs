@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     object::{JsObject, builtins::JsPromise},
 };
@@ -13,6 +13,7 @@ use super::{
     type_error_value, with_writable_stream_ref, writable_stream_default_controller_get_chunk_size,
     writable_stream_default_controller_get_desired_size, writable_stream_default_controller_write,
 };
+use js_engine::boa::BoaTypes;
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -397,7 +398,12 @@ pub(crate) fn acquire_writable_stream_default_writer(
 fn create_writable_stream_default_writer(context: &mut Context) -> JsResult<JsObject> {
     let writer = WritableStreamDefaultWriter::new();
     let writer_object: JsObject =
-        create_interface_instance::<WritableStreamDefaultWriter>(writer, context)?.into();
+        create_interface_instance::<BoaTypes, WritableStreamDefaultWriter>(
+            writer,
+            crate::js::context_as_ec(context),
+        )
+        .map_err(JsError::from_opaque)?
+        .into();
     Ok(writer_object)
 }
 pub(crate) fn with_writable_stream_default_writer_ref<R>(

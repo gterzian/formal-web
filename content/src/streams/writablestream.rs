@@ -4,7 +4,7 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue, js_string,
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, js_string,
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
@@ -23,6 +23,7 @@ use super::{
     set_up_writable_stream_default_controller_from_underlying_sink,
     writable_stream_default_controller_close,
 };
+use js_engine::boa::BoaTypes;
 
 /// <https://streams.spec.whatwg.org/#ws-class>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -649,8 +650,12 @@ pub(crate) fn create_writable_stream(
 }
 fn create_writable_stream_object(context: &mut Context) -> JsResult<(WritableStream, JsObject)> {
     let stream = WritableStream::new();
-    let stream_object: JsObject =
-        create_interface_instance::<WritableStream>(stream.clone(), context)?.into();
+    let stream_object: JsObject = create_interface_instance::<BoaTypes, WritableStream>(
+        stream.clone(),
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?
+    .into();
     Ok((stream, stream_object))
 }
 

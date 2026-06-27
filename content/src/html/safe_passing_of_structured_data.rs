@@ -33,6 +33,7 @@ use boa_engine::{
 
 use crate::dom::DOMException;
 use crate::webidl::bindings::create_interface_instance;
+use js_engine::boa::BoaTypes;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Traits for platform objects (bridge layer)
@@ -205,12 +206,12 @@ impl MemoryMap {
 
 fn data_clone_error(context: &mut Context) -> JsError {
     JsError::from_opaque(JsValue::from(
-        create_interface_instance::<DOMException>(
+        create_interface_instance::<BoaTypes, DOMException>(
             DOMException::new(
                 String::from("The object could not be cloned."),
                 String::from("DataCloneError"),
             ),
-            context,
+            crate::js::context_as_ec(context),
         )
         .expect("DOMException construction should not fail"),
     ))

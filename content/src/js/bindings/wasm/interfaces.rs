@@ -9,15 +9,18 @@ use boa_engine::{
     Context, JsNativeError, JsObject, JsResult, JsValue, js_string,
     native_function::NativeFunction, object::FunctionObjectBuilder, property::PropertyDescriptor,
 };
+use std::marker::PhantomData;
 
 use crate::wasm::{WasmInstance, WasmModule};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::get_a_copy_of_the_buffer_source;
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 // WebIdlInterface: Module
 
 /// <https://webassembly.github.io/spec/js-api/#modules>
-impl WebIdlInterface for WasmModule {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
     const NAME: &'static str = "Module";
 
     fn legacy_namespace() -> Option<&'static str> {
@@ -28,8 +31,10 @@ impl WebIdlInterface for WasmModule {
         1
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+
             id: "exports",
             length: 1,
             method: module_exports_binding,
@@ -40,12 +45,12 @@ impl WebIdlInterface for WasmModule {
         // <https://webassembly.github.io/spec/js-api/#dom-module-imports>
         // Note: Not yet implemented.
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+
             id: "imports",
             length: 1,
-            method: |_this, _args, _ctx| {
-                Err(JsNativeError::error()
-                    .with_message("WebAssembly.Module.imports: not yet implemented")
-                    .into())
+            method: |_this, _args, ec| {
+                Err(ec.new_type_error("WebAssembly.Module.imports: not yet implemented"))
             },
             static_: true,
             unforgeable: false,
@@ -54,12 +59,12 @@ impl WebIdlInterface for WasmModule {
         // <https://webassembly.github.io/spec/js-api/#dom-module-customsections>
         // Note: Not yet implemented.
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+
             id: "customSections",
             length: 2,
-            method: |_this, _args, _ctx| {
-                Err(JsNativeError::error()
-                    .with_message("WebAssembly.Module.customSections: not yet implemented")
-                    .into())
+            method: |_this, _args, ec| {
+                Err(ec.new_type_error("WebAssembly.Module.customSections: not yet implemented"))
             },
             static_: true,
             unforgeable: false,
@@ -70,33 +75,40 @@ impl WebIdlInterface for WasmModule {
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        let bytes_value = args.first().ok_or_else(|| {
-            JsNativeError::typ().with_message("Module constructor: missing argument")
-        })?;
-        let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, context)?;
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
-            JsNativeError::typ().with_message(format!("CompileError: {}", error))
-        })?;
-        // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
-        Ok(WasmModule::new(module, stable_bytes))
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<Self, BoaTypes> {
+        let value_undefined = ec.value_undefined();
+        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        (|| -> JsResult<Self> {
+            let bytes_value = args.first().ok_or_else(|| {
+                JsNativeError::typ().with_message("Module constructor: missing argument")
+            })?;
+            let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ctx)?;
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
+                JsNativeError::typ().with_message(format!("CompileError: {}", error))
+            })?;
+            // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
+            Ok(WasmModule::new(module, stable_bytes))
+        })()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 }
 
 // WebIdlInterface: Instance
 
 /// <https://webassembly.github.io/spec/js-api/#instances>
-impl WebIdlInterface for WasmInstance {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmInstance {
     const NAME: &'static str = "Instance";
 
     fn legacy_namespace() -> Option<&'static str> {
         Some("WebAssembly")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "exports",
             getter: get_instance_exports_binding,
             setter: None,
@@ -116,55 +128,61 @@ impl WebIdlInterface for WasmInstance {
 fn module_exports_binding(
     _this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let module_value = args
-        .first()
-        .ok_or_else(|| JsNativeError::typ().with_message("Module.exports: missing argument"))?;
-    let module_object = module_value.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("Module.exports: argument must be a Module object")
-    })?;
-    let wasm_module = module_object.downcast_ref::<WasmModule>().ok_or_else(|| {
-        JsNativeError::typ().with_message("Module.exports: argument is not a WebAssembly.Module")
-    })?;
-
-    let descriptors = wasm_module.export_descriptors();
-    let exports_array = boa_engine::object::builtins::JsArray::new(context)?;
-    for (name, kind) in &descriptors {
-        let entry = context
-            .intrinsics()
-            .constructors()
-            .object()
-            .constructor()
-            .call(&JsValue::undefined(), &[], context)?;
-        let entry_obj = entry.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("failed to create export descriptor")
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+        let module_value = args
+            .first()
+            .ok_or_else(|| JsNativeError::typ().with_message("Module.exports: missing argument"))?;
+        let module_object = module_value.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("Module.exports: argument must be a Module object")
         })?;
-        entry_obj.set(
-            js_string!("name"),
-            js_string!(name.as_str()),
-            false,
-            context,
-        )?;
-        entry_obj.set(js_string!("kind"), js_string!(*kind), false, context)?;
-        exports_array.push(entry, context)?;
-    }
-    Ok(JsValue::from(exports_array))
+        let wasm_module = module_object.downcast_ref::<WasmModule>().ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("Module.exports: argument is not a WebAssembly.Module")
+        })?;
+
+        let descriptors = wasm_module.export_descriptors();
+        let exports_array = boa_engine::object::builtins::JsArray::new(ctx)?;
+        for (name, kind) in &descriptors {
+            let entry = ctx
+                .intrinsics()
+                .constructors()
+                .object()
+                .constructor()
+                .call(&JsValue::undefined(), &[], ctx)?;
+            let entry_obj = entry.as_object().ok_or_else(|| {
+                JsNativeError::typ().with_message("failed to create export descriptor")
+            })?;
+            entry_obj.set(js_string!("name"), js_string!(name.as_str()), false, ctx)?;
+            entry_obj.set(js_string!("kind"), js_string!(*kind), false, ctx)?;
+            exports_array.push(entry, ctx)?;
+        }
+        Ok(JsValue::from(exports_array))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn get_instance_exports_binding(
     this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
-) -> JsResult<JsValue> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("Instance.exports getter: receiver is not an object")
-    })?;
-    let instance = object.downcast_ref::<WasmInstance>().ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("Instance.exports getter: receiver is not a WebAssembly.Instance")
-    })?;
-    Ok(JsValue::from(instance.exports.clone()))
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+        let object = this.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("Instance.exports getter: receiver is not an object")
+        })?;
+        let instance = object.downcast_ref::<WasmInstance>().ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("Instance.exports getter: receiver is not a WebAssembly.Instance")
+        })?;
+        Ok(JsValue::from(instance.exports.clone()))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 // Error types
@@ -272,9 +290,7 @@ pub(crate) fn register_wasm_error_types(
 pub(crate) fn get_wasm_jstag(
     _this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
-) -> JsResult<JsValue> {
-    Err(JsNativeError::error()
-        .with_message("WebAssembly.JSTag: not yet implemented")
-        .into())
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    Err(ec.new_type_error("WebAssembly.JSTag: not yet implemented"))
 }

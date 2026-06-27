@@ -1,19 +1,24 @@
 // ── HTMLInputElement JS bindings ──
 
-use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
+use boa_engine::{JsNativeError, JsResult, JsString, JsValue};
+use std::marker::PhantomData;
 
 use crate::html::HTMLInputElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
-impl WebIdlInterface for HTMLInputElement {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLInputElement {
     const NAME: &'static str = "HTMLInputElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("HTMLElement")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "value",
             getter: get_value,
             setter: Some(set_value),
@@ -26,6 +31,8 @@ impl WebIdlInterface for HTMLInputElement {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+
             id: "focus",
             length: 0,
             method: focus_method,
@@ -36,37 +43,64 @@ impl WebIdlInterface for HTMLInputElement {
     }
 }
 
-fn get_value(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let input = obj
-        .downcast_ref::<HTMLInputElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLInputElement"))?;
-    Ok(JsValue::from(JsString::from(input.value())))
+fn get_value(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let input = obj
+            .downcast_ref::<HTMLInputElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLInputElement"))?;
+        Ok(JsValue::from(JsString::from(input.value())))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn focus_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let _obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    // Note: focus() is a no-op — element focus management not yet implemented.
-    Ok(JsValue::undefined())
+fn focus_method(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+        let _obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        // Note: focus() is a no-op — element focus management not yet implemented.
+        Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let input = obj
-        .downcast_ref::<HTMLInputElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLInputElement"))?;
-    let value = args
-        .first()
-        .map(|v| v.to_string(context))
-        .transpose()?
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    input.set_value(&value);
-    Ok(JsValue::undefined())
+fn set_value(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let input = obj
+            .downcast_ref::<HTMLInputElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLInputElement"))?;
+        let value = args
+            .first()
+            .map(|v| v.to_string(ctx))
+            .transpose()?
+            .map(|s| s.to_std_string_escaped())
+            .unwrap_or_default();
+        input.set_value(&value);
+        Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }

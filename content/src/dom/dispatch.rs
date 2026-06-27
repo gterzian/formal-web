@@ -6,7 +6,8 @@ use boa_engine::{JsResult, JsValue, object::JsObject};
 
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
 use crate::js::{with_event_mut, with_event_target_mut, with_event_target_ref};
-use crate::webidl::{EcmascriptHost, call_user_objects_operation};
+use crate::webidl::call_user_objects_operation;
+use js_engine::EcmascriptHost;
 
 use super::event::{EventListener, NONE};
 use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};
@@ -46,7 +47,9 @@ fn debug_target_label(object: &JsObject) -> String {
     String::from("UnknownTarget")
 }
 
-pub(crate) trait EventDispatchHost: EcmascriptHost {
+pub(crate) trait EventDispatchHost: EcmascriptHost<js_engine::boa::BoaTypes> {
+    fn context(&mut self) -> &mut boa_engine::Context;
+
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject>;
 
     fn document_object(&mut self) -> JsResult<JsObject>;
@@ -598,7 +601,10 @@ fn inner_invoke(
                 &[JsValue::from(event.clone())],
                 Some(&JsValue::from(current_target.clone())),
             ) {
-                host.report_exception(error, callback);
+                let error_value = error
+                    .into_opaque(host.context())
+                    .unwrap_or(JsValue::undefined());
+                host.report_exception(error_value);
             }
         }
 

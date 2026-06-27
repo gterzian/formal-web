@@ -10,6 +10,7 @@ use crate::html::{
     HTMLVideoElement, Window,
 };
 use crate::webidl::bindings::create_interface_instance;
+use js_engine::boa::BoaTypes;
 
 pub(crate) fn with_global_scope<R>(
     context: &Context,
@@ -134,27 +135,36 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
             .unwrap_or(0);
 
         match kind {
-            5 => create_interface_instance::<HTMLInputElement>(
+            5 => create_interface_instance::<BoaTypes, HTMLInputElement>(
                 HTMLInputElement::new(document, node_id),
-                context,
-            )?,
-            4 => create_interface_instance::<HTMLVideoElement>(
+                crate::js::context_as_ec(context),
+            )
+            .map_err(JsError::from_opaque)?,
+            4 => create_interface_instance::<BoaTypes, HTMLVideoElement>(
                 HTMLVideoElement::new(document, node_id),
-                context,
-            )?,
-            3 => create_interface_instance::<HTMLIFrameElement>(
+                crate::js::context_as_ec(context),
+            )
+            .map_err(JsError::from_opaque)?,
+            3 => create_interface_instance::<BoaTypes, HTMLIFrameElement>(
                 HTMLIFrameElement::new(document, node_id),
-                context,
-            )?,
-            2 => create_interface_instance::<HTMLAnchorElement>(
+                crate::js::context_as_ec(context),
+            )
+            .map_err(JsError::from_opaque)?,
+            2 => create_interface_instance::<BoaTypes, HTMLAnchorElement>(
                 HTMLAnchorElement::new(document, node_id),
-                context,
-            )?,
-            1 => create_interface_instance::<HTMLElement>(
+                crate::js::context_as_ec(context),
+            )
+            .map_err(JsError::from_opaque)?,
+            1 => create_interface_instance::<BoaTypes, HTMLElement>(
                 HTMLElement::new(document, node_id),
-                context,
-            )?,
-            _ => create_interface_instance::<Element>(Element::new(document, node_id), context)?,
+                crate::js::context_as_ec(context),
+            )
+            .map_err(JsError::from_opaque)?,
+            _ => create_interface_instance::<BoaTypes, Element>(
+                Element::new(document, node_id),
+                crate::js::context_as_ec(context),
+            )
+            .map_err(JsError::from_opaque)?,
         }
     };
     cache_node_object(context, node_id, object.clone())?;
@@ -170,7 +180,11 @@ pub(crate) fn resolve_or_create_text_node_object(
         return Ok(object);
     }
 
-    let object = create_interface_instance::<Node>(Node::new(document, node_id), context)?;
+    let object = create_interface_instance::<BoaTypes, Node>(
+        Node::new(document, node_id),
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?;
     cache_node_object(context, node_id, object.clone())?;
     Ok(object)
 }
