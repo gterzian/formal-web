@@ -7,7 +7,7 @@ use boa_engine::{JsResult, JsValue, object::JsObject};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
 use crate::js::{with_event_mut, with_event_target_mut, with_event_target_ref};
 use crate::webidl::call_user_objects_operation;
-use js_engine::{Completion, EcmascriptHost, JsTypes, JsTypesWithRealm};
+use js_engine::EcmascriptHost;
 
 use super::event::{EventListener, NONE};
 use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};

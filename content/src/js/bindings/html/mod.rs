@@ -1,5 +1,3 @@
-use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
 mod host_hooks;
 mod html_anchor_element;
 mod html_element;

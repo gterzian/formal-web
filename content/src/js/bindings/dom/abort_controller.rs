@@ -1,4 +1,4 @@
-use boa_engine::{Context, JsNativeError, JsResult, JsValue};
+use boa_engine::{JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};

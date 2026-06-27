@@ -1,4 +1,4 @@
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string};
+use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue, js_string};
 use std::marker::PhantomData;
 
 use crate::dom::{Event, UIEvent};

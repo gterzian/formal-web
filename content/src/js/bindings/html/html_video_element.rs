@@ -1,6 +1,6 @@
 // ── HTMLVideoElement JS bindings ──
 
-use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
+use boa_engine::{JsNativeError, JsResult, JsString, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLVideoElement;

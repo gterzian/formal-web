@@ -1,5 +1,3 @@
-use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
 mod abort_controller;
 pub(crate) mod abort_signal;
 mod document;

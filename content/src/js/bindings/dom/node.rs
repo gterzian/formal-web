@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use blitz_dom::NodeData;
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, object::builtins::JsArray,
+    JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, object::builtins::JsArray,
 };
 use js_engine::boa::BoaTypes;
 use js_engine::{Completion, ExecutionContext};

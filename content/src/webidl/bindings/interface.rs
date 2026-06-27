@@ -1,12 +1,3 @@
-use boa_engine::{
-    Context, JsError, JsNativeError, JsObject, JsResult, JsValue,
-    builtins::object::OrdinaryObject,
-    js_string,
-    native_function::NativeFunction,
-    object::{FunctionObjectBuilder, NativeObject},
-    property::PropertyDescriptor,
-};
-
 use js_engine::{
     Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm,
     PropertyDescriptor as JsPropertyDescriptor,

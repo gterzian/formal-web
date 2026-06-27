@@ -34,8 +34,6 @@ use crate::webidl::bindings::{
 // Note: AbortSignal static methods (abort, timeout, any) are registered via
 // static operations in `AbortSignal::define_members`.
 use super::super::streams::readablestream::{pipe_to_native_method, values_method};
-use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
 
 pub(crate) struct WindowHostHooks {
     document: Rc<RefCell<BaseDocument>>,

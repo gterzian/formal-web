@@ -5,7 +5,7 @@
 //
 // Only a subset of the full IDL is exposed for the initial video cut.
 
-use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
+use boa_engine::{JsNativeError, JsResult, JsString, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLMediaElement;

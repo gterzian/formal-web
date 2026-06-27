@@ -4,7 +4,7 @@ use boa_engine::{
 };
 use url::Url;
 
-use crate::js::{self, platform_objects};
+use crate::js::platform_objects;
 use crate::{
     dom::Document,
     html::{HTMLAnchorElement, HyperlinkElementUtils},

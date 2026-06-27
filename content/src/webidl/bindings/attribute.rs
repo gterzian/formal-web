@@ -86,7 +86,7 @@ where
         };
         if let Some(setter) = attr.setter {
             let setter_fn = engine.create_builtin_function(
-                Box::new({ move |args, this, ec| setter(&this, args, ec) }),
+                Box::new(move |args, this, ec| setter(&this, args, ec)),
                 1,
                 engine.property_key_from_str(attr.id),
                 &realm,

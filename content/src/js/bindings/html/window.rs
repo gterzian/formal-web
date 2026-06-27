@@ -346,7 +346,6 @@ fn get_location(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
     let location_val = location_object(ec)?;
     Ok(JsValue::from(location_val))
 }
