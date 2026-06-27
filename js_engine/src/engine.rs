@@ -114,6 +114,10 @@ pub trait EcmascriptHost<T: JsTypes> {
 
     /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
     fn value_from_string(&mut self, s: T::JsString) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    /// Construct a `JsString` value from a `&str`.
+    fn js_string_from_str(&self, s: &str) -> T::JsString;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -275,6 +279,13 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         object: T::JsObject,
         property_key: T::PropertyKey,
     ) -> Completion<(), T>;
+
+    /// <https://tc39.es/ecma262/#sec-setprototypeof>
+    fn set_prototype(
+        &mut self,
+        object: T::JsObject,
+        prototype: Option<T::JsObject>,
+    ) -> Completion<bool, T>;
 
     /// <https://tc39.es/ecma262/#sec-getmethod>
     fn get_method(
@@ -485,6 +496,12 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         prototype: T::JsObject,
         data: Box<dyn std::any::Any + 'static>,
     ) -> T::JsObject;
+
+    // ── Error Construction ──────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-native-error-types-used-in-this-standard-typeerror>
+    /// Create a new TypeError with the given message.
+    fn new_type_error(&mut self, msg: &str) -> T::JsValue;
 
     // ────────────────────────────────────────────────────────────────────────
     // Error Reporting

@@ -91,6 +91,11 @@ mod boa_gc_impl {
     use super::*;
     use crate::boa::{BoaEngine, BoaTypes};
 
+    // SAFETY: `boa_gc::Trace` has the same safety contract as
+    // `js_engine::gc::Trace` — the implementor guarantees that every GC
+    // reachable field is visited during trace.
+    unsafe impl<T: boa_gc::Trace + ?Sized> Trace for T {}
+
     impl<T: boa_gc::Finalize + ?Sized> Finalize for T {
         #[inline]
         fn finalize(&self) {

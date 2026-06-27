@@ -1,8 +1,7 @@
 use std::any::TypeId;
 use std::collections::HashMap;
 
-use boa_engine::Context;
-use js_engine::JsTypes;
+use js_engine::{ExecutionContext, JsTypes, JsTypesWithRealm};
 
 use super::interface::WebIdlInterface;
 
@@ -15,7 +14,8 @@ pub(crate) struct InterfaceEntry<T: JsTypes> {
 /// Registry of Web IDL interfaces.
 ///
 /// Generic over `T: JsTypes` so it can store engine-native object types.
-/// Stored in the context's host-defined data via a `RegistryHost` wrapper.
+/// Stored in the EC's host-defined data store via `store_host_any`/
+/// `get_host_any`.
 pub(crate) struct InterfaceRegistry<T: JsTypes> {
     map: HashMap<TypeId, InterfaceEntry<T>>,
 }
@@ -41,62 +41,115 @@ impl<T: JsTypes> InterfaceRegistry<T> {
     }
 }
 
-/// Wrapper for storing an InterfaceRegistry in the Boa Context's HostDefined.
-struct RegistryHost(Box<dyn std::any::Any>);
-
-fn registry_type_id() -> TypeId {
-    TypeId::of::<InterfaceRegistry<js_engine::boa::BoaTypes>>()
+fn registry_type_id<Ty: 'static + JsTypes>() -> TypeId {
+    TypeId::of::<InterfaceRegistry<Ty>>()
 }
 
-fn with_registry_mut<R>(context: &mut Context, f: impl FnOnce(&mut InterfaceRegistry<js_engine::boa::BoaTypes>) -> R) -> R {
-    let mut host = context.remove_data::<RegistryHost>()
-        .unwrap_or_else(|| Box::new(RegistryHost(Box::new(InterfaceRegistry::<js_engine::boa::BoaTypes>::new()))));
-    let registry: &mut InterfaceRegistry<js_engine::boa::BoaTypes> = unsafe {
-        &mut *(host.0.as_mut() as *mut dyn std::any::Any as *mut InterfaceRegistry<js_engine::boa::BoaTypes>)
-    };
-    let result = f(registry);
-    context.insert_data(*host);
+fn with_registry_mut<Ty: JsTypes + JsTypesWithRealm, R>(
+    ec: &mut dyn ExecutionContext<Ty>,
+    f: impl FnOnce(&mut InterfaceRegistry<Ty>) -> R,
+) -> R {
+    let type_id = registry_type_id::<Ty>();
+    let mut registry = ec
+        .remove_host_any(&type_id)
+        .map(|any| {
+            *any.downcast::<InterfaceRegistry<Ty>>()
+                .expect("InterfaceRegistry type mismatch")
+        })
+        .unwrap_or_else(|| InterfaceRegistry::<Ty>::new());
+    let result = f(&mut registry);
+    ec.store_host_any(type_id, Box::new(registry));
     result
 }
 
-fn get_registry_ref(context: &Context) -> Option<&InterfaceRegistry<js_engine::boa::BoaTypes>> {
-    let host = context.get_data::<RegistryHost>()?;
-    host.0.downcast_ref::<InterfaceRegistry<js_engine::boa::BoaTypes>>()
+fn with_registry_ref<Ty: JsTypes + JsTypesWithRealm, R>(
+    ec: &dyn ExecutionContext<Ty>,
+    f: impl FnOnce(&InterfaceRegistry<Ty>) -> R,
+) -> R {
+    let type_id = registry_type_id::<Ty>();
+    let host = ec
+        .get_host_any(&type_id)
+        .unwrap_or_else(|| panic!("InterfaceRegistry not initialized"));
+    let registry = host
+        .downcast_ref::<InterfaceRegistry<Ty>>()
+        .expect("InterfaceRegistry type mismatch");
+    f(registry)
 }
 
 /// Ensure the interface registry exists on the context.
-pub(crate) fn initialize(context: &mut Context) {
-    with_registry_mut(context, |_| {});
+pub(crate) fn initialize<Ty: JsTypes + JsTypesWithRealm>(ec: &mut dyn ExecutionContext<Ty>) {
+    with_registry_mut::<Ty, _>(ec, |_| {});
 }
 
 /// Register an interface in the registry.
-pub(crate) fn register_in_host_defined<T: WebIdlInterface<js_engine::boa::BoaTypes> + 'static>(
-    context: &mut Context,
-    prototype: boa_engine::JsObject,
-    constructor: boa_engine::JsObject,
-) {
-    with_registry_mut(context, |registry| {
-        registry.register::<T>(prototype, constructor);
+pub(crate) fn register_in_host_defined<Ty, I>(
+    ec: &mut dyn ExecutionContext<Ty>,
+    prototype: Ty::JsObject,
+    constructor: Ty::JsObject,
+) where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: WebIdlInterface<Ty> + 'static,
+{
+    with_registry_mut::<Ty, _>(ec, |registry| {
+        registry.register::<I>(prototype, constructor);
     });
 }
 
 /// Get a prototype from the registry.
-pub(crate) fn get_prototype_from_host_defined<T: 'static>(context: &Context) -> Option<boa_engine::JsObject> {
-    get_registry_ref(context)?.get_prototype::<T>().cloned()
+pub(crate) fn get_prototype_from_host_defined<Ty, I>(ec: &dyn ExecutionContext<Ty>) -> Option<Ty::JsObject>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    with_registry_ref::<Ty, _>(ec, |registry| {
+        registry.get_prototype::<I>().cloned()
+    })
 }
 
 /// Wire the prototype chain for an interface that inherits from another.
-pub(crate) fn wire_prototype<TChild: 'static, TParent: 'static>(context: &mut Context) {
-    let child_proto = get_registry_ref(context)
-        .and_then(|r| r.get_prototype::<TChild>().cloned());
-    let parent_proto = get_registry_ref(context)
-        .and_then(|r| r.get_prototype::<TParent>().cloned());
+pub(crate) fn wire_prototype<Ty, TChild, TParent>(ec: &mut dyn ExecutionContext<Ty>)
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    TChild: 'static,
+    TParent: 'static,
+{
+    let (child_proto, parent_proto) = {
+        let reg = with_registry_ref::<Ty, _>(ec, |registry| {
+            (
+                registry.get_prototype::<TChild>().cloned(),
+                registry.get_prototype::<TParent>().cloned(),
+            )
+        });
+        reg
+    };
     if let (Some(child), Some(parent)) = (child_proto, parent_proto) {
-        child.set_prototype(Some(parent));
+        let _ = ec.set_prototype(child, Some(parent));
     }
 }
 
-/// Get a prototype from the registry (aliased for external use).
-pub(crate) fn get_registry_prototype<T: 'static>(context: &Context) -> Option<boa_engine::JsObject> {
-    get_prototype_from_host_defined::<T>(context)
+/// Get a prototype from the registry (generic, takes ExecutionContext).
+pub(crate) fn get_registry_prototype<Ty, I>(ec: &dyn ExecutionContext<Ty>) -> Option<Ty::JsObject>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    get_prototype_from_host_defined::<Ty, I>(ec)
+}
+
+/// Convenience: get prototype from &Context (Boa-specific, uses repr(transparent) cast).
+pub(crate) fn get_registry_prototype_boa<I: 'static>(
+    context: &boa_engine::Context,
+) -> Option<boa_engine::JsObject> {
+    get_prototype_from_host_defined::<js_engine::boa::BoaTypes, I>(
+        crate::js::context_as_ec_ref(context),
+    )
+}
+
+/// Convenience: wire prototype using &mut Context.
+pub(crate) fn wire_registry_prototype_boa<TChild: 'static, TParent: 'static>(
+    context: &mut boa_engine::Context,
+) {
+    wire_prototype::<js_engine::boa::BoaTypes, TChild, TParent>(
+        crate::js::context_as_ec(context),
+    );
 }

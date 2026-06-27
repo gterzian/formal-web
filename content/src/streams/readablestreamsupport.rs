@@ -106,6 +106,7 @@ impl SourceMethod {
             fn value_from_bool(&mut self, b: bool) -> JsValue { JsValue::from(b) }
             fn value_from_number(&mut self, n: f64) -> JsValue { JsValue::from(n) }
             fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue { JsValue::from(s) }
+            fn js_string_from_str(&self, s: &str) -> boa_engine::JsString { boa_engine::js_string!(s) }
         }
         let mut host = CtxHost(context);
         let this_value = JsValue::from(self.this_value.clone());

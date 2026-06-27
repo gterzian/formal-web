@@ -345,6 +345,9 @@ impl ExecutionContext<JscTypes> for JscEngine {
         if !exception.is_null() { return Err(JscValue { raw: exception }); }
         Ok(())
     }
+    fn set_prototype(&mut self, _object: JscObject, _prototype: Option<JscObject>) -> Completion<bool, JscTypes> {
+        todo!("set_prototype not implemented for JSC")
+    }
     fn get_method(&mut self, value: JscValue, property_key: JscPropertyKey) -> Completion<Option<JscFunction>, JscTypes> {
         let prop = self.get_v(value, property_key)?;
         if self.is_callable(&prop) {
@@ -473,6 +476,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         todo!("create_object_with_any not implemented for JSC")
     }
 
+    fn new_type_error(&mut self, _msg: &str) -> JscValue {
+        todo!("new_type_error not implemented for JSC")
+    }
+
     // ── Property Key Construction ─────────────────────────────────────────
 
     fn property_key_from_str(&self, s: &str) -> JscPropertyKey {
@@ -515,4 +522,8 @@ impl EcmascriptHost<JscTypes> for JscEngine {
     fn value_from_bool(&mut self, b: bool) -> JscValue { JscValue { raw: unsafe { JSValueMakeBoolean(self.context.as_context_ref(), b) } } }
     fn value_from_number(&mut self, n: f64) -> JscValue { JscValue { raw: unsafe { JSValueMakeNumber(self.context.as_context_ref(), n) } } }
     fn value_from_string(&mut self, s: JscString) -> JscValue { JscValue { raw: unsafe { JSValueMakeString(self.context.as_context_ref(), s.raw) } } }
+
+    fn js_string_from_str(&self, s: &str) -> JscString {
+        JscString::from_rust(s)
+    }
 }

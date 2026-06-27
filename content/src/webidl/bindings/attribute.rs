@@ -10,9 +10,6 @@ use js_engine::JsTypes;
 /// Describes a single attribute on an interface.
 ///
 /// https://webidl.spec.whatwg.org/#dfn-attribute
-///
-/// Generic over `T: JsTypes` so that the bindings infrastructure can
-/// verify type consistency at compile time.
 pub(crate) struct AttributeDef<T: JsTypes> {
     pub id: &'static str,
     pub getter: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
@@ -50,32 +47,18 @@ pub(crate) fn define_static_attributes(
     define_attributes_on_target(constructor, context, &static_attrs)
 }
 
-pub(crate) fn define_unforgeable_regular_attributes(
-    proto: &JsValue,
-    context: &mut Context,
-    attributes: &[AttributeDef<js_engine::boa::BoaTypes>],
-) -> JsResult<()> {
-    let unforgeable: Vec<&AttributeDef<js_engine::boa::BoaTypes>> = attributes
-        .iter()
-        .filter(|a| a.unforgeable && !a.static_)
-        .collect();
-    define_attributes_on_target(proto, context, &unforgeable)
-}
-
 fn define_attributes_on_target(
     target: &JsValue,
     context: &mut Context,
     attributes: &[&AttributeDef<js_engine::boa::BoaTypes>],
 ) -> JsResult<()> {
     let realm = context.realm().clone();
-
     for attr in attributes {
         let getter_fn = NativeFunction::from_fn_ptr(attr.getter).to_js_function(&realm);
         let setter_fn = attr
             .setter
             .map(|s| NativeFunction::from_fn_ptr(s).to_js_function(&realm));
         let configurable = !attr.unforgeable;
-
         let mut desc = PropertyDescriptor::builder()
             .get(getter_fn)
             .enumerable(true)
@@ -83,13 +66,11 @@ fn define_attributes_on_target(
         if let Some(setter) = setter_fn {
             desc = desc.set(setter);
         }
-
         let target_obj = target.as_object().ok_or_else(|| {
             boa_engine::JsNativeError::typ()
                 .with_message("target is not an object in attribute definition")
         })?;
         target_obj.define_property_or_throw(js_string!(attr.id), desc.build(), context)?;
     }
-
     Ok(())
 }

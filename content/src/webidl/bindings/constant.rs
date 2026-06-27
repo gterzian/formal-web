@@ -6,8 +6,6 @@ use js_engine::JsTypes;
 /// Describes a constant on an interface.
 ///
 /// https://webidl.spec.whatwg.org/#dfn-constant
-///
-/// Generic over `T: JsTypes`.  The `value` field is concrete (Boa) for now.
 pub(crate) struct ConstantDef<T: JsTypes> {
     pub id: &'static str,
     pub value: JsValue,
@@ -27,9 +25,7 @@ pub(crate) fn define_constants(
             .enumerable(true)
             .configurable(false)
             .build();
-
         target.define_property_or_throw(js_string!(constant.id), desc, context)?;
     }
-
     Ok(())
 }

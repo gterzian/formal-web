@@ -20,27 +20,16 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for UIEvent {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
-        let type_ = args
-            .get_or_undefined(0)
-            .to_string(context)?
-            .to_std_string_escaped();
+        let type_ = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
         let init = args.get_or_undefined(1);
         let detail = if let Some(object) = init.as_object() {
             object.get(js_string!("detail"), context)?.to_i32(context)?
-        } else {
-            0
-        };
+        } else { 0 };
         Ok(UIEvent {
-            event: Event::new(
-                type_,
-                init_flag(init, js_string!("bubbles"), context)?,
+            event: Event::new(type_, init_flag(init, js_string!("bubbles"), context)?,
                 init_flag(init, js_string!("cancelable"), context)?,
-                init_flag(init, js_string!("composed"), context)?,
-                false,
-                0.0,
-            ),
-            view: None,
-            detail,
+                init_flag(init, js_string!("composed"), context)?, false, 0.0),
+            view: None, detail,
         })
     }
 

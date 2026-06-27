@@ -74,7 +74,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
         .build()
         .map_err(|error| error.to_string())?;
 
-    initialize_registry(&mut context);
+    initialize_registry::<js_engine::boa::BoaTypes>(crate::js::context_as_ec(&mut context));
 
     // ── Install WebAssembly namespace ──
     if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut context) {

@@ -20,15 +20,13 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
         _args: &[JsValue],
         _context: &mut Context,
     ) -> JsResult<Self> {
-        #[cfg(not(feature = "media"))]
-        {
+        #[cfg(not(feature = "media"))] {
             return Err(JsNativeError::typ()
                 .with_message("NotSupportedError: Media not available (media feature disabled)")
                 .into());
         }
         Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
+            .with_message("Illegal constructor").into())
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {

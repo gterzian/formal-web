@@ -14,24 +14,12 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for DOMException {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
-        let message = args
-            .get(0)
-            .map(|value| {
-                value
-                    .to_string(context)
-                    .map(|value| value.to_std_string_escaped())
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let name = args
-            .get(1)
-            .map(|value| {
-                value
-                    .to_string(context)
-                    .map(|value| value.to_std_string_escaped())
-            })
-            .transpose()?
-            .unwrap_or_else(|| String::from("Error"));
+        let message = args.get(0).map(|value| {
+            value.to_string(context).map(|v| v.to_std_string_escaped())
+        }).transpose()?.unwrap_or_default();
+        let name = args.get(1).map(|value| {
+            value.to_string(context).map(|v| v.to_std_string_escaped())
+        }).transpose()?.unwrap_or_else(|| String::from("Error"));
         Ok(DOMException::new(message, name))
     }
 

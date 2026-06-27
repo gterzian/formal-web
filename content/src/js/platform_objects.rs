@@ -154,7 +154,10 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
                 HTMLElement::new(document, node_id),
                 context,
             )?,
-            _ => create_interface_instance::<Element>(Element::new(document, node_id), context)?,
+            _ => create_interface_instance::<Element>(
+                Element::new(document, node_id),
+                context,
+            )?,
         }
     };
     cache_node_object(context, node_id, object.clone())?;
@@ -170,7 +173,10 @@ pub(crate) fn resolve_or_create_text_node_object(
         return Ok(object);
     }
 
-    let object = create_interface_instance::<Node>(Node::new(document, node_id), context)?;
+    let object = create_interface_instance::<Node>(
+        Node::new(document, node_id),
+        context,
+    )?;
     cache_node_object(context, node_id, object.clone())?;
     Ok(object)
 }

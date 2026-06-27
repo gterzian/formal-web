@@ -80,6 +80,6 @@ pub(crate) use interface::{
 };
 pub(crate) use operation::OperationDef;
 pub(crate) use registry::{
-    get_prototype_from_host_defined as get_registry_prototype, initialize as initialize_registry,
-    wire_prototype as wire_registry_prototype,
+    get_registry_prototype_boa as get_registry_prototype, initialize as initialize_registry,
+    wire_registry_prototype_boa as wire_registry_prototype,
 };

@@ -15,19 +15,12 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for Event {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<Self> {
-        let type_ = args
-            .get_or_undefined(0)
-            .to_string(context)?
-            .to_std_string_escaped();
+        let type_ = args.get_or_undefined(0).to_string(context)?.to_std_string_escaped();
         let init = args.get_or_undefined(1);
-        Ok(Event::new(
-            type_,
+        Ok(Event::new(type_,
             init_flag(init, js_string!("bubbles"), context)?,
             init_flag(init, js_string!("cancelable"), context)?,
-            init_flag(init, js_string!("composed"), context)?,
-            false,
-            0.0,
-        ))
+            init_flag(init, js_string!("composed"), context)?, false, 0.0))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {

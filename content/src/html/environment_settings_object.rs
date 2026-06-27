@@ -384,6 +384,7 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for EnvironmentSettings
     fn value_from_bool(&mut self, b: bool) -> JsValue { self.engine.value_from_bool(b) }
     fn value_from_number(&mut self, n: f64) -> JsValue { self.engine.value_from_number(n) }
     fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue { self.engine.value_from_string(s) }
+    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString { self.engine.js_string_from_str(s) }
 }
 
 impl EventDispatchHost for EnvironmentSettingsObject {

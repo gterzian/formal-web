@@ -574,6 +574,14 @@ impl ExecutionContext<BoaTypes> for BoaEngine {
         )
     }
 
+    fn set_prototype(
+        &mut self,
+        object: JsObject,
+        prototype: Option<JsObject>,
+    ) -> Completion<bool, BoaTypes> {
+        Ok(object.set_prototype(prototype))
+    }
+
     fn get_method(
         &mut self,
         value: JsValue,
@@ -1028,6 +1036,14 @@ impl ExecutionContext<BoaTypes> for BoaEngine {
         let wrapper = NativeDataWrapper(data);
         JsObject::from_proto_and_data(Some(prototype), wrapper)
     }
+
+    fn new_type_error(&mut self, msg: &str) -> JsValue {
+        let owned: String = msg.to_string();
+        let err_obj = JsNativeError::typ()
+            .with_message(owned)
+            .into_opaque(&mut self.context);
+        JsValue::from(err_obj)
+    }
 }
 
 /// Wrapper that implements `NativeObject` for arbitrary `'static` data.
@@ -1135,6 +1151,10 @@ impl EcmascriptHost<BoaTypes> for BoaEngine {
 
     fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
         JsValue::from(s)
+    }
+
+    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+        boa_engine::js_string!(s)
     }
 }
 
