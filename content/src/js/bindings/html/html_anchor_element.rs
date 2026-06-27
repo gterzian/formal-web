@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLAnchorElement;
@@ -7,16 +8,18 @@ use super::hyperlink_element_utils::document_creation_url;
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for HTMLAnchorElement {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLAnchorElement {
     const NAME: &'static str = "HTMLAnchorElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("HTMLElement")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         // HTMLAnchorElement own attributes
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "href",
             getter: get_href,
             setter: Some(set_href),
@@ -29,6 +32,8 @@ impl WebIdlInterface for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "target",
             getter: get_target,
             setter: Some(set_target),
@@ -41,6 +46,8 @@ impl WebIdlInterface for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "download",
             getter: get_download,
             setter: Some(set_download),
@@ -53,6 +60,8 @@ impl WebIdlInterface for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "rel",
             getter: get_rel,
             setter: Some(set_rel),
@@ -65,6 +74,8 @@ impl WebIdlInterface for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "referrerPolicy",
             getter: get_referrer_policy,
             setter: Some(set_referrer_policy),

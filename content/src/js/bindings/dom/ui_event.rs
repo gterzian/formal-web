@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{js_string, Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::dom::{Event, UIEvent};
@@ -7,7 +8,7 @@ use super::event::init_flag;
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for UIEvent {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for UIEvent {
     const NAME: &'static str = "UIEvent";
 
     fn parent_name() -> Option<&'static str> {
@@ -43,8 +44,10 @@ impl WebIdlInterface for UIEvent {
         })
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "view",
             getter: get_view,
             setter: None,
@@ -57,6 +60,8 @@ impl WebIdlInterface for UIEvent {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "detail",
             getter: get_detail,
             setter: None,

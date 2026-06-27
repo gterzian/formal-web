@@ -1,11 +1,12 @@
 // ── HTMLVideoElement JS bindings ──
 
+use std::marker::PhantomData;
 use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLVideoElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
-impl WebIdlInterface for HTMLVideoElement {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
     const NAME: &'static str = "HTMLVideoElement";
 
     fn parent_name() -> Option<&'static str> {
@@ -30,7 +31,7 @@ impl WebIdlInterface for HTMLVideoElement {
             .into())
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         #[cfg(not(feature = "media"))]
         {
             // No members when media is disabled — the interface exists but is empty.
@@ -39,6 +40,8 @@ impl WebIdlInterface for HTMLVideoElement {
         }
 
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "videoWidth",
             getter: get_video_width,
             setter: None,
@@ -51,6 +54,8 @@ impl WebIdlInterface for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "videoHeight",
             getter: get_video_height,
             setter: None,
@@ -63,6 +68,8 @@ impl WebIdlInterface for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "poster",
             getter: get_poster,
             setter: Some(set_poster),
@@ -75,6 +82,8 @@ impl WebIdlInterface for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "playsInline",
             getter: get_plays_inline,
             setter: Some(set_plays_inline),
@@ -87,6 +96,8 @@ impl WebIdlInterface for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "width",
             getter: get_width,
             setter: Some(set_width),
@@ -99,6 +110,8 @@ impl WebIdlInterface for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "height",
             getter: get_height,
             setter: Some(set_height),

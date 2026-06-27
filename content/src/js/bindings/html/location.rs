@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{
     object::builtins::JsArray, Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
 };
@@ -21,11 +22,13 @@ use crate::webidl::bindings::{
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for Location {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for Location {
     const NAME: &'static str = "Location";
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "href",
             getter: get_href,
             setter: Some(set_href),
@@ -38,6 +41,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "origin",
             getter: get_origin,
             setter: None,
@@ -50,6 +55,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "protocol",
             getter: get_protocol,
             setter: Some(set_protocol),
@@ -62,6 +69,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "host",
             getter: get_host,
             setter: Some(set_host),
@@ -74,6 +83,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "hostname",
             getter: get_hostname,
             setter: Some(set_hostname),
@@ -86,6 +97,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "port",
             getter: get_port,
             setter: Some(set_port),
@@ -98,6 +111,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "pathname",
             getter: get_pathname,
             setter: Some(set_pathname),
@@ -110,6 +125,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "search",
             getter: get_search,
             setter: Some(set_search),
@@ -122,6 +139,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "hash",
             getter: get_hash,
             setter: Some(set_hash),
@@ -134,6 +153,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "ancestorOrigins",
             getter: get_ancestor_origins,
             setter: None,
@@ -146,6 +167,8 @@ impl WebIdlInterface for Location {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "assign",
             length: 1,
             method: assign_method,
@@ -154,6 +177,8 @@ impl WebIdlInterface for Location {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "replace",
             length: 1,
             method: replace_method,
@@ -162,6 +187,8 @@ impl WebIdlInterface for Location {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "reload",
             length: 0,
             method: reload_method,
@@ -170,6 +197,8 @@ impl WebIdlInterface for Location {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "toString",
             length: 0,
             method: to_string_method,

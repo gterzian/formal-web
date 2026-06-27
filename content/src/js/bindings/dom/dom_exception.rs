@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::dom::DOMException;
@@ -5,7 +6,7 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for DOMException {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for DOMException {
     const NAME: &'static str = "DOMException";
 
     fn create_platform_object(
@@ -34,8 +35,10 @@ impl WebIdlInterface for DOMException {
         Ok(DOMException::new(message, name))
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "name",
             getter: get_name,
             setter: None,
@@ -48,6 +51,8 @@ impl WebIdlInterface for DOMException {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "message",
             getter: get_message,
             setter: None,
@@ -60,6 +65,8 @@ impl WebIdlInterface for DOMException {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "code",
             getter: get_code,
             setter: None,

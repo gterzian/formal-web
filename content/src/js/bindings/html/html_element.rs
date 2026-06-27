@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::collections::BTreeMap;
 
 use boa_engine::{
@@ -17,15 +18,17 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for HTMLElement {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLElement {
     const NAME: &'static str = "HTMLElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("Element")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "title",
             getter: get_title,
             setter: Some(set_title),
@@ -38,6 +41,8 @@ impl WebIdlInterface for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "lang",
             getter: get_lang,
             setter: Some(set_lang),
@@ -50,6 +55,8 @@ impl WebIdlInterface for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "dir",
             getter: get_dir,
             setter: Some(set_dir),
@@ -62,6 +69,8 @@ impl WebIdlInterface for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "hidden",
             getter: get_hidden,
             setter: Some(set_hidden),
@@ -74,6 +83,8 @@ impl WebIdlInterface for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "style",
             getter: get_style,
             setter: None,

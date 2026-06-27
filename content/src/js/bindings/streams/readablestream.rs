@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{object::JsObject, Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::streams::{
@@ -14,7 +15,7 @@ use crate::webidl::{create_value_async_iterator, rejected_promise};
 
 // ── WebIDL interface definitions (§3) ──
 
-impl WebIdlInterface for ReadableStream {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for ReadableStream {
     const NAME: &'static str = "ReadableStream";
 
     fn create_platform_object(
@@ -25,8 +26,10 @@ impl WebIdlInterface for ReadableStream {
         construct_readable_stream(new_target, args, context)
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "locked",
             getter: get_locked,
             setter: None,
@@ -39,6 +42,8 @@ impl WebIdlInterface for ReadableStream {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "pipeThrough",
             length: 2,
             method: pipe_through_method,
@@ -47,6 +52,8 @@ impl WebIdlInterface for ReadableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "cancel",
             length: 1,
             method: cancel_method,
@@ -55,6 +62,8 @@ impl WebIdlInterface for ReadableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "getReader",
             length: 1,
             method: get_reader_method,
@@ -63,6 +72,8 @@ impl WebIdlInterface for ReadableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "tee",
             length: 0,
             method: tee_method,
@@ -72,6 +83,8 @@ impl WebIdlInterface for ReadableStream {
         });
         // https://streams.spec.whatwg.org/#readablestream-static-methods
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "from",
             length: 1,
             method: from_static,
@@ -82,11 +95,13 @@ impl WebIdlInterface for ReadableStream {
     }
 }
 
-impl WebIdlInterface for ReadableStreamDefaultController {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for ReadableStreamDefaultController {
     const NAME: &'static str = "ReadableStreamDefaultController";
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "desiredSize",
             getter: get_desired_size,
             setter: None,
@@ -99,6 +114,8 @@ impl WebIdlInterface for ReadableStreamDefaultController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "close",
             length: 0,
             method: close_method,
@@ -107,6 +124,8 @@ impl WebIdlInterface for ReadableStreamDefaultController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "enqueue",
             length: 1,
             method: enqueue_method,
@@ -115,6 +134,8 @@ impl WebIdlInterface for ReadableStreamDefaultController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "error",
             length: 1,
             method: error_method,
@@ -125,11 +146,13 @@ impl WebIdlInterface for ReadableStreamDefaultController {
     }
 }
 
-impl WebIdlInterface for ReadableByteStreamController {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for ReadableByteStreamController {
     const NAME: &'static str = "ReadableByteStreamController";
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "byobRequest",
             getter: get_byob_request,
             setter: None,
@@ -142,6 +165,8 @@ impl WebIdlInterface for ReadableByteStreamController {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "desiredSize",
             getter: get_byte_desired_size,
             setter: None,
@@ -154,6 +179,8 @@ impl WebIdlInterface for ReadableByteStreamController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "close",
             length: 0,
             method: close_byte_method,
@@ -162,6 +189,8 @@ impl WebIdlInterface for ReadableByteStreamController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "enqueue",
             length: 1,
             method: enqueue_byte_method,
@@ -170,6 +199,8 @@ impl WebIdlInterface for ReadableByteStreamController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "error",
             length: 1,
             method: error_byte_method,
@@ -180,7 +211,7 @@ impl WebIdlInterface for ReadableByteStreamController {
     }
 }
 
-impl WebIdlInterface for ReadableStreamDefaultReader {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for ReadableStreamDefaultReader {
     const NAME: &'static str = "ReadableStreamDefaultReader";
 
     fn create_platform_object(
@@ -191,8 +222,10 @@ impl WebIdlInterface for ReadableStreamDefaultReader {
         construct_readable_stream_default_reader(this, args, context)
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "closed",
             getter: get_closed,
             setter: None,
@@ -205,6 +238,8 @@ impl WebIdlInterface for ReadableStreamDefaultReader {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "cancel",
             length: 1,
             method: cancel_reader_method,
@@ -213,6 +248,8 @@ impl WebIdlInterface for ReadableStreamDefaultReader {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "read",
             length: 0,
             method: read_method,
@@ -221,6 +258,8 @@ impl WebIdlInterface for ReadableStreamDefaultReader {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "releaseLock",
             length: 0,
             method: release_lock_method,
@@ -231,7 +270,7 @@ impl WebIdlInterface for ReadableStreamDefaultReader {
     }
 }
 
-impl WebIdlInterface for ReadableStreamBYOBReader {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for ReadableStreamBYOBReader {
     const NAME: &'static str = "ReadableStreamBYOBReader";
 
     fn create_platform_object(
@@ -242,8 +281,10 @@ impl WebIdlInterface for ReadableStreamBYOBReader {
         construct_readable_stream_byob_reader(this, args, context)
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "closed",
             getter: get_byob_closed,
             setter: None,
@@ -256,6 +297,8 @@ impl WebIdlInterface for ReadableStreamBYOBReader {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "cancel",
             length: 1,
             method: cancel_byob_reader_method,
@@ -264,6 +307,8 @@ impl WebIdlInterface for ReadableStreamBYOBReader {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "read",
             length: 2,
             method: read_byob_method,
@@ -272,6 +317,8 @@ impl WebIdlInterface for ReadableStreamBYOBReader {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "releaseLock",
             length: 0,
             method: release_byob_lock_method,
@@ -282,11 +329,13 @@ impl WebIdlInterface for ReadableStreamBYOBReader {
     }
 }
 
-impl WebIdlInterface for ReadableStreamBYOBRequest {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for ReadableStreamBYOBRequest {
     const NAME: &'static str = "ReadableStreamBYOBRequest";
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "view",
             getter: get_byob_view,
             setter: None,
@@ -299,6 +348,8 @@ impl WebIdlInterface for ReadableStreamBYOBRequest {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "respond",
             length: 1,
             method: respond_method,
@@ -307,6 +358,8 @@ impl WebIdlInterface for ReadableStreamBYOBRequest {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "respondWithNewView",
             length: 1,
             method: respond_with_new_view_method,

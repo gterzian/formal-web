@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -7,7 +8,7 @@ use crate::streams::{
     with_transform_stream_ref, TransformStream, TransformStreamDefaultController,
 };
 
-impl WebIdlInterface for TransformStream {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for TransformStream {
     const NAME: &'static str = "TransformStream";
 
     fn create_platform_object(
@@ -18,8 +19,10 @@ impl WebIdlInterface for TransformStream {
         construct_transform_stream(this, args, context)
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "readable",
             getter: get_readable,
             setter: None,
@@ -32,6 +35,8 @@ impl WebIdlInterface for TransformStream {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "writable",
             getter: get_writable,
             setter: None,
@@ -46,11 +51,13 @@ impl WebIdlInterface for TransformStream {
     }
 }
 
-impl WebIdlInterface for TransformStreamDefaultController {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for TransformStreamDefaultController {
     const NAME: &'static str = "TransformStreamDefaultController";
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "desiredSize",
             getter: get_desired_size,
             setter: None,
@@ -63,6 +70,8 @@ impl WebIdlInterface for TransformStreamDefaultController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "enqueue",
             length: 1,
             method: controller_enqueue,
@@ -71,6 +80,8 @@ impl WebIdlInterface for TransformStreamDefaultController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "error",
             length: 1,
             method: controller_error,
@@ -79,6 +90,8 @@ impl WebIdlInterface for TransformStreamDefaultController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "terminate",
             length: 0,
             method: controller_terminate,

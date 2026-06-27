@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{js_string, Context, JsArgs, JsResult, JsString, JsValue};
 
 use crate::dom::Event;
@@ -6,7 +7,7 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, W
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for Event {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for Event {
     const NAME: &'static str = "Event";
 
     fn create_platform_object(
@@ -29,9 +30,11 @@ impl WebIdlInterface for Event {
         ))
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "type",
             getter: get_type,
             setter: None,
@@ -44,6 +47,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "target",
             getter: get_target,
             setter: None,
@@ -56,6 +61,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "currentTarget",
             getter: get_current_target,
             setter: None,
@@ -68,6 +75,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "eventPhase",
             getter: get_event_phase,
             setter: None,
@@ -80,6 +89,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "bubbles",
             getter: get_bubbles,
             setter: None,
@@ -92,6 +103,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "cancelable",
             getter: get_cancelable,
             setter: None,
@@ -104,6 +117,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "defaultPrevented",
             getter: get_default_prevented,
             setter: None,
@@ -116,6 +131,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "cancelBubble",
             getter: get_cancel_bubble,
             setter: Some(set_cancel_bubble),
@@ -128,6 +145,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "isTrusted",
             getter: get_is_trusted,
             setter: None,
@@ -140,6 +159,8 @@ impl WebIdlInterface for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "timeStamp",
             getter: get_time_stamp,
             setter: None,
@@ -154,6 +175,8 @@ impl WebIdlInterface for Event {
 
         // §3.7.7: Regular operations
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "stopPropagation",
             length: 0,
             method: stop_propagation,
@@ -162,6 +185,8 @@ impl WebIdlInterface for Event {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "stopImmediatePropagation",
             length: 0,
             method: stop_immediate_propagation,
@@ -170,6 +195,8 @@ impl WebIdlInterface for Event {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "preventDefault",
             length: 0,
             method: prevent_default,

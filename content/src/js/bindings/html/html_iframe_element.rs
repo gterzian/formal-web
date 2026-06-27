@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLIFrameElement;
@@ -7,15 +8,17 @@ use crate::webidl::{callback_function_value, nullable_value};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for HTMLIFrameElement {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLIFrameElement {
     const NAME: &'static str = "HTMLIFrameElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("HTMLElement")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "src",
             getter: get_src,
             setter: Some(set_src),
@@ -28,6 +31,8 @@ impl WebIdlInterface for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "srcdoc",
             getter: get_srcdoc,
             setter: Some(set_srcdoc),
@@ -40,6 +45,8 @@ impl WebIdlInterface for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "name",
             getter: get_name,
             setter: Some(set_name),
@@ -52,6 +59,8 @@ impl WebIdlInterface for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "width",
             getter: get_width,
             setter: Some(set_width),
@@ -64,6 +73,8 @@ impl WebIdlInterface for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "height",
             getter: get_height,
             setter: Some(set_height),
@@ -76,6 +87,8 @@ impl WebIdlInterface for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "contentDocument",
             getter: get_content_document,
             setter: None,
@@ -88,6 +101,8 @@ impl WebIdlInterface for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "contentWindow",
             getter: get_content_window,
             setter: None,
@@ -100,6 +115,8 @@ impl WebIdlInterface for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "onload",
             getter: get_onload,
             setter: Some(set_onload),
@@ -112,6 +129,8 @@ impl WebIdlInterface for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "onerror",
             getter: get_onerror,
             setter: Some(set_onerror),

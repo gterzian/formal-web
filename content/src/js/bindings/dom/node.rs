@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 use blitz_dom::NodeData;
@@ -16,90 +17,128 @@ use crate::webidl::bindings::{
     WebIdlInterface,
 };
 
-impl WebIdlInterface for Node {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for Node {
     const NAME: &'static str = "Node";
     fn parent_name() -> Option<&'static str> {
         Some("EventTarget")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         use boa_engine::JsValue;
         // §3.7.5: Constants
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "ELEMENT_NODE",
             value: JsValue::from(1),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "ATTRIBUTE_NODE",
             value: JsValue::from(2),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "TEXT_NODE",
             value: JsValue::from(3),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "CDATA_SECTION_NODE",
             value: JsValue::from(4),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "ENTITY_REFERENCE_NODE",
             value: JsValue::from(5),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "ENTITY_NODE",
             value: JsValue::from(6),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "PROCESSING_INSTRUCTION_NODE",
             value: JsValue::from(7),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "COMMENT_NODE",
             value: JsValue::from(8),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_NODE",
             value: JsValue::from(9),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_TYPE_NODE",
             value: JsValue::from(10),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_FRAGMENT_NODE",
             value: JsValue::from(11),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "NOTATION_NODE",
             value: JsValue::from(12),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_POSITION_DISCONNECTED",
             value: JsValue::from(0x01),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_POSITION_PRECEDING",
             value: JsValue::from(0x02),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_POSITION_FOLLOWING",
             value: JsValue::from(0x04),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_POSITION_CONTAINS",
             value: JsValue::from(0x08),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_POSITION_CONTAINED_BY",
             value: JsValue::from(0x10),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
             value: JsValue::from(0x20),
         });
 
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "nodeType",
             getter: get_node_type,
             setter: None,
@@ -112,6 +151,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "ownerDocument",
             getter: get_owner_document,
             setter: None,
@@ -124,6 +165,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "parentNode",
             getter: get_parent_node,
             setter: None,
@@ -136,6 +179,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "childNodes",
             getter: get_child_nodes,
             setter: None,
@@ -148,6 +193,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "firstChild",
             getter: get_first_child,
             setter: None,
@@ -160,6 +207,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "lastChild",
             getter: get_last_child,
             setter: None,
@@ -172,6 +221,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "previousSibling",
             getter: get_previous_sibling,
             setter: None,
@@ -184,6 +235,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "nextSibling",
             getter: get_next_sibling,
             setter: None,
@@ -196,6 +249,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "nodeName",
             getter: get_node_name,
             setter: None,
@@ -208,6 +263,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "nodeValue",
             getter: get_node_value,
             setter: Some(set_node_value),
@@ -220,6 +277,8 @@ impl WebIdlInterface for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "textContent",
             getter: get_text_content,
             setter: Some(set_text_content),
@@ -234,6 +293,8 @@ impl WebIdlInterface for Node {
 
         // §3.7.7: Regular operations
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "hasChildNodes",
             length: 0,
             method: has_child_nodes,
@@ -242,6 +303,8 @@ impl WebIdlInterface for Node {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "appendChild",
             length: 1,
             method: append_child,
@@ -250,6 +313,8 @@ impl WebIdlInterface for Node {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "insertBefore",
             length: 2,
             method: insert_before,
@@ -258,6 +323,8 @@ impl WebIdlInterface for Node {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "removeChild",
             length: 1,
             method: remove_child,
@@ -266,6 +333,8 @@ impl WebIdlInterface for Node {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "remove",
             length: 0,
             method: remove,

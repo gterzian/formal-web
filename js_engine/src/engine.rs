@@ -1,22 +1,28 @@
-//! # Core traits: `JsEngine<T>`, `EcmascriptHost<T>`, `HostHooks<T>`
+//! # Core traits: `JsEngine<T>`, `ExecutionContext<T>`, `EcmascriptHost<T>`, `HostHooks<T>`
 //!
-//! ## `JsEngine<T>` — standard ECMA-262 abstract operations
+//! ## `JsEngine<T>` — ECMA-262 engine factory
 //!
-//! Every method maps to a spec-defined abstract operation (§7.1, §7.2, §7.3,
-//! §9.3, §9.6, §10.3, §16, §25, §27).  The trait is intentionally flat —
-//! no layering, no wrappers.  Web standards (HTML, DOM, Streams, Web IDL)
-//! already define their behavior in terms of these operations.
+//! Factory operations: creates realms, built-in functions, evaluates scripts.
+//! Used at initialization time only.  Every method maps to a spec-defined
+//! abstract operation (§9.3, §10.3, §16).
 //!
-//! The trait is object-safe when monomorphized for a concrete `T` (e.g.,
-//! `dyn JsEngine<BoaTypes>`), enabling `CreateBuiltinFunction` closures to
-//! receive the engine directly.
+//! ## `ExecutionContext<T>` — running execution context (§9.4)
+//!
+//! The runtime handle for ECMA-262 abstract operations that implicitly
+//! reference the surrounding agent's running execution context.  This is the
+//! type that flows through every binding function, domain method, and dispatch
+//! call — it IS the HTML spec's "realm execution context".
+//!
+//! Operations: §7.1 Type Conversion, §7.2 Testing and Comparison,
+//! §7.3 Operations on Objects, §7.4 Iteration, §9.3 currentRealm,
+//! §9.6 Jobs, §27.2 Promise operations, value construction.
 //!
 //! ## `EcmascriptHost<T>` — Web IDL callback operations
 //!
 //! A narrower interface covering only the ECMA-262 operations that Web IDL
 //! callback algorithms need: `Get`, `IsCallable`, `Call`, microtask
-//! checkpoint, and exception reporting.  Also includes value construction
-//! (`value_undefined`, `value_from_*`) for `CreateBuiltinFunction` closures.
+//! checkpoint, and exception reporting.  `ExecutionContext<T>` extends this
+//! trait.
 //!
 //! ## `Completion<T, Ty>`
 //!
@@ -61,8 +67,66 @@ use crate::{Numeric, PreferredType, PropertyDescriptor};
 /// Rust's `?` corresponds to the spec's `?` (ReturnIfAbrupt).
 pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
 
-/// <https://tc39.es/ecma262/>
-pub trait JsEngine<T: JsTypes> {
+// ────────────────────────────────────────────────────────────────────────────
+// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
+// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
+//
+// Narrow interface covering only the ECMA-262 operations that Web IDL callback
+// algorithms need.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
+/// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
+pub trait EcmascriptHost<T: JsTypes> {
+    /// <https://tc39.es/ecma262/#sec-get-o-p>
+    fn get(&mut self, object: &T::JsObject, property: &str) -> Completion<T::JsValue, T>;
+
+    /// <https://tc39.es/ecma262/#sec-iscallable>
+    fn is_callable(&self, value: &T::JsValue) -> bool;
+
+    /// <https://tc39.es/ecma262/#sec-call>
+    fn call(
+        &mut self,
+        callable: &T::JsObject,
+        this_arg: &T::JsValue,
+        args: &[T::JsValue],
+    ) -> Completion<T::JsValue, T>;
+
+    /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+    fn perform_a_microtask_checkpoint(&mut self) -> Completion<(), T>;
+
+    /// Report an exception thrown from a callback to the host environment.
+    fn report_exception(&mut self, error: T::JsValue);
+
+    // ── Value construction — needed by CreateBuiltinFunction closures ────
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_undefined(&mut self) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_null(&mut self) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_bool(&mut self, b: bool) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_number(&mut self, n: f64) -> T::JsValue;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    fn value_from_string(&mut self, s: T::JsString) -> T::JsValue;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// <https://tc39.es/ecma262/#sec-execution-contexts>
+//
+// The running execution context.  Provides all ECMA-262 abstract operations
+// that implicitly reference the surrounding agent's running execution context.
+// This is the type threaded through every binding function, domain method, and
+// dispatch call — it IS the HTML spec's "realm execution context".
+// ────────────────────────────────────────────────────────────────────────────
+
+/// <https://tc39.es/ecma262/#sec-execution-contexts>
+pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     // ────────────────────────────────────────────────────────────────────────
     // §7.1 Type Conversion
     // ────────────────────────────────────────────────────────────────────────
@@ -137,9 +201,6 @@ pub trait JsEngine<T: JsTypes> {
 
     /// <https://tc39.es/ecma262/#sec-isarray>
     fn is_array(&mut self, value: &T::JsValue) -> Completion<bool, T>;
-
-    /// <https://tc39.es/ecma262/#sec-iscallable>
-    fn is_callable(&self, value: &T::JsValue) -> bool;
 
     /// <https://tc39.es/ecma262/#sec-isconstructor>
     fn is_constructor(&self, value: &T::JsValue) -> bool;
@@ -236,14 +297,6 @@ pub trait JsEngine<T: JsTypes> {
         property_key: T::PropertyKey,
     ) -> Completion<bool, T>;
 
-    /// <https://tc39.es/ecma262/#sec-call>
-    fn call(
-        &mut self,
-        function: T::Function,
-        this: T::JsValue,
-        args: &[T::JsValue],
-    ) -> Completion<T::JsValue, T>;
-
     /// <https://tc39.es/ecma262/#sec-construct>
     fn construct(
         &mut self,
@@ -272,6 +325,10 @@ pub trait JsEngine<T: JsTypes> {
         object: T::JsObject,
         default_constructor: T::Constructor,
     ) -> Completion<T::Constructor, T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §7.4 Iteration
+    // ────────────────────────────────────────────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-getiterator>
     fn get_iterator(
@@ -302,59 +359,14 @@ pub trait JsEngine<T: JsTypes> {
     ) -> Completion<T::JsValue, T>;
 
     // ────────────────────────────────────────────────────────────────────────
-    // §9.3 Realm
+    // §9.3 Realm — runtime access
     // ────────────────────────────────────────────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-createrealm>
-    fn create_realm(&mut self) -> T::Realm
-    where
-        T: JsTypesWithRealm;
-
-    /// <https://tc39.es/ecma262/#sec-setrealmglobalobject>
-    fn set_realm_global_object(
-        &mut self,
-        realm: &T::Realm,
-        global: T::JsObject,
-        this_value: Option<T::JsObject>,
-    ) where
-        T: JsTypesWithRealm;
-
-    /// <https://tc39.es/ecma262/#sec-setdefaultglobalbindings>
-    fn set_default_global_bindings(&mut self, realm: &T::Realm) -> Completion<(), T>
-    where
-        T: JsTypesWithRealm;
 
     /// <https://tc39.es/ecma262/#sec-execution-contexts>
-    fn current_realm(&self) -> T::Realm
-    where
-        T: JsTypesWithRealm;
+    fn current_realm(&self) -> T::Realm;
 
     /// <https://tc39.es/ecma262/#sec-completion-record-specification-type>
-    fn realm_intrinsics(&self, realm: &T::Realm) -> RealmIntrinsics<T>
-    where
-        T: JsTypesWithRealm;
-
-    // ────────────────────────────────────────────────────────────────────────
-    // §10.3 Built-in Function Objects
-    // ────────────────────────────────────────────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    ///
-    /// Creates a JS-callable function object from native behaviour steps,
-    /// following the same pattern Web IDL uses for observable arrays,
-    /// callback interfaces, and other native-to-JS bridges.
-    ///
-    /// The behaviour closure receives the JS arguments, the `this` value,
-    /// and a `&mut dyn JsEngine<T>` for calling any ECMA-262 operation.
-    fn create_builtin_function(
-        &mut self,
-        behaviour: Box<dyn Fn(&[T::JsValue], T::JsValue, &mut dyn JsEngine<T>) -> Completion<T::JsValue, T>>,
-        length: u32,
-        name: T::PropertyKey,
-        realm: &T::Realm,
-    ) -> T::Function
-    where
-        T: JsTypesWithRealm;
+    fn realm_intrinsics(&self, realm: &T::Realm) -> RealmIntrinsics<T>;
 
     // ────────────────────────────────────────────────────────────────────────
     // §9.6 / §9.7 Jobs (microtask queue)
@@ -367,49 +379,11 @@ pub trait JsEngine<T: JsTypes> {
     fn run_jobs(&mut self);
 
     // ────────────────────────────────────────────────────────────────────────
-    // §16.1 / §16.2 Script and Module evaluation
+    // §25.1 ArrayBuffer Abstract Operations — runtime queries
     // ────────────────────────────────────────────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation>
-    fn evaluate_script(&mut self, source: &str, realm: &T::Realm) -> Completion<T::JsValue, T>
-    where
-        T: JsTypesWithRealm;
-
-    /// <https://tc39.es/ecma262/#sec-evaluatemodule>
-    fn evaluate_module(&mut self, source: &str, realm: &T::Realm) -> Completion<T::JsObject, T>
-    where
-        T: JsTypesWithRealm;
-
-    // ────────────────────────────────────────────────────────────────────────
-    // §25.1 ArrayBuffer Abstract Operations
-    // ────────────────────────────────────────────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-allocatearraybuffer>
-    fn allocate_array_buffer(
-        &mut self,
-        constructor: T::Constructor,
-        byte_length: u64,
-        max_byte_length: Option<u64>,
-    ) -> Completion<T::ArrayBuffer, T>;
 
     /// <https://tc39.es/ecma262/#sec-isdetachedbuffer>
     fn is_detached_buffer(&self, array_buffer: &T::ArrayBuffer) -> bool;
-
-    /// <https://tc39.es/ecma262/#sec-detacharraybuffer>
-    fn detach_array_buffer(
-        &mut self,
-        array_buffer: T::ArrayBuffer,
-        key: Option<T::JsValue>,
-    ) -> Completion<(), T>;
-
-    /// <https://tc39.es/ecma262/#sec-clonearraybuffer>
-    fn clone_array_buffer(
-        &mut self,
-        src: T::ArrayBuffer,
-        src_byte_offset: u64,
-        src_length: u64,
-        clone_constructor: T::Constructor,
-    ) -> Completion<T::ArrayBuffer, T>;
 
     /// <https://tc39.es/ecma262/#sec-isfixedlengtharraybuffer>
     fn is_fixed_length_array_buffer(&self, array_buffer: &T::ArrayBuffer) -> bool;
@@ -434,17 +408,6 @@ pub trait JsEngine<T: JsTypes> {
         is_typed_array: bool,
         order: SharedMemoryOrder,
     ) -> Completion<(), T>;
-
-    // ────────────────────────────────────────────────────────────────────────
-    // §25.2 SharedArrayBuffer Abstract Operations
-    // ────────────────────────────────────────────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-allocatesharedarraybuffer>
-    fn allocate_shared_array_buffer(
-        &mut self,
-        constructor: T::Constructor,
-        byte_length: u64,
-    ) -> Completion<T::SharedArrayBuffer, T>;
 
     // ────────────────────────────────────────────────────────────────────────
     // §27.2 Promise Abstract Operations
@@ -484,31 +447,161 @@ pub trait JsEngine<T: JsTypes> {
     ) -> Completion<(), T>;
 
     // ────────────────────────────────────────────────────────────────────────
-    // Value Construction (engine-context-requiring)
+    // Global Object Access
     // ────────────────────────────────────────────────────────────────────────
 
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_from_string(&mut self, s: T::JsString) -> T::JsValue;
+    /// <https://tc39.es/ecma262/#sec-getglobalobject>
+    /// Returns the global object of the current realm.
+    fn global_object(&self) -> T::JsObject;
 
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_from_bool(&mut self, b: bool) -> T::JsValue;
+    // ────────────────────────────────────────────────────────────────────────
+    // Property Key Construction
+    // ────────────────────────────────────────────────────────────────────────
 
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_from_number(&mut self, n: f64) -> T::JsValue;
+    /// Create a `PropertyKey` from a `&str`.  Used by the Web IDL bindings
+    /// infrastructure when defining attributes and operations on interface
+    /// prototype objects.
+    fn property_key_from_str(&self, s: &str) -> T::PropertyKey;
 
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_undefined(&mut self) -> T::JsValue;
+    // ────────────────────────────────────────────────────────────────────────
+    // Host-Defined Data Store (analogous to boa_engine::Context::get_data/insert_data)
+    // ────────────────────────────────────────────────────────────────────────
 
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_null(&mut self) -> T::JsValue;
+    /// Store a value of type `T` in the host-defined data store.
+    /// Store a value by TypeId (type-erased, object-safe).
+    fn store_host_any(&mut self, id: std::any::TypeId, value: Box<dyn std::any::Any>);
+
+    /// Retrieve a reference to a stored value by TypeId.
+    fn get_host_any(&self, id: &std::any::TypeId) -> Option<&dyn std::any::Any>;
+
+    /// Remove and return a stored value by TypeId.
+    fn remove_host_any(&mut self, id: &std::any::TypeId) -> Option<Box<dyn std::any::Any>>;
+
+    // ── Platform Object Creation ─────────────────────────────────────────
+
+    /// Create a JS object with the given prototype and type-erased Rust data.
+    fn create_object_with_any(
+        &mut self,
+        prototype: T::JsObject,
+        data: Box<dyn std::any::Any + 'static>,
+    ) -> T::JsObject;
 
     // ────────────────────────────────────────────────────────────────────────
     // Error Reporting
     // ────────────────────────────────────────────────────────────────────────
 
     fn report_error(&mut self, message: &str) {
-        error!("unhandled engine exception: {message}");
+        error!("unhandled exception: {message}");
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// <https://tc39.es/ecma262/>
+//
+// Engine factory: creates realms, built-in functions, evaluates scripts.
+// Used at initialization time only.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// <https://tc39.es/ecma262/>
+pub trait JsEngine<T: JsTypes> {
+    // ────────────────────────────────────────────────────────────────────────
+    // §9.3 Realm — creation
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-createrealm>
+    fn create_realm(&mut self) -> T::Realm
+    where
+        T: JsTypesWithRealm;
+
+    /// <https://tc39.es/ecma262/#sec-setrealmglobalobject>
+    fn set_realm_global_object(
+        &mut self,
+        realm: &T::Realm,
+        global: T::JsObject,
+        this_value: Option<T::JsObject>,
+    ) where
+        T: JsTypesWithRealm;
+
+    /// <https://tc39.es/ecma262/#sec-setdefaultglobalbindings>
+    fn set_default_global_bindings(&mut self, realm: &T::Realm) -> Completion<(), T>
+    where
+        T: JsTypesWithRealm;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §10.3 Built-in Function Objects
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    ///
+    /// Creates a JS-callable function object from native behaviour steps,
+    /// following the same pattern Web IDL uses for observable arrays,
+    /// callback interfaces, and other native-to-JS bridges.
+    ///
+    /// The behaviour closure receives the JS arguments, the `this` value,
+    /// and a `&mut dyn ExecutionContext<T>` for calling any ECMA-262
+    /// runtime operation.
+    fn create_builtin_function(
+        &mut self,
+        behaviour: Box<dyn Fn(&[T::JsValue], T::JsValue, &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>>,
+        length: u32,
+        name: T::PropertyKey,
+        realm: &T::Realm,
+    ) -> T::Function
+    where
+        T: JsTypesWithRealm;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §16.1 / §16.2 Script and Module evaluation
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation>
+    fn evaluate_script(&mut self, source: &str, realm: &T::Realm) -> Completion<T::JsValue, T>
+    where
+        T: JsTypesWithRealm;
+
+    /// <https://tc39.es/ecma262/#sec-evaluatemodule>
+    fn evaluate_module(&mut self, source: &str, realm: &T::Realm) -> Completion<T::JsObject, T>
+    where
+        T: JsTypesWithRealm;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §25.1 ArrayBuffer Abstract Operations — creation
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-allocatearraybuffer>
+    fn allocate_array_buffer(
+        &mut self,
+        constructor: T::Constructor,
+        byte_length: u64,
+        max_byte_length: Option<u64>,
+    ) -> Completion<T::ArrayBuffer, T>;
+
+    /// <https://tc39.es/ecma262/#sec-detacharraybuffer>
+    fn detach_array_buffer(
+        &mut self,
+        array_buffer: T::ArrayBuffer,
+        key: Option<T::JsValue>,
+    ) -> Completion<(), T>;
+
+    /// <https://tc39.es/ecma262/#sec-clonearraybuffer>
+    fn clone_array_buffer(
+        &mut self,
+        src: T::ArrayBuffer,
+        src_byte_offset: u64,
+        src_length: u64,
+        clone_constructor: T::Constructor,
+    ) -> Completion<T::ArrayBuffer, T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §25.2 SharedArrayBuffer Abstract Operations
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-allocatesharedarraybuffer>
+    fn allocate_shared_array_buffer(
+        &mut self,
+        constructor: T::Constructor,
+        byte_length: u64,
+    ) -> Completion<T::SharedArrayBuffer, T>;
 
     // ────────────────────────────────────────────────────────────────────────
     // HTML host hooks
@@ -520,46 +613,9 @@ pub trait JsEngine<T: JsTypes> {
         T: JsTypesWithRealm;
 }
 
-/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
-/// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
-pub trait EcmascriptHost<T: JsTypes> {
-    /// <https://tc39.es/ecma262/#sec-get-o-p>
-    fn get(&mut self, object: &T::JsObject, property: &str) -> Completion<T::JsValue, T>;
-
-    /// <https://tc39.es/ecma262/#sec-iscallable>
-    fn is_callable(&self, value: &T::JsValue) -> bool;
-
-    /// <https://tc39.es/ecma262/#sec-call>
-    fn call(
-        &mut self,
-        callable: &T::JsObject,
-        this_arg: &T::JsValue,
-        args: &[T::JsValue],
-    ) -> Completion<T::JsValue, T>;
-
-    /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
-    fn perform_a_microtask_checkpoint(&mut self) -> Completion<(), T>;
-
-    /// Report an exception thrown from a callback to the host environment.
-    fn report_exception(&mut self, error: T::JsValue);
-
-    // ── Value construction — needed by CreateBuiltinFunction closures ────
-
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_undefined(&mut self) -> T::JsValue;
-
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_null(&mut self) -> T::JsValue;
-
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_from_bool(&mut self, b: bool) -> T::JsValue;
-
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_from_number(&mut self, n: f64) -> T::JsValue;
-
-    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
-    fn value_from_string(&mut self, s: T::JsString) -> T::JsValue;
-}
+// ────────────────────────────────────────────────────────────────────────────
+// HostHooks
+// ────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#javascript-specification-host-hooks>
 pub struct HostHooks<T: JsTypesWithRealm> {

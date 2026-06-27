@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{object::JsObject, Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::html::{
@@ -19,7 +20,7 @@ use super::{hyperlink_element_utils::document_creation_url, style_declaration_ob
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for Window {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for Window {
     const NAME: &'static str = "Window";
 
     fn parent_name() -> Option<&'static str> {
@@ -30,8 +31,10 @@ impl WebIdlInterface for Window {
         true
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "onload",
             getter: get_onload,
             setter: Some(set_onload),
@@ -44,6 +47,8 @@ impl WebIdlInterface for Window {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "parent",
             getter: get_parent,
             setter: None,
@@ -56,6 +61,8 @@ impl WebIdlInterface for Window {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "top",
             getter: get_top,
             setter: None,
@@ -68,6 +75,8 @@ impl WebIdlInterface for Window {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "location",
             getter: get_location,
             setter: None,
@@ -80,6 +89,8 @@ impl WebIdlInterface for Window {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "requestAnimationFrame",
             length: 1,
             method: request_animation_frame_method,
@@ -88,6 +99,8 @@ impl WebIdlInterface for Window {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "cancelAnimationFrame",
             length: 1,
             method: cancel_animation_frame_method,
@@ -96,6 +109,8 @@ impl WebIdlInterface for Window {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "setTimeout",
             length: 1,
             method: set_timeout_method,
@@ -104,6 +119,8 @@ impl WebIdlInterface for Window {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "clearTimeout",
             length: 1,
             method: clear_timeout_method,
@@ -112,6 +129,8 @@ impl WebIdlInterface for Window {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "setInterval",
             length: 1,
             method: set_interval_method,
@@ -120,6 +139,8 @@ impl WebIdlInterface for Window {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "clearInterval",
             length: 1,
             method: clear_interval_method,
@@ -128,6 +149,8 @@ impl WebIdlInterface for Window {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "getComputedStyle",
             length: 1,
             method: get_computed_style_method,
@@ -136,6 +159,8 @@ impl WebIdlInterface for Window {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "open",
             length: 0,
             method: open_method,
@@ -144,6 +169,8 @@ impl WebIdlInterface for Window {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "structuredClone",
             length: 1,
             method: structured_clone_method,

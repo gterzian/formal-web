@@ -1,12 +1,12 @@
-//! `BoaEngine` — the `JsEngine<BoaTypes>` + `EcmascriptHost<BoaTypes>` impl.
+//! `BoaEngine` — the `JsEngine<BoaTypes>` + `ExecutionContext<BoaTypes>` + `EcmascriptHost<BoaTypes>` impl.
 //!
 //! ## Layout safety
 //!
 //! `BoaEngine` is `#[repr(transparent)]` over `Context`.  This enables the
 //! `create_builtin_function` shim to safely cast `&mut Context` →
-//! `&mut BoaEngine` → `&mut dyn JsEngine<BoaTypes>` inside the
+//! `&mut BoaEngine` → `&mut dyn ExecutionContext<BoaTypes>` inside the
 //! `NativeFunction` callback, giving the behaviour closure access to all
-//! ECMA-262 operations without an external adapter.
+//! ECMA-262 runtime operations without an external adapter.
 //!
 //! ## What's not yet implemented
 //!
@@ -31,14 +31,15 @@ use boa_engine::{
 
 use crate::{
     records::{IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics},
-    Completion, EcmascriptHost, HostHooks, IntegrityLevel, IteratorKind, JsEngine,
-    JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
+    Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
+    JsEngine, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
 };
 
 use super::types::BoaTypes;
 
 /// Boa engine wrapper.  Wraps a `boa_engine::Context` and implements
-/// `JsEngine<BoaTypes>`.
+/// `JsEngine<BoaTypes>`, `ExecutionContext<BoaTypes>`, and
+/// `EcmascriptHost<BoaTypes>`.
 ///
 /// # Layout
 ///
@@ -86,7 +87,222 @@ fn into_completion<T>(result: JsResult<T>, context: &mut Context) -> Completion<
     result.map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// JsEngine<BoaTypes> — factory operations (§9.3, §10.3, §16, §25)
+// ═══════════════════════════════════════════════════════════════════════════
+
 impl JsEngine<BoaTypes> for BoaEngine {
+    // ── §9.3 Realm — creation ───────────────────────────────────────────
+
+    fn create_realm(&mut self) -> boa_engine::realm::Realm
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        self.context.create_realm().expect("create_realm failed")
+    }
+
+    fn set_realm_global_object(
+        &mut self,
+        _realm: &boa_engine::realm::Realm,
+        _global: JsObject,
+        _this_value: Option<JsObject>,
+    ) where
+        BoaTypes: JsTypesWithRealm,
+    {
+        // HARD: Boa's Context doesn't expose set_realm_global_object through its public API.
+        // This is typically done at context construction time.
+    }
+
+    fn set_default_global_bindings(
+        &mut self,
+        _realm: &boa_engine::realm::Realm,
+    ) -> Completion<(), BoaTypes>
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        // A fresh context already has default bindings.
+        Ok(())
+    }
+
+    // ── §10.3 Built-in Function Objects ──────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JsValue],
+                JsValue,
+                &mut dyn ExecutionContext<BoaTypes>,
+            ) -> Completion<JsValue, BoaTypes>,
+        >,
+        length: u32,
+        name: PropertyKey,
+        realm: &boa_engine::realm::Realm,
+    ) -> JsFunction
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        // Extract the name string for FunctionObjectBuilder.
+        let name_str = match &name {
+            PropertyKey::String(s) => s.clone(),
+            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
+            _ => boa_engine::js_string!(""),
+        };
+
+        // SAFETY: BoaEngine is `#[repr(transparent)]` over Context, so
+        // a `&mut Context` pointer can be safely cast to `&mut BoaEngine`.
+        // The resulting reference has the same lifetime as the `context`
+        // parameter and does not alias any other mutable reference.
+        //
+        // The closure is `'static` — `behaviour` is an owned Box that
+        // does not borrow from the engine.
+        let native = unsafe {
+            NativeFunction::from_closure(
+                Box::new(
+                    move |this: &JsValue,
+                          args: &[JsValue],
+                          context: &mut Context|
+                          -> JsResult<JsValue> {
+                        // SAFETY: BoaEngine is repr(transparent) over Context.
+                        let engine: &mut BoaEngine =
+                            &mut *(context as *mut Context as *mut BoaEngine);
+                        behaviour(args, this.clone(), engine)
+                            .map_err(|e| JsError::from_opaque(e))
+                    },
+                ),
+            )
+        };
+
+        FunctionObjectBuilder::new(realm, native)
+            .name(name_str)
+            .length(length as usize)
+            .build()
+    }
+
+    // ── §16 Script and Module evaluation ──────────────────────────────────
+
+    fn evaluate_script(
+        &mut self,
+        source: &str,
+        _realm: &boa_engine::realm::Realm,
+    ) -> Completion<JsValue, BoaTypes>
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        into_completion(
+            self.context.eval(boa_engine::Source::from_bytes(source)),
+            &mut self.context,
+        )
+    }
+
+    fn evaluate_module(
+        &mut self,
+        _source: &str,
+        _realm: &boa_engine::realm::Realm,
+    ) -> Completion<JsObject, BoaTypes>
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        todo!("Boa module evaluation")
+    }
+
+    // ── §25 ArrayBuffer — creation ──────────────────────────────────────
+
+    fn allocate_array_buffer(
+        &mut self,
+        constructor: JsFunction,
+        byte_length: u64,
+        _max_byte_length: Option<u64>,
+    ) -> Completion<JsArrayBuffer, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-allocatearraybuffer>
+        // AllocateArrayBuffer via JS constructor.  The constructor
+        // internally performs OrdinaryCreateFromConstructor,
+        // CreateByteDataBlock, and slot initialization.
+        let arg = JsValue::from(byte_length as f64);
+        let obj = into_completion(
+            constructor.construct(&[arg], Some(&constructor), &mut self.context),
+            &mut self.context,
+        )?;
+        into_completion(JsArrayBuffer::from_object(obj), &mut self.context)
+    }
+
+    fn detach_array_buffer(
+        &mut self,
+        array_buffer: JsArrayBuffer,
+        key: Option<JsValue>,
+    ) -> Completion<(), BoaTypes> {
+        let undefined = JsValue::undefined();
+        let detach_key = key.as_ref().unwrap_or(&undefined);
+        into_completion(
+            array_buffer.detach(detach_key).map(|_| ()),
+            &mut self.context,
+        )
+    }
+
+    fn clone_array_buffer(
+        &mut self,
+        src: JsArrayBuffer,
+        src_byte_offset: u64,
+        src_length: u64,
+        _clone_constructor: JsFunction,
+    ) -> Completion<JsArrayBuffer, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-clonearraybuffer>
+        //
+        // Step 1: Assert: IsDetachedBuffer(sourceBuffer) is false.
+        // Step 2: Let targetBuffer be ? AllocateArrayBuffer(%ArrayBuffer%, sourceLength).
+        //
+        // Read source data.
+        let src_bytes = src.data().ok_or_else(|| {
+            JsValue::from(
+                JsNativeError::typ()
+                    .with_message("Cannot clone a detached ArrayBuffer")
+                    .into_opaque(&mut self.context),
+            )
+        })?;
+        // Step 3: Let sourceBlock be sourceBuffer.[[ArrayBufferData]].
+        let start = src_byte_offset as usize;
+        let end = start + src_length as usize;
+        let slice = &src_bytes[start..end];
+        // Step 4: Perform CopyDataBlockBytes(targetBlock, 0, sourceBlock, ...).
+        // Create an AlignedVec from the source slice and use from_byte_block.
+        let aligned = AlignedVec::from_slice(64, slice);
+        // Step 5: Return targetBuffer.
+        into_completion(
+            JsArrayBuffer::from_byte_block(aligned, &mut self.context),
+            &mut self.context,
+        )
+    }
+
+    fn allocate_shared_array_buffer(
+        &mut self,
+        _constructor: JsFunction,
+        byte_length: u64,
+    ) -> Completion<JsSharedArrayBuffer, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-allocatesharedarraybuffer>
+        // Steps 1-4 are handled by JsSharedArrayBuffer::new internally.
+        into_completion(
+            JsSharedArrayBuffer::new(byte_length as usize, &mut self.context),
+            &mut self.context,
+        )
+    }
+
+    // ── Host Hooks ────────────────────────────────────────────────────────
+
+    fn set_host_hooks(&mut self, _hooks: HostHooks<BoaTypes>)
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        // TODO: store and call through hooks internally
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ExecutionContext<BoaTypes> — running execution context (§7, §9.3 runtime,
+// §9.6 jobs, §25 queries, §27 promises, value construction)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl ExecutionContext<BoaTypes> for BoaEngine {
     // ── §7.1 Type Conversion ──────────────────────────────────────────────
 
     fn to_primitive(
@@ -236,9 +452,7 @@ impl JsEngine<BoaTypes> for BoaEngine {
         Ok(value.as_object().is_some_and(|o| o.is_array()))
     }
 
-    fn is_callable(&self, value: &JsValue) -> bool {
-        value.as_object().is_some_and(|o| o.is_callable())
-    }
+    // is_callable is inherited from EcmascriptHost<BoaTypes>
 
     fn is_constructor(&self, value: &JsValue) -> bool {
         value.as_object().is_some_and(|o| o.is_constructor())
@@ -375,9 +589,6 @@ impl JsEngine<BoaTypes> for BoaEngine {
         )?;
         if let Some(object) = prop.as_object() {
             if object.is_callable() {
-                // HARD: downcast_ref returns GcRef, can't &-borrow across engine calls
-                // Return a cloned JsFunction when possible
-                // Fallback: the object itself is callable, wrap as JsFunction
                 return Ok(JsFunction::from_object(object.clone()));
             }
         }
@@ -402,18 +613,6 @@ impl JsEngine<BoaTypes> for BoaEngine {
     ) -> Completion<bool, BoaTypes> {
         into_completion(
             object.has_own_property(property_key, &mut self.context),
-            &mut self.context,
-        )
-    }
-
-    fn call(
-        &mut self,
-        function: JsFunction,
-        this: JsValue,
-        args: &[JsValue],
-    ) -> Completion<JsValue, BoaTypes> {
-        into_completion(
-            function.call(&this, args, &mut self.context),
             &mut self.context,
         )
     }
@@ -468,17 +667,16 @@ impl JsEngine<BoaTypes> for BoaEngine {
         Ok(default_constructor)
     }
 
+    // ── §7.4 Iteration ───────────────────────────────────────────────────
+
     fn get_iterator(
         &mut self,
         object: JsValue,
         kind: IteratorKind,
         method: Option<JsFunction>,
     ) -> Completion<IteratorRecord<BoaTypes>, BoaTypes> {
-        // §7.4.4 GetIterator ( obj, kind )
         match kind {
             IteratorKind::Async => {
-                // Step 1: If kind is async:
-                //   a. Let method be ? GetMethod(obj, %Symbol.asyncIterator%).
                 let method = match method {
                     Some(m) => Some(m),
                     None => self.get_method(
@@ -489,11 +687,8 @@ impl JsEngine<BoaTypes> for BoaEngine {
                 match method {
                     Some(m) => get_iterator_from_method(self, object, m),
                     None => {
-                        // b. If method is undefined:
-                        //   i. Let syncMethod be ? GetMethod(obj, %Symbol.iterator%).
                         let sync_method = self
                             .get_method(object.clone(), PropertyKey::from(JsSymbol::iterator()))?;
-                        // ii. If syncMethod is undefined, throw a TypeError exception.
                         let sync_method = sync_method.ok_or_else(|| {
                             JsValue::from(
                                 JsNativeError::typ()
@@ -501,25 +696,18 @@ impl JsEngine<BoaTypes> for BoaEngine {
                                     .into_opaque(&mut self.context),
                             )
                         })?;
-                        // iii. Let syncIteratorRecord be ? GetIteratorFromMethod(obj, syncMethod).
                         let sync_record = get_iterator_from_method(self, object, sync_method)?;
-                        // iv. Return CreateAsyncFromSyncIterator(syncIteratorRecord).
-                        // Note: CreateAsyncFromSyncIterator is not implemented yet.
-                        // Fallback: return the sync iterator wrapped.
                         Ok(sync_record)
                     }
                 }
             }
             IteratorKind::Sync => {
-                // Step 2: Else (kind is sync):
-                //   a. Let method be ? GetMethod(obj, %Symbol.iterator%).
                 let method = match method {
                     Some(m) => Some(m),
                     None => {
                         self.get_method(object.clone(), PropertyKey::from(JsSymbol::iterator()))?
                     }
                 };
-                // Step 3: If method is undefined, throw a TypeError exception.
                 let method = method.ok_or_else(|| {
                     JsValue::from(
                         JsNativeError::typ()
@@ -527,7 +715,6 @@ impl JsEngine<BoaTypes> for BoaEngine {
                             .into_opaque(&mut self.context),
                     )
                 })?;
-                // Step 4: Return ? GetIteratorFromMethod(obj, method).
                 get_iterator_from_method(self, object, method)
             }
         }
@@ -537,20 +724,12 @@ impl JsEngine<BoaTypes> for BoaEngine {
         &mut self,
         iterator: &mut IteratorRecord<BoaTypes>,
     ) -> Completion<Option<JsValue>, BoaTypes> {
-        // §7.4.10 IteratorStepValue ( iteratorRecord )
-        //
-        // 1. Let result be ? IteratorStep(iteratorRecord).
-        //
-        // §7.4.9 IteratorStep ( iteratorRecord )
-        //   1. Let result be ? IteratorNext(iteratorRecord).
         let result = into_completion(
             iterator
                 .next_method
                 .call(&iterator.iterator.clone().into(), &[], &mut self.context),
             &mut self.context,
         )?;
-        //   2. If result is not an Object, throw a TypeError exception.
-        //   (IteratorNext step 5)
         let result_obj = result.as_object().ok_or_else(|| {
             JsValue::from(
                 JsNativeError::typ()
@@ -558,8 +737,6 @@ impl JsEngine<BoaTypes> for BoaEngine {
                     .into_opaque(&mut self.context),
             )
         })?;
-        //   2. Let done be Completion(IteratorComplete(result)).
-        //   §7.4.7 IteratorComplete: Return ToBoolean(? Get(iteratorResult, "done")).
         let done_val = into_completion(
             result_obj.get(
                 PropertyKey::from(boa_engine::js_string!("done")),
@@ -568,21 +745,10 @@ impl JsEngine<BoaTypes> for BoaEngine {
             &mut self.context,
         )?;
         let done = done_val.to_boolean();
-        //   3. If done is a throw completion, then (handled by ?)
-        //   4. Set done to ! done.
         if done {
-            //   5. If done is true:
-            //      a. Set iteratorRecord.[[Done]] to true.
-            //      b. Return done.
             iterator.done = true;
             return Ok(None);
         }
-        // 2. If result is done, then (handled above)
-        //
-        // 3. Let value be Completion(IteratorValue(result)).
-        // 4. If value is a throw completion, then
-        //      a. Set iteratorRecord.[[Done]] to true.
-        //    (§7.4.8 IteratorValue: Return ? Get(iteratorResult, "value").)
         let value = into_completion(
             result_obj.get(
                 PropertyKey::from(boa_engine::js_string!("value")),
@@ -594,7 +760,6 @@ impl JsEngine<BoaTypes> for BoaEngine {
             iterator.done = true;
             e
         })?;
-        // 5. Return ? value.
         Ok(Some(value))
     }
 
@@ -603,41 +768,25 @@ impl JsEngine<BoaTypes> for BoaEngine {
         iterator: IteratorRecord<BoaTypes>,
         completion: Completion<JsValue, BoaTypes>,
     ) -> Completion<JsValue, BoaTypes> {
-        // §7.4.11 IteratorClose ( iteratorRecord, completion )
-        //
-        // 1. Assert: iteratorRecord.[[Iterator]] is an Object.
-        // 2. Let iterator be iteratorRecord.[[Iterator]].
         let iter_value = JsValue::from(iterator.iterator);
         let return_key: PropertyKey = boa_engine::js_string!("return").into();
-        //
-        // 3. Let innerResult be Completion(GetMethod(iterator, "return")).
         let inner_result = self.get_method(iter_value.clone(), return_key);
-        //
-        // 4. If innerResult.[[Type]] is normal, then
         let inner_result = match inner_result {
             Ok(Some(return_fn)) => {
-                // a. Let return be innerResult.[[Value]].
-                // c. Set innerResult to Completion(Call(return, iterator)).
-                JsEngine::call(self, return_fn, iter_value, &[])
+                EcmascriptHost::call(self, &JsObject::from(return_fn), &iter_value, &[])
             }
             Ok(None) => {
-                // b. If return is undefined, return ? completion.
                 return completion;
             }
             Err(e) => {
-                // 5. If completion.[[Type]] is throw, return ? completion.
                 if completion.is_err() {
                     return completion;
                 }
-                // 6. If innerResult.[[Type]] is throw, return ? innerResult.
                 return Err(e);
             }
         };
-        // 5. If completion.[[Type]] is throw, return ? completion.
         let completion_value = completion?;
-        // 6. If innerResult.[[Type]] is throw, return ? innerResult.
         let inner_value = inner_result?;
-        // 7. If Type(innerResult.[[Value]]) is not Object, throw a TypeError exception.
         if !inner_value.is_object() {
             return Err(JsValue::from(
                 JsNativeError::typ()
@@ -645,7 +794,6 @@ impl JsEngine<BoaTypes> for BoaEngine {
                     .into_opaque(&mut self.context),
             ));
         }
-        // 8. Return ? completion.
         Ok(completion_value)
     }
 
@@ -654,92 +802,44 @@ impl JsEngine<BoaTypes> for BoaEngine {
         iterator: IteratorRecord<BoaTypes>,
         completion: Completion<JsValue, BoaTypes>,
     ) -> Completion<JsValue, BoaTypes> {
-        // §7.4.15 AsyncIteratorClose ( iteratorRecord, completion )
-        //
-        // 1. Assert: iteratorRecord.[[Iterator]] is an Object.
-        // 2. Let iterator be iteratorRecord.[[Iterator]].
         let iter_value = JsValue::from(iterator.iterator);
         let return_key: PropertyKey = boa_engine::js_string!("return").into();
-        //
-        // 3. Let innerResult be Completion(GetMethod(iterator, "return")).
         let inner_result = self.get_method(iter_value.clone(), return_key);
-        //
-        // 4. If innerResult.[[Type]] is normal, then
         match inner_result {
             Ok(Some(return_fn)) => {
-                // c. Set innerResult to Completion(Call(return, iterator)).
-                match JsEngine::call(self, return_fn, iter_value, &[]) {
+                let callable = JsObject::from(return_fn);
+                match EcmascriptHost::call(self, &callable, &iter_value, &[]) {
                     Ok(val) => {
-                        // If innerResult is a normal completion, set innerResult
-                        // to Completion(Await(innerResult.[[Value]])).
-                        // Note: Await is async — this implementation is synchronous
-                        // and does not await.  See spec §7.4.15 step 4 sub-step 3.
                         if !val.is_object() {
                             return Err(JsValue::from(
                                 JsNativeError::typ()
-                                    .with_message("Async iterator return result is not an object")
+                                    .with_message(
+                                        "Async iterator return result is not an object",
+                                    )
                                     .into_opaque(&mut self.context),
                             ));
                         }
-                        // 8. Return ? completion.
                         completion
                     }
                     Err(e) => {
-                        // 5. If completion.[[Type]] is throw, return ? completion.
                         if completion.is_err() {
                             return completion;
                         }
-                        // 6. If innerResult.[[Type]] is throw, return ? innerResult.
                         Err(e)
                     }
                 }
             }
-            Ok(None) => {
-                // b. If return is undefined, return ? completion.
-                completion
-            }
+            Ok(None) => completion,
             Err(e) => {
-                // 5. If completion.[[Type]] is throw, return ? completion.
                 if completion.is_err() {
                     return completion;
                 }
-                // 6. If innerResult.[[Type]] is throw, return ? innerResult.
                 Err(e)
             }
         }
     }
 
-    // ── §9.3 Realm ────────────────────────────────────────────────────────
-
-    fn create_realm(&mut self) -> boa_engine::realm::Realm
-    where
-        BoaTypes: JsTypesWithRealm,
-    {
-        self.context.create_realm().expect("create_realm failed")
-    }
-
-    fn set_realm_global_object(
-        &mut self,
-        _realm: &boa_engine::realm::Realm,
-        _global: JsObject,
-        _this_value: Option<JsObject>,
-    ) where
-        BoaTypes: JsTypesWithRealm,
-    {
-        // HARD: Boa's Context doesn't expose set_realm_global_object through its public API.
-        // This is typically done at context construction time.
-    }
-
-    fn set_default_global_bindings(
-        &mut self,
-        _realm: &boa_engine::realm::Realm,
-    ) -> Completion<(), BoaTypes>
-    where
-        BoaTypes: JsTypesWithRealm,
-    {
-        // A fresh context already has default bindings.
-        Ok(())
-    }
+    // ── §9.3 Realm — runtime access ──────────────────────────────────────
 
     fn current_realm(&self) -> boa_engine::realm::Realm
     where
@@ -752,7 +852,6 @@ impl JsEngine<BoaTypes> for BoaEngine {
     where
         BoaTypes: JsTypesWithRealm,
     {
-        // <https://tc39.es/ecma262/#table-basic-intrinsics>
         let intrinsics = self.context.intrinsics();
         let constructors = intrinsics.constructors();
         RealmIntrinsics {
@@ -799,102 +898,10 @@ impl JsEngine<BoaTypes> for BoaEngine {
         let _ = self.context.run_jobs();
     }
 
-    // ── §16 Script ────────────────────────────────────────────────────────
-
-    fn evaluate_script(
-        &mut self,
-        source: &str,
-        _realm: &boa_engine::realm::Realm,
-    ) -> Completion<JsValue, BoaTypes>
-    where
-        BoaTypes: JsTypesWithRealm,
-    {
-        into_completion(
-            self.context.eval(boa_engine::Source::from_bytes(source)),
-            &mut self.context,
-        )
-    }
-
-    fn evaluate_module(
-        &mut self,
-        _source: &str,
-        _realm: &boa_engine::realm::Realm,
-    ) -> Completion<JsObject, BoaTypes>
-    where
-        BoaTypes: JsTypesWithRealm,
-    {
-        todo!("Boa module evaluation")
-    }
-
-    // ── §25 ArrayBuffer ───────────────────────────────────────────────────
-
-    fn allocate_array_buffer(
-        &mut self,
-        constructor: JsFunction,
-        byte_length: u64,
-        _max_byte_length: Option<u64>,
-    ) -> Completion<JsArrayBuffer, BoaTypes> {
-        // <https://tc39.es/ecma262/#sec-allocatearraybuffer>
-        // AllocateArrayBuffer via JS constructor.  The constructor
-        // internally performs OrdinaryCreateFromConstructor,
-        // CreateByteDataBlock, and slot initialization.
-        let arg = JsValue::from(byte_length as f64);
-        let obj = into_completion(
-            constructor.construct(&[arg], Some(&constructor), &mut self.context),
-            &mut self.context,
-        )?;
-        into_completion(JsArrayBuffer::from_object(obj), &mut self.context)
-    }
+    // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
 
     fn is_detached_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {
-        false // HARD: Boa's JsArrayBuffer doesn't expose is_detached publicly in this version
-    }
-
-    fn detach_array_buffer(
-        &mut self,
-        array_buffer: JsArrayBuffer,
-        key: Option<JsValue>,
-    ) -> Completion<(), BoaTypes> {
-        let undefined = JsValue::undefined();
-        let detach_key = key.as_ref().unwrap_or(&undefined);
-        into_completion(
-            array_buffer.detach(detach_key).map(|_| ()),
-            &mut self.context,
-        )
-    }
-
-    fn clone_array_buffer(
-        &mut self,
-        src: JsArrayBuffer,
-        src_byte_offset: u64,
-        src_length: u64,
-        _clone_constructor: JsFunction,
-    ) -> Completion<JsArrayBuffer, BoaTypes> {
-        // <https://tc39.es/ecma262/#sec-clonearraybuffer>
-        //
-        // Step 1: Assert: IsDetachedBuffer(sourceBuffer) is false.
-        // Step 2: Let targetBuffer be ? AllocateArrayBuffer(%ArrayBuffer%, sourceLength).
-        //
-        // Read source data.
-        let src_bytes = src.data().ok_or_else(|| {
-            JsValue::from(
-                JsNativeError::typ()
-                    .with_message("Cannot clone a detached ArrayBuffer")
-                    .into_opaque(&mut self.context),
-            )
-        })?;
-        // Step 3: Let sourceBlock be sourceBuffer.[[ArrayBufferData]].
-        let start = src_byte_offset as usize;
-        let end = start + src_length as usize;
-        let slice = &src_bytes[start..end];
-        // Step 4: Perform CopyDataBlockBytes(targetBlock, 0, sourceBlock, ...).
-        // Create an AlignedVec from the source slice and use from_byte_block.
-        let aligned = AlignedVec::from_slice(64, slice);
-        // Step 5: Return targetBuffer.
-        into_completion(
-            JsArrayBuffer::from_byte_block(aligned, &mut self.context),
-            &mut self.context,
-        )
+        false // HARD: Boa's JsArrayBuffer doesn't expose is_detached publicly
     }
 
     fn is_fixed_length_array_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {
@@ -922,23 +929,6 @@ impl JsEngine<BoaTypes> for BoaEngine {
         _order: SharedMemoryOrder,
     ) -> Completion<(), BoaTypes> {
         Ok(())
-    }
-
-    fn allocate_shared_array_buffer(
-        &mut self,
-        _constructor: JsFunction,
-        byte_length: u64,
-    ) -> Completion<JsSharedArrayBuffer, BoaTypes> {
-        // <https://tc39.es/ecma262/#sec-allocatesharedarraybuffer>
-        // Steps 1-4 are handled by JsSharedArrayBuffer::new internally.
-        //
-        // Note: The spec uses OrdinaryCreateFromConstructor(ctor, ...)
-        // to set the prototype chain via the constructor.  Using new()
-        // with the default prototype is equivalent for most use cases.
-        into_completion(
-            JsSharedArrayBuffer::new(byte_length as usize, &mut self.context),
-            &mut self.context,
-        )
     }
 
     // ── §27 Promise ───────────────────────────────────────────────────────
@@ -987,93 +977,98 @@ impl JsEngine<BoaTypes> for BoaEngine {
         todo!("Boa generator_start")
     }
 
-    // ── §10.3 Built-in Function Objects ──────────────────────────────────
+    // ── Global Object Access ──────────────────────────────────────────────
 
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    fn create_builtin_function(
+    fn global_object(&self) -> JsObject {
+        self.context.global_object()
+    }
+
+    // ── Property Key Construction ─────────────────────────────────────────
+
+    fn property_key_from_str(&self, s: &str) -> PropertyKey {
+        PropertyKey::from(boa_engine::js_string!(s))
+    }
+
+    // ── Host-Defined Data Store ───────────────────────────────────────────
+
+
+
+    // ── Error Reporting ──────────────────────────────────────────────────
+
+    fn report_error(&mut self, message: &str) {
+        log::error!("unhandled exception: {message}");
+    }
+
+    // ── Host-Defined Data Store (type-erased) ──────────────────────────
+
+    fn store_host_any(&mut self, _id: std::any::TypeId, value: Box<dyn std::any::Any>) {
+        self.context.insert_data(HostAny(value));
+    }
+
+    fn get_host_any(&self, _id: &std::any::TypeId) -> Option<&dyn std::any::Any> {
+        self.context.get_data::<HostAny>().map(|h| h.0.as_ref())
+    }
+
+    fn remove_host_any(&mut self, _id: &std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        self.context.remove_data::<HostAny>().map(|h| h.0)
+    }
+
+    // ── Platform Object Creation ─────────────────────────────────────────
+
+    fn create_object_with_any(
         &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JsValue],
-                JsValue,
-                &mut dyn JsEngine<BoaTypes>,
-            ) -> Completion<JsValue, BoaTypes>,
-        >,
-        length: u32,
-        name: PropertyKey,
-        realm: &boa_engine::realm::Realm,
-    ) -> JsFunction
-    where
-        BoaTypes: JsTypesWithRealm,
-    {
-        // Extract the name string for FunctionObjectBuilder.
-        let name_str = match &name {
-            PropertyKey::String(s) => s.clone(),
-            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
-            _ => boa_engine::js_string!(""),
-        };
-
-        // SAFETY: BoaEngine is `#[repr(transparent)]` over Context, so
-        // a `&mut Context` pointer can be safely cast to `&mut BoaEngine`.
-        // The resulting reference has the same lifetime as the `context`
-        // parameter and does not alias any other mutable reference.
-        //
-        // The closure is `'static` — `behaviour` is an owned Box that
-        // does not borrow from the engine.
-        let native = unsafe {
-            NativeFunction::from_closure(
-                Box::new(
-                    move |this: &JsValue,
-                          args: &[JsValue],
-                          context: &mut Context|
-                          -> JsResult<JsValue> {
-                        // SAFETY: BoaEngine is repr(transparent) over Context.
-                        let engine: &mut BoaEngine =
-                            &mut *(context as *mut Context as *mut BoaEngine);
-                        behaviour(args, this.clone(), engine)
-                            .map_err(|e| JsError::from_opaque(e))
-                    },
-                ),
-            )
-        };
-
-        FunctionObjectBuilder::new(realm, native)
-            .name(name_str)
-            .length(length as usize)
-            .build()
-    }
-
-    // ── Value Construction ───────────────────────────────────────────────
-
-    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
-        JsValue::from(s)
-    }
-
-    fn value_from_bool(&mut self, b: bool) -> JsValue {
-        JsValue::from(b)
-    }
-
-    fn value_from_number(&mut self, n: f64) -> JsValue {
-        JsValue::from(n)
-    }
-
-    fn value_undefined(&mut self) -> JsValue {
-        JsValue::undefined()
-    }
-
-    fn value_null(&mut self) -> JsValue {
-        JsValue::null()
-    }
-
-    // ── Host Hooks ────────────────────────────────────────────────────────
-
-    fn set_host_hooks(&mut self, _hooks: HostHooks<BoaTypes>)
-    where
-        BoaTypes: JsTypesWithRealm,
-    {
-        // TODO: store and call through hooks internally
+        prototype: JsObject,
+        data: Box<dyn std::any::Any + 'static>,
+    ) -> JsObject {
+        // SAFETY: The data must be downcastable to a type that implements
+        // NativeObject.  The caller (create_interface_instance) ensures
+        // this by providing data of type T where T: NativeObject + 'static.
+        // We use the NativeDataWrapper to satisfy the NativeObject bound.
+        // The downcast on retrieval (downcast_ref) uses the correct TypeId.
+        let wrapper = NativeDataWrapper(data);
+        JsObject::from_proto_and_data(Some(prototype), wrapper)
     }
 }
+
+/// Wrapper that implements `NativeObject` for arbitrary `'static` data.
+///
+/// Used by `create_object_with_data` to store Rust data inside Boa objects.
+/// The GC traits are no-ops because the content process does not relocate
+/// GC'd objects and the data is only accessed through the JS object's
+/// internal slot (via `downcast_ref`).
+struct NativeDataWrapper<T: std::any::Any + 'static>(T);
+
+// SAFETY: The content process is single-threaded.  `NativeDataWrapper`
+// only stores `'static` data that does not contain GC roots.
+/// Type-erased storage wrapper for the host-defined data store.
+struct HostAny(Box<dyn std::any::Any>);
+
+// SAFETY: The stored data is only accessed through type-safe downcasts.
+unsafe impl boa_gc::Trace for HostAny {
+    unsafe fn trace(&self, _: &mut boa_gc::Tracer) {}
+    unsafe fn trace_non_roots(&self) {}
+    fn run_finalizer(&self) {}
+}
+impl boa_gc::Finalize for HostAny {}
+
+// SAFETY: The wrapped data does not contain GC roots — it is only
+// accessed through the JS object's internal slot via `downcast_ref`.
+unsafe impl<T: std::any::Any + 'static> boa_gc::Trace for NativeDataWrapper<T> {
+    unsafe fn trace(&self, _: &mut boa_gc::Tracer) {}
+    unsafe fn trace_non_roots(&self) {}
+    fn run_finalizer(&self) {}
+}
+
+impl<T: std::any::Any + 'static> boa_gc::Finalize for NativeDataWrapper<T> {}
+
+impl<T: std::any::Any + 'static> boa_engine::JsData for NativeDataWrapper<T> {}
+
+// Note: `NativeDataWrapper<T>` implements `NativeObject` via the blanket
+// `impl<T: Any + Trace + JsData> NativeObject for T` in boa_engine.
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EcmascriptHost<BoaTypes> — Web IDL callback operations
+// ═══════════════════════════════════════════════════════════════════════════
 
 impl EcmascriptHost<BoaTypes> for BoaEngine {
     fn get(&mut self, object: &JsObject, property: &str) -> Completion<JsValue, BoaTypes> {
@@ -1150,9 +1145,7 @@ fn get_iterator_from_method(
     method: JsFunction,
 ) -> Completion<IteratorRecord<BoaTypes>, BoaTypes> {
     let context = &mut engine.context;
-    // Step 1: Let iterator be ? Call(method, obj).
     let iterator = into_completion(method.call(&obj, &[], context), context)?;
-    // Step 2: If iterator is not an Object, throw a TypeError exception.
     let iterator_obj = iterator.as_object().ok_or_else(|| {
         JsValue::from(
             JsNativeError::typ()
@@ -1160,13 +1153,10 @@ fn get_iterator_from_method(
                 .into_opaque(context),
         )
     })?;
-    // Step 3: Let nextMethod be ? Get(iterator, "next").
     let next_value = into_completion(
         iterator_obj.get(PropertyKey::from(boa_engine::js_string!("next")), context),
         context,
     )?;
-    // Step 4: Let iteratorRecord be the Iterator Record
-    // { [[Iterator]]: iterator, [[NextMethod]]: nextMethod, [[Done]]: false }.
     let next_method = JsFunction::from_object(next_value.as_object().ok_or_else(|| {
         JsValue::from(
             JsNativeError::typ()
@@ -1181,7 +1171,6 @@ fn get_iterator_from_method(
                 .into_opaque(context),
         )
     })?;
-    // Step 5: Return iteratorRecord.
     Ok(IteratorRecord {
         iterator: iterator_obj,
         next_method,
@@ -1192,8 +1181,7 @@ fn get_iterator_from_method(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::JsEngine;
-    use boa_engine::js_string;
+    use crate::ExecutionContext;
 
     /// Verify that `create_builtin_function` creates a JS-callable function
     /// that can receive arguments and return values through the generic trait.
@@ -1203,21 +1191,21 @@ mod tests {
         let realm = engine.context.realm().clone();
 
         // Create a function that doubles its first argument using
-        // generic JsEngine operations (to_number, value_from_number).
+        // generic ExecutionContext operations (to_number, value_from_number).
         let double_fn = engine.create_builtin_function(
             Box::new(|args, _this, host| {
                 let n = host.to_number(args.first().cloned().unwrap_or(JsValue::undefined()))?;
                 Ok(host.value_from_number(n * 2.0))
             }),
             1,
-            PropertyKey::from(js_string!("double")),
+            PropertyKey::from(boa_engine::js_string!("double")),
             &realm,
         );
 
         // Register the function on the global object.
         let global = engine.context.global_object();
         let _ = global.set(
-            PropertyKey::from(js_string!("double")),
+            PropertyKey::from(boa_engine::js_string!("double")),
             JsValue::from(double_fn),
             false,
             &mut engine.context,

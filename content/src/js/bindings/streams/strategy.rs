@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{
     js_string, native_function::NativeFunction, object::FunctionObjectBuilder, Context, JsArgs,
     JsNativeError, JsResult, JsValue,
@@ -10,7 +11,7 @@ use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy,
 };
 
-impl WebIdlInterface for ByteLengthQueuingStrategy {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for ByteLengthQueuingStrategy {
     const NAME: &'static str = "ByteLengthQueuingStrategy";
 
     fn create_platform_object(
@@ -24,8 +25,10 @@ impl WebIdlInterface for ByteLengthQueuingStrategy {
         Ok(ByteLengthQueuingStrategy::new(high_water_mark))
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "highWaterMark",
             getter: get_byte_length_high_water_mark,
             setter: None,
@@ -38,6 +41,8 @@ impl WebIdlInterface for ByteLengthQueuingStrategy {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "size",
             getter: get_byte_length_size,
             setter: None,
@@ -52,7 +57,7 @@ impl WebIdlInterface for ByteLengthQueuingStrategy {
     }
 }
 
-impl WebIdlInterface for CountQueuingStrategy {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for CountQueuingStrategy {
     const NAME: &'static str = "CountQueuingStrategy";
 
     fn create_platform_object(
@@ -66,8 +71,10 @@ impl WebIdlInterface for CountQueuingStrategy {
         Ok(CountQueuingStrategy::new(high_water_mark))
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "highWaterMark",
             getter: get_count_high_water_mark,
             setter: None,
@@ -80,6 +87,8 @@ impl WebIdlInterface for CountQueuingStrategy {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "size",
             getter: get_count_size,
             setter: None,

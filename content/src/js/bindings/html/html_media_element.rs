@@ -5,6 +5,7 @@
 //
 // Only a subset of the full IDL is exposed for the initial video cut.
 
+use std::marker::PhantomData;
 use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLMediaElement;
@@ -13,7 +14,7 @@ use crate::webidl::bindings::{
     AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
-impl WebIdlInterface for HTMLMediaElement {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLMediaElement {
     const NAME: &'static str = "HTMLMediaElement";
 
     fn parent_name() -> Option<&'static str> {
@@ -38,7 +39,7 @@ impl WebIdlInterface for HTMLMediaElement {
             .into())
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         #[cfg(not(feature = "media"))]
         {
             // No members when media is disabled — the interface exists but is empty.
@@ -48,44 +49,64 @@ impl WebIdlInterface for HTMLMediaElement {
 
         // Constants
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "NETWORK_EMPTY",
             value: JsValue::from(HTMLMediaElement::NETWORK_EMPTY as i32),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "NETWORK_IDLE",
             value: JsValue::from(HTMLMediaElement::NETWORK_IDLE as i32),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "NETWORK_LOADING",
             value: JsValue::from(HTMLMediaElement::NETWORK_LOADING as i32),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "NETWORK_NO_SOURCE",
             value: JsValue::from(HTMLMediaElement::NETWORK_NO_SOURCE as i32),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "HAVE_NOTHING",
             value: JsValue::from(HTMLMediaElement::HAVE_NOTHING as i32),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "HAVE_METADATA",
             value: JsValue::from(HTMLMediaElement::HAVE_METADATA as i32),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "HAVE_CURRENT_DATA",
             value: JsValue::from(HTMLMediaElement::HAVE_CURRENT_DATA as i32),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "HAVE_FUTURE_DATA",
             value: JsValue::from(HTMLMediaElement::HAVE_FUTURE_DATA as i32),
         });
         def.add_constant(ConstantDef {
+            _phantom: PhantomData,
+        
             id: "HAVE_ENOUGH_DATA",
             value: JsValue::from(HTMLMediaElement::HAVE_ENOUGH_DATA as i32),
         });
 
         // network state
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "networkState",
             getter: get_network_state,
             setter: None,
@@ -98,6 +119,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "readyState",
             getter: get_ready_state,
             setter: None,
@@ -110,6 +133,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "src",
             getter: get_src,
             setter: Some(set_src),
@@ -122,6 +147,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "currentSrc",
             getter: get_current_src,
             setter: None,
@@ -134,6 +161,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "duration",
             getter: get_duration,
             setter: None,
@@ -146,6 +175,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "paused",
             getter: get_paused,
             setter: None,
@@ -158,6 +189,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "seeking",
             getter: get_seeking,
             setter: None,
@@ -170,6 +203,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "currentTime",
             getter: get_current_time,
             setter: Some(set_current_time),
@@ -182,6 +217,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "error",
             getter: get_error,
             setter: None,
@@ -194,6 +231,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "autoplay",
             getter: get_autoplay,
             setter: Some(set_autoplay),
@@ -206,6 +245,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "loop",
             getter: get_loop,
             setter: Some(set_loop),
@@ -218,6 +259,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "controls",
             getter: get_controls,
             setter: Some(set_controls),
@@ -230,6 +273,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "muted",
             getter: get_muted,
             setter: Some(set_muted),
@@ -242,6 +287,8 @@ impl WebIdlInterface for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "volume",
             getter: get_volume,
             setter: Some(set_volume),
@@ -255,6 +302,8 @@ impl WebIdlInterface for HTMLMediaElement {
         });
         // Operations
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "load",
             length: 0,
             method: load_method,
@@ -263,6 +312,8 @@ impl WebIdlInterface for HTMLMediaElement {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "play",
             length: 0,
             method: play_method,
@@ -271,6 +322,8 @@ impl WebIdlInterface for HTMLMediaElement {
             promise_type: true,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "pause",
             length: 0,
             method: pause_method,
@@ -279,6 +332,8 @@ impl WebIdlInterface for HTMLMediaElement {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "canPlayType",
             length: 1,
             method: can_play_type,
@@ -288,6 +343,8 @@ impl WebIdlInterface for HTMLMediaElement {
         });
 
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "preload",
             getter: get_preload,
             setter: Some(set_preload),

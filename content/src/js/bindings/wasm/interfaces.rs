@@ -5,6 +5,7 @@
 //! Each binding function is a thin wrapper that downcasts, calls a
 //! domain method or function, and wraps the result.
 
+use std::marker::PhantomData;
 use boa_engine::{
     js_string, native_function::NativeFunction, object::FunctionObjectBuilder,
     property::PropertyDescriptor, Context, JsNativeError, JsObject, JsResult, JsValue,
@@ -17,7 +18,7 @@ use crate::webidl::get_a_copy_of_the_buffer_source;
 // WebIdlInterface: Module
 
 /// <https://webassembly.github.io/spec/js-api/#modules>
-impl WebIdlInterface for WasmModule {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
     const NAME: &'static str = "Module";
 
     fn legacy_namespace() -> Option<&'static str> {
@@ -28,8 +29,10 @@ impl WebIdlInterface for WasmModule {
         1
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "exports",
             length: 1,
             method: module_exports_binding,
@@ -40,6 +43,8 @@ impl WebIdlInterface for WasmModule {
         // <https://webassembly.github.io/spec/js-api/#dom-module-imports>
         // Note: Not yet implemented.
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "imports",
             length: 1,
             method: |_this, _args, _ctx| {
@@ -54,6 +59,8 @@ impl WebIdlInterface for WasmModule {
         // <https://webassembly.github.io/spec/js-api/#dom-module-customsections>
         // Note: Not yet implemented.
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "customSections",
             length: 2,
             method: |_this, _args, _ctx| {
@@ -88,15 +95,17 @@ impl WebIdlInterface for WasmModule {
 // WebIdlInterface: Instance
 
 /// <https://webassembly.github.io/spec/js-api/#instances>
-impl WebIdlInterface for WasmInstance {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmInstance {
     const NAME: &'static str = "Instance";
 
     fn legacy_namespace() -> Option<&'static str> {
         Some("WebAssembly")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "exports",
             getter: get_instance_exports_binding,
             setter: None,

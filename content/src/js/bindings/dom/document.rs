@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 use boa_engine::{
@@ -16,16 +17,18 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, W
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for Document {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for Document {
     const NAME: &'static str = "Document";
 
     fn parent_name() -> Option<&'static str> {
         Some("Node")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         // §3.7.7: Regular operations
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "getElementById",
             length: 1,
             method: get_element_by_id,
@@ -34,6 +37,8 @@ impl WebIdlInterface for Document {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "querySelector",
             length: 1,
             method: query_selector,
@@ -42,6 +47,8 @@ impl WebIdlInterface for Document {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "querySelectorAll",
             length: 1,
             method: query_selector_all,
@@ -50,6 +57,8 @@ impl WebIdlInterface for Document {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "getElementsByTagName",
             length: 1,
             method: get_elements_by_tag_name,
@@ -58,6 +67,8 @@ impl WebIdlInterface for Document {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "createElement",
             length: 1,
             method: create_element,
@@ -66,6 +77,8 @@ impl WebIdlInterface for Document {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "createElementNS",
             length: 2,
             method: create_element_ns,
@@ -74,6 +87,8 @@ impl WebIdlInterface for Document {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "createTextNode",
             length: 1,
             method: create_text_node,
@@ -82,6 +97,8 @@ impl WebIdlInterface for Document {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "createComment",
             length: 1,
             method: create_comment,
@@ -92,6 +109,8 @@ impl WebIdlInterface for Document {
 
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "body",
             getter: get_body,
             setter: None,
@@ -104,6 +123,8 @@ impl WebIdlInterface for Document {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "documentElement",
             getter: get_document_element,
             setter: None,
@@ -116,6 +137,8 @@ impl WebIdlInterface for Document {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "title",
             getter: get_title,
             setter: Some(set_title),
@@ -128,6 +151,8 @@ impl WebIdlInterface for Document {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "dir",
             getter: get_dir,
             setter: Some(set_dir),

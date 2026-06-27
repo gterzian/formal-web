@@ -12,6 +12,7 @@
 
 mod interfaces;
 
+use std::marker::PhantomData;
 use crate::wasm::{
     namespace::{
         asynchronously_compile_a_webassembly_module,
@@ -37,12 +38,14 @@ struct WasmNamespace;
 ///
 /// The `WebAssembly` namespace object exposes validate, compile, instantiate,
 /// and the JSTag attribute.
-impl WebIdlNamespace for WasmNamespace {
+impl WebIdlNamespace<js_engine::boa::BoaTypes> for WasmNamespace {
     const NAME: &'static str = "WebAssembly";
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-validate>
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "validate",
             length: 1,
             method: validate_fn,
@@ -53,6 +56,8 @@ impl WebIdlNamespace for WasmNamespace {
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-compile>
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "compile",
             length: 1,
             method: compile_fn,
@@ -63,6 +68,8 @@ impl WebIdlNamespace for WasmNamespace {
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate>
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "instantiate",
             length: 1,
             method: instantiate_fn,
@@ -73,6 +80,8 @@ impl WebIdlNamespace for WasmNamespace {
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-jstag>
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "JSTag",
             getter: interfaces::get_wasm_jstag,
             setter: None,

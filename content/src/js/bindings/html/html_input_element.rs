@@ -1,19 +1,22 @@
 // ── HTMLInputElement JS bindings ──
 
+use std::marker::PhantomData;
 use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLInputElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
-impl WebIdlInterface for HTMLInputElement {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLInputElement {
     const NAME: &'static str = "HTMLInputElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("HTMLElement")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "value",
             getter: get_value,
             setter: Some(set_value),
@@ -26,6 +29,8 @@ impl WebIdlInterface for HTMLInputElement {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "focus",
             length: 0,
             method: focus_method,

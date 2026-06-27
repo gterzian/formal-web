@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{
     js_string, native_function::NativeFunction, Context, JsArgs, JsError, JsNativeError, JsResult,
     JsValue,
@@ -17,15 +18,17 @@ use super::event_target::ContextEventDispatchHost;
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for AbortSignal {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortSignal {
     const NAME: &'static str = "AbortSignal";
 
     fn parent_name() -> Option<&'static str> {
         Some("EventTarget")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "aborted",
             getter: get_aborted,
             setter: None,
@@ -38,6 +41,8 @@ impl WebIdlInterface for AbortSignal {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "reason",
             getter: get_reason,
             setter: None,
@@ -50,6 +55,8 @@ impl WebIdlInterface for AbortSignal {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "onabort",
             getter: get_onabort,
             setter: Some(set_onabort),
@@ -62,6 +69,8 @@ impl WebIdlInterface for AbortSignal {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "throwIfAborted",
             length: 0,
             method: throw_if_aborted,
@@ -71,6 +80,8 @@ impl WebIdlInterface for AbortSignal {
         });
         // https://dom.spec.whatwg.org/#AbortSignal-static-members
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "abort",
             length: 1,
             method: abort_static,
@@ -79,6 +90,8 @@ impl WebIdlInterface for AbortSignal {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "timeout",
             length: 1,
             method: timeout_static,
@@ -87,6 +100,8 @@ impl WebIdlInterface for AbortSignal {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "any",
             length: 1,
             method: any_static,

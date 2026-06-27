@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::streams::{
@@ -8,7 +9,7 @@ use crate::streams::{
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
-impl WebIdlInterface for WritableStream {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStream {
     const NAME: &'static str = "WritableStream";
 
     fn create_platform_object(
@@ -19,8 +20,10 @@ impl WebIdlInterface for WritableStream {
         construct_writable_stream(new_target, args, context)
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "locked",
             getter: get_locked,
             setter: None,
@@ -33,6 +36,8 @@ impl WebIdlInterface for WritableStream {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "abort",
             length: 1,
             method: abort_method,
@@ -41,6 +46,8 @@ impl WebIdlInterface for WritableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "close",
             length: 0,
             method: close_method,
@@ -49,6 +56,8 @@ impl WebIdlInterface for WritableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "getWriter",
             length: 0,
             method: get_writer_method,
@@ -59,11 +68,13 @@ impl WebIdlInterface for WritableStream {
     }
 }
 
-impl WebIdlInterface for WritableStreamDefaultController {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStreamDefaultController {
     const NAME: &'static str = "WritableStreamDefaultController";
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "signal",
             getter: get_signal,
             setter: None,
@@ -76,6 +87,8 @@ impl WebIdlInterface for WritableStreamDefaultController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "error",
             length: 1,
             method: error_method,
@@ -86,7 +99,7 @@ impl WebIdlInterface for WritableStreamDefaultController {
     }
 }
 
-impl WebIdlInterface for WritableStreamDefaultWriter {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStreamDefaultWriter {
     const NAME: &'static str = "WritableStreamDefaultWriter";
 
     fn create_platform_object(
@@ -97,8 +110,10 @@ impl WebIdlInterface for WritableStreamDefaultWriter {
         construct_writable_stream_default_writer(this, args, context)
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "closed",
             getter: get_closed,
             setter: None,
@@ -111,6 +126,8 @@ impl WebIdlInterface for WritableStreamDefaultWriter {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "desiredSize",
             getter: get_desired_size,
             setter: None,
@@ -123,6 +140,8 @@ impl WebIdlInterface for WritableStreamDefaultWriter {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "ready",
             getter: get_ready,
             setter: None,
@@ -135,6 +154,8 @@ impl WebIdlInterface for WritableStreamDefaultWriter {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "abort",
             length: 1,
             method: abort_writer_method,
@@ -143,6 +164,8 @@ impl WebIdlInterface for WritableStreamDefaultWriter {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "close",
             length: 0,
             method: close_writer_method,
@@ -151,6 +174,8 @@ impl WebIdlInterface for WritableStreamDefaultWriter {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "releaseLock",
             length: 0,
             method: release_lock_method,
@@ -159,6 +184,8 @@ impl WebIdlInterface for WritableStreamDefaultWriter {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "write",
             length: 1,
             method: write_method,

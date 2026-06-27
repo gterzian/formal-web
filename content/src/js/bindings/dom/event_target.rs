@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
@@ -28,7 +29,7 @@ use crate::webidl::bindings::{
     create_interface_instance, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
-impl WebIdlInterface for EventTarget {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for EventTarget {
     const NAME: &'static str = "EventTarget";
 
     fn create_platform_object(
@@ -39,8 +40,10 @@ impl WebIdlInterface for EventTarget {
         Ok(EventTarget::default())
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "addEventListener",
             length: 3,
             method: add_event_listener,
@@ -49,6 +52,8 @@ impl WebIdlInterface for EventTarget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "removeEventListener",
             length: 3,
             method: remove_event_listener,
@@ -57,6 +62,8 @@ impl WebIdlInterface for EventTarget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "dispatchEvent",
             length: 1,
             method: dispatch_event,

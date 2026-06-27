@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use boa_engine::{Context, JsNativeError, JsResult, JsValue};
 
 use crate::dom::{create_abort_signal, AbortController, AbortSignal};
@@ -8,7 +9,7 @@ use super::abort_signal::{abort_reason_from_argument, signal_abort_with_context}
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for AbortController {
+impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortController {
     const NAME: &'static str = "AbortController";
 
     fn create_platform_object(
@@ -20,8 +21,10 @@ impl WebIdlInterface for AbortController {
         Ok(AbortController::new(signal))
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+        
             id: "signal",
             getter: get_signal,
             setter: None,
@@ -34,6 +37,8 @@ impl WebIdlInterface for AbortController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
+            _phantom: PhantomData,
+        
             id: "abort",
             length: 1,
             method: abort,
