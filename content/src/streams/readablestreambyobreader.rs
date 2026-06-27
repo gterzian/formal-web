@@ -1,18 +1,18 @@
 use boa_engine::{
-    builtins::promise::ResolvingFunctions, object::JsObject, Context, JsArgs, JsData,
-    JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
+    builtins::promise::ResolvingFunctions, object::JsObject,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::rejected_promise;
 
-use js_engine::boa::BoaTypes;
 use super::{
-    rejected_type_error_promise, with_readable_stream_ref, ArrayBufferViewDescriptor,
-    ReadIntoRequest, ReadableStream, ReadableStreamGenericReader, ReadableStreamReader,
-    ReadableStreamState,
+    ArrayBufferViewDescriptor, ReadIntoRequest, ReadableStream, ReadableStreamGenericReader,
+    ReadableStreamReader, ReadableStreamState, rejected_type_error_promise,
+    with_readable_stream_ref,
 };
+use js_engine::boa::BoaTypes;
 
 /// <https://streams.spec.whatwg.org/#byob-reader-class>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -188,8 +188,12 @@ pub(crate) fn acquire_readable_stream_byob_reader(
 
 fn create_readable_stream_byob_reader(context: &mut Context) -> JsResult<JsObject> {
     let reader = ReadableStreamBYOBReader::new();
-    let reader_object: JsObject =
-        create_interface_instance::<BoaTypes, ReadableStreamBYOBReader>(reader, crate::js::context_as_ec(context))?.into();
+    let reader_object: JsObject = create_interface_instance::<BoaTypes, ReadableStreamBYOBReader>(
+        reader,
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?
+    .into();
     Ok(reader_object)
 }
 

@@ -1,7 +1,7 @@
 // ── HTMLVideoElement JS bindings ──
 
-use std::marker::PhantomData;
 use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
+use std::marker::PhantomData;
 
 use crate::html::HTMLVideoElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
@@ -25,13 +25,15 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
         let value_undefined = ec.value_undefined();
         let ctx = unsafe { crate::js::ec_to_ctx(ec) };
         (|| -> JsResult<Self> {
-        #[cfg(not(feature = "media"))] {
-            return Err(JsNativeError::typ()
-                .with_message("NotSupportedError: Media not available (media feature disabled)")
-                .into());
-        }
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor").into())
+            #[cfg(not(feature = "media"))]
+            {
+                return Err(JsNativeError::typ()
+                    .with_message("NotSupportedError: Media not available (media feature disabled)")
+                    .into());
+            }
+            Err(JsNativeError::typ()
+                .with_message("Illegal constructor")
+                .into())
         })()
         .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
@@ -46,7 +48,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
 
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
-        
+
             id: "videoWidth",
             getter: get_video_width,
             setter: None,
@@ -60,7 +62,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
         });
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
-        
+
             id: "videoHeight",
             getter: get_video_height,
             setter: None,
@@ -74,7 +76,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
         });
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
-        
+
             id: "poster",
             getter: get_poster,
             setter: Some(set_poster),
@@ -88,7 +90,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
         });
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
-        
+
             id: "playsInline",
             getter: get_plays_inline,
             setter: Some(set_plays_inline),
@@ -102,7 +104,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
         });
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
-        
+
             id: "width",
             getter: get_width,
             setter: Some(set_width),
@@ -116,7 +118,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
         });
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
-        
+
             id: "height",
             getter: get_height,
             setter: Some(set_height),
@@ -131,17 +133,21 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
     }
 }
 
-fn get_video_width(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn get_video_width(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    Ok(JsValue::from(video.video_width()))
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        Ok(JsValue::from(video.video_width()))
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
@@ -154,49 +160,57 @@ fn get_video_height(
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    Ok(JsValue::from(video.video_height()))
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        Ok(JsValue::from(video.video_height()))
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_poster(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn get_poster(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    Ok(JsValue::from(JsString::from(video.poster())))
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        Ok(JsValue::from(JsString::from(video.poster())))
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_poster(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn set_poster(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    let poster = args
-        .first()
-        .and_then(|v| v.as_string())
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    video.set_poster(&poster);
-    Ok(JsValue::undefined())
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        let poster = args
+            .first()
+            .and_then(|v| v.as_string())
+            .map(|s| s.to_std_string_escaped())
+            .unwrap_or_default();
+        video.set_poster(&poster);
+        Ok(JsValue::undefined())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
@@ -209,102 +223,122 @@ fn get_plays_inline(
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    Ok(JsValue::from(video.plays_inline()))
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        Ok(JsValue::from(video.plays_inline()))
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_plays_inline(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn set_plays_inline(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
-    video.set_plays_inline(value);
-    Ok(JsValue::undefined())
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
+        video.set_plays_inline(value);
+        Ok(JsValue::undefined())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_width(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn get_width(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    Ok(JsValue::from(JsString::from(video.width())))
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        Ok(JsValue::from(JsString::from(video.width())))
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_width(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn set_width(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    let value = args
-        .first()
-        .and_then(|v| v.as_string())
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    video.set_width(&value);
-    Ok(JsValue::undefined())
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        let value = args
+            .first()
+            .and_then(|v| v.as_string())
+            .map(|s| s.to_std_string_escaped())
+            .unwrap_or_default();
+        video.set_width(&value);
+        Ok(JsValue::undefined())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_height(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn get_height(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    Ok(JsValue::from(JsString::from(video.height())))
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        Ok(JsValue::from(JsString::from(video.height())))
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_height(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn set_height(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-    let value = args
-        .first()
-        .and_then(|v| v.as_string())
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    video.set_height(&value);
-    Ok(JsValue::undefined())
+        let obj = this
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+        let video = obj
+            .downcast_ref::<HTMLVideoElement>()
+            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
+        let value = args
+            .first()
+            .and_then(|v| v.as_string())
+            .map(|s| s.to_std_string_escaped())
+            .unwrap_or_default();
+        video.set_height(&value);
+        Ok(JsValue::undefined())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }

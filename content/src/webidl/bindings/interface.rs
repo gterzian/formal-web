@@ -1,13 +1,16 @@
 use boa_engine::{
+    Context, JsError, JsNativeError, JsObject, JsResult, JsValue,
     builtins::object::OrdinaryObject,
     js_string,
     native_function::NativeFunction,
     object::{FunctionObjectBuilder, NativeObject},
     property::PropertyDescriptor,
-    Context, JsError, JsNativeError, JsObject, JsResult, JsValue,
 };
 
-use js_engine::{Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor as JsPropertyDescriptor};
+use js_engine::{
+    Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm,
+    PropertyDescriptor as JsPropertyDescriptor,
+};
 
 use super::attribute::AttributeDef;
 use super::constant::ConstantDef;
@@ -22,11 +25,21 @@ pub(crate) struct InterfaceDefinition<T: JsTypes> {
 
 impl<T: JsTypes> InterfaceDefinition<T> {
     pub(crate) fn new() -> Self {
-        Self { attributes: Vec::new(), operations: Vec::new(), constants: Vec::new() }
+        Self {
+            attributes: Vec::new(),
+            operations: Vec::new(),
+            constants: Vec::new(),
+        }
     }
-    pub(crate) fn add_attribute(&mut self, attr: AttributeDef<T>) { self.attributes.push(attr); }
-    pub(crate) fn add_operation(&mut self, op: OperationDef<T>) { self.operations.push(op); }
-    pub(crate) fn add_constant(&mut self, const_: ConstantDef<T>) { self.constants.push(const_); }
+    pub(crate) fn add_attribute(&mut self, attr: AttributeDef<T>) {
+        self.attributes.push(attr);
+    }
+    pub(crate) fn add_operation(&mut self, op: OperationDef<T>) {
+        self.operations.push(op);
+    }
+    pub(crate) fn add_constant(&mut self, const_: ConstantDef<T>) {
+        self.constants.push(const_);
+    }
 }
 
 /// Trait for Web IDL platform objects.
@@ -34,12 +47,24 @@ impl<T: JsTypes> InterfaceDefinition<T> {
 /// https://webidl.spec.whatwg.org/#js-interfaces
 pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
     const NAME: &'static str;
-    fn parent_name() -> Option<&'static str> { None }
-    fn is_global() -> bool { false }
-    fn no_interface_object() -> bool { false }
-    fn legacy_namespace() -> Option<&'static str> { None }
-    fn constructor_length() -> usize { 0 }
-    fn immutable_prototype() -> bool { Self::is_global() }
+    fn parent_name() -> Option<&'static str> {
+        None
+    }
+    fn is_global() -> bool {
+        false
+    }
+    fn no_interface_object() -> bool {
+        false
+    }
+    fn legacy_namespace() -> Option<&'static str> {
+        None
+    }
+    fn constructor_length() -> usize {
+        0
+    }
+    fn immutable_prototype() -> bool {
+        Self::is_global()
+    }
 
     fn create_platform_object(
         _new_target: &T::JsValue,
@@ -52,7 +77,9 @@ pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
         Err(ec.new_type_error("Illegal constructor"))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<T>) where Self: Sized;
+    fn define_members(def: &mut InterfaceDefinition<T>)
+    where
+        Self: Sized;
 }
 
 // ── Generic helpers ──
@@ -182,7 +209,9 @@ pub(crate) fn define_global_property_references<Ty: JsTypes>(
 
 pub(crate) trait WebIdlNamespace<T: JsTypes + JsTypesWithRealm>: 'static {
     const NAME: &'static str;
-    fn define_members(def: &mut InterfaceDefinition<T>) where Self: Sized;
+    fn define_members(def: &mut InterfaceDefinition<T>)
+    where
+        Self: Sized;
 }
 
 pub(crate) fn register_namespace_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>

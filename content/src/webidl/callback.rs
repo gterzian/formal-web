@@ -1,4 +1,4 @@
-use boa_engine::{object::JsObject, JsError, JsNativeError, JsResult, JsValue};
+use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
 use js_engine::boa::BoaTypes;
 

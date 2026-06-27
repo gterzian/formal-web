@@ -2,17 +2,15 @@ use log::trace;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{object::JsObject, JsResult, JsValue};
+use boa_engine::{JsResult, JsValue, object::JsObject};
 
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
 use crate::js::{with_event_mut, with_event_target_mut, with_event_target_ref};
 use crate::webidl::call_user_objects_operation;
-use js_engine::{
-    Completion, EcmascriptHost, JsTypes, JsTypesWithRealm,
-};
+use js_engine::{Completion, EcmascriptHost, JsTypes, JsTypesWithRealm};
 
 use super::event::{EventListener, NONE};
-use super::{Document, Element, Event, Node, BUBBLING_PHASE, CAPTURING_PHASE};
+use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};
 
 fn dispatch_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()

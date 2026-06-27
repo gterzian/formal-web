@@ -6,11 +6,12 @@ mod callback;
 mod promise;
 
 pub(crate) use array_index::is_array_index_key;
-pub(crate) use async_iterable::{create_value_async_iterator, AsyncValueIterable};
+pub(crate) use async_iterable::{AsyncValueIterable, create_value_async_iterator};
 pub(crate) use buffer_source::{get_a_copy_of_the_buffer_source, is_buffer_source};
 pub(crate) use callback::{
-    call_user_objects_operation, callback_function_value, callback_interface_type_value,
-    invoke_callback_function, nullable_value, Callback, EcmascriptHost, ExceptionBehavior,
+    Callback, EcmascriptHost, ExceptionBehavior, call_user_objects_operation,
+    callback_function_value, callback_interface_type_value, invoke_callback_function,
+    nullable_value,
 };
 pub(crate) use promise::{
     a_new_promise, error_to_rejection_reason, mark_promise_as_handled, promise_from_completion,

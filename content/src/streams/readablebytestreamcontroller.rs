@@ -1,27 +1,26 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
+    Context, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::typed_array::TypedArrayKind,
     js_string,
     native_function::NativeFunction,
     object::{
-        builtins::{JsArrayBuffer, JsDataView, JsPromise, JsTypedArray},
         JsObject,
+        builtins::{JsArrayBuffer, JsDataView, JsPromise, JsTypedArray},
     },
-    Context, JsData, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use js_engine::boa::BoaTypes;
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::resolved_promise;
 
-use js_engine::boa::BoaTypes;
 use super::{
-    extract_source_method, readable_stream_add_read_request, readable_stream_close,
-    readable_stream_error, readable_stream_fulfill_read_request,
-    readable_stream_get_num_read_requests, type_error_value, CancelAlgorithm, PullAlgorithm,
-    ReadIntoRequest, ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState,
-    StartAlgorithm,
+    CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest, ReadableStream,
+    ReadableStreamController, ReadableStreamState, StartAlgorithm, extract_source_method,
+    readable_stream_add_read_request, readable_stream_close, readable_stream_error,
+    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, type_error_value,
 };
 
 #[derive(Clone, Trace, Finalize)]
@@ -551,8 +550,12 @@ impl ReadableByteStreamController {
         }
 
         let request = ReadableStreamBYOBRequest::new(self.clone());
-        let object: JsObject =
-            create_interface_instance::<BoaTypes, ReadableStreamBYOBRequest>(request, crate::js::context_as_ec(context))?.into();
+        let object: JsObject = create_interface_instance::<BoaTypes, ReadableStreamBYOBRequest>(
+            request,
+            crate::js::context_as_ec(context),
+        )
+        .map_err(JsError::from_opaque)?
+        .into();
         *self.byob_request_object.borrow_mut() = Some(object.clone());
         self.update_byob_request_view(context)?;
         Ok(Some(object))
@@ -1144,9 +1147,12 @@ pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
     context: &mut Context,
 ) -> JsResult<()> {
     let controller = ReadableByteStreamController::new();
-    let controller_object: JsObject =
-        create_interface_instance::<BoaTypes, ReadableByteStreamController>(controller.clone(), crate::js::context_as_ec(context))?
-            .into();
+    let controller_object: JsObject = create_interface_instance::<
+        BoaTypes,
+        ReadableByteStreamController,
+    >(controller.clone(), crate::js::context_as_ec(context))
+    .map_err(JsError::from_opaque)?
+    .into();
 
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
     let mut pull_algorithm = PullAlgorithm::ReturnUndefined;

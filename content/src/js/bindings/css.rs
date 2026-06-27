@@ -2,13 +2,11 @@
 ///
 /// https://drafts.csswg.org/css-conditional-3/#the-css-namespace
 use boa_engine::{
-    js_string, native_function::NativeFunction, object::ObjectInitializer, property::Attribute,
-    Context, JsResult, JsValue,
+    Context, JsResult, JsValue, js_string, native_function::NativeFunction,
+    object::ObjectInitializer, property::Attribute,
 };
 
 use crate::css::CSS;
-use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
 
 /// Install the `CSS` namespace object on the global scope.
 ///
@@ -37,8 +35,7 @@ pub(crate) fn install_css_namespace(context: &mut Context) -> JsResult<()> {
 /// WebIDL overload resolution selects:
 /// - 2 arguments → `supports(CSSOMString property, CSSOMString value)`
 /// - 1 argument  → `supports(CSSOMString conditionText)`
-fn supports(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
-    (|| -> JsResult<JsValue> {
+fn supports(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
     let result = if args.len() >= 2 {
         // Invoked as supports(property, value) — WebIDL overload with 2 required arguments.
         let property = args
@@ -69,6 +66,4 @@ fn supports(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<Js
     };
 
     Ok(JsValue::from(result))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }

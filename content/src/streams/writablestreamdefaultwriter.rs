@@ -1,20 +1,19 @@
 use boa_engine::{
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
-    object::{builtins::JsPromise, JsObject},
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
+    object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 
-use js_engine::boa::BoaTypes;
 use super::{
-    rejected_type_error_promise, type_error_value, with_writable_stream_ref,
-    writable_stream_default_controller_get_chunk_size,
+    WritableStream, WritableStreamState, WritableStreamWriter, rejected_type_error_promise,
+    type_error_value, with_writable_stream_ref, writable_stream_default_controller_get_chunk_size,
     writable_stream_default_controller_get_desired_size, writable_stream_default_controller_write,
-    WritableStream, WritableStreamState, WritableStreamWriter,
 };
+use js_engine::boa::BoaTypes;
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -399,7 +398,12 @@ pub(crate) fn acquire_writable_stream_default_writer(
 fn create_writable_stream_default_writer(context: &mut Context) -> JsResult<JsObject> {
     let writer = WritableStreamDefaultWriter::new();
     let writer_object: JsObject =
-        create_interface_instance::<BoaTypes, WritableStreamDefaultWriter>(writer, crate::js::context_as_ec(context))?.into();
+        create_interface_instance::<BoaTypes, WritableStreamDefaultWriter>(
+            writer,
+            crate::js::context_as_ec(context),
+        )
+        .map_err(JsError::from_opaque)?
+        .into();
     Ok(writer_object)
 }
 pub(crate) fn with_writable_stream_default_writer_ref<R>(

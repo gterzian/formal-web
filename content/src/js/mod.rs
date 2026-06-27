@@ -28,11 +28,15 @@ pub(crate) fn context_as_engine(context: &mut boa_engine::Context) -> &mut Engin
     unsafe { &mut *(context as *mut boa_engine::Context as *mut Engine) }
 }
 
-pub(crate) fn context_as_ec(context: &mut boa_engine::Context) -> &mut dyn js_engine::ExecutionContext<js_engine::boa::BoaTypes> {
+pub(crate) fn context_as_ec(
+    context: &mut boa_engine::Context,
+) -> &mut dyn js_engine::ExecutionContext<js_engine::boa::BoaTypes> {
     context_as_engine(context)
 }
 
-pub(crate) fn context_as_ec_ref(context: &boa_engine::Context) -> &dyn js_engine::ExecutionContext<js_engine::boa::BoaTypes> {
+pub(crate) fn context_as_ec_ref(
+    context: &boa_engine::Context,
+) -> &dyn js_engine::ExecutionContext<js_engine::boa::BoaTypes> {
     unsafe { &*(context as *const boa_engine::Context as *const Engine) }
 }
 
@@ -44,11 +48,13 @@ pub(crate) fn context_as_ec_ref(context: &boa_engine::Context) -> &dyn js_engine
 /// Currently unused — available for binding functions that need to call
 /// existing domain helpers taking `&mut Context`.
 #[allow(dead_code)]
-pub(crate) unsafe fn ec_to_ctx<'a>(ec: &'a mut dyn js_engine::ExecutionContext<js_engine::boa::BoaTypes>) -> &'a mut boa_engine::Context {
+pub(crate) unsafe fn ec_to_ctx<'a>(
+    ec: &'a mut dyn js_engine::ExecutionContext<js_engine::boa::BoaTypes>,
+) -> &'a mut boa_engine::Context {
     // SAFETY: BoaEngine is repr(transparent) over Context, so the data pointer
     // of dyn ExecutionContext<BoaTypes> points to a BoaEngine whose first field is Context.
     unsafe {
-        &mut *(ec as *mut dyn js_engine::ExecutionContext<js_engine::boa::BoaTypes>
-            as *mut Engine as *mut boa_engine::Context)
+        &mut *(ec as *mut dyn js_engine::ExecutionContext<js_engine::boa::BoaTypes> as *mut Engine
+            as *mut boa_engine::Context)
     }
 }

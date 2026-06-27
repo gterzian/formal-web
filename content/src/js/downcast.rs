@@ -1,4 +1,4 @@
-use boa_engine::{object::JsObject, JsNativeError, JsResult, JsValue};
+use boa_engine::{JsNativeError, JsResult, JsValue, object::JsObject};
 
 use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent,

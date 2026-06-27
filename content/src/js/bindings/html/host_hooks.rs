@@ -3,14 +3,14 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    context::{intrinsics::Intrinsics, ContextBuilder, HostHooks},
+    Context, Source,
+    context::{ContextBuilder, HostHooks, intrinsics::Intrinsics},
     job::SimpleJobExecutor,
     js_string,
     native_function::NativeFunction,
     object::{FunctionObjectBuilder, JsObject},
     property::PropertyDescriptor,
     symbol::JsSymbol,
-    Context, Source,
 };
 
 use super::hyperlink_element_utils;
@@ -64,7 +64,9 @@ impl HostHooks for WindowHostHooks {
 /// Returns a fully-initialized `Engine` with all interfaces, prototypes,
 /// and native functions registered.  Access the underlying `Context` via
 /// `engine.context()` for Boa-specific operations not yet abstracted.
-pub(crate) fn build_boa_engine(document: Rc<RefCell<BaseDocument>>) -> Result<crate::js::Engine, String> {
+pub(crate) fn build_boa_engine(
+    document: Rc<RefCell<BaseDocument>>,
+) -> Result<crate::js::Engine, String> {
     let context = build_boa_context(document)?;
     Ok(crate::js::Engine::from_context(context))
 }
@@ -85,13 +87,15 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<js_engine::boa::BoaTypes, $ty, _>(crate::js::context_as_engine(&mut context))
-                .map_err(|error| {
-                    error
-                        .to_string(&mut context)
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_else(|_| String::from("unknown error"))
-                })?;
+            register_interface_spec::<js_engine::boa::BoaTypes, $ty, _>(
+                crate::js::context_as_engine(&mut context),
+            )
+            .map_err(|error| {
+                error
+                    .to_string(&mut context)
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_else(|_| String::from("unknown error"))
+            })?;
         };
     }
 
@@ -153,7 +157,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             &proto,
             crate::js::context_as_ec(&mut context),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.display().to_string())?;
     }
 
     // ReadableStream: async iterator, pipeTo (§ReadableStream)

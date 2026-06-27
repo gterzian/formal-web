@@ -309,8 +309,11 @@ pub(crate) fn create_abort_signal(
     signal: AbortSignal,
     context: &mut Context,
 ) -> JsResult<AbortSignal> {
-    let signal_object = create_interface_instance::<BoaTypes, AbortSignal>(signal.clone(), crate::js::context_as_ec(context))
-        .map_err(JsError::from_opaque)?;
+    let signal_object = create_interface_instance::<BoaTypes, AbortSignal>(
+        signal.clone(),
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?;
     signal.set_reflector(signal_object);
     Ok(signal)
 }
@@ -322,10 +325,13 @@ pub(crate) fn signal_abort(
     reason: JsValue,
 ) -> JsResult<()> {
     let reason = if reason.is_undefined() {
-        JsValue::from(create_interface_instance::<BoaTypes, DOMException>(
-            DOMException::abort_error(),
-            crate::js::context_as_ec(host.context()),
-        ).map_err(JsError::from_opaque)?)
+        JsValue::from(
+            create_interface_instance::<BoaTypes, DOMException>(
+                DOMException::abort_error(),
+                crate::js::context_as_ec(host.context()),
+            )
+            .map_err(JsError::from_opaque)?,
+        )
     } else {
         reason
     };

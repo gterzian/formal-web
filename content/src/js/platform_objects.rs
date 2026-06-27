@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
-use boa_engine::{object::JsObject, Context, JsError, JsNativeError, JsResult};
+use boa_engine::{Context, JsError, JsNativeError, JsResult, object::JsObject};
 use html5ever::{local_name, ns};
 
 use crate::dom::{Element, Node};
@@ -138,27 +138,33 @@ pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> J
             5 => create_interface_instance::<BoaTypes, HTMLInputElement>(
                 HTMLInputElement::new(document, node_id),
                 crate::js::context_as_ec(context),
-            )?,
+            )
+            .map_err(JsError::from_opaque)?,
             4 => create_interface_instance::<BoaTypes, HTMLVideoElement>(
                 HTMLVideoElement::new(document, node_id),
                 crate::js::context_as_ec(context),
-            )?,
+            )
+            .map_err(JsError::from_opaque)?,
             3 => create_interface_instance::<BoaTypes, HTMLIFrameElement>(
                 HTMLIFrameElement::new(document, node_id),
                 crate::js::context_as_ec(context),
-            )?,
+            )
+            .map_err(JsError::from_opaque)?,
             2 => create_interface_instance::<BoaTypes, HTMLAnchorElement>(
                 HTMLAnchorElement::new(document, node_id),
                 crate::js::context_as_ec(context),
-            )?,
+            )
+            .map_err(JsError::from_opaque)?,
             1 => create_interface_instance::<BoaTypes, HTMLElement>(
                 HTMLElement::new(document, node_id),
                 crate::js::context_as_ec(context),
-            )?,
+            )
+            .map_err(JsError::from_opaque)?,
             _ => create_interface_instance::<BoaTypes, Element>(
                 Element::new(document, node_id),
                 crate::js::context_as_ec(context),
-            )?,
+            )
+            .map_err(JsError::from_opaque)?,
         }
     };
     cache_node_object(context, node_id, object.clone())?;
@@ -177,7 +183,8 @@ pub(crate) fn resolve_or_create_text_node_object(
     let object = create_interface_instance::<BoaTypes, Node>(
         Node::new(document, node_id),
         crate::js::context_as_ec(context),
-    )?;
+    )
+    .map_err(JsError::from_opaque)?;
     cache_node_object(context, node_id, object.clone())?;
     Ok(object)
 }

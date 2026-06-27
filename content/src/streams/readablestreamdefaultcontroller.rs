@@ -1,9 +1,9 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    native_function::NativeFunction,
-    object::{builtins::JsPromise, JsObject},
     Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
+    native_function::NativeFunction,
+    object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -11,25 +11,25 @@ use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, promise_from_completion, resolved_promise};
 
-use js_engine::boa::BoaTypes;
 use super::readablestream::{
+    ByteTeeState, ReadableStreamFromIterableState, TeeState,
     readable_byte_stream_tee_cancel1_algorithm, readable_byte_stream_tee_cancel2_algorithm,
     readable_byte_stream_tee_pull1_algorithm, readable_byte_stream_tee_pull2_algorithm,
     readable_stream_add_read_request, readable_stream_close,
     readable_stream_default_tee_cancel1_algorithm, readable_stream_default_tee_cancel2_algorithm,
     readable_stream_default_tee_pull_algorithm, readable_stream_error,
     readable_stream_from_iterable_cancel_algorithm, readable_stream_from_iterable_pull_algorithm,
-    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, ByteTeeState,
-    ReadableStreamFromIterableState, TeeState,
+    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
 };
 use super::transformstream::{
     transform_stream_default_source_cancel_algorithm,
     transform_stream_default_source_pull_algorithm,
 };
 use super::{
-    range_error_value, ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState,
-    SourceMethod, TransformStream,
+    ReadRequest, ReadableStream, ReadableStreamController, ReadableStreamState, SourceMethod,
+    TransformStream, range_error_value,
 };
+use js_engine::boa::BoaTypes;
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
 #[derive(Clone, Trace, Finalize)]
@@ -743,8 +743,11 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
 ) -> JsResult<()> {
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
-    let controller_object =
-        create_interface_instance::<BoaTypes, ReadableStreamDefaultController>(controller.clone(), crate::js::context_as_ec(context))?;
+    let controller_object = create_interface_instance::<BoaTypes, ReadableStreamDefaultController>(
+        controller.clone(),
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;

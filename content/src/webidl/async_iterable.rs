@@ -1,12 +1,12 @@
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::{iterable::create_iter_result_object, object::OrdinaryObject},
     js_string,
     native_function::NativeFunction,
-    object::{builtins::JsPromise, FunctionObjectBuilder, JsObject, ObjectInitializer},
+    object::{FunctionObjectBuilder, JsObject, ObjectInitializer, builtins::JsPromise},
     property::Attribute,
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 

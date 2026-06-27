@@ -22,13 +22,22 @@ pub(crate) struct InterfaceRegistry<T: JsTypes> {
 
 impl<T: JsTypes> InterfaceRegistry<T> {
     pub(crate) fn new() -> Self {
-        Self { map: HashMap::new() }
+        Self {
+            map: HashMap::new(),
+        }
     }
 
-    pub(crate) fn register<U: 'static>(&mut self, prototype: T::JsObject, constructor: T::JsObject) {
+    pub(crate) fn register<U: 'static>(
+        &mut self,
+        prototype: T::JsObject,
+        constructor: T::JsObject,
+    ) {
         self.map.insert(
             TypeId::of::<U>(),
-            InterfaceEntry { prototype, constructor },
+            InterfaceEntry {
+                prototype,
+                constructor,
+            },
         );
     }
 
@@ -96,14 +105,14 @@ pub(crate) fn register_in_host_defined<Ty, I>(
 }
 
 /// Get a prototype from the registry.
-pub(crate) fn get_prototype_from_host_defined<Ty, I>(ec: &dyn ExecutionContext<Ty>) -> Option<Ty::JsObject>
+pub(crate) fn get_prototype_from_host_defined<Ty, I>(
+    ec: &dyn ExecutionContext<Ty>,
+) -> Option<Ty::JsObject>
 where
     Ty: JsTypes + JsTypesWithRealm,
     I: 'static,
 {
-    with_registry_ref::<Ty, _>(ec, |registry| {
-        registry.get_prototype::<I>().cloned()
-    })
+    with_registry_ref::<Ty, _>(ec, |registry| registry.get_prototype::<I>().cloned())
 }
 
 /// Wire the prototype chain for an interface that inherits from another.
@@ -140,16 +149,14 @@ where
 pub(crate) fn get_registry_prototype_boa<I: 'static>(
     context: &boa_engine::Context,
 ) -> Option<boa_engine::JsObject> {
-    get_prototype_from_host_defined::<js_engine::boa::BoaTypes, I>(
-        crate::js::context_as_ec_ref(context),
-    )
+    get_prototype_from_host_defined::<js_engine::boa::BoaTypes, I>(crate::js::context_as_ec_ref(
+        context,
+    ))
 }
 
 /// Convenience: wire prototype using &mut Context.
 pub(crate) fn wire_registry_prototype_boa<TChild: 'static, TParent: 'static>(
     context: &mut boa_engine::Context,
 ) {
-    wire_prototype::<js_engine::boa::BoaTypes, TChild, TParent>(
-        crate::js::context_as_ec(context),
-    );
+    wire_prototype::<js_engine::boa::BoaTypes, TChild, TParent>(crate::js::context_as_ec(context));
 }

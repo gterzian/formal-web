@@ -1,7 +1,7 @@
-use std::marker::PhantomData;
 use boa_engine::{Context, JsNativeError, JsResult, JsValue};
+use std::marker::PhantomData;
 
-use crate::dom::{create_abort_signal, AbortController, AbortSignal};
+use crate::dom::{AbortController, AbortSignal, create_abort_signal};
 use crate::js::with_abort_controller_ref;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
@@ -22,8 +22,8 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortController {
         let value_undefined = ec.value_undefined();
         let ctx = unsafe { crate::js::ec_to_ctx(ec) };
         (|| -> JsResult<Self> {
-        let signal = create_abort_signal(AbortSignal::new(), ctx)?;
-        Ok(AbortController::new(signal))
+            let signal = create_abort_signal(AbortSignal::new(), ctx)?;
+            Ok(AbortController::new(signal))
         })()
         .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
@@ -31,7 +31,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortController {
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
-        
+
             id: "signal",
             getter: get_signal,
             setter: None,
@@ -45,7 +45,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortController {
         });
         def.add_operation(OperationDef {
             _phantom: PhantomData,
-        
+
             id: "abort",
             length: 1,
             method: abort,
@@ -56,30 +56,39 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortController {
     }
 }
 
-fn get_signal(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn get_signal(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let controller = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("AbortController receiver is not an object")
-    })?;
-    let signal = with_abort_controller_ref(&controller, |controller| controller.signal_object())??;
-    Ok(JsValue::from(signal))
+        let controller = this.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("AbortController receiver is not an object")
+        })?;
+        let signal =
+            with_abort_controller_ref(&controller, |controller| controller.signal_object())??;
+        Ok(JsValue::from(signal))
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn abort(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+fn abort(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
+    let reason = abort_reason_from_argument(args.get(0), ec)?;
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let controller = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("AbortController receiver is not an object")
-    })?;
-    let signal = with_abort_controller_ref(&controller, |controller| controller.signal())?;
-    let reason = abort_reason_from_argument(args.get(0), ctx)?;
-    signal_abort_with_context(&signal, reason, ctx)?;
-    Ok(JsValue::undefined())
+        let controller = this.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("AbortController receiver is not an object")
+        })?;
+        let signal = with_abort_controller_ref(&controller, |controller| controller.signal())?;
+        signal_abort_with_context(&signal, reason, ctx)?;
+        Ok(JsValue::undefined())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }

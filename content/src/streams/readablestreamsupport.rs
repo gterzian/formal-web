@@ -1,13 +1,13 @@
 use boa_engine::{
+    Context, JsNativeError, JsResult, JsString, JsValue,
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
     object::{
-        builtins::{JsFunction, JsPromise},
         JsObject, ObjectInitializer,
+        builtins::{JsFunction, JsPromise},
     },
     property::Attribute,
-    Context, JsNativeError, JsResult, JsString, JsValue,
 };
 use js_engine::boa::BoaTypes;
 
@@ -15,18 +15,18 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use log::error;
 
 use crate::webidl::{
-    invoke_callback_function, mark_promise_as_handled, rejected_promise, Callback, EcmascriptHost,
-    ExceptionBehavior,
+    Callback, EcmascriptHost, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
+    rejected_promise,
 };
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestream::{
-    readable_byte_stream_tee_default_reader_chunk_steps,
+    ByteTeeState, PipeToState, TeeState, readable_byte_stream_tee_default_reader_chunk_steps,
     readable_byte_stream_tee_default_reader_close_steps,
     readable_byte_stream_tee_default_reader_error_steps,
     readable_stream_default_tee_read_request_chunk_steps,
     readable_stream_default_tee_read_request_close_steps,
-    readable_stream_default_tee_read_request_error_steps, ByteTeeState, PipeToState, TeeState,
+    readable_stream_default_tee_read_request_error_steps,
 };
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
@@ -101,12 +101,24 @@ impl SourceMethod {
             fn report_exception(&mut self, error: JsValue) {
                 log::error!("uncaught callback error: {error:?}");
             }
-            fn value_undefined(&mut self) -> JsValue { JsValue::undefined() }
-            fn value_null(&mut self) -> JsValue { JsValue::null() }
-            fn value_from_bool(&mut self, b: bool) -> JsValue { JsValue::from(b) }
-            fn value_from_number(&mut self, n: f64) -> JsValue { JsValue::from(n) }
-            fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue { JsValue::from(s) }
-            fn js_string_from_str(&self, s: &str) -> boa_engine::JsString { boa_engine::js_string!(s) }
+            fn value_undefined(&mut self) -> JsValue {
+                JsValue::undefined()
+            }
+            fn value_null(&mut self) -> JsValue {
+                JsValue::null()
+            }
+            fn value_from_bool(&mut self, b: bool) -> JsValue {
+                JsValue::from(b)
+            }
+            fn value_from_number(&mut self, n: f64) -> JsValue {
+                JsValue::from(n)
+            }
+            fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+                JsValue::from(s)
+            }
+            fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+                boa_engine::js_string!(s)
+            }
         }
         let mut host = CtxHost(context);
         let this_value = JsValue::from(self.this_value.clone());

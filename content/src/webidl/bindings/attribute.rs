@@ -50,8 +50,7 @@ where
     Ty: JsTypes + JsTypesWithRealm,
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
-    let static_attrs: Vec<&AttributeDef<Ty>> =
-        attributes.iter().filter(|a| a.static_).collect();
+    let static_attrs: Vec<&AttributeDef<Ty>> = attributes.iter().filter(|a| a.static_).collect();
     define_attributes_on_target(engine, target, &static_attrs)
 }
 
@@ -87,9 +86,7 @@ where
         };
         if let Some(setter) = attr.setter {
             let setter_fn = engine.create_builtin_function(
-                Box::new({
-                    move |args, this, ec| setter(&this, args, ec)
-                }),
+                Box::new({ move |args, this, ec| setter(&this, args, ec) }),
                 1,
                 engine.property_key_from_str(attr.id),
                 &realm,

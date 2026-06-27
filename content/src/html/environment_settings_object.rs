@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    js_string, object::JsObject, property::Attribute, Context, JsResult, JsValue, Source,
+    Context, JsError, JsResult, JsValue, Source, js_string, object::JsObject, property::Attribute,
 };
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
@@ -14,7 +14,7 @@ use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_boa_engine;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
 use crate::js::{
-    install_console_namespace, install_css_namespace, install_document_property, Engine,
+    Engine, install_console_namespace, install_css_namespace, install_document_property,
 };
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 use js_engine::boa::BoaTypes;
@@ -104,18 +104,16 @@ impl EnvironmentSettingsObject {
 
         let document_object = create_interface_instance::<BoaTypes, Document>(
             Document::new(document.clone(), creation_url.clone()),
-            engine,
+            &mut engine,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.display().to_string())?;
 
         store_document_object(engine.context_ref(), document_object)
             .map_err(|error| error.to_string())?;
-        install_document_property(engine.context())
-            .map_err(|error| error.to_string())?;
+        install_document_property(engine.context()).map_err(|error| error.to_string())?;
         install_console_namespace(engine.context())
             .map_err(|error: boa_engine::JsError| error.to_string())?;
-        install_css_namespace(engine.context())
-            .map_err(|error| error.to_string())?;
+        install_css_namespace(engine.context()).map_err(|error| error.to_string())?;
 
         let global = engine.context().global_object();
         if let Some(window_proto) = get_registry_prototype::<Window>(engine.context_ref()) {
@@ -380,12 +378,24 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for EnvironmentSettings
         self.engine.report_exception(error)
     }
 
-    fn value_undefined(&mut self) -> JsValue { self.engine.value_undefined() }
-    fn value_null(&mut self) -> JsValue { self.engine.value_null() }
-    fn value_from_bool(&mut self, b: bool) -> JsValue { self.engine.value_from_bool(b) }
-    fn value_from_number(&mut self, n: f64) -> JsValue { self.engine.value_from_number(n) }
-    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue { self.engine.value_from_string(s) }
-    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString { self.engine.js_string_from_str(s) }
+    fn value_undefined(&mut self) -> JsValue {
+        self.engine.value_undefined()
+    }
+    fn value_null(&mut self) -> JsValue {
+        self.engine.value_null()
+    }
+    fn value_from_bool(&mut self, b: bool) -> JsValue {
+        self.engine.value_from_bool(b)
+    }
+    fn value_from_number(&mut self, n: f64) -> JsValue {
+        self.engine.value_from_number(n)
+    }
+    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+        self.engine.value_from_string(s)
+    }
+    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+        self.engine.js_string_from_str(s)
+    }
 }
 
 impl EventDispatchHost for EnvironmentSettingsObject {
@@ -394,7 +404,11 @@ impl EventDispatchHost for EnvironmentSettingsObject {
     }
 
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
-        create_interface_instance::<BoaTypes, Event>(event, crate::js::context_as_ec(self.context()))
+        create_interface_instance::<BoaTypes, Event>(
+            event,
+            crate::js::context_as_ec(self.context()),
+        )
+        .map_err(JsError::from_opaque)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

@@ -18,21 +18,21 @@
 //! `super::mod.rs` for known Boa-specific quirks.
 
 use boa_engine::{
+    Context, JsError, JsNativeError, JsResult, JsSymbol, JsValue,
     builtins::array_buffer::AlignedVec,
     native_function::NativeFunction,
     object::{
-        builtins::{JsArrayBuffer, JsFunction, JsGenerator, JsPromise, JsSharedArrayBuffer},
         FunctionObjectBuilder, JsObject,
+        builtins::{JsArrayBuffer, JsFunction, JsGenerator, JsPromise, JsSharedArrayBuffer},
     },
     property::PropertyKey,
     value::PreferredType as BoaPreferredType,
-    Context, JsError, JsNativeError, JsResult, JsSymbol, JsValue,
 };
 
 use crate::{
-    records::{IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics},
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
     JsEngine, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
+    records::{IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics},
 };
 
 use super::types::BoaTypes;
@@ -158,20 +158,16 @@ impl JsEngine<BoaTypes> for BoaEngine {
         // The closure is `'static` — `behaviour` is an owned Box that
         // does not borrow from the engine.
         let native = unsafe {
-            NativeFunction::from_closure(
-                Box::new(
-                    move |this: &JsValue,
-                          args: &[JsValue],
-                          context: &mut Context|
-                          -> JsResult<JsValue> {
-                        // SAFETY: BoaEngine is repr(transparent) over Context.
-                        let engine: &mut BoaEngine =
-                            &mut *(context as *mut Context as *mut BoaEngine);
-                        behaviour(args, this.clone(), engine)
-                            .map_err(|e| JsError::from_opaque(e))
-                    },
-                ),
-            )
+            NativeFunction::from_closure(Box::new(
+                move |this: &JsValue,
+                      args: &[JsValue],
+                      context: &mut Context|
+                      -> JsResult<JsValue> {
+                    // SAFETY: BoaEngine is repr(transparent) over Context.
+                    let engine: &mut BoaEngine = &mut *(context as *mut Context as *mut BoaEngine);
+                    behaviour(args, this.clone(), engine).map_err(|e| JsError::from_opaque(e))
+                },
+            ))
         };
 
         FunctionObjectBuilder::new(realm, native)
@@ -821,9 +817,7 @@ impl ExecutionContext<BoaTypes> for BoaEngine {
                         if !val.is_object() {
                             return Err(JsValue::from(
                                 JsNativeError::typ()
-                                    .with_message(
-                                        "Async iterator return result is not an object",
-                                    )
+                                    .with_message("Async iterator return result is not an object")
                                     .into_opaque(&mut self.context),
                             ));
                         }
@@ -998,8 +992,6 @@ impl ExecutionContext<BoaTypes> for BoaEngine {
     }
 
     // ── Host-Defined Data Store ───────────────────────────────────────────
-
-
 
     // ── Error Reporting ──────────────────────────────────────────────────
 

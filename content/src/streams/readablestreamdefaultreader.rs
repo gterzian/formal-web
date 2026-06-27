@@ -1,21 +1,21 @@
 use std::mem;
 
 use boa_engine::{
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
-    object::{builtins::JsPromise, JsObject},
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
+    object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise};
 
-use js_engine::boa::BoaTypes;
 use super::readablestream::{readable_stream_cancel, with_readable_stream_ref};
 use super::{
-    rejected_type_error_promise, type_error_value, ReadRequest, ReadableStream,
-    ReadableStreamReader, ReadableStreamState,
+    ReadRequest, ReadableStream, ReadableStreamReader, ReadableStreamState,
+    rejected_type_error_promise, type_error_value,
 };
+use js_engine::boa::BoaTypes;
 /// default readers and BYOB readers.
 pub(crate) trait ReadableStreamGenericReader: Clone {
     fn stream_slot_value(&self) -> Option<ReadableStream>;
@@ -382,7 +382,12 @@ pub(crate) fn acquire_readable_stream_default_reader(
 fn create_readable_stream_default_reader(context: &mut Context) -> JsResult<JsObject> {
     let reader = ReadableStreamDefaultReader::new();
     let reader_object: JsObject =
-        create_interface_instance::<BoaTypes, ReadableStreamDefaultReader>(reader, crate::js::context_as_ec(context))?.into();
+        create_interface_instance::<BoaTypes, ReadableStreamDefaultReader>(
+            reader,
+            crate::js::context_as_ec(context),
+        )
+        .map_err(JsError::from_opaque)?
+        .into();
     Ok(reader_object)
 }
 pub(crate) fn with_readable_stream_default_reader_ref<R>(

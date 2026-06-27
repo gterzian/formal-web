@@ -1,7 +1,7 @@
 use boa_engine::{
-    builtins::promise::ResolvingFunctions,
-    object::{builtins::JsPromise, JsObject},
     Context, JsResult, JsValue,
+    builtins::promise::ResolvingFunctions,
+    object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Trace};
 

@@ -5,14 +5,15 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
     native_function::NativeFunction,
-    object::{builtins::JsPromise, JsObject},
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsString, JsValue,
+    object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use js_engine::boa::BoaTypes;
 
 use crate::{
-    dom::{create_abort_signal, signal_abort, AbortSignal, Event, EventDispatchHost},
+    dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
     js::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
     streams::SizeAlgorithm,
     webidl::bindings::create_interface_instance,
@@ -586,12 +587,24 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for ContextEventDispatc
         log::error!("uncaught abort callback error: {error:?}");
     }
 
-    fn value_undefined(&mut self) -> JsValue { JsValue::undefined() }
-    fn value_null(&mut self) -> JsValue { JsValue::null() }
-    fn value_from_bool(&mut self, b: bool) -> JsValue { JsValue::from(b) }
-    fn value_from_number(&mut self, n: f64) -> JsValue { JsValue::from(n) }
-    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue { JsValue::from(s) }
-    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString { boa_engine::js_string!(s) }
+    fn value_undefined(&mut self) -> JsValue {
+        JsValue::undefined()
+    }
+    fn value_null(&mut self) -> JsValue {
+        JsValue::null()
+    }
+    fn value_from_bool(&mut self, b: bool) -> JsValue {
+        JsValue::from(b)
+    }
+    fn value_from_number(&mut self, n: f64) -> JsValue {
+        JsValue::from(n)
+    }
+    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+        JsValue::from(s)
+    }
+    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+        boa_engine::js_string!(s)
+    }
 }
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
@@ -600,7 +613,8 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
     }
 
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        create_interface_instance::<Event>(event, self.context)
+        create_interface_instance::<BoaTypes, Event>(event, crate::js::context_as_ec(self.context))
+            .map_err(JsError::from_opaque)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
@@ -632,9 +646,12 @@ pub(crate) fn create_writable_stream_default_controller(
     context: &mut Context,
 ) -> JsResult<(WritableStreamDefaultController, JsObject)> {
     let controller = WritableStreamDefaultController::new();
-    let controller_object: JsObject =
-        create_interface_instance::<WritableStreamDefaultController>(controller.clone(), context)?
-            .into();
+    let controller_object: JsObject = create_interface_instance::<
+        BoaTypes,
+        WritableStreamDefaultController,
+    >(controller.clone(), crate::js::context_as_ec(context))
+    .map_err(JsError::from_opaque)?
+    .into();
     Ok((controller, controller_object))
 }
 

@@ -1,4 +1,4 @@
-use boa_engine::{js_string, property::PropertyDescriptor, JsObject, JsValue};
+use boa_engine::{JsObject, JsValue, js_string, property::PropertyDescriptor};
 use std::marker::PhantomData;
 
 use js_engine::JsTypes;

@@ -8,12 +8,12 @@
 //! Boa backend status.
 
 use boa_engine::{
+    JsValue,
+    object::JsObject,
     object::builtins::{
         JsArrayBuffer, JsAsyncGenerator, JsDataView, JsFunction, JsGenerator, JsMap, JsPromise,
         JsSet, JsSharedArrayBuffer, JsTypedArray, JsWeakMap, JsWeakSet,
     },
-    object::JsObject,
-    JsValue,
 };
 
 use crate::{JsTypes, JsTypesWithRealm};

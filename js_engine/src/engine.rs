@@ -559,7 +559,13 @@ pub trait JsEngine<T: JsTypes> {
     /// runtime operation.
     fn create_builtin_function(
         &mut self,
-        behaviour: Box<dyn Fn(&[T::JsValue], T::JsValue, &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>>,
+        behaviour: Box<
+            dyn Fn(
+                &[T::JsValue],
+                T::JsValue,
+                &mut dyn ExecutionContext<T>,
+            ) -> Completion<T::JsValue, T>,
+        >,
         length: u32,
         name: T::PropertyKey,
         realm: &T::Realm,

@@ -50,8 +50,7 @@ where
     Ty: JsTypes + JsTypesWithRealm,
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
-    let static_ops: Vec<&OperationDef<Ty>> =
-        operations.iter().filter(|o| o.static_).collect();
+    let static_ops: Vec<&OperationDef<Ty>> = operations.iter().filter(|o| o.static_).collect();
     define_operations_on_target(engine, target, &static_ops)
 }
 

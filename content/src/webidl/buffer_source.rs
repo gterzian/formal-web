@@ -1,8 +1,8 @@
 //! <https://webidl.spec.whatwg.org/#js-buffer-source-types>
 
 use boa_engine::{
-    object::builtins::JsArrayBuffer, object::builtins::JsTypedArray, Context, JsNativeError,
-    JsResult, JsValue,
+    Context, JsNativeError, JsResult, JsValue, object::builtins::JsArrayBuffer,
+    object::builtins::JsTypedArray,
 };
 
 /// <https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy>

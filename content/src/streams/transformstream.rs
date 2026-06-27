@@ -2,16 +2,17 @@ use log::debug;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
     native_function::NativeFunction,
-    object::{builtins::JsPromise, JsObject},
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
+    object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use js_engine::boa::BoaTypes;
 
-use crate::streams::{extract_high_water_mark, extract_size_algorithm, SizeAlgorithm};
+use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{promise_from_value, rejected_promise, resolved_promise};
 
@@ -22,10 +23,10 @@ use super::readablestreamdefaultcontroller::{
 use super::readablestreamsupport::SourceMethod;
 use super::writablestream::create_writable_stream;
 use super::writablestreamdefaultcontroller::{
-    writable_stream_default_controller_error_if_needed, AbortAlgorithm, CloseAlgorithm,
-    StartAlgorithm as WritableStartAlgorithm, WriteAlgorithm,
+    AbortAlgorithm, CloseAlgorithm, StartAlgorithm as WritableStartAlgorithm, WriteAlgorithm,
+    writable_stream_default_controller_error_if_needed,
 };
-use super::{type_error_value, ReadableStream, WritableStream};
+use super::{ReadableStream, WritableStream, type_error_value};
 
 fn stream_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some()
@@ -1214,9 +1215,12 @@ fn create_transform_stream_default_controller(
     context: &mut Context,
 ) -> JsResult<(TransformStreamDefaultController, JsObject)> {
     let controller = TransformStreamDefaultController::new();
-    let controller_object: JsObject =
-        create_interface_instance::<TransformStreamDefaultController>(controller.clone(), context)?
-            .into();
+    let controller_object: JsObject = create_interface_instance::<
+        BoaTypes,
+        TransformStreamDefaultController,
+    >(controller.clone(), crate::js::context_as_ec(context))
+    .map_err(JsError::from_opaque)?
+    .into();
     Ok((controller, controller_object))
 }
 
