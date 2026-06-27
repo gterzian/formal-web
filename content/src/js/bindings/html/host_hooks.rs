@@ -34,6 +34,8 @@ use crate::webidl::bindings::{
 // Note: AbortSignal static methods (abort, timeout, any) are registered via
 // static operations in `AbortSignal::define_members`.
 use super::super::streams::readablestream::{pipe_to_native_method, values_method};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 pub(crate) struct WindowHostHooks {
     document: Rc<RefCell<BaseDocument>>,
@@ -83,7 +85,13 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<$ty>(&mut context).map_err(|error| error.to_string())?;
+            register_interface_spec::<js_engine::boa::BoaTypes, $ty, _>(crate::js::context_as_engine(&mut context))
+                .map_err(|error| {
+                    error
+                        .to_string(&mut context)
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_else(|_| String::from("unknown error"))
+                })?;
         };
     }
 

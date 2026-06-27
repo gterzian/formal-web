@@ -13,6 +13,8 @@ use crate::html::{
     HTMLVideoElement,
 };
 use crate::js::platform_objects::invalidate_cached_node_ids;
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 use crate::webidl::bindings::{
     create_interface_instance, AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
@@ -209,38 +211,61 @@ pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R)
         .into())
 }
 
-fn get_id(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_id(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     with_element_ref(this, |element| JsValue::from(JsString::from(element.id())))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_tag_name(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_tag_name(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     with_element_ref(this, |element| {
         JsValue::from(JsString::from(element.tag_name().as_str()))
     })
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_inner_html(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_inner_html(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     with_element_ref(this, |element| {
         JsValue::from(JsString::from(element.inner_html().as_str()))
     })
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_inner_html(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let html = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     let dropped_node_ids = with_element_ref(this, Element::child_subtree_node_ids)?;
-    invalidate_cached_node_ids(context, &dropped_node_ids)?;
+    invalidate_cached_node_ids(ctx, &dropped_node_ids)?;
     with_element_ref(this, |element| {
         element.set_inner_html(&html);
     })?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://dom.spec.whatwg.org/#dom-element-classlist>
-fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let realm = context.realm().clone();
+fn get_class_list(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let realm = ctx.realm().clone();
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("classList receiver is not an object"))?;
@@ -248,7 +273,7 @@ fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
 
     // Build a simple JS object that wraps class attribute manipulation.
     // <https://dom.spec.whatwg.org/#domtokenlist>
-    let token_list = ObjectInitializer::new(context)
+    let token_list = ObjectInitializer::new(ctx)
         .function(
             NativeFunction::from_fn_ptr(class_list_add),
             js_string!("add"),
@@ -275,7 +300,7 @@ fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
     // Note: The spec requires that DOMTokenList is "live" — changes to
     // the element's class attribute are reflected. Our implementation
     // reads the class attribute fresh on each call.
-    token_list.set(js_string!("__element"), obj_clone, false, context)?;
+    token_list.set(js_string!("__element"), obj_clone, false, ctx)?;
 
     // length getter
     let len_fn = NativeFunction::from_fn_ptr(class_list_length);
@@ -285,16 +310,21 @@ fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
         .enumerable(true)
         .configurable(true)
         .build();
-    token_list.define_property_or_throw(js_string!("length"), len_desc, context)?;
+    token_list.define_property_or_throw(js_string!("length"), len_desc, ctx)?;
 
     Ok(token_list.into())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn class_list_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<String> {
+fn class_list_value(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<String, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<String> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let element_val = obj.get(js_string!("__element"), context)?;
+    let element_val = obj.get(js_string!("__element"), ctx)?;
     let element_obj = element_val
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("classList: element not found"))?;
@@ -337,13 +367,18 @@ fn class_list_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
     } else {
         Ok(String::new())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn class_list_set_value(this: &JsValue, value: &str, context: &mut Context) -> JsResult<()> {
+fn class_list_set_value(this: &JsValue, value: &str, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<(), BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<()> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let element_val = obj.get(js_string!("__element"), context)?;
+    let element_val = obj.get(js_string!("__element"), ctx)?;
     let element_obj = element_val
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("classList: element not found"))?;
@@ -400,14 +435,19 @@ fn class_list_set_value(this: &JsValue, value: &str, context: &mut Context) -> J
         }
     }
     Ok(())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn class_list_add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn class_list_add(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let token = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
-    let current = class_list_value(this, &[], context)?;
+    let current = class_list_value(this, &[], ctx)?;
     let mut classes: Vec<String> = if current.is_empty() {
         Vec::new()
     } else {
@@ -416,33 +456,43 @@ fn class_list_add(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     if !classes.contains(&token) {
         classes.push(token);
         let new_value = classes.join(" ");
-        class_list_set_value(this, &new_value, context)?;
+        class_list_set_value(this, &new_value, ctx)?;
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn class_list_remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn class_list_remove(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let token = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
-    let current = class_list_value(this, &[], context)?;
+    let current = class_list_value(this, &[], ctx)?;
     let classes: Vec<String> = current
         .split(' ')
         .filter(|c| !c.is_empty() && *c != token)
         .map(|s| s.to_string())
         .collect();
     let new_value = classes.join(" ");
-    class_list_set_value(this, &new_value, context)?;
+    class_list_set_value(this, &new_value, ctx)?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn class_list_toggle(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn class_list_toggle(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let token = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
-    let current = class_list_value(this, &[], context)?;
+    let current = class_list_value(this, &[], ctx)?;
     let mut classes: Vec<String> = if current.is_empty() {
         Vec::new()
     } else {
@@ -451,103 +501,133 @@ fn class_list_toggle(this: &JsValue, args: &[JsValue], context: &mut Context) ->
     if let Some(pos) = classes.iter().position(|c| c == &token) {
         classes.remove(pos);
         let new_value = classes.join(" ");
-        class_list_set_value(this, &new_value, context)?;
+        class_list_set_value(this, &new_value, ctx)?;
         Ok(JsValue::new(false))
     } else {
         classes.push(token);
         let new_value = classes.join(" ");
-        class_list_set_value(this, &new_value, context)?;
+        class_list_set_value(this, &new_value, ctx)?;
         Ok(JsValue::new(true))
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn class_list_contains(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let token = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
-    let current = class_list_value(this, &[], context)?;
+    let current = class_list_value(this, &[], ctx)?;
     let classes: Vec<&str> = current.split(' ').collect();
     Ok(JsValue::new(classes.contains(&token.as_str())))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn class_list_length(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let current = class_list_value(this, &[], context)?;
+fn class_list_length(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let current = class_list_value(this, &[], ctx)?;
     let count = if current.is_empty() {
         0
     } else {
         current.split(' ').count()
     };
     Ok(JsValue::new(count))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn query_selector(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let selector = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     let node_id = with_element_ref(this, |element| element.query_selector(&selector))?
         .map_err(|error| JsNativeError::syntax().with_message(error))?;
     match node_id {
         Some(node_id) => {
-            Ok(crate::js::platform_objects::resolve_element_object(node_id, context)?.into())
+            Ok(crate::js::platform_objects::resolve_element_object(node_id, ctx)?.into())
         }
         None => Ok(JsValue::null()),
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn query_selector_all(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let selector = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     let node_ids = with_element_ref(this, |element| element.query_selector_all(&selector))?
         .map_err(|error| JsNativeError::syntax().with_message(error))?;
     let values = node_ids
         .into_iter()
         .map(|node_id| {
-            crate::js::platform_objects::resolve_element_object(node_id, context).map(JsValue::from)
+            crate::js::platform_objects::resolve_element_object(node_id, ctx).map(JsValue::from)
         })
         .collect::<JsResult<Vec<_>>>()?;
-    Ok(JsArray::from_iter(values, context).into())
+    Ok(JsArray::from_iter(values, ctx).into())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn insert_adjacent_text(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let where_ = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     let data = args
         .get_or_undefined(1)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
         |error| {
             JsError::from_opaque(JsValue::from(
-                create_interface_instance::<DOMException>(error, context)
+                create_interface_instance::<DOMException>(error, ctx)
                     .expect("DOMException construction should not fail"),
             ))
         },
     )?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn get_attribute(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let name = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     Ok(
         match with_element_ref(this, |element| element.get_attribute(&name))? {
@@ -555,78 +635,103 @@ fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
             None => JsValue::null(),
         },
     )
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn has_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn has_attribute(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let name = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     Ok(JsValue::from(with_element_ref(this, |element| {
         element.has_attribute(&name)
     })?))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_attribute(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let name = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     let value = args
         .get_or_undefined(1)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     with_element_ref(this, |element| {
         element.set_attribute(&name, &value);
     })?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_attribute_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_attribute_ns(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let namespace = if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined()
     {
         None
     } else {
         Some(
             args.get_or_undefined(0)
-                .to_string(context)?
+                .to_string(ctx)?
                 .to_std_string_escaped(),
         )
     };
     let qualified_name = args
         .get_or_undefined(1)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     let value = args
         .get_or_undefined(2)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     with_element_ref(this, |element| {
         element.set_attribute_ns(namespace.as_deref(), &qualified_name, &value);
     })?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn remove_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn remove_attribute(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let name = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     with_element_ref(this, |element| {
         element.remove_attribute(&name);
     })?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn get_bounding_client_rect(
     this: &JsValue,
     _: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let rect = with_element_ref(this, |element| {
         element.bounding_client_rect().unwrap_or_default()
     })?;
-    let mut initializer = ObjectInitializer::new(context);
+    let mut initializer = ObjectInitializer::new(ctx);
     initializer.property(js_string!("x"), rect.x, Attribute::all());
     initializer.property(js_string!("y"), rect.y, Attribute::all());
     initializer.property(js_string!("width"), rect.width, Attribute::all());
@@ -636,4 +741,6 @@ fn get_bounding_client_rect(
     initializer.property(js_string!("bottom"), rect.bottom, Attribute::all());
     initializer.property(js_string!("left"), rect.left, Attribute::all());
     Ok(initializer.build().into())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }

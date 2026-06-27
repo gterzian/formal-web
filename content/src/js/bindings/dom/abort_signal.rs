@@ -15,6 +15,8 @@ use crate::webidl::bindings::{
 use crate::webidl::{callback_function_value, nullable_value};
 
 use super::event_target::ContextEventDispatchHost;
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -197,21 +199,34 @@ pub(crate) fn any_static(
     Ok(JsValue::from(result_signal.object()?))
 }
 
-fn get_aborted(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_aborted(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let signal = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("AbortSignal receiver is not an object")
     })?;
     with_abort_signal_ref(&signal, |signal| JsValue::from(signal.aborted_value()))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_reason(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_reason(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let signal = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("AbortSignal receiver is not an object")
     })?;
     with_abort_signal_ref(&signal, |signal| signal.reason_value())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn throw_if_aborted(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn throw_if_aborted(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let signal = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("AbortSignal receiver is not an object")
     })?;
@@ -222,9 +237,14 @@ fn throw_if_aborted(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<
 
     let reason = with_abort_signal_ref(&signal, |signal| signal.reason_value())?;
     Err(JsError::from_opaque(reason))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_onabort(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_onabort(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let signal = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("AbortSignal receiver is not an object")
     })?;
@@ -234,9 +254,14 @@ fn get_onabort(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsVal
             .map(|callback| callback.to_js_value())
             .unwrap_or_else(JsValue::null)
     })
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_onabort(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn set_onabort(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let signal_object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("AbortSignal receiver is not an object")
     })?;
@@ -264,20 +289,25 @@ fn set_onabort(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<Js
     }
 
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Vec<AbortSignal>> {
+fn sequence_abort_signals(value: &JsValue, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<Vec<AbortSignal>, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<Vec<AbortSignal>> {
     let object = value.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("AbortSignal.any() requires a sequence of AbortSignal objects")
     })?;
     let length = object
-        .get(js_string!("length"), context)?
-        .to_length(context)?;
+        .get(js_string!("length"), ctx)?
+        .to_length(ctx)?;
     let mut signals = Vec::with_capacity(length as usize);
 
     for index in 0..length {
-        let signal_value = object.get(index, context)?;
+        let signal_value = object.get(index, ctx)?;
         let signal_object = signal_value.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("AbortSignal.any() requires AbortSignal objects")
         })?;
@@ -291,11 +321,18 @@ fn sequence_abort_signals(value: &JsValue, context: &mut Context) -> JsResult<Ve
     }
 
     Ok(signals)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn abort_error_value(context: &mut Context) -> JsResult<JsValue> {
+fn abort_error_value(ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     Ok(JsValue::from(create_interface_instance::<DOMException>(
         DOMException::abort_error(),
-        context,
+        ctx,
     )?))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }

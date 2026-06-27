@@ -15,6 +15,8 @@ use crate::html::{
     HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -125,67 +127,110 @@ fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -
         .into())
 }
 
-fn get_title(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_title(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     with_html_element_ref(this, |html_element| {
         JsValue::from(JsString::from(html_element.title()))
     })
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_title(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_title(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let title = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     with_html_element_ref(this, |html_element| html_element.set_title(&title))?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_lang(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_lang(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     with_html_element_ref(this, |html_element| {
         JsValue::from(JsString::from(html_element.lang()))
     })
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_lang(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_lang(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let lang = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     with_html_element_ref(this, |html_element| html_element.set_lang(&lang))?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_dir(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_dir(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     with_html_element_ref(this, |html_element| {
         JsValue::from(JsString::from(html_element.dir()))
     })
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_dir(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_dir(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let dir = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     with_html_element_ref(this, |html_element| html_element.set_dir(&dir))?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_hidden(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn get_hidden(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     with_html_element_ref(this, |html_element| JsValue::from(html_element.hidden()))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_hidden(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn set_hidden(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let hidden = args.get_or_undefined(0).to_boolean();
     with_html_element_ref(this, |html_element| html_element.set_hidden(hidden))?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn get_style(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("style getter: receiver is not an object")
     })?;
     let element_ref = JsValue::from(object.clone());
-    let realm = context.realm().clone();
+    let realm = ctx.realm().clone();
 
     // Build the style declaration object with a reference to the element,
     // so that cssText and individual property setters can write back.
@@ -193,7 +238,7 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
         inline_style_properties_for_element(&html_element.element)
     })?;
 
-    let mut initializer = ObjectInitializer::new(context);
+    let mut initializer = ObjectInitializer::new(ctx);
     for (name, value) in &properties {
         // cssText is handled separately; skip it here to avoid conflict.
         if name == "cssText" {
@@ -220,7 +265,7 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     let style_obj = initializer.build();
 
     // Store a reference to the element so cssText setter can write back.
-    style_obj.set(js_string!("__element"), element_ref, false, context)?;
+    style_obj.set(js_string!("__element"), element_ref, false, ctx)?;
 
     // Implement cssText as a live getter/setter backed by the element's style attribute.
     let css_text_getter = NativeFunction::from_fn_ptr(style_css_text_getter);
@@ -233,25 +278,35 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
         .enumerable(true)
         .configurable(true)
         .build();
-    style_obj.define_property_or_throw(js_string!("cssText"), css_text_desc, context)?;
+    style_obj.define_property_or_throw(js_string!("cssText"), css_text_desc, ctx)?;
 
     Ok(style_obj.into())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn resolve_style_element(this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
+fn resolve_style_element(this: &JsValue, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected style object"))?;
-    obj.get(js_string!("__element"), context)
+    obj.get(js_string!("__element"), ctx)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn style_css_text_getter(
     this: &JsValue,
     _: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     // Read the element's style attribute.
-    let element_val = resolve_style_element(this, context)?;
+    let element_val = resolve_style_element(this, ctx)?;
     let element_obj = element_val
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("cssText getter: element not found"))?;
@@ -287,18 +342,23 @@ fn style_css_text_getter(
         String::new()
     };
     Ok(JsValue::from(JsString::from(style_attr)))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn style_css_text_setter(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let value = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
-    let element_val = resolve_style_element(this, context)?;
+    let element_val = resolve_style_element(this, ctx)?;
     let element_obj = element_val
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("cssText setter: element not found"))?;
@@ -355,6 +415,8 @@ fn style_css_text_setter(
         }
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 pub(crate) fn style_declaration_object(
@@ -386,13 +448,16 @@ pub(crate) fn style_declaration_object(
 fn get_style_property_value(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     // Step 1.1 of CSSStyleDeclaration.getPropertyValue(property): if property is not a custom
     // property, convert it to ASCII lowercase.
     let property_name = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped()
         .trim()
         .to_ascii_lowercase();
@@ -403,7 +468,7 @@ fn get_style_property_value(
     let Some(object) = this.as_object() else {
         return Ok(JsValue::from(JsString::from("")));
     };
-    let value = object.get(JsString::from(property_name.as_str()), context)?;
+    let value = object.get(JsString::from(property_name.as_str()), ctx)?;
 
     // Step 3: "Return the empty string."
     // Note: This snapshot object currently exposes directly materialized longhand values only, so
@@ -412,6 +477,8 @@ fn get_style_property_value(
         return Ok(JsValue::from(JsString::from("")));
     }
     Ok(value)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn camel_case_property_name(name: &str) -> String {

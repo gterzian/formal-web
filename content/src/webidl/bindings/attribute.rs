@@ -1,19 +1,18 @@
 use std::marker::PhantomData;
 
-use boa_engine::{
-    js_string, native_function::NativeFunction, property::PropertyDescriptor, Context, JsResult,
-    JsValue,
+use js_engine::{
+    Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
 
-use js_engine::JsTypes;
-
 /// Describes a single attribute on an interface.
-///
 /// https://webidl.spec.whatwg.org/#dfn-attribute
 pub(crate) struct AttributeDef<T: JsTypes> {
     pub id: &'static str,
-    pub getter: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
-    pub setter: Option<fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>>,
+    pub getter:
+        fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>,
+    pub setter: Option<
+        fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>,
+    >,
     pub static_: bool,
     pub unforgeable: bool,
     pub promise_type: bool,
@@ -25,52 +24,83 @@ pub(crate) struct AttributeDef<T: JsTypes> {
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-regular-attributes>
-pub(crate) fn define_regular_attributes(
-    proto: &JsValue,
-    context: &mut Context,
-    attributes: &[AttributeDef<js_engine::boa::BoaTypes>],
-) -> JsResult<()> {
-    let regular: Vec<&AttributeDef<js_engine::boa::BoaTypes>> = attributes
+pub(crate) fn define_regular_attributes<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    attributes: &[AttributeDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let regular: Vec<&AttributeDef<Ty>> = attributes
         .iter()
         .filter(|a| !a.static_ && !a.unforgeable)
         .collect();
-    define_attributes_on_target(proto, context, &regular)
+    define_attributes_on_target(engine, target, &regular)
 }
 
-pub(crate) fn define_static_attributes(
-    constructor: &JsValue,
-    context: &mut Context,
-    attributes: &[AttributeDef<js_engine::boa::BoaTypes>],
-) -> JsResult<()> {
-    let static_attrs: Vec<&AttributeDef<js_engine::boa::BoaTypes>> =
+/// <https://webidl.spec.whatwg.org/#define-the-static-attributes>
+pub(crate) fn define_static_attributes<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    attributes: &[AttributeDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let static_attrs: Vec<&AttributeDef<Ty>> =
         attributes.iter().filter(|a| a.static_).collect();
-    define_attributes_on_target(constructor, context, &static_attrs)
+    define_attributes_on_target(engine, target, &static_attrs)
 }
 
-fn define_attributes_on_target(
-    target: &JsValue,
-    context: &mut Context,
-    attributes: &[&AttributeDef<js_engine::boa::BoaTypes>],
-) -> JsResult<()> {
-    let realm = context.realm().clone();
+fn define_attributes_on_target<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    attributes: &[&AttributeDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let realm = engine.current_realm();
+    let target_obj = Ty::value_as_object(target)
+        .ok_or_else(|| engine.new_type_error("target is not an object in attribute definition"))?;
     for attr in attributes {
-        let getter_fn = NativeFunction::from_fn_ptr(attr.getter).to_js_function(&realm);
-        let setter_fn = attr
-            .setter
-            .map(|s| NativeFunction::from_fn_ptr(s).to_js_function(&realm));
-        let configurable = !attr.unforgeable;
-        let mut desc = PropertyDescriptor::builder()
-            .get(getter_fn)
-            .enumerable(true)
-            .configurable(configurable);
-        if let Some(setter) = setter_fn {
-            desc = desc.set(setter);
+        let getter_fn = engine.create_builtin_function(
+            Box::new({
+                let getter = attr.getter;
+                move |args, this, ec| getter(&this, args, ec)
+            }),
+            0,
+            engine.property_key_from_str(attr.id),
+            &realm,
+        );
+        let mut desc = PropertyDescriptor {
+            value: None,
+            get: Some(Ty::value_from_object(Ty::object_from_function(getter_fn))),
+            set: None,
+            writable: None,
+            enumerable: Some(true),
+            configurable: Some(!attr.unforgeable),
+        };
+        if let Some(setter) = attr.setter {
+            let setter_fn = engine.create_builtin_function(
+                Box::new({
+                    move |args, this, ec| setter(&this, args, ec)
+                }),
+                1,
+                engine.property_key_from_str(attr.id),
+                &realm,
+            );
+            desc.set = Some(Ty::value_from_object(Ty::object_from_function(setter_fn)));
         }
-        let target_obj = target.as_object().ok_or_else(|| {
-            boa_engine::JsNativeError::typ()
-                .with_message("target is not an object in attribute definition")
-        })?;
-        target_obj.define_property_or_throw(js_string!(attr.id), desc.build(), context)?;
+        engine.define_property_or_throw(
+            target_obj.clone(),
+            engine.property_key_from_str(attr.id),
+            desc,
+        )?;
     }
     Ok(())
 }

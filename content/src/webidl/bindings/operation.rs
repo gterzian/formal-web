@@ -1,24 +1,22 @@
 use std::marker::PhantomData;
 
-use boa_engine::{
-    js_string, native_function::NativeFunction, property::PropertyDescriptor, Context, JsResult,
-    JsValue,
+use js_engine::{
+    Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
-
-use js_engine::JsTypes;
 
 /// Describes a single operation (method) on an interface.
 ///
 /// https://webidl.spec.whatwg.org/#dfn-operation
 ///
-/// The fn pointer is concrete Boa: `fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>`.
-/// The generic `register_interface_spec` wraps these via `CreateBuiltinFunction`
-/// by casting `&mut dyn ExecutionContext<BoaTypes>` → `&mut Context` through
-/// the `#[repr(transparent)]` guarantee of `BoaEngine` over `Context`.
+/// Generic fn pointer: receives `&Ty::JsValue`, `&[Ty::JsValue]`, and
+/// `&mut dyn ExecutionContext<Ty>`.  Binding functions use
+/// `Ty::value_as_object` and `ec.with_platform_data` for upcast/downcast,
+/// avoiding engine-specific dependencies.
 pub(crate) struct OperationDef<T: JsTypes> {
     pub id: &'static str,
     pub length: usize,
-    pub method: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+    pub method:
+        fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>,
     pub static_: bool,
     pub unforgeable: bool,
     pub promise_type: bool,
@@ -26,49 +24,74 @@ pub(crate) struct OperationDef<T: JsTypes> {
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-regular-operations>
-pub(crate) fn define_regular_operations(
-    proto: &JsValue,
-    context: &mut Context,
-    operations: &[OperationDef<js_engine::boa::BoaTypes>],
-) -> JsResult<()> {
-    let regular: Vec<&OperationDef<js_engine::boa::BoaTypes>> = operations
+pub(crate) fn define_regular_operations<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    operations: &[OperationDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let regular: Vec<&OperationDef<Ty>> = operations
         .iter()
         .filter(|o| !o.static_ && !o.unforgeable)
         .collect();
-    define_operations_on_target(proto, context, &regular)
+    define_operations_on_target(engine, target, &regular)
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-static-operations>
-pub(crate) fn define_static_operations(
-    constructor: &JsValue,
-    context: &mut Context,
-    operations: &[OperationDef<js_engine::boa::BoaTypes>],
-) -> JsResult<()> {
-    let static_ops: Vec<&OperationDef<js_engine::boa::BoaTypes>> =
+pub(crate) fn define_static_operations<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    operations: &[OperationDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let static_ops: Vec<&OperationDef<Ty>> =
         operations.iter().filter(|o| o.static_).collect();
-    define_operations_on_target(constructor, context, &static_ops)
+    define_operations_on_target(engine, target, &static_ops)
 }
 
-fn define_operations_on_target(
-    proto: &JsValue,
-    context: &mut Context,
-    operations: &[&OperationDef<js_engine::boa::BoaTypes>],
-) -> JsResult<()> {
-    let realm = context.realm().clone();
+fn define_operations_on_target<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    operations: &[&OperationDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let realm = engine.current_realm();
+    let target_obj = Ty::value_as_object(target)
+        .ok_or_else(|| engine.new_type_error("target is not an object in operation definition"))?;
+
     for op in operations {
-        let method = NativeFunction::from_fn_ptr(op.method).to_js_function(&realm);
-        let proto_obj = proto.as_object().ok_or_else(|| {
-            boa_engine::JsNativeError::typ()
-                .with_message("target is not an object in operation definition")
-        })?;
+        let method = engine.create_builtin_function(
+            Box::new({
+                let op_method = op.method;
+                move |args, this, ec| op_method(&this, args, ec)
+            }),
+            op.length as u32,
+            engine.property_key_from_str(op.id),
+            &realm,
+        );
         let modifiable = !op.unforgeable;
-        let desc = PropertyDescriptor::builder()
-            .value(method)
-            .writable(modifiable)
-            .enumerable(true)
-            .configurable(modifiable)
-            .build();
-        proto_obj.define_property_or_throw(js_string!(op.id), desc, context)?;
+        let desc = PropertyDescriptor {
+            value: Some(Ty::value_from_object(Ty::object_from_function(method))),
+            get: None,
+            set: None,
+            writable: Some(modifiable),
+            enumerable: Some(true),
+            configurable: Some(modifiable),
+        };
+        engine.define_property_or_throw(
+            target_obj.clone(),
+            engine.property_key_from_str(op.id),
+            desc,
+        )?;
     }
     Ok(())
 }

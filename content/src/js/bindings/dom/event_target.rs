@@ -14,6 +14,8 @@ use crate::js::platform_objects::{
 };
 use crate::js::with_event_target_mut;
 use crate::webidl::{callback_interface_type_value, nullable_value};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 #[derive(Clone)]
 pub(crate) struct AddEventListenerOptions {
@@ -35,9 +37,14 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for EventTarget {
     fn create_platform_object(
         _new_target: &JsValue,
         _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<Self, BoaTypes> {
+        let value_undefined = ec.value_undefined();
+        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        (|| -> JsResult<Self> {
         Ok(EventTarget::default())
+        })()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
@@ -77,14 +84,17 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for EventTarget {
 fn add_event_listener(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
-    let event_target = current_event_target_object(this, context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let event_target = current_event_target_object(this, ctx);
     let type_ = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
-    let options = flatten_more(args.get_or_undefined(2), context)?;
+    let options = flatten_more(args.get_or_undefined(2), ctx)?;
     let callback = nullable_value(args.get_or_undefined(1), callback_interface_type_value)?;
     let receiver = JsValue::from(event_target.clone());
 
@@ -101,23 +111,28 @@ fn add_event_listener(
     })??;
 
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn remove_event_listener(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
-    let event_target = current_event_target_object(this, context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let event_target = current_event_target_object(this, ctx);
     let type_ = args
         .get_or_undefined(0)
-        .to_string(context)?
+        .to_string(ctx)?
         .to_std_string_escaped();
     let Some(callback) = nullable_value(args.get_or_undefined(1), callback_interface_type_value)?
     else {
         return Ok(JsValue::undefined());
     };
-    let capture = flatten(args.get_or_undefined(2), context)?;
+    let capture = flatten(args.get_or_undefined(2), ctx)?;
     let receiver = JsValue::from(event_target);
 
     with_event_target_mut(&receiver, |target| {
@@ -125,25 +140,37 @@ fn remove_event_listener(
     })?;
 
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let target = current_event_target_object(this, context);
+fn dispatch_event(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let target = current_event_target_object(this, ctx);
     let event = args
         .get_or_undefined(0)
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
-    let canceled = dispatch_event_with_context(&target, &event, context)?;
+    let canceled = dispatch_event_with_context(&target, &event, ctx)?;
     Ok(JsValue::from(!canceled))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn dispatch_event_with_context(
     target: &JsObject,
     event: &JsObject,
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<bool> {
-    let mut host = ContextEventDispatchHost::new(context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let mut host = ContextEventDispatchHost::new(ctx);
     dispatch(&mut host, target, event, false)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>

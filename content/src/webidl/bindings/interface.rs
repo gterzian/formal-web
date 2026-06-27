@@ -7,7 +7,7 @@ use boa_engine::{
     Context, JsError, JsNativeError, JsObject, JsResult, JsValue,
 };
 
-use js_engine::{JsTypes, JsTypesWithRealm};
+use js_engine::{Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor as JsPropertyDescriptor};
 
 use super::attribute::AttributeDef;
 use super::constant::ConstantDef;
@@ -42,9 +42,14 @@ pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
     fn immutable_prototype() -> bool { Self::is_global() }
 
     fn create_platform_object(
-        _new_target: &JsValue, _args: &[JsValue], _context: &mut Context,
-    ) -> JsResult<Self> where Self: Sized {
-        Err(JsNativeError::typ().with_message("Illegal constructor").into())
+        _new_target: &T::JsValue,
+        _args: &[T::JsValue],
+        ec: &mut dyn ExecutionContext<T>,
+    ) -> Completion<Self, T>
+    where
+        Self: Sized,
+    {
+        Err(ec.new_type_error("Illegal constructor"))
     }
 
     fn define_members(def: &mut InterfaceDefinition<T>) where Self: Sized;
@@ -53,87 +58,125 @@ pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
 // ── Generic helpers ──
 
 /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-///
-/// Uses the generic registry (which stores `Ty::JsObject` via EC host data store).
-pub(crate) fn create_interface_instance<T>(data: T, context: &mut Context) -> JsResult<JsObject>
-where T: NativeObject + 'static {
-    let prototype = super::registry::get_prototype_from_host_defined::<js_engine::boa::BoaTypes, T>(
-        crate::js::context_as_ec_ref(context),
-    ).ok_or_else(|| JsError::from(JsNativeError::typ().with_message(
-        format!("interface not registered: {}", std::any::type_name::<T>())
-    )))?;
-    Ok(JsObject::from_proto_and_data(Some(prototype), data))
+pub(crate) fn create_interface_instance<Ty, T>(
+    data: T,
+    ec: &mut dyn ExecutionContext<Ty>,
+) -> Completion<Ty::JsObject, Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    T: 'static,
+{
+    let prototype =
+        super::registry::get_prototype_from_host_defined::<Ty, T>(ec).ok_or_else(|| {
+            ec.new_type_error(&format!(
+                "interface not registered: {}",
+                std::any::type_name::<T>()
+            ))
+        })?;
+    Ok(ec.create_object_with_any(prototype, Box::new(data)))
 }
 
 // ── Concrete registration ──
 
-pub(crate) fn register_interface_spec<T: WebIdlInterface<js_engine::boa::BoaTypes> + NativeObject>(
-    context: &mut Context,
-) -> JsResult<()> {
-    let realm = context.realm().clone();
-    let proto = JsObject::from_proto_and_data(
-        Some(context.intrinsics().constructors().object().prototype()), OrdinaryObject,
-    );
-    let mut def = InterfaceDefinition::<js_engine::boa::BoaTypes>::new();
-    T::define_members(&mut def);
-    super::attribute::define_regular_attributes(&JsValue::from(proto.clone()), context, &def.attributes)?;
-    super::operation::define_regular_operations(&JsValue::from(proto.clone()), context, &def.operations)?;
-    super::constant::define_constants(&proto, context, &def.constants)?;
-
-    let constructor = {
-        let f = FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(
-            |new_target: &JsValue, args: &[JsValue], ctx: &mut Context| {
-                let obj = T::create_platform_object(new_target, args, ctx)?;
-                let instance_proto = (|| {
-                    let nt = new_target.as_object()?;
-                    let proto_val = nt.get(js_string!("prototype"), ctx).ok()?;
-                    proto_val.as_object().map(|o| o.clone())
-                })();
-                let instance = match instance_proto {
-                    Some(p) => JsObject::from_proto_and_data(Some(p), obj),
-                    None => create_interface_instance(obj, ctx)?,
-                };
-                Ok(JsValue::from(instance))
+pub(crate) fn register_interface_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: WebIdlInterface<Ty> + 'static,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let realm = engine.current_realm();
+    let intrinsics = engine.realm_intrinsics(&realm);
+    let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
+    let mut def = InterfaceDefinition::<Ty>::new();
+    I::define_members(&mut def);
+    let proto_val = Ty::value_from_object(proto.clone());
+    super::attribute::define_regular_attributes::<Ty, E>(engine, &proto_val, &def.attributes)?;
+    super::operation::define_regular_operations::<Ty, E>(engine, &proto_val, &def.operations)?;
+    let op_prototype = intrinsics.object_prototype.clone();
+    let constructor_fn = engine.create_builtin_function(
+        Box::new(
+            move |args: &[Ty::JsValue],
+                  new_target: Ty::JsValue,
+                  ec: &mut dyn ExecutionContext<Ty>| {
+                let obj = I::create_platform_object(&new_target, args, ec)?;
+                let instance = ec.create_object_with_any(op_prototype.clone(), Box::new(obj));
+                Ok(Ty::value_from_object(instance))
             },
-        )).name(T::NAME).length(T::constructor_length()).constructor(true).build();
-        let f_obj: JsObject = f.clone().into();
-        let proto_desc = PropertyDescriptor::builder()
-            .value(proto.clone()).writable(false).enumerable(false).configurable(false).build();
-        f_obj.define_property_or_throw(js_string!("prototype"), proto_desc, context)?;
-        let ctor_desc = PropertyDescriptor::builder()
-            .value(f_obj.clone()).writable(true).enumerable(false).configurable(true).build();
-        proto.define_property_or_throw(js_string!("constructor"), ctor_desc, context)?;
-        super::constant::define_constants(&f_obj, context, &def.constants)?;
-        super::attribute::define_static_attributes(&JsValue::from(f_obj.clone()), context, &def.attributes)?;
-        super::operation::define_static_operations(&JsValue::from(f_obj.clone()), context, &def.operations)?;
-        f_obj
-    };
-
-    // Uses generic registry
-    super::registry::register_in_host_defined::<js_engine::boa::BoaTypes, T>(
-        crate::js::context_as_ec(context), proto, constructor.clone(),
+        ),
+        I::constructor_length() as u32,
+        engine.property_key_from_str(I::NAME),
+        &realm,
     );
-
-    let desc = PropertyDescriptor::builder()
-        .value(constructor).writable(true).enumerable(false).configurable(true).build();
-    if let Some(ns_name) = T::legacy_namespace() {
-        let ns_val = context.global_object().get(js_string!(ns_name), context)?;
-        let ns_obj = ns_val.as_object().ok_or_else(|| JsNativeError::typ().with_message(
-            format!("interface {}: namespace '{}' not found", T::NAME, ns_name)
-        ))?;
-        ns_obj.define_property_or_throw(js_string!(T::NAME), desc, context)?;
+    let f_obj = Ty::object_from_function(constructor_fn);
+    let proto_desc = JsPropertyDescriptor {
+        value: Some(Ty::value_from_object(proto.clone())),
+        writable: Some(false),
+        get: None,
+        set: None,
+        enumerable: Some(false),
+        configurable: Some(false),
+    };
+    engine.define_property_or_throw(
+        f_obj.clone(),
+        engine.property_key_from_str("prototype"),
+        proto_desc,
+    )?;
+    let ctor_ref = JsPropertyDescriptor {
+        value: Some(Ty::value_from_object(f_obj.clone())),
+        writable: Some(true),
+        get: None,
+        set: None,
+        enumerable: Some(false),
+        configurable: Some(true),
+    };
+    engine.define_property_or_throw(
+        proto.clone(),
+        engine.property_key_from_str("constructor"),
+        ctor_ref,
+    )?;
+    let f_val = Ty::value_from_object(f_obj.clone());
+    super::attribute::define_static_attributes::<Ty, E>(engine, &f_val, &def.attributes)?;
+    super::operation::define_static_operations::<Ty, E>(engine, &f_val, &def.operations)?;
+    super::registry::register_in_host_defined::<Ty, I>(engine, proto.clone(), f_obj.clone());
+    let install_desc = JsPropertyDescriptor {
+        value: Some(Ty::value_from_object(f_obj)),
+        writable: Some(true),
+        get: None,
+        set: None,
+        enumerable: Some(false),
+        configurable: Some(true),
+    };
+    if let Some(ns_name) = I::legacy_namespace() {
+        let go = engine.global_object();
+        let key = engine.property_key_from_str(ns_name);
+        let ns_val = ExecutionContext::get(&mut *engine, go, key)?;
+        let ns_obj = Ty::value_as_object(&ns_val).ok_or_else(|| {
+            engine.new_type_error(&format!(
+                "interface {}: namespace '{}' not found",
+                I::NAME,
+                ns_name
+            ))
+        })?;
+        engine.define_property_or_throw(
+            ns_obj,
+            engine.property_key_from_str(I::NAME),
+            install_desc,
+        )?;
     } else {
-        context.global_object().define_property_or_throw(js_string!(T::NAME), desc, context)?;
+        engine.define_property_or_throw(
+            engine.global_object(),
+            engine.property_key_from_str(I::NAME),
+            install_desc,
+        )?;
     }
     Ok(())
 }
 
-pub(crate) fn resolve_this_value(this: &JsValue, context: &Context) -> JsResult<JsValue> {
-    if this.is_null_or_undefined() { Ok(JsValue::from(context.global_object())) }
-    else { Ok(this.clone()) }
+pub(crate) fn define_global_property_references<Ty: JsTypes>(
+    _ec: &mut dyn ExecutionContext<Ty>,
+) -> Completion<(), Ty> {
+    Ok(())
 }
-
-pub(crate) fn define_global_property_references(_context: &mut Context) -> JsResult<()> { Ok(()) }
 
 // ── Namespace trait + registration ──
 
@@ -142,18 +185,32 @@ pub(crate) trait WebIdlNamespace<T: JsTypes + JsTypesWithRealm>: 'static {
     fn define_members(def: &mut InterfaceDefinition<T>) where Self: Sized;
 }
 
-pub(crate) fn register_namespace_spec<T: WebIdlNamespace<js_engine::boa::BoaTypes>>(
-    context: &mut Context,
-) -> JsResult<()> {
-    let namespace = JsObject::from_proto_and_data(
-        Some(context.intrinsics().constructors().object().prototype()), OrdinaryObject,
-    );
-    let mut def = InterfaceDefinition::<js_engine::boa::BoaTypes>::new();
-    T::define_members(&mut def);
-    super::attribute::define_regular_attributes(&JsValue::from(namespace.clone()), context, &def.attributes)?;
-    super::operation::define_regular_operations(&JsValue::from(namespace.clone()), context, &def.operations)?;
-    let desc = PropertyDescriptor::builder()
-        .value(namespace).writable(true).enumerable(false).configurable(true).build();
-    context.global_object().define_property_or_throw(js_string!(T::NAME), desc, context)?;
+pub(crate) fn register_namespace_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: WebIdlNamespace<Ty> + 'static,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let realm = engine.current_realm();
+    let intrinsics = engine.realm_intrinsics(&realm);
+    let ns_obj = engine.create_object_with_any(intrinsics.object_prototype, Box::new(()));
+    let mut def = InterfaceDefinition::<Ty>::new();
+    I::define_members(&mut def);
+    let ns_val = Ty::value_from_object(ns_obj.clone());
+    super::attribute::define_regular_attributes::<Ty, E>(engine, &ns_val, &def.attributes)?;
+    super::operation::define_regular_operations::<Ty, E>(engine, &ns_val, &def.operations)?;
+    let desc = JsPropertyDescriptor {
+        value: Some(ns_val),
+        writable: Some(true),
+        get: None,
+        set: None,
+        enumerable: Some(false),
+        configurable: Some(true),
+    };
+    engine.define_property_or_throw(
+        engine.global_object(),
+        engine.property_key_from_str(I::NAME),
+        desc,
+    )?;
     Ok(())
 }

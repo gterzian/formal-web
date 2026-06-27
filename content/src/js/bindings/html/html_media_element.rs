@@ -10,6 +10,8 @@ use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
 
 use crate::html::HTMLMediaElement;
 use crate::html::HTMLVideoElement;
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 use crate::webidl::bindings::{
     AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
 };
@@ -26,8 +28,11 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLMediaElement {
     fn create_platform_object(
         _new_target: &JsValue,
         _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<Self, BoaTypes> {
+        let value_undefined = ec.value_undefined();
+        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        (|| -> JsResult<Self> {
         #[cfg(not(feature = "media"))] {
             return Err(JsNativeError::typ()
                 .with_message("NotSupportedError: Media not available (media feature disabled)")
@@ -35,6 +40,8 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLMediaElement {
         }
         Err(JsNativeError::typ()
             .with_message("Illegal constructor").into())
+        })()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
@@ -362,8 +369,11 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLMediaElement {
 fn get_network_state(
     this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -376,9 +386,14 @@ fn get_network_state(
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_ready_state(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_ready_state(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -391,9 +406,14 @@ fn get_ready_state(this: &JsValue, _args: &[JsValue], _context: &mut Context) ->
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_src(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -406,9 +426,14 @@ fn get_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResul
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_src(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -418,18 +443,23 @@ fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
         .map(|s| s.to_std_string_escaped())
         .unwrap_or_default();
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.set_src(&src, context);
+        media.set_src(&src, ctx);
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.set_src(&src, context);
+        video.media_element.set_src(&src, ctx);
     } else {
         return Err(JsNativeError::typ()
             .with_message("expected HTMLMediaElement")
             .into());
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_current_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_current_src(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -444,9 +474,14 @@ fn get_current_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) ->
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_duration(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_duration(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -459,9 +494,14 @@ fn get_duration(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> Js
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_paused(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_paused(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -474,9 +514,14 @@ fn get_paused(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsRe
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_seeking(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_seeking(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -489,13 +534,18 @@ fn get_seeking(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsR
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn get_current_time(
     this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -508,21 +558,31 @@ fn get_current_time(
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn set_current_time(
     this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let _obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     // TODO: Implement using interior mutability.
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_error(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_error(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -541,9 +601,14 @@ fn get_error(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsRes
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_autoplay(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_autoplay(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -556,9 +621,14 @@ fn get_autoplay(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> Js
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_autoplay(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn set_autoplay(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -573,9 +643,14 @@ fn set_autoplay(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsR
             .into());
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_loop(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_loop(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -588,9 +663,14 @@ fn get_loop(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResu
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_loop(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn set_loop(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -605,9 +685,14 @@ fn set_loop(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResul
             .into());
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_controls(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_controls(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -620,9 +705,14 @@ fn get_controls(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> Js
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_controls(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn set_controls(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -637,9 +727,14 @@ fn set_controls(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsR
             .into());
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_muted(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_muted(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -652,9 +747,14 @@ fn get_muted(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsRes
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_muted(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn set_muted(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -669,9 +769,14 @@ fn set_muted(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResu
             .into());
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_volume(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_volume(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -684,9 +789,14 @@ fn get_volume(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsRe
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_volume(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn set_volume(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -701,9 +811,14 @@ fn set_volume(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsRes
             .into());
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_preload(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_preload(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -716,9 +831,14 @@ fn get_preload(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsR
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_preload(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn set_preload(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -737,11 +857,16 @@ fn set_preload(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsRe
             .into());
     }
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 // ── Operations ──
 
-fn load_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn load_method(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let _obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -749,45 +874,62 @@ fn load_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsR
     // is behind a plain &ref in the binding layer. Adding RefCell support is tracked
     // as a separate gap — this binding currently returns undefined.
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn play_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn play_method(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.play(context)
+        media.play(ctx)
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.play(context)
+        video.media_element.play(ctx)
     } else {
         Err(JsNativeError::typ()
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn pause_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn pause_method(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.pause(context);
+        media.pause(ctx);
         Ok(JsValue::undefined())
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.pause(context);
+        video.media_element.pause(ctx);
         Ok(JsValue::undefined())
     } else {
         Err(JsNativeError::typ()
             .with_message("expected HTMLMediaElement")
             .into())
     }
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn can_play_type(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn can_play_type(this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let _obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
     // Step 1: Return "probably" if the type is a media type that can be rendered.
     // Initial cut: return empty string (no types supported).
     Ok(JsValue::from(JsString::from("")))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }

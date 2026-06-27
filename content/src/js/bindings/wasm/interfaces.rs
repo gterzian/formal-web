@@ -14,6 +14,8 @@ use boa_engine::{
 use crate::wasm::{WasmInstance, WasmModule};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::get_a_copy_of_the_buffer_source;
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 // WebIdlInterface: Module
 
@@ -77,18 +79,23 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<Self, BoaTypes> {
+        let value_undefined = ec.value_undefined();
+        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        (|| -> JsResult<Self> {
         let bytes_value = args.first().ok_or_else(|| {
             JsNativeError::typ().with_message("Module constructor: missing argument")
         })?;
-        let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, context)?;
+        let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ctx)?;
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
             JsNativeError::typ().with_message(format!("CompileError: {}", error))
         })?;
         // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
         Ok(WasmModule::new(module, stable_bytes))
+        })()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 }
 
@@ -125,8 +132,11 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmInstance {
 fn module_exports_binding(
     _this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let module_value = args
         .first()
         .ok_or_else(|| JsNativeError::typ().with_message("Module.exports: missing argument"))?;
@@ -138,14 +148,14 @@ fn module_exports_binding(
     })?;
 
     let descriptors = wasm_module.export_descriptors();
-    let exports_array = boa_engine::object::builtins::JsArray::new(context)?;
+    let exports_array = boa_engine::object::builtins::JsArray::new(ctx)?;
     for (name, kind) in &descriptors {
-        let entry = context
+        let entry = ctx
             .intrinsics()
             .constructors()
             .object()
             .constructor()
-            .call(&JsValue::undefined(), &[], context)?;
+            .call(&JsValue::undefined(), &[], ctx)?;
         let entry_obj = entry.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("failed to create export descriptor")
         })?;
@@ -153,19 +163,24 @@ fn module_exports_binding(
             js_string!("name"),
             js_string!(name.as_str()),
             false,
-            context,
+            ctx,
         )?;
-        entry_obj.set(js_string!("kind"), js_string!(*kind), false, context)?;
-        exports_array.push(entry, context)?;
+        entry_obj.set(js_string!("kind"), js_string!(*kind), false, ctx)?;
+        exports_array.push(entry, ctx)?;
     }
     Ok(JsValue::from(exports_array))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn get_instance_exports_binding(
     this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("Instance.exports getter: receiver is not an object")
     })?;
@@ -174,6 +189,8 @@ fn get_instance_exports_binding(
             .with_message("Instance.exports getter: receiver is not a WebAssembly.Instance")
     })?;
     Ok(JsValue::from(instance.exports.clone()))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 // Error types

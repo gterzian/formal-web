@@ -17,6 +17,8 @@ use crate::webidl::{callback_function_value, nullable_value};
 use crate::js::bindings::dom::with_element_ref;
 
 use super::{hyperlink_element_utils::document_creation_url, style_declaration_object};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -184,15 +186,20 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for Window {
 fn structured_clone_method(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
-    let window_object = current_window_object(this, context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
 
     let value = args.get_or_undefined(0).clone();
     let options = args.get(1).and_then(parse_structured_clone_options);
 
-    window.structured_clone(value, options, context)
+    window.structured_clone(value, options, ctx)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn parse_structured_clone_options(value: &JsValue) -> Option<StructuredCloneOptions> {
@@ -203,52 +210,70 @@ fn parse_structured_clone_options(value: &JsValue) -> Option<StructuredCloneOpti
     None
 }
 
-fn open_method(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn open_method(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let url = args
         .get(0)
-        .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
+        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
         .transpose()?
         .unwrap_or_default();
     let target = args
         .get(1)
-        .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
+        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
         .transpose()?
         .unwrap_or_default();
     let features = args
         .get(2)
-        .map(|v| v.to_string(context).map(|s| s.to_std_string_escaped()))
+        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
         .transpose()?
         .unwrap_or_default();
 
-    let window_object = current_window_object(this, context);
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
-    window.open(&url, &target, &features, context)
+    window.open(&url, &target, &features, ctx)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn request_animation_frame_method(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let callback = callback_function_value(args.get_or_undefined(0))?;
-    let window_object = current_window_object(this, context);
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
     Ok(JsValue::from(
         window.global_scope.request_animation_frame(callback),
     ))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_onload(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let window_object = current_window_object(this, context);
+fn get_onload(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
     Ok(window
         .onload_value()
         .map(|callback| callback.to_js_value())
         .unwrap_or_else(JsValue::null))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn set_onload(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let window_object = current_window_object(this, context);
+fn set_onload(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let window_object = current_window_object(this, ctx);
     let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
     let previous = with_window_mut(&window_object, |window| {
         window.replace_onload(callback.clone())
@@ -277,97 +302,142 @@ fn set_onload(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
     }
 
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_parent(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(current_window_object(this, context)))
+fn get_parent(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    Ok(JsValue::from(current_window_object(this, ctx)))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_top(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(current_window_object(this, context)))
+fn get_top(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    Ok(JsValue::from(current_window_object(this, ctx)))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn get_location(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(location_object(context)?))
+fn get_location(_: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    Ok(JsValue::from(location_object(ctx)?))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn cancel_animation_frame_method(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
-    let handle = args.get_or_undefined(0).to_u32(context)?;
-    let window_object = current_window_object(this, context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let handle = args.get_or_undefined(0).to_u32(ctx)?;
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
     window.global_scope.cancel_animation_frame(handle);
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn set_timeout_method(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
-    let window_object = current_window_object(this, context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
     Ok(JsValue::from(window.set_timeout(
         args.get_or_undefined(0),
         args.get_or_undefined(1),
         args.iter().skip(2).cloned().collect(),
-        context,
+        ctx,
     )?))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn clear_timeout_method(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
-    let timer_id = args.get_or_undefined(0).to_u32(context)?;
-    let window_object = current_window_object(this, context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let timer_id = args.get_or_undefined(0).to_u32(ctx)?;
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
     window.clear_timeout(timer_id);
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn set_interval_method(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
-    let window_object = current_window_object(this, context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
     Ok(JsValue::from(window.set_interval(
         args.get_or_undefined(0),
         args.get_or_undefined(1),
         args.iter().skip(2).cloned().collect(),
-        context,
+        ctx,
     )?))
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn clear_interval_method(
     this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
-    let timer_id = args.get_or_undefined(0).to_u32(context)?;
-    let window_object = current_window_object(this, context);
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
+    let timer_id = args.get_or_undefined(0).to_u32(ctx)?;
+    let window_object = current_window_object(this, ctx);
     let window = downcast_window(&window_object)?;
     window.clear_interval(timer_id);
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 fn get_computed_style_method(
     _: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let pseudo_elt = if args.get_or_undefined(1).is_null_or_undefined() {
         None
     } else {
         Some(
             args.get_or_undefined(1)
-                .to_string(context)?
+                .to_string(ctx)?
                 .to_std_string_escaped(),
         )
     };
@@ -375,25 +445,32 @@ fn get_computed_style_method(
     with_element_ref(args.get_or_undefined(0), |element| {
         style_declaration_object(
             &window_computed_style_properties_for_element(element, pseudo_elt.as_deref()),
-            context,
+            ctx,
         )
         .map(JsValue::from)
     })?
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
 
-fn location_object(context: &mut Context) -> JsResult<JsObject> {
-    if let Some(object) = cached_location_object(context)? {
+fn location_object(ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsObject, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsObject> {
+    if let Some(object) = cached_location_object(ctx)? {
         return Ok(object);
     }
 
-    let url = document_creation_url(context)?;
-    let window = context.global_object();
-    let object = create_interface_instance::<Location>(Location::new(url, window), context)?;
-    store_location_object(context, object.clone())?;
+    let url = document_creation_url(ctx)?;
+    let window = ctx.global_object();
+    let object = create_interface_instance::<Location>(Location::new(url, window), ctx)?;
+    store_location_object(ctx, object.clone())?;
     Ok(object)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>

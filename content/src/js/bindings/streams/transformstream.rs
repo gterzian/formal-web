@@ -2,6 +2,8 @@ use std::marker::PhantomData;
 use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue};
 
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 use crate::streams::{
     construct_transform_stream, with_transform_stream_default_controller_ref,
@@ -14,9 +16,14 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for TransformStream {
     fn create_platform_object(
         this: &JsValue,
         args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        construct_transform_stream(this, args, context)
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<Self, BoaTypes> {
+        let value_undefined = ec.value_undefined();
+        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        (|| -> JsResult<Self> {
+        construct_transform_stream(this, args, ctx)
+        })()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
@@ -103,31 +110,44 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for TransformStreamDefaultControl
 }
 
 /// <https://streams.spec.whatwg.org/#ts-readable>
-fn get_readable(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_readable(_this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("TransformStream.readable called on non-object")
     })?;
     with_transform_stream_ref(&object, |stream| {
         Ok(JsValue::from(stream.readable_object()?))
     })?
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://streams.spec.whatwg.org/#ts-writable>
-fn get_writable(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn get_writable(_this: &JsValue, _args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("TransformStream.writable called on non-object")
     })?;
     with_transform_stream_ref(&object, |stream| {
         Ok(JsValue::from(stream.writable_object()?))
     })?
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://streams.spec.whatwg.org/#ts-default-controller-desired-size>
 fn get_desired_size(
     _this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("TransformStreamDefaultController.desiredSize called on non-object")
@@ -138,14 +158,19 @@ fn get_desired_size(
             None => Ok(JsValue::null()),
         }
     })?
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://streams.spec.whatwg.org/#ts-default-controller-enqueue>
 fn controller_enqueue(
     _this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("TransformStreamDefaultController.enqueue called on non-object")
@@ -157,12 +182,17 @@ fn controller_enqueue(
             JsNativeError::typ().with_message("object is not a TransformStreamDefaultController")
         })?
         .clone();
-    controller.enqueue(chunk, context)?;
+    controller.enqueue(chunk, ctx)?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://streams.spec.whatwg.org/#ts-default-controller-error>
-fn controller_error(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn controller_error(_this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("TransformStreamDefaultController.error called on non-object")
@@ -174,16 +204,21 @@ fn controller_error(_this: &JsValue, args: &[JsValue], context: &mut Context) ->
             JsNativeError::typ().with_message("object is not a TransformStreamDefaultController")
         })?
         .clone();
-    controller.error(reason, context)?;
+    controller.error(reason, ctx)?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
 /// <https://streams.spec.whatwg.org/#ts-default-controller-terminate>
 fn controller_terminate(
     _this: &JsValue,
     _args: &[JsValue],
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<JsValue> {
+    let value_undefined = ec.value_undefined();
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    (|| -> JsResult<JsValue> {
     let object = _this.as_object().ok_or_else(|| {
         JsNativeError::typ()
             .with_message("TransformStreamDefaultController.terminate called on non-object")
@@ -194,6 +229,8 @@ fn controller_terminate(
             JsNativeError::typ().with_message("object is not a TransformStreamDefaultController")
         })?
         .clone();
-    controller.terminate(context)?;
+    controller.terminate(ctx)?;
     Ok(JsValue::undefined())
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
