@@ -218,7 +218,7 @@ fn query_selector_all(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -241,7 +241,7 @@ fn get_elements_by_tag_name(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {

@@ -11,6 +11,7 @@ use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, promise_from_completion, resolved_promise};
 
+use js_engine::boa::BoaTypes;
 use super::readablestream::{
     readable_byte_stream_tee_cancel1_algorithm, readable_byte_stream_tee_cancel2_algorithm,
     readable_byte_stream_tee_pull1_algorithm, readable_byte_stream_tee_pull2_algorithm,
@@ -743,7 +744,7 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
     let controller_object =
-        create_interface_instance::<ReadableStreamDefaultController>(controller.clone(), context)?;
+        create_interface_instance::<BoaTypes, ReadableStreamDefaultController>(controller.clone(), crate::js::context_as_ec(context))?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;

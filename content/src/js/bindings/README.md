@@ -22,7 +22,7 @@ From inside out:
 
 2. **JS bindings functions downcast then delegate.**  A binding function looks like:
    ```rust
-   fn my_method_binding(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+   fn my_method_binding(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> Completion<JsValue, BoaTypes> {
        let obj = this.as_object().ok_or_else(|| /* TypeError */)?;
        let domain = obj.downcast_ref::<MyDomainType>().ok_or_else(|| /* TypeError */)?;
        let result: RustType = domain.my_method(arg1, arg2);

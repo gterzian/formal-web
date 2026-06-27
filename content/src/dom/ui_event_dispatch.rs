@@ -12,6 +12,7 @@ use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::bindings::create_interface_instance;
+use js_engine::boa::BoaTypes;
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -508,7 +509,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         let view = Some(self.settings.context().global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
         let event_object =
-            create_interface_instance::<JsUiEvent>(ui_event, self.settings.context())
+            create_interface_instance::<BoaTypes, JsUiEvent>(ui_event, crate::js::context_as_ec(self.settings.context()))
                 .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
             error!("failed to dispatch UI event through JavaScript listeners: {error}");

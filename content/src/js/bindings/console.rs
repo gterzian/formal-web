@@ -1,3 +1,5 @@
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 use boa_engine::{
     js_string, native_function::NativeFunction, object::ObjectInitializer, property::Attribute,
     Context, JsResult, JsValue,
@@ -25,41 +27,56 @@ pub(crate) fn install_console_namespace(context: &mut Context) -> JsResult<()> {
 
 /// <https://console.spec.whatwg.org/#log>
 /// Note: This implements `console.log()` by running the `Logger("log", data)` algorithm inline.
-fn log(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn log(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
+    (|| -> JsResult<JsValue> {
     // Step 1: "Perform Logger(\"log\", data)."
     logger(ConsoleSink::Stdout, args)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 /// <https://console.spec.whatwg.org/#info>
 /// Note: This implements `console.info()` by running the `Logger("info", data)` algorithm inline.
-fn info(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn info(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
+    (|| -> JsResult<JsValue> {
     // Step 1: "Perform Logger(\"info\", data)."
     logger(ConsoleSink::Stdout, args)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 /// <https://console.spec.whatwg.org/#debug>
 /// Note: This implements `console.debug()` by running the `Logger("debug", data)` algorithm inline.
-fn debug(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn debug(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
+    (|| -> JsResult<JsValue> {
     // Step 1: "Perform Logger(\"debug\", data)."
     logger(ConsoleSink::Stdout, args)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 /// <https://console.spec.whatwg.org/#warn>
 /// Note: This implements `console.warn()` by running the `Logger("warn", data)` algorithm inline.
-fn warn(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn warn(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
+    (|| -> JsResult<JsValue> {
     // Step 1: "Perform Logger(\"warn\", data)."
     logger(ConsoleSink::Stderr, args)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 /// <https://console.spec.whatwg.org/#error>
 /// Note: This implements `console.error()` by running the `Logger("error", data)` algorithm inline.
-fn error(_this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+fn error(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
+    (|| -> JsResult<JsValue> {
     // Step 1: "Perform Logger(\"error\", data)."
     logger(ConsoleSink::Stderr, args)
+    })()
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 /// <https://console.spec.whatwg.org/#logger>
-fn logger(sink: ConsoleSink, args: &[JsValue]) -> JsResult<JsValue> {
+fn logger(sink: ConsoleSink, args: &[JsValue]) -> JsResult<JsValue {
     // Step 1: "If args is empty, return."
     if args.is_empty() {
         return Ok(JsValue::undefined());

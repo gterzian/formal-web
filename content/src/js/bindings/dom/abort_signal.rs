@@ -116,23 +116,23 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortSignal {
 
 pub(crate) fn abort_reason_from_argument(
     argument: Option<&JsValue>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     let Some(argument) = argument else {
-        return abort_error_value(context);
+        return abort_error_value(ec);
     };
 
     if argument.is_undefined() {
-        return abort_error_value(context);
+        return abort_error_value(ec);
     }
 
     Ok(argument.clone())
 }
 
-pub(crate) fn timeout_reason(context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(create_interface_instance::<DOMException>(
+pub(crate) fn timeout_reason(context: &mut Context) -> Completion<JsValue, BoaTypes> {
+    Ok(JsValue::from(create_interface_instance::<BoaTypes, DOMException>(
         DOMException::timeout_error(),
-        context,
+        crate::js::context_as_ec(context),
     )?))
 }
 
@@ -148,20 +148,22 @@ pub(crate) fn signal_abort_with_context(
 pub(crate) fn abort_static(
     _: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let reason = abort_reason_from_argument(args.get(0), context)?;
-    let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), context)?;
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let reason = abort_reason_from_argument(args.get(0), ec)?;
+    let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), ctx)?;
     Ok(JsValue::from(signal.object()?))
 }
 
 pub(crate) fn timeout_static(
     _: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let milliseconds = args.get_or_undefined(0).to_length(context)?;
-    let signal = create_abort_signal(AbortSignal::new(), context)?;
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let milliseconds = ec.to_length(args.get_or_undefined(0).clone())?;
+    let signal = create_abort_signal(AbortSignal::new(), ctx)?;
     let callback = NativeFunction::from_copy_closure_with_captures(
         |_, _, signal: &AbortSignal, context| {
             let reason = timeout_reason(context)?;
@@ -170,9 +172,9 @@ pub(crate) fn timeout_static(
         },
         signal.clone(),
     )
-    .to_js_function(context.realm());
+    .to_js_function(ctx.realm());
 
-    let global = context.global_object();
+    let global = ctx.global_object();
     let window = global.downcast_ref::<Window>().ok_or_else(|| {
         JsError::from(
             JsNativeError::typ().with_message("AbortSignal.timeout() requires a Window global"),
@@ -182,7 +184,7 @@ pub(crate) fn timeout_static(
         &JsValue::from(callback),
         &JsValue::from(milliseconds as f64),
         Vec::new(),
-        context,
+        ctx,
     )?;
 
     Ok(JsValue::from(signal.object()?))
@@ -191,10 +193,11 @@ pub(crate) fn timeout_static(
 pub(crate) fn any_static(
     _: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let signals = sequence_abort_signals(args.get_or_undefined(0), context)?;
-    let result_signal = create_abort_signal(AbortSignal::new(), context)?;
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let signals = sequence_abort_signals(args.get_or_undefined(0), ctx)?;
+    let result_signal = create_abort_signal(AbortSignal::new(), ctx)?;
     initialize_dependent_abort_signal(&result_signal, &signals)?;
     Ok(JsValue::from(result_signal.object()?))
 }
@@ -329,9 +332,9 @@ fn abort_error_value(ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsVa
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    Ok(JsValue::from(create_interface_instance::<DOMException>(
+    Ok(JsValue::from(create_interface_instance::<BoaTypes, DOMException>(
         DOMException::abort_error(),
-        ctx,
+        crate::js::context_as_ec(ctx),
     )?))
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))

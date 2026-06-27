@@ -151,7 +151,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     if let Some(proto) = get_registry_prototype::<HTMLAnchorElement>(&context) {
         hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(
             &proto,
-            &mut context,
+            crate::js::context_as_ec(&mut context),
         )
         .map_err(|error| error.to_string())?;
     }

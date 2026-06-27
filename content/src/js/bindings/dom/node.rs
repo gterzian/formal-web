@@ -681,7 +681,7 @@ fn dom_exception_error(exception: DOMException, ec: &mut dyn ExecutionContext<Bo
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
     JsError::from_opaque(JsValue::from(
-        create_interface_instance::<DOMException>(exception, ctx)
+        create_interface_instance::<BoaTypes, DOMException>(exception, crate::js::context_as_ec(ctx))
             .expect("DOMException construction should not fail"),
     ))
     })()

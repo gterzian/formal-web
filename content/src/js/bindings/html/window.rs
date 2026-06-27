@@ -187,7 +187,7 @@ fn structured_clone_method(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -241,7 +241,7 @@ fn request_animation_frame_method(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -337,7 +337,7 @@ fn cancel_animation_frame_method(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -354,7 +354,7 @@ fn set_timeout_method(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -374,7 +374,7 @@ fn clear_timeout_method(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -391,7 +391,7 @@ fn set_interval_method(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -411,7 +411,7 @@ fn clear_interval_method(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -428,7 +428,7 @@ fn get_computed_style_method(
     _: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -466,7 +466,7 @@ fn location_object(ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsObje
 
     let url = document_creation_url(ctx)?;
     let window = ctx.global_object();
-    let object = create_interface_instance::<Location>(Location::new(url, window), ctx)?;
+    let object = create_interface_instance::<BoaTypes, Location>(Location::new(url, window), crate::js::context_as_ec(ctx))?;
     store_location_object(ctx, object.clone())?;
     Ok(object)
     })()

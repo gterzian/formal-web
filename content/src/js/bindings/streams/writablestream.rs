@@ -355,7 +355,7 @@ fn abort_writer_method(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {

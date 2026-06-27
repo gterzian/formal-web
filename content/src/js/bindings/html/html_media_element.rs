@@ -370,7 +370,7 @@ fn get_network_state(
     this: &JsValue,
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -542,7 +542,7 @@ fn get_current_time(
     this: &JsValue,
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -566,7 +566,7 @@ fn set_current_time(
     this: &JsValue,
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {

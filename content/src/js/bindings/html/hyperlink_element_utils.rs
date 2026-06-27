@@ -1,10 +1,10 @@
 use boa_engine::{
     js_string, native_function::NativeFunction, object::JsObject, property::PropertyDescriptor,
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
 };
 use url::Url;
 
-use crate::js::platform_objects;
+use crate::js::{self, platform_objects};
 use js_engine::boa::BoaTypes;
 use js_engine::{Completion, ExecutionContext};
 use crate::{
@@ -42,13 +42,14 @@ fn with_hyperlink_element_utils_ref<R>(
 /// via `JsObject::from_proto_and_data` instead of via `ClassBuilder`.
 pub(crate) fn register_hyperlink_element_utils_on_prototype(
     proto: &JsObject,
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> JsResult<()> {
-    let realm = context.realm().clone();
-    link_property(proto, context, &realm, "origin", get_origin, None)?;
+    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let realm = ctx.realm().clone();
+    link_property(proto, ec, &realm, "origin", get_origin, None)?;
     link_property(
         proto,
-        context,
+        ec,
         &realm,
         "protocol",
         get_protocol,
@@ -56,7 +57,7 @@ pub(crate) fn register_hyperlink_element_utils_on_prototype(
     )?;
     link_property(
         proto,
-        context,
+        ec,
         &realm,
         "username",
         get_username,
@@ -64,25 +65,25 @@ pub(crate) fn register_hyperlink_element_utils_on_prototype(
     )?;
     link_property(
         proto,
-        context,
+        ec,
         &realm,
         "password",
         get_password,
         Some(set_password),
     )?;
-    link_property(proto, context, &realm, "host", get_host, Some(set_host))?;
+    link_property(proto, ec, &realm, "host", get_host, Some(set_host))?;
     link_property(
         proto,
-        context,
+        ec,
         &realm,
         "hostname",
         get_hostname,
         Some(set_hostname),
     )?;
-    link_property(proto, context, &realm, "port", get_port, Some(set_port))?;
+    link_property(proto, ec, &realm, "port", get_port, Some(set_port))?;
     link_property(
         proto,
-        context,
+        ec,
         &realm,
         "pathname",
         get_pathname,
@@ -90,13 +91,13 @@ pub(crate) fn register_hyperlink_element_utils_on_prototype(
     )?;
     link_property(
         proto,
-        context,
+        ec,
         &realm,
         "search",
         get_search,
         Some(set_search),
     )?;
-    link_property(proto, context, &realm, "hash", get_hash, Some(set_hash))?;
+    link_property(proto, ec, &realm, "hash", get_hash, Some(set_hash))?;
     Ok(())
 }
 
@@ -105,25 +106,48 @@ fn link_property(
     ec: &mut dyn ExecutionContext<BoaTypes>,
     realm: &boa_engine::realm::Realm,
     name: &str,
-    getter: fn(&JsValue, &[JsValue], &mut Context) -> Completion<JsValue, BoaTypes>,
-    setter: Option<fn(&JsValue, &[JsValue], &mut Context) -> Completion<JsValue, BoaTypes>>,
+    getter: fn(&JsValue, &[JsValue], &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>,
+    setter: Option<fn(&JsValue, &[JsValue], &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>>,
 ) -> JsResult<()> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
-    let get = NativeFunction::from_fn_ptr(getter).to_js_function(realm);
+    let get = ec_fn_ptr_to_js_function(getter, realm);
     let mut desc = PropertyDescriptor::builder()
         .get(get)
         .enumerable(true)
         .configurable(true);
     if let Some(setter_fn) = setter {
-        let set = NativeFunction::from_fn_ptr(setter_fn).to_js_function(realm);
+        let set = ec_fn_ptr_to_js_function(setter_fn, realm);
         desc = desc.set(set);
     }
     proto.define_property_or_throw(js_string!(name), desc.build(), ctx)?;
     Ok(())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+}
+
+/// Bridge a function pointer taking `&mut dyn ExecutionContext<BoaTypes>`
+/// into a `NativeFunction` → `JsObject` callable, using an `unsafe`
+/// `repr(transparent)` cast to recover the Boa `Context`.
+fn ec_fn_ptr_to_js_function(
+    f: fn(&JsValue, &[JsValue], &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>,
+    realm: &boa_engine::realm::Realm,
+) -> JsObject {
+    // SAFETY: BoaEngine is `#[repr(transparent)]` over `Context`, and
+    // `ExecutionContext<BoaTypes>` is implemented by `BoaEngine`.
+    // Casting `&mut Context` → `&mut dyn ExecutionContext<BoaTypes>` via
+    // the `repr(transparent)` guarantee is sound.
+    unsafe {
+        let native = NativeFunction::from_closure(Box::new(
+            move |this: &JsValue, args: &[JsValue], context: &mut Context| -> JsResult<JsValue> {
+                let engine: &mut dyn ExecutionContext<BoaTypes> =
+                    &mut *(context as *mut Context as *mut js_engine::boa::BoaEngine);
+                f(this, args, engine).map_err(|e| JsError::from_opaque(e))
+            },
+        ));
+        native.to_js_function(realm)
+    }
 }
 
 fn get_origin(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {

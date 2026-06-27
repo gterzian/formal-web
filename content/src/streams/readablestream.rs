@@ -31,6 +31,7 @@ use crate::webidl::{
     transform_promise_to_undefined,
 };
 
+use js_engine::boa::BoaTypes;
 use super::{
     acquire_readable_stream_byob_reader, acquire_readable_stream_default_reader,
     queue_internal_stream_microtask, readable_stream_byob_reader_release,
@@ -1118,7 +1119,7 @@ pub(crate) fn create_readable_stream(
 fn create_readable_stream_object(context: &mut Context) -> JsResult<(ReadableStream, JsObject)> {
     let stream = ReadableStream::new();
     let stream_object: JsObject =
-        create_interface_instance::<ReadableStream>(stream.clone(), context)?.into();
+        create_interface_instance::<BoaTypes, ReadableStream>(stream.clone(), crate::js::context_as_ec(context))?.into();
     Ok((stream, stream_object))
 }
 
@@ -1138,7 +1139,7 @@ fn create_readable_byte_stream(
     // Step 3: "Let controller be a new ReadableByteStreamController."
     let controller = ReadableByteStreamController::new();
     let controller_object =
-        create_interface_instance::<ReadableByteStreamController>(controller.clone(), context)?;
+        create_interface_instance::<BoaTypes, ReadableByteStreamController>(controller.clone(), crate::js::context_as_ec(context))?;
 
     // Step 4: "Perform ? SetUpReadableByteStreamController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, 0, undefined)."
     super::set_up_readable_byte_stream_controller(

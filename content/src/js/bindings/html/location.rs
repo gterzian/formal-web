@@ -223,31 +223,18 @@ fn with_location_ref<R>(this: &JsValue, f: impl FnOnce(&Location) -> R) -> JsRes
 
 fn map_location_result(
     result: Result<(), LocationError>,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ctx: &mut Context,
 ) -> JsResult<JsValue> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
     result
         .map(|_| JsValue::undefined())
         .map_err(|error| location_error_to_js_error(error, ctx))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn map_location_value<T>(result: Result<T, LocationError>, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<T, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<T> {
+fn map_location_value<T>(result: Result<T, LocationError>, ctx: &mut Context) -> JsResult<T> {
     result.map_err(|error| location_error_to_js_error(error, ctx))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn location_error_to_js_error(error: LocationError, ec: &mut dyn ExecutionContext<BoaTypes>) -> JsError {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
+fn location_error_to_js_error(error: LocationError, ctx: &mut Context) -> JsError {
     match error {
         LocationError::Security => dom_exception_error(DOMException::security_error(), ctx),
         LocationError::Syntax => dom_exception_error(DOMException::syntax_error(), ctx),
@@ -256,20 +243,13 @@ fn location_error_to_js_error(error: LocationError, ec: &mut dyn ExecutionContex
             ctx,
         ),
     }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-fn dom_exception_error(exception: DOMException, ec: &mut dyn ExecutionContext<BoaTypes>) -> JsError {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-    JsError::from_opaque(JsValue::from(
-        create_interface_instance::<DOMException>(exception, ctx)
-            .expect("DOMException construction should not fail"),
-    ))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+fn dom_exception_error(exception: DOMException, ctx: &mut Context) -> JsError {
+    let ec = crate::js::context_as_ec(ctx);
+    let object = create_interface_instance::<BoaTypes, DOMException>(exception, ec)
+        .expect("DOMException construction should not fail");
+    JsError::from_opaque(JsValue::from(object))
 }
 
 fn entry_settings_object(context: &Context) -> JsResult<EntrySettingsObject> {

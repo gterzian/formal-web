@@ -15,6 +15,7 @@ use crate::streams::{extract_high_water_mark, extract_size_algorithm, SizeAlgori
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::resolved_promise;
 
+use js_engine::boa::BoaTypes;
 use super::{
     acquire_writable_stream_default_writer, create_writable_stream_default_controller,
     rejected_type_error_promise, set_up_writable_stream_default_controller,
@@ -650,7 +651,7 @@ pub(crate) fn create_writable_stream(
 fn create_writable_stream_object(context: &mut Context) -> JsResult<(WritableStream, JsObject)> {
     let stream = WritableStream::new();
     let stream_object: JsObject =
-        create_interface_instance::<WritableStream>(stream.clone(), context)?.into();
+        create_interface_instance::<BoaTypes, WritableStream>(stream.clone(), crate::js::context_as_ec(context))?.into();
     Ok((stream, stream_object))
 }
 

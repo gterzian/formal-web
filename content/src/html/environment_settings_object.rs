@@ -17,6 +17,7 @@ use crate::js::{
     install_console_namespace, install_css_namespace, install_document_property, Engine,
 };
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
+use js_engine::boa::BoaTypes;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -101,9 +102,9 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let document_object = create_interface_instance::<Document>(
+        let document_object = create_interface_instance::<BoaTypes, Document>(
             Document::new(document.clone(), creation_url.clone()),
-            engine.context(),
+            engine,
         )
         .map_err(|error| error.to_string())?;
 
@@ -393,7 +394,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
     }
 
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
-        create_interface_instance::<Event>(event, self.context())
+        create_interface_instance::<BoaTypes, Event>(event, crate::js::context_as_ec(self.context()))
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

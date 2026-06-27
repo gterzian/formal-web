@@ -19,17 +19,15 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for ByteLengthQueuingStrategy {
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
+        ctx: &mut Context,
+    ) -> JsResult<Self {
+                (|| -> JsResult<Self> {
         let init = args.get_or_undefined(0).to_object(ctx)?;
         let high_water_mark = init.get(js_string!("highWaterMark"), ctx)?;
         let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, ctx)?;
         Ok(ByteLengthQueuingStrategy::new(high_water_mark))
         })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
@@ -70,17 +68,15 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for CountQueuingStrategy {
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
+        ctx: &mut Context,
+    ) -> JsResult<Self {
+                (|| -> JsResult<Self> {
         let init = args.get_or_undefined(0).to_object(ctx)?;
         let high_water_mark = init.get(js_string!("highWaterMark"), ctx)?;
         let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, ctx)?;
         Ok(CountQueuingStrategy::new(high_water_mark))
         })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
@@ -118,10 +114,8 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for CountQueuingStrategy {
 fn get_byte_length_high_water_mark(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    ctx: &mut Context,
+) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let strategy = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("ByteLengthQueuingStrategy receiver is not an object")
@@ -133,12 +127,10 @@ fn get_byte_length_high_water_mark(
         })?;
     Ok(JsValue::from(strategy.high_water_mark()))
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn get_count_high_water_mark(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn get_count_high_water_mark(this: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let strategy = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("CountQueuingStrategy receiver is not an object")
@@ -150,12 +142,10 @@ fn get_count_high_water_mark(this: &JsValue, _: &[JsValue], ec: &mut dyn Executi
         })?;
     Ok(JsValue::from(strategy.high_water_mark()))
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn get_byte_length_size(_: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn get_byte_length_size(_: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let function = FunctionObjectBuilder::new(
         ctx.realm(),
@@ -166,12 +156,10 @@ fn get_byte_length_size(_: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContex
     .build();
     Ok(JsValue::from(function))
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn get_count_size(_: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn get_count_size(_: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let function = FunctionObjectBuilder::new(
         ctx.realm(),
@@ -182,27 +170,23 @@ fn get_count_size(_: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaT
     .build();
     Ok(JsValue::from(function))
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 fn byte_length_size_function(
     _: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    ctx: &mut Context,
+) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     byte_length_size(args.get_or_undefined(0), ctx)
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn count_size_function(_: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn count_size_function(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     Ok(count_size(args.get_or_undefined(0)))
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }

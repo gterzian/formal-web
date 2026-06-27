@@ -144,7 +144,7 @@ fn get_desired_size(
     _this: &JsValue,
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -167,7 +167,7 @@ fn controller_enqueue(
     _this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -215,7 +215,7 @@ fn controller_terminate(
     _this: &JsValue,
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {

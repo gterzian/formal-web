@@ -79,7 +79,7 @@ where
         );
         let mut desc = PropertyDescriptor {
             value: None,
-            get: Some(Ty::value_from_object(Ty::object_from_function(getter_fn))),
+            get: Some(getter_fn),
             set: None,
             writable: None,
             enumerable: Some(true),
@@ -94,7 +94,7 @@ where
                 engine.property_key_from_str(attr.id),
                 &realm,
             );
-            desc.set = Some(Ty::value_from_object(Ty::object_from_function(setter_fn)));
+            desc.set = Some(setter_fn);
         }
         engine.define_property_or_throw(
             target_obj.clone(),

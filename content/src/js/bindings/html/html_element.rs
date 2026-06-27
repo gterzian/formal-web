@@ -127,20 +127,16 @@ fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -
         .into())
 }
 
-fn get_title(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn get_title(this: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     with_html_element_ref(this, |html_element| {
         JsValue::from(JsString::from(html_element.title()))
     })
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn set_title(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn set_title(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let title = args
         .get_or_undefined(0)
@@ -149,23 +145,19 @@ fn set_title(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<Boa
     with_html_element_ref(this, |html_element| html_element.set_title(&title))?;
     Ok(JsValue::undefined())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn get_lang(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn get_lang(this: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     with_html_element_ref(this, |html_element| {
         JsValue::from(JsString::from(html_element.lang()))
     })
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn set_lang(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn set_lang(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let lang = args
         .get_or_undefined(0)
@@ -174,23 +166,19 @@ fn set_lang(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaT
     with_html_element_ref(this, |html_element| html_element.set_lang(&lang))?;
     Ok(JsValue::undefined())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn get_dir(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn get_dir(this: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     with_html_element_ref(this, |html_element| {
         JsValue::from(JsString::from(html_element.dir()))
     })
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn set_dir(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn set_dir(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let dir = args
         .get_or_undefined(0)
@@ -199,32 +187,26 @@ fn set_dir(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTy
     with_html_element_ref(this, |html_element| html_element.set_dir(&dir))?;
     Ok(JsValue::undefined())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn get_hidden(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn get_hidden(this: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     with_html_element_ref(this, |html_element| JsValue::from(html_element.hidden()))
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn set_hidden(this: &JsValue, args: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn set_hidden(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let hidden = args.get_or_undefined(0).to_boolean();
     with_html_element_ref(this, |html_element| html_element.set_hidden(hidden))?;
     Ok(JsValue::undefined())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn get_style(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn get_style(this: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let object = this.as_object().ok_or_else(|| {
         JsNativeError::typ().with_message("style getter: receiver is not an object")
@@ -282,28 +264,24 @@ fn get_style(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTyp
 
     Ok(style_obj.into())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
-fn resolve_style_element(this: &JsValue, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+fn resolve_style_element(this: &JsValue, ctx: &mut Context) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("expected style object"))?;
     obj.get(js_string!("__element"), ctx)
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 fn style_css_text_getter(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    ctx: &mut Context,
+) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     // Read the element's style attribute.
     let element_val = resolve_style_element(this, ctx)?;
@@ -343,16 +321,14 @@ fn style_css_text_getter(
     };
     Ok(JsValue::from(JsString::from(style_attr)))
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 fn style_css_text_setter(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    ctx: &mut Context,
+) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     let value = args
         .get_or_undefined(0)
@@ -416,7 +392,7 @@ fn style_css_text_setter(
     }
     Ok(JsValue::undefined())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 pub(crate) fn style_declaration_object(
@@ -448,10 +424,8 @@ pub(crate) fn style_declaration_object(
 fn get_style_property_value(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    ctx: &mut Context,
+) -> JsResult<JsValue {
     (|| -> JsResult<JsValue> {
     // Step 1.1 of CSSStyleDeclaration.getPropertyValue(property): if property is not a custom
     // property, convert it to ASCII lowercase.
@@ -478,7 +452,7 @@ fn get_style_property_value(
     }
     Ok(value)
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 fn camel_case_property_name(name: &str) -> String {

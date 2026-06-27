@@ -7,6 +7,7 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::rejected_promise;
 
+use js_engine::boa::BoaTypes;
 use super::{
     rejected_type_error_promise, with_readable_stream_ref, ArrayBufferViewDescriptor,
     ReadIntoRequest, ReadableStream, ReadableStreamGenericReader, ReadableStreamReader,
@@ -188,7 +189,7 @@ pub(crate) fn acquire_readable_stream_byob_reader(
 fn create_readable_stream_byob_reader(context: &mut Context) -> JsResult<JsObject> {
     let reader = ReadableStreamBYOBReader::new();
     let reader_object: JsObject =
-        create_interface_instance::<ReadableStreamBYOBReader>(reader, context)?.into();
+        create_interface_instance::<BoaTypes, ReadableStreamBYOBReader>(reader, crate::js::context_as_ec(context))?.into();
     Ok(reader_object)
 }
 

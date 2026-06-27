@@ -275,22 +275,34 @@ fn get_class_list(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<B
     // <https://dom.spec.whatwg.org/#domtokenlist>
     let token_list = ObjectInitializer::new(ctx)
         .function(
-            NativeFunction::from_fn_ptr(class_list_add),
+            NativeFunction::from_closure(Box::new(move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
+                let ec = crate::js::context_as_ec(ctx);
+                class_list_add(this, args, ec).map_err(JsError::from_opaque)
+            })),
             js_string!("add"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(class_list_remove),
+            NativeFunction::from_closure(Box::new(move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
+                let ec = crate::js::context_as_ec(ctx);
+                class_list_remove(this, args, ec).map_err(JsError::from_opaque)
+            })),
             js_string!("remove"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(class_list_toggle),
+            NativeFunction::from_closure(Box::new(move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
+                let ec = crate::js::context_as_ec(ctx);
+                class_list_toggle(this, args, ec).map_err(JsError::from_opaque)
+            })),
             js_string!("toggle"),
             1,
         )
         .function(
-            NativeFunction::from_fn_ptr(class_list_contains),
+            NativeFunction::from_closure(Box::new(move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
+                let ec = crate::js::context_as_ec(ctx);
+                class_list_contains(this, args, ec).map_err(JsError::from_opaque)
+            })),
             js_string!("contains"),
             1,
         )
@@ -303,7 +315,10 @@ fn get_class_list(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<B
     token_list.set(js_string!("__element"), obj_clone, false, ctx)?;
 
     // length getter
-    let len_fn = NativeFunction::from_fn_ptr(class_list_length);
+    let len_fn = NativeFunction::from_closure(Box::new(move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
+        let ec = crate::js::context_as_ec(ctx);
+        class_list_length(this, args, ec).map_err(JsError::from_opaque)
+    }));
     let len_fn_obj = FunctionObjectBuilder::new(&realm, len_fn).build();
     let len_desc = boa_engine::property::PropertyDescriptor::builder()
         .get(len_fn_obj)
@@ -611,7 +626,7 @@ fn insert_adjacent_text(
     with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
         |error| {
             JsError::from_opaque(JsValue::from(
-                create_interface_instance::<DOMException>(error, ctx)
+                create_interface_instance::<BoaTypes, DOMException>(error, crate::js::context_as_ec(ctx))
                     .expect("DOMException construction should not fail"),
             ))
         },

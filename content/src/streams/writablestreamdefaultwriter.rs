@@ -8,6 +8,7 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 
+use js_engine::boa::BoaTypes;
 use super::{
     rejected_type_error_promise, type_error_value, with_writable_stream_ref,
     writable_stream_default_controller_get_chunk_size,
@@ -398,7 +399,7 @@ pub(crate) fn acquire_writable_stream_default_writer(
 fn create_writable_stream_default_writer(context: &mut Context) -> JsResult<JsObject> {
     let writer = WritableStreamDefaultWriter::new();
     let writer_object: JsObject =
-        create_interface_instance::<WritableStreamDefaultWriter>(writer, context)?.into();
+        create_interface_instance::<BoaTypes, WritableStreamDefaultWriter>(writer, crate::js::context_as_ec(context))?.into();
     Ok(writer_object)
 }
 pub(crate) fn with_writable_stream_default_writer_ref<R>(

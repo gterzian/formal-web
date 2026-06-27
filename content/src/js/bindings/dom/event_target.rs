@@ -85,7 +85,7 @@ fn add_event_listener(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -119,7 +119,7 @@ fn remove_event_listener(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -243,7 +243,7 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
     }
 
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        create_interface_instance::<Event>(event, self.context)
+        create_interface_instance::<BoaTypes, Event>(event, crate::js::context_as_ec(self.context))
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

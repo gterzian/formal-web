@@ -1,6 +1,6 @@
 use std::{mem, ptr};
 
-use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{Context, JsData, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::js::with_event_target_mut;
@@ -9,6 +9,7 @@ use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
+use js_engine::boa::BoaTypes;
 
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
 #[derive(Clone, Trace, Finalize)]
@@ -308,7 +309,8 @@ pub(crate) fn create_abort_signal(
     signal: AbortSignal,
     context: &mut Context,
 ) -> JsResult<AbortSignal> {
-    let signal_object = create_interface_instance::<AbortSignal>(signal.clone(), context)?;
+    let signal_object = create_interface_instance::<BoaTypes, AbortSignal>(signal.clone(), crate::js::context_as_ec(context))
+        .map_err(JsError::from_opaque)?;
     signal.set_reflector(signal_object);
     Ok(signal)
 }
@@ -320,10 +322,10 @@ pub(crate) fn signal_abort(
     reason: JsValue,
 ) -> JsResult<()> {
     let reason = if reason.is_undefined() {
-        JsValue::from(create_interface_instance::<DOMException>(
+        JsValue::from(create_interface_instance::<BoaTypes, DOMException>(
             DOMException::abort_error(),
-            host.context(),
-        )?)
+            crate::js::context_as_ec(host.context()),
+        ).map_err(JsError::from_opaque)?)
     } else {
         reason
     };

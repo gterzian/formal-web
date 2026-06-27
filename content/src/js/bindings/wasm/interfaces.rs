@@ -133,7 +133,7 @@ fn module_exports_binding(
     _this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -177,7 +177,7 @@ fn get_instance_exports_binding(
     this: &JsValue,
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
@@ -299,7 +299,7 @@ pub(crate) fn get_wasm_jstag(
     _this: &JsValue,
     _args: &[JsValue],
     _context: &mut Context,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, BoaTypes> {
     Err(JsNativeError::error()
         .with_message("WebAssembly.JSTag: not yet implemented")
         .into())
