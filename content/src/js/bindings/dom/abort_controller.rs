@@ -19,13 +19,8 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortController {
         _args: &[JsValue],
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<Self, BoaTypes> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
-            let signal = create_abort_signal(AbortSignal::new(), ctx)?;
-            Ok(AbortController::new(signal))
-        })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        let signal = create_abort_signal(AbortSignal::new(), ec)?;
+        Ok(AbortController::new(signal))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {

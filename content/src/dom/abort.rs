@@ -1,6 +1,6 @@
 use std::{mem, ptr};
 
-use boa_engine::{Context, JsData, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsData, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::js::with_event_target_mut;
@@ -10,6 +10,7 @@ use crate::webidl::bindings::create_interface_instance;
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
 #[derive(Clone, Trace, Finalize)]
@@ -308,15 +309,12 @@ impl AbortController {
     }
 }
 
+/// <https://dom.spec.whatwg.org/#abortsignal>
 pub(crate) fn create_abort_signal(
     signal: AbortSignal,
-    context: &mut Context,
-) -> JsResult<AbortSignal> {
-    let signal_object = create_interface_instance::<BoaTypes, AbortSignal>(
-        signal.clone(),
-        crate::js::context_as_ec(context),
-    )
-    .map_err(JsError::from_opaque)?;
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<AbortSignal, BoaTypes> {
+    let signal_object = create_interface_instance::<BoaTypes, AbortSignal>(signal.clone(), ec)?;
     signal.set_reflector(signal_object);
     Ok(signal)
 }
@@ -378,12 +376,12 @@ fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> J
 pub(crate) fn initialize_dependent_abort_signal(
     result_signal: &AbortSignal,
     signals: &[AbortSignal],
-) -> JsResult<()> {
+) {
     // Step 2: "For each signal of signals: if signal is aborted, then set resultSignal's abort reason to signal's abort reason and return resultSignal."
     for signal in signals {
         if signal.aborted_value() {
             result_signal.set_aborted_reason(signal.reason_value());
-            return Ok(());
+            return;
         }
     }
 
@@ -411,8 +409,6 @@ pub(crate) fn initialize_dependent_abort_signal(
             source_signal.append_dependent_signal(result_signal);
         }
     }
-
-    Ok(())
 }
 
 fn append_unique_signal(signals: &mut Vec<AbortSignal>, signal: &AbortSignal) {

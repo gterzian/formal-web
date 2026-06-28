@@ -26,19 +26,15 @@ pub(crate) fn a_new_promise(context: &mut Context) -> (JsObject, ResolvingFuncti
     (promise.into(), resolvers)
 }
 
-/// Creates a promise already resolved with the given value.
-///
-/// Implements: https://webidl.spec.whatwg.org/#a-promise-resolved-with
-/// Step 1: "Return a promise resolved with value."
+/// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
 pub(crate) fn resolved_promise(value: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    // Step 1: "Return a promise resolved with value."
     Ok(JsPromise::resolve(value, context)?.into())
 }
 
-/// Creates a promise already rejected with the given reason.
-///
-/// Implements: https://webidl.spec.whatwg.org/#a-promise-rejected-with
-/// Step 1: "Return a promise rejected with reason."
+/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
 pub(crate) fn rejected_promise(reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    // Step 1: "Return a promise rejected with reason."
     Ok(JsPromise::reject(JsError::from_opaque(reason), context)?.into())
 }
 

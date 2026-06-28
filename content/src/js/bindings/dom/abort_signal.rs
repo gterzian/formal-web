@@ -155,9 +155,8 @@ pub(crate) fn abort_static(
 ) -> Completion<JsValue, BoaTypes> {
     let reason = abort_reason_from_argument(args.get(0), ec)?;
     let value_undefined = ec.value_undefined();
+    let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), ec)?;
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), ctx)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined.clone()))?;
     Ok(JsValue::from(signal.object().map_err(|e| {
         e.into_opaque(ctx).unwrap_or(value_undefined)
     })?))
@@ -170,9 +169,8 @@ pub(crate) fn timeout_static(
 ) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let milliseconds = ec.to_length(args.get_or_undefined(0).clone())?;
+    let signal = create_abort_signal(AbortSignal::new(), ec)?;
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    let signal = create_abort_signal(AbortSignal::new(), ctx)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined.clone()))?;
     let callback = NativeFunction::from_copy_closure_with_captures(
         |_, _, signal: &AbortSignal, context| {
             let reason = timeout_reason(context).map_err(JsError::from_opaque)?;
@@ -215,11 +213,9 @@ pub(crate) fn any_static(
 ) -> Completion<JsValue, BoaTypes> {
     let value_undefined = ec.value_undefined();
     let signals = sequence_abort_signals(args.get_or_undefined(0), ec)?;
+    let result_signal = create_abort_signal(AbortSignal::new(), ec)?;
+    initialize_dependent_abort_signal(&result_signal, &signals);
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    let result_signal = create_abort_signal(AbortSignal::new(), ctx)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined.clone()))?;
-    initialize_dependent_abort_signal(&result_signal, &signals)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined.clone()))?;
     Ok(JsValue::from(result_signal.object().map_err(|e| {
         e.into_opaque(ctx).unwrap_or(value_undefined.clone())
     })?))

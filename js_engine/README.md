@@ -286,7 +286,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 | 6a. CtxHost removal | `CtxHost` adapters in `strategy.rs` and `readablestreamsupport.rs` removed. `invoke_callback_function` and `call_user_objects_operation` take `&mut dyn EcmascriptHost<BoaTypes>` instead of `&mut impl EcmascriptHost<BoaTypes>`. `SourceMethod::call` and `SizeAlgorithm::size` use `context_as_ec` internally instead of local `CtxHost`. | ✅ |
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
-| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. | ❌ |
+| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. | 🔄 (abort helpers converted: `create_abort_signal`, `initialize_dependent_abort_signal`) |
 | 8. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
 | 9. JSC parity | Missing JSC methods implemented | ❌ |
 
@@ -318,11 +318,20 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 
 ### Step 1: Thread `ExecutionContext<T>` through domain code
 
-Mechanical change: every domain function that takes `&mut Context` takes
-`&mut dyn ExecutionContext<T>` instead.  Replace direct Boa API calls
-(`context.global_object()`, `value.to_number(context)`, `js_error.into_opaque(context)`)
-with EC trait methods (`ec.global_object()`, `ec.to_number(value)`,
-`ec.new_type_error(msg)`).
+**Pattern established**: domain entry points take `&mut dyn ExecutionContext<BoaTypes>`
+and return `Completion<_, BoaTypes>`. Binding functions pass `ec` directly without
+`ec_to_ctx`. Domain-internal callers bridge via `context_as_ec(context)` until they're
+converted.
+
+**Completed**: `create_abort_signal` (dom/abort.rs), `initialize_dependent_abort_signal`.
+
+**Remaining**: All other domain functions in the areas listed below need the same
+treatment.  Each conversion follows the same mechanical pattern:
+1. Change signature from `&mut Context` → `&mut dyn ExecutionContext<BoaTypes>`
+2. Return `Completion<_, BoaTypes>` instead of `JsResult<_>`
+3. Replace Boa API calls with EC trait methods where equivalents exist
+4. Callers with `&mut Context` bridge via `context_as_ec(context)`
+5. Binding function callers pass `ec` directly, removing `ec_to_ctx` where possible
 
 Affected areas:
 - Streams: `writablestreamdefaultcontroller.rs`, `readablestreamdefaultcontroller.rs`,
