@@ -875,26 +875,23 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     let mut cancel_algorithm = CancelAlgorithm::ReturnUndefined;
 
     // Step 5: "If underlyingSourceDict[\"start\"] exists, then set startAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"start\"] with argument list « controller » and callback this value underlyingSource."
-    if let Some(start_method) = crate::js::js_result_to_completion(
-        extract_source_method(underlying_source_object.as_ref(), "start", context),
-        context,
-    )? {
+    if let Some(start_method) =
+        extract_source_method(underlying_source_object.as_ref(), "start", ec)?
+    {
         start_algorithm = StartAlgorithm::JavaScript(start_method);
     }
 
     // Step 6: "If underlyingSourceDict[\"pull\"] exists, then set pullAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"pull\"] with argument list « controller » and callback this value underlyingSource."
-    if let Some(pull_method) = crate::js::js_result_to_completion(
-        extract_source_method(underlying_source_object.as_ref(), "pull", context),
-        context,
-    )? {
+    if let Some(pull_method) =
+        extract_source_method(underlying_source_object.as_ref(), "pull", ec)?
+    {
         pull_algorithm = PullAlgorithm::JavaScript(pull_method);
     }
 
     // Step 7: "If underlyingSourceDict[\"cancel\"] exists, then set cancelAlgorithm to an algorithm which takes an argument reason and returns the result of invoking underlyingSourceDict[\"cancel\"] with argument list « reason » and callback this value underlyingSource."
-    if let Some(cancel_method) = crate::js::js_result_to_completion(
-        extract_source_method(underlying_source_object.as_ref(), "cancel", context),
-        context,
-    )? {
+    if let Some(cancel_method) =
+        extract_source_method(underlying_source_object.as_ref(), "cancel", ec)?
+    {
         cancel_algorithm = CancelAlgorithm::JavaScript(cancel_method);
     }
 
@@ -915,14 +912,19 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
 pub(crate) fn extract_source_method(
     source_object: Option<&JsObject>,
     name: &str,
-    context: &mut Context,
-) -> JsResult<Option<SourceMethod>> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<Option<SourceMethod>, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     let Some(source_object) = source_object else {
         return Ok(None);
     };
 
     let property_name = JsString::from(name);
-    let value = source_object.get(property_name, context)?;
+    let value = crate::js::js_result_to_completion(
+        source_object.get(property_name, context),
+        context,
+    )?;
     if value.is_undefined() {
         return Ok(None);
     }
@@ -931,7 +933,10 @@ pub(crate) fn extract_source_method(
         .as_object()
         .filter(|object| object.is_callable())
         .ok_or_else(|| {
-            JsNativeError::typ().with_message(format!("underlying source {name} must be callable"))
+            crate::js::native_error_to_js_value(
+                JsNativeError::typ().with_message(format!("underlying source {name} must be callable")),
+                context,
+            )
         })?;
 
     Ok(Some(SourceMethod::new(

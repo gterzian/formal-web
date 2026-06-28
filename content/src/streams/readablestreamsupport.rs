@@ -390,11 +390,7 @@ impl ReadableStreamController {
         match self {
             Self::Default(controller) => controller.cancel_steps(reason, ec),
             Self::Byte(controller) => {
-                let context = unsafe { crate::js::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(
-                    controller.cancel_steps(reason, context),
-                    context,
-                )
+                controller.cancel_steps(reason, ec)
             }
         }
     }
@@ -406,11 +402,7 @@ impl ReadableStreamController {
         match self {
             Self::Default(controller) => controller.pull_steps(read_request, ec),
             Self::Byte(controller) => {
-                let context = unsafe { crate::js::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(
-                    controller.pull_steps(read_request, context),
-                    context,
-                )
+                controller.pull_steps(read_request, ec)
             }
         }
     }
@@ -421,8 +413,7 @@ impl ReadableStreamController {
         match self {
             Self::Default(controller) => controller.release_steps(ec),
             Self::Byte(controller) => {
-                let context = unsafe { crate::js::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(controller.release_steps(context), context)
+                controller.release_steps(ec)
             }
         }
     }

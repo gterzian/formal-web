@@ -487,7 +487,7 @@ impl ReadableByteStreamController {
     }
 
     fn controller_object(&self) -> JsResult<JsObject> {
-        crate::js::js_result_to_completion(self.stream_slot(), context)?.controller_object_slot().ok_or_else(|| {
+        self.stream_slot()?.controller_object_slot().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("ReadableByteStreamController is missing its JavaScript object")
                 .into()
@@ -562,7 +562,7 @@ impl ReadableByteStreamController {
 
     /// <https://streams.spec.whatwg.org/#rbs-controller-desired-size>
     pub(crate) fn desired_size(&self) -> JsResult<Option<f64>> {
-        match crate::js::js_result_to_completion(self.stream_slot(), context)?.state() {
+        match self.stream_slot()?.state() {
             ReadableStreamState::Errored => Ok(None),
             ReadableStreamState::Closed => Ok(Some(0.0)),
             ReadableStreamState::Readable => Ok(Some(
@@ -713,6 +713,7 @@ impl ReadableByteStreamController {
     ) -> Completion<(), BoaTypes> {
         // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
         let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
         let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
         let mut descriptor = PullIntoDescriptor {
             minimum_fill: min * view.element_size(),
@@ -723,30 +724,30 @@ impl ReadableByteStreamController {
 
         crate::js::js_result_to_completion(self.fill_pull_into_from_queue(&mut descriptor), context)?;
         if descriptor.can_commit() {
-            return descriptor.commit(false, ec);
+            return descriptor.commit(false, ec_ref);
         }
 
         if self.close_requested.get() && self.queue_total_size.get() == 0 {
             if descriptor.bytes_filled % descriptor.view.element_size() != 0 {
                 let error = type_error_value(
                     "Cannot close a byte stream with a partially filled typed array element",
-                    ec,
+                    ec_ref,
                 )?;
-                descriptor.error(error.clone(), ec)?;
+                descriptor.error(error.clone(), ec_ref)?;
                 self.clear_algorithms();
                 crate::js::js_result_to_completion(readable_stream_error(stream, error, context), context)?;
                 return Ok(());
             }
 
             self.clear_algorithms();
-            descriptor.close(ec)?;
+            descriptor.close(ec_ref)?;
             crate::js::js_result_to_completion(readable_stream_close(stream, context), context)?;
             return Ok(());
         }
 
         self.pending_pull_intos.borrow_mut().push_back(descriptor);
-        let _ = self.byob_request(ec)?;
-        self.call_pull_if_needed(ec)
+        let _ = self.byob_request(ec_ref)?;
+        self.call_pull_if_needed(ec_ref)
     }
 
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamcontroller-releasesteps>
@@ -756,11 +757,12 @@ impl ReadableByteStreamController {
     ) -> Completion<(), BoaTypes> {
         // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
         let context = unsafe { crate::js::ec_to_ctx(ec) };
-        let release_error = type_error_value("Reader was released", ec)?;
+        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        let release_error = type_error_value("Reader was released", ec_ref)?;
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
         crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
         for descriptor in pending {
-            descriptor.error(release_error.clone(), ec)?;
+            descriptor.error(release_error.clone(), ec_ref)?;
         }
         Ok(())
     }
@@ -810,7 +812,7 @@ impl ReadableByteStreamController {
         }
 
         self.clear_algorithms();
-        readable_stream_close(stream, context)
+        crate::js::js_result_to_completion(readable_stream_close(stream, context), context)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-enqueue>
@@ -855,7 +857,7 @@ impl ReadableByteStreamController {
             descriptor.error(error.clone(), ec)?;
         }
         self.clear_algorithms();
-        readable_stream_error(crate::js::js_result_to_completion(self.stream_slot(), context)?, error, context)
+        crate::js::js_result_to_completion(readable_stream_error(crate::js::js_result_to_completion(self.stream_slot(), context)?, error, context), context)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-respond>
@@ -918,7 +920,7 @@ impl ReadableByteStreamController {
             && self.pending_pull_intos.borrow().is_empty()
         {
             self.clear_algorithms();
-            readable_stream_close(crate::js::js_result_to_completion(self.stream_slot(), context)?, context)?;
+            crate::js::js_result_to_completion(readable_stream_close(crate::js::js_result_to_completion(self.stream_slot(), context)?, context), context)?;
             return Ok(());
         }
 
@@ -1009,7 +1011,7 @@ impl ReadableByteStreamController {
             && self.pending_pull_intos.borrow().is_empty()
         {
             self.clear_algorithms();
-            readable_stream_close(crate::js::js_result_to_completion(self.stream_slot(), context)?, context)?;
+            crate::js::js_result_to_completion(readable_stream_close(crate::js::js_result_to_completion(self.stream_slot(), context)?, context), context)?;
             return Ok(());
         }
 
@@ -1080,7 +1082,7 @@ impl ReadableByteStreamController {
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-should-call-pull>
     fn should_call_pull(&self) -> JsResult<bool> {
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
+        let stream = self.stream_slot()?;
         if !self.started.get()
             || self.close_requested.get()
             || stream.state() != ReadableStreamState::Readable

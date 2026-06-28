@@ -158,10 +158,11 @@ impl ReadableStream {
     pub(crate) fn cancel(&mut self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
         // Step 1: "If ! IsReadableStreamLocked(this) is true, return a promise rejected with a TypeError exception."
         if self.is_readable_stream_locked() {
-            return rejected_type_error_promise(
+            let ec_ref = crate::js::context_as_ec(context);
+            return crate::js::completion_to_js_result(rejected_type_error_promise(
                 "Cannot cancel a stream that already has a reader",
-                context,
-            );
+                ec_ref,
+            ));
         }
 
         // Step 2: "Return ! ReadableStreamCancel(this, reason)."
@@ -1062,12 +1063,14 @@ pub(crate) fn construct_readable_stream(
                     .map_err(JsError::from_opaque)?;
 
             // Step 4.3: "Perform ? SetUpReadableByteStreamControllerFromUnderlyingSource(this, underlyingSource, underlyingSourceDict, highWaterMark)."
+            crate::js::completion_to_js_result(
             set_up_readable_byte_stream_controller_from_underlying_source(
                 stream.clone(),
                 underlying_source_object,
                 high_water_mark,
-                context,
-            )?;
+                crate::js::context_as_ec(context),
+            ),
+        )?;
             return Ok(stream);
         }
         Some(_) => {
@@ -1130,10 +1133,11 @@ pub(crate) fn create_readable_stream(
 
     // Step 6: "Let controller be a new ReadableStreamDefaultController."
     let controller = super::ReadableStreamDefaultController::new();
+    let ec_ref = crate::js::context_as_ec(context);
     let controller_object = create_interface_instance::<
         BoaTypes,
         super::ReadableStreamDefaultController,
-    >(controller.clone(), crate::js::context_as_ec(context))
+    >(controller.clone(), ec_ref)
     .map_err(JsError::from_opaque)?;
 
     // Step 7: "Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm)."
@@ -1153,10 +1157,11 @@ pub(crate) fn create_readable_stream(
     Ok((stream, stream_object))
 }
 fn create_readable_stream_object(context: &mut Context) -> JsResult<(ReadableStream, JsObject)> {
+    let ec_ref = crate::js::context_as_ec(context);
     let stream = ReadableStream::new();
     let stream_object: JsObject = create_interface_instance::<BoaTypes, ReadableStream>(
         stream.clone(),
-        crate::js::context_as_ec(context),
+        ec_ref,
     )
     .map_err(JsError::from_opaque)?
     .into();
@@ -1607,7 +1612,7 @@ pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Contex
             // Step 6.3: "For each readRequest of readRequests,"
             for read_request in read_requests {
                 // Step 6.3.1: "Perform readRequest's close steps."
-                read_request.close_steps(context)?;
+                crate::js::completion_to_js_result(read_request.close_steps(ec))?;
             }
         }
         ReadableStreamReader::BYOB(reader) => {
@@ -1715,6 +1720,7 @@ pub(crate) fn readable_stream_fulfill_read_request(
     done: bool,
     context: &mut Context,
 ) -> JsResult<()> {
+    let ec = crate::js::context_as_ec(context);
     // Step 1: "Assert: ! ReadableStreamHasDefaultReader(stream) is true."
     let reader = stream
         .reader_slot()
@@ -2827,7 +2833,7 @@ fn promise_rejected_with_reason(reason: JsValue, context: &mut Context) -> JsObj
 }
 
 fn promise_rejected_with_type_error(message: &'static str, context: &mut Context) -> JsObject {
-    let reason = match type_error_value(message, context) {
+    let reason = match crate::js::completion_to_js_result(type_error_value(message, crate::js::context_as_ec(context))) {
         Ok(reason) => reason,
         Err(_) => JsValue::undefined(),
     };

@@ -178,15 +178,7 @@ impl ReadableStreamBYOBReader {
                 .into_opaque(ctx)
                 .unwrap_or_else(|_| JsValue::undefined())
         })?;
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        // pull_into still takes Boa's Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-        controller
-            .pull_into(view, min, read_into_request, context)
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })
+        controller.pull_into(view, min, read_into_request, ec)
     }
 
     pub(crate) fn release_lock(
