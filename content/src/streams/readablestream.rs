@@ -288,7 +288,8 @@ impl ReadableStream {
         );
 
         // Step 5: "Set promise.[[PromiseIsHandled]] to true."
-        crate::webidl::mark_promise_as_handled(&promise, context)?;
+        crate::webidl::mark_promise_as_handled(&promise, crate::js::context_as_ec(context))
+            .map_err(boa_engine::JsError::from_opaque)?;
 
         // Step 6: "Return transform[\"readable\"]."
         Ok(readable_value)
@@ -441,7 +442,8 @@ fn readable_stream_default_tee(
     // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r,"
     // Note: mark the source reader's closed promise as handled before attaching the forwarding
     // reaction so engine-level unhandled-rejection reporting does not race this internal hook.
-    mark_promise_as_handled(&reader_closed_promise, context)?;
+    mark_promise_as_handled(&reader_closed_promise, crate::js::context_as_ec(context))
+        .map_err(boa_engine::JsError::from_opaque)?;
 
     let (cancel_promise, cancel_resolvers) = JsPromise::new_pending(context);
 
@@ -549,7 +551,8 @@ fn readable_stream_default_tee(
     let forward_error: JsObject = JsPromise::from_object(reader_closed_promise)?
         .catch(on_rejected, context)?
         .into();
-    mark_promise_as_handled(&forward_error, context)?;
+    mark_promise_as_handled(&forward_error, crate::js::context_as_ec(context))
+        .map_err(boa_engine::JsError::from_opaque)?;
 
     // Step 20: "Return « branch1, branch2 »."
     Ok(ReadableStreamTeeBranches {
@@ -754,9 +757,13 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
                         clone_for_branch2,
                         context,
                     ),
-                    context,
+                    crate::js::context_as_ec(context),
                 );
-                mark_promise_as_handled(&JsObject::from(pull_promise), context)?;
+                mark_promise_as_handled(
+                    &JsObject::from(pull_promise),
+                    crate::js::context_as_ec(context),
+                )
+                .map_err(boa_engine::JsError::from_opaque)?;
             }
 
             Ok(())
@@ -930,7 +937,9 @@ impl ReadableStreamFromIteratorRecord {
                 .call(&JsValue::from(self.iterator.clone()), &[], context)?;
 
         match self.kind {
-            ReadableStreamFromIteratorKind::Async => promise_from_value(next_result, context),
+            ReadableStreamFromIteratorKind::Async => crate::js::completion_to_js_result(
+                promise_from_value(next_result, crate::js::context_as_ec(context)),
+            ),
             ReadableStreamFromIteratorKind::Sync => {
                 promise_from_sync_iterator_result(next_result, context)
             }
@@ -953,7 +962,10 @@ impl ReadableStreamFromIteratorRecord {
         let return_result =
             return_method.call(&JsValue::from(self.iterator.clone()), &[reason], context)?;
         let return_promise = match self.kind {
-            ReadableStreamFromIteratorKind::Async => promise_from_value(return_result, context)?,
+            ReadableStreamFromIteratorKind::Async => {
+                promise_from_value(return_result, crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?
+            }
             ReadableStreamFromIteratorKind::Sync => {
                 promise_from_sync_iterator_result(return_result, context)?
             }
@@ -1221,7 +1233,12 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     // Step 4.2: "If nextResult is an abrupt completion, return a promise rejected with nextResult.[[Value]]."
     let next_promise = match next_result {
         Ok(next_promise) => next_promise,
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Err(error) => {
+            return crate::js::completion_to_js_result(rejected_promise(
+                error.into_opaque(context)?,
+                crate::js::context_as_ec(context),
+            ));
+        }
     };
 
     // Step 4.3: "Let nextPromise be a promise resolved with nextResult.[[Value]]."
@@ -1292,8 +1309,18 @@ pub(crate) fn readable_stream_from_iterable_cancel_algorithm(
     let return_result = state.iterator_record.return_result_promise(reason, context);
     let return_promise = match return_result {
         Ok(Some(return_promise)) => return_promise,
-        Ok(None) => return resolved_promise(JsValue::undefined(), context),
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Ok(None) => {
+            return crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                crate::js::context_as_ec(context),
+            ));
+        }
+        Err(error) => {
+            return crate::js::completion_to_js_result(rejected_promise(
+                error.into_opaque(context)?,
+                crate::js::context_as_ec(context),
+            ));
+        }
     };
 
     // Step 5.8: "Return the result of reacting to returnPromise with the following fulfillment steps, given iterResult:"
@@ -1382,27 +1409,42 @@ fn promise_from_sync_iterator_result(
     let iter_result_object = match iter_result.as_object() {
         Some(iter_result_object) => iter_result_object.clone(),
         None => {
-            return rejected_promise(
-                JsNativeError::typ()
-                    .with_message("ReadableStream.from() iterator result must be an object")
-                    .into_opaque(context)
-                    .into(),
-                context,
-            );
+            let js_error: JsError = JsNativeError::typ()
+                .with_message("ReadableStream.from() iterator result must be an object")
+                .into();
+            return crate::js::completion_to_js_result(rejected_promise(
+                js_error.into_opaque(context)?,
+                crate::js::context_as_ec(context),
+            ));
         }
     };
 
     let done = match iter_result_object.get(js_string!("done"), context) {
         Ok(done) => done.to_boolean(),
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Err(error) => {
+            return crate::js::completion_to_js_result(rejected_promise(
+                error.into_opaque(context)?,
+                crate::js::context_as_ec(context),
+            ));
+        }
     };
     let value = match iter_result_object.get(js_string!("value"), context) {
         Ok(value) => value,
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Err(error) => {
+            return crate::js::completion_to_js_result(rejected_promise(
+                error.into_opaque(context)?,
+                crate::js::context_as_ec(context),
+            ));
+        }
     };
-    let value_promise = match promise_from_value(value, context) {
+    let value_promise = match promise_from_value(value, crate::js::context_as_ec(context)) {
         Ok(value_promise) => value_promise,
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Err(error) => {
+            return crate::js::completion_to_js_result(rejected_promise(
+                error,
+                crate::js::context_as_ec(context),
+            ));
+        }
     };
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
         |_, args, done: &bool, context| {
@@ -1471,12 +1513,18 @@ pub(crate) fn readable_stream_cancel(
 
     // Step 2: "If stream.[[state]] is \"closed\", return a promise resolved with undefined."
     if stream.state() == ReadableStreamState::Closed {
-        return resolved_promise(JsValue::undefined(), context);
+        return crate::js::completion_to_js_result(resolved_promise(
+            JsValue::undefined(),
+            crate::js::context_as_ec(context),
+        ));
     }
 
     // Step 3: "If stream.[[state]] is \"errored\", return a promise rejected with stream.[[storedError]]."
     if stream.state() == ReadableStreamState::Errored {
-        return rejected_promise(stream.stored_error(), context);
+        return crate::js::completion_to_js_result(rejected_promise(
+            stream.stored_error(),
+            crate::js::context_as_ec(context),
+        ));
     }
 
     // Step 4: "Perform ! ReadableStreamClose(stream)."
@@ -1496,7 +1544,8 @@ pub(crate) fn readable_stream_cancel(
     let source_cancel_promise = controller.cancel_steps(reason, context)?;
 
     // Step 8: "Return the result of reacting to sourceCancelPromise with a fulfillment step that returns undefined."
-    transform_promise_to_undefined(&source_cancel_promise, context)
+    transform_promise_to_undefined(&source_cancel_promise, crate::js::context_as_ec(context))
+        .map_err(boa_engine::JsError::from_opaque)
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-close>
@@ -1577,7 +1626,8 @@ pub(crate) fn readable_stream_error(
         ReadableStreamReader::Default(reader) => {
             // Step 7: "Set reader.[[closedPromise]].[[PromiseIsHandled]] to true."
             if let Some(closed_promise) = reader.closed_promise_slot_value() {
-                mark_promise_as_handled(&closed_promise, context)?;
+                mark_promise_as_handled(&closed_promise, crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?;
             }
 
             // Step 6: "Reject reader.[[closedPromise]] with e."
@@ -1593,7 +1643,8 @@ pub(crate) fn readable_stream_error(
         }
         ReadableStreamReader::BYOB(reader) => {
             if let Some(closed_promise) = reader.closed_promise_slot_value() {
-                mark_promise_as_handled(&closed_promise, context)?;
+                mark_promise_as_handled(&closed_promise, crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?;
             }
 
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
@@ -1863,8 +1914,9 @@ fn byte_tee_ignore_pull_completion(
     completion: JsResult<JsValue>,
     context: &mut Context,
 ) -> JsResult<()> {
-    let promise = promise_from_completion(completion, context);
-    mark_promise_as_handled(&JsObject::from(promise), context)
+    let promise = promise_from_completion(completion, crate::js::context_as_ec(context));
+    mark_promise_as_handled(&JsObject::from(promise), crate::js::context_as_ec(context))
+        .map_err(boa_engine::JsError::from_opaque)
 }
 
 fn byte_tee_switch_to_default_reader(
@@ -2348,7 +2400,8 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     let reaction: JsObject = JsPromise::from_object(promise)?
         .then(Some(on_fulfilled), Some(on_rejected), context)?
         .into();
-    mark_promise_as_handled(&reaction, context)?;
+    mark_promise_as_handled(&reaction, crate::js::context_as_ec(context))
+        .map_err(boa_engine::JsError::from_opaque)?;
     Ok(())
 }
 
@@ -2522,7 +2575,8 @@ fn readable_byte_stream_tee(
     let reader_object = acquire_readable_stream_default_reader(stream.clone(), context)?;
     let reader = with_readable_stream_default_reader_ref(&reader_object, |r| r.clone())?;
     let reader_closed_promise = reader.closed()?;
-    mark_promise_as_handled(&reader_closed_promise, context)?;
+    mark_promise_as_handled(&reader_closed_promise, crate::js::context_as_ec(context))
+        .map_err(boa_engine::JsError::from_opaque)?;
 
     // Step 4: Let reading be false.
     // Step 5: Let readAgainForBranch1 be false.
@@ -2709,18 +2763,20 @@ fn normalize_pipe_options(options: &JsValue, context: &mut Context) -> JsResult<
 }
 
 fn promise_rejected_with_reason(reason: JsValue, context: &mut Context) -> JsObject {
-    crate::webidl::rejected_promise(reason, context).unwrap_or_else(|_| {
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        let promise_object: JsObject = promise.into();
-        if let Err(error) =
-            resolvers
-                .reject
-                .call(&JsValue::undefined(), &[JsValue::undefined()], context)
-        {
-            error!("[readable-stream] failed to reject fallback promise: {error}");
-        }
-        promise_object
-    })
+    crate::webidl::rejected_promise(reason, crate::js::context_as_ec(context)).unwrap_or_else(
+        |_| {
+            let (promise, resolvers) = JsPromise::new_pending(context);
+            let promise_object: JsObject = promise.into();
+            if let Err(error) =
+                resolvers
+                    .reject
+                    .call(&JsValue::undefined(), &[JsValue::undefined()], context)
+            {
+                error!("[readable-stream] failed to reject fallback promise: {error}");
+            }
+            promise_object
+        },
+    )
 }
 
 fn promise_rejected_with_type_error(message: &'static str, context: &mut Context) -> JsObject {
@@ -2732,7 +2788,7 @@ fn promise_rejected_with_type_error(message: &'static str, context: &mut Context
 }
 
 fn promise_rejected_with_error(error: JsError, context: &mut Context) -> JsObject {
-    rejected_promise_from_error(error, context)
+    rejected_promise_from_error(error, crate::js::context_as_ec(context))
 }
 
 fn reject_promise_with_error(
@@ -2740,7 +2796,7 @@ fn reject_promise_with_error(
     error: JsError,
     context: &mut Context,
 ) {
-    let reason = error_to_rejection_reason(error, context);
+    let reason = error_to_rejection_reason(error, crate::js::context_as_ec(context));
     if let Err(error) = resolvers
         .reject
         .call(&JsValue::undefined(), &[reason], context)
@@ -2975,7 +3031,10 @@ impl PipeToState {
     }
 
     fn reject_and_finalize_with_error(&self, error: JsError, context: &mut Context) {
-        self.reject_and_finalize_with_reason(error_to_rejection_reason(error, context), context);
+        self.reject_and_finalize_with_reason(
+            error_to_rejection_reason(error, crate::js::context_as_ec(context)),
+            context,
+        );
     }
 
     fn reject_and_finalize_with_reason(&self, reason: JsValue, context: &mut Context) {
@@ -3276,18 +3335,21 @@ impl PipeToState {
         let action_promise = match action {
             PipeShutdownAction::AbortDestination => match dest {
                 Some(dest) => dest.abort_stream(error, context)?,
-                None => resolved_promise(JsValue::undefined(), context)?,
+                None => resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?,
             },
             PipeShutdownAction::CancelSource => match source {
                 Some(source) => readable_stream_cancel(source, error, context)?,
-                None => resolved_promise(JsValue::undefined(), context)?,
+                None => resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?,
             },
             PipeShutdownAction::CloseDestination => match dest {
                 Some(dest)
                     if dest.state() == super::WritableStreamState::Closed
                         || dest.close_queued_or_in_flight() =>
                 {
-                    resolved_promise(JsValue::undefined(), context)?
+                    resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+                        .map_err(boa_engine::JsError::from_opaque)?
                 }
                 _ => writer
                     .close(crate::js::context_as_ec(context))
@@ -3322,7 +3384,10 @@ impl PipeToState {
                     }
                     (Some(abort_promise), None) => abort_promise,
                     (None, Some(source)) => readable_stream_cancel(source, error, context)?,
-                    (None, None) => resolved_promise(JsValue::undefined(), context)?,
+                    (None, None) => {
+                        resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+                            .map_err(boa_engine::JsError::from_opaque)?
+                    }
                 }
             }
         };
@@ -3354,12 +3419,18 @@ impl PipeToState {
                 .map_err(JsError::from_opaque)
         {
             if error.is_none() {
-                error = Some(error_to_rejection_reason(release_error, context));
+                error = Some(error_to_rejection_reason(
+                    release_error,
+                    crate::js::context_as_ec(context),
+                ));
             }
         }
         if let Err(release_error) = super::readable_stream_default_reader_release(reader, context) {
             if error.is_none() {
-                error = Some(error_to_rejection_reason(release_error, context));
+                error = Some(error_to_rejection_reason(
+                    release_error,
+                    crate::js::context_as_ec(context),
+                ));
             }
         }
 
@@ -3492,7 +3563,8 @@ impl PipeToState {
         }
 
         for promise in handled {
-            mark_promise_as_handled(&promise, context)?;
+            mark_promise_as_handled(&promise, crate::js::context_as_ec(context))
+                .map_err(boa_engine::JsError::from_opaque)?;
         }
 
         Ok(())
@@ -3661,7 +3733,10 @@ fn pipe_read_result_done(result: &JsValue, context: &mut Context) -> JsResult<Op
 #[allow(dead_code)]
 fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsResult<JsObject> {
     if promises.is_empty() {
-        return resolved_promise(JsValue::undefined(), context);
+        return crate::js::completion_to_js_result(resolved_promise(
+            JsValue::undefined(),
+            crate::js::context_as_ec(context),
+        ));
     }
 
     if promises.len() == 1 {
@@ -3669,7 +3744,10 @@ fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsRe
             return Ok(promise);
         }
 
-        return resolved_promise(JsValue::undefined(), context);
+        return crate::js::completion_to_js_result(resolved_promise(
+            JsValue::undefined(),
+            crate::js::context_as_ec(context),
+        ));
     }
 
     let (promise, resolvers) = JsPromise::new_pending(context);
@@ -3846,7 +3924,8 @@ fn start_abort_cancel_source(
 
     let cancel_promise = match source {
         Some(source) => readable_stream_cancel(source, error, context)?,
-        None => resolved_promise(JsValue::undefined(), context)?,
+        None => resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+            .map_err(boa_engine::JsError::from_opaque)?,
     };
 
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(

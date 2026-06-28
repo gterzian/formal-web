@@ -269,10 +269,7 @@ impl WritableStreamDefaultWriter {
             return Ok(());
         }
 
-        let promise = resolved_promise(JsValue::undefined(), context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        let promise = resolved_promise(JsValue::undefined(), ec)?;
         self.set_ready_promise_value(Some(promise));
         Ok(())
     }
@@ -295,17 +292,11 @@ impl WritableStreamDefaultWriter {
                 })?;
             self.set_ready_resolvers_value(None);
         } else {
-            self.set_ready_promise_value(Some(rejected_promise(error, context).map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?));
+            self.set_ready_promise_value(Some(rejected_promise(error, ec)?));
         }
 
         if let Some(ready_promise) = self.ready_promise_value() {
-            mark_promise_as_handled(&ready_promise, context).map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?;
+            mark_promise_as_handled(&ready_promise, ec)?;
         }
         Ok(())
     }
@@ -334,10 +325,7 @@ impl WritableStreamDefaultWriter {
             return Ok(());
         }
 
-        let promise = resolved_promise(JsValue::undefined(), context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        let promise = resolved_promise(JsValue::undefined(), ec)?;
         self.set_closed_promise_value(Some(promise));
         Ok(())
     }
@@ -360,17 +348,11 @@ impl WritableStreamDefaultWriter {
                 })?;
             self.set_closed_resolvers_value(None);
         } else {
-            self.set_closed_promise_value(Some(rejected_promise(error, context).map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?));
+            self.set_closed_promise_value(Some(rejected_promise(error, ec)?));
         }
 
         if let Some(closed_promise) = self.closed_promise_value() {
-            mark_promise_as_handled(&closed_promise, context).map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?;
+            mark_promise_as_handled(&closed_promise, ec)?;
         }
         Ok(())
     }
@@ -482,10 +464,7 @@ impl WritableStreamDefaultWriter {
 
         match stream.state() {
             WritableStreamState::Errored => {
-                return rejected_promise(stream.stored_error(), context).map_err(|e| {
-                    e.into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined())
-                });
+                return rejected_promise(stream.stored_error(), ec);
             }
             WritableStreamState::Closed => {
                 return rejected_type_error_promise(
@@ -498,10 +477,7 @@ impl WritableStreamDefaultWriter {
                 });
             }
             WritableStreamState::Erroring => {
-                return rejected_promise(stream.stored_error(), context).map_err(|e| {
-                    e.into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined())
-                });
+                return rejected_promise(stream.stored_error(), ec);
             }
             WritableStreamState::Writable => {}
         }

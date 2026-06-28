@@ -48,7 +48,10 @@ pub(crate) trait AsyncValueIterable: Clone + Trace + Finalize + 'static {
         _value: JsValue,
         context: &mut Context,
     ) -> JsResult<JsObject> {
-        resolved_promise(JsValue::undefined(), context)
+        crate::js::completion_to_js_result(resolved_promise(
+            JsValue::undefined(),
+            crate::js::context_as_ec(context),
+        ))
     }
 }
 
@@ -147,16 +150,20 @@ where
     fn start_next(&self, context: &mut Context) -> JsResult<JsObject> {
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
-            return resolved_promise(
+            return crate::js::completion_to_js_result(resolved_promise(
                 create_iter_result_object(JsValue::undefined(), true, context),
-                context,
-            );
+                crate::js::context_as_ec(context),
+            ));
         }
 
         // Step 8.4: "Let nextPromise be the result of getting the next iteration result with object's target and object."
         let next_promise = match self.target.get_next_iteration_result(&self.state, context) {
             Ok(next_promise) => next_promise,
-            Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+            Err(error) => {
+                let reason = error.into_opaque(context)?;
+                rejected_promise(reason, crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?
+            }
         };
 
         let on_fulfilled = FunctionObjectBuilder::new(
@@ -219,12 +226,18 @@ where
     fn start_return(&self, value: JsValue, context: &mut Context) -> JsResult<JsObject> {
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
-            return resolved_promise(create_iter_result_object(value, true, context), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                create_iter_result_object(value, true, context),
+                crate::js::context_as_ec(context),
+            ));
         }
 
         if !T::has_async_iterator_return() {
             self.finished.set(true);
-            return resolved_promise(create_iter_result_object(value, true, context), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                create_iter_result_object(value, true, context),
+                crate::js::context_as_ec(context),
+            ));
         }
 
         // Step 8.3: "Set object's is finished to true."
@@ -237,7 +250,11 @@ where
                 .return_async_iterator(&self.state, value.clone(), context)
             {
                 Ok(return_promise) => return_promise,
-                Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+                Err(error) => {
+                    let reason = error.into_opaque(context)?;
+                    rejected_promise(reason, crate::js::context_as_ec(context))
+                        .map_err(boa_engine::JsError::from_opaque)?
+                }
             };
 
         let on_fulfilled = FunctionObjectBuilder::new(
@@ -356,9 +373,11 @@ where
     let iterator = match default_async_iterator_from_this::<T>(this, context) {
         Ok(iterator) => iterator,
         Err(error) => {
-            return Ok(JsValue::from(rejected_promise(
-                error.into_opaque(context)?,
-                context,
+            return Ok(JsValue::from(crate::js::completion_to_js_result(
+                rejected_promise(
+                    error.into_opaque(context)?,
+                    crate::js::context_as_ec(context),
+                ),
             )?));
         }
     };
@@ -385,9 +404,11 @@ where
     let iterator = match default_async_iterator_from_this::<T>(this, context) {
         Ok(iterator) => iterator,
         Err(error) => {
-            return Ok(JsValue::from(rejected_promise(
-                error.into_opaque(context)?,
-                context,
+            return Ok(JsValue::from(crate::js::completion_to_js_result(
+                rejected_promise(
+                    error.into_opaque(context)?,
+                    crate::js::context_as_ec(context),
+                ),
             )?));
         }
     };

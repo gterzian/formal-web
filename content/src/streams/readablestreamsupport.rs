@@ -7,13 +7,11 @@ use boa_engine::{
     property::Attribute,
 };
 
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
-use log::error;
-
 use crate::webidl::{
     Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
     rejected_promise,
 };
+use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestream::{
@@ -220,9 +218,16 @@ where
                     let reason = error
                         .into_opaque(context)
                         .unwrap_or_else(|_| JsValue::undefined());
-                    if let Ok(rejected) = rejected_promise(reason, context) {
-                        if let Err(error) = mark_promise_as_handled(&rejected, context) {
-                            error!("[readable-stream] failed to mark promise as handled: {error}");
+                    if let Ok(rejected) =
+                        rejected_promise(reason, crate::js::context_as_ec(context))
+                    {
+                        if let Err(error) =
+                            mark_promise_as_handled(&rejected, crate::js::context_as_ec(context))
+                        {
+                            log::warn!(
+                                "[readable-stream] failed to mark promise as handled: {:?}",
+                                error
+                            );
                         }
                     }
                 }
@@ -318,7 +323,10 @@ pub(crate) fn rejected_type_error_promise(
     message: &'static str,
     context: &mut Context,
 ) -> JsResult<JsObject> {
-    crate::webidl::rejected_promise(type_error_value(message, context)?, context)
+    crate::js::completion_to_js_result(crate::webidl::rejected_promise(
+        type_error_value(message, context)?,
+        crate::js::context_as_ec(context),
+    ))
 }
 pub(crate) fn type_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::from(

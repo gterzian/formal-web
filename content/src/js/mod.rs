@@ -31,6 +31,16 @@ pub(crate) fn js_result_to_completion<T>(
     })
 }
 
+/// Convert a `Completion<T, BoaTypes>` back to `JsResult<T>` by wrapping
+/// the error JsValue in a `JsError`.  Used as a bridge at unconverted
+/// domain files that still return `JsResult` and call `Completion`-returning
+/// helpers.
+pub(crate) fn completion_to_js_result<T>(
+    result: js_engine::Completion<T, js_engine::boa::BoaTypes>,
+) -> boa_engine::JsResult<T> {
+    result.map_err(boa_engine::JsError::from_opaque)
+}
+
 /// Convert a `JsNativeError` into a `JsValue` suitable as a `Completion` error.
 #[allow(dead_code)]
 pub(crate) fn native_error_to_js_value(

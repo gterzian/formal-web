@@ -110,7 +110,8 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         let promise_object: JsObject = promise.into();
         self.set_closed_promise_slot_value(Some(promise_object.clone()));
         self.set_closed_resolvers_slot_value(None);
-        mark_promise_as_handled(&promise_object, context)?;
+        mark_promise_as_handled(&promise_object, crate::js::context_as_ec(context))
+            .map_err(boa_engine::JsError::from_opaque)?;
         resolvers
             .reject
             .call(&JsValue::undefined(), &[stream.stored_error()], context)?;
@@ -141,14 +142,17 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
             }
         } else {
             // Step 5: "Otherwise, set reader.[[closedPromise]] to a promise rejected with a TypeError exception."
-            let closed_promise = rejected_promise(release_error.clone(), context)?;
+            let closed_promise =
+                rejected_promise(release_error.clone(), crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?;
             self.set_closed_promise_slot_value(Some(closed_promise.clone()));
             self.set_closed_resolvers_slot_value(None);
         }
 
         // Step 6: "Set reader.[[closedPromise]].[[PromiseIsHandled]] to true."
         if let Some(closed_promise) = self.closed_promise_slot_value() {
-            mark_promise_as_handled(&closed_promise, context)?;
+            mark_promise_as_handled(&closed_promise, crate::js::context_as_ec(context))
+                .map_err(boa_engine::JsError::from_opaque)?;
         }
 
         // Step 7: "Perform ! stream.[[controller]].[[ReleaseSteps]]()."

@@ -543,7 +543,10 @@ impl HTMLMediaElement {
 
         // Step 5: Let promise be a new promise and append promise to the
         // list of pending play promises.
-        let promise = resolved_promise(JsValue::undefined(), context)?;
+        let promise = crate::js::completion_to_js_result(resolved_promise(
+            JsValue::undefined(),
+            crate::js::context_as_ec(context),
+        ))?;
         // Note: The list of pending play promises is not yet tracked.
 
         // Step 6: Run the internal play steps for the media element.

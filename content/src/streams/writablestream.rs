@@ -241,7 +241,10 @@ impl WritableStream {
             self.state(),
             WritableStreamState::Closed | WritableStreamState::Errored
         ) {
-            return resolved_promise(JsValue::undefined(), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                crate::js::context_as_ec(context),
+            ));
         }
 
         let controller = self.controller_slot().ok_or_else(|| {
@@ -253,7 +256,10 @@ impl WritableStream {
             self.state(),
             WritableStreamState::Closed | WritableStreamState::Errored
         ) {
-            return resolved_promise(JsValue::undefined(), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                crate::js::context_as_ec(context),
+            ));
         }
 
         if let Some(abort_request) = self.pending_abort_request_slot() {

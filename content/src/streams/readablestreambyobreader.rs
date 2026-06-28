@@ -84,7 +84,13 @@ impl ReadableStreamBYOBReader {
 
         let min = match normalize_min(options, &view, context) {
             Ok(min) => min,
-            Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+            Err(error) => {
+                return rejected_promise(
+                    error.into_opaque(context)?,
+                    crate::js::context_as_ec(context),
+                )
+                .map_err(boa_engine::JsError::from_opaque);
+            }
         };
         let (read_into_request, promise) = ReadIntoRequest::new(context);
         self.read_steps(view, min, read_into_request, context)?;

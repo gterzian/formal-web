@@ -104,17 +104,27 @@ impl AsyncValueIterable for ReadableStream {
         context: &mut Context,
     ) -> JsResult<JsObject> {
         let Some(reader) = state.reader() else {
-            return resolved_promise(JsValue::undefined(), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                crate::js::context_as_ec(context),
+            ));
         };
 
         if state.prevent_cancel.get() {
             state.finish(context)?;
-            return resolved_promise(JsValue::undefined(), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                crate::js::context_as_ec(context),
+            ));
         }
 
-        let cancel_promise = reader
-            .cancel(value, context)
-            .or_else(|error| rejected_promise(error.into_opaque(context)?, context))?;
+        let cancel_promise = reader.cancel(value, context).or_else(|error| {
+            rejected_promise(
+                error.into_opaque(context)?,
+                crate::js::context_as_ec(context),
+            )
+            .map_err(boa_engine::JsError::from_opaque)
+        })?;
 
         state.finish(context)?;
         Ok(cancel_promise)

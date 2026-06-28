@@ -61,15 +61,21 @@ impl WriteAlgorithm {
         context: &mut Context,
     ) -> JsResult<JsObject> {
         match self {
-            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), context),
+            Self::ReturnUndefined => {
+                resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+            }
             Self::JavaScript(callback) => {
                 let controller_value = JsValue::from(controller_object.clone());
                 match callback.call(&[chunk, controller_value], context) {
-                    Ok(value) => promise_from_value(value, context),
-                    Err(error) => rejected_promise(error.into_opaque(context)?, context),
+                    Ok(value) => promise_from_value(value, crate::js::context_as_ec(context)),
+                    Err(error) => {
+                        let reason = error.into_opaque(context)?;
+                        rejected_promise(reason, crate::js::context_as_ec(context))
+                    }
                 }
             }
         }
+        .map_err(boa_engine::JsError::from_opaque)
     }
 }
 
@@ -84,12 +90,18 @@ impl CloseAlgorithm {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-closealgorithm>
     fn call(&self, context: &mut Context) -> JsResult<JsObject> {
         match self {
-            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), context),
+            Self::ReturnUndefined => {
+                resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+            }
             Self::JavaScript(callback) => match callback.call(&[], context) {
-                Ok(value) => promise_from_value(value, context),
-                Err(error) => rejected_promise(error.into_opaque(context)?, context),
+                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context)),
+                Err(error) => {
+                    let reason = error.into_opaque(context)?;
+                    rejected_promise(reason, crate::js::context_as_ec(context))
+                }
             },
         }
+        .map_err(boa_engine::JsError::from_opaque)
     }
 }
 
@@ -104,12 +116,18 @@ impl AbortAlgorithm {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-abortalgorithm>
     fn call(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
         match self {
-            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), context),
+            Self::ReturnUndefined => {
+                resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+            }
             Self::JavaScript(callback) => match callback.call(&[reason], context) {
-                Ok(value) => promise_from_value(value, context),
-                Err(error) => rejected_promise(error.into_opaque(context)?, context),
+                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context)),
+                Err(error) => {
+                    let reason = error.into_opaque(context)?;
+                    rejected_promise(reason, crate::js::context_as_ec(context))
+                }
             },
         }
+        .map_err(boa_engine::JsError::from_opaque)
     }
 }
 #[derive(Clone, Trace, Finalize)]

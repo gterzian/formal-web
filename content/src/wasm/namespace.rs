@@ -33,7 +33,7 @@ pub(crate) fn asynchronously_compile_a_webassembly_module(
     // was already executed by the bindings layer.
     //
     // Step 1: "Let promise be a new promise."
-    let (promise, resolvers) = a_new_promise(context);
+    let (promise, resolvers) = a_new_promise(crate::js::context_as_ec(context));
     // Step 2: "Run the following steps in parallel:"
     let global = context.global_object();
     let window = global.downcast_ref::<Window>().ok_or_else(|| {
@@ -61,7 +61,7 @@ pub(crate) fn asynchronously_instantiate_a_webassembly_module(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     // Step 1: "Let promise be a new promise."
-    let (promise, resolvers) = a_new_promise(context);
+    let (promise, resolvers) = a_new_promise(crate::js::context_as_ec(context));
     // Step 2: "Let module be moduleObject.[[Module]]."
     let module = wasm_module.module.clone();
     //
@@ -100,7 +100,7 @@ pub(crate) fn instantiate_bytes(stable_bytes: Vec<u8>, context: &mut Context) ->
     // is_instantiate: true, because the compile and instantiate phases run
     // sequentially in the worker and the content process resolves the promise
     // after both complete.
-    let (promise, resolvers) = a_new_promise(context);
+    let (promise, resolvers) = a_new_promise(crate::js::context_as_ec(context));
     let global = context.global_object();
     let window = global.downcast_ref::<Window>().ok_or_else(|| {
         JsNativeError::error().with_message("WebAssembly: global object is not a Window")

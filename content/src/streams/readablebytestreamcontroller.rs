@@ -606,7 +606,10 @@ impl ReadableByteStreamController {
         let cancel_algorithm = self.cancel_algorithm.borrow().clone();
         let result = match cancel_algorithm {
             Some(cancel_algorithm) => JsObject::from(cancel_algorithm.call(reason, context)),
-            None => resolved_promise(JsValue::undefined(), context)?,
+            None => crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                crate::js::context_as_ec(context),
+            ))?,
         };
         self.clear_algorithms();
         Ok(result)
@@ -927,7 +930,10 @@ impl ReadableByteStreamController {
             Some(pull_algorithm) => {
                 JsObject::from(pull_algorithm.call(&controller_object, context))
             }
-            None => resolved_promise(JsValue::undefined(), context)?,
+            None => crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                crate::js::context_as_ec(context),
+            ))?,
         };
 
         let on_fulfilled = NativeFunction::from_copy_closure_with_captures(

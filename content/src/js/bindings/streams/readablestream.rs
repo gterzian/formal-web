@@ -490,7 +490,8 @@ pub(crate) fn pipe_to_native_method(
     let ec = crate::js::context_as_ec(context);
     let promise = match pipe_to_operation(this, args, ec) {
         Ok(promise) => promise,
-        Err(error) => rejected_promise(error, context)?,
+        Err(error) => rejected_promise(error, crate::js::context_as_ec(context))
+            .map_err(boa_engine::JsError::from_opaque)?,
     };
     Ok(JsValue::from(promise))
 }

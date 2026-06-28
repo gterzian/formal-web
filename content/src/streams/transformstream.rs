@@ -637,16 +637,26 @@ fn transform_stream_default_controller_perform_transform(
             if let Err(error) =
                 transform_stream_default_controller_enqueue(controller.clone(), chunk, context)
             {
-                rejected_promise(error.into_opaque(context)?, context)?
+                rejected_promise(
+                    error.into_opaque(context)?,
+                    crate::js::context_as_ec(context),
+                )
+                .map_err(boa_engine::JsError::from_opaque)?
             } else {
-                resolved_promise(JsValue::undefined(), context)?
+                resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?
             }
         }
         Some(TransformAlgorithm::JavaScript(ref callback)) => {
             let controller_value = JsValue::from(controller.controller_object()?);
             match callback.call(&[chunk, controller_value], context) {
-                Ok(value) => promise_from_value(value, context)?,
-                Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?,
+                Err(error) => rejected_promise(
+                    error.into_opaque(context)?,
+                    crate::js::context_as_ec(context),
+                )
+                .map_err(boa_engine::JsError::from_opaque)?,
             }
         }
         None => {
@@ -807,8 +817,13 @@ fn transform_stream_default_sink_abort_algorithm(
         }
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
             match callback.call(&[reason.clone()], context) {
-                Ok(value) => promise_from_value(value, context)?,
-                Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?,
+                Err(error) => rejected_promise(
+                    error.into_opaque(context)?,
+                    crate::js::context_as_ec(context),
+                )
+                .map_err(boa_engine::JsError::from_opaque)?,
             }
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
@@ -939,8 +954,13 @@ fn transform_stream_default_sink_close_algorithm(
         Some(FlushAlgorithm::JavaScript(ref callback)) => {
             let controller_value = JsValue::from(controller.controller_object()?);
             match callback.call(&[controller_value], context) {
-                Ok(value) => promise_from_value(value, context)?,
-                Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?,
+                Err(error) => rejected_promise(
+                    error.into_opaque(context)?,
+                    crate::js::context_as_ec(context),
+                )
+                .map_err(boa_engine::JsError::from_opaque)?,
             }
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
@@ -1081,8 +1101,13 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
         }
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
             match callback.call(&[reason.clone()], context) {
-                Ok(value) => promise_from_value(value, context)?,
-                Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?,
+                Err(error) => rejected_promise(
+                    error.into_opaque(context)?,
+                    crate::js::context_as_ec(context),
+                )
+                .map_err(boa_engine::JsError::from_opaque)?,
             }
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
