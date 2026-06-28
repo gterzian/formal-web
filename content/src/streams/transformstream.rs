@@ -336,14 +336,16 @@ fn initialize_transform_stream(
     ));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."
-    let (writable, writable_object) = create_writable_stream(
-        writable_start_algorithm,
-        write_algorithm,
-        close_algorithm,
-        abort_algorithm,
-        Some(writable_high_water_mark),
-        Some(writable_size_algorithm),
-        context,
+    let (writable, writable_object) = crate::js::completion_to_js_result(
+        create_writable_stream(
+            writable_start_algorithm,
+            write_algorithm,
+            close_algorithm,
+            abort_algorithm,
+            Some(writable_high_water_mark),
+            Some(writable_size_algorithm),
+            crate::js::context_as_ec(context),
+        ),
     )?;
     *stream.writable.borrow_mut() = Some(writable);
     *stream.writable_object.borrow_mut() = Some(writable_object);

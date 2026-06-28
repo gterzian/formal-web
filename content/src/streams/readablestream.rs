@@ -3395,7 +3395,9 @@ impl PipeToState {
 
         let action_promise = match action {
             PipeShutdownAction::AbortDestination => match dest {
-                Some(dest) => dest.abort_stream(error, context)?,
+                Some(dest) => crate::js::completion_to_js_result(
+                    dest.abort_stream(error, crate::js::context_as_ec(context)),
+                )?,
                 None => resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
                     .map_err(boa_engine::JsError::from_opaque)?,
             },
@@ -3420,7 +3422,9 @@ impl PipeToState {
                 let abort_promise = if !prevent_abort {
                     match dest {
                         Some(dest) if dest.state() == super::WritableStreamState::Writable => {
-                            Some(dest.abort_stream(error.clone(), context)?)
+                            Some(crate::js::completion_to_js_result(
+                                dest.abort_stream(error.clone(), crate::js::context_as_ec(context)),
+                            )?)
                         }
                         _ => None,
                     }

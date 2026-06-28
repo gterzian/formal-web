@@ -266,7 +266,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 | 6a. CtxHost removal | `CtxHost` adapters in `strategy.rs` and `readablestreamsupport.rs` removed. `invoke_callback_function` and `call_user_objects_operation` take `&mut dyn EcmascriptHost<BoaTypes>` instead of `&mut impl EcmascriptHost<BoaTypes>`. `SourceMethod::call` and `SizeAlgorithm::size` use `context_as_ec` internally instead of local `CtxHost`. | ✅ |
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
-| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. `writablestreamdefaultwriter.rs`, `writablestreamdefaultcontroller.rs`, `readablestreamdefaultreader.rs` (including shared `ReadableStreamGenericReader` trait), `readablestreambyobreader.rs`, foundational helpers, and strategy trait methods done. | 🔄 (continue with remaining stream files) |
+| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. `writablestreamdefaultwriter.rs`, `writablestreamdefaultcontroller.rs`, `readablestreamdefaultreader.rs` (including shared `ReadableStreamGenericReader` trait), `readablestreambyobreader.rs`, `writablestream.rs`, foundational helpers, and strategy trait methods done. | 🔄 (continue with remaining stream files) |
 | 8. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
 | 9. JSC parity | Missing JSC methods implemented | ❌ |
 
@@ -288,7 +288,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 ### What's still Boa-concrete
 
 - **Binding function bodies** use `ec_to_ctx(ec)` to cast back to `&mut Context` for Boa-specific operations (`JsObject::get`, `JsValue::to_number`, `JsNativeError::into_opaque`, etc.). The bodies are in the new signature but internally bridge to Boa.
-- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all), `streams/readablestreamdefaultcontroller.rs` (all, ~22 functions + 3 algorithm enums + callers bridged).
+- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all), `streams/readablestreamdefaultcontroller.rs` (all, ~22 methods + 3 algorithm enums + all callers bridged), `streams/writablestream.rs` (all public methods, constructors, free functions; all callers bridged).
 - **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 
@@ -321,65 +321,37 @@ converted.
 - `streams/writablestreamdefaultcontroller.rs`: ~20 functions + all callers bridged
 - `streams/readablestreamdefaultreader.rs`: ~14 functions + shared `ReadableStreamGenericReader` trait + all callers bridged
 - `streams/readablestreambyobreader.rs`: ~10 functions + all callers bridged
+- `streams/writablestream.rs`: all public methods (~18) + constructors + free functions, all callers bridged
 
-**Recommended order** (smallest/most self-contained first):
+**Remaining** (batch-convert all streams together; the compiler catches every missed call site):
 
-1. **Foundational helpers** — convert these first to eliminate the most bridge boilerplate:
-   - ~~`webidl/promise.rs`~~ — ✅ 9 functions + all ~40 call sites converted. Callers use
-     `context_as_ec(context)` bridge; already-converted domain files pass `ec` directly.
-   - ~~`webidl/buffer_source.rs`~~ — ✅ 2 functions, 4 call sites (all in WASM binding files)
-     converted. `validate_fn` and `WasmModule::create_platform_object` eliminated their
-     ctx bridge entirely; `compile_fn`/`instantiate_fn` use `context_as_ec(ctx)` bridge.
-   - ~~`streams/writablestreamdefaultcontroller.rs`~~ — ✅ ~20 functions converted. All
-     strategy trait methods (`StartAlgorithm`, `WriteAlgorithm`, `CloseAlgorithm`,
-     `AbortAlgorithm`) and controller impl methods (`error`, `abort_steps`, `signal_abort`,
-     `get_chunk_size`, `error_controller`, `error_if_needed`, `close_controller`,
-     `write_controller`, `advance_queue_if_needed`, `process_close`, `process_write`)
-     plus public API functions (`create_writable_stream_default_controller`,
-     `set_up_writable_stream_default_controller`,
-     `set_up_writable_stream_default_controller_from_underlying_sink`, close/write/error
-     wrappers) converted. Callers in `writablestream.rs`, `transformstream.rs`,
-     `writablestreamdefaultwriter.rs`, `writablestreamsupport.rs`, and
-     `js/bindings/streams/writablestream.rs` bridged with `context_as_ec` +
-     `completion_to_js_result`.
-
-2. **Streams** — convert the remaining stream files:
-   - ~~`writablestreamdefaultcontroller.rs`~~ — ✅ ~20 functions + all callers bridged
-   - ~~`readablestreamdefaultreader.rs`~~ — ✅ ~14 functions + shared `ReadableStreamGenericReader` trait + all callers bridged
-   - ~~`readablestreambyobreader.rs`~~ — ✅ ~10 functions + all callers bridged
-   - ~~`readablestreamdefaultcontroller.rs`~~ — ✅ ~22 functions + 3 algorithm enums + all callers bridged
-   - `writablestream.rs` (~25 functions, next)
-   - `readablestream.rs` (largest: ~80 instances)
+1. **Streams** — convert the remaining 6 files in one batch:
+   - ~~`writablestreamdefaultcontroller.rs`~~ — ✅
+   - ~~`readablestreamdefaultreader.rs`~~ — ✅
+   - ~~`readablestreambyobreader.rs`~~ — ✅
+   - ~~`readablestreamdefaultcontroller.rs`~~ — ✅
+   - ~~`writablestream.rs`~~ — ✅
+   - `readablestream.rs` (~80 instances, largest)
    - `transformstream.rs` (~20 functions)
-   - `readablestreamsupport.rs` / `writablestreamsupport.rs`
+   - `readablestreamsupport.rs`
+   - `writablestreamsupport.rs`
    - `readablebytestreamcontroller.rs`
    - `readablestreamasynciterator.rs`
 
-3. **DOM**: `dispatch.rs`, `event.rs` (few Context-taking functions)
+2. **DOM** (2 files): `dispatch.rs`, `event.rs`
 
-4. **HTML**: `window.rs`, `location.rs`, `html_media_element.rs`, `environment_settings_object.rs`,
+3. **HTML** (7 files): `window.rs`, `location.rs`, `html_media_element.rs`, `environment_settings_object.rs`,
    `window_or_worker_global_scope.rs`, `windowproxy.rs`, `safe_passing_of_structured_data.rs`
 
-5. **WebAssembly**: `namespace.rs`, `conversions.rs`
+4. **WebAssembly** (2 files): `namespace.rs`, `conversions.rs`
 
-6. **Web IDL**: `async_iterable.rs`
+5. **Web IDL** (1 file): `async_iterable.rs`
 
-Each conversion follows the same mechanical pattern:
-1. Change signature from `&mut Context` → `&mut dyn ExecutionContext<BoaTypes>`
-2. Return `Completion<_, BoaTypes>` instead of `JsResult<_>`
-3. At the top of the function body, add `let context = unsafe { crate::js::ec_to_ctx(ec) };`
-   for calls to helpers that still take `&mut Context`.
-4. Wrap `JsResult`-returning helper calls with
-   `js_result_to_completion(call(context), context)?`
-   or the equivalent `.map_err(|e| e.into_opaque(context).unwrap_or_else(|_| JsValue::undefined()))?`.
-5. Wrap `JsNativeError` creation with `native_error_to_js_value(...)` or the
-   equivalent `into()` + `into_opaque(context).unwrap_or_else(...)`.
-6. Update callers:
-   - Binding function callers: pass `ec` directly, drop `ec_to_ctx`
-     (update the JsResult closure pattern).
-   - Domain callers with `&mut Context`: bridge via `context_as_ec(context)`,
-     convert the `Completion` result back to `JsResult` with
-     `.map_err(JsError::from_opaque)`.
+**Batch approach**: convert all stream files at once, then fix compilation errors
+in a single pass. The transformation is mechanical — the compiler catches every
+missed call site, and the bridging patterns (`completion_to_js_result`,
+`context_as_ec`, `js_result_to_completion`) are trivial. No point doing these
+one at a time.
 
 **Note**: The `writablestreamdefaultwriter.rs` conversion serves as the reference
 implementation — it demonstrates all the patterns above.
@@ -420,5 +392,12 @@ JSC feature flag builds clean.
 Until the generic JS engine migration is complete, each sub-task only requires
 `cargo check` (no WPT or navigation verification).  Full verification resumes
 when the migration reaches a stable checkpoint (all Phase 7 files converted).
+
+**Known issues** (to fix after streams conversion completes):
+- WPT runner crashes with `TypeError: receiver is not an Event (native)` —
+  likely because stream-related WPT tests exercise code paths that bridge
+  through unconverted `Context`-taking callers.  Should resolve once all
+  stream files are on `ExecutionContext<T>`.
+- Navigation verification fails with the same error during initial load.
 
 Each sub-task ends with a commit message suggestion covering the current diff.

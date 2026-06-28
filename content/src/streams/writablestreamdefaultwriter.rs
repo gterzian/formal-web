@@ -166,9 +166,7 @@ impl WritableStreamDefaultWriter {
             });
         };
 
-        stream
-            .abort_stream(reason, context)
-            .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+        stream.abort_stream(reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-close>
@@ -201,9 +199,7 @@ impl WritableStreamDefaultWriter {
             });
         }
 
-        stream
-            .close_stream(context)
-            .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+        stream.close_stream(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-release-lock>
@@ -489,10 +485,7 @@ impl WritableStreamDefaultWriter {
             });
         }
 
-        let promise = stream.add_write_request(context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        let promise = stream.add_write_request(crate::js::context_as_ec(context))?;
         writable_stream_default_controller_write(
             controller.as_default_controller(),
             chunk,

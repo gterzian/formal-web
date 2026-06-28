@@ -381,7 +381,7 @@ impl WritableStreamDefaultController {
         debug_assert_eq!(stream.state(), WritableStreamState::Writable);
 
         self.clear_algorithms();
-        crate::js::js_result_to_completion(stream.start_erroring(error, context), context)
+        stream.start_erroring(error, ec)
     }
 
     fn error_if_needed(
@@ -428,10 +428,7 @@ impl WritableStreamDefaultController {
         if !stream.close_queued_or_in_flight() && stream.state() == WritableStreamState::Writable {
             let backpressure =
                 crate::js::js_result_to_completion(self.get_backpressure(), context)?;
-            crate::js::js_result_to_completion(
-                stream.update_backpressure(backpressure, context),
-                context,
-            )?;
+            stream.update_backpressure(backpressure, ec)?;
         }
 
         self.advance_queue_if_needed(ec)
@@ -458,7 +455,7 @@ impl WritableStreamDefaultController {
         );
 
         if state == WritableStreamState::Erroring {
-            crate::js::js_result_to_completion(stream.finish_erroring(context), context)?;
+            stream.finish_erroring(ec)?;
             return Ok(());
         }
 
@@ -485,7 +482,9 @@ impl WritableStreamDefaultController {
         let stream_for_fulfilled = stream.clone();
         let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
             |_, _, stream: &WritableStream, context| {
-                stream.finish_in_flight_close(context)?;
+                crate::js::completion_to_js_result(
+                    stream.finish_in_flight_close(crate::js::context_as_ec(context)),
+                )?;
                 Ok(JsValue::undefined())
             },
             stream_for_fulfilled,
@@ -493,8 +492,12 @@ impl WritableStreamDefaultController {
         .to_js_function(context.realm());
         let on_rejected = NativeFunction::from_copy_closure_with_captures(
             |_, args, stream: &WritableStream, context| {
-                stream
-                    .finish_in_flight_close_with_error(args.get_or_undefined(0).clone(), context)?;
+                crate::js::completion_to_js_result(
+                    stream.finish_in_flight_close_with_error(
+                        args.get_or_undefined(0).clone(),
+                        crate::js::context_as_ec(context),
+                    ),
+                )?;
                 Ok(JsValue::undefined())
             },
             stream,
@@ -538,7 +541,9 @@ impl WritableStreamDefaultController {
                 let (controller, stream) = captures;
 
                 // Step 4.1: "Perform ! WritableStreamFinishInFlightWrite(stream)."
-                stream.finish_in_flight_write(context)?;
+                crate::js::completion_to_js_result(
+                    stream.finish_in_flight_write(crate::js::context_as_ec(context)),
+                )?;
 
                 // Step 4.2: "Let state be stream.[[state]]."
                 let state = stream.state();
@@ -558,7 +563,9 @@ impl WritableStreamDefaultController {
                     let backpressure = controller.get_backpressure()?;
 
                     // Step 4.5.2: "Perform ! WritableStreamUpdateBackpressure(stream, backpressure)."
-                    stream.update_backpressure(backpressure, context)?;
+                    crate::js::completion_to_js_result(
+                        stream.update_backpressure(backpressure, crate::js::context_as_ec(context)),
+                    )?;
                 }
 
                 // Step 4.6: "Perform ! WritableStreamDefaultControllerAdvanceQueueIfNeeded(controller)."
@@ -580,8 +587,12 @@ impl WritableStreamDefaultController {
                 }
 
                 // Step 5.2: "Perform ! WritableStreamFinishInFlightWriteWithError(stream, reason)."
-                stream
-                    .finish_in_flight_write_with_error(args.get_or_undefined(0).clone(), context)?;
+                crate::js::completion_to_js_result(
+                    stream.finish_in_flight_write_with_error(
+                        args.get_or_undefined(0).clone(),
+                        crate::js::context_as_ec(context),
+                    ),
+                )?;
                 Ok(JsValue::undefined())
             },
             (self.clone(), stream),
@@ -840,7 +851,7 @@ pub(crate) fn set_up_writable_stream_default_controller(
     let backpressure = crate::js::js_result_to_completion(controller.get_backpressure(), context)?;
 
     // Step 14: "Perform ! WritableStreamUpdateBackpressure(stream, backpressure)."
-    crate::js::js_result_to_completion(stream.update_backpressure(backpressure, context), context)?;
+    stream.update_backpressure(backpressure, crate::js::context_as_ec(context))?;
 
     // Step 15: "Let startResult be the result of performing startAlgorithm."
     let start_result =
@@ -874,7 +885,12 @@ pub(crate) fn set_up_writable_stream_default_controller(
 
             // Step 18.3: "Perform ! WritableStreamDealWithRejection(stream, r)."
             let stream = controller.stream_slot()?;
-            stream.deal_with_rejection(args.get_or_undefined(0).clone(), context)?;
+            crate::js::completion_to_js_result(
+                stream.deal_with_rejection(
+                    args.get_or_undefined(0).clone(),
+                    crate::js::context_as_ec(context),
+                ),
+            )?;
             Ok(JsValue::undefined())
         },
         controller,
