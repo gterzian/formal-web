@@ -92,7 +92,7 @@ pub(crate) fn nullable_value<T>(
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 pub(crate) fn call_user_objects_operation(
-    host: &mut impl EcmascriptHost<BoaTypes>,
+    host: &mut dyn EcmascriptHost<BoaTypes>,
     value: &Callback,
     op_name: &str,
     args: &[JsValue],
@@ -174,7 +174,7 @@ pub(crate) fn call_user_objects_operation(
 
 /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
 pub(crate) fn invoke_callback_function(
-    host: &mut impl EcmascriptHost<BoaTypes>,
+    host: &mut dyn EcmascriptHost<BoaTypes>,
     callable: &Callback,
     args: &[JsValue],
     exception_behavior: ExceptionBehavior,

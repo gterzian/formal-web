@@ -1,12 +1,26 @@
 # content/src/webidl
 
-`content/src/webidl` stores the shared Web IDL algorithms that sit between DOM, HTML, and Streams code and the ECMAScript operations used by the current JavaScript engine.
+`content/src/webidl` stores the shared Web IDL algorithms that sit between
+DOM, HTML, and Streams code and the ECMAScript operations used by the
+current JavaScript engine.
+
+**Architecture:** Web specs (Streams, HTML, DOM) delegate JS operations
+through Web IDL algorithms (invoke a callback function, call a user
+object's operation), which in turn call ECMA-262 abstract operations
+(`Get`, `IsCallable`, `Call`).  This layer implements the Web IDL
+half of that chain and delegates to the generic `js_engine` trait for
+the ECMA-262 half.
+
+```
+Web spec  →  content/src/webidl/  →  js_engine trait
+(Streams,   (invoke_callback_fn,     (Get, IsCallable,
+ HTML, DOM)  call_user_obj_op)        Call, ToNumber, …)
+```
 
 - Callback-interface conversion, `call a user object's operation`, and promise helpers belong here.
-- This layer should depend on abstract `Get`, `IsCallable`, and `Call` hooks instead of reaching into engine-specific context APIs directly.
-- Keep the context-backed adapters for those hooks here so DOM, HTML, and Streams code can delegate instead of reimplementing callback glue locally.
-- Promise helpers here should follow the Web IDL promise algorithms, including `#js-promise-manipulation`, `#a-promise-resolved-with`, `#a-promise-rejected-with`, and `#js-to-promise`.
-- DOM event dispatch and other callback sites should call into this layer instead of calling Boa directly.
+- This layer depends on abstract `EcmascriptHost<T>` hooks (`get`, `is_callable`, `call`) from `js_engine` — no engine-specific context APIs.
+- DOM event dispatch and other callback sites call into this layer instead of calling Boa directly.
+- Promise helpers follow the Web IDL promise algorithms (`#js-promise-manipulation`, `#a-promise-resolved-with`, `#a-promise-rejected-with`, `#js-to-promise`).
 - Use the `web_standards` extension (`spec_lookup`) with `https://webidl.spec.whatwg.org/` to read the Web IDL spec.
 
 ## Boa integration of [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object)

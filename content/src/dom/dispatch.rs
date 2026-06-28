@@ -7,7 +7,7 @@ use boa_engine::{JsResult, JsValue, object::JsObject};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
 use crate::js::{with_event_mut, with_event_target_mut, with_event_target_ref};
 use crate::webidl::call_user_objects_operation;
-use js_engine::EcmascriptHost;
+use js_engine::{EcmascriptHost, ExecutionContext};
 
 use super::event::{EventListener, NONE};
 use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};
@@ -48,7 +48,7 @@ fn debug_target_label(object: &JsObject) -> String {
 }
 
 pub(crate) trait EventDispatchHost: EcmascriptHost<js_engine::boa::BoaTypes> {
-    fn context(&mut self) -> &mut boa_engine::Context;
+    fn ec(&mut self) -> &mut dyn ExecutionContext<js_engine::boa::BoaTypes>;
 
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject>;
 
@@ -595,15 +595,16 @@ fn inner_invoke(
         // Step 2.11: "Call a user object's operation with listener's callback, `handleEvent`, « event », and event's currentTarget attribute value."
         if let Some(callback) = listener.callback.as_ref() {
             if let Err(error) = call_user_objects_operation(
-                host,
+                host as &mut dyn EcmascriptHost<js_engine::boa::BoaTypes>,
                 callback,
                 "handleEvent",
                 &[JsValue::from(event.clone())],
                 Some(&JsValue::from(current_target.clone())),
             ) {
-                let error_value = error
-                    .into_opaque(host.context())
-                    .unwrap_or(JsValue::undefined());
+                // SAFETY: EventDispatchHost::ec() returns a &mut dyn ExecutionContext
+                // backed by BoaEngine which is #[repr(transparent)] over Context.
+                let ctx = unsafe { crate::js::ec_to_ctx(host.ec()) };
+                let error_value = error.into_opaque(ctx).unwrap_or(JsValue::undefined());
                 host.report_exception(error_value);
             }
         }

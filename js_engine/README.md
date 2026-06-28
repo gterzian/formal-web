@@ -3,18 +3,41 @@
 <https://tc39.es/ecma262/>
 
 Bridges between ECMAScript engines (Boa, JSC) and formal-web's
-HTML/DOM/WebIDL layers.  Two categories of abstraction:
+HTML/DOM/WebIDL layers.
+
+## Architecture: follow the standards call chain
+
+Every web standard (HTML, Streams, DOM) delegates JS operations through
+Web IDL, which in turn calls ECMA-262 abstract operations.  The layering
+is:
+
+```
+Web spec (Streams, HTML, DOM)
+  → Web IDL (invoke a callback function, call a user object's operation)
+    → ECMA-262 (§7.1–§7.4, §9.3, §9.6, §27.2)
+      → js_engine trait (mirrors the JS spec's public API)
+        → Boa / JSC backend (engine-specific impl detail)
+```
+
+The `js_engine` crate exposes **only** the ECMA-262 operations that other
+standards call into (usually via Web IDL).  This is a mechanical mapping:
+read the spec call chain, expose the JS spec operation on the trait,
+implement it per engine.  No new abstractions beyond what the JS spec
+already defines.
+
+Two categories of abstraction:
 
 ### 1. Standard: `JsEngine<T>` mirrors ECMA-262 operations
 
 Web standards already define their behavior in terms of ECMA-262 operations:
 `Call`, `Get`, `ToNumber`, `NewPromiseCapability`, `PerformPromiseThen`,
-`CreateRealm`, etc.  The trait exposes them generically.  No new abstractions.
+`CreateRealm`, etc.  The trait exposes them generically.
 
 ### 2. Weird: `gc.rs` abstracts engine-specific GC
 
 GC has no ECMA-262 equivalent.  This module is deliberately the one
-engine-specific part of the crate.
+engine-specific part of the crate.  The only genuinely tricky part of
+making the layer generic.
 
 ## Layout
 
@@ -212,33 +235,21 @@ Make `Callback` generic over `T: JsTypes`. Requires abstracting GC trait
 derives (`#[derive(Trace, Finalize)]`) — the one genuinely engine-specific
 part.  Strategy: conditional compilation or a `GcBackend` trait.
 
-## Dependency graph
-
-```
-Phase 1 (ExecutionContext<T> split)
-    │
-    ├── Phase 2 (generic OperationDef/AttributeDef)
-    │       │
-    │       ├── Phase 3 (thread through domain code)
-    │       │       │
-    │       │       └── Phase 4 (remove adapter structs)
-    │       │
-    │       └── (binding functions become generic)
-    │
-    └── Phase 5 (generic Callback — GC derives)
-```
-
 ## Migration status
 
 | Phase | What | Status |
 |---|---|---|
 | 1. Trait split | `ExecutionContext<T>` split from `JsEngine<T>`. Added `global_object()`, `property_key_from_str()` to EC. EC requires `T: JsTypesWithRealm`. | ✅ |
-| 2. Generic bindings | `OperationDef<T>`, `AttributeDef<T>`, `ConstantDef<T>`, `InterfaceDefinition<T>`, `WebIdlInterface<T>`, `WebIdlNamespace<T>` parameterized over `T: JsTypes`. Fn pointer types remain Boa-concrete (Phase 3). | ✅ |
+| 2. Generic bindings | `OperationDef<T>`, `AttributeDef<T>`, `ConstantDef<T>`, `InterfaceDefinition<T>`, `WebIdlInterface<T>`, `WebIdlNamespace<T>` parameterized over `T: JsTypes`. | ✅ |
 | 3. EC infrastructure | Host-defined data store (`store_host_any`, `get_host_any`, `remove_host_any`) on EC. `RegistryHost` wrapper for Context storage. `NativeDataWrapper` for any-to-NativeObject bridging. Boa/JSC backends updated. | ✅ |
 | 4. Generic registry | `InterfaceRegistry<T: JsTypes>` stores `T::JsObject`. `InterfaceEntry<T>` generic. | ✅ |
-| 5. Adapter removal | `ContextEventDispatchHost` × 2, `CtxHost` removed | ❌ |
-| 6. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
-| 7. JSC parity | Missing JSC methods implemented | ❌ |
+| 5. Binding fn migration | All 26 binding files: signatures changed to `&mut dyn ExecutionContext<T>` → `Completion<T::JsValue, T>`. Bodies wrap with `ec_to_ctx` cast → `JsResult` bridge closure. `create_interface_instance` call sites in 14 domain files updated. `create_platform_object` trait updated. `register_interface_spec` takes `E: JsEngine<Ty> + ExecutionContext<Ty>`. | ✅ |
+| 6a. CtxHost removal | `CtxHost` adapters in `strategy.rs` and `readablestreamsupport.rs` removed. `invoke_callback_function` and `call_user_objects_operation` take `&mut dyn EcmascriptHost<BoaTypes>` instead of `&mut impl EcmascriptHost<BoaTypes>`. `SourceMethod::call` and `SizeAlgorithm::size` use `context_as_ec` internally instead of local `CtxHost`. | ✅ |
+| 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
+| 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
+| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. | ❌ |
+| 8. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
+| 9. JSC parity | Missing JSC methods implemented | ❌ |
 
 ## Current state
 
@@ -250,69 +261,64 @@ Phase 1 (ExecutionContext<T> split)
 - `InterfaceRegistry<T>` stores engine-native `T::JsObject` types.
 - Host-defined data store (`store_host_any`/`get_host_any`/`remove_host_any`) provides type-erased storage on `ExecutionContext<T>`.
 - `NativeDataWrapper<T>` bridges arbitrary `'static` data to Boa's `NativeObject` trait for platform object creation.
+- All binding function signatures are generic: `fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>`.
+- `create_interface_instance<Ty, T>(data, ec)` takes `&mut dyn ExecutionContext<Ty>`.
+- `register_interface_spec` takes `E: JsEngine<Ty> + ExecutionContext<Ty>`.
+- `create_platform_object` takes `ec: &mut dyn ExecutionContext<T>`.
 
 ### What's still Boa-concrete
 
-- **Fn pointer types:** `OperationDef<T>::method`, `AttributeDef<T>::getter`/`setter` still have Boa-specific signatures (`fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>`). These need `&mut dyn ExecutionContext<T>` parameters (Phase 5).
-- **`register_interface_spec`:** Still takes `&mut Context` and uses Boa `NativeFunction`, `FunctionObjectBuilder`, `PropertyDescriptor` builder, `JsObject::from_proto_and_data`.
-- **`create_interface_instance`:** Still takes `&mut Context` and uses `JsObject::from_proto_and_data` with `NativeObject` bound.
-- **`Callback`:** Derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
-- **`promise.rs`:** All promise helpers take `&mut Context`. Need to use `ec.new_promise_capability()`, `ec.promise_resolve()`, etc.
-- **`buffer_source.rs`:** Uses `JsArrayBuffer::from_object`, `JsTypedArray::from_object` directly.
+- **Binding function bodies** use `ec_to_ctx(ec)` to cast back to `&mut Context` for Boa-specific operations (`JsObject::get`, `JsValue::to_number`, `JsNativeError::into_opaque`, etc.). The bodies are in the new signature but internally bridge to Boa.
+- **Domain code** (streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet.
+- **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
+- **`promise.rs`** helpers take `&mut Context`. Need to use `ec.new_promise_capability()`, `ec.promise_resolve()`, etc.
+- **`buffer_source.rs`** uses `JsArrayBuffer::from_object`, `JsTypedArray::from_object` directly.
+- **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 
 ## Next steps (priority order)
 
-### Phase 5: Thread `ExecutionContext<T>` through binding function signatures
+### Step 1: Thread `ExecutionContext<T>` through domain code
 
-Change `OperationDef<T>::method`, `AttributeDef<T>::getter`/`setter` from:
-```rust
-fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>
-```
-to:
-```rust
-fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>
-```
+Mechanical change: every domain function that takes `&mut Context` takes
+`&mut dyn ExecutionContext<T>` instead.  Replace direct Boa API calls
+(`context.global_object()`, `value.to_number(context)`, `js_error.into_opaque(context)`)
+with EC trait methods (`ec.global_object()`, `ec.to_number(value)`,
+`ec.new_type_error(msg)`).
 
-This requires: (a) adding the repr(transparent) cast in each binding function body to recover `&mut Context` for Boa-specific operations, and (b) changing the `define_*` functions in `operation.rs`, `attribute.rs`, `constant.rs` to use `ec.define_property_or_throw()`, `ec.create_builtin_function()`, etc. instead of Boa-specific APIs.
+Affected areas:
+- Streams: `writablestreamdefaultcontroller.rs`, `readablestreamdefaultcontroller.rs`,
+  `writablestream.rs`, `readablestream.rs`, `strategy.rs`
+- DOM: `dispatch.rs`, `abort.rs`, `event.rs`
+- HTML: `environment_settings_object.rs`, `window.rs`, `location.rs`
+- WebAssembly: `namespace.rs`, `functions.rs`
+- `promise.rs`, `buffer_source.rs` helpers
 
-### Phase 6: Thread `ExecutionContext<T>` through domain code
+After this step, binding function bodies can drop the `ec_to_ctx` cast and
+pass `ec` directly to domain methods.
 
-Change every domain method that currently takes `&mut Context` to take `&mut dyn ExecutionContext<T>`:
-- `EventDispatchHost` loses `fn context()`
-- `dispatch.rs`, `abort.rs` use EC for `create_interface_instance` and `global_object()`
-- `promise.rs` helpers use `ec.new_promise_capability()`, `ec.promise_resolve()`
-- All domain code uses `ec.to_number()`, `ec.to_js_string()`, `ec.get()`, etc.
+### Step 2: Remove remaining `ContextEventDispatchHost` adapters
 
-### Phase 7: GC abstraction for `Callback<T>`
+Two adapters remain, in:
+- `writablestreamdefaultcontroller.rs`
+- `event_target.rs`
 
-Make `Callback<T>` generic over `T: JsTypes`. Requires abstracting `boa_gc::Trace`/`Finalize` derives — the one genuinely engine-specific part. Strategy: conditional compilation with `cfg(feature = "boa")` vs `cfg(feature = "jsc")`, or a `GcBackend` trait.
+These implement `EventDispatchHost` on a `&mut Context` wrapper.  After
+Step 1 threads EC through domain code, the adapter usage can be replaced
+by passing `EnvironmentSettingsObject` (which implements both
+`ExecutionContext<T>` and `EventDispatchHost`) through stream objects.
 
-## Phase 2 scope
+Options:
+- Store an `EnvironmentSettingsObject` reference on stream objects
+- Store the settings object in the EC's host-defined data store
+- Refactor engine/settings ownership so settings can be retrieved from EC
 
-The following components need `T: JsTypes` parameterization:
+### Step 3: GC abstraction for `Callback<T>`
 
-| File | What changes | Count |
-|---|---|---|
-| `bindings/operation.rs` | `OperationDef<T>`, `define_operations_on_target<T>` | 1 struct, 5 fns |
-| `bindings/attribute.rs` | `AttributeDef<T>`, `define_attributes_on_target<T>` | 1 struct, 5 fns |
-| `bindings/constant.rs` | `ConstantDef<T>` (uses `T::PropertyKey`), `define_constants<T>` | 1 struct, 1 fn |
-| `bindings/interface.rs` | `InterfaceDefinition<T>`, `WebIdlInterface<T>`, `WebIdlNamespace<T>`, `register_interface_spec`, `create_interface_instance` | 2 traits, 6 fns |
-| `bindings/registry.rs` | `get_prototype_from_host_defined<T>`, `register_in_host_defined<T>` | 3 fns |
-| `bindings/mod.rs` | Re-exports | 1 file |
-| `js/bindings/<domain>/*.rs` | All 33 `WebIdlInterface` impls + 1 `WebIdlNamespace` | 34 files |
+The only non-mechanical step.  `Callback` currently derives
+`boa_gc::Trace`/`Finalize`.  Abstract these behind conditional compilation
+(`cfg(feature = "boa")` / `cfg(feature = "jsc")`) or a `GcBackend` trait.
 
-All binding functions change from:
-```rust
-fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>
-```
-to:
-```rust
-fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>
-```
+This is the one genuinely engine-specific part of the crate — GC has no
+ECMA-262 equivalent, so there is no spec to follow.
 
-`register_interface_spec` and `register_namespace_spec` stay monomorphized
-for `BoaTypes` because they call Boa `NativeFunction`, `FunctionObjectBuilder`,
-and `JsObject::from_proto_and_data` internally.  The engine-specific
-registration bridge is the `repr(transparent)` cast from
-`&mut boa_engine::Context` → `&mut BoaEngine` → `&mut dyn ExecutionContext<BoaTypes>`,
-handled by an adapter function in the boas engine's registration helper.
+

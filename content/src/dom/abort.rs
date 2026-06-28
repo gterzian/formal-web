@@ -47,7 +47,10 @@ impl AbortAlgorithm {
                 })?;
             }
             Self::ReadableStreamPipeTo { state } => {
-                state.run_abort_algorithm(host.context())?;
+                // SAFETY: EventDispatchHost::ec() returns a &mut dyn ExecutionContext
+                // backed by BoaEngine which is #[repr(transparent)] over Context.
+                let context = unsafe { crate::js::ec_to_ctx(host.ec()) };
+                state.run_abort_algorithm(context)?;
             }
         }
 
@@ -328,7 +331,7 @@ pub(crate) fn signal_abort(
         JsValue::from(
             create_interface_instance::<BoaTypes, DOMException>(
                 DOMException::abort_error(),
-                crate::js::context_as_ec(host.context()),
+                host.ec(),
             )
             .map_err(JsError::from_opaque)?,
         )

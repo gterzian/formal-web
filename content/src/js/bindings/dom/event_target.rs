@@ -248,8 +248,8 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for ContextEventDispatc
 }
 
 impl EventDispatchHost for ContextEventDispatchHost<'_> {
-    fn context(&mut self) -> &mut Context {
-        self.context
+    fn ec(&mut self) -> &mut dyn ExecutionContext<js_engine::boa::BoaTypes> {
+        crate::js::context_as_ec(self.context)
     }
 
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {

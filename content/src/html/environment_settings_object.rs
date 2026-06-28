@@ -18,6 +18,7 @@ use crate::js::{
 };
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 use js_engine::boa::BoaTypes;
+use js_engine::{EcmascriptHost, ExecutionContext};
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -201,7 +202,7 @@ impl EnvironmentSettingsObject {
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
             crate::webidl::invoke_callback_function(
-                &mut self.engine,
+                &mut self.engine as &mut dyn EcmascriptHost<js_engine::boa::BoaTypes>,
                 &callback,
                 &[JsValue::from(now)],
                 crate::webidl::ExceptionBehavior::Report,
@@ -257,7 +258,7 @@ impl EnvironmentSettingsObject {
                 ));
                 let global = JsValue::from(self.context().global_object());
                 let callback_result = crate::webidl::invoke_callback_function(
-                    &mut self.engine,
+                    &mut self.engine as &mut dyn EcmascriptHost<js_engine::boa::BoaTypes>,
                     callback,
                     &timer.arguments,
                     crate::webidl::ExceptionBehavior::Report,
@@ -352,7 +353,7 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for EnvironmentSettings
         object: &JsObject,
         property: &str,
     ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
-        self.engine.get(object, property)
+        js_engine::EcmascriptHost::get(&mut self.engine, object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
@@ -399,8 +400,8 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for EnvironmentSettings
 }
 
 impl EventDispatchHost for EnvironmentSettingsObject {
-    fn context(&mut self) -> &mut boa_engine::Context {
-        self.context()
+    fn ec(&mut self) -> &mut dyn ExecutionContext<js_engine::boa::BoaTypes> {
+        &mut self.engine
     }
 
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
