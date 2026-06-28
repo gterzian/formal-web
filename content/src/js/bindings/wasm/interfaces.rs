@@ -77,21 +77,21 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<Self, BoaTypes> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
-            let bytes_value = args.first().ok_or_else(|| {
-                JsNativeError::typ().with_message("Module constructor: missing argument")
-            })?;
-            let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ctx)?;
-            let engine = wasmtime::Engine::default();
-            let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
-                JsNativeError::typ().with_message(format!("CompileError: {}", error))
-            })?;
-            // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
-            Ok(WasmModule::new(module, stable_bytes))
-        })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        let bytes_value = match args.first() {
+            Some(val) => val,
+            None => return Err(ec.new_type_error("Module constructor: missing argument")),
+        };
+        let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ec)?;
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
+            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            crate::js::native_error_to_js_value(
+                JsNativeError::typ().with_message(format!("CompileError: {}", error)),
+                ctx,
+            )
+        })?;
+        // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
+        Ok(WasmModule::new(module, stable_bytes))
     }
 }
 

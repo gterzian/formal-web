@@ -433,12 +433,8 @@ impl WritableStreamDefaultWriter {
         let chunk_size = writable_stream_default_controller_get_chunk_size(
             controller.as_default_controller(),
             &chunk,
-            context,
-        )
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+            crate::js::context_as_ec(context),
+        )?;
 
         if let Some(current_stream) = self.stream_slot_value() {
             if !current_stream.same_instance(&stream) {
@@ -501,12 +497,8 @@ impl WritableStreamDefaultWriter {
             controller.as_default_controller(),
             chunk,
             chunk_size,
-            context,
-        )
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+            crate::js::context_as_ec(context),
+        )?;
         Ok(promise)
     }
 }

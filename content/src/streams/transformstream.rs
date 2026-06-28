@@ -413,11 +413,11 @@ fn transform_stream_error_writable_and_unblock_write(
     let writable_controller = writable.controller_slot().ok_or_else(|| {
         JsNativeError::typ().with_message("WritableStream is missing its controller")
     })?;
-    writable_stream_default_controller_error_if_needed(
+    crate::js::completion_to_js_result(writable_stream_default_controller_error_if_needed(
         writable_controller.as_default_controller(),
         error,
-        context,
-    )?;
+        crate::js::context_as_ec(context),
+    ))?;
 
     // Step 3: "Perform ! TransformStreamUnblockWrite(stream)."
     transform_stream_unblock_write(stream, context)
@@ -1155,10 +1155,12 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
                 let writable_controller = writable.controller_slot().ok_or_else(|| {
                     JsNativeError::typ().with_message("WritableStream is missing its controller")
                 })?;
-                writable_stream_default_controller_error_if_needed(
-                    writable_controller.as_default_controller(),
-                    reason.clone(),
-                    context,
+                crate::js::completion_to_js_result(
+                    writable_stream_default_controller_error_if_needed(
+                        writable_controller.as_default_controller(),
+                        reason.clone(),
+                        crate::js::context_as_ec(context),
+                    ),
                 )?;
 
                 // Step 7.1.2.2: "Perform ! TransformStreamUnblockWrite(stream)."
@@ -1202,10 +1204,12 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
             let writable_controller = writable.controller_slot().ok_or_else(|| {
                 JsNativeError::typ().with_message("WritableStream is missing its controller")
             })?;
-            writable_stream_default_controller_error_if_needed(
-                writable_controller.as_default_controller(),
-                error.clone(),
-                context,
+            crate::js::completion_to_js_result(
+                writable_stream_default_controller_error_if_needed(
+                    writable_controller.as_default_controller(),
+                    error.clone(),
+                    crate::js::context_as_ec(context),
+                ),
             )?;
 
             // Step 7.2.2: "Perform ! TransformStreamUnblockWrite(stream)."

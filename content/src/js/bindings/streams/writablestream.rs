@@ -316,7 +316,10 @@ fn error_method(
             with_writable_stream_default_controller_ref(&controller_object, |controller| {
                 controller.clone()
             })?;
-        controller.error(args.get_or_undefined(0).clone(), ctx)?;
+        crate::js::completion_to_js_result(controller.error(
+            args.get_or_undefined(0).clone(),
+            crate::js::context_as_ec(ctx),
+        ))?;
         Ok(JsValue::undefined())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))

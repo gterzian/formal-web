@@ -92,7 +92,9 @@ pub(crate) enum WritableStreamController {
 impl WritableStreamController {
     pub(crate) fn abort_steps(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
         match self {
-            Self::Default(controller) => controller.abort_steps(reason, context),
+            Self::Default(controller) => crate::js::completion_to_js_result(
+                controller.abort_steps(reason, crate::js::context_as_ec(context)),
+            ),
         }
     }
     pub(crate) fn error_steps(&self) {
@@ -102,7 +104,9 @@ impl WritableStreamController {
     }
     pub(crate) fn signal_abort(&self, reason: JsValue, context: &mut Context) -> JsResult<()> {
         match self {
-            Self::Default(controller) => controller.signal_abort(reason, context),
+            Self::Default(controller) => crate::js::completion_to_js_result(
+                controller.signal_abort(reason, crate::js::context_as_ec(context)),
+            ),
         }
     }
     pub(crate) fn as_default_controller(&self) -> WritableStreamDefaultController {

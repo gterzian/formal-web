@@ -153,16 +153,12 @@ fn validate_fn(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let bytes_value = args.first().ok_or_else(|| {
-            JsNativeError::typ().with_message("WebAssembly.validate: missing argument")
-        })?;
-        let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ctx)?;
-        Ok(JsValue::new(validate_wasm_module(&stable_bytes)))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let bytes_value = match args.first() {
+        Some(val) => val,
+        None => return Err(ec.new_type_error("WebAssembly.validate: missing argument")),
+    };
+    let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ec)?;
+    Ok(JsValue::new(validate_wasm_module(&stable_bytes)))
 }
 
 fn compile_fn(
@@ -184,16 +180,16 @@ fn compile_fn(
                 );
             }
         };
-        let stable_bytes = match get_a_copy_of_the_buffer_source(bytes_value, ctx) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return Ok(rejected_promise_from_error(
-                    error.into(),
-                    crate::js::context_as_ec(ctx),
-                )
-                .into());
-            }
-        };
+        let stable_bytes =
+            match get_a_copy_of_the_buffer_source(bytes_value, crate::js::context_as_ec(ctx)) {
+                Ok(bytes) => bytes,
+                Err(opaque) => {
+                    let error: JsError = JsError::from_opaque(opaque);
+                    return Ok(
+                        rejected_promise_from_error(error, crate::js::context_as_ec(ctx)).into(),
+                    );
+                }
+            };
         asynchronously_compile_a_webassembly_module(stable_bytes, ctx)
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
@@ -218,12 +214,13 @@ fn instantiate_fn(
     };
 
     // Dispatch to the right overload based on the first argument's type.
-    if is_buffer_source(first, ctx) {
-        let stable_bytes = match get_a_copy_of_the_buffer_source(first, ctx) {
+    if is_buffer_source(first, crate::js::context_as_ec(ctx)) {
+        let stable_bytes = match get_a_copy_of_the_buffer_source(first, crate::js::context_as_ec(ctx)) {
             Ok(bytes) => bytes,
-            Err(error) => {
+            Err(opaque) => {
+                let error: JsError = JsError::from_opaque(opaque);
                 return Ok(rejected_promise_from_error(
-                    error.into(),
+                    error,
                     crate::js::context_as_ec(ctx),
                 ).into());
             }

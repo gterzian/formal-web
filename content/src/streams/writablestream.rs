@@ -315,7 +315,10 @@ impl WritableStream {
         let controller = self.controller_slot().ok_or_else(|| {
             JsNativeError::typ().with_message("WritableStream is missing its controller")
         })?;
-        writable_stream_default_controller_close(controller.as_default_controller(), context)?;
+        crate::js::completion_to_js_result(writable_stream_default_controller_close(
+            controller.as_default_controller(),
+            crate::js::context_as_ec(context),
+        ))?;
         Ok(promise)
     }
 
@@ -631,12 +634,14 @@ pub(crate) fn construct_writable_stream(
     stream.initialize_writable_stream();
 
     // Step 6: "Perform ? SetUpWritableStreamDefaultControllerFromUnderlyingSink(this, underlyingSink, underlyingSinkDict, highWaterMark, sizeAlgorithm)."
-    set_up_writable_stream_default_controller_from_underlying_sink(
-        stream.clone(),
-        underlying_sink_object,
-        high_water_mark,
-        size_algorithm,
-        context,
+    crate::js::completion_to_js_result(
+        set_up_writable_stream_default_controller_from_underlying_sink(
+            stream.clone(),
+            underlying_sink_object,
+            high_water_mark,
+            size_algorithm,
+            crate::js::context_as_ec(context),
+        ),
     )?;
     Ok(stream)
 }
@@ -657,8 +662,10 @@ pub(crate) fn create_writable_stream(
 
     let (mut stream, stream_object) = create_writable_stream_object(context)?;
     stream.initialize_writable_stream();
-    let (controller, controller_object) = create_writable_stream_default_controller(context)?;
-    set_up_writable_stream_default_controller(
+    let (controller, controller_object) = crate::js::completion_to_js_result(
+        create_writable_stream_default_controller(crate::js::context_as_ec(context)),
+    )?;
+    crate::js::completion_to_js_result(set_up_writable_stream_default_controller(
         stream.clone(),
         controller,
         &controller_object,
@@ -668,8 +675,8 @@ pub(crate) fn create_writable_stream(
         abort_algorithm,
         high_water_mark,
         size_algorithm,
-        context,
-    )?;
+        crate::js::context_as_ec(context),
+    ))?;
     Ok((stream, stream_object))
 }
 fn create_writable_stream_object(context: &mut Context) -> JsResult<(WritableStream, JsObject)> {
