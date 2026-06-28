@@ -1,5 +1,7 @@
-use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
+use boa_engine::{JsData, JsValue};
 use boa_gc::{Finalize, Trace};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
 
@@ -52,21 +54,33 @@ pub(crate) enum SizeAlgorithm {
 
 impl SizeAlgorithm {
     /// <https://streams.spec.whatwg.org/#make-size-algorithm-from-size-function>
-    pub(crate) fn size(&self, chunk: &JsValue, context: &mut Context) -> JsResult<f64> {
+    pub(crate) fn size(
+        &self,
+        chunk: &JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<f64, BoaTypes> {
         match self {
             Self::ReturnOne => Ok(1.0),
             Self::Callback { callback } => {
                 // "Return the result of invoking strategy[\"size\"] with argument
                 // list « chunk »."
-                let ec = crate::js::context_as_ec(context);
-                let value = invoke_callback_function(
+                let result = invoke_callback_function(
                     ec,
                     callback,
                     &[chunk.clone()],
                     ExceptionBehavior::Rethrow,
                     None,
-                )?;
-                to_non_negative_number(&value, context)
+                );
+                let value = match result {
+                    Ok(value) => value,
+                    Err(js_error) => {
+                        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+                        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+                        let opaque = js_error.into_opaque(ctx);
+                        return Err(opaque.unwrap_or(JsValue::undefined()));
+                    }
+                };
+                to_non_negative_number(&value, ec)
             }
         }
     }
@@ -75,14 +89,15 @@ impl SizeAlgorithm {
 /// <https://streams.spec.whatwg.org/#validate-and-normalize-high-water-mark>
 pub(crate) fn validate_and_normalize_high_water_mark(
     value: &JsValue,
-    context: &mut Context,
-) -> JsResult<f64> {
-    let number = value.to_number(context)?;
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<f64, BoaTypes> {
+    // Step 1 (implicit): "Let highWaterMark be ? ToNumber(highWaterMark)."
+    let number = ec.to_number(value.clone())?;
+    // Step 2: "If highWaterMark is NaN or highWaterMark < 0, throw a RangeError exception."
     if number.is_nan() || number < 0.0 {
-        return Err(JsNativeError::range()
-            .with_message("highWaterMark must be a non-negative number")
-            .into());
+        return Err(ec.new_range_error("highWaterMark must be a non-negative number"));
     }
+    // Step 3: "Return highWaterMark."
     Ok(number)
 }
 
@@ -90,55 +105,57 @@ pub(crate) fn validate_and_normalize_high_water_mark(
 pub(crate) fn extract_high_water_mark(
     strategy: &JsValue,
     default_high_water_mark: f64,
-    context: &mut Context,
-) -> JsResult<f64> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<f64, BoaTypes> {
     // Step 1: "If strategy[\"highWaterMark\"] does not exist, return defaultHWM."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(default_high_water_mark);
     }
 
-    let strategy = strategy.to_object(context)?;
+    let strategy = ec.to_object(strategy.clone())?;
 
     // Step 2: "Let highWaterMark be strategy[\"highWaterMark\"]."
-    let high_water_mark = strategy.get(boa_engine::js_string!("highWaterMark"), context)?;
+    let high_water_mark =
+        ExecutionContext::get(ec, strategy, ec.property_key_from_str("highWaterMark"))?;
 
     // Step 3: "If highWaterMark is undefined, return defaultHWM."
-    if high_water_mark.is_undefined() {
+    let undefined_value = ec.value_undefined();
+    if ec.same_value(&high_water_mark, &undefined_value) {
         return Ok(default_high_water_mark);
     }
 
     // Step 4: "Return ? ValidateAndNormalizeHighWaterMark(highWaterMark)."
-    validate_and_normalize_high_water_mark(&high_water_mark, context)
+    validate_and_normalize_high_water_mark(&high_water_mark, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#make-size-algorithm-from-size-function>
 pub(crate) fn extract_size_algorithm(
     strategy: &JsValue,
-    context: &mut Context,
-) -> JsResult<SizeAlgorithm> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<SizeAlgorithm, BoaTypes> {
     // Step 1: "If strategy[\"size\"] does not exist, return an algorithm that returns 1."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(SizeAlgorithm::ReturnOne);
     }
 
-    let strategy = strategy.to_object(context)?;
-    let size = strategy.get(boa_engine::js_string!("size"), context)?;
-    if size.is_undefined() {
+    let strategy = ec.to_object(strategy.clone())?;
+    let size = ExecutionContext::get(ec, strategy, ec.property_key_from_str("size"))?;
+    let undefined_value = ec.value_undefined();
+    if ec.same_value(&size, &undefined_value) {
         return Ok(SizeAlgorithm::ReturnOne);
     }
 
     // Step 2: "Return an algorithm that performs the following steps, taking a chunk argument:
     // Return the result of invoking strategy[\"size\"] with argument list « chunk »."
     // Note: IsCallable is checked here rather than deferring to the Web IDL invoke
-    // algorithm so that the TypeError is thrown at construction time (Step 2 of the
-    // streams constructor algorithm) rather than at first enqueue.
+    // algorithm so that the TypeError is thrown at construction time rather than at
+    // first enqueue.
     let size = size
         .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("strategy.size must be callable"))?;
-    if !size.is_callable() {
-        return Err(JsNativeError::typ()
-            .with_message("strategy.size must be callable")
-            .into());
+        .ok_or_else(|| ec.new_type_error("strategy.size must be callable"))?;
+    let size_value = JsValue::from(size.clone());
+    if !ec.is_callable(&size_value) {
+        return Err(ec.new_type_error("strategy.size must be callable"));
     }
 
     Ok(SizeAlgorithm::Callback {
@@ -147,10 +164,13 @@ pub(crate) fn extract_size_algorithm(
 }
 
 /// <https://streams.spec.whatwg.org/#byte-length-queuing-strategy-size-function>
-pub(crate) fn byte_length_size(chunk: &JsValue, context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn byte_length_size(
+    chunk: &JsValue,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     // "Return ? GetV(chunk, \"byteLength\")."
-    let chunk = chunk.to_object(context)?;
-    chunk.get(boa_engine::js_string!("byteLength"), context)
+    let chunk = ec.to_object(chunk.clone())?;
+    ExecutionContext::get(ec, chunk, ec.property_key_from_str("byteLength"))
 }
 
 /// <https://streams.spec.whatwg.org/#count-queuing-strategy-size-function>
@@ -159,12 +179,13 @@ pub(crate) fn count_size(_: &JsValue) -> JsValue {
     JsValue::from(1)
 }
 
-fn to_non_negative_number(value: &JsValue, context: &mut Context) -> JsResult<f64> {
-    let number = value.to_number(context)?;
+fn to_non_negative_number(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<f64, BoaTypes> {
+    let number = ec.to_number(value.clone())?;
     if !number.is_finite() || number < 0.0 {
-        return Err(JsNativeError::range()
-            .with_message("queue strategy size must be a finite, non-negative number")
-            .into());
+        return Err(ec.new_range_error("queue strategy size must be a finite, non-negative number"));
     }
     Ok(number)
 }

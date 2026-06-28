@@ -503,6 +503,10 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// Create a new TypeError with the given message.
     fn new_type_error(&mut self, msg: &str) -> T::JsValue;
 
+    /// <https://tc39.es/ecma262/#sec-native-error-types-used-in-this-standard-rangeerror>
+    /// Create a new RangeError with the given message.
+    fn new_range_error(&mut self, msg: &str) -> T::JsValue;
+
     // ────────────────────────────────────────────────────────────────────────
     // Error Reporting
     // ────────────────────────────────────────────────────────────────────────

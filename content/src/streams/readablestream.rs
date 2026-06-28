@@ -1029,7 +1029,9 @@ pub(crate) fn construct_readable_stream(
             }
 
             // Step 4.2: "Let highWaterMark be ? ExtractHighWaterMark(strategy, 0)."
-            let high_water_mark = extract_high_water_mark(&strategy, 0.0, context)?;
+            let high_water_mark =
+                extract_high_water_mark(&strategy, 0.0, crate::js::context_as_ec(context))
+                    .map_err(JsError::from_opaque)?;
 
             // Step 4.3: "Perform ? SetUpReadableByteStreamControllerFromUnderlyingSource(this, underlyingSource, underlyingSourceDict, highWaterMark)."
             set_up_readable_byte_stream_controller_from_underlying_source(
@@ -1052,10 +1054,13 @@ pub(crate) fn construct_readable_stream(
     debug_assert!(underlying_source_type(underlying_source_object.as_ref(), context)?.is_none());
 
     // Step 5.2: "Let sizeAlgorithm be ! ExtractSizeAlgorithm(strategy)."
-    let size_algorithm = extract_size_algorithm(&strategy, context)?;
+    let size_algorithm = extract_size_algorithm(&strategy, crate::js::context_as_ec(context))
+        .map_err(JsError::from_opaque)?;
 
     // Step 5.3: "Let highWaterMark be ? ExtractHighWaterMark(strategy, 1)."
-    let high_water_mark = extract_high_water_mark(&strategy, 1.0, context)?;
+    let high_water_mark =
+        extract_high_water_mark(&strategy, 1.0, crate::js::context_as_ec(context))
+            .map_err(JsError::from_opaque)?;
 
     // Step 5.4: "Perform ? SetUpReadableStreamDefaultControllerFromUnderlyingSource(this, underlyingSource, underlyingSourceDict, highWaterMark, sizeAlgorithm)."
     set_up_readable_stream_default_controller_from_underlying_source(

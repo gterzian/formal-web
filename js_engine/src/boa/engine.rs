@@ -1036,6 +1036,14 @@ impl ExecutionContext<BoaTypes> for BoaEngine {
             .into_opaque(&mut self.context);
         JsValue::from(err_obj)
     }
+
+    fn new_range_error(&mut self, msg: &str) -> JsValue {
+        let owned: String = msg.to_string();
+        let err_obj = JsNativeError::range()
+            .with_message(owned)
+            .into_opaque(&mut self.context);
+        JsValue::from(err_obj)
+    }
 }
 
 /// Wrapper that implements `NativeObject` for arbitrary `'static` data.

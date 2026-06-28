@@ -285,10 +285,10 @@ impl WritableStreamDefaultController {
             return Ok(1.0);
         };
 
-        match strategy_size_algorithm.size(chunk, context) {
+        match strategy_size_algorithm.size(chunk, crate::js::context_as_ec(context)) {
             Ok(size) => Ok(size),
             Err(error) => {
-                self.error_if_needed(error.into_opaque(context)?, context)?;
+                self.error_if_needed(error, context)?;
                 Ok(1.0)
             }
         }

@@ -509,10 +509,10 @@ impl ReadableStreamDefaultController {
                             "ReadableStreamDefaultController is missing its size algorithm",
                         )
                     })?;
-            let chunk_size = match size_algorithm.size(&chunk, context) {
+            let chunk_size = match size_algorithm.size(&chunk, crate::js::context_as_ec(context)) {
                 Ok(chunk_size) => chunk_size,
                 Err(error) => {
-                    let opaque = error.into_opaque(context)?;
+                    let opaque = error;
 
                     // Step 4.2.1: "Perform ! ReadableStreamDefaultControllerError(controller, result.[[Value]])."
                     self.error_steps(opaque.clone(), context)?;

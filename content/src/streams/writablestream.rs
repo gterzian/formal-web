@@ -582,8 +582,10 @@ pub(crate) fn construct_writable_stream(
     };
     let strategy = args.get_or_undefined(1).clone();
 
-    let size_algorithm = extract_size_algorithm(&strategy, context)?;
-    let high_water_mark = extract_high_water_mark(&strategy, 1.0, context)?;
+    let ec = crate::js::context_as_ec(context);
+    let size_algorithm = extract_size_algorithm(&strategy, ec).map_err(JsError::from_opaque)?;
+    let high_water_mark =
+        extract_high_water_mark(&strategy, 1.0, ec).map_err(JsError::from_opaque)?;
 
     let underlying_sink_object = if underlying_sink.is_null() || underlying_sink.is_undefined() {
         None

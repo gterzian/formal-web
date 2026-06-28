@@ -1111,6 +1111,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         todo!("new_type_error not implemented for JSC")
     }
 
+    fn new_range_error(&mut self, _msg: &str) -> JscValue {
+        todo!("new_range_error not implemented for JSC")
+    }
+
     // ── Property Key Construction ─────────────────────────────────────────
 
     fn property_key_from_str(&self, s: &str) -> JscPropertyKey {

@@ -1268,17 +1268,25 @@ pub(crate) fn construct_transform_stream(
 
     // Step 5: "Let readableHighWaterMark be ? ExtractHighWaterMark(readableStrategy, 0)."
     let readable_strategy = args.get(2).cloned().unwrap_or(JsValue::undefined());
-    let readable_high_water_mark = extract_high_water_mark(&readable_strategy, 0.0, context)?;
+    let readable_high_water_mark =
+        extract_high_water_mark(&readable_strategy, 0.0, crate::js::context_as_ec(context))
+            .map_err(JsError::from_opaque)?;
 
     // Step 6: "Let readableSizeAlgorithm be ! ExtractSizeAlgorithm(readableStrategy)."
-    let readable_size_algorithm = extract_size_algorithm(&readable_strategy, context)?;
+    let readable_size_algorithm =
+        extract_size_algorithm(&readable_strategy, crate::js::context_as_ec(context))
+            .map_err(JsError::from_opaque)?;
 
     // Step 7: "Let writableHighWaterMark be ? ExtractHighWaterMark(writableStrategy, 1)."
     let writable_strategy = args.get(1).cloned().unwrap_or(JsValue::undefined());
-    let writable_high_water_mark = extract_high_water_mark(&writable_strategy, 1.0, context)?;
+    let writable_high_water_mark =
+        extract_high_water_mark(&writable_strategy, 1.0, crate::js::context_as_ec(context))
+            .map_err(JsError::from_opaque)?;
 
     // Step 8: "Let writableSizeAlgorithm be ! ExtractSizeAlgorithm(writableStrategy)."
-    let writable_size_algorithm = extract_size_algorithm(&writable_strategy, context)?;
+    let writable_size_algorithm =
+        extract_size_algorithm(&writable_strategy, crate::js::context_as_ec(context))
+            .map_err(JsError::from_opaque)?;
 
     // Step 9: "Let startPromise be a new promise."
     let (start_promise, start_resolvers) = JsPromise::new_pending(context);

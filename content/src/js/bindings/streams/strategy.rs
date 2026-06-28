@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, native_function::NativeFunction,
+    Context, JsArgs, JsError, JsResult, JsValue, js_string, native_function::NativeFunction,
     object::FunctionObjectBuilder,
 };
 use std::marker::PhantomData;
@@ -21,15 +21,15 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for ByteLengthQueuingStrategy {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<Self, BoaTypes> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
-            let init = args.get_or_undefined(0).to_object(ctx)?;
-            let high_water_mark = init.get(js_string!("highWaterMark"), ctx)?;
-            let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, ctx)?;
-            Ok(ByteLengthQueuingStrategy::new(high_water_mark))
-        })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        let init_value = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined());
+        let init = ec.to_object(init_value)?;
+        let high_water_mark =
+            ExecutionContext::get(ec, init, ec.property_key_from_str("highWaterMark"))?;
+        let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, ec)?;
+        Ok(ByteLengthQueuingStrategy::new(high_water_mark))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
@@ -72,15 +72,15 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for CountQueuingStrategy {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<Self, BoaTypes> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
-            let init = args.get_or_undefined(0).to_object(ctx)?;
-            let high_water_mark = init.get(js_string!("highWaterMark"), ctx)?;
-            let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, ctx)?;
-            Ok(CountQueuingStrategy::new(high_water_mark))
-        })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        let init_value = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined());
+        let init = ec.to_object(init_value)?;
+        let high_water_mark =
+            ExecutionContext::get(ec, init, ec.property_key_from_str("highWaterMark"))?;
+        let high_water_mark = validate_and_normalize_high_water_mark(&high_water_mark, ec)?;
+        Ok(CountQueuingStrategy::new(high_water_mark))
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
@@ -120,20 +120,13 @@ fn get_byte_length_high_water_mark(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let strategy = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ByteLengthQueuingStrategy receiver is not an object")
-        })?;
-        let strategy = strategy
-            .downcast_ref::<ByteLengthQueuingStrategy>()
-            .ok_or_else(|| {
-                JsNativeError::typ().with_message("receiver is not a ByteLengthQueuingStrategy")
-            })?;
-        Ok(JsValue::from(strategy.high_water_mark()))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let strategy = this
+        .as_object()
+        .ok_or_else(|| ec.new_type_error("ByteLengthQueuingStrategy receiver is not an object"))?;
+    let strategy = strategy
+        .downcast_ref::<ByteLengthQueuingStrategy>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a ByteLengthQueuingStrategy"))?;
+    Ok(JsValue::from(strategy.high_water_mark()))
 }
 
 fn get_count_high_water_mark(
@@ -141,20 +134,13 @@ fn get_count_high_water_mark(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let strategy = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("CountQueuingStrategy receiver is not an object")
-        })?;
-        let strategy = strategy
-            .downcast_ref::<CountQueuingStrategy>()
-            .ok_or_else(|| {
-                JsNativeError::typ().with_message("receiver is not a CountQueuingStrategy")
-            })?;
-        Ok(JsValue::from(strategy.high_water_mark()))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let strategy = this
+        .as_object()
+        .ok_or_else(|| ec.new_type_error("CountQueuingStrategy receiver is not an object"))?;
+    let strategy = strategy
+        .downcast_ref::<CountQueuingStrategy>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a CountQueuingStrategy"))?;
+    Ok(JsValue::from(strategy.high_water_mark()))
 }
 
 fn get_byte_length_size(
@@ -202,7 +188,8 @@ fn byte_length_size_function(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    byte_length_size(args.get_or_undefined(0), context)
+    byte_length_size(args.get_or_undefined(0), crate::js::context_as_ec(context))
+        .map_err(JsError::from_opaque)
 }
 
 fn count_size_function(_: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
