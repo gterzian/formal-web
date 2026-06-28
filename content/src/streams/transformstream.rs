@@ -336,17 +336,15 @@ fn initialize_transform_stream(
     ));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."
-    let (writable, writable_object) = crate::js::completion_to_js_result(
-        create_writable_stream(
-            writable_start_algorithm,
-            write_algorithm,
-            close_algorithm,
-            abort_algorithm,
-            Some(writable_high_water_mark),
-            Some(writable_size_algorithm),
-            crate::js::context_as_ec(context),
-        ),
-    )?;
+    let (writable, writable_object) = crate::js::completion_to_js_result(create_writable_stream(
+        writable_start_algorithm,
+        write_algorithm,
+        close_algorithm,
+        abort_algorithm,
+        Some(writable_high_water_mark),
+        Some(writable_size_algorithm),
+        crate::js::context_as_ec(context),
+    ))?;
     *stream.writable.borrow_mut() = Some(writable);
     *stream.writable_object.borrow_mut() = Some(writable_object);
 
@@ -657,9 +655,7 @@ fn transform_stream_default_controller_perform_transform(
             let ec = crate::js::context_as_ec(context);
             let controller_value = JsValue::from(controller.controller_object()?);
             match callback.call(&[chunk, controller_value], ec) {
-                Ok(value) => {
-                    crate::js::completion_to_js_result(promise_from_value(value, ec))?
-                }
+                Ok(value) => crate::js::completion_to_js_result(promise_from_value(value, ec))?,
                 Err(error) => {
                     // error is JsValue since callback.call returns Completion<_, BoaTypes>
                     crate::js::completion_to_js_result(rejected_promise(error, ec))?
@@ -708,9 +704,10 @@ fn transform_stream_default_controller_terminate(
     )?;
 
     // Step 4: "Let error be a TypeError exception indicating that the stream has been terminated."
-    let error = crate::js::completion_to_js_result(
-        type_error_value("TransformStream has been terminated", crate::js::context_as_ec(context)),
-    )?;
+    let error = crate::js::completion_to_js_result(type_error_value(
+        "TransformStream has been terminated",
+        crate::js::context_as_ec(context),
+    ))?;
 
     let writable = stream.writable()?;
     log_stream_debug(format!(
@@ -829,9 +826,7 @@ fn transform_stream_default_sink_abort_algorithm(
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
             let ec = crate::js::context_as_ec(context);
             match callback.call(&[reason.clone()], ec) {
-                Ok(value) => {
-                    crate::js::completion_to_js_result(promise_from_value(value, ec))?
-                }
+                Ok(value) => crate::js::completion_to_js_result(promise_from_value(value, ec))?,
                 Err(error) => {
                     // error is JsValue since callback.call returns Completion<_, BoaTypes>
                     crate::js::completion_to_js_result(rejected_promise(error, ec))?
@@ -971,9 +966,7 @@ fn transform_stream_default_sink_close_algorithm(
             let ec = crate::js::context_as_ec(context);
             let controller_value = JsValue::from(controller.controller_object()?);
             match callback.call(&[controller_value], ec) {
-                Ok(value) => {
-                    crate::js::completion_to_js_result(promise_from_value(value, ec))?
-                }
+                Ok(value) => crate::js::completion_to_js_result(promise_from_value(value, ec))?,
                 Err(error) => {
                     // error is JsValue since callback.call returns Completion<_, BoaTypes>
                     crate::js::completion_to_js_result(rejected_promise(error, ec))?
@@ -1123,9 +1116,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
             let ec = crate::js::context_as_ec(context);
             match callback.call(&[reason.clone()], ec) {
-                Ok(value) => {
-                    crate::js::completion_to_js_result(promise_from_value(value, ec))?
-                }
+                Ok(value) => crate::js::completion_to_js_result(promise_from_value(value, ec))?,
                 Err(error) => {
                     // error is JsValue since callback.call returns Completion<_, BoaTypes>
                     crate::js::completion_to_js_result(rejected_promise(error, ec))?

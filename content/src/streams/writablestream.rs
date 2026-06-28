@@ -4,8 +4,7 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, js_string,
-    object::JsObject,
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use js_engine::boa::BoaTypes;
@@ -654,35 +653,28 @@ pub(crate) fn construct_writable_stream(
     let strategy = args.get_or_undefined(1).clone();
 
     let size_algorithm = extract_size_algorithm(&strategy, ec)?;
-    let high_water_mark =
-        extract_high_water_mark(&strategy, 1.0, ec)?;
+    let high_water_mark = extract_high_water_mark(&strategy, 1.0, ec)?;
 
     let underlying_sink_object = if underlying_sink.is_null() || underlying_sink.is_undefined() {
         None
     } else {
-        Some(
-            underlying_sink
-                .as_object()
-                .ok_or_else(|| {
-                    native_to_completion_err(
-                        JsNativeError::typ()
-                            .with_message("WritableStream underlyingSink must be an object"),
-                        ec,
-                    )
-                })?,
-        )
+        Some(underlying_sink.as_object().ok_or_else(|| {
+            native_to_completion_err(
+                JsNativeError::typ()
+                    .with_message("WritableStream underlyingSink must be an object"),
+                ec,
+            )
+        })?)
     };
 
     // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
     // underlying_sink_type still takes Boa's Context.
     let context = unsafe { crate::js::ec_to_ctx(ec) };
-    if let Some(sink_type) =
-        underlying_sink_type(underlying_sink_object.as_ref(), context)
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?
-
+    if let Some(sink_type) = underlying_sink_type(underlying_sink_object.as_ref(), context)
+        .map_err(|e| {
+            e.into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?
     {
         return Err(native_to_completion_err(
             JsNativeError::range().with_message(format!(

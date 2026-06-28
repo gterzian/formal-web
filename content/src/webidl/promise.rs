@@ -4,7 +4,10 @@ use boa_engine::{
     Context, JsError, JsNativeError, JsValue,
     builtins::promise::ResolvingFunctions,
     native_function::NativeFunction,
-    object::{JsObject, builtins::{JsFunction, JsPromise}},
+    object::{
+        JsObject,
+        builtins::{JsFunction, JsPromise},
+    },
 };
 use js_engine::boa::BoaTypes;
 use js_engine::{Completion, ExecutionContext, JsEngine};
@@ -220,12 +223,10 @@ where
     F: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
         + 'static,
 {
-    upon_settlement::<F, fn(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>>(
-        promise,
-        Some(steps),
-        None,
-        ec,
-    )
+    upon_settlement::<
+        F,
+        fn(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>,
+    >(promise, Some(steps), None, ec)
 }
 
 /// <https://webidl.spec.whatwg.org/#upon-rejection>
@@ -242,12 +243,10 @@ where
     R: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
         + 'static,
 {
-    upon_settlement::<fn(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>, R>(
-        promise,
-        None,
-        Some(steps),
-        ec,
-    )
+    upon_settlement::<
+        fn(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>,
+        R,
+    >(promise, None, Some(steps), ec)
 }
 
 /// <https://webidl.spec.whatwg.org/#react>
@@ -359,8 +358,7 @@ where
     let result_promise = capability.promise.clone();
 
     // Step 7 of react: PerformPromiseThen(promise, onFulfilled, onRejected, newCapability).
-    let js_promise =
-        JsPromise::from_object(promise).map_err(|_| not_promise_err.clone())?;
+    let js_promise = JsPromise::from_object(promise).map_err(|_| not_promise_err.clone())?;
     engine.perform_promise_then(
         js_promise,
         on_fulfilled_fn,

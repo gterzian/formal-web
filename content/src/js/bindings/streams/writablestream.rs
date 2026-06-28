@@ -23,10 +23,10 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStream {
         (|| -> JsResult<Self> {
             crate::js::completion_to_js_result(construct_writable_stream(new_target, args, ec))
         })()
-            .map_err(|e| {
-                let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-                e.into_opaque(ctx).unwrap_or(value_undefined)
-            })
+        .map_err(|e| {
+            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            e.into_opaque(ctx).unwrap_or(value_undefined)
+        })
     }
 
     fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {

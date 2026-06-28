@@ -288,7 +288,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 | 6a. CtxHost removal | `CtxHost` adapters in `strategy.rs` and `readablestreamsupport.rs` removed. `invoke_callback_function` and `call_user_objects_operation` take `&mut dyn EcmascriptHost<BoaTypes>` instead of `&mut impl EcmascriptHost<BoaTypes>`. `SourceMethod::call` and `SizeAlgorithm::size` use `context_as_ec` internally instead of local `CtxHost`. | ✅ |
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
-| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. `writablestreamdefaultwriter.rs`, `writablestreamdefaultcontroller.rs`, `readablestreamdefaultreader.rs` (including shared `ReadableStreamGenericReader` trait), `readablestreambyobreader.rs`, `writablestream.rs`, foundational helpers, and strategy trait methods done. | 🔄 (continue with remaining stream files) |
+| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>`. All stream files bridged: `readablebytestreamcontroller.rs` (all ~45 methods, borrow conflicts resolved via `ec_ref` pattern), `readablestream.rs` (all call sites bridged with `context_as_ec` + `completion_to_js_result`), `readablestreamdefaultcontroller.rs` (3 extract_source_method calls bridged). Content crate compiles cleanly. Remaining domain files (DOM, HTML, WebAssembly, async_iterable) still take `&mut Context`. `readablestreamasynciterator.rs` not yet touched. | ✅ (streams done) / 🔄 (DOM/HTML/Wasm remaining) |
 | 8. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
 | 9. JSC parity | Missing JSC methods implemented | ❌ |
 
@@ -335,35 +335,13 @@ and return `Completion<_, BoaTypes>`. Binding functions pass `ec` directly witho
 `ec_to_ctx`. Domain-internal callers bridge via `context_as_ec(context)` until they're
 converted.
 
-**Completed**:
-- `dom/abort.rs`: `create_abort_signal`, `initialize_dependent_abort_signal`
-- `streams/writablestreamdefaultwriter.rs`: all 19 functions + constructors
-- `streams/strategy.rs`: already uses EC trait methods
-- `webidl/promise.rs`: 9 functions + all ~40 call sites
-- `webidl/buffer_source.rs`: 2 functions, 4 call sites
-- `streams/writablestreamdefaultcontroller.rs`: ~20 functions + all callers bridged
-- `streams/readablestreamdefaultreader.rs`: ~14 functions + shared `ReadableStreamGenericReader` trait + all callers bridged
-- `streams/readablestreambyobreader.rs`: ~10 functions + all callers bridged
-- `streams/writablestream.rs`: all public methods (~18) + constructors + free functions, all callers bridged
+**Streams domain bridging complete.** All stream files now bridge call sites
+with `context_as_ec` + `completion_to_js_result` / `js_result_to_completion`.
+Content crate compiles cleanly.
 
-**Remaining** (batch-convert all streams together; the compiler catches every missed call site):
+**Remaining domain files** (still take `&mut Context` directly):
 
-1. **Streams** — convert the remaining 4 domain files in one batch:
-   - ~~`writablestreamdefaultcontroller.rs`~~ — ✅
-   - ~~`readablestreamdefaultreader.rs`~~ — ✅
-   - ~~`readablestreambyobreader.rs`~~ — ✅
-   - ~~`readablestreamdefaultcontroller.rs`~~ — ✅
-   - ~~`writablestream.rs`~~ — ✅
-   - ~~`writablestreamsupport.rs`~~ — ✅
-   - ~~`readablestreamsupport.rs`~~ — ✅ (support structs + free functions converted; `queue_internal_stream_microtask` intentionally kept with `&mut Context`)
-   - `readablestream.rs` (~80 instances, largest)
-   - `transformstream.rs` (~20 functions)
-   - `readablebytestreamcontroller.rs` (~30 functions)
-   - `readablestreamasynciterator.rs`
-
-   **Then** update binding files to pass `ec` directly (remove `ec_to_ctx` bridge).
-
-2. **DOM** (2 files): `dispatch.rs`, `event.rs`
+1. **DOM** (2 files): `dispatch.rs`, `event.rs`
 
 3. **HTML** (7 files): `window.rs`, `location.rs`, `html_media_element.rs`, `environment_settings_object.rs`,
    `window_or_worker_global_scope.rs`, `windowproxy.rs`, `safe_passing_of_structured_data.rs`
@@ -371,15 +349,6 @@ converted.
 4. **WebAssembly** (2 files): `namespace.rs`, `conversions.rs`
 
 5. **Web IDL** (1 file): `async_iterable.rs`
-
-**Batch approach**: convert all stream files at once, then fix compilation errors
-in a single pass. The transformation is mechanical — the compiler catches every
-missed call site, and the bridging patterns (`completion_to_js_result`,
-`context_as_ec`, `js_result_to_completion`) are trivial. No point doing these
-one at a time.
-
-**Note**: The `writablestreamdefaultwriter.rs` conversion serves as the reference
-implementation — it demonstrates all the patterns above.
 
 ### Step 2: Remove remaining `ContextEventDispatchHost` adapters
 
@@ -426,3 +395,46 @@ when the migration reaches a stable checkpoint (all Phase 7 files converted).
 - Navigation verification fails with the same error during initial load.
 
 Each sub-task ends with a commit message suggestion covering the current diff.
+
+## Session-resume guide for completing Step 1 (stream domain threading)
+
+If resuming this work in another session, start here.  The current checkpoint has
+58 compilation errors (`cargo check -p content`), all in `readablestream.rs` and
+`readablebytestreamcontroller.rs`.
+
+### Next-step session resume: continue domain threading (DOM, HTML, WebAssembly)
+
+The streams domain is fully bridged.  The remaining files still take
+`&mut Context` directly and need the same `context_as_ec` bridging pattern
+at call sites where they invoke already-converted functions.
+
+Files to convert:
+- DOM: `dispatch.rs`, `event.rs`
+- HTML: `window.rs`, `location.rs`, `html_media_element.rs`,
+  `environment_settings_object.rs`, `window_or_worker_global_scope.rs`,
+  `windowproxy.rs`, `safe_passing_of_structured_data.rs`
+- WebAssembly: `namespace.rs`, `conversions.rs`
+- Web IDL: `async_iterable.rs`
+
+**Bridging patterns** (established during streams conversion):
+
+1. **`context` → `ec` at call site** (function takes `&mut Context`, callee takes `ec`):
+   ```rust
+   let ec = crate::js::context_as_ec(context);
+   crate::js::completion_to_js_result(callee.steps(ec))?;
+   ```
+
+2. **`JsResult` → `Completion`** (function returns `Completion`, callee returns `JsResult`):
+   ```rust
+   crate::js::js_result_to_completion(callee(context), context)?;
+   ```
+
+3. **Borrow conflicts** (`ec_to_ctx` borrows `ec`, later `ec`/`context` double-borrow):
+   - Create `ec_ref` via `context_as_ec(context)` after all `context`-only ops
+   - Use `ec_ref` for EC calls
+   - If a closure captures `context`, use `match` + early return instead of `ok_or_else`
+
+4. **`ok_or_else(|| JsNativeError::typ()...)?` in Completion functions:**
+   Wrap the error in `native_error_to_js_value` or use `match` pattern.
+
+**Verification**: `cargo check -p content` after each file group.

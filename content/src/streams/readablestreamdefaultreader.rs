@@ -183,10 +183,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
                 resolvers
                     .reject
                     .call(&JsValue::undefined(), &[release_error.clone()], ctx)
-                    .map_err(|e| {
-                        e.into_opaque(ctx)
-                            .unwrap_or_else(|_| JsValue::undefined())
-                    })?;
+                    .map_err(|e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()))?;
             }
         } else {
             // Step 5: "Otherwise, set reader.[[closedPromise]] to a promise rejected with a TypeError exception."
@@ -530,8 +527,7 @@ pub(crate) fn readable_stream_default_reader_error_read_requests(
     // Step 3: "For each readRequest of readRequests,"
     for read_request in read_requests {
         // Step 3.1: "Perform readRequest's error steps, given e."
-        read_request
-            .error_steps(error.clone(), ec)?;
+        read_request.error_steps(error.clone(), ec)?;
     }
 
     Ok(())

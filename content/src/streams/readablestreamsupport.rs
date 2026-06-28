@@ -266,10 +266,7 @@ impl ReadRequest {
                 // Tee algorithms still take Boa's Context.
                 let context = unsafe { crate::js::ec_to_ctx(ec) };
                 crate::js::js_result_to_completion(
-                    readable_byte_stream_tee_default_reader_close_steps(
-                        tee_state.clone(),
-                        context,
-                    ),
+                    readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), context),
                     context,
                 )
             }
@@ -299,34 +296,22 @@ impl ReadRequest {
         // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
         let context = unsafe { crate::js::ec_to_ctx(ec) };
         match &self {
-            Self::DefaultReaderRead { resolvers } => {
-                resolvers
-                    .reject
-                    .call(&JsValue::undefined(), &[error], context)
-                    .map(|_| ())
-                    .map_err(|e| {
-                        e.into_opaque(context)
-                            .unwrap_or_else(|_| JsValue::undefined())
-                    })
-            }
-            Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                crate::js::js_result_to_completion(
-                    readable_stream_default_tee_read_request_error_steps(
-                        tee_state.clone(),
-                        context,
-                    ),
-                    context,
-                )
-            }
-            Self::ReadableByteStreamTee { tee_state } => {
-                crate::js::js_result_to_completion(
-                    readable_byte_stream_tee_default_reader_error_steps(
-                        tee_state.clone(),
-                        context,
-                    ),
-                    context,
-                )
-            }
+            Self::DefaultReaderRead { resolvers } => resolvers
+                .reject
+                .call(&JsValue::undefined(), &[error], context)
+                .map(|_| ())
+                .map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                }),
+            Self::ReadableStreamDefaultTee { tee_state, .. } => crate::js::js_result_to_completion(
+                readable_stream_default_tee_read_request_error_steps(tee_state.clone(), context),
+                context,
+            ),
+            Self::ReadableByteStreamTee { tee_state } => crate::js::js_result_to_completion(
+                readable_byte_stream_tee_default_reader_error_steps(tee_state.clone(), context),
+                context,
+            ),
             Self::ReadableStreamPipeTo { state } => {
                 let state = state.clone();
                 queue_internal_stream_microtask(
@@ -389,9 +374,7 @@ impl ReadableStreamController {
     ) -> Completion<JsObject, BoaTypes> {
         match self {
             Self::Default(controller) => controller.cancel_steps(reason, ec),
-            Self::Byte(controller) => {
-                controller.cancel_steps(reason, ec)
-            }
+            Self::Byte(controller) => controller.cancel_steps(reason, ec),
         }
     }
     pub(crate) fn pull_steps(
@@ -401,9 +384,7 @@ impl ReadableStreamController {
     ) -> Completion<(), BoaTypes> {
         match self {
             Self::Default(controller) => controller.pull_steps(read_request, ec),
-            Self::Byte(controller) => {
-                controller.pull_steps(read_request, ec)
-            }
+            Self::Byte(controller) => controller.pull_steps(read_request, ec),
         }
     }
     pub(crate) fn release_steps(
@@ -412,9 +393,7 @@ impl ReadableStreamController {
     ) -> Completion<(), BoaTypes> {
         match self {
             Self::Default(controller) => controller.release_steps(ec),
-            Self::Byte(controller) => {
-                controller.release_steps(ec)
-            }
+            Self::Byte(controller) => controller.release_steps(ec),
         }
     }
     /// readable-stream implementation.

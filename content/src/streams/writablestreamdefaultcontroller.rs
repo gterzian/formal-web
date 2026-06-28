@@ -69,17 +69,13 @@ impl WriteAlgorithm {
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
         match self {
-            Self::ReturnUndefined => {
-                resolved_promise(JsValue::undefined(), ec)
-            }
+            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), ec),
             Self::JavaScript(callback) => {
                 let controller_value = JsValue::from(controller_object.clone());
                 let call_result = callback.call(&[chunk, controller_value], ec);
                 match call_result {
                     Ok(value) => promise_from_value(value, ec),
-                    Err(error_value) => {
-                        rejected_promise(error_value, ec)
-                    }
+                    Err(error_value) => rejected_promise(error_value, ec),
                 }
             }
         }
@@ -97,16 +93,12 @@ impl CloseAlgorithm {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-closealgorithm>
     fn call(&self, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsObject, BoaTypes> {
         match self {
-            Self::ReturnUndefined => {
-                resolved_promise(JsValue::undefined(), ec)
-            }
+            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), ec),
             Self::JavaScript(callback) => {
                 let call_result = callback.call(&[], ec);
                 match call_result {
                     Ok(value) => promise_from_value(value, ec),
-                    Err(error_value) => {
-                        rejected_promise(error_value, ec)
-                    }
+                    Err(error_value) => rejected_promise(error_value, ec),
                 }
             }
         }
@@ -128,16 +120,12 @@ impl AbortAlgorithm {
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
         match self {
-            Self::ReturnUndefined => {
-                resolved_promise(JsValue::undefined(), ec)
-            }
+            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), ec),
             Self::JavaScript(callback) => {
                 let call_result = callback.call(&[reason], ec);
                 match call_result {
                     Ok(value) => promise_from_value(value, ec),
-                    Err(error_value) => {
-                        rejected_promise(error_value, ec)
-                    }
+                    Err(error_value) => rejected_promise(error_value, ec),
                 }
             }
         }
@@ -477,12 +465,10 @@ impl WritableStreamDefaultController {
         .to_js_function(context.realm());
         let on_rejected = NativeFunction::from_copy_closure_with_captures(
             |_, args, stream: &WritableStream, context| {
-                crate::js::completion_to_js_result(
-                    stream.finish_in_flight_close_with_error(
-                        args.get_or_undefined(0).clone(),
-                        crate::js::context_as_ec(context),
-                    ),
-                )?;
+                crate::js::completion_to_js_result(stream.finish_in_flight_close_with_error(
+                    args.get_or_undefined(0).clone(),
+                    crate::js::context_as_ec(context),
+                ))?;
                 Ok(JsValue::undefined())
             },
             stream,
@@ -572,12 +558,10 @@ impl WritableStreamDefaultController {
                 }
 
                 // Step 5.2: "Perform ! WritableStreamFinishInFlightWriteWithError(stream, reason)."
-                crate::js::completion_to_js_result(
-                    stream.finish_in_flight_write_with_error(
-                        args.get_or_undefined(0).clone(),
-                        crate::js::context_as_ec(context),
-                    ),
-                )?;
+                crate::js::completion_to_js_result(stream.finish_in_flight_write_with_error(
+                    args.get_or_undefined(0).clone(),
+                    crate::js::context_as_ec(context),
+                ))?;
                 Ok(JsValue::undefined())
             },
             (self.clone(), stream),
@@ -870,12 +854,10 @@ pub(crate) fn set_up_writable_stream_default_controller(
 
             // Step 18.3: "Perform ! WritableStreamDealWithRejection(stream, r)."
             let stream = controller.stream_slot()?;
-            crate::js::completion_to_js_result(
-                stream.deal_with_rejection(
-                    args.get_or_undefined(0).clone(),
-                    crate::js::context_as_ec(context),
-                ),
-            )?;
+            crate::js::completion_to_js_result(stream.deal_with_rejection(
+                args.get_or_undefined(0).clone(),
+                crate::js::context_as_ec(context),
+            ))?;
             Ok(JsValue::undefined())
         },
         controller,

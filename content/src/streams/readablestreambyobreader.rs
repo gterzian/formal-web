@@ -88,10 +88,7 @@ impl ReadableStreamBYOBReader {
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
         if self.stream_slot_value().is_none() {
-            return rejected_type_error_promise(
-                "Cannot read from a released reader",
-                ec,
-            );
+            return rejected_type_error_promise("Cannot read from a released reader", ec);
         }
 
         // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
@@ -148,10 +145,9 @@ impl ReadableStreamBYOBReader {
             // create_result_view requires Boa's Context.
             let ctx = unsafe { crate::js::ec_to_ctx(ec) };
             return read_into_request.close_steps(
-                Some(JsValue::from(view.create_result_view(0, ctx).map_err(|e| {
-                    e.into_opaque(ctx)
-                        .unwrap_or_else(|_| JsValue::undefined())
-                })?)),
+                Some(JsValue::from(view.create_result_view(0, ctx).map_err(
+                    |e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()),
+                )?)),
                 ec,
             );
         }
