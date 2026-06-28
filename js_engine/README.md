@@ -286,7 +286,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 | 6a. CtxHost removal | `CtxHost` adapters in `strategy.rs` and `readablestreamsupport.rs` removed. `invoke_callback_function` and `call_user_objects_operation` take `&mut dyn EcmascriptHost<BoaTypes>` instead of `&mut impl EcmascriptHost<BoaTypes>`. `SourceMethod::call` and `SizeAlgorithm::size` use `context_as_ec` internally instead of local `CtxHost`. | ✅ |
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
-| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. | 🔄 (abort helpers converted: `create_abort_signal`, `initialize_dependent_abort_signal`) |
+| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. | 🔄 (abort helpers: `create_abort_signal`, `initialize_dependent_abort_signal`; `writablestreamdefaultwriter.rs` converted) |
 | 8. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
 | 9. JSC parity | Missing JSC methods implemented | ❌ |
 
@@ -314,6 +314,15 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 - **`buffer_source.rs`** uses `JsArrayBuffer::from_object`, `JsTypedArray::from_object` directly.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 
+### Conversion helpers (content/src/js/mod.rs)
+
+Two bridging helpers reduce boilerplate during the JsResult → Completion transition:
+
+- **`js_result_to_completion(result, context)`** — wraps `JsResult<T>` → `Completion<T, BoaTypes>` by mapping `JsError` to its opaque `JsValue` form via `context`.
+- **`native_error_to_js_value(error, context)`** — converts `JsNativeError` → `JsValue` for use as a `Completion` error value.
+
+These are used inside domain functions that have been converted to take `ec` but internally call helpers that still return `JsResult`.  Once all helpers are converted (promise.rs, buffer_source.rs, type_error_value, etc.), these bridges can be removed.
+
 ## Next steps (priority order)
 
 ### Step 1: Thread `ExecutionContext<T>` through domain code
@@ -323,26 +332,58 @@ and return `Completion<_, BoaTypes>`. Binding functions pass `ec` directly witho
 `ec_to_ctx`. Domain-internal callers bridge via `context_as_ec(context)` until they're
 converted.
 
-**Completed**: `create_abort_signal` (dom/abort.rs), `initialize_dependent_abort_signal`.
+**Conversion helpers** in `content/src/js/mod.rs` reduce boilerplate:
+- `js_result_to_completion(result, context)` — wraps `JsResult<T>` → `Completion<T, BoaTypes>`
+- `native_error_to_js_value(error, context)` — converts `JsNativeError` → `JsValue`
 
-**Remaining**: All other domain functions in the areas listed below need the same
-treatment.  Each conversion follows the same mechanical pattern:
+**Completed**:
+- `dom/abort.rs`: `create_abort_signal`, `initialize_dependent_abort_signal`
+- `streams/writablestreamdefaultwriter.rs`: all 19 functions + constructors
+- `streams/strategy.rs`: already uses EC trait methods
+
+**Recommended order** (smallest/most self-contained first):
+
+1. **Foundational helpers** — convert these first to eliminate the most `?` bridge boilerplate:
+   - `webidl/promise.rs` — 8 functions, ~40 call sites.  When converted, all callers
+     drop their `js_result_to_completion` wrappers for promise operations.
+   - `webidl/buffer_source.rs` — 2 functions, ~6 call sites (all in WASM binding files
+     that already have `ec`).
+
+2. **Streams** — convert the remaining stream files:
+   - `writablestreamdefaultcontroller.rs` (~20 functions)
+   - `readablestreamdefaultreader.rs` (~14 functions)
+   - `readablestreambyobreader.rs` (~10 functions)
+   - `readablestreamdefaultcontroller.rs` (largest: ~40 instances)
+   - `writablestream.rs` (~25 functions)
+   - `readablestream.rs` (largest: ~80 instances)
+   - `transformstream.rs` (~20 functions)
+   - `readablestreamsupport.rs` / `writablestreamsupport.rs`
+
+3. **DOM**: `dispatch.rs`, `event.rs` (few Context-taking functions)
+
+4. **HTML**: `window.rs`, `location.rs`, `html_media_element.rs`
+
+5. **WebAssembly**: `namespace.rs`, `functions.rs`
+
+Each conversion follows the same mechanical pattern:
 1. Change signature from `&mut Context` → `&mut dyn ExecutionContext<BoaTypes>`
 2. Return `Completion<_, BoaTypes>` instead of `JsResult<_>`
-3. Replace Boa API calls with EC trait methods where equivalents exist
-4. Callers with `&mut Context` bridge via `context_as_ec(context)`
-5. Binding function callers pass `ec` directly, removing `ec_to_ctx` where possible
+3. At the top of the function body, add `let context = unsafe { crate::js::ec_to_ctx(ec) };`
+   for calls to helpers that still take `&mut Context`.
+4. Wrap `JsResult`-returning helper calls with
+   `js_result_to_completion(call(context), context)?`
+   or the equivalent `.map_err(|e| e.into_opaque(context).unwrap_or_else(|_| JsValue::undefined()))?`.
+5. Wrap `JsNativeError` creation with `native_error_to_js_value(...)` or the
+   equivalent `into()` + `into_opaque(context).unwrap_or_else(...)`.
+6. Update callers:
+   - Binding function callers: pass `ec` directly, drop `ec_to_ctx`
+     (update the JsResult closure pattern).
+   - Domain callers with `&mut Context`: bridge via `context_as_ec(context)`,
+     convert the `Completion` result back to `JsResult` with
+     `.map_err(JsError::from_opaque)`.
 
-Affected areas:
-- Streams: `writablestreamdefaultcontroller.rs`, `readablestreamdefaultcontroller.rs`,
-  `writablestream.rs`, `readablestream.rs`, `strategy.rs`
-- DOM: `dispatch.rs`, `abort.rs`, `event.rs`
-- HTML: `environment_settings_object.rs`, `window.rs`, `location.rs`
-- WebAssembly: `namespace.rs`, `functions.rs`
-- `promise.rs`, `buffer_source.rs` helpers
-
-After this step, binding function bodies can drop the `ec_to_ctx` cast and
-pass `ec` directly to domain methods.
+**Note**: The `writablestreamdefaultwriter.rs` conversion serves as the reference
+implementation — it demonstrates all the patterns above.
 
 ### Step 2: Remove remaining `ContextEventDispatchHost` adapters
 
@@ -368,5 +409,13 @@ The only non-mechanical step.  `Callback` currently derives
 
 This is the one genuinely engine-specific part of the crate — GC has no
 ECMA-262 equivalent, so there is no spec to follow.
+
+### Verification
+
+Until the generic JS engine migration is complete, each sub-task only requires
+`cargo check` (no WPT or navigation verification).  Full verification resumes
+when the migration reaches a stable checkpoint (all Phase 7 files converted).
+
+Each sub-task ends with a commit message suggestion covering the current diff.
 
 

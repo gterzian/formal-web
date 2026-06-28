@@ -2797,7 +2797,12 @@ fn readable_stream_pipe_to(
         };
 
     // Step 10: "Let writer be ! AcquireWritableStreamDefaultWriter(dest)."
-    let writer_object = match super::acquire_writable_stream_default_writer(dest.clone(), context) {
+    let writer_object = match super::acquire_writable_stream_default_writer(
+        dest.clone(),
+        crate::js::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)
+    {
         Ok(writer_object) => writer_object,
         Err(error) => {
             if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
@@ -3061,7 +3066,9 @@ impl PipeToState {
             let state = self.borrow();
             state.writer.clone()
         };
-        let write_promise = writer.write(value, context)?;
+        let write_promise = writer
+            .write(value, crate::js::context_as_ec(context))
+            .map_err(JsError::from_opaque)?;
         self.borrow_mut().pending_writes.push_back(write_promise);
         Ok(true)
     }
@@ -3282,7 +3289,9 @@ impl PipeToState {
                 {
                     resolved_promise(JsValue::undefined(), context)?
                 }
-                _ => writer.close(context)?,
+                _ => writer
+                    .close(crate::js::context_as_ec(context))
+                    .map_err(JsError::from_opaque)?,
             },
             PipeShutdownAction::Abort => {
                 let abort_promise = if !prevent_abort {
@@ -3340,7 +3349,10 @@ impl PipeToState {
             )
         };
 
-        if let Err(release_error) = super::writable_stream_default_writer_release(writer, context) {
+        if let Err(release_error) =
+            super::writable_stream_default_writer_release(writer, crate::js::context_as_ec(context))
+                .map_err(JsError::from_opaque)
+        {
             if error.is_none() {
                 error = Some(error_to_rejection_reason(release_error, context));
             }

@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
+    JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     object::{JsObject, builtins::JsPromise},
 };
@@ -14,6 +14,7 @@ use super::{
     writable_stream_default_controller_get_desired_size, writable_stream_default_controller_write,
 };
 use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
 #[derive(Clone, Trace, Finalize, JsData)]
@@ -75,12 +76,18 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn set_up_writable_stream_default_writer(
         &self,
         stream: WritableStream,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         if stream.is_writable_stream_locked() {
-            return Err(JsNativeError::typ()
+            let error: JsError = JsNativeError::typ()
                 .with_message("Cannot create a writer for a stream that already has a writer")
-                .into());
+                .into();
+            return Err(error
+                .into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined()));
         }
 
         self.set_stream_slot_value(Some(stream.clone()));
@@ -89,24 +96,24 @@ impl WritableStreamDefaultWriter {
         match stream.state() {
             WritableStreamState::Writable => {
                 if !stream.close_queued_or_in_flight() && stream.backpressure() {
-                    self.reset_ready_promise(context)?;
+                    self.reset_ready_promise(ec)?;
                 } else {
-                    self.resolve_ready_promise(context)?;
+                    self.resolve_ready_promise(ec)?;
                 }
-                self.reset_closed_promise(context);
+                self.reset_closed_promise(ec);
             }
             WritableStreamState::Erroring => {
-                self.reject_ready_promise(stream.stored_error(), context)?;
-                self.reset_closed_promise(context);
+                self.reject_ready_promise(stream.stored_error(), ec)?;
+                self.reset_closed_promise(ec);
             }
             WritableStreamState::Closed => {
-                self.resolve_ready_promise(context)?;
-                self.resolve_closed_promise(context)?;
+                self.resolve_ready_promise(ec)?;
+                self.resolve_closed_promise(ec)?;
             }
             WritableStreamState::Errored => {
                 let stored_error = stream.stored_error();
-                self.reject_ready_promise(stored_error.clone(), context)?;
-                self.reject_closed_promise(stored_error, context)?;
+                self.reject_ready_promise(stored_error.clone(), ec)?;
+                self.reject_closed_promise(stored_error, ec)?;
             }
         }
 
@@ -140,126 +147,230 @@ impl WritableStreamDefaultWriter {
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-abort>
-    pub(crate) fn abort(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn abort(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsObject, BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot abort using a released WritableStreamDefaultWriter",
                 context,
-            );
+            )
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            });
         };
 
-        stream.abort_stream(reason, context)
+        stream
+            .abort_stream(reason, context)
+            .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-close>
-    pub(crate) fn close(&self, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn close(
+        &self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsObject, BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot close using a released WritableStreamDefaultWriter",
                 context,
-            );
+            )
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            });
         };
 
         if stream.close_queued_or_in_flight() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that is already closing",
                 context,
-            );
+            )
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            });
         }
 
-        stream.close_stream(context)
+        stream
+            .close_stream(context)
+            .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-release-lock>
-    pub(crate) fn release_lock(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn release_lock(
+        &self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
         let Some(_) = self.stream_slot_value() else {
             return Ok(());
         };
 
-        self.release(context)
+        self.release(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-write>
-    pub(crate) fn write(&self, chunk: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn write(
+        &self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsObject, BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot write using a released WritableStreamDefaultWriter",
                 context,
-            );
+            )
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            });
         };
 
-        self.write_with_stream(stream, chunk, context)
+        self.write_with_stream(stream, chunk, ec)
     }
-    pub(crate) fn reset_ready_promise(&self, context: &mut Context) -> JsResult<()> {
+
+    pub(crate) fn reset_ready_promise(
+        &self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let (promise, resolvers) = JsPromise::new_pending(context);
         self.set_ready_promise_value(Some(promise.into()));
         self.set_ready_resolvers_value(Some(resolvers));
         Ok(())
     }
-    pub(crate) fn resolve_ready_promise(&self, context: &mut Context) -> JsResult<()> {
+
+    pub(crate) fn resolve_ready_promise(
+        &self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         if let Some(resolvers) = self.ready_resolvers_value() {
             resolvers
                 .resolve
-                .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                .call(&JsValue::undefined(), &[JsValue::undefined()], context)
+                .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))?;
             self.set_ready_resolvers_value(None);
             return Ok(());
         }
 
-        self.set_ready_promise_value(Some(resolved_promise(JsValue::undefined(), context)?));
+        let promise = resolved_promise(JsValue::undefined(), context).map_err(|e| {
+            e.into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
+        self.set_ready_promise_value(Some(promise));
         Ok(())
     }
+
     pub(crate) fn reject_ready_promise(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         if let Some(resolvers) = self.ready_resolvers_value() {
             resolvers
                 .reject
-                .call(&JsValue::undefined(), &[error.clone()], context)?;
+                .call(&JsValue::undefined(), std::slice::from_ref(&error), context)
+                .map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                })?;
             self.set_ready_resolvers_value(None);
         } else {
-            self.set_ready_promise_value(Some(rejected_promise(error, context)?));
+            self.set_ready_promise_value(Some(rejected_promise(error, context).map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })?));
         }
 
         if let Some(ready_promise) = self.ready_promise_value() {
-            mark_promise_as_handled(&ready_promise, context)?;
+            mark_promise_as_handled(&ready_promise, context).map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })?;
         }
         Ok(())
     }
-    pub(crate) fn reset_closed_promise(&self, context: &mut Context) {
+
+    pub(crate) fn reset_closed_promise(&self, ec: &mut dyn ExecutionContext<BoaTypes>) {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let (promise, resolvers) = JsPromise::new_pending(context);
         self.set_closed_promise_value(Some(promise.into()));
         self.set_closed_resolvers_value(Some(resolvers));
     }
-    pub(crate) fn resolve_closed_promise(&self, context: &mut Context) -> JsResult<()> {
+
+    pub(crate) fn resolve_closed_promise(
+        &self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         if let Some(resolvers) = self.closed_resolvers_value() {
             resolvers
                 .resolve
-                .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                .call(&JsValue::undefined(), &[JsValue::undefined()], context)
+                .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))?;
             self.set_closed_resolvers_value(None);
             return Ok(());
         }
 
-        self.set_closed_promise_value(Some(resolved_promise(JsValue::undefined(), context)?));
+        let promise = resolved_promise(JsValue::undefined(), context).map_err(|e| {
+            e.into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
+        self.set_closed_promise_value(Some(promise));
         Ok(())
     }
+
     pub(crate) fn reject_closed_promise(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         if let Some(resolvers) = self.closed_resolvers_value() {
             resolvers
                 .reject
-                .call(&JsValue::undefined(), &[error.clone()], context)?;
+                .call(&JsValue::undefined(), std::slice::from_ref(&error), context)
+                .map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                })?;
             self.set_closed_resolvers_value(None);
         } else {
-            self.set_closed_promise_value(Some(rejected_promise(error, context)?));
+            self.set_closed_promise_value(Some(rejected_promise(error, context).map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })?));
         }
 
         if let Some(closed_promise) = self.closed_promise_value() {
-            mark_promise_as_handled(&closed_promise, context)?;
+            mark_promise_as_handled(&closed_promise, context).map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })?;
         }
         Ok(())
     }
@@ -267,17 +378,17 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn ensure_closed_promise_rejected(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
-        self.reject_closed_promise(error, context)
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        self.reject_closed_promise(error, ec)
     }
 
     pub(crate) fn ensure_ready_promise_rejected(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
-        self.reject_ready_promise(error, context)
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        self.reject_ready_promise(error, ec)
     }
 
     fn get_desired_size_from_stream(&self, stream: WritableStream) -> JsResult<Option<f64>> {
@@ -295,15 +406,26 @@ impl WritableStreamDefaultWriter {
         }
     }
 
-    fn release(&self, context: &mut Context) -> JsResult<()> {
+    fn release(&self, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         let stream = self.stream_slot_value().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStreamDefaultWriter has been released")
+            let error: JsError = JsNativeError::typ()
+                .with_message("WritableStreamDefaultWriter has been released")
+                .into();
+            error
+                .into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
         })?;
         debug_assert!(stream.writer_slot().is_some());
 
-        let released_error = type_error_value("Writer was released", context)?;
-        self.ensure_ready_promise_rejected(released_error.clone(), context)?;
-        self.ensure_closed_promise_rejected(released_error, context)?;
+        let released_error = type_error_value("Writer was released", context).map_err(|e| {
+            e.into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
+        self.ensure_ready_promise_rejected(released_error.clone(), ec)?;
+        self.ensure_closed_promise_rejected(released_error, ec)?;
         stream.set_writer_slot(None);
         self.set_stream_slot_value(None);
         Ok(())
@@ -313,43 +435,73 @@ impl WritableStreamDefaultWriter {
         &self,
         stream: WritableStream,
         chunk: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsObject, BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+
         let controller = stream.controller_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its controller")
+            let error: JsError = JsNativeError::typ()
+                .with_message("WritableStream is missing its controller")
+                .into();
+            error
+                .into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
         })?;
         let chunk_size = writable_stream_default_controller_get_chunk_size(
             controller.as_default_controller(),
             &chunk,
             context,
-        )?;
+        )
+        .map_err(|e| {
+            e.into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
 
         if let Some(current_stream) = self.stream_slot_value() {
             if !current_stream.same_instance(&stream) {
                 return rejected_type_error_promise(
                     "Cannot write using a released WritableStreamDefaultWriter",
                     context,
-                );
+                )
+                .map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                });
             }
         } else {
             return rejected_type_error_promise(
                 "Cannot write using a released WritableStreamDefaultWriter",
                 context,
-            );
+            )
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            });
         }
 
         match stream.state() {
             WritableStreamState::Errored => {
-                return rejected_promise(stream.stored_error(), context);
+                return rejected_promise(stream.stored_error(), context).map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                });
             }
             WritableStreamState::Closed => {
                 return rejected_type_error_promise(
                     "Cannot write to a WritableStream that is closing or closed",
                     context,
-                );
+                )
+                .map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                });
             }
             WritableStreamState::Erroring => {
-                return rejected_promise(stream.stored_error(), context);
+                return rejected_promise(stream.stored_error(), context).map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                });
             }
             WritableStreamState::Writable => {}
         }
@@ -358,54 +510,83 @@ impl WritableStreamDefaultWriter {
             return rejected_type_error_promise(
                 "Cannot write to a WritableStream that is closing or closed",
                 context,
-            );
+            )
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            });
         }
 
-        let promise = stream.add_write_request(context)?;
+        let promise = stream.add_write_request(context).map_err(|e| {
+            e.into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
         writable_stream_default_controller_write(
             controller.as_default_controller(),
             chunk,
             chunk_size,
             context,
-        )?;
+        )
+        .map_err(|e| {
+            e.into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
         Ok(promise)
     }
 }
+
+/// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-constructor>
 pub(crate) fn construct_writable_stream_default_writer(
     _this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<WritableStreamDefaultWriter> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<WritableStreamDefaultWriter, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
+
     let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("WritableStreamDefaultWriter requires a WritableStream")
+        let error: JsError = JsNativeError::typ()
+            .with_message("WritableStreamDefaultWriter requires a WritableStream")
+            .into();
+        error
+            .into_opaque(context)
+            .unwrap_or_else(|_| JsValue::undefined())
     })?;
-    let stream = with_writable_stream_ref(&stream_object, |stream| stream.clone())?;
+    let stream =
+        with_writable_stream_ref(&stream_object, |stream| stream.clone()).map_err(|e| {
+            e.into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
     let writer = WritableStreamDefaultWriter::new();
-    writer.set_up_writable_stream_default_writer(stream, context)?;
+    writer.set_up_writable_stream_default_writer(stream, ec)?;
     Ok(writer)
 }
 
 /// <https://streams.spec.whatwg.org/#acquire-writable-stream-default-writer>
 pub(crate) fn acquire_writable_stream_default_writer(
     stream: WritableStream,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    let writer_object = create_writable_stream_default_writer(context)?;
-    let writer = with_writable_stream_default_writer_ref(&writer_object, |writer| writer.clone())?;
-    writer.set_up_writable_stream_default_writer(stream, context)?;
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes> {
+    let writer_object = create_writable_stream_default_writer(ec)?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, |writer| writer.clone())
+        .map_err(|e| {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        e.into_opaque(context).unwrap_or(JsValue::undefined())
+    })?;
+    writer.set_up_writable_stream_default_writer(stream, ec)?;
     Ok(writer_object)
 }
-fn create_writable_stream_default_writer(context: &mut Context) -> JsResult<JsObject> {
+
+fn create_writable_stream_default_writer(
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes> {
     let writer = WritableStreamDefaultWriter::new();
-    let writer_object: JsObject =
-        create_interface_instance::<BoaTypes, WritableStreamDefaultWriter>(
-            writer,
-            crate::js::context_as_ec(context),
-        )
-        .map_err(JsError::from_opaque)?
-        .into();
+    let writer_object =
+        create_interface_instance::<BoaTypes, WritableStreamDefaultWriter>(writer, ec)?;
     Ok(writer_object)
 }
+
 pub(crate) fn with_writable_stream_default_writer_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&WritableStreamDefaultWriter) -> R,
@@ -421,7 +602,7 @@ pub(crate) fn with_writable_stream_default_writer_ref<R>(
 /// <https://streams.spec.whatwg.org/#writable-stream-default-writer-release>
 pub(crate) fn writable_stream_default_writer_release(
     writer: WritableStreamDefaultWriter,
-    context: &mut Context,
-) -> JsResult<()> {
-    writer.release(context)
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<(), BoaTypes> {
+    writer.release(ec)
 }

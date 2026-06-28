@@ -227,7 +227,8 @@ impl WritableStream {
 
     /// <https://streams.spec.whatwg.org/#ws-get-writer>
     pub(crate) fn get_writer(&self, context: &mut Context) -> JsResult<JsObject> {
-        acquire_writable_stream_default_writer(self.clone(), context)
+        acquire_writable_stream_default_writer(self.clone(), crate::js::context_as_ec(context))
+            .map_err(JsError::from_opaque)
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-abort>
@@ -298,7 +299,9 @@ impl WritableStream {
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
                 if self.backpressure() && self.state() == WritableStreamState::Writable {
-                    writer.resolve_ready_promise(context)?;
+                    writer
+                        .resolve_ready_promise(crate::js::context_as_ec(context))
+                        .map_err(JsError::from_opaque)?;
                 }
             }
         }
@@ -420,7 +423,9 @@ impl WritableStream {
         self.set_state(WritableStreamState::Closed);
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
-                writer.resolve_closed_promise(context)?;
+                writer
+                    .resolve_closed_promise(crate::js::context_as_ec(context))
+                    .map_err(JsError::from_opaque)?;
             }
         }
 
@@ -511,7 +516,12 @@ impl WritableStream {
 
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
-                writer.ensure_closed_promise_rejected(self.stored_error(), context)?;
+                writer
+                    .ensure_closed_promise_rejected(
+                        self.stored_error(),
+                        crate::js::context_as_ec(context),
+                    )
+                    .map_err(JsError::from_opaque)?;
             }
         }
 
@@ -531,7 +541,9 @@ impl WritableStream {
 
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
-                writer.ensure_ready_promise_rejected(reason, context)?;
+                writer
+                    .ensure_ready_promise_rejected(reason, crate::js::context_as_ec(context))
+                    .map_err(JsError::from_opaque)?;
             }
         }
 
@@ -555,9 +567,13 @@ impl WritableStream {
             if let Some(writer) = writer_slot.as_default_writer() {
                 if backpressure != self.backpressure() {
                     if backpressure {
-                        writer.reset_ready_promise(context)?;
+                        writer
+                            .reset_ready_promise(crate::js::context_as_ec(context))
+                            .map_err(JsError::from_opaque)?;
                     } else {
-                        writer.resolve_ready_promise(context)?;
+                        writer
+                            .resolve_ready_promise(crate::js::context_as_ec(context))
+                            .map_err(JsError::from_opaque)?;
                     }
                 }
             }

@@ -13,6 +13,36 @@ pub(crate) use downcast::{
 // This is the only place `BoaEngine` is imported by name from `js_engine`.
 pub(crate) use js_engine::boa::BoaEngine as Engine;
 
+/// Convert a `JsResult<T>` into a `Completion<T, BoaTypes>` by mapping
+/// `JsError` errors to their opaque `JsValue` form via `context`.
+///
+/// This is the standard bridge used during the migration to thread
+/// `ExecutionContext<T>` through domain code: functions still returning
+/// `JsResult` are wrapped with this helper at call sites in
+/// `Completion`-returning functions.
+#[allow(dead_code)]
+pub(crate) fn js_result_to_completion<T>(
+    result: boa_engine::JsResult<T>,
+    context: &mut boa_engine::Context,
+) -> js_engine::Completion<T, js_engine::boa::BoaTypes> {
+    result.map_err(|e| {
+        e.into_opaque(context)
+            .unwrap_or_else(|_| boa_engine::JsValue::undefined())
+    })
+}
+
+/// Convert a `JsNativeError` into a `JsValue` suitable as a `Completion` error.
+#[allow(dead_code)]
+pub(crate) fn native_error_to_js_value(
+    error: boa_engine::JsNativeError,
+    context: &mut boa_engine::Context,
+) -> boa_engine::JsValue {
+    let js_error: boa_engine::JsError = error.into();
+    js_error
+        .into_opaque(context)
+        .unwrap_or_else(|_| boa_engine::JsValue::undefined())
+}
+
 /// SAFETY: `BoaEngine` is `#[repr(transparent)]` over `Context`, so a
 /// `&mut Context` can be safely cast to `&mut BoaEngine`.  This cast is
 /// used to pass Boa's Context through the generic `ExecutionContext<BoaTypes>`
