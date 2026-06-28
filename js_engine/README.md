@@ -284,11 +284,12 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 - `create_interface_instance<Ty, T>(data, ec)` takes `&mut dyn ExecutionContext<Ty>`.
 - `register_interface_spec` takes `E: JsEngine<Ty> + ExecutionContext<Ty>`.
 - `create_platform_object` takes `ec: &mut dyn ExecutionContext<T>`.
+- Web IDL promise reaction helpers (`upon_fulfillment`, `upon_rejection`, `upon_settlement`) implement the \"react\" / \"upon fulfillment\" / \"upon rejection\" algorithms using `create_builtin_function` + `new_promise_capability` + `perform_promise_then` trait methods.  Replaces the `NativeFunction::from_copy_closure_with_captures` closure pattern.  Located in `webidl/promise.rs`.
 
 ### What's still Boa-concrete
 
 - **Binding function bodies** use `ec_to_ctx(ec)` to cast back to `&mut Context` for Boa-specific operations (`JsObject::get`, `JsValue::to_number`, `JsNativeError::into_opaque`, etc.). The bodies are in the new signature but internally bridge to Boa.
-- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all), `streams/readablestreamdefaultcontroller.rs` (all, ~22 methods + 3 algorithm enums + all callers bridged), `streams/writablestream.rs` (all public methods, constructors, free functions; all callers bridged).
+- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all), `streams/readablestreamdefaultcontroller.rs` (all, ~22 methods + 3 algorithm enums + all callers bridged), `streams/writablestream.rs` (all public methods, constructors, free functions; all NativeFunction closures replaced with `upon_settlement`), `streams/writablestreamsupport.rs` (`WriteRequest`/`PendingAbortRequest` resolve/reject take EC), `streams/readablestreamsupport.rs` (`SourceMethod`, `ReadIntoRequest`, `ReadRequest`, `create_read_result`, `type_error_value`, `range_error_value`, `rejected_type_error_promise` take EC; `queue_internal_stream_microtask` intentionally left with `&mut Context` as it bridges to Boa's job system).
 - **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 
@@ -325,18 +326,20 @@ converted.
 
 **Remaining** (batch-convert all streams together; the compiler catches every missed call site):
 
-1. **Streams** — convert the remaining 6 files in one batch:
+1. **Streams** — convert the remaining 4 domain files in one batch:
    - ~~`writablestreamdefaultcontroller.rs`~~ — ✅
    - ~~`readablestreamdefaultreader.rs`~~ — ✅
    - ~~`readablestreambyobreader.rs`~~ — ✅
    - ~~`readablestreamdefaultcontroller.rs`~~ — ✅
    - ~~`writablestream.rs`~~ — ✅
+   - ~~`writablestreamsupport.rs`~~ — ✅
+   - ~~`readablestreamsupport.rs`~~ — ✅ (support structs + free functions converted; `queue_internal_stream_microtask` intentionally kept with `&mut Context`)
    - `readablestream.rs` (~80 instances, largest)
    - `transformstream.rs` (~20 functions)
-   - `readablestreamsupport.rs`
-   - `writablestreamsupport.rs`
-   - `readablebytestreamcontroller.rs`
+   - `readablebytestreamcontroller.rs` (~30 functions)
    - `readablestreamasynciterator.rs`
+
+   **Then** update binding files to pass `ec` directly (remove `ec_to_ctx` bridge).
 
 2. **DOM** (2 files): `dispatch.rs`, `event.rs`
 

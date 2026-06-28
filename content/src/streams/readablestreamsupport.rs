@@ -54,8 +54,11 @@ impl SourceMethod {
     }
 
     /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
-    pub(crate) fn call(&self, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-        let ec = crate::js::context_as_ec(context);
+    pub(crate) fn call(
+        &self,
+        args: &[JsValue],
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsValue, BoaTypes> {
         let this_value = JsValue::from(self.this_value.clone());
         invoke_callback_function(
             ec,
@@ -95,53 +98,99 @@ impl ReadIntoRequest {
         (Self { resolvers }, promise.into())
     }
 
-    pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn chunk_steps(
+        self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let result = create_read_result(chunk, false, context)?;
         self.resolvers
             .resolve
-            .call(&JsValue::undefined(), &[result], context)?;
-        Ok(())
+            .call(&JsValue::undefined(), &[result], context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
 
-    pub(crate) fn close_steps(self, chunk: Option<JsValue>, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn close_steps(
+        self,
+        chunk: Option<JsValue>,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, context)?;
         self.resolvers
             .resolve
-            .call(&JsValue::undefined(), &[result], context)?;
-        Ok(())
+            .call(&JsValue::undefined(), &[result], context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
 
-    pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn error_steps(
+        self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         self.resolvers
             .reject
-            .call(&JsValue::undefined(), &[error], context)?;
-        Ok(())
+            .call(&JsValue::undefined(), &[error], context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
 }
 
 impl ReadRequest {
-    pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn chunk_steps(
+        self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         match &self {
             Self::DefaultReaderRead { resolvers } => {
                 let result = create_read_result(chunk, false, context)?;
                 resolvers
                     .resolve
-                    .call(&JsValue::undefined(), &[result], context)?;
-                Ok(())
+                    .call(&JsValue::undefined(), &[result], context)
+                    .map(|_| ())
+                    .map_err(|e| {
+                        e.into_opaque(context)
+                            .unwrap_or_else(|_| JsValue::undefined())
+                    })
             }
             Self::ReadableStreamDefaultTee {
                 tee_state,
                 clone_for_branch2,
-            } => readable_stream_default_tee_read_request_chunk_steps(
-                tee_state.clone(),
-                *clone_for_branch2,
-                chunk,
+            } => crate::js::js_result_to_completion(
+                readable_stream_default_tee_read_request_chunk_steps(
+                    tee_state.clone(),
+                    *clone_for_branch2,
+                    chunk,
+                    context,
+                ),
                 context,
             ),
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_chunk_steps(
-                    tee_state.clone(),
-                    chunk,
+                crate::js::js_result_to_completion(
+                    readable_byte_stream_tee_default_reader_chunk_steps(
+                        tee_state.clone(),
+                        chunk,
+                        context,
+                    ),
                     context,
                 )
             }
@@ -152,25 +201,49 @@ impl ReadRequest {
                     move |context| state.on_read_request_settled(result, context),
                     context,
                 )
+                .map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                })
             }
         }
     }
 
-    /// closure.
-    pub(crate) fn close_steps(self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn close_steps(
+        self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         match &self {
             Self::DefaultReaderRead { resolvers } => {
                 let result = create_read_result(JsValue::undefined(), true, context)?;
                 resolvers
                     .resolve
-                    .call(&JsValue::undefined(), &[result], context)?;
-                Ok(())
+                    .call(&JsValue::undefined(), &[result], context)
+                    .map(|_| ())
+                    .map_err(|e| {
+                        e.into_opaque(context)
+                            .unwrap_or_else(|_| JsValue::undefined())
+                    })
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                readable_stream_default_tee_read_request_close_steps(tee_state.clone(), context)
+                crate::js::js_result_to_completion(
+                    readable_stream_default_tee_read_request_close_steps(
+                        tee_state.clone(),
+                        context,
+                    ),
+                    context,
+                )
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), context)
+                crate::js::js_result_to_completion(
+                    readable_byte_stream_tee_default_reader_close_steps(
+                        tee_state.clone(),
+                        context,
+                    ),
+                    context,
+                )
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(JsValue::undefined(), true, context)?;
@@ -179,23 +252,49 @@ impl ReadRequest {
                     move |context| state.on_read_request_settled(result, context),
                     context,
                 )
+                .map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                })
             }
         }
     }
 
-    pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn error_steps(
+        self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         match &self {
             Self::DefaultReaderRead { resolvers } => {
                 resolvers
                     .reject
-                    .call(&JsValue::undefined(), &[error], context)?;
-                Ok(())
+                    .call(&JsValue::undefined(), &[error], context)
+                    .map(|_| ())
+                    .map_err(|e| {
+                        e.into_opaque(context)
+                            .unwrap_or_else(|_| JsValue::undefined())
+                    })
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                readable_stream_default_tee_read_request_error_steps(tee_state.clone(), context)
+                crate::js::js_result_to_completion(
+                    readable_stream_default_tee_read_request_error_steps(
+                        tee_state.clone(),
+                        context,
+                    ),
+                    context,
+                )
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_error_steps(tee_state.clone(), context)
+                crate::js::js_result_to_completion(
+                    readable_byte_stream_tee_default_reader_error_steps(
+                        tee_state.clone(),
+                        context,
+                    ),
+                    context,
+                )
             }
             Self::ReadableStreamPipeTo { state } => {
                 let state = state.clone();
@@ -203,6 +302,10 @@ impl ReadRequest {
                     move |context| state.on_read_request_settled(error, context),
                     context,
                 )
+                .map_err(|e| {
+                    e.into_opaque(context)
+                        .unwrap_or_else(|_| JsValue::undefined())
+                })
             }
         }
     }
@@ -332,7 +435,13 @@ impl ReadableStreamReader {
         }
     }
 }
-fn create_read_result(value: JsValue, done: bool, context: &mut Context) -> JsResult<JsValue> {
+fn create_read_result(
+    value: JsValue,
+    done: bool,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     let mut initializer = ObjectInitializer::new(context);
     initializer.property(js_string!("value"), value, Attribute::all());
     initializer.property(js_string!("done"), done, Attribute::all());
@@ -341,21 +450,31 @@ fn create_read_result(value: JsValue, done: bool, context: &mut Context) -> JsRe
 
 pub(crate) fn rejected_type_error_promise(
     message: &'static str,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    crate::js::completion_to_js_result(crate::webidl::rejected_promise(
-        type_error_value(message, context)?,
-        crate::js::context_as_ec(context),
-    ))
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes> {
+    let reason = type_error_value(message, ec)?;
+    crate::webidl::rejected_promise(reason, ec)
 }
-pub(crate) fn type_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
+
+pub(crate) fn type_error_value(
+    message: &'static str,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     Ok(JsValue::from(
         JsNativeError::typ()
             .with_message(message)
             .into_opaque(context),
     ))
 }
-pub(crate) fn range_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
+
+pub(crate) fn range_error_value(
+    message: &'static str,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     Ok(JsValue::from(
         JsNativeError::range()
             .with_message(message)

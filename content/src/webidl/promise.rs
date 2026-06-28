@@ -1,11 +1,13 @@
+use std::cell::RefCell;
+
 use boa_engine::{
     Context, JsError, JsNativeError, JsValue,
     builtins::promise::ResolvingFunctions,
     native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
+    object::{JsObject, builtins::{JsFunction, JsPromise}},
 };
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsEngine};
 use log::error;
 
 /// **Web IDL Promise Manipulation**
@@ -192,4 +194,183 @@ pub(crate) fn mark_promise_as_handled(
 
 fn return_undefined(_: &JsValue, _: &[JsValue], _: &mut Context) -> boa_engine::JsResult<JsValue> {
     Ok(JsValue::undefined())
+}
+
+// ── Web IDL Promise Reaction (upon fulfillment / upon rejection) ────────
+//
+// Implements <https://webidl.spec.whatwg.org/#upon-fulfillment>,
+// <https://webidl.spec.whatwg.org/#upon-rejection>, and the underlying
+// <https://webidl.spec.whatwg.org/#react> algorithm.
+//
+// These wrap the engine-specific promise-chaining mechanism so that domain
+// code never reaches for NativeFunction::from_closure / to_js_function.
+// For the Boa backend the closure is registered via NativeFunction; for JSC
+// it would use the JSC callback API.
+
+/// <https://webidl.spec.whatwg.org/#upon-fulfillment>
+///
+/// Performs steps upon fulfillment of a promise.  Returns a new promise
+/// that resolves with the result of the steps.
+pub(crate) fn upon_fulfillment<F>(
+    promise: JsObject,
+    steps: F,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes>
+where
+    F: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
+        + 'static,
+{
+    upon_settlement::<F, fn(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>>(
+        promise,
+        Some(steps),
+        None,
+        ec,
+    )
+}
+
+/// <https://webidl.spec.whatwg.org/#upon-rejection>
+///
+/// Performs steps upon rejection of a promise.  Returns a new promise
+/// that resolves with the result of the steps (or rejects if the steps
+/// return a rejected promise).
+pub(crate) fn upon_rejection<R>(
+    promise: JsObject,
+    steps: R,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes>
+where
+    R: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
+        + 'static,
+{
+    upon_settlement::<fn(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>, R>(
+        promise,
+        None,
+        Some(steps),
+        ec,
+    )
+}
+
+/// <https://webidl.spec.whatwg.org/#react>
+///
+/// Reacts to a promise with optional fulfillment and rejection steps.
+/// Wraps CreateBuiltinFunction + NewPromiseCapability + PerformPromiseThen
+/// into a single call.  Returns the new promise capability's promise.
+pub(crate) fn upon_settlement<F, R>(
+    promise: JsObject,
+    on_fulfilled: Option<F>,
+    on_rejected: Option<R>,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes>
+where
+    F: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
+        + 'static,
+    R: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
+        + 'static,
+{
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    // We extract the concrete engine so we can call create_builtin_function
+    // (on JsEngine) and new_promise_capability / perform_promise_then
+    // (on ExecutionContext) through the same object.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
+
+    // Extract everything we need from `context` before creating `engine`,
+    // since both reference the same underlying Boa Context.
+    let realm = context.realm().clone();
+    let global = context.global_object();
+    let not_promise_err: JsValue = {
+        let js_error: JsError = JsNativeError::typ()
+            .with_message("upon_settlement: value is not a Promise")
+            .into();
+        js_error
+            .into_opaque(context)
+            .unwrap_or_else(|_| JsValue::undefined())
+    };
+
+    let engine = crate::js::context_as_engine(context);
+
+    // Wrap FnOnce steps in RefCell so they satisfy the Fn bound required
+    // by create_builtin_function.  Each callback is called at most once
+    // (promise reactions are single-fire).
+    let fulfilled_cell = on_fulfilled.map(|s| RefCell::new(Some(s)));
+    let rejected_cell = on_rejected.map(|s| RefCell::new(Some(s)));
+
+    // Step 2 of react: CreateBuiltinFunction(onFulfilledSteps, 1, "", « »)
+    let on_fulfilled_fn: Option<JsFunction> = if fulfilled_cell.is_some() {
+        let cell = fulfilled_cell.unwrap();
+        Some(engine.create_builtin_function(
+            Box::new(
+                move |args: &[JsValue],
+                      _this: JsValue,
+                      inner_ec: &mut dyn ExecutionContext<BoaTypes>|
+                      -> Completion<JsValue, BoaTypes> {
+                    let value = args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| inner_ec.value_undefined());
+                    if let Some(steps) = cell.borrow_mut().take() {
+                        steps(value, inner_ec)
+                    } else {
+                        Ok(inner_ec.value_undefined())
+                    }
+                },
+            ),
+            1,
+            engine.property_key_from_str(""),
+            &realm,
+        ))
+    } else {
+        None
+    };
+
+    // Step 4 of react: CreateBuiltinFunction(onRejectedSteps, 1, "", « »)
+    let on_rejected_fn: Option<JsFunction> = if rejected_cell.is_some() {
+        let cell = rejected_cell.unwrap();
+        Some(engine.create_builtin_function(
+            Box::new(
+                move |args: &[JsValue],
+                      _this: JsValue,
+                      inner_ec: &mut dyn ExecutionContext<BoaTypes>|
+                      -> Completion<JsValue, BoaTypes> {
+                    let reason = args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| inner_ec.value_undefined());
+                    if let Some(steps) = cell.borrow_mut().take() {
+                        steps(reason, inner_ec)
+                    } else {
+                        Ok(inner_ec.value_undefined())
+                    }
+                },
+            ),
+            1,
+            engine.property_key_from_str(""),
+            &realm,
+        ))
+    } else {
+        None
+    };
+
+    // Step 5 of react: Let constructor be %Promise%.
+    let intrinsics = engine.realm_intrinsics(&realm);
+    let promise_constructor = intrinsics.promise;
+
+    // Step 6 of react: Let newCapability be ? NewPromiseCapability(constructor).
+    let capability = engine.new_promise_capability(promise_constructor)?;
+    let result_promise = capability.promise.clone();
+
+    // Step 7 of react: PerformPromiseThen(promise, onFulfilled, onRejected, newCapability).
+    let js_promise =
+        JsPromise::from_object(promise).map_err(|_| not_promise_err.clone())?;
+    engine.perform_promise_then(
+        js_promise,
+        on_fulfilled_fn,
+        on_rejected_fn,
+        Some(capability),
+    )?;
+
+    // Step 8 of react: Return newCapability.
+    Ok(result_promise
+        .as_object()
+        .map(|o| o.clone())
+        .unwrap_or(global))
 }

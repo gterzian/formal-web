@@ -5,8 +5,7 @@ use std::{
 
 use boa_engine::{
     Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, js_string,
-    native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
+    object::JsObject,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use js_engine::boa::BoaTypes;
@@ -14,7 +13,7 @@ use js_engine::{Completion, ExecutionContext};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::resolved_promise;
+use crate::webidl::{resolved_promise, upon_settlement};
 
 use super::{
     AbortAlgorithm, CloseAlgorithm, PendingAbortRequest, WritableStartAlgorithm,
@@ -420,9 +419,7 @@ impl WritableStream {
 
         let stored_error = self.stored_error();
         for write_request in self.take_write_requests().into_iter() {
-            write_request
-                .reject(stored_error.clone(), context)
-                .map_err(|e| js_error_to_completion_err(e, context))?;
+            write_request.reject(stored_error.clone(), crate::js::context_as_ec(context))?;
         }
 
         let Some(abort_request) = self.take_pending_abort_request_slot() else {
@@ -431,9 +428,7 @@ impl WritableStream {
         };
 
         if abort_request.was_already_erroring() {
-            abort_request
-                .reject(stored_error.clone(), context)
-                .map_err(|e| js_error_to_completion_err(e, context))?;
+            abort_request.reject(stored_error.clone(), crate::js::context_as_ec(context))?;
             self.reject_close_and_closed_promise_if_needed(ec)?;
             return Ok(());
         }
@@ -443,37 +438,26 @@ impl WritableStream {
             .map_err(|e| js_error_to_completion_err(e, context))?;
         let abort_request_for_fulfilled = abort_request.clone();
         let stream_for_fulfilled = self.clone();
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, captures: &(PendingAbortRequest, WritableStream), context| {
-                let (abort_request, stream) = captures;
-                abort_request.resolve(context)?;
-                crate::js::completion_to_js_result(
-                    stream
-                        .reject_close_and_closed_promise_if_needed(crate::js::context_as_ec(context)),
-                )?;
-                Ok(JsValue::undefined())
-            },
-            (abort_request_for_fulfilled, stream_for_fulfilled),
-        )
-        .to_js_function(context.realm());
         let stream_for_rejected = self.clone();
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args: &[JsValue], captures: &(PendingAbortRequest, WritableStream), context| {
-                let (abort_request, stream) = captures;
-                abort_request.reject(args.get_or_undefined(0).clone(), context)?;
-                crate::js::completion_to_js_result(
-                    stream
-                        .reject_close_and_closed_promise_if_needed(crate::js::context_as_ec(context)),
-                )?;
-                Ok(JsValue::undefined())
-            },
-            (abort_request, stream_for_rejected),
-        )
-        .to_js_function(context.realm());
-        let _ = JsPromise::from_object(promise)
-            .map_err(|e| js_error_to_completion_err(e, context))?
-            .then(Some(on_fulfilled), Some(on_rejected), context)
-            .map_err(|e| js_error_to_completion_err(e, context))?;
+
+        let _ = upon_settlement(
+            promise,
+            Some(
+                move |_value: JsValue, ec: &mut dyn ExecutionContext<BoaTypes>| {
+                    abort_request_for_fulfilled.resolve(ec)?;
+                    stream_for_fulfilled.reject_close_and_closed_promise_if_needed(ec)?;
+                    Ok(ec.value_undefined())
+                },
+            ),
+            Some(
+                move |reason: JsValue, ec: &mut dyn ExecutionContext<BoaTypes>| {
+                    abort_request.reject(reason, ec)?;
+                    stream_for_rejected.reject_close_and_closed_promise_if_needed(ec)?;
+                    Ok(ec.value_undefined())
+                },
+            ),
+            crate::js::context_as_ec(context),
+        )?;
         Ok(())
     }
 
@@ -492,9 +476,7 @@ impl WritableStream {
                 context,
             )
         })?;
-        close_request
-            .resolve(context)
-            .map_err(|e| js_error_to_completion_err(e, context))?;
+        close_request.resolve(crate::js::context_as_ec(context))?;
 
         let state = self.state();
         debug_assert!(
@@ -503,9 +485,7 @@ impl WritableStream {
         if state == WritableStreamState::Erroring {
             self.set_stored_error(JsValue::undefined());
             if let Some(abort_request) = self.take_pending_abort_request_slot() {
-                abort_request
-                    .resolve(context)
-                    .map_err(|e| js_error_to_completion_err(e, context))?;
+                abort_request.resolve(crate::js::context_as_ec(context))?;
             }
         }
 
@@ -537,14 +517,10 @@ impl WritableStream {
                 context,
             )
         })?;
-        close_request
-            .reject(error.clone(), context)
-            .map_err(|e| js_error_to_completion_err(e, context))?;
+        close_request.reject(error.clone(), crate::js::context_as_ec(context))?;
 
         if let Some(abort_request) = self.take_pending_abort_request_slot() {
-            abort_request
-                .reject(error.clone(), context)
-                .map_err(|e| js_error_to_completion_err(e, context))?;
+            abort_request.reject(error.clone(), crate::js::context_as_ec(context))?;
         }
 
         self.deal_with_rejection(error, ec)
@@ -565,9 +541,7 @@ impl WritableStream {
                 context,
             )
         })?;
-        write_request
-            .resolve(context)
-            .map_err(|e| js_error_to_completion_err(e, context))?;
+        write_request.resolve(crate::js::context_as_ec(context))?;
         Ok(())
     }
 
@@ -587,9 +561,7 @@ impl WritableStream {
                 context,
             )
         })?;
-        write_request
-            .reject(error.clone(), context)
-            .map_err(|e| js_error_to_completion_err(e, context))?;
+        write_request.reject(error.clone(), crate::js::context_as_ec(context))?;
         self.deal_with_rejection(error, ec)
     }
 
@@ -631,9 +603,7 @@ impl WritableStream {
 
         if let Some(close_request) = self.take_close_request_slot() {
             debug_assert!(self.in_flight_close_request_slot().is_none());
-            close_request
-                .reject(self.stored_error(), context)
-                .map_err(|e| js_error_to_completion_err(e, context))?;
+            close_request.reject(self.stored_error(), crate::js::context_as_ec(context))?;
         }
 
         if let Some(writer_slot) = self.writer_slot() {

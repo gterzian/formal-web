@@ -4,6 +4,8 @@ use boa_engine::{
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Trace};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 use super::writablestreamdefaultcontroller::WritableStreamDefaultController;
 use super::writablestreamdefaultwriter::WritableStreamDefaultWriter;
@@ -27,17 +29,36 @@ impl WriteRequest {
         let (promise, resolvers) = JsPromise::new_pending(context);
         (Self { resolvers }, promise.into())
     }
-    pub(crate) fn resolve(self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn resolve(
+        self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         self.resolvers
             .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
-        Ok(())
+            .call(&JsValue::undefined(), &[JsValue::undefined()], context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
-    pub(crate) fn reject(self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn reject(
+        self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         self.resolvers
             .reject
-            .call(&JsValue::undefined(), &[error], context)?;
-        Ok(())
+            .call(&JsValue::undefined(), &[error], context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
 }
 #[derive(Clone, Trace, Finalize)]
@@ -71,17 +92,36 @@ impl PendingAbortRequest {
     pub(crate) fn was_already_erroring(&self) -> bool {
         self.was_already_erroring
     }
-    pub(crate) fn resolve(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn resolve(
+        &self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         self.resolvers
             .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
-        Ok(())
+            .call(&JsValue::undefined(), &[JsValue::undefined()], context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
-    pub(crate) fn reject(&self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn reject(
+        &self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         self.resolvers
             .reject
-            .call(&JsValue::undefined(), &[error], context)?;
-        Ok(())
+            .call(&JsValue::undefined(), &[error], context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
 }
 #[derive(Clone, Trace, Finalize)]
