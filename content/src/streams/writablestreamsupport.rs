@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsResult, JsValue,
+    Context, JsValue,
     builtins::promise::ResolvingFunctions,
     object::{JsObject, builtins::JsPromise},
 };
@@ -130,11 +130,13 @@ pub(crate) enum WritableStreamController {
 }
 
 impl WritableStreamController {
-    pub(crate) fn abort_steps(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn abort_steps(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsObject, BoaTypes> {
         match self {
-            Self::Default(controller) => crate::js::completion_to_js_result(
-                controller.abort_steps(reason, crate::js::context_as_ec(context)),
-            ),
+            Self::Default(controller) => controller.abort_steps(reason, ec),
         }
     }
     pub(crate) fn error_steps(&self) {
@@ -142,11 +144,13 @@ impl WritableStreamController {
             Self::Default(controller) => controller.error_steps(),
         }
     }
-    pub(crate) fn signal_abort(&self, reason: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn signal_abort(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
         match self {
-            Self::Default(controller) => crate::js::completion_to_js_result(
-                controller.signal_abort(reason, crate::js::context_as_ec(context)),
-            ),
+            Self::Default(controller) => controller.signal_abort(reason, ec),
         }
     }
     pub(crate) fn as_default_controller(&self) -> WritableStreamDefaultController {

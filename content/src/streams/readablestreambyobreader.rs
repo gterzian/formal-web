@@ -87,17 +87,16 @@ impl ReadableStreamBYOBReader {
         options: &JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         if self.stream_slot_value().is_none() {
-            return rejected_type_error_promise("Cannot read from a released reader", context)
-                .map_err(|e| {
-                    e.into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined())
-                });
+            return rejected_type_error_promise(
+                "Cannot read from a released reader",
+                ec,
+            );
         }
 
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // ArrayBufferViewDescriptor::from_value requires Boa's Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let view = ArrayBufferViewDescriptor::from_value(view.clone(), context).map_err(|e| {
             e.into_opaque(context)
                 .unwrap_or_else(|_| JsValue::undefined())
@@ -105,12 +104,8 @@ impl ReadableStreamBYOBReader {
         if view.byte_length() == 0 {
             return rejected_type_error_promise(
                 "ReadableStreamBYOBReader.read() requires a non-empty view",
-                context,
-            )
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            });
+                ec,
+            );
         }
 
         let min = match normalize_min(options, &view, context) {
@@ -136,62 +131,56 @@ impl ReadableStreamBYOBReader {
         read_into_request: ReadIntoRequest,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let stream = self.stream_slot_value().ok_or_else(|| {
+            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
             let error: JsError = JsNativeError::typ()
                 .with_message("reader is not attached to a stream")
                 .into();
             error
-                .into_opaque(context)
+                .into_opaque(ctx)
                 .unwrap_or_else(|_| JsValue::undefined())
         })?;
 
         stream.set_disturbed(true);
 
         if stream.state() == ReadableStreamState::Closed {
-            return read_into_request
-                .close_steps(
-                    Some(JsValue::from(view.create_result_view(0, context).map_err(
-                        |e| {
-                            e.into_opaque(context)
-                                .unwrap_or_else(|_| JsValue::undefined())
-                        },
-                    )?)),
-                    context,
-                )
-                .map_err(|e| {
-                    e.into_opaque(context)
+            // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+            // create_result_view requires Boa's Context.
+            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            return read_into_request.close_steps(
+                Some(JsValue::from(view.create_result_view(0, ctx).map_err(|e| {
+                    e.into_opaque(ctx)
                         .unwrap_or_else(|_| JsValue::undefined())
-                });
+                })?)),
+                ec,
+            );
         }
 
         if stream.state() == ReadableStreamState::Errored {
-            return read_into_request
-                .error_steps(stream.stored_error(), context)
-                .map_err(|e| {
-                    e.into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined())
-                });
+            return read_into_request.error_steps(stream.stored_error(), ec);
         }
 
         let controller = stream.controller_slot().ok_or_else(|| {
+            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
             let error: JsError = JsNativeError::typ()
                 .with_message("ReadableStream is missing its controller")
                 .into();
             error
-                .into_opaque(context)
+                .into_opaque(ctx)
                 .unwrap_or_else(|_| JsValue::undefined())
         })?;
         let controller = controller.as_byte_controller().ok_or_else(|| {
+            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
             let error: JsError = JsNativeError::typ()
                 .with_message("ReadableStreamBYOBReader requires a byte stream")
                 .into();
             error
-                .into_opaque(context)
+                .into_opaque(ctx)
                 .unwrap_or_else(|_| JsValue::undefined())
         })?;
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // pull_into still takes Boa's Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         controller
             .pull_into(view, min, read_into_request, context)
             .map_err(|e| {

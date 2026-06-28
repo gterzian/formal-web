@@ -597,7 +597,7 @@ fn get_byob_request(
         })?;
 
         match with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            controller.byob_request(ctx)
+            crate::js::completion_to_js_result(controller.byob_request(ec))
         })?? {
             Some(byob_request) => Ok(JsValue::from(byob_request)),
             None => Ok(JsValue::null()),
@@ -620,7 +620,7 @@ fn close_method(
         })?;
 
         with_readable_stream_default_controller_ref(&controller_object, |controller| {
-            crate::js::completion_to_js_result(controller.close(crate::js::context_as_ec(ctx)))
+            crate::js::completion_to_js_result(controller.close(ec))
         })??;
         Ok(JsValue::undefined())
     })()
@@ -641,7 +641,7 @@ fn close_byte_method(
         })?;
 
         with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            controller.close(ctx)
+            crate::js::completion_to_js_result(controller.close(ec))
         })??;
         Ok(JsValue::undefined())
     })()
@@ -664,7 +664,7 @@ fn enqueue_method(
         with_readable_stream_default_controller_ref(&controller_object, |controller| {
             crate::js::completion_to_js_result(controller.enqueue(
                 args.get_or_undefined(0).clone(),
-                crate::js::context_as_ec(ctx),
+                ec,
             ))
         })??;
         Ok(JsValue::undefined())
@@ -686,7 +686,7 @@ fn enqueue_byte_method(
         })?;
 
         with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            controller.enqueue(args.get_or_undefined(0).clone(), ctx)
+            crate::js::completion_to_js_result(controller.enqueue(args.get_or_undefined(0).clone(), ec))
         })??;
         Ok(JsValue::undefined())
     })()
@@ -709,7 +709,7 @@ fn error_method(
         with_readable_stream_default_controller_ref(&controller_object, |controller| {
             crate::js::completion_to_js_result(controller.error(
                 args.get_or_undefined(0).clone(),
-                crate::js::context_as_ec(ctx),
+                ec,
             ))
         })??;
         Ok(JsValue::undefined())
@@ -731,7 +731,7 @@ fn error_byte_method(
         })?;
 
         with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            controller.error(args.get_or_undefined(0).clone(), ctx)
+            crate::js::completion_to_js_result(controller.error(args.get_or_undefined(0).clone(), ec))
         })??;
         Ok(JsValue::undefined())
     })()
@@ -957,7 +957,7 @@ fn respond_method(
                 .into());
         }
         with_readable_stream_byob_request_ref(&request_object, |request| {
-            request.respond(bytes_written as usize, ctx)
+            crate::js::completion_to_js_result(request.respond(bytes_written as usize, ec))
         })??;
         Ok(JsValue::undefined())
     })()
@@ -976,7 +976,7 @@ fn respond_with_new_view_method(
             JsNativeError::typ().with_message("ReadableStreamBYOBRequest receiver is not an object")
         })?;
         with_readable_stream_byob_request_ref(&request_object, |request| {
-            request.respond_with_new_view(args.get_or_undefined(0).clone(), ctx)
+            crate::js::completion_to_js_result(request.respond_with_new_view(args.get_or_undefined(0).clone(), ec))
         })??;
         Ok(JsValue::undefined())
     })()

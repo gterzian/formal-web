@@ -38,16 +38,17 @@ impl StartAlgorithm {
         controller_object: &JsObject,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsValue, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let result: JsResult<JsValue> = match self {
             Self::ReturnUndefined => Ok(JsValue::undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
             Self::JavaScript(callback) => {
                 let arg = JsValue::from(controller_object.clone());
-                callback.call(&[arg], context)
+                crate::js::completion_to_js_result(callback.call(&[arg], ec))
             }
         };
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // js_result_to_completion wraps JsError -> JsValue via Boa's Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         crate::js::js_result_to_completion(result, context)
     }
 }
@@ -67,23 +68,17 @@ impl WriteAlgorithm {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
         match self {
             Self::ReturnUndefined => {
-                resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+                resolved_promise(JsValue::undefined(), ec)
             }
             Self::JavaScript(callback) => {
                 let controller_value = JsValue::from(controller_object.clone());
-                let call_result: JsResult<JsValue> =
-                    callback.call(&[chunk, controller_value], context);
+                let call_result = callback.call(&[chunk, controller_value], ec);
                 match call_result {
-                    Ok(value) => promise_from_value(value, crate::js::context_as_ec(context)),
-                    Err(error) => {
-                        let reason = crate::js::js_result_to_completion(
-                            error.into_opaque(context),
-                            context,
-                        )?;
-                        rejected_promise(reason, crate::js::context_as_ec(context))
+                    Ok(value) => promise_from_value(value, ec),
+                    Err(error_value) => {
+                        rejected_promise(error_value, ec)
                     }
                 }
             }
@@ -101,21 +96,16 @@ pub(crate) enum CloseAlgorithm {
 impl CloseAlgorithm {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-closealgorithm>
     fn call(&self, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsObject, BoaTypes> {
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
         match self {
             Self::ReturnUndefined => {
-                resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+                resolved_promise(JsValue::undefined(), ec)
             }
             Self::JavaScript(callback) => {
-                let call_result: JsResult<JsValue> = callback.call(&[], context);
+                let call_result = callback.call(&[], ec);
                 match call_result {
-                    Ok(value) => promise_from_value(value, crate::js::context_as_ec(context)),
-                    Err(error) => {
-                        let reason = crate::js::js_result_to_completion(
-                            error.into_opaque(context),
-                            context,
-                        )?;
-                        rejected_promise(reason, crate::js::context_as_ec(context))
+                    Ok(value) => promise_from_value(value, ec),
+                    Err(error_value) => {
+                        rejected_promise(error_value, ec)
                     }
                 }
             }
@@ -137,21 +127,16 @@ impl AbortAlgorithm {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
         match self {
             Self::ReturnUndefined => {
-                resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
+                resolved_promise(JsValue::undefined(), ec)
             }
             Self::JavaScript(callback) => {
-                let call_result: JsResult<JsValue> = callback.call(&[reason], context);
+                let call_result = callback.call(&[reason], ec);
                 match call_result {
-                    Ok(value) => promise_from_value(value, crate::js::context_as_ec(context)),
-                    Err(error) => {
-                        let reason = crate::js::js_result_to_completion(
-                            error.into_opaque(context),
-                            context,
-                        )?;
-                        rejected_promise(reason, crate::js::context_as_ec(context))
+                    Ok(value) => promise_from_value(value, ec),
+                    Err(error_value) => {
+                        rejected_promise(error_value, ec)
                     }
                 }
             }

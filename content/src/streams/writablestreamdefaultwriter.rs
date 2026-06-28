@@ -152,18 +152,11 @@ impl WritableStreamDefaultWriter {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot abort using a released WritableStreamDefaultWriter",
-                context,
-            )
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            });
+                ec,
+            );
         };
 
         stream.abort_stream(reason, ec)
@@ -174,29 +167,18 @@ impl WritableStreamDefaultWriter {
         &self,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot close using a released WritableStreamDefaultWriter",
-                context,
-            )
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            });
+                ec,
+            );
         };
 
         if stream.close_queued_or_in_flight() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that is already closing",
-                context,
-            )
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            });
+                ec,
+            );
         }
 
         stream.close_stream(ec)
@@ -220,18 +202,11 @@ impl WritableStreamDefaultWriter {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot write using a released WritableStreamDefaultWriter",
-                context,
-            )
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            });
+                ec,
+            );
         };
 
         self.write_with_stream(stream, chunk, ec)
@@ -398,10 +373,7 @@ impl WritableStreamDefaultWriter {
         })?;
         debug_assert!(stream.writer_slot().is_some());
 
-        let released_error = type_error_value("Writer was released", context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        let released_error = type_error_value("Writer was released", ec)?;
         self.ensure_ready_promise_rejected(released_error.clone(), ec)?;
         self.ensure_closed_promise_rejected(released_error, ec)?;
         stream.set_writer_slot(None);
@@ -415,10 +387,10 @@ impl WritableStreamDefaultWriter {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let controller = stream.controller_slot().ok_or_else(|| {
+            // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+            // JsNativeError::into_opaque requires Boa's Context.
+            let context = unsafe { crate::js::ec_to_ctx(ec) };
             let error: JsError = JsNativeError::typ()
                 .with_message("WritableStream is missing its controller")
                 .into();
@@ -429,29 +401,21 @@ impl WritableStreamDefaultWriter {
         let chunk_size = writable_stream_default_controller_get_chunk_size(
             controller.as_default_controller(),
             &chunk,
-            crate::js::context_as_ec(context),
+            ec,
         )?;
 
         if let Some(current_stream) = self.stream_slot_value() {
             if !current_stream.same_instance(&stream) {
                 return rejected_type_error_promise(
                     "Cannot write using a released WritableStreamDefaultWriter",
-                    context,
-                )
-                .map_err(|e| {
-                    e.into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined())
-                });
+                    ec,
+                );
             }
         } else {
             return rejected_type_error_promise(
                 "Cannot write using a released WritableStreamDefaultWriter",
-                context,
-            )
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            });
+                ec,
+            );
         }
 
         match stream.state() {
@@ -461,12 +425,8 @@ impl WritableStreamDefaultWriter {
             WritableStreamState::Closed => {
                 return rejected_type_error_promise(
                     "Cannot write to a WritableStream that is closing or closed",
-                    context,
-                )
-                .map_err(|e| {
-                    e.into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined())
-                });
+                    ec,
+                );
             }
             WritableStreamState::Erroring => {
                 return rejected_promise(stream.stored_error(), ec);
@@ -477,20 +437,16 @@ impl WritableStreamDefaultWriter {
         if stream.close_queued_or_in_flight() {
             return rejected_type_error_promise(
                 "Cannot write to a WritableStream that is closing or closed",
-                context,
-            )
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            });
+                ec,
+            );
         }
 
-        let promise = stream.add_write_request(crate::js::context_as_ec(context))?;
+        let promise = stream.add_write_request(ec)?;
         writable_stream_default_controller_write(
             controller.as_default_controller(),
             chunk,
             chunk_size,
-            crate::js::context_as_ec(context),
+            ec,
         )?;
         Ok(promise)
     }

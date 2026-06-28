@@ -60,12 +60,18 @@ impl SourceMethod {
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsValue, BoaTypes> {
         let this_value = JsValue::from(self.this_value.clone());
-        invoke_callback_function(
-            ec,
-            &self.callback,
-            args,
-            ExceptionBehavior::Rethrow,
-            Some(&this_value),
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // invoke_callback_function returns JsResult; bridge via context_as_ec.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        crate::js::js_result_to_completion(
+            invoke_callback_function(
+                crate::js::context_as_ec(context),
+                &self.callback,
+                args,
+                ExceptionBehavior::Rethrow,
+                Some(&this_value),
+            ),
+            context,
         )
     }
 }
@@ -103,9 +109,10 @@ impl ReadIntoRequest {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let result = create_read_result(chunk, false, ec)?;
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // ResolvingFunctions.resolve.call requires Boa's Context.
         let context = unsafe { crate::js::ec_to_ctx(ec) };
-        let result = create_read_result(chunk, false, context)?;
         self.resolvers
             .resolve
             .call(&JsValue::undefined(), &[result], context)
@@ -121,9 +128,10 @@ impl ReadIntoRequest {
         chunk: Option<JsValue>,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, ec)?;
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // ResolvingFunctions.resolve.call requires Boa's Context.
         let context = unsafe { crate::js::ec_to_ctx(ec) };
-        let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, context)?;
         self.resolvers
             .resolve
             .call(&JsValue::undefined(), &[result], context)
@@ -139,7 +147,8 @@ impl ReadIntoRequest {
         error: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // ResolvingFunctions.reject.call requires Boa's Context.
         let context = unsafe { crate::js::ec_to_ctx(ec) };
         self.resolvers
             .reject
@@ -158,11 +167,12 @@ impl ReadRequest {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                let result = create_read_result(chunk, false, context)?;
+                let result = create_read_result(chunk, false, ec)?;
+                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // ResolvingFunctions.resolve.call requires Boa's Context.
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
                 resolvers
                     .resolve
                     .call(&JsValue::undefined(), &[result], context)
@@ -175,16 +185,24 @@ impl ReadRequest {
             Self::ReadableStreamDefaultTee {
                 tee_state,
                 clone_for_branch2,
-            } => crate::js::js_result_to_completion(
-                readable_stream_default_tee_read_request_chunk_steps(
-                    tee_state.clone(),
-                    *clone_for_branch2,
-                    chunk,
+            } => {
+                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // Tee algorithms still take Boa's Context.
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    readable_stream_default_tee_read_request_chunk_steps(
+                        tee_state.clone(),
+                        *clone_for_branch2,
+                        chunk,
+                        context,
+                    ),
                     context,
-                ),
-                context,
-            ),
+                )
+            }
             Self::ReadableByteStreamTee { tee_state } => {
+                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // Tee algorithms still take Boa's Context.
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
                 crate::js::js_result_to_completion(
                     readable_byte_stream_tee_default_reader_chunk_steps(
                         tee_state.clone(),
@@ -195,8 +213,11 @@ impl ReadRequest {
                 )
             }
             Self::ReadableStreamPipeTo { state } => {
-                let result = create_read_result(chunk, false, context)?;
+                let result = create_read_result(chunk, false, ec)?;
                 let state = state.clone();
+                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // queue_internal_stream_microtask requires Boa's Context.
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
                 queue_internal_stream_microtask(
                     move |context| state.on_read_request_settled(result, context),
                     context,
@@ -213,11 +234,12 @@ impl ReadRequest {
         self,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                let result = create_read_result(JsValue::undefined(), true, context)?;
+                let result = create_read_result(JsValue::undefined(), true, ec)?;
+                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // ResolvingFunctions.resolve.call requires Boa's Context.
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
                 resolvers
                     .resolve
                     .call(&JsValue::undefined(), &[result], context)
@@ -228,6 +250,9 @@ impl ReadRequest {
                     })
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
+                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // Tee algorithms still take Boa's Context.
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
                 crate::js::js_result_to_completion(
                     readable_stream_default_tee_read_request_close_steps(
                         tee_state.clone(),
@@ -237,6 +262,9 @@ impl ReadRequest {
                 )
             }
             Self::ReadableByteStreamTee { tee_state } => {
+                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // Tee algorithms still take Boa's Context.
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
                 crate::js::js_result_to_completion(
                     readable_byte_stream_tee_default_reader_close_steps(
                         tee_state.clone(),
@@ -246,8 +274,11 @@ impl ReadRequest {
                 )
             }
             Self::ReadableStreamPipeTo { state } => {
-                let result = create_read_result(JsValue::undefined(), true, context)?;
+                let result = create_read_result(JsValue::undefined(), true, ec)?;
                 let state = state.clone();
+                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // queue_internal_stream_microtask requires Boa's Context.
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
                 queue_internal_stream_microtask(
                     move |context| state.on_read_request_settled(result, context),
                     context,

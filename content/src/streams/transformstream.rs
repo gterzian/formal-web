@@ -639,29 +639,31 @@ fn transform_stream_default_controller_perform_transform(
         Some(TransformAlgorithm::Identity) => {
             // Step 1: "Let transformPromise be the result of performing controller.[[transformAlgorithm]], passing chunk."
             // Note: The default identity transform algorithm enqueues chunk directly.
-            if let Err(error) =
-                transform_stream_default_controller_enqueue(controller.clone(), chunk, context)
-            {
-                rejected_promise(
-                    error.into_opaque(context)?,
-                    crate::js::context_as_ec(context),
-                )
-                .map_err(boa_engine::JsError::from_opaque)?
-            } else {
-                resolved_promise(JsValue::undefined(), crate::js::context_as_ec(context))
-                    .map_err(boa_engine::JsError::from_opaque)?
+            let enqueue_result =
+                transform_stream_default_controller_enqueue(controller.clone(), chunk, context);
+            match enqueue_result {
+                Err(error) => {
+                    let opaque_error = error.into_opaque(context)?;
+                    let ec = crate::js::context_as_ec(context);
+                    crate::js::completion_to_js_result(rejected_promise(opaque_error, ec))?
+                }
+                Ok(_) => {
+                    let ec = crate::js::context_as_ec(context);
+                    crate::js::completion_to_js_result(resolved_promise(JsValue::undefined(), ec))?
+                }
             }
         }
         Some(TransformAlgorithm::JavaScript(ref callback)) => {
+            let ec = crate::js::context_as_ec(context);
             let controller_value = JsValue::from(controller.controller_object()?);
-            match callback.call(&[chunk, controller_value], context) {
-                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context))
-                    .map_err(boa_engine::JsError::from_opaque)?,
-                Err(error) => rejected_promise(
-                    error.into_opaque(context)?,
-                    crate::js::context_as_ec(context),
-                )
-                .map_err(boa_engine::JsError::from_opaque)?,
+            match callback.call(&[chunk, controller_value], ec) {
+                Ok(value) => {
+                    crate::js::completion_to_js_result(promise_from_value(value, ec))?
+                }
+                Err(error) => {
+                    // error is JsValue since callback.call returns Completion<_, BoaTypes>
+                    crate::js::completion_to_js_result(rejected_promise(error, ec))?
+                }
             }
         }
         None => {
@@ -706,7 +708,9 @@ fn transform_stream_default_controller_terminate(
     )?;
 
     // Step 4: "Let error be a TypeError exception indicating that the stream has been terminated."
-    let error = type_error_value("TransformStream has been terminated", context)?;
+    let error = crate::js::completion_to_js_result(
+        type_error_value("TransformStream has been terminated", crate::js::context_as_ec(context)),
+    )?;
 
     let writable = stream.writable()?;
     log_stream_debug(format!(
@@ -823,14 +827,15 @@ fn transform_stream_default_sink_abort_algorithm(
             queued_resolved_promise(JsValue::undefined(), context)?
         }
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
-            match callback.call(&[reason.clone()], context) {
-                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context))
-                    .map_err(boa_engine::JsError::from_opaque)?,
-                Err(error) => rejected_promise(
-                    error.into_opaque(context)?,
-                    crate::js::context_as_ec(context),
-                )
-                .map_err(boa_engine::JsError::from_opaque)?,
+            let ec = crate::js::context_as_ec(context);
+            match callback.call(&[reason.clone()], ec) {
+                Ok(value) => {
+                    crate::js::completion_to_js_result(promise_from_value(value, ec))?
+                }
+                Err(error) => {
+                    // error is JsValue since callback.call returns Completion<_, BoaTypes>
+                    crate::js::completion_to_js_result(rejected_promise(error, ec))?
+                }
             }
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
@@ -963,15 +968,16 @@ fn transform_stream_default_sink_close_algorithm(
             queued_resolved_promise(JsValue::undefined(), context)?
         }
         Some(FlushAlgorithm::JavaScript(ref callback)) => {
+            let ec = crate::js::context_as_ec(context);
             let controller_value = JsValue::from(controller.controller_object()?);
-            match callback.call(&[controller_value], context) {
-                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context))
-                    .map_err(boa_engine::JsError::from_opaque)?,
-                Err(error) => rejected_promise(
-                    error.into_opaque(context)?,
-                    crate::js::context_as_ec(context),
-                )
-                .map_err(boa_engine::JsError::from_opaque)?,
+            match callback.call(&[controller_value], ec) {
+                Ok(value) => {
+                    crate::js::completion_to_js_result(promise_from_value(value, ec))?
+                }
+                Err(error) => {
+                    // error is JsValue since callback.call returns Completion<_, BoaTypes>
+                    crate::js::completion_to_js_result(rejected_promise(error, ec))?
+                }
             }
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
@@ -1115,14 +1121,15 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
             queued_resolved_promise(JsValue::undefined(), context)?
         }
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
-            match callback.call(&[reason.clone()], context) {
-                Ok(value) => promise_from_value(value, crate::js::context_as_ec(context))
-                    .map_err(boa_engine::JsError::from_opaque)?,
-                Err(error) => rejected_promise(
-                    error.into_opaque(context)?,
-                    crate::js::context_as_ec(context),
-                )
-                .map_err(boa_engine::JsError::from_opaque)?,
+            let ec = crate::js::context_as_ec(context);
+            match callback.call(&[reason.clone()], ec) {
+                Ok(value) => {
+                    crate::js::completion_to_js_result(promise_from_value(value, ec))?
+                }
+                Err(error) => {
+                    // error is JsValue since callback.call returns Completion<_, BoaTypes>
+                    crate::js::completion_to_js_result(rejected_promise(error, ec))?
+                }
             }
         }
         None => queued_resolved_promise(JsValue::undefined(), context)?,
@@ -1361,7 +1368,9 @@ pub(crate) fn construct_transform_stream(
                 transformer_obj.clone(),
                 crate::webidl::Callback::from_object(start),
             );
-            let result = source_method.call(&[controller_value], context)?;
+            let result = crate::js::completion_to_js_result(
+                source_method.call(&[controller_value], crate::js::context_as_ec(context)),
+            )?;
             start_resolvers
                 .resolve
                 .call(&JsValue::undefined(), &[result], context)?;

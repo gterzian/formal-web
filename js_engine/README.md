@@ -41,6 +41,28 @@ GC has no ECMA-262 equivalent.  This module is deliberately the one
 engine-specific part of the crate.  The only genuinely tricky part of
 making the layer generic.
 
+### Design principle: engine-specific code stays inside the backend
+
+A Web IDL algorithm like "a promise rejected with" does not do anything
+Boa-specific or JSC-specific — it calls ECMA-262 abstract operations
+(`NewPromiseCapability`, `Call`).  Our implementation must do the same:
+call the equivalent operations on the generic `ExecutionContext<T>` trait.
+The fact that Boa's `Call` internally requires a `Context` is an
+implementation detail of the Boa backend (`js_engine/src/boa/`).  Domain
+code and Web IDL helpers must never reach through the trait to the
+concrete engine.
+
+Concretely:
+- `ec_to_ctx` (cast from `dyn ExecutionContext` back to `&mut Context`)
+  belongs **only** inside `js_engine/src/boa/` — the Boa backend
+  implementing the trait methods.
+- Domain code that currently says `let context = ec_to_ctx(ec);` and then
+  calls Boa-specific APIs is bypassing the trait.  The right fix is to
+  call the equivalent trait method instead, or if one does not exist, to
+  add it to the trait and implement it for each backend.
+- The goal is that every `.rs` file outside `js_engine/src/boa/` (and
+  `js_engine/src/jsc/`) contains **zero** calls to `ec_to_ctx`.
+
 ### Three-trait model
 
 The ECMA-262 spec (§9.4) defines an **execution context** as the device

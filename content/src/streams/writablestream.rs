@@ -26,16 +26,14 @@ use super::{
 };
 
 /// Helper: convert a JsNativeError into a JsValue for use as a Completion error.
-fn native_to_completion_err(error: JsNativeError, context: &mut Context) -> JsValue {
+fn native_to_completion_err(
+    error: JsNativeError,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> JsValue {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     let js_error: JsError = error.into();
     js_error
-        .into_opaque(context)
-        .unwrap_or_else(|_| JsValue::undefined())
-}
-
-/// Helper: convert a JsError into a JsValue for use as a Completion error.
-fn js_error_to_completion_err(error: JsError, context: &mut Context) -> JsValue {
-    error
         .into_opaque(context)
         .unwrap_or_else(|_| JsValue::undefined())
 }
@@ -215,15 +213,11 @@ impl WritableStream {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         if self.is_writable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot abort a WritableStream that already has a writer",
-                context,
-            )
-            .map_err(|e| js_error_to_completion_err(e, context));
+                ec,
+            );
         }
 
         self.abort_stream(reason, ec)
@@ -234,23 +228,18 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         if self.is_writable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that already has a writer",
-                context,
-            )
-            .map_err(|e| js_error_to_completion_err(e, context));
+                ec,
+            );
         }
 
         if self.close_queued_or_in_flight() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that is already closing",
-                context,
-            )
-            .map_err(|e| js_error_to_completion_err(e, context));
+                ec,
+            );
         }
 
         self.close_stream(ec)
@@ -270,9 +259,6 @@ impl WritableStream {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         if matches!(
             self.state(),
             WritableStreamState::Closed | WritableStreamState::Errored
@@ -283,12 +269,10 @@ impl WritableStream {
         let controller = self.controller_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ().with_message("WritableStream is missing its controller"),
-                context,
+                ec,
             )
         })?;
-        controller
-            .signal_abort(reason.clone(), context)
-            .map_err(|e| js_error_to_completion_err(e, context))?;
+        controller.signal_abort(reason.clone(), ec)?;
 
         if matches!(
             self.state(),
@@ -308,6 +292,9 @@ impl WritableStream {
             abort_reason = JsValue::undefined();
         }
 
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // PendingAbortRequest::new requires Boa's Context for JsPromise::new_pending.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let abort_request =
             PendingAbortRequest::new(abort_reason.clone(), was_already_erroring, context);
         let promise = abort_request.promise();
@@ -325,29 +312,28 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         match self.state() {
             WritableStreamState::Closed | WritableStreamState::Errored => {
                 return rejected_type_error_promise(
                     "Cannot close a WritableStream that is already closed or errored",
-                    context,
-                )
-                .map_err(|e| js_error_to_completion_err(e, context));
+                    ec,
+                );
             }
             _ => {}
         }
 
         debug_assert!(!self.close_queued_or_in_flight());
 
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // WriteRequest::new requires Boa's Context for JsPromise::new_pending.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let (close_request, promise) = WriteRequest::new(context);
         self.set_close_request_slot(Some(close_request));
 
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
                 if self.backpressure() && self.state() == WritableStreamState::Writable {
-                    writer.resolve_ready_promise(crate::js::context_as_ec(context))?;
+                    writer.resolve_ready_promise(ec)?;
                 }
             }
         }
@@ -355,7 +341,7 @@ impl WritableStream {
         let controller = self.controller_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ().with_message("WritableStream is missing its controller"),
-                context,
+                ec,
             )
         })?;
         writable_stream_default_controller_close(controller.as_default_controller(), ec)?;
@@ -370,7 +356,8 @@ impl WritableStream {
         debug_assert!(self.is_writable_stream_locked());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // WriteRequest::new requires Boa's Context for JsPromise::new_pending.
         let context = unsafe { crate::js::ec_to_ctx(ec) };
         let (write_request, promise) = WriteRequest::new(context);
         self.push_write_request(write_request);
@@ -402,9 +389,6 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         debug_assert_eq!(self.state(), WritableStreamState::Erroring);
         debug_assert!(!self.has_operation_marked_in_flight());
 
@@ -412,14 +396,14 @@ impl WritableStream {
         let controller = self.controller_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ().with_message("WritableStream is missing its controller"),
-                context,
+                ec,
             )
         })?;
         controller.error_steps();
 
         let stored_error = self.stored_error();
         for write_request in self.take_write_requests().into_iter() {
-            write_request.reject(stored_error.clone(), crate::js::context_as_ec(context))?;
+            write_request.reject(stored_error.clone(), ec)?;
         }
 
         let Some(abort_request) = self.take_pending_abort_request_slot() else {
@@ -428,14 +412,12 @@ impl WritableStream {
         };
 
         if abort_request.was_already_erroring() {
-            abort_request.reject(stored_error.clone(), crate::js::context_as_ec(context))?;
+            abort_request.reject(stored_error.clone(), ec)?;
             self.reject_close_and_closed_promise_if_needed(ec)?;
             return Ok(());
         }
 
-        let promise = controller
-            .abort_steps(abort_request.reason(), context)
-            .map_err(|e| js_error_to_completion_err(e, context))?;
+        let promise = controller.abort_steps(abort_request.reason(), ec)?;
         let abort_request_for_fulfilled = abort_request.clone();
         let stream_for_fulfilled = self.clone();
         let stream_for_rejected = self.clone();
@@ -456,7 +438,7 @@ impl WritableStream {
                     Ok(ec.value_undefined())
                 },
             ),
-            crate::js::context_as_ec(context),
+            ec,
         )?;
         Ok(())
     }
@@ -466,17 +448,14 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ()
                     .with_message("WritableStream is missing its in-flight close request"),
-                context,
+                ec,
             )
         })?;
-        close_request.resolve(crate::js::context_as_ec(context))?;
+        close_request.resolve(ec)?;
 
         let state = self.state();
         debug_assert!(
@@ -485,7 +464,7 @@ impl WritableStream {
         if state == WritableStreamState::Erroring {
             self.set_stored_error(JsValue::undefined());
             if let Some(abort_request) = self.take_pending_abort_request_slot() {
-                abort_request.resolve(crate::js::context_as_ec(context))?;
+                abort_request.resolve(ec)?;
             }
         }
 
@@ -507,20 +486,17 @@ impl WritableStream {
         error: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ()
                     .with_message("WritableStream is missing its in-flight close request"),
-                context,
+                ec,
             )
         })?;
-        close_request.reject(error.clone(), crate::js::context_as_ec(context))?;
+        close_request.reject(error.clone(), ec)?;
 
         if let Some(abort_request) = self.take_pending_abort_request_slot() {
-            abort_request.reject(error.clone(), crate::js::context_as_ec(context))?;
+            abort_request.reject(error.clone(), ec)?;
         }
 
         self.deal_with_rejection(error, ec)
@@ -531,17 +507,14 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ()
                     .with_message("WritableStream is missing its in-flight write request"),
-                context,
+                ec,
             )
         })?;
-        write_request.resolve(crate::js::context_as_ec(context))?;
+        write_request.resolve(ec)?;
         Ok(())
     }
 
@@ -551,17 +524,14 @@ impl WritableStream {
         error: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ()
                     .with_message("WritableStream is missing its in-flight write request"),
-                context,
+                ec,
             )
         })?;
-        write_request.reject(error.clone(), crate::js::context_as_ec(context))?;
+        write_request.reject(error.clone(), ec)?;
         self.deal_with_rejection(error, ec)
     }
 
@@ -596,14 +566,11 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         debug_assert_eq!(self.state(), WritableStreamState::Errored);
 
         if let Some(close_request) = self.take_close_request_slot() {
             debug_assert!(self.in_flight_close_request_slot().is_none());
-            close_request.reject(self.stored_error(), crate::js::context_as_ec(context))?;
+            close_request.reject(self.stored_error(), ec)?;
         }
 
         if let Some(writer_slot) = self.writer_slot() {
@@ -621,16 +588,13 @@ impl WritableStream {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-
         debug_assert!(self.stored_error().is_undefined());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
         let controller = self.controller_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ().with_message("WritableStream is missing its controller"),
-                context,
+                ec,
             )
         })?;
         self.set_state(WritableStreamState::Erroring);
@@ -680,9 +644,6 @@ pub(crate) fn construct_writable_stream(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<WritableStream, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
-
     let mut stream = WritableStream::new();
 
     let underlying_sink = if args.is_empty() {
@@ -692,9 +653,9 @@ pub(crate) fn construct_writable_stream(
     };
     let strategy = args.get_or_undefined(1).clone();
 
-    let size_algorithm = extract_size_algorithm(&strategy, crate::js::context_as_ec(context))?;
+    let size_algorithm = extract_size_algorithm(&strategy, ec)?;
     let high_water_mark =
-        extract_high_water_mark(&strategy, 1.0, crate::js::context_as_ec(context))?;
+        extract_high_water_mark(&strategy, 1.0, ec)?;
 
     let underlying_sink_object = if underlying_sink.is_null() || underlying_sink.is_undefined() {
         None
@@ -706,20 +667,28 @@ pub(crate) fn construct_writable_stream(
                     native_to_completion_err(
                         JsNativeError::typ()
                             .with_message("WritableStream underlyingSink must be an object"),
-                        context,
+                        ec,
                     )
                 })?,
         )
     };
 
-    if let Some(sink_type) = underlying_sink_type(underlying_sink_object.as_ref(), context)
-        .map_err(|e| js_error_to_completion_err(e, context))?
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    // underlying_sink_type still takes Boa's Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    if let Some(sink_type) =
+        underlying_sink_type(underlying_sink_object.as_ref(), context)
+            .map_err(|e| {
+                e.into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })?
+
     {
         return Err(native_to_completion_err(
             JsNativeError::range().with_message(format!(
                 "WritableStream underlyingSink.type must be undefined, got {sink_type}"
             )),
-            context,
+            ec,
         ));
     }
 

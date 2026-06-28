@@ -54,22 +54,24 @@ impl PullAlgorithm {
         controller_object: &JsObject,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> JsPromise {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // readable_stream_from_iterable_pull_algorithm and tee algorithms still take Context.
         let context = unsafe { crate::js::ec_to_ctx(ec) };
         match self {
             Self::ReturnUndefined => {
-                promise_from_completion(Ok(JsValue::undefined()), crate::js::context_as_ec(context))
+                promise_from_completion(Ok(JsValue::undefined()), ec)
             }
             Self::JavaScript(callback) => {
                 let arg = JsValue::from(controller_object.clone());
                 promise_from_completion(
-                    callback.call(&[arg], context),
-                    crate::js::context_as_ec(context),
+                    crate::js::completion_to_js_result(callback.call(&[arg], ec)),
+                    ec,
                 )
             }
             Self::ReadableStreamFromIterable(state) => promise_from_completion(
                 readable_stream_from_iterable_pull_algorithm(state.clone(), context)
                     .map(JsValue::from),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::ReadableStreamDefaultTee {
                 tee_state,
@@ -80,20 +82,20 @@ impl PullAlgorithm {
                     *clone_for_branch2,
                     context,
                 ),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::ReadableByteStreamTeeBranch1(tee_state) => promise_from_completion(
                 readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::ReadableByteStreamTeeBranch2(tee_state) => promise_from_completion(
                 readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::TransformStreamDefaultSourcePull(stream) => promise_from_completion(
                 transform_stream_default_source_pull_algorithm(stream.clone(), context)
                     .map(JsValue::from),
-                crate::js::context_as_ec(context),
+                ec,
             ),
         }
     }
@@ -119,42 +121,44 @@ impl CancelAlgorithm {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> JsPromise {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // readable_stream_from_iterable_cancel_algorithm and tee algorithms still take Context.
         let context = unsafe { crate::js::ec_to_ctx(ec) };
         match self {
             Self::ReturnUndefined => {
-                promise_from_completion(Ok(JsValue::undefined()), crate::js::context_as_ec(context))
+                promise_from_completion(Ok(JsValue::undefined()), ec)
             }
             Self::JavaScript(callback) => promise_from_completion(
-                callback.call(&[reason], context),
-                crate::js::context_as_ec(context),
+                crate::js::completion_to_js_result(callback.call(&[reason], ec)),
+                ec,
             ),
             Self::ReadableStreamFromIterable(state) => promise_from_completion(
                 readable_stream_from_iterable_cancel_algorithm(state.clone(), reason, context)
                     .map(JsValue::from),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::ReadableStreamDefaultTeeBranch1(tee_state) => promise_from_completion(
                 readable_stream_default_tee_cancel1_algorithm(tee_state.clone(), reason, context),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::ReadableStreamDefaultTeeBranch2(tee_state) => promise_from_completion(
                 readable_stream_default_tee_cancel2_algorithm(tee_state.clone(), reason, context),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::ReadableByteStreamTeeBranch1(tee_state) => promise_from_completion(
                 readable_byte_stream_tee_cancel1_algorithm(tee_state.clone(), reason, context)
                     .map(JsValue::from),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::ReadableByteStreamTeeBranch2(tee_state) => promise_from_completion(
                 readable_byte_stream_tee_cancel2_algorithm(tee_state.clone(), reason, context)
                     .map(JsValue::from),
-                crate::js::context_as_ec(context),
+                ec,
             ),
             Self::TransformStreamDefaultSourceCancel(stream) => promise_from_completion(
                 transform_stream_default_source_cancel_algorithm(stream.clone(), reason, context)
                     .map(JsValue::from),
-                crate::js::context_as_ec(context),
+                ec,
             ),
         }
     }
@@ -175,15 +179,17 @@ impl StartAlgorithm {
         controller_object: &JsObject,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsValue, BoaTypes> {
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
         let result: JsResult<JsValue> = match self {
             Self::ReturnUndefined => Ok(JsValue::undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
             Self::JavaScript(callback) => {
                 let arg = JsValue::from(controller_object.clone());
-                callback.call(&[arg], context)
+                crate::js::completion_to_js_result(callback.call(&[arg], ec))
             }
         };
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // js_result_to_completion wraps JsError -> JsValue via Boa's Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         crate::js::js_result_to_completion(result, context)
     }
 }
@@ -400,10 +406,7 @@ impl ReadableStreamDefaultController {
             }
 
             // Step 2.4: "Perform readRequest's chunk steps, given chunk."
-            return read_request.chunk_steps(chunk, context).map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            });
+            return read_request.chunk_steps(chunk, ec);
         }
 
         // Step 3.1: "Perform ! ReadableStreamAddReadRequest(stream, readRequest)."
@@ -599,11 +602,11 @@ impl ReadableStreamDefaultController {
                     }),
                 context,
             )?;
-            let chunk_size = match size_algorithm.size(&chunk, crate::js::context_as_ec(context)) {
+            let chunk_size = match size_algorithm.size(&chunk, ec) {
                 Ok(chunk_size) => chunk_size,
                 Err(error) => {
                     // Step 4.2.1: "Perform ! ReadableStreamDefaultControllerError(controller, result.[[Value]])."
-                    self.error_steps(error.clone(), crate::js::context_as_ec(context))?;
+                    self.error_steps(error.clone(), ec)?;
 
                     // Step 4.2.2: "Return result."
                     return Err(error);
@@ -614,16 +617,13 @@ impl ReadableStreamDefaultController {
 
             // Step 4.4: "Let enqueueResult be EnqueueValueWithSize(controller, chunk, chunkSize)."
             if !chunk_size.is_finite() || chunk_size < 0.0 {
-                let error = crate::js::js_result_to_completion(
-                    range_error_value(
-                        "queue strategy size must be a finite, non-negative number",
-                        context,
-                    ),
-                    context,
+                let error = range_error_value(
+                    "queue strategy size must be a finite, non-negative number",
+                    ec,
                 )?;
 
                 // Step 4.5.1: "Perform ! ReadableStreamDefaultControllerError(controller, enqueueResult.[[Value]])."
-                self.error_steps(error.clone(), crate::js::context_as_ec(context))?;
+                self.error_steps(error.clone(), ec)?;
 
                 // Step 4.5.2: "Return enqueueResult."
                 return Err(error);
