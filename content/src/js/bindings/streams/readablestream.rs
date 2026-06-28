@@ -519,7 +519,11 @@ pub(crate) fn values_method(
     })?;
 
     let iterator = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| {
-        create_value_async_iterator(stream.clone(), args, context)
+        crate::js::completion_to_js_result(create_value_async_iterator(
+            stream.clone(),
+            args,
+            crate::js::context_as_ec(context),
+        ))
     })??;
     Ok(JsValue::from(iterator))
 }

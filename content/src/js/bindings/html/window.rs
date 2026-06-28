@@ -1,8 +1,9 @@
 use boa_engine::{Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use std::marker::PhantomData;
 
+use crate::html::windowproxy::resolve_window;
 use crate::html::{
-    Location, Window, WindowOrWorkerGlobalScope, resolve_window,
+    Location, Window, WindowOrWorkerGlobalScope,
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
@@ -477,8 +478,8 @@ fn location_object(ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsObje
 ///
 /// Resolve the Window from a receiver that may be a Window or a WindowProxy.
 /// Delegates to the domain layer's `resolve_window`.
-fn current_window_object(this: &JsValue, context: &Context) -> JsObject {
-    resolve_window(this, context)
+fn current_window_object(this: &JsValue, ctx: &mut Context) -> JsObject {
+    resolve_window(this, crate::js::context_as_ec(ctx))
 }
 
 fn downcast_window(object: &JsObject) -> JsResult<boa_gc::GcRef<'_, Window>> {

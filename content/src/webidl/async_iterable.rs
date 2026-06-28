@@ -11,6 +11,8 @@ use boa_engine::{
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use super::promise::{rejected_promise, resolved_promise};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 #[derive(Clone, Trace, Finalize)]
 enum IteratorOperation {
@@ -59,20 +61,28 @@ pub(crate) trait AsyncValueIterable: Clone + Trace + Finalize + 'static {
 pub(crate) fn create_value_async_iterator<T>(
     target: T,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsObject>
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes>
 where
     T: AsyncValueIterable,
 {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Step 6: "Let iterator be a newly created default asynchronous iterator object for definition with idlObject as its target, \"value\" as its kind, and is finished set to false."
     // Step 7: "Run the asynchronous iterator initialization steps for definition with idlObject, iterator, and idlArgs, if any such steps exist."
     // Note: No current content-process async iterable needs the JavaScript iterator object's identity during initialization, so the interface-specific hook returns the iterator state before the wrapper object is allocated.
-    let state = target.create_async_iterator_state(args, context)?;
+    let state = crate::js::js_result_to_completion(
+        target.create_async_iterator_state(args, context),
+        context,
+    )?;
 
     let iterator = DefaultAsyncIterator::new(target, state);
 
     // Step 8: "Return iterator."
-    create_default_async_iterator_object(iterator, context)
+    crate::js::js_result_to_completion(
+        create_default_async_iterator_object(iterator, context),
+        context,
+    )
 }
 
 /// <https://webidl.spec.whatwg.org/#js-default-asynchronous-iterator-object>

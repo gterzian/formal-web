@@ -34,6 +34,7 @@ use boa_engine::{
 use crate::dom::DOMException;
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Traits for platform objects (bridge layer)
@@ -1415,18 +1416,26 @@ pub fn structured_deserialize_with_transfer(
 pub fn structured_clone(
     value: JsValue,
     options: Option<StructuredCloneOptions>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
+
     // Step 1: Let serialized be ? StructuredSerializeWithTransfer(value, options["transfer"]).
     let transfer = options
         .as_ref()
         .and_then(|o| o.transfer.clone())
         .unwrap_or_default();
-    let serialized = structured_serialize_with_transfer(&value, transfer, context)?;
+    let serialized = crate::js::js_result_to_completion(
+        structured_serialize_with_transfer(&value, transfer, context),
+        context,
+    )?;
 
     // Step 2: Let deserializeRecord be ? StructuredDeserializeWithTransfer(...).
-    let desc_result =
-        structured_deserialize_with_transfer(&serialized, &JsValue::undefined(), context)?;
+    let desc_result = crate::js::js_result_to_completion(
+        structured_deserialize_with_transfer(&serialized, &JsValue::undefined(), context),
+        context,
+    )?;
 
     // Step 3: Return deserializeRecord.[[Deserialized]].
     Ok(desc_result.deserialized)

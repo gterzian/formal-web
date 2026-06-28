@@ -156,20 +156,23 @@ pub(crate) fn compile_continuation(
     resolvers: &ResolvingFunctions,
     module: wasmtime::Module,
     bytes: Vec<u8>,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<(), BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Step 2.2.5.1: "Construct a WebAssembly module object from module, bytes,
     //                builtinSetNames, importedStringModule, and let moduleObject
     //                be the result."
     // Note: builtinSetNames and importedStringModule are not yet supported.
-    let module_proto = get_wasm_module_prototype(context)
+    let module_proto = get_wasm_module_prototype(crate::js::context_as_ec(context))
         .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
     let module_object =
         JsObject::from_proto_and_data(Some(module_proto), WasmModule::new(module, bytes));
     // Step 2.2.5.2: "Resolve promise with moduleObject."
     resolvers
         .resolve
-        .call(&JsValue::undefined(), &[module_object.into()], context)?;
+        .call(&JsValue::undefined(), &[module_object.into()], context)
+        .map_err(|error| error.into_opaque(context).unwrap_or(JsValue::undefined()))?;
     Ok(())
 }
 
@@ -177,14 +180,17 @@ pub(crate) fn compile_continuation(
 pub(crate) fn compile_rejection(
     resolvers: &ResolvingFunctions,
     message: String,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<(), BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Step 2.2.1: "If module is error, reject promise with a CompileError exception
     //              and return."
-    let error = create_compile_error(&message, context);
+    let error = create_compile_error(&message, crate::js::context_as_ec(context));
     resolvers
         .reject
-        .call(&JsValue::undefined(), &[error], context)?;
+        .call(&JsValue::undefined(), &[error], context)
+        .map_err(|error| error.into_opaque(context).unwrap_or(JsValue::undefined()))?;
     Ok(())
 }
 
@@ -194,17 +200,21 @@ pub(crate) fn instantiate_continuation(
     instance: &WasmtimeInstance,
     store: &Arc<Mutex<Store<()>>>,
     resolvers: &ResolvingFunctions,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<(), BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Note: Step 6.1.1 (instantiate the core) was already done by the worker.
     //
     // Step 6.1.2: "Let instanceObject be a new Instance."
     // Step 6.1.3: "Initialize instanceObject from module and instance."
-    let instance_object = initialize_an_instance_object(module, instance, store, context)?;
+    let instance_object =
+        initialize_an_instance_object(module, instance, store, crate::js::context_as_ec(context))?;
     // Step 6.1.4: "Resolve promise with instanceObject."
     resolvers
         .resolve
-        .call(&JsValue::undefined(), &[instance_object.into()], context)?;
+        .call(&JsValue::undefined(), &[instance_object.into()], context)
+        .map_err(|error| error.into_opaque(context).unwrap_or(JsValue::undefined()))?;
     Ok(())
 }
 
@@ -213,24 +223,31 @@ fn initialize_an_instance_object(
     module: &Module,
     instance: &WasmtimeInstance,
     store: &Arc<Mutex<Store<()>>>,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Step 1: "Create an exports object from module and instance and let exportsObject be the result."
     let mut store_guard = store.lock().unwrap();
-    let exports_object =
-        create_an_exports_object(module, instance, &mut *store_guard, store, context)?;
+    let exports_object = create_an_exports_object(
+        module,
+        instance,
+        &mut *store_guard,
+        store,
+        crate::js::context_as_ec(context),
+    )?;
     drop(store_guard);
 
     // Step 2: "Set instanceObject.[[Instance]] to instance."
     // Step 3: "Set instanceObject.[[Exports]] to exportsObject."
     // These are both done by constructing the WasmInstance with those fields.
-    let instance_proto = get_wasm_instance_prototype(context)
+    let instance_proto = get_wasm_instance_prototype(crate::js::context_as_ec(context))
         .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
     let instance_object = JsObject::from_proto_and_data(
         Some(instance_proto),
         WasmInstance::new(exports_object, Arc::clone(store), *instance),
     );
-    Ok(instance_object)
+    crate::js::js_result_to_completion(Ok(instance_object), context)
 }
 
 // ── Exports object ──
@@ -241,8 +258,10 @@ pub(crate) fn create_an_exports_object(
     instance: &WasmtimeInstance,
     store: &mut Store<()>,
     store_arc: &Arc<Mutex<Store<()>>>,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsObject, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Step 1: "Let exportsObject be ! OrdinaryObjectCreate(null)."
     let exports_object = JsObject::from_proto_and_data(None, ());
 
@@ -261,24 +280,25 @@ pub(crate) fn create_an_exports_object(
             wasmtime::Extern::Func(func) => {
                 // Steps 2.3.x:  "Let func be the result of creating a new
                 //                Exported Function from funcaddr."
-                crate::js::completion_to_js_result(create_exported_function_wrapper(
+                create_exported_function_wrapper(
                     *func,
                     Arc::clone(store_arc),
                     crate::js::context_as_ec(context),
-                ))?
+                )?
             }
             _ => JsValue::undefined(),
         };
         // Step 2.8: "Let status be ! CreateDataProperty(exportsObject, name, value)."
         exports_object
             .set(js_string!(name.as_str()), value, false, context)
-            .map_err(|_| JsNativeError::typ().with_message("failed to set export property"))?;
+            .map_err(|_| JsNativeError::typ().with_message("failed to set export property"))
+            .map_err(|error| crate::js::native_error_to_js_value(error, context))?;
     }
     // Step 3: "Perform ! SetIntegrityLevel(exportsObject, "frozen")."
     // Note: Boa does not expose SetIntegrityLevel directly; skip for now.
     //
     // Step 4: "Return exportsObject."
-    Ok(exports_object)
+    crate::js::js_result_to_completion(Ok(exports_object), context)
 }
 
 /// Return `(name, externval)` pairs for all exports of an instantiated module.
@@ -349,7 +369,8 @@ fn create_exported_function_wrapper(
 
 // ── Helpers ──
 
-fn get_wasm_module_prototype(context: &mut Context) -> Option<JsObject> {
+fn get_wasm_module_prototype(ec: &mut dyn ExecutionContext<BoaTypes>) -> Option<JsObject> {
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     let ns = context
         .global_object()
         .get(js_string!("WebAssembly"), context)
@@ -363,7 +384,8 @@ fn get_wasm_module_prototype(context: &mut Context) -> Option<JsObject> {
         .and_then(|p| p.as_object().map(|o| o.clone()))
 }
 
-fn get_wasm_instance_prototype(context: &mut Context) -> Option<JsObject> {
+fn get_wasm_instance_prototype(ec: &mut dyn ExecutionContext<BoaTypes>) -> Option<JsObject> {
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     let ns = context
         .global_object()
         .get(js_string!("WebAssembly"), context)
@@ -377,7 +399,8 @@ fn get_wasm_instance_prototype(context: &mut Context) -> Option<JsObject> {
         .and_then(|p| p.as_object().map(|o| o.clone()))
 }
 
-fn create_compile_error(message: &str, context: &mut Context) -> JsValue {
+fn create_compile_error(message: &str, ec: &mut dyn ExecutionContext<BoaTypes>) -> JsValue {
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Use the registered CompileError constructor on the WebAssembly namespace.
     if let Ok(ns) = context
         .global_object()

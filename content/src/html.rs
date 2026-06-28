@@ -50,8 +50,6 @@ pub(crate) use location::LocationError;
 pub use window::Window;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
-pub(crate) use windowproxy::create_window_proxy;
-pub(crate) use windowproxy::resolve_window;
 
 use blitz_dom::{BaseDocument, DocumentConfig};
 use std::{cell::RefCell, rc::Rc};

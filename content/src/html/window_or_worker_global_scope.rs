@@ -18,12 +18,7 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         options: Option<StructuredCloneOptions>,
         ec: &mut dyn ExecutionContext<BoaTypes>,
     ) -> Completion<JsValue, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-        crate::js::js_result_to_completion(
-            safe_passing_of_structured_data::structured_clone(value, options, context),
-            context,
-        )
+        safe_passing_of_structured_data::structured_clone(value, options, ec)
     }
 
     /// <https://html.spec.whatwg.org/#dom-settimeout>

@@ -14,6 +14,7 @@ use crate::dom::event::EventTarget;
 use crate::webidl::Callback;
 
 use super::resolved_style_properties_for_element;
+use super::windowproxy::create_window_proxy;
 use super::{GlobalScope, the_rules_for_choosing_a_navigable};
 
 /// <https://html.spec.whatwg.org/#window>
@@ -294,7 +295,7 @@ pub(crate) fn window_open_steps(
     let window = result
         .return_window
         .expect("window_open_steps: all navigable branches set a return window");
-    crate::js::js_result_to_completion(crate::html::create_window_proxy(&window, context), context)
+    create_window_proxy(&window, crate::js::context_as_ec(context))
 }
 
 /// <https://html.spec.whatwg.org/#get-noopener-for-window-open>

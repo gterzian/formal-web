@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
 use boa_engine::JsData;
-use boa_engine::{Context, JsResult, JsValue};
+use boa_engine::JsValue;
 use boa_gc::{Finalize, Trace};
 use log::{debug, error};
 
@@ -12,6 +12,8 @@ use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
 use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::media::VideoPaintId;
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 /// <https://html.spec.whatwg.org/#media-elements>
 #[derive(Trace, Finalize, JsData)]
@@ -158,12 +160,12 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-src>
-    pub(crate) fn set_src(&mut self, src: &str, context: &mut Context) {
+    pub(crate) fn set_src(&mut self, src: &str, ec: &mut dyn ExecutionContext<BoaTypes>) {
         // Step 1: Set this's src content attribute to the given value.
         self.html_element.element.set_attribute("src", src);
 
         // Step 2: Invoke the element's media element load algorithm.
-        self.media_element_load_algorithm(context);
+        self.media_element_load_algorithm(ec);
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-currentsrc>
@@ -226,7 +228,7 @@ impl HTMLMediaElement {
     /// are no-ops until promise-based play() and the media element event task source
     /// are implemented.  Step 6 (abort event for NETWORK_LOADING/IDLE) is deferred
     /// to event dispatch.
-    pub(crate) fn media_element_load_algorithm(&mut self, context: &mut Context) {
+    pub(crate) fn media_element_load_algorithm(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
         // Step 1: Set this element's is currently stalled to false.
         self.is_currently_stalled = false;
 
@@ -300,14 +302,16 @@ impl HTMLMediaElement {
         self.can_autoplay = true;
 
         // Step 10: Invoke the resource selection algorithm.
-        self.resource_selection_algorithm(context);
+        self.resource_selection_algorithm(ec);
 
         // Step 11: Playback of any previously playing media resource stops.
         // Note: No-op — no active playback in the initial cut.
     }
 
     /// <https://html.spec.whatwg.org/#resource-selection-algorithm>
-    pub(crate) fn resource_selection_algorithm(&mut self, context: &mut Context) {
+    pub(crate) fn resource_selection_algorithm(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         // Step 1: Set networkState to NETWORK_NO_SOURCE.
         self.network_state = Self::NETWORK_NO_SOURCE;
 
@@ -527,7 +531,10 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-play>
-    pub(crate) fn play(&mut self, context: &mut Context) -> JsResult<JsValue> {
+    pub(crate) fn play(
+        &mut self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsValue, BoaTypes> {
         // Step 1: If the media element is not allowed to play, then return
         // a promise rejected with a "NotAllowedError" DOMException.
         // Note: Simplified — always allowed to play for now.
@@ -543,26 +550,23 @@ impl HTMLMediaElement {
 
         // Step 5: Let promise be a new promise and append promise to the
         // list of pending play promises.
-        let promise = crate::js::completion_to_js_result(resolved_promise(
-            JsValue::undefined(),
-            crate::js::context_as_ec(context),
-        ))?;
+        let promise = resolved_promise(JsValue::undefined(), ec)?.into();
         // Note: The list of pending play promises is not yet tracked.
 
         // Step 6: Run the internal play steps for the media element.
-        self.internal_play_steps(context);
+        self.internal_play_steps(ec);
 
         // Step 7: Return promise.
-        Ok(JsValue::from(promise))
+        Ok(promise)
     }
 
     /// <https://html.spec.whatwg.org/#internal-play-steps>
-    pub(crate) fn internal_play_steps(&mut self, context: &mut Context) {
+    pub(crate) fn internal_play_steps(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
         // Step 1: If the media element's networkState attribute has the
         // value NETWORK_EMPTY, invoke the media element's resource
         // selection algorithm.
         if self.network_state == Self::NETWORK_EMPTY {
-            self.resource_selection_algorithm(context);
+            self.resource_selection_algorithm(ec);
         }
 
         // Step 2: If the playback has ended and the direction of playback
@@ -600,12 +604,12 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-pause>
-    pub(crate) fn pause(&mut self, context: &mut Context) {
+    pub(crate) fn pause(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
         // Step 1: If the media element's networkState attribute has the
         // value NETWORK_EMPTY, invoke the media element's resource
         // selection algorithm.
         if self.network_state == Self::NETWORK_EMPTY {
-            self.resource_selection_algorithm(context);
+            self.resource_selection_algorithm(ec);
         }
 
         // Step 2: Run the internal pause steps for the media element.
@@ -637,12 +641,12 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#dom-media-load>
     #[allow(dead_code)]
-    pub(crate) fn load(&mut self, context: &mut Context) {
+    pub(crate) fn load(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
         // Step 1: Let resumptionSteps be the media element's lazy load resumption steps.
         // Step 2: If resumptionSteps is not null, set to null and invoke resumptionSteps.
         // Note: Lazy load resumption steps are not yet implemented — always null.
 
         // Step 3: Run the media element load algorithm.
-        self.media_element_load_algorithm(context);
+        self.media_element_load_algorithm(ec);
     }
 }
