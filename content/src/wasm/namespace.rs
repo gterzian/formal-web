@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue, builtins::promise::ResolvingFunctions, js_string,
-    native_function::NativeFunction, object::FunctionObjectBuilder, object::JsObject,
+    Context, JsError, JsNativeError, JsResult, JsValue, builtins::promise::ResolvingFunctions,
+    js_string, native_function::NativeFunction, object::FunctionObjectBuilder, object::JsObject,
 };
 use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 
@@ -12,6 +12,8 @@ use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
 use crate::webidl::a_new_promise;
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 // ── Namespace operations ──
 
@@ -27,18 +29,26 @@ pub(crate) fn validate_wasm_module(stable_bytes: &[u8]) -> bool {
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 pub(crate) fn asynchronously_compile_a_webassembly_module(
     stable_bytes: Vec<u8>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     // Note: "Let stableBytes be a copy of the bytes held by the buffer bytes"
     // was already executed by the bindings layer.
     //
     // Step 1: "Let promise be a new promise."
-    let (promise, resolvers) = a_new_promise(crate::js::context_as_ec(context));
+    let (promise, resolvers) = a_new_promise(ec);
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Step 2: "Run the following steps in parallel:"
     let global = context.global_object();
-    let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("WebAssembly: global object is not a Window")
-    })?;
+    let window = match global.downcast_ref::<Window>() {
+        Some(w) => w,
+        None => {
+            return Err(crate::js::native_error_to_js_value(
+                JsNativeError::typ().with_message("WebAssembly: global object is not a Window"),
+                context,
+            ));
+        }
+    };
     let request_id = window.global_scope.next_wasm_request_id();
     window
         .global_scope
@@ -58,10 +68,12 @@ pub(crate) fn asynchronously_compile_a_webassembly_module(
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-instantiate-a-webassembly-module>
 pub(crate) fn asynchronously_instantiate_a_webassembly_module(
     wasm_module: &WasmModule,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     // Step 1: "Let promise be a new promise."
-    let (promise, resolvers) = a_new_promise(crate::js::context_as_ec(context));
+    let (promise, resolvers) = a_new_promise(ec);
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     // Step 2: "Let module be moduleObject.[[Module]]."
     let module = wasm_module.module.clone();
     //
@@ -70,9 +82,15 @@ pub(crate) fn asynchronously_instantiate_a_webassembly_module(
     //
     // Step 6: "Run the following steps in parallel:"
     let global = context.global_object();
-    let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("WebAssembly: global object is not a Window")
-    })?;
+    let window = match global.downcast_ref::<Window>() {
+        Some(w) => w,
+        None => {
+            return Err(crate::js::native_error_to_js_value(
+                JsNativeError::typ().with_message("WebAssembly: global object is not a Window"),
+                context,
+            ));
+        }
+    };
     let request_id = window.global_scope.next_wasm_request_id();
     window
         .global_scope
@@ -89,7 +107,10 @@ pub(crate) fn asynchronously_instantiate_a_webassembly_module(
 }
 
 /// <https://webassembly.github.io/spec/js-api/#dom-webassembly-instantiate>
-pub(crate) fn instantiate_bytes(stable_bytes: Vec<u8>, context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn instantiate_bytes(
+    stable_bytes: Vec<u8>,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
     // Note: Step 1 ("Let stableBytes be a copy of the bytes held by the buffer bytes")
     // was already executed by the bindings layer.
     //
@@ -100,11 +121,19 @@ pub(crate) fn instantiate_bytes(stable_bytes: Vec<u8>, context: &mut Context) ->
     // is_instantiate: true, because the compile and instantiate phases run
     // sequentially in the worker and the content process resolves the promise
     // after both complete.
-    let (promise, resolvers) = a_new_promise(crate::js::context_as_ec(context));
+    let (promise, resolvers) = a_new_promise(ec);
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     let global = context.global_object();
-    let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsNativeError::error().with_message("WebAssembly: global object is not a Window")
-    })?;
+    let window = match global.downcast_ref::<Window>() {
+        Some(w) => w,
+        None => {
+            return Err(crate::js::native_error_to_js_value(
+                JsNativeError::typ().with_message("WebAssembly: global object is not a Window"),
+                context,
+            ));
+        }
+    };
     let request_id = window.global_scope.next_wasm_request_id();
     window
         .global_scope
@@ -232,7 +261,11 @@ pub(crate) fn create_an_exports_object(
             wasmtime::Extern::Func(func) => {
                 // Steps 2.3.x:  "Let func be the result of creating a new
                 //                Exported Function from funcaddr."
-                create_exported_function_wrapper(*func, Arc::clone(store_arc), context)?
+                crate::js::completion_to_js_result(create_exported_function_wrapper(
+                    *func,
+                    Arc::clone(store_arc),
+                    crate::js::context_as_ec(context),
+                ))?
             }
             _ => JsValue::undefined(),
         };
@@ -270,8 +303,10 @@ fn instance_export_list(
 fn create_exported_function_wrapper(
     func: Func,
     store: Arc<Mutex<Store<()>>>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+) -> Completion<JsValue, BoaTypes> {
+    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    let context = unsafe { crate::js::ec_to_ctx(ec) };
     let js_func = unsafe {
         NativeFunction::from_closure(
             move |_this: &JsValue, args: &[JsValue], context: &mut Context| -> JsResult<JsValue> {
@@ -282,7 +317,9 @@ fn create_exported_function_wrapper(
                     .enumerate()
                     .map(|(i, param_type)| {
                         let js_arg = args.get(i).cloned().unwrap_or(JsValue::undefined());
-                        js_val_to_wasm_val(&js_arg, &param_type, context)
+                        let ec = crate::js::context_as_ec(context);
+                        js_val_to_wasm_val(&js_arg, &param_type, ec)
+                            .map_err(|err_val| JsError::from_opaque(err_val))
                     })
                     .collect::<Result<_, _>>()?;
                 let mut results: Vec<wasmtime::Val> = func_type
@@ -294,7 +331,9 @@ fn create_exported_function_wrapper(
                         JsNativeError::error().with_message(format!("WebAssembly trap: {}", error))
                     })?;
                 if results.len() == 1 {
-                    wasm_val_to_js_value(&results[0], context)
+                    let ec = crate::js::context_as_ec(context);
+                    wasm_val_to_js_value(&results[0], ec)
+                        .map_err(|err_val| JsError::from_opaque(err_val))
                 } else {
                     Err(JsNativeError::error()
                         .with_message("multiple wasm results not yet supported")

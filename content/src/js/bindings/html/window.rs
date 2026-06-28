@@ -189,18 +189,14 @@ fn structured_clone_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
+    let window_object = current_window_object(this, ctx);
+    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
 
-        let value = args.get_or_undefined(0).clone();
-        let options = args.get(1).and_then(parse_structured_clone_options);
+    let value = args.get_or_undefined(0).clone();
+    let options = args.get(1).and_then(parse_structured_clone_options);
 
-        window.structured_clone(value, options, ctx)
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    window.structured_clone(value, options, ec)
 }
 
 fn parse_structured_clone_options(value: &JsValue) -> Option<StructuredCloneOptions> {
@@ -216,30 +212,29 @@ fn open_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let url = args
-            .get(0)
-            .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
-            .transpose()?
-            .unwrap_or_default();
-        let target = args
-            .get(1)
-            .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
-            .transpose()?
-            .unwrap_or_default();
-        let features = args
-            .get(2)
-            .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
-            .transpose()?
-            .unwrap_or_default();
+    let url = args
+        .get(0)
+        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
+        .transpose()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()))?
+        .unwrap_or_default();
+    let target = args
+        .get(1)
+        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
+        .transpose()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()))?
+        .unwrap_or_default();
+    let features = args
+        .get(2)
+        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
+        .transpose()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()))?
+        .unwrap_or_default();
 
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
-        window.open(&url, &target, &features, ctx)
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let window_object = current_window_object(this, ctx);
+    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    window.open(&url, &target, &features, ec)
 }
 
 fn request_animation_frame_method(
@@ -372,19 +367,15 @@ fn set_timeout_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
-        Ok(JsValue::from(window.set_timeout(
-            args.get_or_undefined(0),
-            args.get_or_undefined(1),
-            args.iter().skip(2).cloned().collect(),
-            ctx,
-        )?))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let window_object = current_window_object(this, ctx);
+    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    Ok(JsValue::from(window.set_timeout(
+        args.get_or_undefined(0),
+        args.get_or_undefined(1),
+        args.iter().skip(2).cloned().collect(),
+        ec,
+    )?))
 }
 
 fn clear_timeout_method(
@@ -392,16 +383,12 @@ fn clear_timeout_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let timer_id = args.get_or_undefined(0).to_u32(ctx)?;
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
-        window.clear_timeout(timer_id);
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let timer_id = crate::js::js_result_to_completion(args.get_or_undefined(0).to_u32(ctx), ctx)?;
+    let window_object = current_window_object(this, ctx);
+    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    window.clear_timeout(timer_id);
+    Ok(JsValue::undefined())
 }
 
 fn set_interval_method(
@@ -409,19 +396,15 @@ fn set_interval_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
-        Ok(JsValue::from(window.set_interval(
-            args.get_or_undefined(0),
-            args.get_or_undefined(1),
-            args.iter().skip(2).cloned().collect(),
-            ctx,
-        )?))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let window_object = current_window_object(this, ctx);
+    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    Ok(JsValue::from(window.set_interval(
+        args.get_or_undefined(0),
+        args.get_or_undefined(1),
+        args.iter().skip(2).cloned().collect(),
+        ec,
+    )?))
 }
 
 fn clear_interval_method(
@@ -429,16 +412,12 @@ fn clear_interval_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let timer_id = args.get_or_undefined(0).to_u32(ctx)?;
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
-        window.clear_interval(timer_id);
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let timer_id = crate::js::js_result_to_completion(args.get_or_undefined(0).to_u32(ctx), ctx)?;
+    let window_object = current_window_object(this, ctx);
+    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    window.clear_interval(timer_id);
+    Ok(JsValue::undefined())
 }
 
 fn get_computed_style_method(

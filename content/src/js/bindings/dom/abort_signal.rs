@@ -188,18 +188,18 @@ pub(crate) fn timeout_static(
             JsNativeError::typ().with_message("AbortSignal.timeout() requires a Window global")
         })
         .map_err(|e| {
-            JsError::from(e)
-                .into_opaque(ctx)
-                .unwrap_or(value_undefined.clone())
+            let js_error: JsError = JsError::from(e);
+            js_error.into_opaque(ctx).unwrap_or(value_undefined.clone())
         })?;
-    let _ = window
-        .set_timeout(
-            &JsValue::from(callback),
-            &JsValue::from(milliseconds as f64),
-            Vec::new(),
-            ctx,
-        )
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined.clone()))?;
+    // Use context_as_ec to get ec from ctx for the set_timeout call,
+    // avoiding a double borrow on the original ec.
+    let ec_ref = crate::js::context_as_ec(ctx);
+    window.set_timeout(
+        &JsValue::from(callback),
+        &JsValue::from(milliseconds as f64),
+        Vec::new(),
+        ec_ref,
+    )?;
 
     Ok(JsValue::from(signal.object().map_err(|e| {
         e.into_opaque(ctx).unwrap_or(value_undefined)

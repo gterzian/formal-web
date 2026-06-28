@@ -311,7 +311,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 ### What's still Boa-concrete
 
 - **Binding function bodies** use `ec_to_ctx(ec)` to cast back to `&mut Context` for Boa-specific operations (`JsObject::get`, `JsValue::to_number`, `JsNativeError::into_opaque`, etc.). The bodies are in the new signature but internally bridge to Boa.
-- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all), `streams/readablestreamdefaultcontroller.rs` (all, ~22 methods + 3 algorithm enums + all callers bridged), `streams/writablestream.rs` (all public methods, constructors, free functions; all NativeFunction closures replaced with `upon_settlement`), `streams/writablestreamsupport.rs` (`WriteRequest`/`PendingAbortRequest` resolve/reject take EC), `streams/readablestreamsupport.rs` (`SourceMethod`, `ReadIntoRequest`, `ReadRequest`, `create_read_result`, `type_error_value`, `range_error_value`, `rejected_type_error_promise` take EC; `queue_internal_stream_microtask` intentionally left with `&mut Context` as it bridges to Boa's job system).
+- **Domain code** (DOM, HTML, WebAssembly, streams internals) still takes `&mut Context` directly in some places. Stream-domain public APIs and most helpers have been bridged: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all), `streams/readablestreamdefaultcontroller.rs` (all, ~22 methods + 3 algorithm enums + all callers bridged), `streams/writablestream.rs` (all public methods, constructors, free functions; all NativeFunction closures replaced with `upon_settlement`), `streams/writablestreamsupport.rs` (`WriteRequest`/`PendingAbortRequest` resolve/reject take EC), `streams/readablestreamsupport.rs` (`SourceMethod`, `ReadIntoRequest`, `ReadRequest`, `create_read_result`, `type_error_value`, `range_error_value`, `rejected_type_error_promise` take EC; `queue_internal_stream_microtask` intentionally left with `&mut Context` as it bridges to Boa's job system).
 - **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 
@@ -341,14 +341,22 @@ Content crate compiles cleanly.
 
 **Remaining domain files** (still take `&mut Context` directly):
 
-1. **DOM** (2 files): `dispatch.rs`, `event.rs`
+1. **DOM** (2 files): `dispatch.rs`, `event.rs` — both already converted (0 `Context` params)
 
-3. **HTML** (7 files): `window.rs`, `location.rs`, `html_media_element.rs`, `environment_settings_object.rs`,
-   `window_or_worker_global_scope.rs`, `windowproxy.rs`, `safe_passing_of_structured_data.rs`
+2. **HTML** (7 files):
+   - ✅ `window.rs` — fully converted
+   - ✅ `location.rs` — already converted (0 `Context` params)
+   - `html_media_element.rs` — 7 Context params
+   - ✅ `environment_settings_object.rs` — already converted (0 `Context` params)
+   - ✅ `window_or_worker_global_scope.rs` — fully converted
+   - `windowproxy.rs` — 12 Context params
+   - `safe_passing_of_structured_data.rs` — 22 Context params
 
-4. **WebAssembly** (2 files): `namespace.rs`, `conversions.rs`
+3. **WebAssembly** (2 files):
+   - ✅ `conversions.rs` — fully converted
+   - `namespace.rs` — 3 public functions converted; 9 internal remain
 
-5. **Web IDL** (1 file): `async_iterable.rs`
+4. **Web IDL** (1 file): `async_iterable.rs` — 14 Context params
 
 ### Step 2: Remove remaining `ContextEventDispatchHost` adapters
 
@@ -402,19 +410,22 @@ If resuming this work in another session, start here.  The current checkpoint ha
 58 compilation errors (`cargo check -p content`), all in `readablestream.rs` and
 `readablebytestreamcontroller.rs`.
 
-### Next-step session resume: continue domain threading (DOM, HTML, WebAssembly)
+### Next-step session resume: continue domain threading
 
-The streams domain is fully bridged.  The remaining files still take
-`&mut Context` directly and need the same `context_as_ec` bridging pattern
-at call sites where they invoke already-converted functions.
+**Progress summary:** `window.rs`, `window_or_worker_global_scope.rs`,
+`conversions.rs`, and 3 public wasm namespace functions converted to take
+`ec: &mut dyn ExecutionContext<BoaTypes>` and return `Completion`.  JS
+bindings for `open`, `setTimeout`, `setInterval`, `clearTimeout`,
+`clearInterval`, `structuredClone`, `WebAssembly.compile`,
+`WebAssembly.instantiate`, and `AbortSignal.timeout` updated to pass `ec`
+directly (no more `ec_to_ctx` bridge for those calls).
 
-Files to convert:
-- DOM: `dispatch.rs`, `event.rs`
-- HTML: `window.rs`, `location.rs`, `html_media_element.rs`,
-  `environment_settings_object.rs`, `window_or_worker_global_scope.rs`,
-  `windowproxy.rs`, `safe_passing_of_structured_data.rs`
-- WebAssembly: `namespace.rs`, `conversions.rs`
-- Web IDL: `async_iterable.rs`
+Files still to convert:
+- `html_media_element.rs` (7 Context params)
+- `windowproxy.rs` (12 Context params)
+- `safe_passing_of_structured_data.rs` (22 Context params)
+- `namespace.rs` — remaining 9 internal functions
+- `async_iterable.rs` (14 Context params)
 
 **Bridging patterns** (established during streams conversion):
 
@@ -433,8 +444,38 @@ Files to convert:
    - Create `ec_ref` via `context_as_ec(context)` after all `context`-only ops
    - Use `ec_ref` for EC calls
    - If a closure captures `context`, use `match` + early return instead of `ok_or_else`
+   - **New pattern:** Use `context_as_ec(ctx)` to get a separate `ec_ref` from the
+     existing `ctx` borrow, rather than trying to drop `ctx` and reuse `ec`.
+     This avoids borrow conflicts when `ctx` is still needed after the EC call.
+     Example:
+     ```rust
+     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+     let window = global.downcast_ref::<Window>()...;
+     // ctx is alive, can't use ec directly
+     let ec_ref = crate::js::context_as_ec(ctx);
+     window.set_timeout(..., ec_ref)?;
+     // ok to use either ref now
+     ```
 
 4. **`ok_or_else(|| JsNativeError::typ()...)?` in Completion functions:**
    Wrap the error in `native_error_to_js_value` or use `match` pattern.
+
+5. **Binding function cleanup:** When converting a binding that previously used
+   the `ec_to_ctx` + closure + `map_err` sandwich pattern, remove the closure
+   and `map_err` entirely.  Extract args with JS-specific helpers (still need
+   `ctx`), then call the domain function with `ec` directly.  Drop `ctx` before
+   passing `ec` if needed:
+   ```rust
+   // Before
+   let ctx = unsafe { ec_to_ctx(ec) };
+   (|| -> JsResult<JsValue> { ...; domain_method(ctx) })()
+       .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+   
+   // After
+   let ctx = unsafe { ec_to_ctx(ec) };
+   let window = js_result_to_completion(downcast_window(...), ctx)?;
+   let args = extract_args_with_ctx(ctx);
+   window.domain_method(ec)  // ec is free because ctx no longer used
+   ```
 
 **Verification**: `cargo check -p content` after each file group.

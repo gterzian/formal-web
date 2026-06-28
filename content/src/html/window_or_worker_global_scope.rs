@@ -1,4 +1,6 @@
 use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue};
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 use crate::html::{GlobalScope, TimerHandler, Window};
 use crate::webidl::Callback;
@@ -14,9 +16,14 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         &self,
         value: JsValue,
         options: Option<StructuredCloneOptions>,
-        context: &mut Context,
-    ) -> JsResult<JsValue> {
-        safe_passing_of_structured_data::structured_clone(value, options, context)
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsValue, BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        crate::js::js_result_to_completion(
+            safe_passing_of_structured_data::structured_clone(value, options, context),
+            context,
+        )
     }
 
     /// <https://html.spec.whatwg.org/#dom-settimeout>
@@ -25,17 +32,13 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         handler: &JsValue,
         timeout: &JsValue,
         arguments: Vec<JsValue>,
-        context: &mut Context,
-    ) -> JsResult<u32> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<u32, BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and false."
-        self.timer_initialization_steps(
-            timer_handler(handler, context)?,
-            timeout,
-            arguments,
-            false,
-            None,
-            context,
-        )
+        let handler = crate::js::js_result_to_completion(timer_handler(handler, context), context)?;
+        self.timer_initialization_steps(handler, timeout, arguments, false, None, ec)
     }
 
     /// <https://html.spec.whatwg.org/#dom-setinterval>
@@ -44,17 +47,13 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         handler: &JsValue,
         timeout: &JsValue,
         arguments: Vec<JsValue>,
-        context: &mut Context,
-    ) -> JsResult<u32> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<u32, BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and true."
-        self.timer_initialization_steps(
-            timer_handler(handler, context)?,
-            timeout,
-            arguments,
-            true,
-            None,
-            context,
-        )
+        let handler = crate::js::js_result_to_completion(timer_handler(handler, context), context)?;
+        self.timer_initialization_steps(handler, timeout, arguments, true, None, ec)
     }
 
     /// <https://html.spec.whatwg.org/#dom-cleartimeout>
@@ -77,8 +76,10 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         arguments: Vec<JsValue>,
         repeat: bool,
         previous_id: Option<u32>,
-        context: &mut Context,
-    ) -> JsResult<u32> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<u32, BoaTypes> {
+        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        let context = unsafe { crate::js::ec_to_ctx(ec) };
         // Step 1: "If method context is a Window object, then let thisArg be method context's WindowProxy object; otherwise let thisArg be method context."
         // Note: The callback invocation path always uses the current global object as `this`, so the Window case is implicit in the stored registration.
 
@@ -92,7 +93,8 @@ pub(crate) trait WindowOrWorkerGlobalScope {
             .unwrap_or(0);
 
         // Step 4: "Set timeout to the result of converting timeout to an IDL long."
-        let mut timeout_ms = timeout_ms(timeout, context)?;
+        let mut timeout_ms =
+            crate::js::js_result_to_completion(timeout_ms(timeout, context), context)?;
 
         // Step 5: "If timeout is less than 0, then set timeout to 0."
         // Note: `timeout_ms` already clamps negative values to zero during the IDL conversion.
@@ -124,7 +126,12 @@ pub(crate) trait WindowOrWorkerGlobalScope {
                 timeout_ms,
                 task_nesting_level,
             )
-            .map_err(internal_error)
+            .map_err(|message| {
+                let js_error: JsError = JsError::from(JsNativeError::typ().with_message(message));
+                js_error
+                    .into_opaque(context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
 }
 
@@ -154,8 +161,4 @@ fn timeout_ms(value: &JsValue, context: &mut Context) -> JsResult<u32> {
         return Ok(0);
     }
     Ok(timeout.floor().min(i32::MAX as f64) as u32)
-}
-
-fn internal_error(message: String) -> JsError {
-    JsError::from(JsNativeError::typ().with_message(message))
 }
