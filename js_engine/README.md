@@ -266,7 +266,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 | 6a. CtxHost removal | `CtxHost` adapters in `strategy.rs` and `readablestreamsupport.rs` removed. `invoke_callback_function` and `call_user_objects_operation` take `&mut dyn EcmascriptHost<BoaTypes>` instead of `&mut impl EcmascriptHost<BoaTypes>`. `SourceMethod::call` and `SizeAlgorithm::size` use `context_as_ec` internally instead of local `CtxHost`. | ✅ |
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
-| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. `writablestreamdefaultwriter.rs`, `writablestreamdefaultcontroller.rs`, foundational helpers, and strategy trait methods done. | 🔄 (continue with remaining stream files) |
+| 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Promise helpers, buffer_source, dispatch/abort code use EC trait methods. `writablestreamdefaultwriter.rs`, `writablestreamdefaultcontroller.rs`, `readablestreamdefaultreader.rs` (including shared `ReadableStreamGenericReader` trait), `readablestreambyobreader.rs`, foundational helpers, and strategy trait methods done. | 🔄 (continue with remaining stream files) |
 | 8. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
 | 9. JSC parity | Missing JSC methods implemented | ❌ |
 
@@ -288,7 +288,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 ### What's still Boa-concrete
 
 - **Binding function bodies** use `ec_to_ctx(ec)` to cast back to `&mut Context` for Boa-specific operations (`JsObject::get`, `JsValue::to_number`, `JsNativeError::into_opaque`, etc.). The bodies are in the new signature but internally bridge to Boa.
-- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all).
+- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all).
 - **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 
@@ -319,6 +319,8 @@ converted.
 - `webidl/promise.rs`: 9 functions + all ~40 call sites
 - `webidl/buffer_source.rs`: 2 functions, 4 call sites
 - `streams/writablestreamdefaultcontroller.rs`: ~20 functions + all callers bridged
+- `streams/readablestreamdefaultreader.rs`: ~14 functions + shared `ReadableStreamGenericReader` trait + all callers bridged
+- `streams/readablestreambyobreader.rs`: ~10 functions + all callers bridged
 
 **Recommended order** (smallest/most self-contained first):
 
@@ -343,8 +345,8 @@ converted.
 
 2. **Streams** — convert the remaining stream files:
    - ~~`writablestreamdefaultcontroller.rs`~~ — ✅ ~20 functions + all callers bridged
-   - `readablestreamdefaultreader.rs` (~14 functions)
-   - `readablestreambyobreader.rs` (~10 functions)
+   - ~~`readablestreamdefaultreader.rs`~~ — ✅ ~14 functions + shared `ReadableStreamGenericReader` trait + all callers bridged
+   - ~~`readablestreambyobreader.rs`~~ — ✅ ~10 functions + all callers bridged
    - `readablestreamdefaultcontroller.rs` (largest: ~40 instances)
    - `writablestream.rs` (~25 functions)
    - `readablestream.rs` (largest: ~80 instances)

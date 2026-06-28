@@ -189,16 +189,25 @@ impl ReadableStream {
 
         // Step 1: "If options[\"mode\"] does not exist, return ? AcquireReadableStreamDefaultReader(this)."
         let Some(options_object) = options_object else {
-            return acquire_readable_stream_default_reader(self.clone(), context);
+            return crate::js::completion_to_js_result(acquire_readable_stream_default_reader(
+                self.clone(),
+                crate::js::context_as_ec(context),
+            ));
         };
 
         if !options_object.has_property(js_string!("mode"), context)? {
-            return acquire_readable_stream_default_reader(self.clone(), context);
+            return crate::js::completion_to_js_result(acquire_readable_stream_default_reader(
+                self.clone(),
+                crate::js::context_as_ec(context),
+            ));
         }
 
         let mode = options_object.get(js_string!("mode"), context)?;
         if mode.is_undefined() {
-            return acquire_readable_stream_default_reader(self.clone(), context);
+            return crate::js::completion_to_js_result(acquire_readable_stream_default_reader(
+                self.clone(),
+                crate::js::context_as_ec(context),
+            ));
         }
 
         // Step 2: "Assert: options[\"mode\"] is \"byob\"."
@@ -221,7 +230,10 @@ impl ReadableStream {
                 .into());
         }
 
-        acquire_readable_stream_byob_reader(self.clone(), context)
+        crate::js::completion_to_js_result(acquire_readable_stream_byob_reader(
+            self.clone(),
+            crate::js::context_as_ec(context),
+        ))
     }
 
     /// <https://streams.spec.whatwg.org/#rs-pipe-through>
@@ -433,7 +445,9 @@ fn readable_stream_default_tee(
     // Step 2: "Assert: cloneForBranch2 is a boolean."
 
     // Step 3: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
-    let reader_object = acquire_readable_stream_default_reader(stream.clone(), context)?;
+    let reader_object = crate::js::completion_to_js_result(
+        acquire_readable_stream_default_reader(stream.clone(), crate::js::context_as_ec(context)),
+    )?;
     let reader = with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone())?;
 
     // Step 12: "Let cancelPromise be a new promise."
@@ -643,7 +657,9 @@ pub(crate) fn readable_stream_default_tee_pull_algorithm(
     let reader = tee_state.borrow().reader.clone();
 
     // Step 13.4: "Perform ! ReadableStreamDefaultReaderRead(reader, readRequest)."
-    if let Err(error) = reader.read_with_request(read_request, context) {
+    if let Err(error) = crate::js::completion_to_js_result(
+        reader.read_with_request(read_request, crate::js::context_as_ec(context)),
+    ) {
         tee_state.borrow_mut().reading = false;
         return Err(error);
     }
@@ -1639,7 +1655,11 @@ pub(crate) fn readable_stream_error(
             }
 
             // Step 8.1: "Perform ! ReadableStreamDefaultReaderErrorReadRequests(reader, e)."
-            readable_stream_default_reader_error_read_requests(reader.clone(), error, context)
+            crate::js::completion_to_js_result(readable_stream_default_reader_error_read_requests(
+                reader.clone(),
+                error,
+                crate::js::context_as_ec(context),
+            ))
         }
         ReadableStreamReader::BYOB(reader) => {
             if let Some(closed_promise) = reader.closed_promise_slot_value() {
@@ -1935,8 +1955,13 @@ fn byte_tee_switch_to_default_reader(
         )
     };
     tee_state.borrow_mut().reader_generation += 1;
-    readable_stream_byob_reader_release(old_reader, context)?;
-    let new_reader_object = acquire_readable_stream_default_reader(source_stream, context)?;
+    crate::js::completion_to_js_result(readable_stream_byob_reader_release(
+        old_reader,
+        crate::js::context_as_ec(context),
+    ))?;
+    let new_reader_object = crate::js::completion_to_js_result(
+        acquire_readable_stream_default_reader(source_stream, crate::js::context_as_ec(context)),
+    )?;
     let new_reader = with_readable_stream_default_reader_ref(&new_reader_object, |r| r.clone())?;
     tee_state.borrow_mut().reader = ReadableStreamReader::Default(new_reader);
     byte_tee_forward_reader_error(&new_reader_object, tee_state, context)
@@ -1958,8 +1983,13 @@ fn byte_tee_switch_to_byob_reader(
         )
     };
     tee_state.borrow_mut().reader_generation += 1;
-    readable_stream_default_reader_release(old_reader, context)?;
-    let new_reader_object = acquire_readable_stream_byob_reader(source_stream, context)?;
+    crate::js::completion_to_js_result(readable_stream_default_reader_release(
+        old_reader,
+        crate::js::context_as_ec(context),
+    ))?;
+    let new_reader_object = crate::js::completion_to_js_result(
+        acquire_readable_stream_byob_reader(source_stream, crate::js::context_as_ec(context)),
+    )?;
     let new_reader = with_readable_stream_byob_reader_ref(&new_reader_object, |r| r.clone())?;
     tee_state.borrow_mut().reader = ReadableStreamReader::BYOB(new_reader);
     byte_tee_forward_reader_error(&new_reader_object, tee_state, context)
@@ -2156,7 +2186,9 @@ fn readable_byte_stream_tee_pull_with_default_reader(
     };
 
     // Step 18.3: "Perform ! ReadableStreamDefaultReaderRead(reader, readRequest)."
-    default_reader.read_with_request(read_request, context)
+    crate::js::completion_to_js_result(
+        default_reader.read_with_request(read_request, crate::js::context_as_ec(context)),
+    )
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -2396,7 +2428,12 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     let (read_into_request, promise) = ReadIntoRequest::new(context);
 
     // Step 19.5: "Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest)."
-    byob_reader.read_steps(view, 1, read_into_request, context)?;
+    crate::js::completion_to_js_result(byob_reader.read_steps(
+        view,
+        1,
+        read_into_request,
+        crate::js::context_as_ec(context),
+    ))?;
     let reaction: JsObject = JsPromise::from_object(promise)?
         .then(Some(on_fulfilled), Some(on_rejected), context)?
         .into();
@@ -2572,7 +2609,9 @@ fn readable_byte_stream_tee(
 ) -> JsResult<ReadableStreamTeeBranches> {
     // Steps 1-2: Assert stream and stream.[[controller]] (implicit in types).
     // Step 3: Let reader be ? AcquireReadableStreamDefaultReader(stream).
-    let reader_object = acquire_readable_stream_default_reader(stream.clone(), context)?;
+    let reader_object = crate::js::completion_to_js_result(
+        acquire_readable_stream_default_reader(stream.clone(), crate::js::context_as_ec(context)),
+    )?;
     let reader = with_readable_stream_default_reader_ref(&reader_object, |r| r.clone())?;
     let reader_closed_promise = reader.closed()?;
     mark_promise_as_handled(&reader_closed_promise, crate::js::context_as_ec(context))
@@ -2836,7 +2875,9 @@ fn readable_stream_pipe_to(
     // Note: Readable byte streams are not implemented yet, so the implementation always uses the default reader path.
 
     // Step 9: "Otherwise, let reader be ! AcquireReadableStreamDefaultReader(source)."
-    let reader_object = match acquire_readable_stream_default_reader(source.clone(), context) {
+    let reader_object = match crate::js::completion_to_js_result(
+        acquire_readable_stream_default_reader(source.clone(), crate::js::context_as_ec(context)),
+    ) {
         Ok(reader_object) => reader_object,
         Err(error) => {
             reject_promise_with_error(&pipe_resolvers, error, context);
@@ -2861,7 +2902,12 @@ fn readable_stream_pipe_to(
     {
         Ok(writer_object) => writer_object,
         Err(error) => {
-            if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
+            if let Err(error) =
+                crate::js::completion_to_js_result(readable_stream_default_reader_release(
+                    reader.clone(),
+                    crate::js::context_as_ec(context),
+                ))
+            {
                 error!("[readable-stream] failed to release reader on pipe setup error: {error}");
             }
             reject_promise_with_error(&pipe_resolvers, error, context);
@@ -2873,7 +2919,12 @@ fn readable_stream_pipe_to(
     }) {
         Ok(writer) => writer,
         Err(error) => {
-            if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
+            if let Err(error) =
+                crate::js::completion_to_js_result(readable_stream_default_reader_release(
+                    reader.clone(),
+                    crate::js::context_as_ec(context),
+                ))
+            {
                 error!("[readable-stream] failed to release reader on writer error: {error}");
             }
             reject_promise_with_error(&pipe_resolvers, error, context);
@@ -3100,7 +3151,9 @@ impl PipeToState {
         let read_request = ReadRequest::ReadableStreamPipeTo {
             state: self.clone(),
         };
-        reader.read_with_request(read_request, context)?;
+        crate::js::completion_to_js_result(
+            reader.read_with_request(read_request, crate::js::context_as_ec(context)),
+        )?;
         let writer_closed_promise = writer.closed()?;
 
         self.append_reaction(writer_closed_promise, context)
@@ -3425,7 +3478,12 @@ impl PipeToState {
                 ));
             }
         }
-        if let Err(release_error) = super::readable_stream_default_reader_release(reader, context) {
+        if let Err(release_error) =
+            crate::js::completion_to_js_result(super::readable_stream_default_reader_release(
+                reader,
+                crate::js::context_as_ec(context),
+            ))
+        {
             if error.is_none() {
                 error = Some(error_to_rejection_reason(
                     release_error,
