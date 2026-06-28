@@ -390,9 +390,11 @@ fn transform_stream_error(
     let readable_controller = readable.controller_slot().ok_or_else(|| {
         JsNativeError::typ().with_message("ReadableStream is missing its controller")
     })?;
-    readable_controller
-        .as_default_controller()
-        .error_steps(error.clone(), context)?;
+    crate::js::completion_to_js_result(
+        readable_controller
+            .as_default_controller()
+            .error_steps(error.clone(), crate::js::context_as_ec(context)),
+    )?;
 
     // Step 2: "Perform ! TransformStreamErrorWritableAndUnblockWrite(stream, e)."
     transform_stream_error_writable_and_unblock_write(stream, error, context)
@@ -585,9 +587,10 @@ fn transform_stream_default_controller_enqueue(
 
     // Step 4: "Let enqueueResult be ReadableStreamDefaultControllerEnqueue(readableController, chunk)."
     // Step 5: "If enqueueResult is an abrupt completion..."
-    if let Err(error) = readable_controller.enqueue_steps(chunk, context) {
+    if let Err(error_value) =
+        readable_controller.enqueue_steps(chunk, crate::js::context_as_ec(context))
+    {
         // Step 5.1: "Perform ! TransformStreamErrorWritableAndUnblockWrite(stream, enqueueResult.[[Value]])."
-        let error_value = error.into_opaque(context)?;
         transform_stream_error_writable_and_unblock_write(&stream, error_value, context)?;
 
         // Step 5.2: "Throw stream.[[readable]].[[storedError]]."
@@ -696,7 +699,9 @@ fn transform_stream_default_controller_terminate(
     let readable_controller = controller.readable_controller()?;
 
     // Step 3: "Perform ! ReadableStreamDefaultControllerClose(readableController)."
-    readable_controller.close_steps(context)?;
+    crate::js::completion_to_js_result(
+        readable_controller.close_steps(crate::js::context_as_ec(context)),
+    )?;
 
     // Step 4: "Let error be a TypeError exception indicating that the stream has been terminated."
     let error = type_error_value("TransformStream has been terminated", context)?;
@@ -862,9 +867,11 @@ fn transform_stream_default_sink_abort_algorithm(
                 let readable_controller = readable.controller_slot().ok_or_else(|| {
                     JsNativeError::typ().with_message("ReadableStream is missing its controller")
                 })?;
-                readable_controller
-                    .as_default_controller()
-                    .error_steps(reason.clone(), context)?;
+                crate::js::completion_to_js_result(
+                    readable_controller
+                        .as_default_controller()
+                        .error_steps(reason.clone(), crate::js::context_as_ec(context)),
+                )?;
 
                 // Step 7.1.2.2: Resolve finishPromise.
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
@@ -896,9 +903,11 @@ fn transform_stream_default_sink_abort_algorithm(
             let readable_controller = readable.controller_slot().ok_or_else(|| {
                 JsNativeError::typ().with_message("ReadableStream is missing its controller")
             })?;
-            readable_controller
-                .as_default_controller()
-                .error_steps(error.clone(), context)?;
+            crate::js::completion_to_js_result(
+                readable_controller
+                    .as_default_controller()
+                    .error_steps(error.clone(), crate::js::context_as_ec(context)),
+            )?;
 
             // Step 7.2.2: Reject finishPromise with r.
             if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
@@ -989,9 +998,11 @@ fn transform_stream_default_sink_close_algorithm(
                 let readable_controller = readable.controller_slot().ok_or_else(|| {
                     JsNativeError::typ().with_message("ReadableStream is missing its controller")
                 })?;
-                readable_controller
-                    .as_default_controller()
-                    .close_steps(context)?;
+                crate::js::completion_to_js_result(
+                    readable_controller
+                        .as_default_controller()
+                        .close_steps(crate::js::context_as_ec(context)),
+                )?;
 
                 // Step 7.1.2.2: Resolve finishPromise.
                 if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
@@ -1018,9 +1029,11 @@ fn transform_stream_default_sink_close_algorithm(
             let readable_controller = readable.controller_slot().ok_or_else(|| {
                 JsNativeError::typ().with_message("ReadableStream is missing its controller")
             })?;
-            readable_controller
-                .as_default_controller()
-                .error_steps(error.clone(), context)?;
+            crate::js::completion_to_js_result(
+                readable_controller
+                    .as_default_controller()
+                    .error_steps(error.clone(), crate::js::context_as_ec(context)),
+            )?;
 
             // Step 7.2.2: Reject finishPromise with r.
             if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {

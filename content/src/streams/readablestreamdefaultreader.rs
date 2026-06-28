@@ -213,10 +213,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
                 .into_opaque(context)
                 .unwrap_or_else(|_| JsValue::undefined())
         })?;
-        controller.release_steps(context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        controller.release_steps(crate::js::context_as_ec(context))?;
 
         // Step 8: "Set stream.[[reader]] to undefined."
         stream.set_reader_slot(None);
@@ -411,10 +408,7 @@ impl ReadableStreamDefaultReader {
                 .into_opaque(context)
                 .unwrap_or_else(|_| JsValue::undefined())
         })?;
-        controller.pull_steps(read_request, context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })
+        controller.pull_steps(read_request, crate::js::context_as_ec(context))
     }
 
     /// <https://streams.spec.whatwg.org/#default-reader-release-lock>

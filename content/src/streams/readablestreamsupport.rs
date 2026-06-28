@@ -6,6 +6,8 @@ use boa_engine::{
     object::{JsObject, ObjectInitializer, builtins::JsPromise},
     property::Attribute,
 };
+use js_engine::boa::BoaTypes;
+use js_engine::{Completion, ExecutionContext};
 
 use crate::webidl::{
     Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
@@ -249,27 +251,45 @@ impl ReadableStreamController {
     pub(crate) fn cancel_steps(
         &self,
         reason: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsObject, BoaTypes> {
         match self {
-            Self::Default(controller) => controller.cancel_steps(reason, context),
-            Self::Byte(controller) => controller.cancel_steps(reason, context),
+            Self::Default(controller) => controller.cancel_steps(reason, ec),
+            Self::Byte(controller) => {
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    controller.cancel_steps(reason, context),
+                    context,
+                )
+            }
         }
     }
     pub(crate) fn pull_steps(
         &self,
         read_request: ReadRequest,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
         match self {
-            Self::Default(controller) => controller.pull_steps(read_request, context),
-            Self::Byte(controller) => controller.pull_steps(read_request, context),
+            Self::Default(controller) => controller.pull_steps(read_request, ec),
+            Self::Byte(controller) => {
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    controller.pull_steps(read_request, context),
+                    context,
+                )
+            }
         }
     }
-    pub(crate) fn release_steps(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn release_steps(
+        &self,
+        ec: &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<(), BoaTypes> {
         match self {
-            Self::Default(controller) => controller.release_steps(context),
-            Self::Byte(controller) => controller.release_steps(context),
+            Self::Default(controller) => controller.release_steps(ec),
+            Self::Byte(controller) => {
+                let context = unsafe { crate::js::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(controller.release_steps(context), context)
+            }
         }
     }
     /// readable-stream implementation.

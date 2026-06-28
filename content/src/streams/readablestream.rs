@@ -601,7 +601,7 @@ fn default_tee_enqueue_to_branch(
     else {
         return Ok(());
     };
-    controller.enqueue(chunk, context)
+    crate::js::completion_to_js_result(controller.enqueue(chunk, crate::js::context_as_ec(context)))
 }
 
 fn default_tee_close_branch(branch: &ReadableStream, context: &mut Context) -> JsResult<()> {
@@ -611,7 +611,7 @@ fn default_tee_close_branch(branch: &ReadableStream, context: &mut Context) -> J
     else {
         return Ok(());
     };
-    controller.close(context)
+    crate::js::completion_to_js_result(controller.close(crate::js::context_as_ec(context)))
 }
 
 fn default_tee_error_branch(
@@ -625,7 +625,7 @@ fn default_tee_error_branch(
     else {
         return Ok(());
     };
-    controller.error(error, context)
+    crate::js::completion_to_js_result(controller.error(error, crate::js::context_as_ec(context)))
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
@@ -1091,12 +1091,14 @@ pub(crate) fn construct_readable_stream(
             .map_err(JsError::from_opaque)?;
 
     // Step 5.4: "Perform ? SetUpReadableStreamDefaultControllerFromUnderlyingSource(this, underlyingSource, underlyingSourceDict, highWaterMark, sizeAlgorithm)."
-    set_up_readable_stream_default_controller_from_underlying_source(
-        stream.clone(),
-        underlying_source_object,
-        high_water_mark,
-        size_algorithm,
-        context,
+    crate::js::completion_to_js_result(
+        set_up_readable_stream_default_controller_from_underlying_source(
+            stream.clone(),
+            underlying_source_object,
+            high_water_mark,
+            size_algorithm,
+            crate::js::context_as_ec(context),
+        ),
     )?;
 
     Ok(stream)
@@ -1135,7 +1137,7 @@ pub(crate) fn create_readable_stream(
     .map_err(JsError::from_opaque)?;
 
     // Step 7: "Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm)."
-    set_up_readable_stream_default_controller(
+    crate::js::completion_to_js_result(set_up_readable_stream_default_controller(
         stream.clone(),
         controller,
         &controller_object,
@@ -1144,8 +1146,8 @@ pub(crate) fn create_readable_stream(
         cancel_algorithm,
         high_water_mark,
         size_algorithm,
-        context,
-    )?;
+        crate::js::context_as_ec(context),
+    ))?;
 
     // Step 8: "Return stream."
     Ok((stream, stream_object))
@@ -1287,7 +1289,9 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
             // Step 4.4.3: "If done is true:"
             if done {
                 // Step 4.4.3.1: "Perform ! ReadableStreamDefaultControllerClose(stream.[[controller]])."
-                controller.close_steps(context)?;
+                crate::js::completion_to_js_result(
+                    controller.close_steps(crate::js::context_as_ec(context)),
+                )?;
                 return Ok(JsValue::undefined());
             }
 
@@ -1295,7 +1299,9 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
             let value = iter_result_object.get(js_string!("value"), context)?;
 
             // Step 4.4.4.2: "Perform ! ReadableStreamDefaultControllerEnqueue(stream.[[controller]], value)."
-            controller.enqueue_steps(value, context)?;
+            crate::js::completion_to_js_result(
+                controller.enqueue_steps(value, crate::js::context_as_ec(context)),
+            )?;
             Ok(JsValue::undefined())
         },
         state,
@@ -1557,7 +1563,9 @@ pub(crate) fn readable_stream_cancel(
     let controller = stream.controller_slot().ok_or_else(|| {
         JsNativeError::typ().with_message("ReadableStream is missing its controller")
     })?;
-    let source_cancel_promise = controller.cancel_steps(reason, context)?;
+    let source_cancel_promise = crate::js::completion_to_js_result(
+        controller.cancel_steps(reason, crate::js::context_as_ec(context)),
+    )?;
 
     // Step 8: "Return the result of reacting to sourceCancelPromise with a fulfillment step that returns undefined."
     transform_promise_to_undefined(&source_cancel_promise, crate::js::context_as_ec(context))

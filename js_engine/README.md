@@ -288,7 +288,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 ### What's still Boa-concrete
 
 - **Binding function bodies** use `ec_to_ctx(ec)` to cast back to `&mut Context` for Boa-specific operations (`JsObject::get`, `JsValue::to_number`, `JsNativeError::into_opaque`, etc.). The bodies are in the new signature but internally bridge to Boa.
-- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all).
+- **Domain code** (remaining streams, DOM, HTML, WebAssembly) still takes `&mut Context` directly — hasn't been threaded with `ExecutionContext<T>` yet. Converted so far: `webidl/promise.rs`, `webidl/buffer_source.rs`, `dom/abort.rs` (2 functions), `streams/writablestreamdefaultwriter.rs` (all), `streams/writablestreamdefaultcontroller.rs` (all), `streams/readablestreamdefaultreader.rs` (all including shared `ReadableStreamGenericReader` trait), `streams/readablestreambyobreader.rs` (all), `streams/readablestreamdefaultcontroller.rs` (all, ~22 functions + 3 algorithm enums + callers bridged).
 - **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 
@@ -347,8 +347,8 @@ converted.
    - ~~`writablestreamdefaultcontroller.rs`~~ — ✅ ~20 functions + all callers bridged
    - ~~`readablestreamdefaultreader.rs`~~ — ✅ ~14 functions + shared `ReadableStreamGenericReader` trait + all callers bridged
    - ~~`readablestreambyobreader.rs`~~ — ✅ ~10 functions + all callers bridged
-   - `readablestreamdefaultcontroller.rs` (largest: ~40 instances)
-   - `writablestream.rs` (~25 functions)
+   - ~~`readablestreamdefaultcontroller.rs`~~ — ✅ ~22 functions + 3 algorithm enums + all callers bridged
+   - `writablestream.rs` (~25 functions, next)
    - `readablestream.rs` (largest: ~80 instances)
    - `transformstream.rs` (~20 functions)
    - `readablestreamsupport.rs` / `writablestreamsupport.rs`

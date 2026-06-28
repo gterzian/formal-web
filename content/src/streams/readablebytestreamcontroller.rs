@@ -605,7 +605,9 @@ impl ReadableByteStreamController {
 
         let cancel_algorithm = self.cancel_algorithm.borrow().clone();
         let result = match cancel_algorithm {
-            Some(cancel_algorithm) => JsObject::from(cancel_algorithm.call(reason, context)),
+            Some(cancel_algorithm) => {
+                JsObject::from(cancel_algorithm.call(reason, crate::js::context_as_ec(context)))
+            }
             None => crate::js::completion_to_js_result(resolved_promise(
                 JsValue::undefined(),
                 crate::js::context_as_ec(context),
@@ -927,9 +929,9 @@ impl ReadableByteStreamController {
         let controller_object = self.controller_object()?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
         let pull_promise = match pull_algorithm {
-            Some(pull_algorithm) => {
-                JsObject::from(pull_algorithm.call(&controller_object, context))
-            }
+            Some(pull_algorithm) => JsObject::from(
+                pull_algorithm.call(&controller_object, crate::js::context_as_ec(context)),
+            ),
             None => crate::js::completion_to_js_result(resolved_promise(
                 JsValue::undefined(),
                 crate::js::context_as_ec(context),
@@ -1224,7 +1226,9 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     *controller.cancel_algorithm.borrow_mut() = Some(cancel_algorithm);
     controller.pending_pull_intos.borrow_mut().clear();
 
-    let start_result = start_algorithm.call(controller_object, context)?;
+    let start_result = crate::js::completion_to_js_result(
+        start_algorithm.call(controller_object, crate::js::context_as_ec(context)),
+    )?;
     let start_promise = JsPromise::resolve(start_result, context)?;
 
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(

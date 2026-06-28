@@ -620,7 +620,7 @@ fn close_method(
         })?;
 
         with_readable_stream_default_controller_ref(&controller_object, |controller| {
-            controller.close(ctx)
+            crate::js::completion_to_js_result(controller.close(crate::js::context_as_ec(ctx)))
         })??;
         Ok(JsValue::undefined())
     })()
@@ -662,7 +662,10 @@ fn enqueue_method(
         })?;
 
         with_readable_stream_default_controller_ref(&controller_object, |controller| {
-            controller.enqueue(args.get_or_undefined(0).clone(), ctx)
+            crate::js::completion_to_js_result(controller.enqueue(
+                args.get_or_undefined(0).clone(),
+                crate::js::context_as_ec(ctx),
+            ))
         })??;
         Ok(JsValue::undefined())
     })()
@@ -704,7 +707,10 @@ fn error_method(
         })?;
 
         with_readable_stream_default_controller_ref(&controller_object, |controller| {
-            controller.error(args.get_or_undefined(0).clone(), ctx)
+            crate::js::completion_to_js_result(controller.error(
+                args.get_or_undefined(0).clone(),
+                crate::js::context_as_ec(ctx),
+            ))
         })??;
         Ok(JsValue::undefined())
     })()
