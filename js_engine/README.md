@@ -99,6 +99,45 @@ they are not spec-defined operations.
 These are handled by `#[repr(transparent)]` casts in the `CreateBuiltinFunction`
 shim (see `boa/engine.rs` module docs).
 
+## Design notes
+
+### Why `value_*` methods are `&mut self`
+
+Boa's API requires `&mut Context` for value construction.  This leaks into
+the trait even though constructing `undefined` or `null` is conceptually
+pure.  Fixing this requires an engine-side change.
+
+### EcmascriptHost::get takes `&str`, ExecutionContext::get takes `PropertyKey`
+
+`EcmascriptHost` is the narrow interface Web IDL callback algorithms need.
+Web IDL's \"get a callback function\" steps always use string property names
+(e.g. \"handleEvent\"), so `&str` is sufficient.  `ExecutionContext::get` is
+the full ECMA-262 `Get(O, P)` which takes an arbitrary property key.
+Both map to the same spec operation (`#[sec-get-o-p]`).
+
+### What does NOT belong on these traits
+
+- **`report_exception`** has no ECMA-262 anchor — it's an HTML concept
+  (\"report an exception\").  It lives on `EcmascriptHost` because Web IDL
+  callback algorithms need it.
+- **`perform_a_microtask_checkpoint`** is HTML, not ECMA-262.  Same
+  rationale.
+- **`js_string_from_str`** is pure convenience — no spec equivalent.
+  Only needed because `T::JsString` is engine-opaque.
+- **`report_error`** (default impl) is a logging convenience, not a
+  spec operation.
+
+### NativeFunction barrier
+
+`JsEngine::create_builtin_function` takes a closure receiving
+`&mut dyn ExecutionContext<T>` — architecturally correct for a generic
+layer.  But content code still uses Boa's `FunctionObjectBuilder` +
+`NativeFunction::from_fn_ptr` because (a) `create_builtin_function`
+requires `T: JsTypesWithRealm` and returns `T::Function`, which
+creates type-erasure issues with the current interface registry, and
+(b) converting all native function registrations is a large mechanical
+change.  This is the P3 problem noted in the migration plan.
+
 ## Per-backend details
 
 See module docs for implementation status and quirks:

@@ -40,12 +40,18 @@
 //! - **P2: No `JsEngineErased` type.**  `enqueue_job` takes
 //!   `Box<dyn FnOnce() + Send>` — the closure can't access the engine.
 //!   Fix: create object-safe `JsEngineErased`.
+//! - **P3: `create_builtin_function` not yet used by content code.**
+//!   Content still uses Boa's `FunctionObjectBuilder` + `NativeFunction`
+//!   because converting all native function registrations is a large
+//!   mechanical change and the current interface registry stores
+//!   `T::JsObject` not `T::Function`.
 //! - **P4: `set_host_hooks` is a no-op for Boa.**  Boa host hooks are set
 //!   during `ContextBuilder::host_hooks()`, not at runtime.
 //! - **P7: `Callback` is Boa-concrete.**  Derives `boa_gc::Trace`/`Finalize`.
 //!   Fix requires abstracting GC trait derives.
 //!
-//! See `js_engine/README.md` for the full philosophy and migration plan.
+//! See `js_engine/README.md` for the full philosophy, design notes, and
+//! migration plan.
 
 use log::error;
 
