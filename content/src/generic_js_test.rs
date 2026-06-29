@@ -1025,10 +1025,6 @@ mod tests {
         assert!(engine.get_host_any(&id).is_none());
     }
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: JSObjectSetProperty on eval-created plain objects crashes"
-    )]
     #[test]
     fn create_plain_object_with_properties() {
         let mut engine = setup();
@@ -1121,10 +1117,6 @@ mod tests {
         assert!(engine.is_fixed_length_array_buffer(&ab));
     }
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: JSObjectSetProperty on eval-created plain objects crashes"
-    )]
     #[test]
     fn to_object_method_returns_plain_object() {
         let mut engine = setup();
@@ -1165,7 +1157,7 @@ mod tests {
 
     #[cfg_attr(
         feature = "jsc",
-        ignore = "JSC: create_root / GcRootHandle causes SIGSEGV"
+        ignore = "JSC: create_root / GcRootHandle SIGSEGV (JSValueProtect on eval result)"
     )]
     #[test]
     fn store_callback_then_flush_microtasks() {
@@ -1330,10 +1322,6 @@ mod tests {
         assert!(engine.is_loosely_equal(undef, null).unwrap());
     }
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: JSObjectSetProperty on eval-created plain objects crashes"
-    )]
     #[test]
     fn define_property_with_descriptor() {
         let mut engine = setup();
@@ -1371,10 +1359,6 @@ mod tests {
         assert!(method.is_some());
     }
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: JSObjectSetProperty on eval-created plain objects crashes"
-    )]
     #[test]
     fn get_v_and_delete_property_or_throw() {
         let mut engine = setup();
@@ -1388,10 +1372,6 @@ mod tests {
         engine.delete_property_or_throw(obj, pk).unwrap();
     }
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: JSObjectSetProperty on eval-created plain objects crashes"
-    )]
     #[test]
     fn set_prototype_and_integrity() {
         let mut engine = setup();
@@ -1493,10 +1473,6 @@ mod tests {
 
     // ── JSON and BigInt ────────────────────────────────────────────
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: JSObjectSetProperty on eval-created plain objects crashes"
-    )]
     #[test]
     fn json_stringify_roundtrip() {
         let mut engine = setup();
@@ -1581,5 +1557,48 @@ mod tests {
         assert!(
             TestTypes::object_as_data_view(&TestTypes::value_as_object(&dv_val).unwrap()).is_some()
         );
+    }
+
+    // ── GC object round-trip (create_object_with_any + with_object_any) ─
+
+    /// Exercises the GC integration: create a JS object with native Rust
+    /// data via `create_object_with_any`, then retrieve it via
+    /// `with_object_any` / `with_object_any_mut`.  Proves the round-trip
+    /// works for both Boa (NativeDataWrapper + downcast_ref) and JSC
+    /// (host_data side-table).
+    #[test]
+    fn gc_object_roundtrip() {
+        let mut engine = setup();
+        let widget = TestWidget {
+            title: "GC-test".into(),
+            visible: false,
+            count: 7,
+            #[cfg(feature = "boa")]
+            on_change: None,
+            #[cfg(feature = "jsc")]
+            #[allow(unexpected_cfgs)]
+            on_change: None,
+        };
+
+        // Create via the trait's generic API.
+        let prototype = engine.create_plain_object(None);
+        let obj = engine.create_object_with_any(prototype, Box::new(widget));
+
+        // Retrieve immutable.
+        let title = engine
+            .with_object_any(&obj, |d| {
+                d.downcast_ref::<TestWidget>().unwrap().title.clone()
+            })
+            .unwrap();
+        assert_eq!(title, "GC-test");
+
+        // Retrieve mutable.
+        engine.with_object_any_mut(&obj, |d| {
+            d.downcast_mut::<TestWidget>().unwrap().count = 99;
+        });
+        let count = engine
+            .with_object_any(&obj, |d| d.downcast_ref::<TestWidget>().unwrap().count)
+            .unwrap();
+        assert_eq!(count, 99);
     }
 }

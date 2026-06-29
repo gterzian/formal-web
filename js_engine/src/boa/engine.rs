@@ -1084,6 +1084,24 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         JsObject::from_proto_and_data(Some(prototype), wrapper)
     }
 
+    fn with_object_any<R>(
+        &self,
+        object: &JsObject,
+        f: impl FnOnce(&dyn std::any::Any) -> R,
+    ) -> Option<R> {
+        let wrapper = object.downcast_ref::<NativeDataWrapper<Box<dyn std::any::Any>>>()?;
+        Some(f(wrapper.0.as_ref()))
+    }
+
+    fn with_object_any_mut<R>(
+        &mut self,
+        object: &JsObject,
+        f: impl FnOnce(&mut dyn std::any::Any) -> R,
+    ) -> Option<R> {
+        let mut wrapper = object.downcast_mut::<NativeDataWrapper<Box<dyn std::any::Any>>>()?;
+        Some(f(wrapper.0.as_mut()))
+    }
+
     fn new_type_error(&mut self, msg: &str) -> JsValue {
         let owned: String = msg.to_string();
         let err_obj = JsNativeError::typ()

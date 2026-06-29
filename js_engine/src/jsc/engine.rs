@@ -1875,19 +1875,53 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // TODO(Phase 5 real-code): use JSClassDefinition + JSObjectMake
         // with jsc_generic_finalizer to free data on GC.  See gc.rs.
         let obj = self.create_plain_object(Some(&prototype));
-        let obj_ptr = obj.raw as usize;
-        // Use the object pointer as a unique key to avoid colliding with
-        // other host_data entries.
-        self.host_data.insert(
-            std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>(),
-            Box::new({
-                let mut map: std::collections::HashMap<usize, Box<dyn std::any::Any>> =
-                    std::collections::HashMap::new();
-                map.insert(obj_ptr, data);
-                map
-            }),
-        );
+        let obj_ptr = obj.as_raw() as usize;
+        // Retrieve existing map or create new one, then insert.
+        let map_type_id =
+            std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
+        let mut map: std::collections::HashMap<usize, Box<dyn std::any::Any>> = self
+            .remove_host_any(&map_type_id)
+            .map(|boxed| *boxed.downcast::<_>().unwrap())
+            .unwrap_or_default();
+        map.insert(obj_ptr, data);
+        self.store_host_any(map_type_id, Box::new(map));
         obj
+    }
+
+    /// Retrieve data stored via `create_object_with_any`.
+    fn with_object_any<R>(
+        &self,
+        object: &JscObject,
+        f: impl FnOnce(&dyn std::any::Any) -> R,
+    ) -> Option<R> {
+        let map_type_id =
+            std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
+        let map = self
+            .get_host_any(&map_type_id)?
+            .downcast_ref::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()?;
+        let key = object.as_raw() as usize;
+        let data = map.get(&key)?;
+        Some(f(data.as_ref()))
+    }
+
+    /// Retrieve mutable data stored via `create_object_with_any`.
+    fn with_object_any_mut<R>(
+        &mut self,
+        object: &JscObject,
+        f: impl FnOnce(&mut dyn std::any::Any) -> R,
+    ) -> Option<R> {
+        let map_type_id =
+            std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
+        // Remove, look up, modify, re-insert.
+        let mut map: std::collections::HashMap<usize, Box<dyn std::any::Any>> = self
+            .remove_host_any(&map_type_id)
+            .map(|boxed| *boxed.downcast::<_>().unwrap())
+            .unwrap_or_default();
+        let key = object.as_raw() as usize;
+        let data = map.get_mut(&key)?;
+        let result = f(data.as_mut());
+        self.store_host_any(map_type_id, Box::new(map));
+        Some(result)
     }
 
     fn new_type_error(&mut self, msg: &str) -> JscValue {
@@ -2040,7 +2074,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
                     );
                 }
                 if !exc.is_null() {
-                    let (result, _) = self.eval_script_raw("{}");
+                    let (result, _) = self.eval_script_raw("({})");
                     return JscObject {
                         raw: result as *mut JSObjectRef,
                         ctx: self.ctx_ptr(),
@@ -2057,7 +2091,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
                     );
                 }
                 if !exception.is_null() || result.is_null() {
-                    let (result, _) = self.eval_script_raw("{}");
+                    let (result, _) = self.eval_script_raw("({})");
                     return JscObject {
                         raw: result as *mut JSObjectRef,
                         ctx: self.ctx_ptr(),
@@ -2069,7 +2103,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 }
             }
             None => {
-                let (result, exception) = self.eval_script_raw("{}");
+                let (result, exception) = self.eval_script_raw("({})");
                 if !exception.is_null() || result.is_null() {
                     return self.context.global_object();
                 }

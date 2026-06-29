@@ -508,6 +508,32 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         data: Box<dyn std::any::Any + 'static>,
     ) -> T::JsObject;
 
+    /// Access data stored via `create_object_with_any` immutably.
+    /// `Self: Sized` bound preserves `dyn ExecutionContext` object safety.
+    fn with_object_any<R>(
+        &self,
+        _object: &T::JsObject,
+        _f: impl FnOnce(&dyn std::any::Any) -> R,
+    ) -> Option<R>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    /// Access data stored via `create_object_with_any` mutably.
+    /// `Self: Sized` bound preserves `dyn ExecutionContext` object safety.
+    fn with_object_any_mut<R>(
+        &mut self,
+        _object: &T::JsObject,
+        _f: impl FnOnce(&mut dyn std::any::Any) -> R,
+    ) -> Option<R>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
     // ── Error Construction ──────────────────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-native-error-types-used-in-this-standard-typeerror>
