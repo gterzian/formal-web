@@ -1044,6 +1044,7 @@ impl ExecutionContext<BoaTypes> for BoaEngine {
             .into_opaque(&mut self.context);
         JsValue::from(err_obj)
     }
+
 }
 
 /// Wrapper that implements `NativeObject` for arbitrary `'static` data.
