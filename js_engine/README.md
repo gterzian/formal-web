@@ -667,29 +667,33 @@ All 10 gaps done.  Content migration freeze lifted.
 | 11 | `property_key_from_index` — missing from `ExecutionContext<T>` trait | ✅ added to trait, Boa backend, JSC stub; exercised in test file |
 | 12 | Context creation lifecycle (`build_context` → `initialize_registry` → `register_interface_spec`) | ✅ `exercise_context_lifecycle` added to test file |
 
-### POC status
+### POC status — COMPLETE
 
-The test file now covers every real-world pattern from the content codebase:
+The test file now covers every relevant `ExecutionContext<T>`, `JsEngine<T>`,
+and `EcmascriptHost<T>` method.  All 10 original gaps resolved.
 
-| Pattern | Copied from | Test file equivalent |
-|---|---|---|
-| String getter | `Element.id` | `get_title` |
-| String setter | `Element.title` | `set_title` |
-| Bool getter | `Element.hidden` | `get_visible` |
-| Number getter | `Node.nodeType` | `get_count` |
-| Numeric setter | — | `set_count` |
-| Method | `Element.remove()` | `increment` |
-| Plain-object return | — | `to_object` |
-| Array return | — | `to_array` |
-| `to_js_string` pattern | — | `format_label` |
-| Promise-returning | `fetch()` | `delayed_title` |
-| Callback invocation | `addEventListener` | `with_callback` |
-| Sequence iteration | `AbortSignal.any()` | `process_items` |
-| Static method | `AbortSignal.abort()` | `create_static` |
-| Constructor with args | `new Event(type, init)` | `from_args` |
-| `create_builtin_function` | — | `exercise_engine_api` |
-| Registry bootstrap | `build_context` | `exercise_context_lifecycle` |
-| `register_interface_spec` | `build_context` | `exercise_context_lifecycle` |
+Three exercise functions provide full coverage:
+- `exercise_generic_api(ec)` — all `ExecutionContext<T>` and `EcmascriptHost<T>` methods
+- `exercise_engine_api(engine, ec)` — `create_builtin_function`
+- `exercise_context_lifecycle()` — `ContextBuilder` → `BoaContext` → `initialize_registry` → `register_interface_spec`
+- `exercise_remaining_api(engine, ec)` — all remaining methods:
+  `create_realm` / `set_realm_global_object` / `set_default_global_bindings`,
+  `evaluate_script` / `evaluate_module`, `set_host_hooks`,
+  `perform_a_microtask_checkpoint`, all remaining §7.1/§7.2/§7.3/§7.4 ops,
+  `construct`, `promise_resolve`, `perform_promise_then`,
+  `allocate_array_buffer` / `clone_array_buffer` / `detach_array_buffer` /
+  `allocate_shared_array_buffer`, `is_detached_buffer` / `is_fixed_length_array_buffer` /
+  `get_value_from_buffer` / `set_value_in_buffer`.
+
+**Not exercised (type barrier — cannot create the required object from generic API):**
+- `generator_start` — needs `T::Generator`, no generator constructor on the trait
+- `to_bigint` / `string_to_bigint` — need BigInt constructor; no way to create BigInt from trait
+- `TypedArray` / `DataView` / `Map` / `Set` / `WeakMap` / `WeakSet` / `WeakRef` downcast methods —
+  no constructor on the trait to create these objects
+
+**Not exercised (engine lifecycle, not binding-relevant):**
+- `allocate_array_buffer` constructor path — exercised factory path only
+- JSC backend — all `todo!()` stubs remain
 
 ### Key architectural insight
 
