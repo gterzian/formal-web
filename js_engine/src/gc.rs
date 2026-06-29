@@ -144,7 +144,7 @@ mod jsc_gc_impl {
                 Some(unsafe {
                     crate::jsc::JscObject::from_raw(std::mem::transmute::<
                         *mut std::ffi::c_void,
-                        *mut crate::jsc::sys::JSObjectRef,
+                        *mut crate::jsc_sys::JSObjectRef,
                     >(*reflector))
                 })
             }

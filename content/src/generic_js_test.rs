@@ -859,6 +859,14 @@ pub(crate) fn exercise_remaining_api(
     );
     let _then = ec.perform_promise_then(promise, Some(on_fulfilled), None, Some(pcap));
 
+    // ── Rejected promise pattern ───────────────────────────────────
+    // Generic equivalent of WebIDL's "a promise rejected with".
+    let err_val = ec.new_type_error("test rejection");
+    let rcap = ec
+        .new_promise_capability(intrinsics.promise.clone())
+        .unwrap_or_else(|_| panic!("new_promise_capability should succeed"));
+    let _ = ec.call(&rcap.reject, &undef, &[err_val]);
+
     // ── ArrayBuffer: allocate + inspect + get/set ──────────────────
     let ab = engine
         .allocate_array_buffer(intrinsics.array_buffer.clone(), 16, None)
@@ -889,12 +897,89 @@ pub(crate) fn exercise_remaining_api(
     // allocate_shared_array_buffer (needs SharedArrayBuffer constructor)
     let _sab = engine.allocate_shared_array_buffer(intrinsics.shared_array_buffer.clone(), 16);
 
-    // ── to_bigint / string_to_bigint (type-check only) ────────────
-    // Can't create a BigInt value without being able to call BigInt(),
-    // so these are exercised only to verify they exist on the trait.
-    // The methods are covered by the trait definition + compilation.
+    // ── to_bigint / string_to_bigint ──────────────────────────────
+    let bigint_val = ec.value_from_bigint(42);
+    let _bigint = ec.to_bigint(bigint_val.clone());
+    let num_string = ec.js_string_from_str("123");
+    let _str_bigint = ec.string_to_bigint(num_string);
 
-    // ── generator_start (type-check only) ─────────────────────────
-    // Can't create a Generator without a generator function,
-    // so this is exercised only to verify it exists on the trait.
+    // ── json_stringify (ECMA-262 §24.5.2) ─────────────────────────
+    let test_obj_for_json = ec.create_plain_object(None);
+    let val_1 = ec.value_from_number(1.0);
+    let _ = ec.object_set_property(test_obj_for_json.clone(), "x", val_1);
+    let _json_str = ec.json_stringify(JsValue::from(test_obj_for_json));
+
+    // ── Object downcasts via evaluate_script ──────────────────────
+    let map_val = engine
+        .evaluate_script("new Map([['k', 'v']])", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(map_obj) = Types::value_as_object(&map_val) {
+        let _map = Types::object_as_map(&map_obj);
+    }
+    let set_val = engine
+        .evaluate_script("new Set([1,2,3])", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(set_obj) = Types::value_as_object(&set_val) {
+        let _set = Types::object_as_set(&set_obj);
+    }
+    let wm_val = engine
+        .evaluate_script("new WeakMap()", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(wm_obj) = Types::value_as_object(&wm_val) {
+        let _wm = Types::object_as_weak_map(&wm_obj);
+    }
+    let ws_val = engine
+        .evaluate_script("new WeakSet()", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(ws_obj) = Types::value_as_object(&ws_val) {
+        let _ws = Types::object_as_weak_set(&ws_obj);
+    }
+    let wr_val = engine
+        .evaluate_script("new WeakRef({})", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(wr_obj) = Types::value_as_object(&wr_val) {
+        let _wr = Types::object_as_weak_ref(&wr_obj);
+    }
+    let ta_val = engine
+        .evaluate_script("new Uint8Array(4)", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(ta_obj) = Types::value_as_object(&ta_val) {
+        let _ta = Types::object_as_typed_array(&ta_obj);
+    }
+    let dv_val = engine
+        .evaluate_script("new DataView(new ArrayBuffer(8))", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(dv_obj) = Types::value_as_object(&dv_val) {
+        let _dv = Types::object_as_data_view(&dv_obj);
+    }
+
+    // ── generator_start (via evaluate_script) ─────────────────────
+    let gen_val = engine
+        .evaluate_script("(function*(){yield 1})()", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(gen_obj) = Types::value_as_object(&gen_val) {
+        if let Some(generator) = Types::object_as_generator(&gen_obj) {
+            let pk_start = ec.property_key_from_str("next");
+            let next_fn =
+                ExecutionContext::get(ec, gen_obj, pk_start).unwrap_or(ec.value_undefined());
+            if let Some(next_obj) = Types::value_as_object(&next_fn) {
+                if let Some(next_func) = Types::object_as_function(&next_obj) {
+                    let _ = ec.generator_start(generator, next_func);
+                }
+            }
+        }
+    }
+
+    // ── async_iterator_close (with async generator) ───────────────
+    let agen_val = engine
+        .evaluate_script("(async function*(){yield 1})()", &realm)
+        .unwrap_or(ec.value_undefined());
+    if let Some(agen_obj) = Types::value_as_object(&agen_val) {
+        let _agen = Types::object_as_async_generator(&agen_obj);
+    }
+
+    // ── register_global_property (generic equivalent) ─────────────
+    let global = ec.global_object();
+    let val_1 = ec.value_from_number(1.0);
+    let _ = ec.object_set_property(global, "__testPOC", val_1);
 }

@@ -2914,6 +2914,7 @@ dependencies = [
  "boa_engine",
  "boa_gc",
  "log",
+ "serde_json",
 ]
 
 [[package]]

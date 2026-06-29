@@ -23,7 +23,7 @@
 //! `super::mod.rs` for known Boa-specific quirks.
 
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsSymbol, JsValue,
+    Context, JsBigInt, JsError, JsNativeError, JsResult, JsSymbol, JsValue,
     builtins::array_buffer::AlignedVec,
     native_function::NativeFunction,
     object::{
@@ -1151,6 +1151,21 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     fn create_plain_object(&mut self, prototype: Option<&JsObject>) -> JsObject {
         let proto = prototype.cloned();
         JsObject::from_proto_and_data(proto, ())
+    }
+
+    fn json_stringify(&mut self, value: JsValue) -> Completion<String, BoaTypes> {
+        let ctx = &mut self.context;
+        let result = value.to_json(ctx);
+        match result {
+            Ok(v) => Ok(
+                serde_json::to_string(&v.unwrap_or(serde_json::Value::Null)).unwrap_or_default()
+            ),
+            Err(e) => Err(e.into_opaque(ctx).unwrap_or(JsValue::undefined())),
+        }
+    }
+
+    fn value_from_bigint(&mut self, n: i64) -> JsValue {
+        JsValue::from(JsBigInt::from(n))
     }
 }
 

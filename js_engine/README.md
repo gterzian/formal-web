@@ -436,24 +436,28 @@ changing this one line.
 > surface can support every real-world pattern found in the content codebase.
 > Migration of real code begins only after the POC is complete and validated.
 
-### Current step: Build out the generic API surface in `generic_js_test.rs`
+### Current step: Boa POC complete — JSC implementation next
 
-All gaps resolved — ✅ **done.**  The test module now exercises every
-`ExecutionContext<T>` / `JsTypes` / `EcmascriptHost<T>` / `JsEngine<T>` method
-in a binding-function-adjacent pattern.  Move on to Step B.
+All `ExecutionContext<T>`, `JsEngine<T>`, `EcmascriptHost<T>`, and `JsTypes`
+methods are exercised in the test file through the Boa backend.  Every content
+binding pattern has a generic equivalent demonstrated.
 
-| # | Gap | Status |
-|---|---|---|
-| 1 | `to_js_string` in binding pattern | ✅ `formatLabel` |
-| 2 | Property descriptor ops | ✅ `define_property_or_throw`, `has_property` |
-| 3 | Iterator ops | ✅ `get_iterator`, `iterator_step_value`, `iterator_close` |
-| 4 | Promise ops at binding level | ✅ `delayedTitle` (`new_promise_capability` + `call`) |
-| 5 | `create_builtin_function` | ✅ `exercise_engine_api` companion function |
-| 6 | `Call` / `Construct` at binding level | ✅ `withCallback` + `call` exercise |
-| 7 | Error-path patterns | ✅ `new_type_error`, `new_range_error` |
-| 8 | `call_user_objects_operation` | ✅ imported and exercised in `exercise_generic_api` |
-| 9 | `create_interface_instance` integration | ✅ extended with error path |
-| 10 | Setter with type conversion | ✅ `set_count` (uses `to_number`) |
+**Remaining before content migration:** implement the JSC backend to validate
+that the trait API works across engines.  See gap #8 below.
+
+**Next session:** implement the JSC backend and refine the trait API.
+
+1. Port the 25 `todo!()` stubs in `js_engine/src/jsc/engine.rs` using the
+   Boa backend (`js_engine/src/boa/engine.rs`) as a reference.
+2. As you hit mismatches (things Boa can do that JSC can't, or things JSC
+   needs that aren't on the trait), refine the `JsTypes` / `ExecutionContext` /
+   `JsEngine` traits.  The goal is a single API shape that works for both
+   engines — the test file proves the Boa side; JSC proves the other side.
+3. Exercise new or changed trait methods in `generic_js_test.rs`.
+4. Once both backends compile and the API is stable, return to Step B
+   (binding function body conversion).
+
+The Boa POC is the reference; the JSC implementation is the stress test.
 
 ---
 
@@ -658,7 +662,8 @@ Gaps resolved this session: 1 (to_js_string pattern), 2 (property descriptors),
 6 (Call), 7 (error paths), 8 (call_user_objects_operation), 9 (create_interface_instance
 integration), 10 (numeric setter).
 
-All 10 gaps done.  Content migration freeze lifted.
+All 12 gaps resolved.  See [POC status](#poc-status--complete) below for the
+complete content-pattern → generic-equivalent audit.
 
 ### Remaining generic-API gaps (discovered during content conversion)
 
@@ -667,33 +672,61 @@ All 10 gaps done.  Content migration freeze lifted.
 | 11 | `property_key_from_index` — missing from `ExecutionContext<T>` trait | ✅ added to trait, Boa backend, JSC stub; exercised in test file |
 | 12 | Context creation lifecycle (`build_context` → `initialize_registry` → `register_interface_spec`) | ✅ `exercise_context_lifecycle` added to test file |
 
-### POC status — COMPLETE
+### POC status — ✅ COMPLETE
 
-The test file now covers every relevant `ExecutionContext<T>`, `JsEngine<T>`,
-and `EcmascriptHost<T>` method.  All 10 original gaps resolved.
+Every method on every trait is exercised.  Zero uncoverable gaps.
 
-Three exercise functions provide full coverage:
+#### Content pattern → generic equivalent mapping
+
+| Content pattern | File | Generic equivalent in test |
+|---|---|---|
+| Simple getter | `element.rs` | `get_title` / `get_visible` / `get_count` |
+| String setter | `html_element.rs` | `set_title` (`ec.to_rust_string`) |
+| Numeric setter | — | `set_count` (`ec.to_number`) |
+| Method | `element.rs` | `increment` |
+| Constructor with args | `event.rs` | `TestWidget::from_args` |
+| Static method | `abort_signal.rs` | `create_static` |
+| Plain-object return | — | `to_object` (`create_plain_object` + `object_set_property`) |
+| Array return | — | `to_array` (`create_empty_array` + `array_push`) |
+| `to_js_string` pattern | — | `format_label` |
+| Promise-returning | `fetch()` | `delayed_title` (`new_promise_capability` + `call` on resolve) |
+| Rejected promise | WebIDL helpers | `exercise_remaining_api` (`call` on `pcap.reject`) |
+| Callback invocation | `event_target.rs` | `with_callback` (`ec.call`) |
+| Sequence iteration | `abort_signal.rs` | `process_items` (`property_key_from_index` + `get` loop) |
+| `ObjectInitializer` with attrs | `html_element.rs` | `define_property_or_throw` + `PropertyDescriptor` |
+| Namespace object | `console.rs`, `css.rs` | `create_plain_object` + builtin fn |
+| `NativeFunction::from_closure` | `hyperlink_element_utils.rs` | `exercise_engine_api` (`create_builtin_function`) |
+| `FunctionObjectBuilder` | `strategy.rs` | `exercise_engine_api` (`create_builtin_function`) |
+| `upon_settlement` pattern | `promise.rs` | `exercise_remaining_api` (engine + ec combined) |
+| Registry bootstrap | `host_hooks.rs` | `exercise_context_lifecycle` |
+| `register_interface_spec` | `host_hooks.rs` | `exercise_context_lifecycle` |
+| `initialize_registry` | `host_hooks.rs` | `exercise_context_lifecycle` |
+| `evaluate_script` | `host_hooks.rs` | `exercise_remaining_api` |
+| `set_host_hooks` | `host_hooks.rs` | `exercise_remaining_api` |
+
+#### Four exercise functions
+
 - `exercise_generic_api(ec)` — all `ExecutionContext<T>` and `EcmascriptHost<T>` methods
 - `exercise_engine_api(engine, ec)` — `create_builtin_function`
 - `exercise_context_lifecycle()` — `ContextBuilder` → `BoaContext` → `initialize_registry` → `register_interface_spec`
-- `exercise_remaining_api(engine, ec)` — all remaining methods:
-  `create_realm` / `set_realm_global_object` / `set_default_global_bindings`,
-  `evaluate_script` / `evaluate_module`, `set_host_hooks`,
-  `perform_a_microtask_checkpoint`, all remaining §7.1/§7.2/§7.3/§7.4 ops,
-  `construct`, `promise_resolve`, `perform_promise_then`,
-  `allocate_array_buffer` / `clone_array_buffer` / `detach_array_buffer` /
-  `allocate_shared_array_buffer`, `is_detached_buffer` / `is_fixed_length_array_buffer` /
-  `get_value_from_buffer` / `set_value_in_buffer`.
+- `exercise_remaining_api(engine, ec)` — `create_realm`, `evaluate_script`/`module`,
+  `set_host_hooks`, `perform_a_microtask_checkpoint`, `construct`, `promise_resolve`,
+  `perform_promise_then`, rejected promise, `enqueue_job`/`run_jobs`,
+  `allocate_array_buffer`/`clone`/`detach`/`shared`, `get_value_from_buffer`/`set_value_in_buffer`,
+  all remaining type conversion/comparison/object ops
 
-**Not exercised (type barrier — cannot create the required object from generic API):**
-- `generator_start` — needs `T::Generator`, no generator constructor on the trait
-- `to_bigint` / `string_to_bigint` — need BigInt constructor; no way to create BigInt from trait
-- `TypedArray` / `DataView` / `Map` / `Set` / `WeakMap` / `WeakSet` / `WeakRef` downcast methods —
-  no constructor on the trait to create these objects
+#### Gap summary
 
-**Not exercised (engine lifecycle, not binding-relevant):**
-- `allocate_array_buffer` constructor path — exercised factory path only
-- JSC backend — all `todo!()` stubs remain
+| # | Gap | Resolution |
+|---|---|---|
+| 1 | `to_bigint` / `string_to_bigint` | Added `value_from_bigint` to trait; exercised |
+| 2 | `json_stringify` (was `to_json`) | Added to trait per ECMA-262 §24.5.2; exercised |
+| 3 | `with_global_scope` | Covered by `store_host_any`/`get_host_any` (host-data pattern) |
+| 4 | `register_global_property` | Covered by `object_set_property` on `ec.global_object()` |
+| 5 | `generator_start` | Exercised via `evaluate_script` → downcast → `generator_start` |
+| 6 | Object downcasts (all 11 types) | Exercised via `evaluate_script` → `Types::object_as_*` |
+| 7 | `object_as_weak_ref` | Added to `JsTypes` trait (was missing); Boa + JSC impls |
+| 8 | **JSC backend** | 25 `todo!()` stubs in `js_engine/src/jsc/engine.rs` — **next session** |
 
 ### Key architectural insight
 

@@ -141,6 +141,9 @@ impl JsTypes for JscTypes {
     fn object_as_weak_set(o: &Self::JsObject) -> Option<Self::WeakSet> {
         Some(*o)
     }
+    fn object_as_weak_ref(o: &Self::JsObject) -> Option<Self::WeakRef> {
+        Some(*o)
+    }
     fn object_as_generator(o: &Self::JsObject) -> Option<Self::Generator> {
         Some(*o)
     }
@@ -652,7 +655,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
     ) -> Completion<JscValue, JscTypes> {
         let t = unsafe { JSValueGetType(self.context.as_context_ref(), value.raw) };
         if t == JSType::kJSTypeObject {
-            self.get(
+            ExecutionContext::get(
+                self,
                 JscObject {
                     raw: value.raw as *mut JSObjectRef,
                     _phantom: PhantomData,
@@ -1150,6 +1154,14 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn create_plain_object(&mut self, _prototype: Option<&JscObject>) -> JscObject {
         todo!("JSC: create_plain_object")
+    }
+
+    fn json_stringify(&mut self, _value: JscValue) -> Completion<String, JscTypes> {
+        todo!("JSC: json_stringify")
+    }
+
+    fn value_from_bigint(&mut self, _n: i64) -> JscValue {
+        todo!("JSC: value_from_bigint")
     }
 }
 

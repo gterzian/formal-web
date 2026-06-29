@@ -570,6 +570,22 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ) -> Completion<(), T> {
         self.set(object, self.property_key_from_str(key), value, false)
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // JSON Serialization
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-json.stringify>
+    /// Serialize a value to a JSON string.
+    fn json_stringify(&mut self, value: T::JsValue) -> Completion<String, T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // BigInt Construction
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Create a `JsValue` from an `i64` BigInt.  Enables exercising `to_bigint`
+    /// and `string_to_bigint` without a BigInt constructor on the trait.
+    fn value_from_bigint(&mut self, n: i64) -> T::JsValue;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

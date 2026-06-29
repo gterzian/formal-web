@@ -141,6 +141,11 @@ impl JsTypes for BoaTypes {
     fn object_as_weak_set(o: &Self::JsObject) -> Option<Self::WeakSet> {
         JsWeakSet::from_object(o.clone()).ok()
     }
+    fn object_as_weak_ref(o: &Self::JsObject) -> Option<Self::WeakRef> {
+        // Boa does not have a specialized JsWeakRef type.
+        // WeakRef objects are plain JsObjects.
+        Some(o.clone())
+    }
     fn object_as_generator(o: &Self::JsObject) -> Option<Self::Generator> {
         JsGenerator::from_object(o.clone()).ok()
     }

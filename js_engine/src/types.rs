@@ -120,6 +120,7 @@ pub trait JsTypes: Sized + 'static {
     fn object_as_set(o: &Self::JsObject) -> Option<Self::Set>;
     fn object_as_weak_map(o: &Self::JsObject) -> Option<Self::WeakMap>;
     fn object_as_weak_set(o: &Self::JsObject) -> Option<Self::WeakSet>;
+    fn object_as_weak_ref(o: &Self::JsObject) -> Option<Self::WeakRef>;
     fn object_as_generator(o: &Self::JsObject) -> Option<Self::Generator>;
     fn object_as_async_generator(o: &Self::JsObject) -> Option<Self::AsyncGenerator>;
 }
