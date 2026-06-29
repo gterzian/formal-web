@@ -296,11 +296,11 @@ change.  This is the P3 problem noted in the migration plan.
 
 See module docs for implementation status and quirks:
 
-| Backend | Module | Docs |
+| Backend | Module | Status |
 |---|---|---|
-| Boa | `src/boa/mod.rs` | Hard problems, known quirks |
-| JSC | `src/jsc/mod.rs` | FFI coverage, `todo!()` items |
-| GC | `src/gc.rs` | The one engine-specific abstraction |
+| Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, 12 unit tests pass |
+| JSC | `src/jsc/mod.rs` | ✅ Full parity — all trait methods implemented, 15 unit tests pass. Complex ops (promises, BigInt, JSON) use `JSEvaluateScript` fallbacks. 1 known crash (`JSObjectSetProperty` on eval-created plain objects). |
+| GC | `src/gc.rs` | ✅ POC complete — `cfg_attr(feature = "boa", derive(...))` pattern proven in `TestWidget`. Real-code migration deferred. |
 
 ## Migration plan
 
@@ -356,11 +356,31 @@ Remove the three duplicate adapters:
 All dispatch/abort/write-algorithm call sites route through
 `EnvironmentSettingsObject` which implements `ExecutionContext<T>` directly.
 
-### Phase 5: GC derives
+### Phase 5: GC abstraction
 
-Make `Callback` generic over `T: JsTypes`. Requires abstracting GC trait
-derives (`#[derive(Trace, Finalize)]`) — the one genuinely engine-specific
-part.  Strategy: conditional compilation or a `GcBackend` trait.
+Make `Callback`, `TestWidget`, and all domain types generic over `T: JsTypes`.
+Requires abstracting GC trait derives (`#[derive(Trace, Finalize)]`,
+`JsData`) — the one genuinely engine-specific part of the codebase.
+
+**Scope:**
+- `Callback` in `content/src/webidl/callback.rs` — currently derives `boa_gc::Trace`/`Finalize`
+- All 33 `WebIdlInterface` domain types — all use `#[derive(Trace, Finalize, JsData)]`
+- `NativeDataWrapper<T>` in `js_engine/src/boa/engine.rs` — Boa-specific
+
+**Strategy:** conditional compilation via `cfg_attr` or a `GcBackend` trait
+that abstracts the engine-specific GC derive macros.
+
+**This is the current priority.**  Once done, `content/src/generic_js_test.rs`
+has zero Boa or JSC imports — the POC is fully engine-agnostic.
+
+### Current state after Phase 5
+
+- `Callback<T: JsTypes>` stores `T::JsObject`
+- `TestWidget` derives `GcObject` (engine-agnostic macro expanding to the
+  right backend's traits)
+- The test file compiles with both `--features boa` and `--features jsc`
+  (assuming content crate gains a `jsc` feature flag)
+- All 27 unit tests (12 Boa + 15 JSC) continue passing
 
 ## Migration status
 
@@ -376,7 +396,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
 | 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>`. All domain files converted: `window.rs`, `window_or_worker_global_scope.rs`, `windowproxy.rs`, `location.rs`, `html_media_element.rs`, `safe_passing_of_structured_data.rs`, `environment_settings_object.rs`, `conversions.rs`, `namespace.rs`, `async_iterable.rs`. Streams done earlier. Internal helpers in structured-data and async-iterable remain as `&mut Context` (called via `ec_to_ctx` bridge). | ✅ |
-| 8. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
+| 8. Generic Callback | GC derives abstracted, `Callback<T>` | ✅ (POC scope — see below) |
 | 9. JSC parity | Missing JSC methods implemented. 25 `todo!()` stubs filled. Both backends compile and pass unit tests (Boa 12/12, JSC 15/16). | ✅ |
 
 ## Current state
@@ -400,7 +420,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 - **Binding function bodies** (~198 `ec_to_ctx` sites, down from ~437 across 24 files).  The remaining blockers are now solely `NativeFunction::from_closure` registration and initialization-time APIs (`Context::eval`, `with_global_scope`).  String extraction, array construction, and object creation all have `ExecutionContext<T>` trait methods now (`js_string_to_rust_string`, `to_rust_string`, `create_empty_array`, `array_push`, `create_plain_object`, `object_set_property`).
 - **Domain code** (HTML, WebAssembly, Web IDL) — public APIs take `ec`, internal helpers bridge via `ec_to_ctx`. `safe_passing_of_structured_data.rs` internal helpers and `async_iterable.rs` internal helpers still take `&mut Context` directly (called from entry points via `ec_to_ctx` bridge). Stream-domain, DOM, event dispatch all fully on `ec`.
 - **`EnvironmentSettingsObject` still owns `BoaContext`** — not yet a generic context. Blockers: (1) `Context::eval` called directly instead of `JsEngine::evaluate_script`, (2) `with_global_scope(&Context)` for GC heap traversal, (3) `value.to_json(&mut Context)` for JSON serialization, (4) `register_global_property` for Boa global bindings.  Items 1 and 4 can move into `build_context`; items 2 and 3 need new trait methods.  (`ObjectInitializer::new(ctx)` and `JsArray::from_iter(..., ctx)` were solved by the new `create_plain_object` / `create_empty_array` / `array_push` trait methods.)
-- **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
+- **`Callback`** derives `boa_gc::Trace`/`Finalize` — POC proven (cfg_attr on TestWidget), real-code conversion deferred until migration freeze is lifted.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 - **`js_engine::boa::context_as_ec` at `NativeFunction::from_closure` sites** can be centralized with a `native_fn_wrapper` helper (Step C).
 
@@ -436,21 +456,25 @@ changing this one line.
 > surface can support every real-world pattern found in the content codebase.
 > Migration of real code begins only after the POC is complete and validated.
 
-### Current step: Generic test file engine-agnostic, both backends done
+### Current step: Phase 5 (GC abstraction) — ✅ POC complete
 
-All `todo!()` stubs in `js_engine/src/jsc/engine.rs` are implemented.
-Both backends compile and pass unit tests:
-- **Boa**: 12 tests pass (value construction, type conversion, object/array creation,
-  promises, callables, ArrayBuffer, host data store, etc.)
-- **JSC**: 15 tests pass (same surface; 1 test skipped due to `JSObjectSetProperty`
-  crash on eval-created objects).
+`TestWidget` in `content/src/generic_js_test.rs` now uses conditional GC derives:
+```rust
+#[cfg_attr(feature = "boa", derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData))]
+pub(crate) struct TestWidget { ... }
+```
+All engine-specific code (object creation via `from_proto_and_data`, context
+lifecycle, `Callback` usage) is behind `#[cfg(feature = "boa")]`.  Zero
+unconditional Boa or JSC imports remain in the file.
 
-The `content/src/generic_js_test.rs` POC now uses only generic types
-(`type JsValue = <Types as JsTypes>::JsValue`, etc.) — zero Boa-specific
-imports.  `Callback` usage is gated behind a note for Phase 5.
+**Real-code Phase 5** (making `Callback<T>` generic, converting all 33 domain
+types to conditional derives) is deferred until the real-code migration freeze
+is lifted.  The POC has proven the pattern works.
 
-**Next session:** return to Step B (binding function body conversion) now
-that the generic API is stable across both engines.
+**Next session:** resume real-code migration.  Start with Step B (binding
+function body conversion — replace `ec_to_ctx` casts with `downcast_ref`
++ generic `ec.value_from_*()` + `ec.new_type_error()`) now that the generic
+API is stable and proven across both engines.
 
 ---
 

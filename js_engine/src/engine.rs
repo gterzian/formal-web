@@ -586,6 +586,22 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// Create a `JsValue` from an `i64` BigInt.  Enables exercising `to_bigint`
     /// and `string_to_bigint` without a BigInt constructor on the trait.
     fn value_from_bigint(&mut self, n: i64) -> T::JsValue;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // GC Rooting
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Protect a JS value from garbage collection for the lifetime of the
+    /// returned handle.  When the handle is dropped, the protection is released.
+    ///
+    /// Boa: no-op (the GC traces through `#[derive(Trace)]` automatically).
+    /// JSC: calls `JSValueProtect` / `JSValueUnprotect`.
+    fn create_root(&mut self, value: &T::JsValue) -> crate::gc::GcRootHandle<T> {
+        crate::gc::GcRootHandle {
+            value: value.clone(),
+            unroot_action: None,
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

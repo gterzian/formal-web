@@ -6,8 +6,9 @@ publish = false
 autobins = false
 
 [features]
-default = ["media"]
+default = ["media", "boa"]
 media = []
+boa = []
 
 [lib]
 path = "src/main.rs"

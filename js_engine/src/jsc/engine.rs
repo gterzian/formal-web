@@ -1850,17 +1850,26 @@ impl ExecutionContext<JscTypes> for JscEngine {
         prototype: JscObject,
         data: Box<dyn std::any::Any + 'static>,
     ) -> JscObject {
-        // Store the data in host_data by a unique ID, create an empty object
-        // with the given prototype, and return it.
-        // The downcast_ref/downcast_mut pattern won't work with plain JSC
-        // objects — we use a JS object with data stored on the Rust side
-        // via a mapping from object identity to data.
-        // For now, create a plain object with the prototype.
+        // Note: proper JSC object-with-data creation requires defining a
+        // JSClass with a finalize callback and using JSObjectMake with
+        // private data (JSObjectSetPrivate).  The current implementation
+        // stores data in a side-table keyed by object pointer.
+        //
+        // TODO(Phase 5 real-code): use JSClassDefinition + JSObjectMake
+        // with jsc_generic_finalizer to free data on GC.  See gc.rs.
         let obj = self.create_plain_object(Some(&prototype));
-        // Store the data associated with this object.
         let obj_ptr = obj.raw as usize;
-        self.host_data
-            .insert(std::any::TypeId::of::<usize>(), Box::new((obj_ptr, data)));
+        // Use the object pointer as a unique key to avoid colliding with
+        // other host_data entries.
+        self.host_data.insert(
+            std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>(),
+            Box::new({
+                let mut map: std::collections::HashMap<usize, Box<dyn std::any::Any>> =
+                    std::collections::HashMap::new();
+                map.insert(obj_ptr, data);
+                map
+            }),
+        );
         obj
     }
 
@@ -2116,6 +2125,20 @@ impl ExecutionContext<JscTypes> for JscEngine {
         JscValue {
             raw: result,
             ctx: self.ctx_ptr(),
+        }
+    }
+
+    fn create_root(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
+        let ctx_ptr = self.ctx_ptr();
+        let val_ptr = value.as_raw();
+        unsafe {
+            crate::jsc_sys::JSValueProtect(ctx_ptr, val_ptr);
+        }
+        crate::gc::GcRootHandle {
+            value: *value,
+            unroot_action: Some(Box::new(move |_val| unsafe {
+                crate::jsc_sys::JSValueUnprotect(ctx_ptr, val_ptr);
+            })),
         }
     }
 }

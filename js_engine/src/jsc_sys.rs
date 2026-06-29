@@ -196,4 +196,8 @@ unsafe extern "C" {
         bytesDeallocator: *mut c_void,
         exception: *mut *mut JSValueRef,
     ) -> *mut JSObjectRef;
+
+    // ── GC protection (not in public headers; available on macOS) ────────
+    pub fn JSValueProtect(ctx: *mut JSContextRef, value: *mut JSValueRef);
+    pub fn JSValueUnprotect(ctx: *mut JSContextRef, value: *mut JSValueRef);
 }

@@ -58,22 +58,13 @@ pub trait JsTypesGcExt: JsTypes + Sized + 'static {
     fn upgrade_reflector(reflector: &Self::Reflector) -> Option<Self::JsObject>;
 }
 
-/// Extends [`JsEngine`] with rooting operations.
-pub trait JsEngineGcExt<T: JsTypesGcExt> {
-    /// Explicitly anchors a JS value to prevent collection across async
-    /// execution bounds.
-    ///
-    /// Returns a [`GcRootHandle`] that unroots on drop.
-    fn create_root(&mut self, value: &T::JsValue) -> GcRootHandle<T>;
-}
-
 /// An RAII guard that unroots a protected JS value when dropped.
-pub struct GcRootHandle<T: JsTypesGcExt> {
-    value: T::JsValue,
-    unroot_action: Option<Box<dyn FnOnce(&T::JsValue)>>,
+pub struct GcRootHandle<T: JsTypes> {
+    pub(crate) value: T::JsValue,
+    pub(crate) unroot_action: Option<Box<dyn FnOnce(&T::JsValue)>>,
 }
 
-impl<T: JsTypesGcExt> Drop for GcRootHandle<T> {
+impl<T: JsTypes> Drop for GcRootHandle<T> {
     fn drop(&mut self) {
         if let Some(action) = self.unroot_action.take() {
             action(&self.value);
@@ -89,7 +80,7 @@ impl<T: JsTypesGcExt> Drop for GcRootHandle<T> {
 #[cfg(feature = "boa")]
 mod boa_gc_impl {
     use super::*;
-    use crate::boa::{BoaContext, BoaTypes};
+    use crate::boa::BoaTypes;
 
     // SAFETY: `boa_gc::Trace` has the same safety contract as
     // `js_engine::gc::Trace` — the implementor guarantees that every GC
@@ -113,22 +104,13 @@ mod boa_gc_impl {
             Some(reflector.clone())
         }
     }
-
-    impl JsEngineGcExt<BoaTypes> for BoaContext {
-        fn create_root(&mut self, value: &boa_engine::JsValue) -> GcRootHandle<BoaTypes> {
-            GcRootHandle {
-                value: value.clone(),
-                unroot_action: None,
-            }
-        }
-    }
 }
 
 // ── JSC backend ───────────────────────────────────────────────────────────
 #[cfg(not(feature = "boa"))]
 mod jsc_gc_impl {
     use super::*;
-    use crate::jsc::{JscEngine, JscTypes};
+    use crate::jsc::JscTypes;
 
     impl JsTypesGcExt for JscTypes {
         type Reflector = *mut std::ffi::c_void;
@@ -155,27 +137,7 @@ mod jsc_gc_impl {
     }
 
     unsafe extern "C" {
-        fn JSValueProtect(ctx: *mut std::ffi::c_void, value: *mut std::ffi::c_void);
-        fn JSValueUnprotect(ctx: *mut std::ffi::c_void, value: *mut std::ffi::c_void);
         fn JSObjectGetPrivate(object: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-    }
-
-    impl JsEngineGcExt<JscTypes> for JscEngine {
-        fn create_root(&mut self, value: &crate::jsc::JscValue) -> GcRootHandle<JscTypes> {
-            let ctx_ptr = self.context().as_context_ref() as *mut std::ffi::c_void;
-            let val_ptr = value.as_raw() as *mut std::ffi::c_void;
-
-            unsafe {
-                JSValueProtect(ctx_ptr, val_ptr);
-            }
-
-            GcRootHandle {
-                value: *value,
-                unroot_action: Some(Box::new(move |_val| unsafe {
-                    JSValueUnprotect(ctx_ptr, val_ptr);
-                })),
-            }
-        }
     }
 
     #[allow(dead_code)]
