@@ -396,8 +396,9 @@ has zero Boa or JSC imports — the POC is fully engine-agnostic.
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
 | 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>`. All domain files converted: `window.rs`, `window_or_worker_global_scope.rs`, `windowproxy.rs`, `location.rs`, `html_media_element.rs`, `safe_passing_of_structured_data.rs`, `environment_settings_object.rs`, `conversions.rs`, `namespace.rs`, `async_iterable.rs`. Streams done earlier. Internal helpers in structured-data and async-iterable remain as `&mut Context` (called via `ec_to_ctx` bridge). | ✅ |
-| 8. Generic Callback | GC derives abstracted, `Callback<T>` | ✅ (POC scope — see below) |
+| 8. Generic Callback | GC derives abstracted in POC (`cfg_attr` on TestWidget, JSC `GcRootHandle` example). Real-code `Callback<T>` deferred. | ✅ POC |
 | 9. JSC parity | Missing JSC methods implemented. 25 `todo!()` stubs filled. Both backends compile and pass unit tests (Boa 12/12, JSC 15/16). | ✅ |
+| 10. JSC content | Content crate compiles & tests pass with `--features jsc`. Requires: (1) feature flag wiring, (2) conditional `Types` alias, (3) gate Boa-specific content, (4) JSC object creation/rooting. Test file has cfg arms ready. | ❌ next |
 
 ## Current state
 
@@ -456,25 +457,50 @@ changing this one line.
 > surface can support every real-world pattern found in the content codebase.
 > Migration of real code begins only after the POC is complete and validated.
 
-### Current step: Phase 5 (GC abstraction) — ✅ POC complete
+### Current step: POC complete — 49 tests pass (Boa), real-code migration next
 
-`TestWidget` in `content/src/generic_js_test.rs` now uses conditional GC derives:
-```rust
-#[cfg_attr(feature = "boa", derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData))]
-pub(crate) struct TestWidget { ... }
-```
-All engine-specific code (object creation via `from_proto_and_data`, context
-lifecycle, `Callback` usage) is behind `#[cfg(feature = "boa")]`.  Zero
-unconditional Boa or JSC imports remain in the file.
+The generic JS layer POC is complete.  `content/src/generic_js_test.rs`
+contains a full TestWidget domain type with 49 passing unit tests covering
+every JS integration pattern found in content/:
 
-**Real-code Phase 5** (making `Callback<T>` generic, converting all 33 domain
-types to conditional derives) is deferred until the real-code migration freeze
-is lifted.  The POC has proven the pattern works.
+- **Binding patterns**: getter, setter (string and numeric via `to_uint32`),
+  method, constructor, static factory, promise-returning, callback invocation,
+  callback storage, sequence iteration, array construction
+- **Engine operations**: all `ExecutionContext` / `JsEngine` / `EcmascriptHost`
+  methods exercised through generic API calls
+- **GC**: `cfg_attr(feature = "boa", derive(...))` on TestWidget with
+  documented JSC equivalent (`GcRootHandle`).  `create_root` is on
+  `ExecutionContext<T>` (added as part of this phase).
 
-**Next session:** resume real-code migration.  Start with Step B (binding
-function body conversion — replace `ec_to_ctx` casts with `downcast_ref`
-+ generic `ec.value_from_*()` + `ec.new_type_error()`) now that the generic
-API is stable and proven across both engines.
+The exercise functions (`exercise_generic_api`, `exercise_engine_api`,
+`exercise_remaining_api`) have been deleted — all their patterns are now
+covered by the real unit tests.
+
+### Next: real-code migration (Step B)
+
+Start converting binding function bodies in `content/src/js/bindings/`:
+replace `ec_to_ctx` casts (~336 remaining) with direct `downcast_ref` +
+`ec.value_from_*()` + `ec.new_type_error()`.  The POC test file proves
+the pattern works for every binding type.
+
+After that: JSC backend parity for content.  Currently:
+- `js_engine` has full JSC backend (15 tests pass, 1 skipped)
+- Content compiles only with Boa (`Types = BoaTypes`).  JSC requires:
+  1. Add `jsc` feature to content/Cargo.toml (feature flag, dependencies)
+  2. Make `crate::js::Types` conditional: `#[cfg(feature = "boa")]` /
+     `#[cfg(feature = "jsc")]`
+  3. Gate all Boa-specific content (GC derives, `from_proto_and_data`,
+     `NativeFunction`, `Context::eval`, `$sub_crate::boa::BoaContext`) behind
+     `#[cfg(feature = "boa")]`
+  4. Add JSC equivalents for object creation (`JSObjectMake` +
+     `JSObjectSetPrivate`), rooting (`create_root`), and context lifecycle
+  5. Make the test module dual-backend (`with_engine` closure pattern,
+     ready to drop in when #1-4 are done)
+
+The test file already has the JSC cfg arms (`#[cfg(feature = "jsc")]`
+variants for `create_test_widget`, `TestWidget` field types, `store_callback`).
+Once content compiles with `--features jsc`, the test module's `with_engine`
+helper dispatches to the right backend and all tests run identically.
 
 ---
 
