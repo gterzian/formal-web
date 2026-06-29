@@ -427,6 +427,68 @@ changing this one line.
 
 ## Next steps (priority order)
 
+> **⚠️ CONTENT MIGRATION FROZEN.** Steps B–G below are deferred.  No binding
+> files, domain files, or adapter structs may be edited until the generic API
+> surface is fully designed and exercised in `generic_js_test.rs`.
+> See [CURRENT WORKFLOW](#current-workflow--do-not-touch-content-code) above.
+
+### Current step: Build out the generic API surface in `generic_js_test.rs`
+
+The generic API surface is not yet complete.  The following gaps must be
+addressed **in the test module first** before touching any content code:
+
+1. **`to_js_string` (ToString abstract op)** — already exercised as a type-check
+   call but not yet integrated into a binding function pattern (e.g. for setters
+   that need to call `ToString` on an argument before converting to Rust).
+
+2. **Property descriptor operations** — `define_property_or_throw`,
+   `get_own_property`, `has_property` are on the trait but untested in the
+   test module's domain/binding pattern.
+
+3. **Iterator operations** — `get_iterator`, `iterator_step`, `iterator_value`,
+   `iterator_close` are on the trait but have no test-module exercise path.
+
+4. **Promise operations at the binding level** — `new_promise_capability`,
+   `perform_promise_then`, `promise_resolve` are on the trait.  The test module
+   should exercise creating a promise, reacting to it, and returning it from a
+   binding function.
+
+5. **`create_builtin_function`** — the trait method exists but is untested in
+   the test module.  This is the key to eliminating `NativeFunction::from_closure`
+   calls (Step C).  The test module should build a binding function that creates
+   a builtin function and calls it.
+
+6. **`Call` / `Construct` at the binding level** — the trait has `call` and
+   `construct` but the test module only exercises `is_callable`.  A binding
+   function should invoke a passed callback.
+
+7. **Error-path patterns** — the test module should exercise every error
+   construction method (`new_type_error`, `new_range_error`, `new_error`) in
+   real binding-function error paths, and verify that `Completion` error
+   propagation works correctly through `?`.
+
+8. **`call_user_objects_operation` through the trait** — currently this uses
+   `&mut dyn EcmascriptHost<T>`.  The test module should exercise a callback
+   invocation pattern that mirrors real Web IDL callback dispatch.
+
+9. **Integration with `create_interface_instance`** — already partially
+   exercised (widget creation).  Extend to test error paths and property
+   access on the created object.
+
+10. **Setter with type conversion** — the test module has `set_title` using
+    `to_rust_string`.  Add a numeric setter (e.g. `set_count`) exercising
+    `to_number` and `to_int32` in a binding pattern.
+
+Each gap above gets a concrete test function or exercise path in
+`generic_js_test.rs`.  The goal is that the test module exercises **every**
+`ExecutionContext<T>` method in a binding-function-adjacent pattern before
+we touch any content code.
+
+Once all gaps are addressed and `cargo check -p content` passes, the freeze
+is lifted and Steps B–G resume.
+
+---
+
 ### Step A: Add `get_object_data` / `get_object_data_mut` to `ExecutionContext<T>` — SUPERSEDED
 
 The practical conversion uses direct `obj.downcast_ref::<T>()` and
@@ -548,23 +610,27 @@ crates hide migration-specific warnings) and skip WPT + navigation
 verification (they are expected to fail mid-migration).  Resume full
 verification after Step G when `ec_to_ctx` is deleted.
 
-## Session-resume guide
+## CURRENT WORKFLOW — DO NOT TOUCH CONTENT CODE
 
-**Current step: Using `generic_js_test` module for fast feedback on generic layer design.**
+**The content migration is frozen.**  All generic-API design work must happen
+inside `content/src/generic_js_test.rs` first.  Do NOT edit any binding files,
+domain files, adapter structs, or other content code until the full generic API
+is proven through the test module.
 
 ### New workflow
 
-Instead of incrementally converting every `ec_to_ctx` site in `content/` (which
-is slow and risks going in the wrong direction), we now have a `content/src/generic_js_test.rs`
-module that serves as a mini-integration-test for the generic JS layer.  It defines
-a toy domain type (`TestWidget`), implements `WebIdlInterface<Types>` for it with
-binding functions that use the full generic API, and an `exercise_generic_api` function
-that calls every relevant `ExecutionContext<T>` / `JsTypes` / `EcmascriptHost<T>` method.
+The `content/src/generic_js_test.rs` module is a self-contained mini-integration-test
+for the generic JS layer.  It defines a toy domain type (`TestWidget`), implements
+`WebIdlInterface<Types>` for it with binding functions that use the full generic API,
+and an `exercise_generic_api` function that calls every relevant `ExecutionContext<T>` /
+`JsTypes` / `EcmascriptHost<T>` method.
 
-**Workflow going forward:**
+**Workflow:**
 1. Add new generic API methods to `js_engine` traits.
 2. Exercise them in `generic_js_test.rs` — this gives fast compile-time feedback.
-3. Once the API design is proven, apply to the real `content/` code.
+3. Once the **entire** generic API surface is designed and proven in the test
+   module (covering every remaining bridging gap identified below), begin
+   migrating content code.
 
 The test module compiles as part of `cargo check -p content` and catches
 borrow-checker issues, type mismatch, and design problems instantly.
