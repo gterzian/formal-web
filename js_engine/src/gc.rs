@@ -142,10 +142,13 @@ mod jsc_gc_impl {
                 None
             } else {
                 Some(unsafe {
-                    crate::jsc::JscObject::from_raw(std::mem::transmute::<
-                        *mut std::ffi::c_void,
-                        *mut crate::jsc_sys::JSObjectRef,
-                    >(*reflector))
+                    crate::jsc::JscObject::from_raw(
+                        std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            *mut crate::jsc_sys::JSObjectRef,
+                        >(*reflector),
+                        std::ptr::null_mut(),
+                    )
                 })
             }
         }
@@ -175,6 +178,7 @@ mod jsc_gc_impl {
         }
     }
 
+    #[allow(dead_code)]
     pub extern "C" fn jsc_generic_finalizer<V>(object: *mut std::ffi::c_void) {
         unsafe {
             let private_data = JSObjectGetPrivate(object);

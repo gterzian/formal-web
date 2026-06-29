@@ -1324,7 +1324,7 @@ fn get_iterator_from_method(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ExecutionContext;
+    use crate::{ExecutionContext, JsTypes};
 
     /// Verify that `create_builtin_function` creates a JS-callable function
     /// that can receive arguments and return values through the generic trait.
@@ -1360,5 +1360,145 @@ mod tests {
             .eval(boa_engine::Source::from_bytes("double(21)"))
             .expect("eval should succeed");
         assert_eq!(result.as_number(), Some(42.0));
+    }
+
+    #[test]
+    fn value_construction_and_downcasts() {
+        let mut engine = BoaContext::new();
+        let undef = engine.value_undefined();
+        let null = engine.value_null();
+        let bool_val = engine.value_from_bool(true);
+        let num_val = engine.value_from_number(42.0);
+        let str_val = engine.value_from_string(boa_engine::js_string!("hello"));
+
+        assert!(BoaTypes::value_is_undefined(&undef));
+        assert!(BoaTypes::value_is_null(&null));
+        assert_eq!(BoaTypes::value_as_bool(&bool_val), Some(true));
+        assert!((BoaTypes::value_as_number(&num_val).unwrap() - 42.0).abs() < 0.001);
+        assert!(BoaTypes::value_as_string(&str_val).is_some());
+        assert!(BoaTypes::value_as_object(&num_val).is_none());
+    }
+
+    #[test]
+    fn type_conversion_to_number_and_string() {
+        let mut engine = BoaContext::new();
+        let num = engine.value_from_number(42.5);
+        let n = engine.to_number(num).unwrap();
+        assert!((n - 42.5).abs() < 0.001);
+
+        let num_val = engine.value_from_number(123.0);
+        let s = engine.to_rust_string(num_val).unwrap();
+        assert_eq!(s, "123");
+    }
+
+    #[test]
+    fn create_plain_object_and_array() {
+        let mut engine = BoaContext::new();
+        let obj = engine.create_plain_object(None);
+        let val = engine.value_from_number(99.0);
+        engine.object_set_property(obj.clone(), "x", val).unwrap();
+
+        let pk = engine.property_key_from_str("x");
+        let retrieved = ExecutionContext::get(&mut engine, obj, pk).unwrap();
+        let n = engine.to_number(retrieved).unwrap();
+        assert!((n - 99.0).abs() < 0.001);
+
+        let arr = engine.create_empty_array();
+        let v10 = engine.value_from_number(10.0);
+        engine.array_push(&arr, v10).unwrap();
+        let v20 = engine.value_from_number(20.0);
+        engine.array_push(&arr, v20).unwrap();
+        let pk0 = engine.property_key_from_index(0);
+        let v0 = ExecutionContext::get(&mut engine, arr.clone(), pk0).unwrap();
+        assert!((engine.to_number(v0).unwrap() - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn error_construction() {
+        let mut engine = BoaContext::new();
+        let type_err = engine.new_type_error("bad type");
+        let range_err = engine.new_range_error("out of range");
+        assert!(type_err.is_object());
+        assert!(range_err.is_object());
+    }
+
+    #[test]
+    fn host_data_store() {
+        let mut engine = BoaContext::new();
+        let id = std::any::TypeId::of::<String>();
+        engine.store_host_any(id, Box::new("test data".to_string()));
+        assert!(engine.get_host_any(&id).is_some());
+        assert!(engine.remove_host_any(&id).is_some());
+        assert!(engine.get_host_any(&id).is_none());
+    }
+
+    #[test]
+    fn realm_intrinsics_finds_constructors() {
+        let engine = BoaContext::new();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        let _ = intrinsics.object;
+        let _ = intrinsics.promise;
+        let _ = intrinsics.array;
+    }
+
+    #[test]
+    fn evaluate_script_via_engine() {
+        let mut engine = BoaContext::new();
+        let realm = engine.create_realm();
+        let result = engine.evaluate_script("40 + 2", &realm).unwrap();
+        let n = engine.to_number(result).unwrap();
+        assert!((n - 42.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn promise_new_capability_and_resolve() {
+        let mut engine = BoaContext::new();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        let pcap = engine.new_promise_capability(intrinsics.promise).unwrap();
+        assert!(pcap.promise.is_object());
+
+        let undef = engine.value_undefined();
+        let val = engine.value_from_number(7.0);
+        let result = EcmascriptHost::call(&mut engine, &pcap.resolve, &undef, &[val]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn is_callable_and_call() {
+        let mut engine = BoaContext::new();
+        let realm = engine.current_realm();
+        let fn_val = engine
+            .evaluate_script("(function(x) { return x * 2; })", &realm)
+            .unwrap();
+        assert!(engine.is_callable(&fn_val));
+        let fn_obj = fn_val.as_object().unwrap().clone();
+        let undef = engine.value_undefined();
+        let arg = engine.value_from_number(21.0);
+        let result = EcmascriptHost::call(&mut engine, &fn_obj, &undef, &[arg]).unwrap();
+        let n = engine.to_number(result).unwrap();
+        assert!((n - 42.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn same_value_and_comparison() {
+        let mut engine = BoaContext::new();
+        let v1 = engine.value_from_number(1.0);
+        let v2 = engine.value_from_number(1.0);
+        let v3 = engine.value_from_number(2.0);
+        assert!(engine.same_value(&v1, &v2));
+        assert!(!engine.same_value(&v1, &v3));
+    }
+
+    #[test]
+    fn allocate_array_buffer_via_engine() {
+        let mut engine = BoaContext::new();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        let ab = engine
+            .allocate_array_buffer(intrinsics.array_buffer, 8, None)
+            .unwrap();
+        let _ = ab;
     }
 }

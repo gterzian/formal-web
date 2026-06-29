@@ -12,9 +12,6 @@
 
 use std::marker::PhantomData;
 
-use boa_engine::{JsData, JsValue, object::JsObject};
-use boa_gc::{Finalize, Trace};
-
 use crate::js::Types;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
@@ -23,10 +20,15 @@ use js_engine::{
     Completion, ExecutionContext, IteratorKind, JsEngine, JsTypes, PropertyDescriptor,
 };
 
+// Local type aliases for the active backend's associated types.
+// Changing `Types` in `crate::js` switches between Boa and JSC.
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+
 // ── Domain type ──────────────────────────────────────────────────────────
 
 /// A toy domain struct exercising the full generic-API binding pattern.
-#[derive(Trace, Finalize, JsData)]
+#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]
 pub(crate) struct TestWidget {
     title: String,
     visible: bool,
@@ -159,7 +161,7 @@ fn to_object(
     ec.object_set_property(result.clone(), "title", title_val)?;
     ec.object_set_property(result.clone(), "visible", visible_val)?;
     ec.object_set_property(result.clone(), "count", count_val)?;
-    Ok(JsValue::from(result))
+    Ok(Types::value_from_object(result))
 }
 
 /// Method: `widget.toArray()` — returns `[title, visible, count]`.
@@ -182,7 +184,7 @@ fn to_array(
     ec.array_push(&array, title_val)?;
     ec.array_push(&array, visible_val)?;
     ec.array_push(&array, count_val)?;
-    Ok(JsValue::from(array))
+    Ok(Types::value_from_object(array))
 }
 
 /// Setter: `widget.count = val` — exercises `ec.to_number` in a binding pattern.
@@ -258,7 +260,7 @@ fn with_callback(
         .first()
         .and_then(|v| Types::value_as_object(v))
         .ok_or_else(|| ec.new_type_error("expected a callback function"))?;
-    let callback_val = JsValue::from(callback_obj.clone());
+    let callback_val = Types::value_from_object(callback_obj.clone());
     if !ec.is_callable(&callback_val) {
         return Err(ec.new_type_error("argument is not callable"));
     }
@@ -317,7 +319,7 @@ fn create_static(
         count: 0,
     };
     let obj = create_interface_instance::<Types, TestWidget>(widget, ec)?;
-    Ok(JsValue::from(obj))
+    Ok(Types::value_from_object(obj))
 }
 
 // ── WebIDL interface definition ─────────────────────────────────────────
@@ -532,10 +534,10 @@ pub(crate) fn exercise_generic_api(ec: &mut dyn ExecutionContext<Types>) {
     let _strict: bool = ec.is_strictly_equal(&bool_val, &bool_val);
 
     // ── is_array ───────────────────────────────────────────────────
-    let _is_arr: bool = ec.is_array(&JsValue::from(arr)).unwrap_or(false);
+    let _is_arr: bool = ec.is_array(&Types::value_from_object(arr)).unwrap_or(false);
 
     // ── Upcasts from JsTypes ────────────────────────────────────────
-    let _val_from_obj: JsValue = JsValue::from(plain);
+    let _val_from_obj: JsValue = Types::value_from_object(plain);
 
     // ── set / create_data_property ──────────────────────────────────
     let pk_custom = ec.property_key_from_str("customProp");
@@ -590,7 +592,7 @@ pub(crate) fn exercise_generic_api(ec: &mut dyn ExecutionContext<Types>) {
     let v3 = ec.value_from_number(3.0);
     let _ = ec.array_push(&iter_arr, v3);
     let mut iter_record = ec
-        .get_iterator(JsValue::from(iter_arr), IteratorKind::Sync, None)
+        .get_iterator(Types::value_from_object(iter_arr), IteratorKind::Sync, None)
         .unwrap_or_else(|_| {
             // Fallback: create a dummy iterator record (won't happen with real arrays,
             // but satisfies the type-checker in a test context).
@@ -623,7 +625,11 @@ pub(crate) fn exercise_generic_api(ec: &mut dyn ExecutionContext<Types>) {
         ExecutionContext::get(ec, widget_obj.clone(), pk_to_array).unwrap_or(ec.value_undefined());
     if let Some(to_array_fn) = Types::value_as_object(&to_array_val) {
         if ec.is_callable(&to_array_val) {
-            let _ = ec.call(&to_array_fn, &JsValue::from(widget_obj.clone()), &[]);
+            let _ = ec.call(
+                &to_array_fn,
+                &Types::value_from_object(widget_obj.clone()),
+                &[],
+            );
         }
     }
 
@@ -641,17 +647,17 @@ pub(crate) fn exercise_generic_api(ec: &mut dyn ExecutionContext<Types>) {
 
     // ── set_count (numeric setter exercising to_number) ─────────────
     let _ = set_count(
-        &JsValue::from(widget_obj.clone()),
+        &Types::value_from_object(widget_obj.clone()),
         &[ec.value_from_number(99.0)],
         ec,
     );
 
     // ── call_user_objects_operation (Web IDL callback helper) ──────────
+    // Note: Callback is currently Boa-specific (derives boa_gc traits).
+    // Will be generic after Phase 5 (GC abstraction).
     {
         use crate::webidl::{Callback, call_user_objects_operation};
         let widget_callback = Callback::from_object(widget_obj.clone());
-        // call_user_objects_operation takes &mut dyn EcmascriptHost<Types>;
-        // ExecutionContext<Types> coerces automatically.
         let _ = call_user_objects_operation(ec, &widget_callback, "toArray", &[], None);
     }
 
@@ -794,14 +800,14 @@ pub(crate) fn exercise_remaining_api(
     // ── Object operations: get_v, delete_property_or_throw, etc. ────
     let pk = ec.property_key_from_str("testProp");
     let _ = ec.object_set_property(plain.clone(), "testProp", bool_val.clone());
-    let _get_v = ec.get_v(JsValue::from(plain.clone()), pk.clone());
+    let _get_v = ec.get_v(Types::value_from_object(plain.clone()), pk.clone());
     let _del = ec.delete_property_or_throw(plain.clone(), pk.clone());
 
     // ── has_own_property ──────────────────────────────────────────
     let _has_own = ec.has_own_property(plain.clone(), pk.clone());
 
     // ── get_method ────────────────────────────────────────────────
-    let _method = ec.get_method(JsValue::from(plain.clone()), pk.clone());
+    let _method = ec.get_method(Types::value_from_object(plain.clone()), pk.clone());
 
     // ── set_prototype ─────────────────────────────────────────────
     let proto = ec.create_plain_object(None);
@@ -823,9 +829,11 @@ pub(crate) fn exercise_remaining_api(
     let dummy_iter = ec.create_empty_array();
     let dummy_arr_val = ec.value_from_number(1.0);
     let _ = ec.array_push(&dummy_iter, dummy_arr_val);
-    if let Ok(mut iter_record) =
-        ec.get_iterator(JsValue::from(dummy_iter), IteratorKind::Sync, None)
-    {
+    if let Ok(iter_record) = ec.get_iterator(
+        Types::value_from_object(dummy_iter),
+        IteratorKind::Sync,
+        None,
+    ) {
         let close_val = ec.value_undefined();
         let _ = ec.async_iterator_close(iter_record, Ok(close_val));
     }
@@ -907,7 +915,7 @@ pub(crate) fn exercise_remaining_api(
     let test_obj_for_json = ec.create_plain_object(None);
     let val_1 = ec.value_from_number(1.0);
     let _ = ec.object_set_property(test_obj_for_json.clone(), "x", val_1);
-    let _json_str = ec.json_stringify(JsValue::from(test_obj_for_json));
+    let _json_str = ec.json_stringify(Types::value_from_object(test_obj_for_json));
 
     // ── Object downcasts via evaluate_script ──────────────────────
     let map_val = engine

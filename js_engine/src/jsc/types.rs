@@ -12,7 +12,6 @@
 //!   Strings (`JSStringRef`) follow the Create Rule and are wrapped in RAII.
 
 use std::ffi::CString;
-use std::marker::PhantomData;
 use std::os::raw::c_char;
 
 use crate::jsc_sys::*;
@@ -39,12 +38,10 @@ impl JscContext {
     }
 
     pub fn global_object(&self) -> JscObject {
-        let raw = unsafe { JSContextGetGlobalObject(self.as_context_ref()) };
+        let ctx_ptr = self.as_context_ref();
+        let raw = unsafe { JSContextGetGlobalObject(ctx_ptr) };
         assert!(!raw.is_null());
-        JscObject {
-            raw,
-            _phantom: PhantomData,
-        }
+        JscObject { raw, ctx: ctx_ptr }
     }
 }
 
@@ -142,11 +139,18 @@ impl std::hash::Hash for JscString {
 /// A JavaScript value — wraps a `JSValueRef`.
 ///
 /// Valid only while the creating `JscEngine` exists.
-/// `PartialEq` compares raw pointers — a placeholder until
-/// engine-based comparison is plumbed.
+/// Contains a context pointer for type queries (JSC requires context for
+/// `JSValueGetType`, `JSValueIsString`, etc.).
 #[derive(Clone, Copy)]
 pub struct JscValue {
     pub(crate) raw: *mut JSValueRef,
+    pub(crate) ctx: *mut JSContextRef,
+}
+
+impl std::fmt::Debug for JscValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JscValue").field("raw", &self.raw).finish()
+    }
 }
 
 impl PartialEq for JscValue {
@@ -158,20 +162,29 @@ impl Eq for JscValue {}
 
 impl JscValue {
     /// # Safety
-    /// `raw` must be a valid `JSValueRef` from a context that outlives this value.
-    pub unsafe fn from_raw(raw: *mut JSValueRef) -> Self {
-        Self { raw }
+    /// `raw` must be a valid `JSValueRef` from `ctx`.
+    pub unsafe fn from_raw(raw: *mut JSValueRef, ctx: *mut JSContextRef) -> Self {
+        Self { raw, ctx }
     }
     pub fn as_raw(&self) -> *mut JSValueRef {
         self.raw
     }
-
-    pub fn get_type(&self, ctx: &JscContext) -> JSType {
-        unsafe { JSValueGetType(ctx.as_context_ref(), self.raw) }
+    pub fn ctx(&self) -> *mut JSContextRef {
+        self.ctx
     }
 
-    pub fn to_bool(&self, ctx: &JscContext) -> bool {
-        unsafe { JSValueToBoolean(ctx.as_context_ref(), self.raw) }
+    pub fn get_type(&self) -> JSType {
+        if self.ctx.is_null() {
+            return JSType::kJSTypeUndefined;
+        }
+        unsafe { JSValueGetType(self.ctx, self.raw) }
+    }
+
+    pub fn to_bool(&self) -> bool {
+        if self.ctx.is_null() {
+            return false;
+        }
+        unsafe { JSValueToBoolean(self.ctx, self.raw) }
     }
 }
 
@@ -179,8 +192,10 @@ impl JscValue {
 pub struct JscUndefined;
 impl JscUndefined {
     pub fn get(ctx: &JscContext) -> JscValue {
+        let ctx_ptr = ctx.as_context_ref();
         JscValue {
-            raw: unsafe { JSValueMakeUndefined(ctx.as_context_ref()) },
+            raw: unsafe { JSValueMakeUndefined(ctx_ptr) },
+            ctx: ctx_ptr,
         }
     }
 }
@@ -189,8 +204,10 @@ impl JscUndefined {
 pub struct JscNull;
 impl JscNull {
     pub fn get(ctx: &JscContext) -> JscValue {
+        let ctx_ptr = ctx.as_context_ref();
         JscValue {
-            raw: unsafe { JSValueMakeNull(ctx.as_context_ref()) },
+            raw: unsafe { JSValueMakeNull(ctx_ptr) },
+            ctx: ctx_ptr,
         }
     }
 }
@@ -200,20 +217,20 @@ impl JscNull {
 #[derive(Clone, Copy)]
 pub struct JscObject {
     pub(crate) raw: *mut JSObjectRef,
-    pub(crate) _phantom: PhantomData<*mut ()>,
+    pub(crate) ctx: *mut JSContextRef,
 }
 
 impl JscObject {
     /// # Safety
-    /// `raw` must be a valid `JSObjectRef`.
-    pub unsafe fn from_raw(raw: *mut JSObjectRef) -> Self {
-        Self {
-            raw,
-            _phantom: PhantomData,
-        }
+    /// `raw` must be a valid `JSObjectRef` from `ctx`.
+    pub unsafe fn from_raw(raw: *mut JSObjectRef, ctx: *mut JSContextRef) -> Self {
+        Self { raw, ctx }
     }
     pub fn as_raw(&self) -> *mut JSObjectRef {
         self.raw
+    }
+    pub fn ctx(&self) -> *mut JSContextRef {
+        self.ctx
     }
     pub fn as_value_ref(&self) -> *mut JSValueRef {
         self.raw as *mut JSValueRef
@@ -221,15 +238,22 @@ impl JscObject {
     pub fn as_value(&self) -> JscValue {
         JscValue {
             raw: self.as_value_ref(),
+            ctx: self.ctx,
         }
     }
 
-    pub fn is_callable(&self, _ctx: &JscContext) -> bool {
-        unsafe { JSObjectIsFunction(self.raw as *mut JSContextRef, self.raw) }
+    pub fn is_callable(&self) -> bool {
+        if self.ctx.is_null() {
+            return false;
+        }
+        unsafe { JSObjectIsFunction(self.ctx, self.raw) }
     }
 
-    pub fn is_constructor(&self, _ctx: &JscContext) -> bool {
-        unsafe { JSObjectIsConstructor(self.raw as *mut JSContextRef, self.raw) }
+    pub fn is_constructor(&self) -> bool {
+        if self.ctx.is_null() {
+            return false;
+        }
+        unsafe { JSObjectIsConstructor(self.ctx, self.raw) }
     }
 }
 

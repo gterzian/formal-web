@@ -121,7 +121,7 @@ unsafe extern "C" {
         arguments: *const *mut JSValueRef,
         exception: *mut *mut JSValueRef,
     ) -> *mut JSObjectRef;
-    pub fn JSObjectCopyProperty(
+    pub fn JSObjectGetProperty(
         ctx: *mut JSContextRef,
         object: *mut JSObjectRef,
         propertyName: *mut JSStringRef,

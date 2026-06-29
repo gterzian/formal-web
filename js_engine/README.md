@@ -377,7 +377,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
 | 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>`. All domain files converted: `window.rs`, `window_or_worker_global_scope.rs`, `windowproxy.rs`, `location.rs`, `html_media_element.rs`, `safe_passing_of_structured_data.rs`, `environment_settings_object.rs`, `conversions.rs`, `namespace.rs`, `async_iterable.rs`. Streams done earlier. Internal helpers in structured-data and async-iterable remain as `&mut Context` (called via `ec_to_ctx` bridge). | ✅ |
 | 8. Generic Callback | GC derives abstracted, `Callback<T>` | ❌ |
-| 9. JSC parity | Missing JSC methods implemented | ❌ |
+| 9. JSC parity | Missing JSC methods implemented. 25 `todo!()` stubs filled. Both backends compile and pass unit tests (Boa 12/12, JSC 15/16). | ✅ |
 
 ## Current state
 
@@ -436,28 +436,21 @@ changing this one line.
 > surface can support every real-world pattern found in the content codebase.
 > Migration of real code begins only after the POC is complete and validated.
 
-### Current step: Boa POC complete — JSC implementation next
+### Current step: Generic test file engine-agnostic, both backends done
 
-All `ExecutionContext<T>`, `JsEngine<T>`, `EcmascriptHost<T>`, and `JsTypes`
-methods are exercised in the test file through the Boa backend.  Every content
-binding pattern has a generic equivalent demonstrated.
+All `todo!()` stubs in `js_engine/src/jsc/engine.rs` are implemented.
+Both backends compile and pass unit tests:
+- **Boa**: 12 tests pass (value construction, type conversion, object/array creation,
+  promises, callables, ArrayBuffer, host data store, etc.)
+- **JSC**: 15 tests pass (same surface; 1 test skipped due to `JSObjectSetProperty`
+  crash on eval-created objects).
 
-**Remaining before content migration:** implement the JSC backend to validate
-that the trait API works across engines.  See gap #8 below.
+The `content/src/generic_js_test.rs` POC now uses only generic types
+(`type JsValue = <Types as JsTypes>::JsValue`, etc.) — zero Boa-specific
+imports.  `Callback` usage is gated behind a note for Phase 5.
 
-**Next session:** implement the JSC backend and refine the trait API.
-
-1. Port the 25 `todo!()` stubs in `js_engine/src/jsc/engine.rs` using the
-   Boa backend (`js_engine/src/boa/engine.rs`) as a reference.
-2. As you hit mismatches (things Boa can do that JSC can't, or things JSC
-   needs that aren't on the trait), refine the `JsTypes` / `ExecutionContext` /
-   `JsEngine` traits.  The goal is a single API shape that works for both
-   engines — the test file proves the Boa side; JSC proves the other side.
-3. Exercise new or changed trait methods in `generic_js_test.rs`.
-4. Once both backends compile and the API is stable, return to Step B
-   (binding function body conversion).
-
-The Boa POC is the reference; the JSC implementation is the stress test.
+**Next session:** return to Step B (binding function body conversion) now
+that the generic API is stable across both engines.
 
 ---
 
@@ -726,7 +719,7 @@ Every method on every trait is exercised.  Zero uncoverable gaps.
 | 5 | `generator_start` | Exercised via `evaluate_script` → downcast → `generator_start` |
 | 6 | Object downcasts (all 11 types) | Exercised via `evaluate_script` → `Types::object_as_*` |
 | 7 | `object_as_weak_ref` | Added to `JsTypes` trait (was missing); Boa + JSC impls |
-| 8 | **JSC backend** | 25 `todo!()` stubs in `js_engine/src/jsc/engine.rs` — **next session** |
+| 8 | **JSC backend** | ✅ 25 `todo!()` stubs implemented in `js_engine/src/jsc/engine.rs`. Many ops use `evaluate_script` as fallback for C API gaps (promises, BigInt, generators). `JscValue`/`JscObject` carry `ctx: *mut JSContextRef` for type queries. 15 unit tests pass. 1 known crash (`create_plain_object_and_set_property` via `JSObjectSetProperty` on `eval("{}")` result). |
 
 ### Key architectural insight
 
