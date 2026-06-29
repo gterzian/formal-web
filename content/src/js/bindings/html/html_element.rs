@@ -167,17 +167,9 @@ fn set_title(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let title = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_element_ref(this, |html_element| html_element.set_title(&title))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let title = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_element_ref(this, ec, |html_element| html_element.set_title(&title))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_lang(
@@ -194,17 +186,9 @@ fn set_lang(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let lang = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_element_ref(this, |html_element| html_element.set_lang(&lang))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let lang = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_element_ref(this, ec, |html_element| html_element.set_lang(&lang))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_dir(
@@ -221,17 +205,9 @@ fn set_dir(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let dir = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_element_ref(this, |html_element| html_element.set_dir(&dir))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let dir = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_element_ref(this, ec, |html_element| html_element.set_dir(&dir))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_hidden(

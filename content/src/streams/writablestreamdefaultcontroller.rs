@@ -239,7 +239,11 @@ impl WritableStreamDefaultController {
 
     /// <https://streams.spec.whatwg.org/#ws-default-controller-signal>
     pub(crate) fn signal_value(&self) -> JsResult<JsObject> {
-        self.signal()?.object()
+        self.signal()?.object().ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("AbortSignal is missing its JavaScript object")
+                .into()
+        })
     }
 
     /// <https://streams.spec.whatwg.org/#ws-default-controller-error>

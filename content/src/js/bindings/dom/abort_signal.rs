@@ -156,10 +156,7 @@ pub(crate) fn abort_static(
     let reason = abort_reason_from_argument(args.get(0), ec)?;
     let value_undefined = ec.value_undefined();
     let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), ec)?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    Ok(JsValue::from(signal.object().map_err(|e| {
-        e.into_opaque(ctx).unwrap_or(value_undefined)
-    })?))
+    Ok(JsValue::from(signal.object().ok_or(value_undefined)?))
 }
 
 pub(crate) fn timeout_static(
@@ -201,9 +198,9 @@ pub(crate) fn timeout_static(
         ec_ref,
     )?;
 
-    Ok(JsValue::from(signal.object().map_err(|e| {
-        e.into_opaque(ctx).unwrap_or(value_undefined)
-    })?))
+    Ok(JsValue::from(
+        signal.object().ok_or(value_undefined.clone())?,
+    ))
 }
 
 pub(crate) fn any_static(
@@ -215,10 +212,9 @@ pub(crate) fn any_static(
     let signals = sequence_abort_signals(args.get_or_undefined(0), ec)?;
     let result_signal = create_abort_signal(AbortSignal::new(), ec)?;
     initialize_dependent_abort_signal(&result_signal, &signals);
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    Ok(JsValue::from(result_signal.object().map_err(|e| {
-        e.into_opaque(ctx).unwrap_or(value_undefined.clone())
-    })?))
+    Ok(JsValue::from(
+        result_signal.object().ok_or(value_undefined)?,
+    ))
 }
 
 fn get_aborted(

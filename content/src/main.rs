@@ -5,6 +5,7 @@ pub(crate) mod ui_event;
 pub mod css;
 pub mod dom;
 pub(crate) mod fetch;
+mod generic_js_test;
 pub mod html;
 pub mod infra;
 pub mod js;

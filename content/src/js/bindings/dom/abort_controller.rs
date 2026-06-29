@@ -2,12 +2,12 @@ use boa_engine::{JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};
-use crate::js::with_abort_controller_ref;
+use crate::js::{try_with_abort_controller_ref, with_abort_controller_ref};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 use super::abort_signal::{abort_reason_from_argument, signal_abort_with_context};
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -56,17 +56,13 @@ fn get_signal(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("AbortController receiver is not an object")
-        })?;
-        let signal =
-            with_abort_controller_ref(&controller, |controller| controller.signal_object())??;
-        Ok(JsValue::from(signal))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("AbortController receiver is not an object"))?;
+    let signal_object =
+        try_with_abort_controller_ref(&obj, ec, |controller| controller.signal_object())?;
+    let signal_object = signal_object
+        .ok_or_else(|| ec.new_type_error("AbortSignal is missing its JavaScript object"))?;
+    Ok(JsValue::from(signal_object))
 }
 
 fn abort(

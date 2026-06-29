@@ -145,12 +145,8 @@ impl AbortSignal {
         self.shared.borrow_mut().reflector = Some(reflector);
     }
 
-    pub(crate) fn object(&self) -> JsResult<JsObject> {
-        self.shared.borrow().reflector.clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("AbortSignal is missing its JavaScript object")
-                .into()
-        })
+    pub(crate) fn object(&self) -> Option<JsObject> {
+        self.shared.borrow().reflector.clone()
     }
 
     pub(crate) fn with_event_target_mut<R>(&self, f: impl FnOnce(&mut EventTarget) -> R) -> R {
@@ -304,7 +300,7 @@ impl AbortController {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-abortcontroller-signal>
-    pub(crate) fn signal_object(&self) -> JsResult<JsObject> {
+    pub(crate) fn signal_object(&self) -> Option<JsObject> {
         self.signal.object()
     }
 }
@@ -368,7 +364,11 @@ fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> J
     // Note: `take_abort_algorithms()` empties the list before the loop above runs.
 
     // Step 3: "Fire an event named abort at signal."
-    let signal_object = signal.object()?;
+    let signal_object = signal.object().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("AbortSignal is missing its JavaScript object"),
+        )
+    })?;
     let _ = fire_event(host, &signal_object, "abort", false)?;
     Ok(())
 }

@@ -550,74 +550,65 @@ verification after Step G when `ec_to_ctx` is deleted.
 
 ## Session-resume guide
 
-**Current step: Step B — convert binding function bodies, now accelerated by
-new `ExecutionContext<T>` utility methods.**
+**Current step: Using `generic_js_test` module for fast feedback on generic layer design.**
 
-### Status: Step B ~60% complete (~198 ec_to_ctx in bindings, down from ~437).
+### New workflow
 
-Six new utility methods added to `ExecutionContext<T>` trait this session:
-- `js_string_to_rust_string` / `to_rust_string` — eliminate ~80 string-extraction ec_to_ctx
-- `create_empty_array` / `array_push` — eliminate ~15 array-construction ec_to_ctx
-- `create_plain_object` / `object_set_property` — eliminate ~20 object-construction ec_to_ctx
+Instead of incrementally converting every `ec_to_ctx` site in `content/` (which
+is slow and risks going in the wrong direction), we now have a `content/src/generic_js_test.rs`
+module that serves as a mini-integration-test for the generic JS layer.  It defines
+a toy domain type (`TestWidget`), implements `WebIdlInterface<Types>` for it with
+binding functions that use the full generic API, and an `exercise_generic_api` function
+that calls every relevant `ExecutionContext<T>` / `JsTypes` / `EcmascriptHost<T>` method.
 
-These are now available for binding code to use.  Actual conversion of callers
-is mechanical `ec_to_ctx` → `ec.method()` replacement.
+**Workflow going forward:**
+1. Add new generic API methods to `js_engine` traits.
+2. Exercise them in `generic_js_test.rs` — this gives fast compile-time feedback.
+3. Once the API design is proven, apply to the real `content/` code.
+
+The test module compiles as part of `cargo check -p content` and catches
+borrow-checker issues, type mismatch, and design problems instantly.
+
+### Binding conversion status: ~191 ec_to_ctx in bindings (down from ~437).
+
+Binding file counts:
+```
+ 33 readablestream.rs
+ 22 location.rs
+ 21 hyperlink_element_utils.rs
+ 18 writablestream.rs
+ 18 element.rs
+ 12 node.rs
+ 12 document.rs
+ 11 window.rs
+  7 transformstream.rs
+  7 html_iframe_element.rs
+  6 html_anchor_element.rs
+  4 event_target.rs
+  4 abort_signal.rs
+  3 html_video_element.rs
+  2 wasm/interfaces.rs
+  2 strategy.rs
+  2 html_media_element.rs
+  1 wasm/mod.rs
+  1 html_input_element.rs
+  1 html_element.rs
+  1 ui_event.rs
+  1 event.rs
+  1 dom_exception.rs
+  1 abort_controller.rs
+```
 
 Recent changes (this session):
-- `event_target.rs`: 5→4 — removed unnecessary closure bridge from create_platform_object
-- `abort_signal.rs`: 10→6 — converted get_aborted, get_reason, throw_if_aborted, get_onabort
-  to direct downcast + ec.new_type_error() pattern; removed with_abort_signal_ref import
-- `window.rs`: 14→11 — converted get_onload, get_parent, get_top;
-  added current_window_object_from_ec helper that takes ec directly
-- `wasm/interfaces.rs`: 3→2 — converted get_instance_exports_binding
-
-Earlier changes:
-- `BoaEngine` renamed to `BoaContext` — it is the runtime execution context
-  (realm, heap, global object), not a "factory engine."  The `JsEngine<BoaTypes>`
-  impl on it is a convenience; the factory should be a separate global.
-- `build_boa_engine` → `build_context`.  `Engine` alias removed.
-- `BoaTypes` centralized: `pub(crate) type Types = js_engine::boa::BoaTypes;` in
-  `content/src/js/mod.rs` — the only place `BoaTypes` appears in content.
-  All other files use `crate::js::Types`.
-- Unsafe cast functions (`ec_to_ctx`, `context_as_ec`, `context_as_engine`,
-  `context_as_ec_ref`) moved from `content/src/js/mod.rs` into
-  `js_engine/src/boa/engine.rs` — they are now `js_engine::boa::ec_to_ctx(...)` etc.
-
-Binding files: ~198 `ec_to_ctx` sites remaining (down from ~437). Domain files: ~145 sites.
-Total content crate: ~343 (down from ~583).
-
-15 of 24 binding files converted or partially converted:
-- `dom_exception.rs`: 4→1 (create_platform_object still needs ctx for string extraction)
-- `ui_event.rs`: 3→1 (create_platform_object needs ctx)
-- `event.rs`: 15→1 (create_platform_object needs ctx)
-- `html_input_element.rs`: 3→1 (set_value needs ctx for string extraction)
-- `html_element.rs`: 9→4 (string-extraction setters + get_style keep ctx)
-- `html_anchor_element.rs`: 10→6 (string-extraction setters + get_href keep ctx)
-- `html_video_element.rs`: 11→3 (string-extraction setters keep ctx)
-- `node.rs`: 18→12 (tree-traversal getters + mutation ops keep ctx)
-- `document.rs`: 14→12 (most ops need ctx for resolve_element_object)
-- `element.rs`: 21→18 (most ops need ctx for string extraction)
-- `html_iframe_element.rs`: 16→7 (string-extraction setters + event handler setters keep ctx)
-- `event_target.rs`: 5→4 (create_platform_object unnecessary closure bridge removed;
-  remaining ctx for event dispatch adapters)
-- `abort_signal.rs`: 10→6 (converted get_aborted, get_reason, throw_if_aborted, get_onabort;
-  remaining ctx for signal_abort_with_context, object(), DOMException construction)
-- `window.rs`: 14→11 (converted get_onload, get_parent, get_top;
-  added current_window_object_from_ec helper; remaining ctx for string extraction, timer ops)
-- `wasm/interfaces.rs`: 3→2 (converted get_instance_exports_binding;
-  remaining ctx for error conversion and JsArray construction)
-
-Remaining unconverted files: `readablestream.rs` (34), `location.rs` (22),
-`hyperlink_element_utils.rs` (21), `writablestream.rs` (18), `transformstream.rs` (7),
-`strategy.rs` (2), `abort_controller.rs` (2).
-
-Conversion pattern: replace `ec_to_ctx` + `JsResult` closure bridge with
-direct `downcast_ref::<T>()`/`downcast_mut::<T>()` on `JsObject` (both are
-`&self` methods, no `Context` needed) + `ec.value_from_*()` + `ec.new_type_error()`.
-
-Multi-class downcast helpers (e.g. `with_node_ref` mapping through Node, Document,
-Element, HTMLElement, etc.) get a `try_*` Completion-returning counterpart
-that takes `ec: &mut dyn ExecutionContext<BoaTypes>`.
+- `html_element.rs`: 4→1 — converted set_title, set_lang, set_dir using ec.to_rust_string()
+- `abort_controller.rs`: 2→1 — converted get_signal via try_with_abort_controller_ref helper;
+  changed AbortSignal::object() return type from JsResult<JsObject> to Option<JsObject>;
+  updated AbortController::signal_object(), writablestreamdefaultcontroller::signal_value(),
+  and run_abort_steps() accordingly
+- `abort_signal.rs`: 6→4 — removed unnecessary ec_to_ctx from abort_static and any_static
+  by using .ok_or(value_undefined) instead of .ok_or_else(|| JsError::from(...))
+- Added `try_with_abort_controller_ref` to downcast.rs (Completion-returning counterpart)
+- Created `generic_js_test.rs` module — full integration test for generic JS layer
 
 ### Key architectural insight
 

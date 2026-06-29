@@ -3,10 +3,12 @@ use boa_engine::{JsNativeError, JsResult, JsValue, object::JsObject};
 use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent,
 };
+
 use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
     HTMLVideoElement, Window,
 };
+use js_engine::{Completion, ExecutionContext};
 
 pub(crate) fn with_abort_controller_ref<R>(
     object: &JsObject,
@@ -15,6 +17,17 @@ pub(crate) fn with_abort_controller_ref<R>(
     let controller = object
         .downcast_ref::<AbortController>()
         .ok_or_else(|| JsNativeError::typ().with_message("object is not an AbortController"))?;
+    Ok(f(&controller))
+}
+
+pub(crate) fn try_with_abort_controller_ref<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&AbortController) -> R,
+) -> Completion<R, crate::js::Types> {
+    let controller = object
+        .downcast_ref::<AbortController>()
+        .ok_or_else(|| ec.new_type_error("object is not an AbortController"))?;
     Ok(f(&controller))
 }
 
