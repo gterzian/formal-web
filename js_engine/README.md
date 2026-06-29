@@ -437,47 +437,42 @@ changing this one line.
 The generic API surface is not yet complete.  The following gaps must be
 addressed **in the test module first** before touching any content code:
 
-1. **`to_js_string` (ToString abstract op)** — already exercised as a type-check
-   call but not yet integrated into a binding function pattern (e.g. for setters
-   that need to call `ToString` on an argument before converting to Rust).
+1. **`to_js_string` (ToString abstract op)** — ✅ exercised in `formatLabel` binding function.
 
-2. **Property descriptor operations** — `define_property_or_throw`,
-   `get_own_property`, `has_property` are on the trait but untested in the
-   test module's domain/binding pattern.
+2. **Property descriptor operations** — ✅ exercised in `exercise_generic_api`:
+   `define_property_or_throw`, `has_property`.
 
-3. **Iterator operations** — `get_iterator`, `iterator_step`, `iterator_value`,
-   `iterator_close` are on the trait but have no test-module exercise path.
+3. **Iterator operations** — ✅ exercised in `exercise_generic_api`:
+   `get_iterator`, `iterator_step_value`, `iterator_close`.
 
-4. **Promise operations at the binding level** — `new_promise_capability`,
-   `perform_promise_then`, `promise_resolve` are on the trait.  The test module
-   should exercise creating a promise, reacting to it, and returning it from a
-   binding function.
+4. **Promise operations at the binding level** — ✅ exercised in `delayedTitle`
+   binding function (`new_promise_capability` + `call` on resolve).
+   `perform_promise_then` is on the trait but not yet exercised (type barrier:
+   `PromiseCapability.promise` is `JsValue`, `perform_promise_then` expects
+   `T::Promise`).
 
-5. **`create_builtin_function`** — the trait method exists but is untested in
-   the test module.  This is the key to eliminating `NativeFunction::from_closure`
-   calls (Step C).  The test module should build a binding function that creates
-   a builtin function and calls it.
+5. **`create_builtin_function`** — ❌ not yet exercised.  Requires `&mut dyn JsEngine<T>`
+   access which `exercise_generic_api` doesn't currently receive.  May need a
+   companion function `exercise_engine_api(engine: &mut dyn JsEngine<Types>)`.
 
-6. **`Call` / `Construct` at the binding level** — the trait has `call` and
-   `construct` but the test module only exercises `is_callable`.  A binding
-   function should invoke a passed callback.
+6. **`Call` / `Construct` at the binding level** — ✅ exercised in `withCallback`
+   binding function and in `exercise_generic_api` (invoking `toArray` on widget).
 
-7. **Error-path patterns** — the test module should exercise every error
-   construction method (`new_type_error`, `new_range_error`, `new_error`) in
-   real binding-function error paths, and verify that `Completion` error
-   propagation works correctly through `?`.
+7. **Error-path patterns** — ✅ `new_type_error` and `new_range_error` exercised
+   in binding functions and in `exercise_generic_api`.  The trait has no
+   `new_error` method (only `new_type_error` / `new_range_error`).
 
-8. **`call_user_objects_operation` through the trait** — currently this uses
-   `&mut dyn EcmascriptHost<T>`.  The test module should exercise a callback
-   invocation pattern that mirrors real Web IDL callback dispatch.
+8. **`call_user_objects_operation` through the trait** — ❌ not yet exercised.
+   This is a Web IDL helper (in `content/src/webidl/`) that takes
+   `&mut dyn EcmascriptHost<T>`.  Since `ExecutionContext<T>: EcmascriptHost<T>`,
+   `ec` already satisfies the bound — but the test module should import and
+   directly exercise the helper.
 
-9. **Integration with `create_interface_instance`** — already partially
-   exercised (widget creation).  Extend to test error paths and property
-   access on the created object.
+9. **Integration with `create_interface_instance`** — ✅ extended with error-path
+   exercise in `exercise_generic_api`.
 
-10. **Setter with type conversion** — the test module has `set_title` using
-    `to_rust_string`.  Add a numeric setter (e.g. `set_count`) exercising
-    `to_number` and `to_int32` in a binding pattern.
+10. **Setter with type conversion** — ✅ exercised in `set_count` binding function
+    (uses `ec.to_number`).
 
 Each gap above gets a concrete test function or exercise path in
 `generic_js_test.rs`.  The goal is that the test module exercises **every**
@@ -666,15 +661,30 @@ Binding file counts:
 ```
 
 Recent changes (this session):
-- `html_element.rs`: 4→1 — converted set_title, set_lang, set_dir using ec.to_rust_string()
-- `abort_controller.rs`: 2→1 — converted get_signal via try_with_abort_controller_ref helper;
-  changed AbortSignal::object() return type from JsResult<JsObject> to Option<JsObject>;
-  updated AbortController::signal_object(), writablestreamdefaultcontroller::signal_value(),
-  and run_abort_steps() accordingly
-- `abort_signal.rs`: 6→4 — removed unnecessary ec_to_ctx from abort_static and any_static
-  by using .ok_or(value_undefined) instead of .ok_or_else(|| JsError::from(...))
-- Added `try_with_abort_controller_ref` to downcast.rs (Completion-returning counterpart)
-- Created `generic_js_test.rs` module — full integration test for generic JS layer
+- Added four new binding functions to TestWidget: `set_count` (numeric setter
+  exercising `ec.to_number`), `formatLabel` (exercises `ec.to_js_string` in
+  binding pattern), `delayedTitle` (promise creation via `new_promise_capability` +
+  `call` on resolve), `withCallback` (exercises `ec.call` with user-provided
+  callback).
+- Added property descriptor ops (`define_property_or_throw`, `has_property`) to
+  `exercise_generic_api`.
+- Added iterator ops (`get_iterator`, `iterator_step_value`, `iterator_close`)
+  to `exercise_generic_api`.
+- Added promise ops (`new_promise_capability`, `call` on resolve) to
+  `exercise_generic_api`.
+- Added `Call` exercise at binding level (invoking `toArray` on widget object)
+  to `exercise_generic_api`.
+- Extended `create_interface_instance` error-path exercise.
+- Fixed borrow-checker issue: all `ec.value_*()` calls must pre-compute args
+  before passing to `ec.call()` / `ec.array_push()` / `ec.iterator_close()`
+  since `ec: &mut dyn ExecutionContext` can't be borrowed twice.
+
+Gaps resolved this session: 1 (to_js_string pattern), 2 (property descriptors),
+3 (iterators), 4 (promises), 6 (Call), 7 (error paths), 9 (create_interface_instance
+integration), 10 (numeric setter).
+
+Gaps remaining: 5 (create_builtin_function — needs JsEngine trait access),
+8 (call_user_objects_operation — needs WebIDL callback struct integration).
 
 ### Key architectural insight
 

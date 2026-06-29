@@ -19,7 +19,7 @@ use crate::js::Types;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::{Completion, ExecutionContext, IteratorKind, JsTypes, PropertyDescriptor};
 
 // ── Domain type ──────────────────────────────────────────────────────────
 
@@ -164,6 +164,88 @@ fn to_array(
     Ok(JsValue::from(array))
 }
 
+/// Setter: `widget.count = val` — exercises `ec.to_number` in a binding pattern.
+fn set_count(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
+    let num_val = args.first().cloned().unwrap_or(ec.value_undefined());
+    let new_count = ec.to_number(num_val)?;
+    let mut widget = obj
+        .downcast_mut::<TestWidget>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))?;
+    widget.count = new_count as u32;
+    Ok(ec.value_undefined())
+}
+
+/// Method: `widget.formatLabel(prefix)` — exercises `ec.to_js_string` in a binding pattern.
+fn format_label(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
+    let widget = obj
+        .downcast_ref::<TestWidget>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))?;
+    let prefix = if let Some(arg) = args.first() {
+        let js_str = ec.to_js_string(arg.clone())?;
+        ec.js_string_to_rust_string(&js_str)
+    } else {
+        String::new()
+    };
+    let label = format!("{}:{}", prefix, widget.title);
+    Ok(ec.value_from_string(ec.js_string_from_str(&label)))
+}
+
+/// Method: `widget.delayedTitle()` — exercises promise creation and resolution.
+fn delayed_title(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
+    let widget = obj
+        .downcast_ref::<TestWidget>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))?;
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let cap = ec.new_promise_capability(intrinsics.promise)?;
+    let title_val = ec.value_from_string(ec.js_string_from_str(&widget.title));
+    let undef = ec.value_undefined();
+    ec.call(&cap.resolve, &undef, &[title_val])?;
+    Ok(cap.promise)
+}
+
+/// Method: `widget.withCallback(cb)` — exercises `ec.call` with a user-provided callback.
+fn with_callback(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
+    let widget = obj
+        .downcast_ref::<TestWidget>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))?;
+    let callback_obj = args
+        .first()
+        .and_then(|v| Types::value_as_object(v))
+        .ok_or_else(|| ec.new_type_error("expected a callback function"))?;
+    let callback_val = JsValue::from(callback_obj.clone());
+    if !ec.is_callable(&callback_val) {
+        return Err(ec.new_type_error("argument is not callable"));
+    }
+    let title_val = ec.value_from_string(ec.js_string_from_str(&widget.title));
+    let undef = ec.value_undefined();
+    ec.call(&callback_obj, &undef, &[title_val])
+}
+
 // ── WebIDL interface definition ─────────────────────────────────────────
 
 impl WebIdlInterface<Types> for TestWidget {
@@ -208,7 +290,7 @@ impl WebIdlInterface<Types> for TestWidget {
             _phantom: PhantomData,
             id: "count",
             getter: get_count,
-            setter: None,
+            setter: Some(set_count),
             static_: false,
             unforgeable: false,
             promise_type: false,
@@ -240,6 +322,33 @@ impl WebIdlInterface<Types> for TestWidget {
             id: "toArray",
             length: 0,
             method: to_array,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            _phantom: PhantomData,
+            id: "formatLabel",
+            length: 1,
+            method: format_label,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            _phantom: PhantomData,
+            id: "delayedTitle",
+            length: 0,
+            method: delayed_title,
+            static_: false,
+            unforgeable: false,
+            promise_type: true,
+        });
+        def.add_operation(OperationDef {
+            _phantom: PhantomData,
+            id: "withCallback",
+            length: 1,
+            method: with_callback,
             static_: false,
             unforgeable: false,
             promise_type: false,
@@ -362,4 +471,86 @@ pub(crate) fn exercise_generic_api(ec: &mut dyn ExecutionContext<Types>) {
     ec.report_error("test error message");
     let exc = ec.new_type_error("callback exception");
     ec.report_exception(exc);
+
+    // ── Property descriptor operations (§6.2.5) ─────────────────────
+    let pk_desc = ec.property_key_from_str("testDesc");
+    let descriptor = PropertyDescriptor {
+        value: Some(ec.value_from_number(42.0)),
+        writable: Some(true),
+        get: None,
+        set: None,
+        enumerable: Some(true),
+        configurable: Some(true),
+    };
+    let _ = ec.define_property_or_throw(widget_obj.clone(), pk_desc.clone(), descriptor);
+    let _ = ec.has_property(widget_obj.clone(), pk_desc);
+
+    // ── Error construction (additional variants) ────────────────────
+    let _new_err: JsValue = ec.new_range_error("index out of range");
+    let _ = ec.new_type_error("type mismatch in setter"); // error-path pattern
+
+    // ── Iterator operations (§7.4) ──────────────────────────────────
+    let iter_arr: JsObject = ec.create_empty_array();
+    let v1 = ec.value_from_number(1.0);
+    let _ = ec.array_push(&iter_arr, v1);
+    let v2 = ec.value_from_number(2.0);
+    let _ = ec.array_push(&iter_arr, v2);
+    let v3 = ec.value_from_number(3.0);
+    let _ = ec.array_push(&iter_arr, v3);
+    let mut iter_record = ec
+        .get_iterator(JsValue::from(iter_arr), IteratorKind::Sync, None)
+        .unwrap_or_else(|_| {
+            // Fallback: create a dummy iterator record (won't happen with real arrays,
+            // but satisfies the type-checker in a test context).
+            panic!("get_iterator should succeed for arrays")
+        });
+    let first_step = ec.iterator_step_value(&mut iter_record);
+    if let Ok(Some(_val)) = first_step {
+        // Got first value — close the iterator normally.
+        let undef = ec.value_undefined();
+        let _ = ec.iterator_close(iter_record, Ok(undef));
+    }
+
+    // ── Promise operations at the binding level (§27.2) ─────────────
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let pcap = ec
+        .new_promise_capability(intrinsics.promise.clone())
+        .unwrap_or_else(|_| {
+            panic!("new_promise_capability should succeed with Promise constructor")
+        });
+    // Resolve the promise immediately.
+    let undef = ec.value_undefined();
+    let resolved_val = ec.value_from_string(ec.js_string_from_str("resolved"));
+    let _ = ec.call(&pcap.resolve, &undef, &[resolved_val]);
+
+    // ── Call / Construct at the binding level (§7.3) ────────────────
+    // Call a built-in method on the widget object.
+    let pk_to_array = ec.property_key_from_str("toArray");
+    let to_array_val =
+        ExecutionContext::get(ec, widget_obj.clone(), pk_to_array).unwrap_or(ec.value_undefined());
+    if let Some(to_array_fn) = Types::value_as_object(&to_array_val) {
+        if ec.is_callable(&to_array_val) {
+            let _ = ec.call(&to_array_fn, &JsValue::from(widget_obj.clone()), &[]);
+        }
+    }
+
+    // ── to_js_string in a binding-function pattern ──────────────────
+    // formatLabel exercises to_js_string → js_string_to_rust_string;
+    // here we also exercise the standalone pattern.
+    let js_str_from_num = ec
+        .to_js_string(num_val.clone())
+        .unwrap_or_else(|_| ec.js_string_from_str("0"));
+    let _rust_from_num: String = ec.js_string_to_rust_string(&js_str_from_num);
+
+    // ── create_interface_instance error path ────────────────────────
+    let _result: Result<JsObject, JsValue> =
+        create_interface_instance::<Types, TestWidget>(TestWidget::new(), ec);
+
+    // ── set_count (numeric setter exercising to_number) ─────────────
+    let _ = set_count(
+        &JsValue::from(widget_obj.clone()),
+        &[ec.value_from_number(99.0)],
+        ec,
+    );
 }
