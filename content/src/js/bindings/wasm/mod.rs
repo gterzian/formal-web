@@ -28,7 +28,7 @@ use crate::webidl::{
     get_a_copy_of_the_buffer_source, is_buffer_source, rejected_promise_from_error,
 };
 use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
-use js_engine::boa::{BoaEngine, BoaTypes};
+use js_engine::boa::BoaContext;
 use js_engine::{Completion, ExecutionContext};
 use std::marker::PhantomData;
 
@@ -41,10 +41,10 @@ struct WasmNamespace;
 ///
 /// The `WebAssembly` namespace object exposes validate, compile, instantiate,
 /// and the JSTag attribute.
-impl WebIdlNamespace<js_engine::boa::BoaTypes> for WasmNamespace {
+impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
     const NAME: &'static str = "WebAssembly";
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-validate>
         def.add_operation(OperationDef {
             _phantom: PhantomData,
@@ -103,21 +103,21 @@ impl WebIdlNamespace<js_engine::boa::BoaTypes> for WasmNamespace {
 
 /// <https://webassembly.github.io/spec/js-api/#webassembly-namespace>
 pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
-    let engine = crate::js::context_as_engine(context);
+    let engine = js_engine::boa::context_as_engine(context);
     // Step 1: "Let namespaceObject be OrdinaryObjectCreate(...)."
     // Step 2-3: Define regular attributes and operations.
-    register_namespace_spec::<BoaTypes, WasmNamespace, BoaEngine>(engine)
+    register_namespace_spec::<crate::js::Types, WasmNamespace, BoaContext>(engine)
         .map_err(JsError::from_opaque)?;
 
     // §3.13.1 step 5: Define [LegacyNamespace] interfaces on the namespace.
-    register_interface_spec::<BoaTypes, WasmModule, BoaEngine>(engine)
+    register_interface_spec::<crate::js::Types, WasmModule, BoaContext>(engine)
         .map_err(JsError::from_opaque)?;
-    register_interface_spec::<BoaTypes, WasmInstance, BoaEngine>(engine)
+    register_interface_spec::<crate::js::Types, WasmInstance, BoaContext>(engine)
         .map_err(JsError::from_opaque)?;
 
     // Register error types (CompileError, LinkError, RuntimeError).
     // https://webassembly.github.io/spec/js-api/#error-objects
-    let ec = crate::js::context_as_ec(context);
+    let ec = js_engine::boa::context_as_ec(context);
     let namespace_obj = resolve_wasm_namespace(ec).map_err(JsError::from_opaque)?;
     interfaces::register_wasm_error_types(&namespace_obj, context)?;
 
@@ -126,10 +126,10 @@ pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
 
 /// Resolve the `WebAssembly` namespace object from the global object.
 fn resolve_wasm_namespace(
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsObject> {
         let ns_value = ctx.global_object().get(js_string!("WebAssembly"), ctx)?;
         let Some(namespace) = ns_value.as_object() else {
@@ -151,8 +151,8 @@ fn resolve_wasm_namespace(
 fn validate_fn(
     _this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let bytes_value = match args.first() {
         Some(val) => val,
         None => return Err(ec.new_type_error("WebAssembly.validate: missing argument")),
@@ -164,8 +164,8 @@ fn validate_fn(
 fn compile_fn(
     _this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let bytes_value = match args.first() {
         Some(val) => val,
         None => {
@@ -188,8 +188,8 @@ fn compile_fn(
 fn instantiate_fn(
     _this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let first = match args.first() {
         Some(val) => val,
         None => {

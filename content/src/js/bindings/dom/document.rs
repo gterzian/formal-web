@@ -13,19 +13,19 @@ use crate::js::platform_objects::{
     resolve_or_create_text_node_object,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for Document {
+impl WebIdlInterface<crate::js::Types> for Document {
     const NAME: &'static str = "Document";
 
     fn parent_name() -> Option<&'static str> {
         Some("Node")
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // §3.7.7: Regular operations
         def.add_operation(OperationDef {
             _phantom: PhantomData,
@@ -181,10 +181,10 @@ fn with_document<R>(this: &JsValue, f: impl FnOnce(&Document) -> R) -> JsResult<
 fn get_element_by_id(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let id = args
             .get_or_undefined(0)
@@ -202,10 +202,10 @@ fn get_element_by_id(
 fn query_selector(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let selector = args
             .get_or_undefined(0)
@@ -224,10 +224,10 @@ fn query_selector(
 fn query_selector_all(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let selector = args
             .get_or_undefined(0)
@@ -247,10 +247,10 @@ fn query_selector_all(
 fn get_elements_by_tag_name(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let qualified_name = args
             .get_or_undefined(0)
@@ -272,10 +272,10 @@ fn get_elements_by_tag_name(
 fn create_element(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let local_name = args
             .get_or_undefined(0)
@@ -290,10 +290,10 @@ fn create_element(
 fn create_element_ns(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let namespace =
             if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined() {
@@ -321,10 +321,10 @@ fn create_element_ns(
 fn create_text_node(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let text = args
             .get_or_undefined(0)
@@ -344,10 +344,10 @@ fn create_text_node(
 fn create_comment(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let data = args
             .get_or_undefined(0)
@@ -367,10 +367,10 @@ fn create_comment(
 fn get_body(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let node_id = with_document(this, Document::body)?
             .map_err(|error| JsNativeError::syntax().with_message(error))?;
@@ -385,10 +385,10 @@ fn get_body(
 fn get_document_element(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         match with_document(this, Document::document_element)? {
             Some(node_id) => Ok(resolve_element_object(node_id, ctx)?.into()),
@@ -401,9 +401,9 @@ fn get_document_element(
 fn get_title(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("document receiver is not an object"))?;
     let document = obj
         .downcast_ref::<Document>()
@@ -414,10 +414,10 @@ fn get_title(
 fn set_title(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let title = args
             .get_or_undefined(0)
@@ -434,9 +434,9 @@ fn set_title(
 fn get_dir(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("document receiver is not an object"))?;
     let document = obj
         .downcast_ref::<Document>()
@@ -447,10 +447,10 @@ fn get_dir(
 fn set_dir(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let dir = args
             .get_or_undefined(0)

@@ -33,7 +33,7 @@ use boa_engine::{
 
 use crate::dom::DOMException;
 use crate::webidl::bindings::create_interface_instance;
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -207,12 +207,12 @@ impl MemoryMap {
 
 fn data_clone_error(context: &mut Context) -> JsError {
     JsError::from_opaque(JsValue::from(
-        create_interface_instance::<BoaTypes, DOMException>(
+        create_interface_instance::<crate::js::Types, DOMException>(
             DOMException::new(
                 String::from("The object could not be cloned."),
                 String::from("DataCloneError"),
             ),
-            crate::js::context_as_ec(context),
+            js_engine::boa::context_as_ec(context),
         )
         .expect("DOMException construction should not fail"),
     ))
@@ -1416,10 +1416,10 @@ pub fn structured_deserialize_with_transfer(
 pub fn structured_clone(
     value: JsValue,
     options: Option<StructuredCloneOptions>,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
     // Step 1: Let serialized be ? StructuredSerializeWithTransfer(value, options["transfer"]).
     let transfer = options

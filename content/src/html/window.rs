@@ -6,7 +6,7 @@ use boa_engine::{JsData, JsNativeError, JsValue};
 use boa_gc::{Finalize, Trace};
 use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 use crate::dom::Element;
@@ -55,8 +55,8 @@ impl Window {
         url: &str,
         target: &str,
         features: &str,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsValue, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
         let Some(event_sender) = self.global_scope.event_sender() else {
             return Ok(JsValue::null());
         };
@@ -115,15 +115,15 @@ pub(crate) fn window_computed_style_properties_for_element(
 
 /// <https://html.spec.whatwg.org/#window-open-steps>
 pub(crate) fn window_open_steps(
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     url: &str,
     target: &str,
     features: &str,
     global_scope: &GlobalScope,
     event_sender: &IpcSender<ContentEvent>,
-) -> Completion<JsValue, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+) -> Completion<JsValue, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
     // TODO: Content process does not yet track termination nesting.
 
@@ -295,7 +295,7 @@ pub(crate) fn window_open_steps(
     let window = result
         .return_window
         .expect("window_open_steps: all navigable branches set a return window");
-    create_window_proxy(&window, crate::js::context_as_ec(context))
+    create_window_proxy(&window, js_engine::boa::context_as_ec(context))
 }
 
 /// <https://html.spec.whatwg.org/#get-noopener-for-window-open>

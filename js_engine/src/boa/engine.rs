@@ -1,10 +1,15 @@
-//! `BoaEngine` — the `JsEngine<BoaTypes>` + `ExecutionContext<BoaTypes>` + `EcmascriptHost<BoaTypes>` impl.
+//! `BoaContext` — the Boa implementation of `ExecutionContext<BoaTypes>`.
+//!
+//! Wraps `boa_engine::Context` (the stateful JS runtime: realm, heap,
+//! global object, job queue).  Also implements `JsEngine<BoaTypes>` for
+//! convenience (factory operations like `create_realm`), but the primary
+//! role is the execution context — the per-realm runtime state.
 //!
 //! ## Layout safety
 //!
-//! `BoaEngine` is `#[repr(transparent)]` over `Context`.  This enables the
+//! `BoaContext` is `#[repr(transparent)]` over `Context`.  This enables the
 //! `create_builtin_function` shim to safely cast `&mut Context` →
-//! `&mut BoaEngine` → `&mut dyn ExecutionContext<BoaTypes>` inside the
+//! `&mut BoaContext` → `&mut dyn ExecutionContext<BoaTypes>` inside the
 //! `NativeFunction` callback, giving the behaviour closure access to all
 //! ECMA-262 runtime operations without an external adapter.
 //!
@@ -37,30 +42,76 @@ use crate::{
 
 use super::types::BoaTypes;
 
-/// Boa engine wrapper.  Wraps a `boa_engine::Context` and implements
-/// `JsEngine<BoaTypes>`, `ExecutionContext<BoaTypes>`, and
-/// `EcmascriptHost<BoaTypes>`.
+/// Boa execution context.  Wraps a `boa_engine::Context` (the stateful JS
+/// runtime: realm, heap, global object) and implements
+/// `ExecutionContext<BoaTypes>`.  Also carries `JsEngine<BoaTypes>`
+/// factory methods as a convenience.
+///
+/// This is the runtime state that an `EnvironmentSettingsObject` owns —
+/// it IS the HTML spec's "realm execution context."
 ///
 /// # Layout
 ///
 /// `#[repr(transparent)]` guarantees the same memory layout as `Context`,
-/// enabling safe pointer casts from `&mut Context` to `&mut BoaEngine`
+/// enabling safe pointer casts from `&mut Context` to `&mut BoaContext`
 /// inside the `create_builtin_function` shim.
 #[repr(transparent)]
-pub struct BoaEngine {
+pub struct BoaContext {
     context: Context,
 }
 
-impl BoaEngine {
+// ── Bridge casts (temporary) ────────────────────────────────────────────────
+//
+// These convert between `&mut Context` and `&mut dyn ExecutionContext<BoaTypes>`
+// relying on `BoaContext` being `#[repr(transparent)]` over `Context`.
+// They will be deleted once all Boa-specific APIs are behind trait methods.
+
+/// Cast `&mut Context` to `&mut BoaContext` via repr(transparent) layout.
+///
+/// SAFETY: `BoaContext` is `#[repr(transparent)]` over `Context`.
+pub fn context_as_engine(context: &mut boa_engine::Context) -> &mut BoaContext {
+    // SAFETY: BoaContext has the same repr as Context (repr(transparent)),
+    // and this function produces a reference with the same lifetime as the input.
+    unsafe { &mut *(context as *mut boa_engine::Context as *mut BoaContext) }
+}
+
+/// Cast `&mut Context` to `&mut dyn ExecutionContext<BoaTypes>`.
+pub fn context_as_ec(
+    context: &mut boa_engine::Context,
+) -> &mut dyn ExecutionContext<BoaTypes> {
+    context_as_engine(context)
+}
+
+/// Cast `&Context` to `&dyn ExecutionContext<BoaTypes>` (immutable).
+pub fn context_as_ec_ref(
+    context: &boa_engine::Context,
+) -> &dyn ExecutionContext<BoaTypes> {
+    unsafe { &*(context as *const boa_engine::Context as *const BoaContext) }
+}
+
+/// Cast `&mut dyn ExecutionContext<BoaTypes>` back to `&mut Context`.
+///
+/// SAFETY: The `dyn ExecutionContext<BoaTypes>` must be backed by a `BoaContext`.
+pub unsafe fn ec_to_ctx<'a>(
+    ec: &'a mut dyn ExecutionContext<BoaTypes>,
+) -> &'a mut boa_engine::Context {
+    // SAFETY: BoaContext is repr(transparent) over Context.
+    unsafe {
+        &mut *(ec as *mut dyn ExecutionContext<BoaTypes> as *mut BoaContext
+            as *mut boa_engine::Context)
+    }
+}
+
+impl BoaContext {
     pub fn new() -> Self {
         Self {
             context: Context::default(),
         }
     }
 
-    /// Wrap an existing `Context` into a `BoaEngine`.
+    /// Wrap an existing `Context` into a `BoaContext`.
     ///
-    /// Used during migration from direct `Context` ownership to `BoaEngine`
+    /// Used during migration from direct `Context` ownership to `BoaContext`
     /// in `content/`.  The context is moved into the engine wrapper.
     pub fn from_context(context: Context) -> Self {
         Self { context }
@@ -77,7 +128,7 @@ impl BoaEngine {
     }
 }
 
-impl Default for BoaEngine {
+impl Default for BoaContext {
     fn default() -> Self {
         Self::new()
     }
@@ -91,7 +142,7 @@ fn into_completion<T>(result: JsResult<T>, context: &mut Context) -> Completion<
 // JsEngine<BoaTypes> — factory operations (§9.3, §10.3, §16, §25)
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl JsEngine<BoaTypes> for BoaEngine {
+impl JsEngine<BoaTypes> for BoaContext {
     // ── §9.3 Realm — creation ───────────────────────────────────────────
 
     fn create_realm(&mut self) -> boa_engine::realm::Realm
@@ -150,8 +201,8 @@ impl JsEngine<BoaTypes> for BoaEngine {
             _ => boa_engine::js_string!(""),
         };
 
-        // SAFETY: BoaEngine is `#[repr(transparent)]` over Context, so
-        // a `&mut Context` pointer can be safely cast to `&mut BoaEngine`.
+        // SAFETY: BoaContext is `#[repr(transparent)]` over Context, so
+        // a `&mut Context` pointer can be safely cast to `&mut BoaContext`.
         // The resulting reference has the same lifetime as the `context`
         // parameter and does not alias any other mutable reference.
         //
@@ -163,8 +214,8 @@ impl JsEngine<BoaTypes> for BoaEngine {
                       args: &[JsValue],
                       context: &mut Context|
                       -> JsResult<JsValue> {
-                    // SAFETY: BoaEngine is repr(transparent) over Context.
-                    let engine: &mut BoaEngine = &mut *(context as *mut Context as *mut BoaEngine);
+                    // SAFETY: BoaContext is repr(transparent) over Context.
+                    let engine: &mut BoaContext = &mut *(context as *mut Context as *mut BoaContext);
                     behaviour(args, this.clone(), engine).map_err(|e| JsError::from_opaque(e))
                 },
             ))
@@ -298,7 +349,7 @@ impl JsEngine<BoaTypes> for BoaEngine {
 // §9.6 jobs, §25 queries, §27 promises, value construction)
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl ExecutionContext<BoaTypes> for BoaEngine {
+impl ExecutionContext<BoaTypes> for BoaContext {
     // ── §7.1 Type Conversion ──────────────────────────────────────────────
 
     fn to_primitive(
@@ -1087,7 +1138,7 @@ impl<T: std::any::Any + 'static> boa_engine::JsData for NativeDataWrapper<T> {}
 // EcmascriptHost<BoaTypes> — Web IDL callback operations
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl EcmascriptHost<BoaTypes> for BoaEngine {
+impl EcmascriptHost<BoaTypes> for BoaContext {
     fn get(&mut self, object: &JsObject, property: &str) -> Completion<JsValue, BoaTypes> {
         into_completion(
             object.get(
@@ -1161,7 +1212,7 @@ impl EcmascriptHost<BoaTypes> for BoaEngine {
 
 /// §7.4.3 GetIteratorFromMethod ( obj, method )
 fn get_iterator_from_method(
-    engine: &mut BoaEngine,
+    engine: &mut BoaContext,
     obj: JsValue,
     method: JsFunction,
 ) -> Completion<IteratorRecord<BoaTypes>, BoaTypes> {
@@ -1208,7 +1259,7 @@ mod tests {
     /// that can receive arguments and return values through the generic trait.
     #[test]
     fn create_builtin_function_doubles() {
-        let mut engine = BoaEngine::new();
+        let mut engine = BoaContext::new();
         let realm = engine.context.realm().clone();
 
         // Create a function that doubles its first argument using

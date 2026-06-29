@@ -9,7 +9,7 @@ use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
@@ -49,8 +49,8 @@ impl AbortAlgorithm {
             }
             Self::ReadableStreamPipeTo { state } => {
                 // SAFETY: EventDispatchHost::ec() returns a &mut dyn ExecutionContext
-                // backed by BoaEngine which is #[repr(transparent)] over Context.
-                let context = unsafe { crate::js::ec_to_ctx(host.ec()) };
+                // backed by BoaContext which is #[repr(transparent)] over Context.
+                let context = unsafe { js_engine::boa::ec_to_ctx(host.ec()) };
                 state.run_abort_algorithm(context)?;
             }
         }
@@ -312,9 +312,9 @@ impl AbortController {
 /// <https://dom.spec.whatwg.org/#abortsignal>
 pub(crate) fn create_abort_signal(
     signal: AbortSignal,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<AbortSignal, BoaTypes> {
-    let signal_object = create_interface_instance::<BoaTypes, AbortSignal>(signal.clone(), ec)?;
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<AbortSignal, crate::js::Types> {
+    let signal_object = create_interface_instance::<crate::js::Types, AbortSignal>(signal.clone(), ec)?;
     signal.set_reflector(signal_object);
     Ok(signal)
 }
@@ -327,7 +327,7 @@ pub(crate) fn signal_abort(
 ) -> JsResult<()> {
     let reason = if reason.is_undefined() {
         JsValue::from(
-            create_interface_instance::<BoaTypes, DOMException>(
+            create_interface_instance::<crate::js::Types, DOMException>(
                 DOMException::abort_error(),
                 host.ec(),
             )

@@ -5,10 +5,10 @@ use std::marker::PhantomData;
 
 use crate::html::HTMLVideoElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
+impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
     const NAME: &'static str = "HTMLVideoElement";
 
     fn parent_name() -> Option<&'static str> {
@@ -20,8 +20,8 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
     fn create_platform_object(
         _new_target: &JsValue,
         _args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         #[cfg(not(feature = "media"))]
         {
             return Err(ec.new_type_error(
@@ -31,7 +31,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
         Err(ec.new_type_error("Illegal constructor"))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         #[cfg(not(feature = "media"))]
         {
             // No members when media is disabled — the interface exists but is empty.
@@ -129,9 +129,9 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLVideoElement {
 fn get_video_width(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let video = obj
         .downcast_ref::<HTMLVideoElement>()
@@ -142,9 +142,9 @@ fn get_video_width(
 fn get_video_height(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let video = obj
         .downcast_ref::<HTMLVideoElement>()
@@ -155,9 +155,9 @@ fn get_video_height(
 fn get_poster(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let video = obj
         .downcast_ref::<HTMLVideoElement>()
@@ -168,10 +168,10 @@ fn get_poster(
 fn set_poster(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let obj = this
             .as_object()
@@ -193,9 +193,9 @@ fn set_poster(
 fn get_plays_inline(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let video = obj
         .downcast_ref::<HTMLVideoElement>()
@@ -206,9 +206,9 @@ fn get_plays_inline(
 fn set_plays_inline(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let video = obj
         .downcast_ref::<HTMLVideoElement>()
@@ -221,9 +221,9 @@ fn set_plays_inline(
 fn get_width(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let video = obj
         .downcast_ref::<HTMLVideoElement>()
@@ -234,10 +234,10 @@ fn get_width(
 fn set_width(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let obj = this
             .as_object()
@@ -259,9 +259,9 @@ fn set_width(
 fn get_height(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let video = obj
         .downcast_ref::<HTMLVideoElement>()
@@ -272,10 +272,10 @@ fn get_height(
 fn set_height(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let obj = this
             .as_object()

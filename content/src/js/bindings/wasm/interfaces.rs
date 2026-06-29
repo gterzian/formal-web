@@ -14,13 +14,13 @@ use std::marker::PhantomData;
 use crate::wasm::{WasmInstance, WasmModule};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::get_a_copy_of_the_buffer_source;
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 // WebIdlInterface: Module
 
 /// <https://webassembly.github.io/spec/js-api/#modules>
-impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
+impl WebIdlInterface<crate::js::Types> for WasmModule {
     const NAME: &'static str = "Module";
 
     fn legacy_namespace() -> Option<&'static str> {
@@ -31,7 +31,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
         1
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_operation(OperationDef {
             _phantom: PhantomData,
 
@@ -75,8 +75,8 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let bytes_value = match args.first() {
             Some(val) => val,
             None => return Err(ec.new_type_error("Module constructor: missing argument")),
@@ -84,7 +84,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
         let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ec)?;
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
-            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
             crate::js::native_error_to_js_value(
                 JsNativeError::typ().with_message(format!("CompileError: {}", error)),
                 ctx,
@@ -98,14 +98,14 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
 // WebIdlInterface: Instance
 
 /// <https://webassembly.github.io/spec/js-api/#instances>
-impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmInstance {
+impl WebIdlInterface<crate::js::Types> for WasmInstance {
     const NAME: &'static str = "Instance";
 
     fn legacy_namespace() -> Option<&'static str> {
         Some("WebAssembly")
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -128,10 +128,10 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmInstance {
 fn module_exports_binding(
     _this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let module_value = args
             .first()
@@ -168,10 +168,10 @@ fn module_exports_binding(
 fn get_instance_exports_binding(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("Instance.exports getter: receiver is not an object")
@@ -290,7 +290,7 @@ pub(crate) fn register_wasm_error_types(
 pub(crate) fn get_wasm_jstag(
     _this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     Err(ec.new_type_error("WebAssembly.JSTag: not yet implemented"))
 }

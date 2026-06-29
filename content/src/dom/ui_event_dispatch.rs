@@ -13,7 +13,7 @@ use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::ExecutionContext;
-use js_engine::boa::BoaTypes;
+
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -387,7 +387,7 @@ impl<'a> BlitzJSEventHandler<'a> {
 }
 
 impl EventDispatchHost for BlitzJSEventHandler<'_> {
-    fn ec(&mut self) -> &mut dyn ExecutionContext<js_engine::boa::BoaTypes> {
+    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
         self.settings.ec()
     }
 
@@ -439,12 +439,12 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
     }
 }
 
-impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for BlitzJSEventHandler<'_> {
+impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
     fn get(
         &mut self,
         object: &JsObject,
         property: &str,
-    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, crate::js::Types> {
         js_engine::EcmascriptHost::get(&mut self.settings.engine, object, property)
     }
 
@@ -457,13 +457,13 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for BlitzJSEventHandler
         callable: &JsObject,
         this_arg: &JsValue,
         args: &[JsValue],
-    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, crate::js::Types> {
         self.settings.engine.call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(
         &mut self,
-    ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
+    ) -> js_engine::Completion<(), crate::js::Types> {
         self.settings.engine.perform_a_microtask_checkpoint()
     }
 
@@ -523,9 +523,9 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         let time_stamp = self.settings.current_time_millis();
         let view = Some(self.settings.context().global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
-        let event_object = create_interface_instance::<BoaTypes, JsUiEvent>(
+        let event_object = create_interface_instance::<crate::js::Types, JsUiEvent>(
             ui_event,
-            crate::js::context_as_ec(self.settings.context()),
+            js_engine::boa::context_as_ec(self.settings.context()),
         )
         .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {

@@ -11,7 +11,7 @@ use boa_engine::{
     },
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 use crate::webidl::bindings::create_interface_instance;
@@ -233,10 +233,10 @@ impl PullIntoDescriptor {
         self.view.create_result_view(self.bytes_filled, context)
     }
 
-    fn close(self, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    fn close(self, ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // filled_view calls Boa-specific typed array constructors.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         match &self.request {
             PullRequest::Default(read_request) => {
                 let value = if self.bytes_filled == 0 {
@@ -264,7 +264,7 @@ impl PullIntoDescriptor {
         }
     }
 
-    fn cancel(self, ec: &mut dyn ExecutionContext<BoaTypes>) -> Completion<(), BoaTypes> {
+    fn cancel(self, ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types> {
         match &self.request {
             PullRequest::Default(read_request) => read_request.clone().close_steps(ec),
             PullRequest::Byob(read_into_request) => read_into_request.clone().close_steps(None, ec),
@@ -274,11 +274,11 @@ impl PullIntoDescriptor {
     fn commit(
         self,
         done: bool,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // filled_view calls Boa-specific typed array constructors.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let value = JsValue::from(crate::js::js_result_to_completion(
             self.filled_view(context),
             context,
@@ -290,8 +290,8 @@ impl PullIntoDescriptor {
         self,
         value: JsValue,
         done: bool,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match &self.request {
             PullRequest::Default(read_request) => {
                 let read_request = read_request.clone();
@@ -315,8 +315,8 @@ impl PullIntoDescriptor {
     fn error(
         self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match &self.request {
             PullRequest::Default(read_request) => read_request.clone().error_steps(error, ec),
             PullRequest::Byob(read_into_request) => {
@@ -402,10 +402,10 @@ impl ReadableStreamBYOBRequest {
     pub(crate) fn respond(
         &self,
         bytes_written: usize,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let controller_result = self.controller_slot();
         let controller = crate::js::js_result_to_completion(controller_result, context)?;
         controller.respond(bytes_written, ec)
@@ -415,10 +415,10 @@ impl ReadableStreamBYOBRequest {
     pub(crate) fn respond_with_new_view(
         &self,
         view: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let view_object = view.as_object().ok_or_else(|| {
             crate::js::native_error_to_js_value(
                 JsNativeError::typ()
@@ -531,11 +531,11 @@ impl ReadableByteStreamController {
 
     fn update_byob_request_view(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // create_remaining_view calls Boa-specific typed array constructors.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let Some(object) = self.byob_request_object.borrow().clone() else {
             return Ok(());
         };
@@ -589,11 +589,11 @@ impl ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#rbs-controller-byob-request>
     pub(crate) fn byob_request(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Option<JsObject>, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<JsObject>, crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // create_interface_instance maps Completion errors via JsError::from_opaque.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
         if self.pending_pull_intos.borrow().is_empty() {
             crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
@@ -606,7 +606,7 @@ impl ReadableByteStreamController {
 
         let request = ReadableStreamBYOBRequest::new(self.clone());
         let object: JsObject =
-            create_interface_instance::<BoaTypes, ReadableStreamBYOBRequest>(request, ec)?.into();
+            create_interface_instance::<crate::js::Types, ReadableStreamBYOBRequest>(request, ec)?.into();
         *self.byob_request_object.borrow_mut() = Some(object.clone());
         self.update_byob_request_view(ec)?;
         Ok(Some(object))
@@ -615,10 +615,10 @@ impl ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#rbs-controller-close>
     pub(crate) fn close(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         if self.close_requested.get()
             || crate::js::js_result_to_completion(self.stream_slot(), context)?.state()
                 != ReadableStreamState::Readable
@@ -636,10 +636,10 @@ impl ReadableByteStreamController {
     pub(crate) fn enqueue(
         &self,
         chunk: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         if self.close_requested.get()
             || crate::js::js_result_to_completion(self.stream_slot(), context)?.state()
                 != ReadableStreamState::Readable
@@ -657,8 +657,8 @@ impl ReadableByteStreamController {
     pub(crate) fn error(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         self.error_steps(error, ec)
     }
 
@@ -666,10 +666,10 @@ impl ReadableByteStreamController {
     pub(crate) fn cancel_steps(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         self.reset_queue();
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
         crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
@@ -690,11 +690,11 @@ impl ReadableByteStreamController {
     pub(crate) fn pull_steps(
         &self,
         read_request: ReadRequest,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // JsArrayBuffer::new and readable_stream_add_read_request still require &mut Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
         if self.queue_total_size.get() > 0 {
             return self.fill_read_request_from_queue(stream, read_request, ec);
@@ -729,10 +729,10 @@ impl ReadableByteStreamController {
         view: ArrayBufferViewDescriptor,
         min: usize,
         read_into_request: ReadIntoRequest,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
         let mut descriptor = PullIntoDescriptor {
             minimum_fill: min * view.element_size(),
@@ -745,7 +745,7 @@ impl ReadableByteStreamController {
             self.fill_pull_into_from_queue(&mut descriptor),
             context,
         )?;
-        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
         if descriptor.can_commit() {
             return descriptor.commit(false, ec_ref);
         }
@@ -779,13 +779,13 @@ impl ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamcontroller-releasesteps>
     pub(crate) fn release_steps(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
         crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
-        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
         let release_error = type_error_value("Reader was released", ec_ref)?;
         for descriptor in pending {
             descriptor.error(release_error.clone(), ec_ref)?;
@@ -796,10 +796,10 @@ impl ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-close>
     pub(crate) fn close_steps(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
         if self.close_requested.get() || stream.state() != ReadableStreamState::Readable {
             return Ok(());
@@ -820,7 +820,7 @@ impl ReadableByteStreamController {
             };
 
             if has_misaligned_pending {
-                let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+                let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
                 let error = type_error_value(
                     "Cannot close a byte stream with a partially filled typed array element",
                     ec_ref,
@@ -846,10 +846,10 @@ impl ReadableByteStreamController {
     pub(crate) fn enqueue_steps(
         &self,
         chunk: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let view = crate::js::js_result_to_completion(
             ArrayBufferViewDescriptor::from_value(chunk, context),
             context,
@@ -863,7 +863,7 @@ impl ReadableByteStreamController {
             ));
         }
 
-        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
         self.enqueue_chunk(view);
         self.process_pending_pull_intos_using_queue(ec_ref)?;
         self.process_read_requests_using_queue(ec_ref)?;
@@ -874,10 +874,10 @@ impl ReadableByteStreamController {
     pub(crate) fn error_steps(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         if crate::js::js_result_to_completion(self.stream_slot(), context)?.state()
             != ReadableStreamState::Readable
         {
@@ -887,7 +887,7 @@ impl ReadableByteStreamController {
         self.reset_queue();
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
         crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
-        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
         for descriptor in pending {
             descriptor.error(error.clone(), ec_ref)?;
         }
@@ -906,10 +906,10 @@ impl ReadableByteStreamController {
     pub(crate) fn respond(
         &self,
         bytes_written: usize,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let descriptor = {
             let mut pending = self.pending_pull_intos.borrow_mut();
             let descriptor = match pending.front_mut() {
@@ -943,7 +943,7 @@ impl ReadableByteStreamController {
                 pending.pop_front().expect("front descriptor must exist")
             } else {
                 drop(pending);
-                let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+                let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
                 self.update_byob_request_view(ec_ref)?;
                 self.call_pull_if_needed(ec_ref)?;
                 return Ok(());
@@ -951,7 +951,7 @@ impl ReadableByteStreamController {
         };
 
         crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
-        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
         if self.close_requested.get() {
             if descriptor.bytes_filled % descriptor.view.element_size() != 0 {
                 let error = type_error_value(
@@ -989,10 +989,10 @@ impl ReadableByteStreamController {
         &self,
         view: ArrayBufferViewDescriptor,
         _view_object: JsObject,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let bytes_written = view.byte_length();
         let descriptor_to_commit = {
             let mut pending = self.pending_pull_intos.borrow_mut();
@@ -1039,7 +1039,7 @@ impl ReadableByteStreamController {
         };
 
         let Some(descriptor) = descriptor_to_commit else {
-            let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+            let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
             self.update_byob_request_view(ec_ref)?;
             self.call_pull_if_needed(ec_ref)?;
             return Ok(());
@@ -1048,7 +1048,7 @@ impl ReadableByteStreamController {
         crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
         if self.close_requested.get() {
             if descriptor.bytes_filled % descriptor.view.element_size() != 0 {
-                let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+                let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
                 let error = type_error_value(
                     "Cannot close a byte stream with a partially filled typed array element",
                     ec_ref,
@@ -1062,7 +1062,7 @@ impl ReadableByteStreamController {
                     .create_result_view(descriptor.bytes_filled, context),
                 context,
             )?;
-            let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+            let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
             descriptor.commit_with_value(JsValue::from(result_view), true, ec_ref)?;
         } else {
             let result_view = crate::js::js_result_to_completion(
@@ -1071,7 +1071,7 @@ impl ReadableByteStreamController {
                     .create_result_view(descriptor.bytes_filled, context),
                 context,
             )?;
-            let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+            let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
             descriptor.commit_with_value(JsValue::from(result_view), false, ec_ref)?;
         }
 
@@ -1090,17 +1090,17 @@ impl ReadableByteStreamController {
             return Ok(());
         }
 
-        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
         self.call_pull_if_needed(ec_ref)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-call-pull-if-needed>
     pub(crate) fn call_pull_if_needed(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         if !crate::js::js_result_to_completion(self.should_call_pull(), context)? {
             return Ok(());
         }
@@ -1112,7 +1112,7 @@ impl ReadableByteStreamController {
         self.pulling.set(true);
         let controller_object =
             crate::js::js_result_to_completion(self.controller_object(), context)?;
-        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
         let pull_algorithm = self.pull_algorithm.borrow().clone();
         let pull_promise = match pull_algorithm {
             Some(pull_algorithm) => JsObject::from(pull_algorithm.call(&controller_object, ec_ref)),
@@ -1126,7 +1126,7 @@ impl ReadableByteStreamController {
                 if controller.pull_again.get() {
                     controller.pull_again.set(false);
                     crate::js::completion_to_js_result(
-                        controller.call_pull_if_needed(crate::js::context_as_ec(context)),
+                        controller.call_pull_if_needed(js_engine::boa::context_as_ec(context)),
                     )?;
                 }
                 Ok(JsValue::undefined())
@@ -1139,7 +1139,7 @@ impl ReadableByteStreamController {
             |_, args, controller: &ReadableByteStreamController, context| {
                 crate::js::completion_to_js_result(controller.error_steps(
                     args.first().cloned().unwrap_or_default(),
-                    crate::js::context_as_ec(context),
+                    js_engine::boa::context_as_ec(context),
                 ))?;
                 Ok(JsValue::undefined())
             },
@@ -1193,11 +1193,11 @@ impl ReadableByteStreamController {
 
     fn dequeue_chunk_as_value(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsValue, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // create_result_view calls Boa-specific typed array constructors.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let entry = self.queue.borrow_mut().pop_front().ok_or_else(|| {
             crate::js::native_error_to_js_value(
                 JsNativeError::typ().with_message("Readable byte stream queue is empty"),
@@ -1218,11 +1218,11 @@ impl ReadableByteStreamController {
         &self,
         stream: ReadableStream,
         read_request: ReadRequest,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
-        let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
         let chunk = self.dequeue_chunk_as_value(ec_ref)?;
         read_request.chunk_steps(chunk, ec_ref)?;
         if self.close_requested.get() && self.queue_total_size.get() == 0 {
@@ -1234,10 +1234,10 @@ impl ReadableByteStreamController {
 
     fn process_read_requests_using_queue(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
         while self.queue_total_size.get() > 0
             && stream
@@ -1246,7 +1246,7 @@ impl ReadableByteStreamController {
                 .is_some()
             && readable_stream_get_num_read_requests(stream.clone()) > 0
         {
-            let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+            let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
             let chunk = self.dequeue_chunk_as_value(ec_ref)?;
             crate::js::js_result_to_completion(
                 readable_stream_fulfill_read_request(stream.clone(), chunk, false, context),
@@ -1316,10 +1316,10 @@ impl ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-process-pull-into-descriptors-using-queue>
     fn process_pending_pull_intos_using_queue(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         loop {
             if self.queue_total_size.get() == 0 {
                 break;
@@ -1333,12 +1333,12 @@ impl ReadableByteStreamController {
             )?;
             if descriptor.can_commit() {
                 crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
-                let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+                let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
                 descriptor.commit(false, ec_ref)?;
                 continue;
             }
             self.pending_pull_intos.borrow_mut().push_front(descriptor);
-            let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+            let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
             self.update_byob_request_view(ec_ref)?;
             break;
         }
@@ -1375,12 +1375,12 @@ pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
     stream: ReadableStream,
     underlying_source_object: Option<JsObject>,
     high_water_mark: f64,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(), BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
     let controller = ReadableByteStreamController::new();
     let controller_object: JsObject = create_interface_instance::<
-        BoaTypes,
+        crate::js::Types,
         ReadableByteStreamController,
     >(controller.clone(), ec)?
     .into();
@@ -1430,11 +1430,11 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     cancel_algorithm: CancelAlgorithm,
     high_water_mark: f64,
     auto_allocate_chunk_size: Option<usize>,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(), BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
-    let ec_ref: &mut dyn ExecutionContext<BoaTypes> = crate::js::context_as_ec(context);
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
     *controller.stream.borrow_mut() = Some(stream.clone());
     stream.set_controller_slot(Some(ReadableStreamController::Byte(controller.clone())));
     stream.set_controller_object_slot(Some(controller_object.clone()));
@@ -1459,7 +1459,7 @@ pub(crate) fn set_up_readable_byte_stream_controller(
         |_, _, captured_controller: &ReadableByteStreamController, context| {
             captured_controller.started.set(true);
             crate::js::completion_to_js_result(
-                captured_controller.call_pull_if_needed(crate::js::context_as_ec(context)),
+                captured_controller.call_pull_if_needed(js_engine::boa::context_as_ec(context)),
             )?;
             Ok(JsValue::undefined())
         },
@@ -1470,7 +1470,7 @@ pub(crate) fn set_up_readable_byte_stream_controller(
         |_, args, captured_controller: &ReadableByteStreamController, context| {
             crate::js::completion_to_js_result(captured_controller.error_steps(
                 args.first().cloned().unwrap_or_default(),
-                crate::js::context_as_ec(context),
+                js_engine::boa::context_as_ec(context),
             ))?;
             Ok(JsValue::undefined())
         },
@@ -1490,10 +1490,10 @@ pub(crate) fn set_up_readable_byte_stream_controller(
 
 fn extract_auto_allocate_chunk_size(
     source_object: Option<&JsObject>,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<Option<usize>, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<usize>, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let Some(source_object) = source_object else {
         return Ok(None);
     };

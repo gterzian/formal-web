@@ -3,21 +3,21 @@ use std::marker::PhantomData;
 
 use crate::dom::DOMException;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for DOMException {
+impl WebIdlInterface<crate::js::Types> for DOMException {
     const NAME: &'static str = "DOMException";
 
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         (|| -> JsResult<Self> {
             let message = args
                 .get(0)
@@ -34,7 +34,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for DOMException {
         .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -83,9 +83,9 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for DOMException {
 fn get_name(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
     let exception = obj
         .downcast_ref::<DOMException>()
@@ -96,9 +96,9 @@ fn get_name(
 fn get_message(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
     let exception = obj
         .downcast_ref::<DOMException>()
@@ -109,9 +109,9 @@ fn get_message(
 fn get_code(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
     let exception = obj
         .downcast_ref::<DOMException>()

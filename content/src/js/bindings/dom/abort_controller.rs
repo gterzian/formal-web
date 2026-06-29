@@ -6,24 +6,24 @@ use crate::js::with_abort_controller_ref;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 use super::abort_signal::{abort_reason_from_argument, signal_abort_with_context};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortController {
+impl WebIdlInterface<crate::js::Types> for AbortController {
     const NAME: &'static str = "AbortController";
 
     fn create_platform_object(
         _new_target: &JsValue,
         _args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let signal = create_abort_signal(AbortSignal::new(), ec)?;
         Ok(AbortController::new(signal))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -54,10 +54,10 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for AbortController {
 fn get_signal(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let controller = this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("AbortController receiver is not an object")
@@ -72,11 +72,11 @@ fn get_signal(
 fn abort(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let reason = abort_reason_from_argument(args.get(0), ec)?;
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let controller = this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("AbortController receiver is not an object")

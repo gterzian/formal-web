@@ -1,6 +1,6 @@
 use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
-use js_engine::boa::BoaTypes;
+
 
 /// <https://webidl.spec.whatwg.org/#idl-callback-function>
 // Note: The content process reuses `Callback` for both [callback function](https://webidl.spec.whatwg.org/#idl-callback-function) type values and objects implementing a [callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) because both Web IDL representations are a tuple of (object reference, callback context).
@@ -92,7 +92,7 @@ pub(crate) fn nullable_value<T>(
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 pub(crate) fn call_user_objects_operation(
-    host: &mut dyn EcmascriptHost<BoaTypes>,
+    host: &mut dyn EcmascriptHost<crate::js::Types>,
     value: &Callback,
     op_name: &str,
     args: &[JsValue],
@@ -174,7 +174,7 @@ pub(crate) fn call_user_objects_operation(
 
 /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
 pub(crate) fn invoke_callback_function(
-    host: &mut dyn EcmascriptHost<BoaTypes>,
+    host: &mut dyn EcmascriptHost<crate::js::Types>,
     callable: &Callback,
     args: &[JsValue],
     exception_behavior: ExceptionBehavior,

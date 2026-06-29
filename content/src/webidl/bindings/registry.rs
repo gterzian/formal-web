@@ -149,7 +149,7 @@ where
 pub(crate) fn get_registry_prototype_boa<I: 'static>(
     context: &boa_engine::Context,
 ) -> Option<boa_engine::JsObject> {
-    get_prototype_from_host_defined::<js_engine::boa::BoaTypes, I>(crate::js::context_as_ec_ref(
+    get_prototype_from_host_defined::<crate::js::Types, I>(js_engine::boa::context_as_ec_ref(
         context,
     ))
 }
@@ -158,5 +158,5 @@ pub(crate) fn get_registry_prototype_boa<I: 'static>(
 pub(crate) fn wire_registry_prototype_boa<TChild: 'static, TParent: 'static>(
     context: &mut boa_engine::Context,
 ) {
-    wire_prototype::<js_engine::boa::BoaTypes, TChild, TParent>(crate::js::context_as_ec(context));
+    wire_prototype::<crate::js::Types, TChild, TParent>(js_engine::boa::context_as_ec(context));
 }

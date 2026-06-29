@@ -5,17 +5,17 @@ use std::marker::PhantomData;
 
 use crate::html::HTMLInputElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLInputElement {
+impl WebIdlInterface<crate::js::Types> for HTMLInputElement {
     const NAME: &'static str = "HTMLInputElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("HTMLElement")
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -46,9 +46,9 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLInputElement {
 fn get_value(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let input = obj
         .downcast_ref::<HTMLInputElement>()
@@ -59,9 +59,9 @@ fn get_value(
 fn focus_method(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let _obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let _obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     // Note: focus() is a no-op — element focus management not yet implemented.
     Ok(ec.value_undefined())
@@ -70,10 +70,10 @@ fn focus_method(
 fn set_value(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let obj = this
             .as_object()

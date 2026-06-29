@@ -15,19 +15,19 @@ use crate::js::platform_objects::invalidate_cached_node_ids;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for Element {
+impl WebIdlInterface<crate::js::Types> for Element {
     const NAME: &'static str = "Element";
 
     fn parent_name() -> Option<&'static str> {
         Some("Node")
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
@@ -212,10 +212,10 @@ pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R)
 
 fn try_with_element_ref<R>(
     this: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&Element) -> R,
-) -> Completion<R, BoaTypes> {
-    let object = BoaTypes::value_as_object(this)
+) -> Completion<R, crate::js::Types> {
+    let object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("element receiver is not an object"))?;
     if let Some(element) = object.downcast_ref::<Element>() {
         return Ok(f(&element));
@@ -244,8 +244,8 @@ fn try_with_element_ref<R>(
 fn get_id(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let id = try_with_element_ref(this, ec, |element| element.id())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&id)))
 }
@@ -253,8 +253,8 @@ fn get_id(
 fn get_tag_name(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let name = try_with_element_ref(this, ec, |element| element.tag_name())?;
     Ok(ec.value_from_string(ec.js_string_from_str(name.as_str())))
 }
@@ -262,8 +262,8 @@ fn get_tag_name(
 fn get_inner_html(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let html = try_with_element_ref(this, ec, |element| element.inner_html())?;
     Ok(ec.value_from_string(ec.js_string_from_str(html.as_str())))
 }
@@ -271,10 +271,10 @@ fn get_inner_html(
 fn set_inner_html(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let html = args
             .get_or_undefined(0)
@@ -294,10 +294,10 @@ fn set_inner_html(
 fn get_class_list(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let realm = ctx.realm().clone();
         let obj = this.as_object().ok_or_else(|| {
@@ -315,7 +315,7 @@ fn get_class_list(
                               args: &[JsValue],
                               ctx: &mut Context|
                               -> JsResult<JsValue> {
-                            let ec = crate::js::context_as_ec(ctx);
+                            let ec = js_engine::boa::context_as_ec(ctx);
                             class_list_add(this, args, ec).map_err(JsError::from_opaque)
                         },
                     ))
@@ -330,7 +330,7 @@ fn get_class_list(
                               args: &[JsValue],
                               ctx: &mut Context|
                               -> JsResult<JsValue> {
-                            let ec = crate::js::context_as_ec(ctx);
+                            let ec = js_engine::boa::context_as_ec(ctx);
                             class_list_remove(this, args, ec).map_err(JsError::from_opaque)
                         },
                     ))
@@ -345,7 +345,7 @@ fn get_class_list(
                               args: &[JsValue],
                               ctx: &mut Context|
                               -> JsResult<JsValue> {
-                            let ec = crate::js::context_as_ec(ctx);
+                            let ec = js_engine::boa::context_as_ec(ctx);
                             class_list_toggle(this, args, ec).map_err(JsError::from_opaque)
                         },
                     ))
@@ -360,7 +360,7 @@ fn get_class_list(
                               args: &[JsValue],
                               ctx: &mut Context|
                               -> JsResult<JsValue> {
-                            let ec = crate::js::context_as_ec(ctx);
+                            let ec = js_engine::boa::context_as_ec(ctx);
                             class_list_contains(this, args, ec).map_err(JsError::from_opaque)
                         },
                     ))
@@ -380,7 +380,7 @@ fn get_class_list(
         let len_fn = unsafe {
             NativeFunction::from_closure(Box::new(
                 move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
-                    let ec = crate::js::context_as_ec(ctx);
+                    let ec = js_engine::boa::context_as_ec(ctx);
                     class_list_length(this, args, ec).map_err(JsError::from_opaque)
                 },
             ))
@@ -401,10 +401,10 @@ fn get_class_list(
 fn class_list_value(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<String, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<String, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<String> {
         let obj = this
             .as_object()
@@ -459,10 +459,10 @@ fn class_list_value(
 fn class_list_set_value(
     this: &JsValue,
     value: &str,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(), BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<()> {
         let obj = this
             .as_object()
@@ -531,11 +531,11 @@ fn class_list_set_value(
 fn class_list_add(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let token = args
             .get_or_undefined(0)
@@ -549,7 +549,7 @@ fn class_list_add(
         if !classes.contains(&token) {
             classes.push(token);
             let new_value = classes.join(" ");
-            class_list_set_value(this, &new_value, crate::js::context_as_ec(ctx))
+            class_list_set_value(this, &new_value, js_engine::boa::context_as_ec(ctx))
                 .map_err(JsError::from_opaque)?;
         }
         Ok(JsValue::undefined())
@@ -560,11 +560,11 @@ fn class_list_add(
 fn class_list_remove(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let token = args
             .get_or_undefined(0)
@@ -576,7 +576,7 @@ fn class_list_remove(
             .map(|s| s.to_string())
             .collect();
         let new_value = classes.join(" ");
-        class_list_set_value(this, &new_value, crate::js::context_as_ec(ctx))
+        class_list_set_value(this, &new_value, js_engine::boa::context_as_ec(ctx))
             .map_err(JsError::from_opaque)?;
         Ok(JsValue::undefined())
     })()
@@ -586,11 +586,11 @@ fn class_list_remove(
 fn class_list_toggle(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let token = args
             .get_or_undefined(0)
@@ -604,13 +604,13 @@ fn class_list_toggle(
         if let Some(pos) = classes.iter().position(|c| c == &token) {
             classes.remove(pos);
             let new_value = classes.join(" ");
-            class_list_set_value(this, &new_value, crate::js::context_as_ec(ctx))
+            class_list_set_value(this, &new_value, js_engine::boa::context_as_ec(ctx))
                 .map_err(JsError::from_opaque)?;
             Ok(JsValue::new(false))
         } else {
             classes.push(token);
             let new_value = classes.join(" ");
-            class_list_set_value(this, &new_value, crate::js::context_as_ec(ctx))
+            class_list_set_value(this, &new_value, js_engine::boa::context_as_ec(ctx))
                 .map_err(JsError::from_opaque)?;
             Ok(JsValue::new(true))
         }
@@ -621,11 +621,11 @@ fn class_list_toggle(
 fn class_list_contains(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let token = args
             .get_or_undefined(0)
@@ -640,11 +640,11 @@ fn class_list_contains(
 fn class_list_length(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let count = if current.is_empty() {
             0
@@ -659,10 +659,10 @@ fn class_list_length(
 fn query_selector(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let selector = args
             .get_or_undefined(0)
@@ -683,10 +683,10 @@ fn query_selector(
 fn query_selector_all(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let selector = args
             .get_or_undefined(0)
@@ -708,10 +708,10 @@ fn query_selector_all(
 fn insert_adjacent_text(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let where_ = args
             .get_or_undefined(0)
@@ -724,9 +724,9 @@ fn insert_adjacent_text(
         with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
             |error| {
                 JsError::from_opaque(JsValue::from(
-                    create_interface_instance::<BoaTypes, DOMException>(
+                    create_interface_instance::<crate::js::Types, DOMException>(
                         error,
-                        crate::js::context_as_ec(ctx),
+                        js_engine::boa::context_as_ec(ctx),
                     )
                     .expect("DOMException construction should not fail"),
                 ))
@@ -740,10 +740,10 @@ fn insert_adjacent_text(
 fn get_attribute(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let name = args
             .get_or_undefined(0)
@@ -762,10 +762,10 @@ fn get_attribute(
 fn has_attribute(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let name = args
             .get_or_undefined(0)
@@ -781,10 +781,10 @@ fn has_attribute(
 fn set_attribute(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let name = args
             .get_or_undefined(0)
@@ -805,10 +805,10 @@ fn set_attribute(
 fn set_attribute_ns(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let namespace =
             if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined() {
@@ -839,10 +839,10 @@ fn set_attribute_ns(
 fn remove_attribute(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let name = args
             .get_or_undefined(0)
@@ -859,10 +859,10 @@ fn remove_attribute(
 fn get_bounding_client_rect(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let rect = with_element_ref(this, |element| {
             element.bounding_client_rect().unwrap_or_default()

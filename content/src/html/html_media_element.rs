@@ -12,7 +12,7 @@ use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
 use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::media::VideoPaintId;
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://html.spec.whatwg.org/#media-elements>
@@ -160,7 +160,7 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-src>
-    pub(crate) fn set_src(&mut self, src: &str, ec: &mut dyn ExecutionContext<BoaTypes>) {
+    pub(crate) fn set_src(&mut self, src: &str, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: Set this's src content attribute to the given value.
         self.html_element.element.set_attribute("src", src);
 
@@ -228,7 +228,7 @@ impl HTMLMediaElement {
     /// are no-ops until promise-based play() and the media element event task source
     /// are implemented.  Step 6 (abort event for NETWORK_LOADING/IDLE) is deferred
     /// to event dispatch.
-    pub(crate) fn media_element_load_algorithm(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
+    pub(crate) fn media_element_load_algorithm(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: Set this element's is currently stalled to false.
         self.is_currently_stalled = false;
 
@@ -309,9 +309,9 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#resource-selection-algorithm>
-    pub(crate) fn resource_selection_algorithm(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+    pub(crate) fn resource_selection_algorithm(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: Set networkState to NETWORK_NO_SOURCE.
         self.network_state = Self::NETWORK_NO_SOURCE;
 
@@ -533,8 +533,8 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-play>
     pub(crate) fn play(
         &mut self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsValue, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
         // Step 1: If the media element is not allowed to play, then return
         // a promise rejected with a "NotAllowedError" DOMException.
         // Note: Simplified — always allowed to play for now.
@@ -561,7 +561,7 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#internal-play-steps>
-    pub(crate) fn internal_play_steps(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
+    pub(crate) fn internal_play_steps(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: If the media element's networkState attribute has the
         // value NETWORK_EMPTY, invoke the media element's resource
         // selection algorithm.
@@ -604,7 +604,7 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-pause>
-    pub(crate) fn pause(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
+    pub(crate) fn pause(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: If the media element's networkState attribute has the
         // value NETWORK_EMPTY, invoke the media element's resource
         // selection algorithm.
@@ -641,7 +641,7 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#dom-media-load>
     #[allow(dead_code)]
-    pub(crate) fn load(&mut self, ec: &mut dyn ExecutionContext<BoaTypes>) {
+    pub(crate) fn load(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: Let resumptionSteps be the media element's lazy load resumption steps.
         // Step 2: If resumptionSteps is not null, set to null and invoke resumptionSteps.
         // Note: Lazy load resumption steps are not yet implemented — always null.

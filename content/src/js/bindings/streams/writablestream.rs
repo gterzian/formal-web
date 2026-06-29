@@ -8,28 +8,28 @@ use crate::streams::{
     with_writable_stream_ref,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStream {
+impl WebIdlInterface<crate::js::Types> for WritableStream {
     const NAME: &'static str = "WritableStream";
 
     fn create_platform_object(
         new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let value_undefined = ec.value_undefined();
         (|| -> JsResult<Self> {
             crate::js::completion_to_js_result(construct_writable_stream(new_target, args, ec))
         })()
         .map_err(|e| {
-            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
             e.into_opaque(ctx).unwrap_or(value_undefined)
         })
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -77,10 +77,10 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStream {
     }
 }
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStreamDefaultController {
+impl WebIdlInterface<crate::js::Types> for WritableStreamDefaultController {
     const NAME: &'static str = "WritableStreamDefaultController";
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -108,18 +108,18 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStreamDefaultControll
     }
 }
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStreamDefaultWriter {
+impl WebIdlInterface<crate::js::Types> for WritableStreamDefaultWriter {
     const NAME: &'static str = "WritableStreamDefaultWriter";
 
     fn create_platform_object(
         this: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         construct_writable_stream_default_writer(this, args, ec)
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -210,10 +210,10 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for WritableStreamDefaultWriter {
 fn get_locked(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let stream_object = this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("WritableStream receiver is not an object")
@@ -227,8 +227,8 @@ fn get_locked(
 fn abort_method(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     (|| -> JsResult<JsValue> {
         let stream_object = this.as_object().ok_or_else(|| {
@@ -241,7 +241,7 @@ fn abort_method(
         Ok(JsValue::from(promise))
     })()
     .map_err(|e| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         e.into_opaque(ctx).unwrap_or(value_undefined)
     })
 }
@@ -249,8 +249,8 @@ fn abort_method(
 fn close_method(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     (|| -> JsResult<JsValue> {
         let stream_object = this.as_object().ok_or_else(|| {
@@ -262,7 +262,7 @@ fn close_method(
         Ok(JsValue::from(promise))
     })()
     .map_err(|e| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         e.into_opaque(ctx).unwrap_or(value_undefined)
     })
 }
@@ -270,8 +270,8 @@ fn close_method(
 fn get_writer_method(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     (|| -> JsResult<JsValue> {
         let stream_object = this.as_object().ok_or_else(|| {
@@ -283,7 +283,7 @@ fn get_writer_method(
         Ok(JsValue::from(writer))
     })()
     .map_err(|e| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         e.into_opaque(ctx).unwrap_or(value_undefined)
     })
 }
@@ -291,10 +291,10 @@ fn get_writer_method(
 fn get_signal(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let controller_object = this.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -313,10 +313,10 @@ fn get_signal(
 fn error_method(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let controller_object = this.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -329,7 +329,7 @@ fn error_method(
             })?;
         crate::js::completion_to_js_result(controller.error(
             args.get_or_undefined(0).clone(),
-            crate::js::context_as_ec(ctx),
+            js_engine::boa::context_as_ec(ctx),
         ))?;
         Ok(JsValue::undefined())
     })()
@@ -339,10 +339,10 @@ fn error_method(
 fn get_closed(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let writer_object = this.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -359,10 +359,10 @@ fn get_closed(
 fn get_desired_size(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let writer_object = this.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -382,10 +382,10 @@ fn get_desired_size(
 fn get_ready(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let writer_object = this.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -402,10 +402,10 @@ fn get_ready(
 fn abort_writer_method(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let writer_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let error: JsError = JsNativeError::typ()
             .with_message("WritableStreamDefaultWriter receiver is not an object")
             .into();
@@ -418,7 +418,7 @@ fn abort_writer_method(
         writer.abort(reason, ec).map(JsValue::from)
     })
     .map_err(|e| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         e.into_opaque(ctx).unwrap_or(JsValue::undefined())
     })?
 }
@@ -426,10 +426,10 @@ fn abort_writer_method(
 fn close_writer_method(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let writer_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let error: JsError = JsNativeError::typ()
             .with_message("WritableStreamDefaultWriter receiver is not an object")
             .into();
@@ -442,7 +442,7 @@ fn close_writer_method(
         writer.close(ec).map(JsValue::from)
     })
     .map_err(|e| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined())
     })?
 }
@@ -450,10 +450,10 @@ fn close_writer_method(
 fn release_lock_method(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let writer_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let error: JsError = JsNativeError::typ()
             .with_message("WritableStreamDefaultWriter receiver is not an object")
             .into();
@@ -463,7 +463,7 @@ fn release_lock_method(
     })?;
     with_writable_stream_default_writer_ref(&writer_object, |writer| writer.release_lock(ec))
         .map_err(|e| {
-            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
             e.into_opaque(ctx).unwrap_or(JsValue::undefined())
         })??;
     Ok(JsValue::undefined())
@@ -472,10 +472,10 @@ fn release_lock_method(
 fn write_method(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let writer_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let error: JsError = JsNativeError::typ()
             .with_message("WritableStreamDefaultWriter receiver is not an object")
             .into();
@@ -488,7 +488,7 @@ fn write_method(
         writer.write(chunk, ec).map(JsValue::from)
     })
     .map_err(|e| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         e.into_opaque(ctx).unwrap_or(JsValue::undefined())
     })?
 }

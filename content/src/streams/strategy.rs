@@ -1,6 +1,6 @@
 use boa_engine::{JsData, JsValue};
 use boa_gc::{Finalize, Trace};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
@@ -57,8 +57,8 @@ impl SizeAlgorithm {
     pub(crate) fn size(
         &self,
         chunk: &JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<f64, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<f64, crate::js::Types> {
         match self {
             Self::ReturnOne => Ok(1.0),
             Self::Callback { callback } => {
@@ -74,8 +74,8 @@ impl SizeAlgorithm {
                 let value = match result {
                     Ok(value) => value,
                     Err(js_error) => {
-                        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-                        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+                        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+                        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
                         let opaque = js_error.into_opaque(ctx);
                         return Err(opaque.unwrap_or(JsValue::undefined()));
                     }
@@ -89,8 +89,8 @@ impl SizeAlgorithm {
 /// <https://streams.spec.whatwg.org/#validate-and-normalize-high-water-mark>
 pub(crate) fn validate_and_normalize_high_water_mark(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<f64, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<f64, crate::js::Types> {
     // Step 1 (implicit): "Let highWaterMark be ? ToNumber(highWaterMark)."
     let number = ec.to_number(value.clone())?;
     // Step 2: "If highWaterMark is NaN or highWaterMark < 0, throw a RangeError exception."
@@ -105,8 +105,8 @@ pub(crate) fn validate_and_normalize_high_water_mark(
 pub(crate) fn extract_high_water_mark(
     strategy: &JsValue,
     default_high_water_mark: f64,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<f64, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<f64, crate::js::Types> {
     // Step 1: "If strategy[\"highWaterMark\"] does not exist, return defaultHWM."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(default_high_water_mark);
@@ -131,8 +131,8 @@ pub(crate) fn extract_high_water_mark(
 /// <https://streams.spec.whatwg.org/#make-size-algorithm-from-size-function>
 pub(crate) fn extract_size_algorithm(
     strategy: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<SizeAlgorithm, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<SizeAlgorithm, crate::js::Types> {
     // Step 1: "If strategy[\"size\"] does not exist, return an algorithm that returns 1."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(SizeAlgorithm::ReturnOne);
@@ -166,8 +166,8 @@ pub(crate) fn extract_size_algorithm(
 /// <https://streams.spec.whatwg.org/#byte-length-queuing-strategy-size-function>
 pub(crate) fn byte_length_size(
     chunk: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     // "Return ? GetV(chunk, \"byteLength\")."
     let chunk = ec.to_object(chunk.clone())?;
     ExecutionContext::get(ec, chunk, ec.property_key_from_str("byteLength"))
@@ -181,8 +181,8 @@ pub(crate) fn count_size(_: &JsValue) -> JsValue {
 
 fn to_non_negative_number(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<f64, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<f64, crate::js::Types> {
     let number = ec.to_number(value.clone())?;
     if !number.is_finite() || number < 0.0 {
         return Err(ec.new_range_error("queue strategy size must be a finite, non-negative number"));

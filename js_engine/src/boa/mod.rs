@@ -8,7 +8,7 @@
 //! | Module | Contents |
 //! |---|---|
 //! | [`types`] | `BoaTypes` — the `JsTypes` / `JsTypesWithRealm` marker type |
-//! | [`engine`] | `BoaEngine` — the `JsEngine<BoaTypes>` implementation |
+//! | [`engine`] | `BoaContext` — the `JsEngine<BoaTypes>` implementation |
 //!
 //! # Hard problems (not yet implemented — marked with `todo!()`)
 //!
@@ -25,5 +25,6 @@
 mod engine;
 mod types;
 
-pub use engine::BoaEngine;
+pub use engine::BoaContext;
+pub use engine::{context_as_ec, context_as_ec_ref, context_as_engine, ec_to_ctx};
 pub use types::BoaTypes;

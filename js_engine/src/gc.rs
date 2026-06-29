@@ -89,7 +89,7 @@ impl<T: JsTypesGcExt> Drop for GcRootHandle<T> {
 #[cfg(feature = "boa")]
 mod boa_gc_impl {
     use super::*;
-    use crate::boa::{BoaEngine, BoaTypes};
+    use crate::boa::{BoaContext, BoaTypes};
 
     // SAFETY: `boa_gc::Trace` has the same safety contract as
     // `js_engine::gc::Trace` — the implementor guarantees that every GC
@@ -114,7 +114,7 @@ mod boa_gc_impl {
         }
     }
 
-    impl JsEngineGcExt<BoaTypes> for BoaEngine {
+    impl JsEngineGcExt<BoaTypes> for BoaContext {
         fn create_root(&mut self, value: &boa_engine::JsValue) -> GcRootHandle<BoaTypes> {
             GcRootHandle {
                 value: value.clone(),

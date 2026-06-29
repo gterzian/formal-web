@@ -7,7 +7,7 @@ use boa_engine::{
     Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
@@ -27,10 +27,10 @@ use super::{
 /// Helper: convert a JsNativeError into a JsValue for use as a Completion error.
 fn native_to_completion_err(
     error: JsNativeError,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsValue {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let js_error: JsError = error.into();
     js_error
         .into_opaque(context)
@@ -210,8 +210,8 @@ impl WritableStream {
     pub(crate) fn abort(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         if self.is_writable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot abort a WritableStream that already has a writer",
@@ -225,8 +225,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#ws-close>
     pub(crate) fn close(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         if self.is_writable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that already has a writer",
@@ -247,8 +247,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#ws-get-writer>
     pub(crate) fn get_writer(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         acquire_writable_stream_default_writer(self.clone(), ec)
     }
 
@@ -256,8 +256,8 @@ impl WritableStream {
     pub(crate) fn abort_stream(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         if matches!(
             self.state(),
             WritableStreamState::Closed | WritableStreamState::Errored
@@ -291,9 +291,9 @@ impl WritableStream {
             abort_reason = JsValue::undefined();
         }
 
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // PendingAbortRequest::new requires Boa's Context for JsPromise::new_pending.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let abort_request =
             PendingAbortRequest::new(abort_reason.clone(), was_already_erroring, context);
         let promise = abort_request.promise();
@@ -309,8 +309,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-close>
     pub(crate) fn close_stream(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         match self.state() {
             WritableStreamState::Closed | WritableStreamState::Errored => {
                 return rejected_type_error_promise(
@@ -323,9 +323,9 @@ impl WritableStream {
 
         debug_assert!(!self.close_queued_or_in_flight());
 
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // WriteRequest::new requires Boa's Context for JsPromise::new_pending.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let (close_request, promise) = WriteRequest::new(context);
         self.set_close_request_slot(Some(close_request));
 
@@ -350,14 +350,14 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-add-write-request>
     pub(crate) fn add_write_request(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         debug_assert!(self.is_writable_stream_locked());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // WriteRequest::new requires Boa's Context for JsPromise::new_pending.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let (write_request, promise) = WriteRequest::new(context);
         self.push_write_request(write_request);
         Ok(promise)
@@ -372,8 +372,8 @@ impl WritableStream {
     pub(crate) fn deal_with_rejection(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if self.state() == WritableStreamState::Writable {
             self.start_erroring(error, ec)?;
             return Ok(());
@@ -386,8 +386,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-erroring>
     pub(crate) fn finish_erroring(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Erroring);
         debug_assert!(!self.has_operation_marked_in_flight());
 
@@ -424,14 +424,14 @@ impl WritableStream {
         let _ = upon_settlement(
             promise,
             Some(
-                move |_value: JsValue, ec: &mut dyn ExecutionContext<BoaTypes>| {
+                move |_value: JsValue, ec: &mut dyn ExecutionContext<crate::js::Types>| {
                     abort_request_for_fulfilled.resolve(ec)?;
                     stream_for_fulfilled.reject_close_and_closed_promise_if_needed(ec)?;
                     Ok(ec.value_undefined())
                 },
             ),
             Some(
-                move |reason: JsValue, ec: &mut dyn ExecutionContext<BoaTypes>| {
+                move |reason: JsValue, ec: &mut dyn ExecutionContext<crate::js::Types>| {
                     abort_request.reject(reason, ec)?;
                     stream_for_rejected.reject_close_and_closed_promise_if_needed(ec)?;
                     Ok(ec.value_undefined())
@@ -445,8 +445,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-close>
     pub(crate) fn finish_in_flight_close(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ()
@@ -483,8 +483,8 @@ impl WritableStream {
     pub(crate) fn finish_in_flight_close_with_error(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ()
@@ -504,8 +504,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-write>
     pub(crate) fn finish_in_flight_write(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ()
@@ -521,8 +521,8 @@ impl WritableStream {
     pub(crate) fn finish_in_flight_write_with_error(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
             native_to_completion_err(
                 JsNativeError::typ()
@@ -563,8 +563,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-reject-close-and-closed-promise-if-needed>
     pub(crate) fn reject_close_and_closed_promise_if_needed(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Errored);
 
         if let Some(close_request) = self.take_close_request_slot() {
@@ -585,8 +585,8 @@ impl WritableStream {
     pub(crate) fn start_erroring(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         debug_assert!(self.stored_error().is_undefined());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
@@ -616,8 +616,8 @@ impl WritableStream {
     pub(crate) fn update_backpressure(
         &self,
         backpressure: bool,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
         debug_assert!(!self.close_queued_or_in_flight());
 
@@ -641,8 +641,8 @@ impl WritableStream {
 pub(crate) fn construct_writable_stream(
     _new_target: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<WritableStream, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<WritableStream, crate::js::Types> {
     let mut stream = WritableStream::new();
 
     let underlying_sink = if args.is_empty() {
@@ -667,9 +667,9 @@ pub(crate) fn construct_writable_stream(
         })?)
     };
 
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
     // underlying_sink_type still takes Boa's Context.
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     if let Some(sink_type) = underlying_sink_type(underlying_sink_object.as_ref(), context)
         .map_err(|e| {
             e.into_opaque(context)
@@ -708,8 +708,8 @@ pub(crate) fn create_writable_stream(
     abort_algorithm: AbortAlgorithm,
     high_water_mark: Option<f64>,
     size_algorithm: Option<SizeAlgorithm>,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(WritableStream, JsObject), BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(WritableStream, JsObject), crate::js::Types> {
     let high_water_mark = high_water_mark.unwrap_or(1.0);
     let size_algorithm = size_algorithm.unwrap_or(SizeAlgorithm::ReturnOne);
     debug_assert!(high_water_mark >= 0.0 && !high_water_mark.is_nan());
@@ -732,11 +732,11 @@ pub(crate) fn create_writable_stream(
     Ok((stream, stream_object))
 }
 fn create_writable_stream_object(
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(WritableStream, JsObject), BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(WritableStream, JsObject), crate::js::Types> {
     let stream = WritableStream::new();
     let stream_object: JsObject =
-        create_interface_instance::<BoaTypes, WritableStream>(stream.clone(), ec)?.into();
+        create_interface_instance::<crate::js::Types, WritableStream>(stream.clone(), ec)?.into();
     Ok((stream, stream_object))
 }
 

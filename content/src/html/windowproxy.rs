@@ -10,7 +10,7 @@ use boa_engine::{
 
 use crate::html::Window;
 use crate::webidl::is_array_index_key;
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 // ── Trap functions ──
@@ -266,10 +266,10 @@ fn desc_from_obj(desc_obj: &JsValue, context: &mut Context) -> JsResult<Property
 /// the ECMAScript spec constructs a Proxy via `ProxyCreate(target, handler)`.
 pub(crate) fn create_window_proxy(
     window: &JsObject,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let proxy = JsProxyBuilder::new(window.clone())
         .get_prototype_of(trap_get_prototype_of)
         .set_prototype_of(trap_set_prototype_of)
@@ -300,9 +300,9 @@ pub(crate) fn create_window_proxy(
 /// Note: This cannot use `Proxy::try_data()` (pub(crate) in upstream Boa)
 /// to extract the target, so it checks whether the object is a Proxy and
 /// falls back to `context.global_object()` for the same-origin case.
-pub(crate) fn resolve_window(value: &JsValue, ec: &mut dyn ExecutionContext<BoaTypes>) -> JsObject {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+pub(crate) fn resolve_window(value: &JsValue, ec: &mut dyn ExecutionContext<crate::js::Types>) -> JsObject {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     if let Some(object) = value.as_object() {
         // Direct Window: return as-is.
         if object.is::<Window>() {

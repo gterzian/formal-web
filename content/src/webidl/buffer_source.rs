@@ -4,16 +4,16 @@ use boa_engine::{
     JsNativeError, JsResult, JsValue, object::builtins::JsArrayBuffer,
     object::builtins::JsTypedArray,
 };
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy>
 pub(crate) fn get_a_copy_of_the_buffer_source(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<Vec<u8>, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Vec<u8>, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let result: JsResult<Vec<u8>> = (|| {
         // Step 1: "Let jsBufferSource be the result of converting bufferSource
         //          to a JavaScript value."
@@ -68,7 +68,7 @@ pub(crate) fn get_a_copy_of_the_buffer_source(
 }
 
 /// <https://webidl.spec.whatwg.org/#dfn-buffer-source-type>
-pub(crate) fn is_buffer_source(value: &JsValue, _ec: &mut dyn ExecutionContext<BoaTypes>) -> bool {
+pub(crate) fn is_buffer_source(value: &JsValue, _ec: &mut dyn ExecutionContext<crate::js::Types>) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };

@@ -1901,7 +1901,7 @@ impl ContentProcess {
                         &resolvers,
                         module,
                         Vec::new(),
-                        crate::js::context_as_ec(content_document.settings.context()),
+                        js_engine::boa::context_as_ec(content_document.settings.context()),
                     )) {
                         error!("WebAssembly: failed to resolve compile promise: {error}");
                     }
@@ -1913,7 +1913,7 @@ impl ContentProcess {
                     if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
                         &resolvers,
                         message,
-                        crate::js::context_as_ec(content_document.settings.context()),
+                        js_engine::boa::context_as_ec(content_document.settings.context()),
                     )) {
                         error!("WebAssembly: failed to reject compile promise: {error}");
                     }
@@ -1938,7 +1938,7 @@ impl ContentProcess {
                             &instance,
                             &store,
                             &resolvers,
-                            crate::js::context_as_ec(content_document.settings.context()),
+                            js_engine::boa::context_as_ec(content_document.settings.context()),
                         ))
                     {
                         error!("WebAssembly: failed to resolve instantiate promise: {error}");
@@ -1951,7 +1951,7 @@ impl ContentProcess {
                     if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
                         &resolvers,
                         message,
-                        crate::js::context_as_ec(content_document.settings.context()),
+                        js_engine::boa::context_as_ec(content_document.settings.context()),
                     )) {
                         error!("WebAssembly: failed to reject instantiate promise: {error}");
                     }

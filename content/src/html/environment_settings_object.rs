@@ -11,13 +11,13 @@ use url::Url;
 
 use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
-use crate::js::bindings::html::build_boa_engine;
+use crate::js::bindings::html::build_context;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
 use crate::js::{
-    Engine, install_console_namespace, install_css_namespace, install_document_property,
+    install_console_namespace, install_css_namespace, install_document_property,
 };
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
-use js_engine::boa::BoaTypes;
+use js_engine::boa::BoaContext;
 use js_engine::{EcmascriptHost, ExecutionContext};
 
 fn timer_debug_enabled() -> bool {
@@ -49,10 +49,10 @@ pub struct EnvironmentSettingsObject {
     /// <https://html.spec.whatwg.org/#realms-settings-objects-global-objects>
     ///
     /// The engine wraps a `boa_engine::Context` and implements
-    /// `JsEngine<BoaTypes>`.  Access the underlying context via
+    /// `JsEngine<crate::js::Types>`.  Access the underlying context via
     /// `self.context()` for Boa-specific operations that are not yet
     /// abstracted through `JsEngine`.
-    pub engine: Engine,
+    pub engine: BoaContext,
 
     /// <https://dom.spec.whatwg.org/#concept-document>
     pub document: Rc<RefCell<BaseDocument>>,
@@ -80,7 +80,7 @@ impl EnvironmentSettingsObject {
     ) -> Result<Self, String> {
         // Build the engine. WindowHostHooks creates the Window and its
         // GlobalScope during build().
-        let mut engine = build_boa_engine(Rc::clone(&document))?;
+        let mut engine = build_context(Rc::clone(&document))?;
 
         // Install timer host and navigation info on the GlobalScope through the
         // safe boa API (with_global_scope — traverses the GC heap to reach the
@@ -103,7 +103,7 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let document_object = create_interface_instance::<BoaTypes, Document>(
+        let document_object = create_interface_instance::<crate::js::Types, Document>(
             Document::new(document.clone(), creation_url.clone()),
             &mut engine,
         )
@@ -202,7 +202,7 @@ impl EnvironmentSettingsObject {
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
             crate::webidl::invoke_callback_function(
-                &mut self.engine as &mut dyn EcmascriptHost<js_engine::boa::BoaTypes>,
+                &mut self.engine as &mut dyn EcmascriptHost<crate::js::Types>,
                 &callback,
                 &[JsValue::from(now)],
                 crate::webidl::ExceptionBehavior::Report,
@@ -258,7 +258,7 @@ impl EnvironmentSettingsObject {
                 ));
                 let global = JsValue::from(self.context().global_object());
                 let callback_result = crate::webidl::invoke_callback_function(
-                    &mut self.engine as &mut dyn EcmascriptHost<js_engine::boa::BoaTypes>,
+                    &mut self.engine as &mut dyn EcmascriptHost<crate::js::Types>,
                     callback,
                     &timer.arguments,
                     crate::webidl::ExceptionBehavior::Report,
@@ -347,12 +347,12 @@ impl EnvironmentSettingsObject {
     }
 }
 
-impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for EnvironmentSettingsObject {
+impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
     fn get(
         &mut self,
         object: &JsObject,
         property: &str,
-    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, crate::js::Types> {
         js_engine::EcmascriptHost::get(&mut self.engine, object, property)
     }
 
@@ -365,13 +365,13 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for EnvironmentSettings
         callable: &JsObject,
         this_arg: &JsValue,
         args: &[JsValue],
-    ) -> js_engine::Completion<JsValue, js_engine::boa::BoaTypes> {
+    ) -> js_engine::Completion<JsValue, crate::js::Types> {
         self.engine.call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(
         &mut self,
-    ) -> js_engine::Completion<(), js_engine::boa::BoaTypes> {
+    ) -> js_engine::Completion<(), crate::js::Types> {
         self.engine.perform_a_microtask_checkpoint()
     }
 
@@ -400,14 +400,14 @@ impl js_engine::EcmascriptHost<js_engine::boa::BoaTypes> for EnvironmentSettings
 }
 
 impl EventDispatchHost for EnvironmentSettingsObject {
-    fn ec(&mut self) -> &mut dyn ExecutionContext<js_engine::boa::BoaTypes> {
+    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
         &mut self.engine
     }
 
     fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
-        create_interface_instance::<BoaTypes, Event>(
+        create_interface_instance::<crate::js::Types, Event>(
             event,
-            crate::js::context_as_ec(self.context()),
+            js_engine::boa::context_as_ec(self.context()),
         )
         .map_err(JsError::from_opaque)
     }

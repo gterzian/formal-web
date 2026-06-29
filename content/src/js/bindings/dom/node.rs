@@ -5,7 +5,7 @@ use blitz_dom::NodeData;
 use boa_engine::{
     JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, object::builtins::JsArray,
 };
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::dom::{DOMException, Document, Element, Node};
@@ -19,13 +19,13 @@ use crate::webidl::bindings::{
     create_interface_instance,
 };
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for Node {
+impl WebIdlInterface<crate::js::Types> for Node {
     const NAME: &'static str = "Node";
     fn parent_name() -> Option<&'static str> {
         Some("EventTarget")
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         use boa_engine::JsValue;
         // §3.7.5: Constants
         def.add_constant(ConstantDef {
@@ -378,10 +378,10 @@ pub(crate) fn with_node_ref<R>(this: &JsValue, f: impl FnOnce(&Node) -> R) -> Js
 
 fn try_with_node_ref<R>(
     this: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&Node) -> R,
-) -> Completion<R, BoaTypes> {
-    let object = BoaTypes::value_as_object(this)
+) -> Completion<R, crate::js::Types> {
+    let object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("node receiver is not an object"))?;
     if let Some(node) = object.downcast_ref::<Node>() {
         return Ok(f(&node));
@@ -407,8 +407,8 @@ fn try_with_node_ref<R>(
 fn get_text_content(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     match try_with_node_ref(this, ec, |node| node.text_content())? {
         Some(content) => Ok(ec.value_from_string(ec.js_string_from_str(content.as_str()))),
         None => Ok(ec.value_null()),
@@ -418,10 +418,10 @@ fn get_text_content(
 fn get_first_child(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let (document, node_id) =
             with_node_ref(this, |node| (Rc::clone(&node.document), node.first_child()))?;
@@ -436,10 +436,10 @@ fn get_first_child(
 fn get_last_child(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let (document, node_id) =
             with_node_ref(this, |node| (Rc::clone(&node.document), node.last_child()))?;
@@ -454,10 +454,10 @@ fn get_last_child(
 fn get_parent_node(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let (document, node_id) =
             with_node_ref(this, |node| (Rc::clone(&node.document), node.parent_node()))?;
@@ -473,10 +473,10 @@ fn get_parent_node(
 fn get_previous_sibling(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let (document, node_id) = with_node_ref(this, |node| {
             (Rc::clone(&node.document), node.previous_sibling())
@@ -492,10 +492,10 @@ fn get_previous_sibling(
 fn get_next_sibling(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let (document, node_id) = with_node_ref(this, |node| {
             (Rc::clone(&node.document), node.next_sibling())
@@ -511,10 +511,10 @@ fn get_next_sibling(
 fn get_child_nodes(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let (document, node_ids) = with_node_ref(this, |node| {
             (Rc::clone(&node.document), node.child_node_ids())
@@ -533,8 +533,8 @@ fn get_child_nodes(
 fn get_node_type(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let node_type = try_with_node_ref(this, ec, |node| node.node_type())?;
     Ok(ec.value_from_number(node_type as f64))
 }
@@ -542,8 +542,8 @@ fn get_node_type(
 fn get_node_name(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let name = try_with_node_ref(this, ec, |node| node.node_name())?;
     Ok(ec.value_from_string(ec.js_string_from_str(name.as_str())))
 }
@@ -551,10 +551,10 @@ fn get_node_name(
 fn get_owner_document(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let owner_document = with_node_ref(this, Node::owner_document_node_id)?;
         match owner_document {
@@ -572,8 +572,8 @@ fn get_owner_document(
 fn get_node_value(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     match try_with_node_ref(this, ec, |node| node.node_value())? {
         Some(value) => Ok(ec.value_from_string(ec.js_string_from_str(value.as_str()))),
         None => Ok(ec.value_null()),
@@ -583,10 +583,10 @@ fn get_node_value(
 fn set_node_value(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let value = args.get_or_undefined(0);
         let value = if value.is_null() {
@@ -603,10 +603,10 @@ fn set_node_value(
 fn set_text_content(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let value = args.get_or_undefined(0);
         let text = if value.is_null() {
@@ -640,14 +640,14 @@ fn set_text_content(
 fn append_child(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let child = appendable_node(args.get_or_undefined(0))?;
         with_node_ref(this, |node| node.append_child(&child))?
-            .map_err(|error| dom_exception_error(error, crate::js::context_as_ec(ctx)))?;
+            .map_err(|error| dom_exception_error(error, js_engine::boa::context_as_ec(ctx)))?;
         Ok(args.get_or_undefined(0).clone())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
@@ -656,10 +656,10 @@ fn append_child(
 fn insert_before(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let child = appendable_node(args.get_or_undefined(0))?;
         let reference_child = match args.get_or_undefined(1) {
@@ -669,7 +669,7 @@ fn insert_before(
         with_node_ref(this, |node| {
             node.insert_before(&child, reference_child.as_ref())
         })?
-        .map_err(|error| dom_exception_error(error, crate::js::context_as_ec(ctx)))?;
+        .map_err(|error| dom_exception_error(error, js_engine::boa::context_as_ec(ctx)))?;
         Ok(args.get_or_undefined(0).clone())
     })()
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
@@ -678,10 +678,10 @@ fn insert_before(
 fn remove_child(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let child = appendable_node(args.get_or_undefined(0))?;
         with_node_ref(this, |node| node.remove_child(&child))?
@@ -694,8 +694,8 @@ fn remove_child(
 fn remove(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     try_with_node_ref(this, ec, Node::remove)?;
     Ok(ec.value_undefined())
 }
@@ -703,8 +703,8 @@ fn remove(
 fn has_child_nodes(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let has = try_with_node_ref(this, ec, |node| node.has_child_nodes())?;
     Ok(ec.value_from_bool(has))
 }
@@ -749,10 +749,10 @@ fn appendable_node(value: &JsValue) -> JsResult<Node> {
 
 fn dom_exception_error(
     exception: DOMException,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsError {
     JsError::from_opaque(JsValue::from(
-        create_interface_instance::<BoaTypes, DOMException>(exception, ec)
+        create_interface_instance::<crate::js::Types, DOMException>(exception, ec)
             .expect("DOMException construction should not fail"),
     ))
 }

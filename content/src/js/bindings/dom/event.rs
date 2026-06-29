@@ -3,21 +3,21 @@ use std::marker::PhantomData;
 
 use crate::dom::Event;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for Event {
+impl WebIdlInterface<crate::js::Types> for Event {
     const NAME: &'static str = "Event";
 
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         (|| -> JsResult<Self> {
             let type_ = args
                 .get_or_undefined(0)
@@ -36,7 +36,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for Event {
         .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
@@ -223,9 +223,9 @@ pub(crate) fn init_flag(init: &JsValue, key: JsString, context: &mut Context) ->
 fn get_type(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -236,9 +236,9 @@ fn get_type(
 fn get_target(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -253,9 +253,9 @@ fn get_target(
 fn get_current_target(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -270,9 +270,9 @@ fn get_current_target(
 fn get_event_phase(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -283,9 +283,9 @@ fn get_event_phase(
 fn get_bubbles(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -296,9 +296,9 @@ fn get_bubbles(
 fn get_cancelable(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -309,9 +309,9 @@ fn get_cancelable(
 fn get_default_prevented(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -322,9 +322,9 @@ fn get_default_prevented(
 fn get_cancel_bubble(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -335,9 +335,9 @@ fn get_cancel_bubble(
 fn set_cancel_bubble(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let mut event = obj
         .downcast_mut::<Event>()
@@ -350,9 +350,9 @@ fn set_cancel_bubble(
 fn get_is_trusted(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -363,9 +363,9 @@ fn get_is_trusted(
 fn get_time_stamp(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let event = obj
         .downcast_ref::<Event>()
@@ -376,9 +376,9 @@ fn get_time_stamp(
 fn stop_propagation(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let mut event = obj
         .downcast_mut::<Event>()
@@ -390,9 +390,9 @@ fn stop_propagation(
 fn stop_immediate_propagation(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let mut event = obj
         .downcast_mut::<Event>()
@@ -404,9 +404,9 @@ fn stop_immediate_propagation(
 fn prevent_default(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
     let mut event = obj
         .downcast_mut::<Event>()

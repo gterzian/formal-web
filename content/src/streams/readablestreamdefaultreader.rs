@@ -15,7 +15,7 @@ use super::{
     ReadRequest, ReadableStream, ReadableStreamReader, ReadableStreamState,
     rejected_type_error_promise, type_error_value, with_readable_stream_ref,
 };
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 /// default readers and BYOB readers.
@@ -43,8 +43,8 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     fn cancel(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         // Step 1: "If this.[[stream]] is undefined, return a promise rejected with a TypeError exception."
         if self.stream_slot_value().is_none() {
             return rejected_type_error_promise(
@@ -61,10 +61,10 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     fn readable_stream_reader_generic_cancel(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
         // Step 1: "Let stream be reader.[[stream]]."
         let stream = self.stream_slot_value().ok_or_else(|| {
@@ -90,10 +90,10 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     fn readable_stream_reader_generic_initialize(
         &self,
         stream: ReadableStream,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
         // Step 1: "Set reader.[[stream]] to stream."
         self.set_stream_slot_value(Some(stream.clone()));
@@ -133,7 +133,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         let promise_object: JsObject = promise.into();
         self.set_closed_promise_slot_value(Some(promise_object.clone()));
         self.set_closed_resolvers_slot_value(None);
-        mark_promise_as_handled(&promise_object, crate::js::context_as_ec(context))?;
+        mark_promise_as_handled(&promise_object, js_engine::boa::context_as_ec(context))?;
         resolvers
             .reject
             .call(&JsValue::undefined(), &[stream.stored_error()], context)
@@ -147,14 +147,14 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     /// <https://streams.spec.whatwg.org/#readable-stream-reader-generic-release>
     fn readable_stream_reader_generic_release(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         // Step 1: "Let stream be reader.[[stream]]."
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // JsNativeError::into_opaque requires Boa's Context.  Scope the borrow
         // so it does not conflict with later `ec` uses.
         let stream = {
-            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
             let stream = self.stream_slot_value().ok_or_else(|| {
                 let error: JsError = JsNativeError::typ()
                     .with_message("ReadableStream reader is not attached to a stream")
@@ -177,9 +177,9 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         // Step 4: "If stream.[[state]] is \"readable\", reject reader.[[closedPromise]] with a TypeError exception."
         if stream.state() == ReadableStreamState::Readable {
             if let Some(resolvers) = self.closed_resolvers_slot_value() {
-                // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
                 // ResolvingFunctions.resolve.call requires Boa's Context.
-                let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+                let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 resolvers
                     .reject
                     .call(&JsValue::undefined(), &[release_error.clone()], ctx)
@@ -199,9 +199,9 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
 
         // Step 7: "Perform ! stream.[[controller]].[[ReleaseSteps]]()."
         let controller = {
-            // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+            // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
             // JsNativeError::into_opaque requires Boa's Context.
-            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
             stream.controller_slot().ok_or_else(|| {
                 let error: JsError = JsNativeError::typ()
                     .with_message("ReadableStream is missing its controller")
@@ -251,11 +251,11 @@ impl ReadableStreamDefaultReader {
     pub(crate) fn set_up_readable_stream_default_reader(
         &self,
         stream: ReadableStream,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         // Step 1: "If ! IsReadableStreamLocked(stream) is true, throw a TypeError exception."
         if stream.is_readable_stream_locked() {
-            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
             let error: JsError = JsNativeError::typ()
                 .with_message("Cannot create a reader for a stream that already has a reader")
                 .into();
@@ -298,25 +298,25 @@ impl ReadableStreamDefaultReader {
     pub(crate) fn cancel(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         <Self as ReadableStreamGenericReader>::cancel(self, reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#default-reader-read>
     pub(crate) fn read(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         // Step 1: "If this.[[stream]] is undefined, return a promise rejected with a TypeError exception."
         if self.stream_slot_value().is_none() {
             return rejected_type_error_promise("Cannot read from a released reader", ec);
         }
 
         // Step 2: "Let promise be a new promise."
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // JsPromise::new_pending requires Boa's Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let (promise, resolvers) = JsPromise::new_pending(context);
 
         // Step 3: "Let readRequest be a new read request with the following items:"
@@ -332,10 +332,10 @@ impl ReadableStreamDefaultReader {
     pub(crate) fn read_with_request(
         &self,
         read_request: ReadRequest,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if self.stream_slot_value().is_none() {
-            let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
             let error: JsError = JsNativeError::typ()
                 .with_message("Cannot read from a released reader")
                 .into();
@@ -351,10 +351,10 @@ impl ReadableStreamDefaultReader {
     fn read_steps(
         &self,
         read_request: ReadRequest,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
         // Step 1: "Let stream be reader.[[stream]]."
         let stream = self.stream_slot_value().ok_or_else(|| {
@@ -394,14 +394,14 @@ impl ReadableStreamDefaultReader {
                 .into_opaque(context)
                 .unwrap_or_else(|_| JsValue::undefined())
         })?;
-        controller.pull_steps(read_request, crate::js::context_as_ec(context))
+        controller.pull_steps(read_request, js_engine::boa::context_as_ec(context))
     }
 
     /// <https://streams.spec.whatwg.org/#default-reader-release-lock>
     pub(crate) fn release_lock(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         // Step 1: "If this.[[stream]] is undefined, return."
         if self.stream_slot_value().is_none() {
             return Ok(());
@@ -446,10 +446,10 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
 pub(crate) fn construct_readable_stream_default_reader(
     _this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<ReadableStreamDefaultReader, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ReadableStreamDefaultReader, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
     let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
         let error: JsError = JsNativeError::typ()
@@ -474,13 +474,13 @@ pub(crate) fn construct_readable_stream_default_reader(
 /// <https://streams.spec.whatwg.org/#acquire-readable-stream-reader>
 pub(crate) fn acquire_readable_stream_default_reader(
     stream: ReadableStream,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Let reader be a new ReadableStreamDefaultReader."
     let reader_object = create_readable_stream_default_reader(ec)?;
     let reader = with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone())
         .map_err(|e: JsError| {
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined())
     })?;
 
@@ -492,11 +492,11 @@ pub(crate) fn acquire_readable_stream_default_reader(
 }
 
 fn create_readable_stream_default_reader(
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let reader = ReadableStreamDefaultReader::new();
     let reader_object: JsObject =
-        create_interface_instance::<BoaTypes, ReadableStreamDefaultReader>(reader, ec)?.into();
+        create_interface_instance::<crate::js::Types, ReadableStreamDefaultReader>(reader, ec)?.into();
     Ok(reader_object)
 }
 
@@ -516,8 +516,8 @@ pub(crate) fn with_readable_stream_default_reader_ref<R>(
 pub(crate) fn readable_stream_default_reader_error_read_requests(
     reader: ReadableStreamDefaultReader,
     error: JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(), BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 1: "Let readRequests be reader.[[readRequests]]."
     let read_requests = reader.take_read_requests();
 
@@ -536,8 +536,8 @@ pub(crate) fn readable_stream_default_reader_error_read_requests(
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaultreaderrelease>
 pub(crate) fn readable_stream_default_reader_release(
     reader: ReadableStreamDefaultReader,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(), BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 1: "Perform ! ReadableStreamReaderGenericRelease(reader)."
     reader.readable_stream_reader_generic_release(ec)?;
 

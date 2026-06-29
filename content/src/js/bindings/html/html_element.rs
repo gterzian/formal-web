@@ -14,19 +14,19 @@ use crate::html::{
     HTMLVideoElement, inline_style_properties_for_element,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLElement {
+impl WebIdlInterface<crate::js::Types> for HTMLElement {
     const NAME: &'static str = "HTMLElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("Element")
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -128,10 +128,10 @@ fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -
 
 fn try_with_html_element_ref<R>(
     this: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&HTMLElement) -> R,
-) -> Completion<R, BoaTypes> {
-    let object = BoaTypes::value_as_object(this)
+) -> Completion<R, crate::js::Types> {
+    let object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLElement receiver is not an object"))?;
 
     if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
@@ -156,8 +156,8 @@ fn try_with_html_element_ref<R>(
 fn get_title(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let title = try_with_html_element_ref(this, ec, |html_element| html_element.title())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&title)))
 }
@@ -165,10 +165,10 @@ fn get_title(
 fn set_title(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let title = args
             .get_or_undefined(0)
@@ -183,8 +183,8 @@ fn set_title(
 fn get_lang(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let lang = try_with_html_element_ref(this, ec, |html_element| html_element.lang())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&lang)))
 }
@@ -192,10 +192,10 @@ fn get_lang(
 fn set_lang(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let lang = args
             .get_or_undefined(0)
@@ -210,8 +210,8 @@ fn set_lang(
 fn get_dir(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let dir = try_with_html_element_ref(this, ec, |html_element| html_element.dir())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&dir)))
 }
@@ -219,10 +219,10 @@ fn get_dir(
 fn set_dir(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let dir = args
             .get_or_undefined(0)
@@ -237,8 +237,8 @@ fn set_dir(
 fn get_hidden(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let hidden = try_with_html_element_ref(this, ec, |html_element| html_element.hidden())?;
     Ok(ec.value_from_bool(hidden))
 }
@@ -246,8 +246,8 @@ fn get_hidden(
 fn set_hidden(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let hidden = args.first().map_or(false, |v| v.to_boolean());
     try_with_html_element_ref(this, ec, |html_element| html_element.set_hidden(hidden))?;
     Ok(ec.value_undefined())
@@ -256,10 +256,10 @@ fn set_hidden(
 fn get_style(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("style getter: receiver is not an object")

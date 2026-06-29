@@ -4,15 +4,15 @@
 //! as defined in the WebAssembly Core Embedding specification.
 
 use boa_engine::JsValue;
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://webassembly.github.io/spec/core/appendix/embedding.html#embed-func-type>
 pub(crate) fn js_val_to_wasm_val(
     value: &JsValue,
     wasm_type: &wasmtime::ValType,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<wasmtime::Val, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<wasmtime::Val, crate::js::Types> {
     match wasm_type {
         wasmtime::ValType::I32 => {
             let n = ec.to_number(value.clone())?;
@@ -34,8 +34,8 @@ pub(crate) fn js_val_to_wasm_val(
 /// <https://webassembly.github.io/spec/core/appendix/embedding.html#embed-func-type>
 pub(crate) fn wasm_val_to_js_value(
     val: &wasmtime::Val,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     match val {
         wasmtime::Val::I32(n) => Ok(JsValue::from(*n)),
         wasmtime::Val::I64(_) => Err(ec.new_type_error("i64 wasm values not yet supported")),

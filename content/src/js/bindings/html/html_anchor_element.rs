@@ -5,19 +5,19 @@ use crate::html::HTMLAnchorElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 use super::hyperlink_element_utils::document_creation_url;
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLAnchorElement {
+impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
     const NAME: &'static str = "HTMLAnchorElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("HTMLElement")
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // HTMLAnchorElement own attributes
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
@@ -107,10 +107,10 @@ fn with_html_anchor_element_ref<R>(
 
 fn try_with_html_anchor_element_ref<R>(
     this: &JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&HTMLAnchorElement) -> R,
-) -> Completion<R, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLAnchorElement receiver is not an object"))?;
     let html_anchor_element = obj
         .downcast_ref::<HTMLAnchorElement>()
@@ -121,10 +121,10 @@ fn try_with_html_anchor_element_ref<R>(
 fn get_href(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let base_url = document_creation_url(ctx)?;
         with_html_anchor_element_ref(this, |anchor| {
@@ -137,10 +137,10 @@ fn get_href(
 fn set_href(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let href = args
             .get_or_undefined(0)
@@ -155,8 +155,8 @@ fn set_href(
 fn get_target(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let target = try_with_html_anchor_element_ref(this, ec, |anchor| anchor.target())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&target)))
 }
@@ -164,10 +164,10 @@ fn get_target(
 fn set_target(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let target = args
             .get_or_undefined(0)
@@ -182,8 +182,8 @@ fn set_target(
 fn get_download(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let download = try_with_html_anchor_element_ref(this, ec, |anchor| anchor.download())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&download)))
 }
@@ -191,10 +191,10 @@ fn get_download(
 fn set_download(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let download = args
             .get_or_undefined(0)
@@ -209,8 +209,8 @@ fn set_download(
 fn get_rel(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let rel = try_with_html_anchor_element_ref(this, ec, |anchor| anchor.rel())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&rel)))
 }
@@ -218,10 +218,10 @@ fn get_rel(
 fn set_rel(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let rel = args
             .get_or_undefined(0)
@@ -236,8 +236,8 @@ fn set_rel(
 fn get_referrer_policy(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let referrer_policy =
         try_with_html_anchor_element_ref(this, ec, |anchor| anchor.referrer_policy())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&referrer_policy)))
@@ -246,10 +246,10 @@ fn get_referrer_policy(
 fn set_referrer_policy(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let referrer_policy = args
             .get_or_undefined(0)

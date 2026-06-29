@@ -53,15 +53,25 @@ code and Web IDL helpers must never reach through the trait to the
 concrete engine.
 
 Concretely:
-- `ec_to_ctx` (cast from `dyn ExecutionContext` back to `&mut Context`)
-  belongs **only** inside `js_engine/src/boa/` — the Boa backend
-  implementing the trait methods.
-- Domain code that currently says `let context = ec_to_ctx(ec);` and then
+- `ec_to_ctx` (cast from `dyn ExecutionContext` back to `&mut Context`),
+  `context_as_ec` (cast from `&mut Context` to `&mut dyn ExecutionContext`),
+  and `context_as_engine` (cast from `&mut Context` to `&mut BoaContext`)
+  are **temporary bridges** living in `js_engine/src/boa/engine.rs` — the
+  Boa backend.  They exist only because not all Boa APIs have been
+  abstracted through the traits yet.  The end state is **zero** calls to
+  these functions anywhere outside the Boa backend.
+- Domain code that currently calls `js_engine::boa::ec_to_ctx(ec)` and then
   calls Boa-specific APIs is bypassing the trait.  The right fix is to
   call the equivalent trait method instead, or if one does not exist, to
   add it to the trait and implement it for each backend.
 - The goal is that every `.rs` file outside `js_engine/src/boa/` (and
-  `js_engine/src/jsc/`) contains **zero** calls to `ec_to_ctx`.
+  `js_engine/src/jsc/`) contains **zero** calls to `ec_to_ctx`,
+  `context_as_ec`, or `context_as_engine`.
+
+`BoaTypes` is similarly centralized: `content/src/js/mod.rs` defines
+`pub(crate) type Types = js_engine::boa::BoaTypes;` — the **only** place
+`BoaTypes` is imported in the content crate.  All other files use
+`crate::js::Types`.  Switching to JSC means changing one line.
 
 ### Three-trait model
 
@@ -72,24 +82,35 @@ stack.  The **running execution context** (§9.4) is the top of this stack;
 all implicit ECMA-262 operations (`Call`, `Get`, `ToNumber`, `SameValue`,
 `currentRealm`, etc.) reference it through the **surrounding agent**.
 
-The HTML spec defines a **realm execution context**
-(§8.1.3.3, [realm-execution-context]) as the execution context stored on an
-environment settings object.  `prepare to run script` (§8.1.4.4) pushes it
-onto the stack; `clean up after running script` pops it.
+The HTML spec (\u00a78.1.3.2) defines a **realm execution context** as the
+execution context stored on an environment settings object — it is **the**
+stateful JS runtime shared by all scripts in a given realm.  When we
+`prepare to run script` (\u00a78.1.4.4) it becomes the top of the JS execution
+context stack.  This is what `EnvironmentSettingsObject` owns.
 
-Three traits model this split:
+Three traits model the split between factory and runtime:
 
 | Trait | Role | Spec basis |
 |---|---|---|
-| `JsEngine<T>` | Factory — creates realms, built-in functions, evaluates scripts. Used at initialization only. | `CreateRealm` (§9.3), `CreateBuiltinFunction` (§10.3), `ScriptEvaluation` (§16.1) |
-| `ExecutionContext<T>` | Runtime — the running execution context. Provides all operations that implicitly reference the surrounding agent. Threaded through every binding function, domain method, and dispatch call. | Running execution context (§9.4) → all of §7, §9.3 (`currentRealm`), §9.6 (jobs), value construction |
-| `EcmascriptHost<T>` | Subset of `ExecutionContext<T>` covering only Web IDL callback algorithms (`Get`, `IsCallable`, `Call`, `report_exception`, value construction). A supertrait of `ExecutionContext<T>`. | §3 of Web IDL |
+| `JsEngine<T>` | **Stateless factory** — creates realms, built-in functions.  A singleton at the process level: it has no mutable state of its own.  Factory operations only. | `CreateRealm` (§9.3), `CreateBuiltinFunction` (§10.3) |
+| `ExecutionContext<T>` | **Stateful runtime** — the realm execution context.  Carries the realm, heap, global object, job queue.  Threaded through every binding function, domain method, and dispatch call.  **This is what `EnvironmentSettingsObject` owns.** | <https://html.spec.whatwg.org/#realm-execution-context> §8.1.3.2 → all of ECMA-262 §7, §9.3, §9.6 |
+| `EcmascriptHost<T>` | Subset of `ExecutionContext<T>` covering only Web IDL callback algorithms (`Get`, `IsCallable`, `Call`, `report_exception`, value construction).  A supertrait of `ExecutionContext<T>`. | §3 of Web IDL |
 
-[realm-execution-context]: https://html.spec.whatwg.org/#realm-execution-context
+### Concrete realization
+
+`BoaContext` (was `BoaEngine`) wraps `boa_engine::Context` and implements
+`ExecutionContext<BoaTypes>`.  It **is** a realm execution context for the
+Boa backend.  The `JsEngine<BoaTypes>` impl on the same struct is a
+convenience — in a clean split the factory would be a separate stateless
+singleton and `BoaContext` would only implement `ExecutionContext<BoaTypes>`.
+
+The plan is to eliminate the `JsEngine<BoaTypes>` impl from `BoaContext`
+and make the factory a standalone global.  For now they co-reside on the
+same struct because Boa's `Context` serves both roles internally.
 
 ### What moves where
 
-**`JsEngine<T>` (factory — stays on the engine):**
+**`JsEngine<T>` (stateless factory — a process-level singleton):**
 - `create_realm`, `set_realm_global_object`, `set_default_global_bindings`
 - `create_builtin_function`
 - `evaluate_script`, `evaluate_module`
@@ -97,7 +118,7 @@ Three traits model this split:
 - `allocate_array_buffer`, `allocate_shared_array_buffer`
 - `clone_array_buffer`, `detach_array_buffer`
 
-**`ExecutionContext<T>` (runtime — separate from `JsEngine<T>`):**
+**`ExecutionContext<T>` (stateful runtime — the realm execution context, owned by `EnvironmentSettingsObject`):**
 - All of §7.1 Type Conversion (`to_number`, `to_string`, `to_object`, etc.)
 - All of §7.2 Testing and Comparison (`is_callable`, `same_value`, etc.)
 - All of §7.3 Operations on Objects (`get`, `set`, `call`, `construct`,
@@ -124,6 +145,13 @@ Three traits model this split:
 | Native function registration (`NativeFunction`) | Engine-specific API shape — but call sites can use a `native_fn_wrapper` helper to centralize the `context_as_ec` cast |
 | Platform object construction | Uses Boa `ObjectInitializer` — needs realm's intrinsics table; passes through EC |
 | Proxy creation | Boa's proxy builder not publicly creatable |
+| `Context::eval` (script evaluation) | `JsEngine::evaluate_script` exists on the trait but callers use `Context::eval` directly; needs migration |
+| `JsValue::to_json(&mut Context)` | Boa-specific JSON serialization; needs a trait method |
+| `with_global_scope(&Context, ...)` | Boa GC heap traversal to access `GlobalScope`; needs a trait-level host-data accessor |
+| `register_global_property`, `ObjectInitializer::new(ctx)`, `JsArray::from_iter(..., ctx)` | Boa object model construction APIs; need trait equivalents or centralized construction in `build_context` |
+
+These are the blockers to `EnvironmentSettingsObject` owning a purely generic context
+instead of `BoaContext`.  None are fundamental — they just aren't done yet.
 
 ### Platform object downcast without GC abstraction
 
@@ -264,7 +292,7 @@ See module docs for implementation status and quirks:
 
 Move runtime operations into a new `ExecutionContext<T>` trait in
 `engine.rs`.  `EcmascriptHost<T>` becomes a supertrait of
-`ExecutionContext<T>`.  `BoaEngine` implements both.  `EnvironmentSettingsObject`
+`ExecutionContext<T>`.  `BoaContext` implements both.  `EnvironmentSettingsObject`
 stores the EC and passes it through domain code.
 
 ```rust
@@ -327,6 +355,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 | 3. EC infrastructure | Host-defined data store (`store_host_any`, `get_host_any`, `remove_host_any`) on EC. `RegistryHost` wrapper for Context storage. `NativeDataWrapper` for any-to-NativeObject bridging. Boa/JSC backends updated. | ✅ |
 | 4. Generic registry | `InterfaceRegistry<T: JsTypes>` stores `T::JsObject`. `InterfaceEntry<T>` generic. | ✅ |
 | 5. Binding fn migration | All 26 binding files: signatures changed to `&mut dyn ExecutionContext<T>` → `Completion<T::JsValue, T>`. Bodies wrap with `ec_to_ctx` cast → `JsResult` bridge closure. `create_interface_instance` call sites in 14 domain files updated. `create_platform_object` trait updated. `register_interface_spec` takes `E: JsEngine<Ty> + ExecutionContext<Ty>`. | ✅ |
+| 5b. BoaEngine → BoaContext | Renamed throughout codebase. `BoaContext` wraps `Context` and implements `ExecutionContext<BoaTypes>` — it is the runtime state (realm, heap, global object), not a "factory engine." `JsEngine<BoaTypes>` methods on it are a convenience. `EnvironmentSettingsObject` owns a `BoaContext`, not an `Engine` alias. `build_boa_engine` → `build_context`. | ✅ |
 | 6a. CtxHost removal | `CtxHost` adapters in `strategy.rs` and `readablestreamsupport.rs` removed. `invoke_callback_function` and `call_user_objects_operation` take `&mut dyn EcmascriptHost<BoaTypes>` instead of `&mut impl EcmascriptHost<BoaTypes>`. `SourceMethod::call` and `SizeAlgorithm::size` use `context_as_ec` internally instead of local `CtxHost`. | ✅ |
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
@@ -352,22 +381,33 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 
 ### What's still Boa-concrete
 
-- **Binding function bodies** (207 sites, down from ~437 across 24 files).  Key insight: `obj.downcast_ref::<T>()` on `JsObject` does NOT need `Context` — it's `&self`.  Simple getters that downcast + read a field + return via `ec.value_from_*()` need zero bridges.  The conversion pattern proven in `html_media_element.rs` (28→2 `ec_to_ctx` calls).  Remaining bridges are concentrated in functions that extract Rust strings from `JsValue` (`to_std_string_escaped`), construct `JsArray`/`ObjectInitializer`, or register `NativeFunction::from_closure`.
+- **Binding function bodies** (207 `ec_to_ctx` sites, down from ~437 across 24 files).  Key insight: `obj.downcast_ref::<T>()` on `JsObject` does NOT need `Context` — it's `&self`.  Simple getters that downcast + read a field + return via `ec.value_from_*()` need zero bridges.  Remaining bridges are concentrated in functions that extract Rust strings from `JsValue` (`to_std_string_escaped`), construct `JsArray`/`ObjectInitializer`, or register `NativeFunction::from_closure`.
 - **Domain code** (HTML, WebAssembly, Web IDL) — public APIs take `ec`, internal helpers bridge via `ec_to_ctx`. `safe_passing_of_structured_data.rs` internal helpers and `async_iterable.rs` internal helpers still take `&mut Context` directly (called from entry points via `ec_to_ctx` bridge). Stream-domain, DOM, event dispatch all fully on `ec`.
+- **`EnvironmentSettingsObject` still owns `BoaContext`** — not yet a generic context. Blockers: (1) `Context::eval` called directly instead of `JsEngine::evaluate_script`, (2) `with_global_scope(&Context)` for GC heap traversal, (3) `value.to_json(&mut Context)` for JSON serialization, (4) `ObjectInitializer::new(ctx)` / `register_global_property` / `JsArray::from_iter(..., ctx)` for Boa object construction.  Some of these (1, 4) can move into `build_context` or use existing trait methods; others (2, 3) need new trait methods.
 - **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
-- **`context_as_ec` at `NativeFunction::from_closure` sites** can be centralized with a `native_fn_wrapper` helper that absorbs the cast: `NativeFunction::from_closure(Box::new(move |this, args, ctx| { let ec = context_as_ec(ctx); f(this, args, ec) }))`.
+- **`js_engine::boa::context_as_ec` at `NativeFunction::from_closure` sites** can be centralized with a `native_fn_wrapper` helper (Step C).
 
 ### Conversion helpers (`content/src/js/mod.rs`)
 
 Three bridging helpers reduce boilerplate during the JsResult → Completion transition:
 
-- **`js_result_to_completion(result, context)`** — wraps `JsResult<T>` → `Completion<T, BoaTypes>` by mapping `JsError` to its opaque `JsValue` form via `context`.
+- **`js_result_to_completion(result, context)`** — wraps `JsResult<T>` → `Completion<T, Types>` by mapping `JsError` to its opaque `JsValue` form via `context`.
 - **`native_error_to_js_value(error, context)`** — converts `JsNativeError` → `JsValue` for use as a `Completion` error value.
+- **`completion_to_js_result(result)`** — wraps `Completion<T, Types>` → `JsResult<T>` by mapping the error `JsValue` into a `JsError`.
 
-`completion_to_js_result` is used at unconverted call sites that call `Completion`-returning
-helpers from `JsResult`-returning functions. `js_result_to_completion` is used in the
-reverse direction. Both will be removed once all helpers and domain code are converted to EC.
+All three are temporary bridges.  They will be removed once all helpers and domain
+code are converted to EC.
+
+### Type alias (`content/src/js/mod.rs`)
+
+```rust
+pub(crate) type Types = js_engine::boa::BoaTypes;
+```
+
+The **only** place `BoaTypes` is imported in the content crate.  All other files
+use `crate::js::Types` in their signatures and impls.  Switching to JSC means
+changing this one line.
 
 ## Next steps (priority order)
 
@@ -382,18 +422,18 @@ optional future clean-up.
 
 ### Step B: Convert binding function bodies — IN PROGRESS (~53%)
 
-Replace the `ec_to_ctx` + `JsResult` closure bridge pattern with direct
-downcast + `ec.value_from_*()` + `ec.new_type_error()`.  The conversion
-was validated with `html_media_element.rs` (28→2) and scaled across
-11 other files.
+Replace the `js_engine::boa::ec_to_ctx` + `JsResult` closure bridge pattern with
+direct `obj.downcast_ref::<T>()` + `ec.value_from_*()` + `ec.new_type_error()`.
+The conversion was validated with `html_media_element.rs` (28→2) and scaled
+across 11 other files.
 
 Each binding function today:
 ```rust
-fn get_id(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>)
-    -> Completion<JsValue, BoaTypes>
+fn get_id(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<Types>)
+    -> Completion<JsValue, Types>
 {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let obj = this.as_object().ok_or_else(|| JsNativeError::typ()...)?;
         let element = obj.downcast_ref::<Element>().ok_or_else(|| JsNativeError::typ()...)?;
@@ -405,10 +445,10 @@ fn get_id(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>
 
 Becomes:
 ```rust
-fn get_id(this: &BoaTypes::JsValue, _: &[BoaTypes::JsValue], ec: &mut dyn ExecutionContext<BoaTypes>)
-    -> Completion<BoaTypes::JsValue, BoaTypes>
+fn get_id(this: &Types::JsValue, _: &[Types::JsValue], ec: &mut dyn ExecutionContext<Types>)
+    -> Completion<Types::JsValue, Types>
 {
-    let obj = BoaTypes::value_as_object(this)
+    let obj = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     let element = obj.downcast_ref::<Element>()
         .ok_or_else(|| ec.new_type_error("expected Element"))?;
@@ -421,10 +461,13 @@ only read/write domain data.  Remaining `ec_to_ctx` sites (207 in bindings)
 are concentrated in string-extraction setters, `ObjectInitializer`
 construction, and `NativeFunction::from_closure` registration.
 
-### Step C: Centralize `context_as_ec` with a `NativeFunction` wrapper
+### Step C: Centralize `NativeFunction::from_closure` bridging
 
-Create a helper that wraps `NativeFunction::from_closure` and absorbs
-the `context_as_ec` cast.  Eliminates ~200 scattered cast sites.
+The cast functions (`ec_to_ctx`, `context_as_ec`, `context_as_engine`) now
+live in `js_engine::boa::` — the Boa backend.  This step adds a
+`native_fn_wrapper` helper that absorbs the `js_engine::boa::context_as_ec`
+cast at `NativeFunction::from_closure` sites, eliminating the remaining
+~200 scattered `context_as_ec` calls in `NativeFunction` closures.
 
 ### Step D: Remove remaining `ContextEventDispatchHost` adapters
 
@@ -443,6 +486,24 @@ Bring the JSC backend up to parity with Boa — fill in `todo!()` stubs,
 implement missing `ExecutionContext<T>` methods, and validate that the
 JSC feature flag builds clean.
 
+### Step G: Make `EnvironmentSettingsObject` own a generic context
+
+Blockers to removing the `BoaContext` dependency from settings:
+1. **`Context::eval`** — callers use it directly instead of `JsEngine::evaluate_script`.
+   Fix: route through the trait method.
+2. **`with_global_scope(&Context, ...)`** — Boa GC heap traversal to access
+   `GlobalScope`.  Fix: add a host-data accessor to `ExecutionContext<T>`.
+3. **`value.to_json(&mut Context)`** — Boa-specific JSON serialization.
+   Fix: add `to_json` to `ExecutionContext<T>`.
+4. **`ObjectInitializer::new(ctx)`, `register_global_property`, `JsArray::from_iter(..., ctx)`** —
+   Boa object construction APIs used in `EnvironmentSettingsObject::new`.
+   Fix: move setup into `build_context` so the settings object doesn't need
+   `Context` for initialization.
+
+Once these are resolved, `EnvironmentSettingsObject` can own
+`Box<dyn ExecutionContext<BoaTypes>>` (or a generic parameter) instead of
+`BoaContext`, and `ec_to_ctx` can be deleted entirely.
+
 ### Verification
 
 Each sub-task requires `cargo check`.  Full verification (WPT + navigation)
@@ -453,7 +514,19 @@ Resume WPT and navigation verification at the next stable checkpoint.
 
 **Current step: Step B — convert binding function bodies.**
 
-### Status: Step A complete. Step B ~53% complete.
+### Status: Step A superseded. Step B ~53% complete.
+
+Recent changes:
+- `BoaEngine` renamed to `BoaContext` — it is the runtime execution context
+  (realm, heap, global object), not a "factory engine."  The `JsEngine<BoaTypes>`
+  impl on it is a convenience; the factory should be a separate global.
+- `build_boa_engine` → `build_context`.  `Engine` alias removed.
+- `BoaTypes` centralized: `pub(crate) type Types = js_engine::boa::BoaTypes;` in
+  `content/src/js/mod.rs` — the only place `BoaTypes` appears in content.
+  All other files use `crate::js::Types`.
+- Unsafe cast functions (`ec_to_ctx`, `context_as_ec`, `context_as_engine`,
+  `context_as_ec_ref`) moved from `content/src/js/mod.rs` into
+  `js_engine/src/boa/engine.rs` — they are now `js_engine::boa::ec_to_ctx(...)` etc.
 
 Binding files: 207 `ec_to_ctx` sites remaining (down from ~437). Domain files: 146 sites.
 Total content crate: ~353 (down from ~583).
@@ -500,17 +573,17 @@ Need zero `ec_to_ctx` calls.  `ec.new_type_error(msg)` replaces
 
 1. **String extraction**: `args.first().and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped())` — `to_std_string_escaped` requires `&JsString` → `String` conversion that's Boa-specific (no trait equivalent yet).
 2. **Object construction**: `ObjectInitializer::new(ctx)`, `JsArray::from_iter(..., ctx)`
-3. **NativeFunction registration**: `NativeFunction::from_closure(...)` (but can be centralized with wrapper)
+3. **NativeFunction registration**: `NativeFunction::from_closure(...)` (Step C will centralize)
 
 ### Conversion patterns for Step B (binding function bodies)
 
-**Before** (bridging through `ec_to_ctx`):
+**Before** (bridging through `js_engine::boa::ec_to_ctx`):
 ```rust
-fn get_id(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>)
-    -> Completion<JsValue, BoaTypes>
+fn get_id(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<Types>)
+    -> Completion<JsValue, Types>
 {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let obj = this.as_object()
             .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
@@ -522,14 +595,14 @@ fn get_id(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>
 }
 ```
 
-**After** (no `ec_to_ctx`, fully generic):
+**After** (no `unsafe`, no `ec_to_ctx`):
 ```rust
-fn get_id(this: &BoaTypes::JsValue, _: &[BoaTypes::JsValue], ec: &mut dyn ExecutionContext<BoaTypes>)
-    -> Completion<BoaTypes::JsValue, BoaTypes>
+fn get_id(this: &Types::JsValue, _: &[Types::JsValue], ec: &mut dyn ExecutionContext<Types>)
+    -> Completion<Types::JsValue, Types>
 {
-    let obj = BoaTypes::value_as_object(this)
+    let obj = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let element = ec.get_object_data::<Element>(&obj)
+    let element = obj.downcast_ref::<Element>()
         .ok_or_else(|| ec.new_type_error("expected Element"))?;
     Ok(ec.value_from_string(ec.js_string_from_str(element.id().as_str())))
 }
@@ -538,24 +611,18 @@ fn get_id(this: &BoaTypes::JsValue, _: &[BoaTypes::JsValue], ec: &mut dyn Execut
 Key replacements:
 | Old (Boa-concrete) | New (generic) |
 |---|---|
-| `this.as_object()` | `BoaTypes::value_as_object(this)` |
-| `let ctx = ec_to_ctx(ec)` | (remove — no longer needed) |
+| `this.as_object()` | `Types::value_as_object(this)` |
+| `let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };` | (remove — no longer needed) |
 | `(\|\| -> JsResult<...> { ... })() .map_err(...)` | (remove — flat `Completion` return) |
 | `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
-| `obj.downcast_ref::<T>()` | `ec.get_object_data::<T>(&obj)` |
-| `obj.downcast_mut::<T>()` | `ec.get_object_data_mut::<T>(&obj)` |
+| `obj.downcast_ref::<T>()` | `obj.downcast_ref::<T>()` (already `&self`, no `Context` needed) |
+| `obj.downcast_mut::<T>()` | `obj.downcast_mut::<T>()` (already `&self`, no `Context` needed) |
 | `JsValue::from(JsString::from(s))` | `ec.value_from_string(ec.js_string_from_str(s))` |
-| `JsValue::new(n)` | `ec.value_from_f64(n)` or `ec.value_from_number(n)` |
+| `JsValue::new(n)` | `ec.value_from_number(n)` |
 | `JsValue::undefined()` | `ec.value_undefined()` |
 | `JsValue::null()` | `ec.value_null()` |
 | `JsValue::from(bool)` | `ec.value_from_bool(b)` |
 | `e.into_opaque(ctx).unwrap_or(value_undefined)` | (not needed — `ec.new_type_error` already returns `JsValue`) |
 
-**`&self` domain methods**: When calling a domain method that takes `&self`
-(read-only), you can pass `&*element` after dereferencing the `&T` from
-`get_object_data`.  Methods that need `&mut self` use `get_object_data_mut`.
-
-**After `get_object_data`, still need `ctx`**: Some sites use `ObjectInitializer`
-or other Boa-native helpers.  Those keep `ec_to_ctx` temporarily.
-
-**Verification**: `cargo check -p content` after each file group.
+**After `downcast_ref`, still need `ctx`**: Some sites use `ObjectInitializer`
+or other Boa-native helpers.  Those keep `js_engine::boa::ec_to_ctx` temporarily.

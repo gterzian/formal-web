@@ -5,12 +5,12 @@ use crate::dom::{Event, UIEvent};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 use super::event::init_flag;
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for UIEvent {
+impl WebIdlInterface<crate::js::Types> for UIEvent {
     const NAME: &'static str = "UIEvent";
 
     fn parent_name() -> Option<&'static str> {
@@ -20,10 +20,10 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for UIEvent {
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         (|| -> JsResult<Self> {
             let type_ = args
                 .get_or_undefined(0)
@@ -51,7 +51,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for UIEvent {
         .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -88,9 +88,9 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for UIEvent {
 fn get_view(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("UIEvent receiver is not an object"))?;
     let ui_event = obj
         .downcast_ref::<UIEvent>()
@@ -105,9 +105,9 @@ fn get_view(
 fn get_detail(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
-    let obj = BoaTypes::value_as_object(this)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("UIEvent receiver is not an object"))?;
     let ui_event = obj
         .downcast_ref::<UIEvent>()

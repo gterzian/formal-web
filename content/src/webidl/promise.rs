@@ -9,7 +9,7 @@ use boa_engine::{
         builtins::{JsFunction, JsPromise},
     },
 };
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext, JsEngine};
 use log::error;
 
@@ -25,10 +25,10 @@ use log::error;
 
 /// <https://webidl.spec.whatwg.org/#a-new-promise>
 pub(crate) fn a_new_promise(
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> (JsObject, ResolvingFunctions) {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let (promise, resolvers) = JsPromise::new_pending(context);
     (promise.into(), resolvers)
 }
@@ -36,11 +36,11 @@ pub(crate) fn a_new_promise(
 /// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
 pub(crate) fn resolved_promise(
     value: JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Return a promise resolved with value."
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     JsPromise::resolve(value, context)
         .map(JsObject::from)
         .map_err(|e| {
@@ -52,11 +52,11 @@ pub(crate) fn resolved_promise(
 /// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
 pub(crate) fn rejected_promise(
     reason: JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Return a promise rejected with reason."
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     JsPromise::reject(JsError::from_opaque(reason.clone()), context)
         .map(JsObject::from)
         .map_err(|e| {
@@ -75,10 +75,10 @@ pub(crate) fn rejected_promise(
 /// Note: `Promise.resolve(value)` implements these steps directly.
 pub(crate) fn promise_from_value(
     value: JsValue,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     JsPromise::resolve(value, context)
         .map(JsObject::from)
         .map_err(|e| {
@@ -92,10 +92,10 @@ pub(crate) fn promise_from_value(
 /// Converts a completion result into a `Promise`, rejecting it when the completion throws.
 pub(crate) fn promise_from_completion(
     completion: boa_engine::JsResult<JsValue>,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsPromise {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     JsPromise::from_result(completion, context).unwrap_or_else(|error| {
         JsPromise::from_object(rejected_promise_from_error(error, ec))
             .expect("rejected_promise_from_error must return a Promise object")
@@ -108,14 +108,14 @@ pub(crate) fn promise_from_completion(
 /// Falls back to a TypeError with a generic message if conversion fails.
 pub(crate) fn rejected_promise_from_error(
     error: JsError,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsObject {
     let reason = error_to_rejection_reason(error, ec);
     if let Ok(promise) = rejected_promise(reason, ec) {
         return promise;
     }
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let (promise, resolvers) = JsPromise::new_pending(context);
     if let Err(error) =
         resolvers
@@ -136,14 +136,14 @@ pub(crate) fn rejected_promise_from_error(
 /// JS exceptions.
 pub(crate) fn error_to_rejection_reason(
     error: JsError,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsValue {
     if let Some(reason) = error.as_opaque().cloned() {
         return reason;
     }
 
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     match error.into_opaque(context) {
         Ok(reason) => reason,
         Err(_js_error) => JsNativeError::typ()
@@ -161,10 +161,10 @@ pub(crate) fn error_to_rejection_reason(
 /// "React to promise with a fulfillment step that returns undefined."
 pub(crate) fn transform_promise_to_undefined(
     promise_object: &JsObject,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let on_fulfilled =
         NativeFunction::from_fn_ptr(return_undefined).to_js_function(context.realm());
     JsPromise::from_object(promise_object.clone())
@@ -181,10 +181,10 @@ pub(crate) fn transform_promise_to_undefined(
 /// Marks a promise as "handled" to suppress unhandled-rejection warnings.
 pub(crate) fn mark_promise_as_handled(
     promise_object: &JsObject,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(), BoaTypes> {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let on_rejected = NativeFunction::from_fn_ptr(return_undefined).to_js_function(context.realm());
     let _ = JsPromise::from_object(promise_object.clone())
         .and_then(|p| p.catch(on_rejected, context))
@@ -217,15 +217,15 @@ fn return_undefined(_: &JsValue, _: &[JsValue], _: &mut Context) -> boa_engine::
 pub(crate) fn upon_fulfillment<F>(
     promise: JsObject,
     steps: F,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes>
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types>
 where
-    F: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
+    F: FnOnce(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
         + 'static,
 {
     upon_settlement::<
         F,
-        fn(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>,
+        fn(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>,
     >(promise, Some(steps), None, ec)
 }
 
@@ -237,14 +237,14 @@ where
 pub(crate) fn upon_rejection<R>(
     promise: JsObject,
     steps: R,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes>
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types>
 where
-    R: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
+    R: FnOnce(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
         + 'static,
 {
     upon_settlement::<
-        fn(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>,
+        fn(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>,
         R,
     >(promise, None, Some(steps), ec)
 }
@@ -258,19 +258,19 @@ pub(crate) fn upon_settlement<F, R>(
     promise: JsObject,
     on_fulfilled: Option<F>,
     on_rejected: Option<R>,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsObject, BoaTypes>
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types>
 where
-    F: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
+    F: FnOnce(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
         + 'static,
-    R: FnOnce(JsValue, &mut dyn ExecutionContext<BoaTypes>) -> Completion<JsValue, BoaTypes>
+    R: FnOnce(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
         + 'static,
 {
-    // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
     // We extract the concrete engine so we can call create_builtin_function
     // (on JsEngine) and new_promise_capability / perform_promise_then
     // (on ExecutionContext) through the same object.
-    let context = unsafe { crate::js::ec_to_ctx(ec) };
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
     // Extract everything we need from `context` before creating `engine`,
     // since both reference the same underlying Boa Context.
@@ -285,7 +285,7 @@ where
             .unwrap_or_else(|_| JsValue::undefined())
     };
 
-    let engine = crate::js::context_as_engine(context);
+    let engine = js_engine::boa::context_as_engine(context);
 
     // Wrap FnOnce steps in RefCell so they satisfy the Fn bound required
     // by create_builtin_function.  Each callback is called at most once
@@ -300,8 +300,8 @@ where
             Box::new(
                 move |args: &[JsValue],
                       _this: JsValue,
-                      inner_ec: &mut dyn ExecutionContext<BoaTypes>|
-                      -> Completion<JsValue, BoaTypes> {
+                      inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                      -> Completion<JsValue, crate::js::Types> {
                     let value = args
                         .first()
                         .cloned()
@@ -328,8 +328,8 @@ where
             Box::new(
                 move |args: &[JsValue],
                       _this: JsValue,
-                      inner_ec: &mut dyn ExecutionContext<BoaTypes>|
-                      -> Completion<JsValue, BoaTypes> {
+                      inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                      -> Completion<JsValue, crate::js::Types> {
                     let reason = args
                         .first()
                         .cloned()

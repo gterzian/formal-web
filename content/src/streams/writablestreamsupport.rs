@@ -4,7 +4,7 @@ use boa_engine::{
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Trace};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 use super::writablestreamdefaultcontroller::WritableStreamDefaultController;
@@ -31,10 +31,10 @@ impl WriteRequest {
     }
     pub(crate) fn resolve(
         self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         self.resolvers
             .resolve
             .call(&JsValue::undefined(), &[JsValue::undefined()], context)
@@ -47,10 +47,10 @@ impl WriteRequest {
     pub(crate) fn reject(
         self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         self.resolvers
             .reject
             .call(&JsValue::undefined(), &[error], context)
@@ -94,10 +94,10 @@ impl PendingAbortRequest {
     }
     pub(crate) fn resolve(
         &self,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         self.resolvers
             .resolve
             .call(&JsValue::undefined(), &[JsValue::undefined()], context)
@@ -110,10 +110,10 @@ impl PendingAbortRequest {
     pub(crate) fn reject(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         self.resolvers
             .reject
             .call(&JsValue::undefined(), &[error], context)
@@ -133,8 +133,8 @@ impl WritableStreamController {
     pub(crate) fn abort_steps(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsObject, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         match self {
             Self::Default(controller) => controller.abort_steps(reason, ec),
         }
@@ -147,8 +147,8 @@ impl WritableStreamController {
     pub(crate) fn signal_abort(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<(), BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match self {
             Self::Default(controller) => controller.signal_abort(reason, ec),
         }

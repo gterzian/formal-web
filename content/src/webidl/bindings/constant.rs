@@ -16,7 +16,7 @@ pub(crate) struct ConstantDef<T: JsTypes> {
 pub(crate) fn define_constants(
     target: &JsObject,
     context: &mut boa_engine::Context,
-    constants: &[ConstantDef<js_engine::boa::BoaTypes>],
+    constants: &[ConstantDef<crate::js::Types>],
 ) -> boa_engine::JsResult<()> {
     for constant in constants {
         let desc = PropertyDescriptor::builder()

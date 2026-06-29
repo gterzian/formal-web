@@ -5,7 +5,7 @@ use boa_engine::{
 use std::marker::PhantomData;
 
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 use crate::streams::{
@@ -13,14 +13,14 @@ use crate::streams::{
     validate_and_normalize_high_water_mark,
 };
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for ByteLengthQueuingStrategy {
+impl WebIdlInterface<crate::js::Types> for ByteLengthQueuingStrategy {
     const NAME: &'static str = "ByteLengthQueuingStrategy";
 
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let init_value = args
             .first()
             .cloned()
@@ -32,7 +32,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for ByteLengthQueuingStrategy {
         Ok(ByteLengthQueuingStrategy::new(high_water_mark))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -64,14 +64,14 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for ByteLengthQueuingStrategy {
     }
 }
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for CountQueuingStrategy {
+impl WebIdlInterface<crate::js::Types> for CountQueuingStrategy {
     const NAME: &'static str = "CountQueuingStrategy";
 
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let init_value = args
             .first()
             .cloned()
@@ -83,7 +83,7 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for CountQueuingStrategy {
         Ok(CountQueuingStrategy::new(high_water_mark))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -118,8 +118,8 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for CountQueuingStrategy {
 fn get_byte_length_high_water_mark(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let strategy = this
         .as_object()
         .ok_or_else(|| ec.new_type_error("ByteLengthQueuingStrategy receiver is not an object"))?;
@@ -132,8 +132,8 @@ fn get_byte_length_high_water_mark(
 fn get_count_high_water_mark(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let strategy = this
         .as_object()
         .ok_or_else(|| ec.new_type_error("CountQueuingStrategy receiver is not an object"))?;
@@ -146,10 +146,10 @@ fn get_count_high_water_mark(
 fn get_byte_length_size(
     _: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let function = FunctionObjectBuilder::new(
             ctx.realm(),
@@ -166,10 +166,10 @@ fn get_byte_length_size(
 fn get_count_size(
     _: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let function = FunctionObjectBuilder::new(
             ctx.realm(),
@@ -188,7 +188,7 @@ fn byte_length_size_function(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    byte_length_size(args.get_or_undefined(0), crate::js::context_as_ec(context))
+    byte_length_size(args.get_or_undefined(0), js_engine::boa::context_as_ec(context))
         .map_err(JsError::from_opaque)
 }
 

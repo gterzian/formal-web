@@ -12,6 +12,7 @@ use boa_engine::{
     property::PropertyDescriptor,
     symbol::JsSymbol,
 };
+use js_engine::boa::BoaContext;
 
 use super::hyperlink_element_utils;
 use crate::dom::{
@@ -57,16 +58,16 @@ impl HostHooks for WindowHostHooks {
     }
 }
 
-/// Build the Boa engine, registering all native bindings.
+/// Build a Boa context, registering all native bindings.
 ///
-/// Returns a fully-initialized `Engine` with all interfaces, prototypes,
+/// Returns a fully-initialized `BoaContext` with all interfaces, prototypes,
 /// and native functions registered.  Access the underlying `Context` via
 /// `engine.context()` for Boa-specific operations not yet abstracted.
-pub(crate) fn build_boa_engine(
+pub(crate) fn build_context(
     document: Rc<RefCell<BaseDocument>>,
-) -> Result<crate::js::Engine, String> {
+) -> Result<BoaContext, String> {
     let context = build_boa_context(document)?;
-    Ok(crate::js::Engine::from_context(context))
+    Ok(BoaContext::from_context(context))
 }
 
 fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
@@ -76,7 +77,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
         .build()
         .map_err(|error| error.to_string())?;
 
-    initialize_registry::<js_engine::boa::BoaTypes>(crate::js::context_as_ec(&mut context));
+    initialize_registry::<crate::js::Types>(js_engine::boa::context_as_ec(&mut context));
 
     // ── Install WebAssembly namespace ──
     if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut context) {
@@ -85,8 +86,8 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<js_engine::boa::BoaTypes, $ty, _>(
-                crate::js::context_as_engine(&mut context),
+            register_interface_spec::<crate::js::Types, $ty, _>(
+                js_engine::boa::context_as_engine(&mut context),
             )
             .map_err(|error| {
                 error
@@ -153,7 +154,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     if let Some(proto) = get_registry_prototype::<HTMLAnchorElement>(&context) {
         hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(
             &proto,
-            crate::js::context_as_ec(&mut context),
+            js_engine::boa::context_as_ec(&mut context),
         )
         .map_err(|error| error.display().to_string())?;
     }

@@ -9,7 +9,7 @@ use crate::{
     dom::Document,
     html::{HTMLAnchorElement, HyperlinkElementUtils},
 };
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 pub(crate) fn document_creation_url(context: &Context) -> JsResult<Url> {
@@ -42,9 +42,9 @@ fn with_hyperlink_element_utils_ref<R>(
 /// via `JsObject::from_proto_and_data` instead of via `ClassBuilder`.
 pub(crate) fn register_hyperlink_element_utils_on_prototype(
     proto: &JsObject,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<(), BoaTypes> {
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let realm = ctx.realm().clone();
     link_property(proto, ec, &realm, "origin", get_origin, None)?;
     link_property(
@@ -96,24 +96,24 @@ pub(crate) fn register_hyperlink_element_utils_on_prototype(
 
 fn link_property(
     proto: &JsObject,
-    ec: &mut dyn ExecutionContext<BoaTypes>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     realm: &boa_engine::realm::Realm,
     name: &str,
     getter: fn(
         &JsValue,
         &[JsValue],
-        &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsValue, BoaTypes>,
+        &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types>,
     setter: Option<
         fn(
             &JsValue,
             &[JsValue],
-            &mut dyn ExecutionContext<BoaTypes>,
-        ) -> Completion<JsValue, BoaTypes>,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>,
     >,
-) -> Completion<(), BoaTypes> {
+) -> Completion<(), crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<()> {
         let get = ec_fn_ptr_to_js_function(getter, realm);
         let mut desc = PropertyDescriptor::builder()
@@ -130,26 +130,26 @@ fn link_property(
     .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
 }
 
-/// Bridge a function pointer taking `&mut dyn ExecutionContext<BoaTypes>`
+/// Bridge a function pointer taking `&mut dyn ExecutionContext<crate::js::Types>`
 /// into a `NativeFunction` → `JsObject` callable, using an `unsafe`
 /// `repr(transparent)` cast to recover the Boa `Context`.
 fn ec_fn_ptr_to_js_function(
     f: fn(
         &JsValue,
         &[JsValue],
-        &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsValue, BoaTypes>,
+        &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types>,
     realm: &boa_engine::realm::Realm,
 ) -> JsObject {
-    // SAFETY: BoaEngine is `#[repr(transparent)]` over `Context`, and
-    // `ExecutionContext<BoaTypes>` is implemented by `BoaEngine`.
-    // Casting `&mut Context` → `&mut dyn ExecutionContext<BoaTypes>` via
+    // SAFETY: BoaContext is `#[repr(transparent)]` over `Context`, and
+    // `ExecutionContext<crate::js::Types>` is implemented by `BoaContext`.
+    // Casting `&mut Context` → `&mut dyn ExecutionContext<crate::js::Types>` via
     // the `repr(transparent)` guarantee is sound.
     unsafe {
         let native = NativeFunction::from_closure(Box::new(
             move |this: &JsValue, args: &[JsValue], context: &mut Context| -> JsResult<JsValue> {
-                let engine: &mut dyn ExecutionContext<BoaTypes> =
-                    &mut *(context as *mut Context as *mut js_engine::boa::BoaEngine);
+                let engine: &mut dyn ExecutionContext<crate::js::Types> =
+                    &mut *(context as *mut Context as *mut js_engine::boa::BoaContext);
                 f(this, args, engine).map_err(|e| JsError::from_opaque(e))
             },
         ));
@@ -160,10 +160,10 @@ fn ec_fn_ptr_to_js_function(
 fn get_origin(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -176,10 +176,10 @@ fn get_origin(
 fn get_protocol(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -192,10 +192,10 @@ fn get_protocol(
 fn set_protocol(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args
@@ -213,10 +213,10 @@ fn set_protocol(
 fn get_username(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -229,10 +229,10 @@ fn get_username(
 fn set_username(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args
@@ -250,10 +250,10 @@ fn set_username(
 fn get_password(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -266,10 +266,10 @@ fn get_password(
 fn set_password(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args
@@ -287,10 +287,10 @@ fn set_password(
 fn get_host(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -303,10 +303,10 @@ fn get_host(
 fn set_host(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args
@@ -324,10 +324,10 @@ fn set_host(
 fn get_hostname(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -340,10 +340,10 @@ fn get_hostname(
 fn set_hostname(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args
@@ -361,10 +361,10 @@ fn set_hostname(
 fn get_port(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -377,10 +377,10 @@ fn get_port(
 fn set_port(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args
@@ -398,10 +398,10 @@ fn set_port(
 fn get_pathname(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -414,10 +414,10 @@ fn get_pathname(
 fn set_pathname(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args
@@ -435,10 +435,10 @@ fn set_pathname(
 fn get_search(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -451,10 +451,10 @@ fn get_search(
 fn set_search(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args
@@ -472,10 +472,10 @@ fn set_search(
 fn get_hash(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         with_hyperlink_element_utils_ref(this, |hyperlink| {
@@ -488,10 +488,10 @@ fn get_hash(
 fn set_hash(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let document_creation_url = document_creation_url(ctx)?;
         let value = args

@@ -1,5 +1,5 @@
 use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 use crate::html::{GlobalScope, TimerHandler, Window};
@@ -16,8 +16,8 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         &self,
         value: JsValue,
         options: Option<StructuredCloneOptions>,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsValue, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
         safe_passing_of_structured_data::structured_clone(value, options, ec)
     }
 
@@ -27,10 +27,10 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         handler: &JsValue,
         timeout: &JsValue,
         arguments: Vec<JsValue>,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<u32, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<u32, crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and false."
         let handler = crate::js::js_result_to_completion(timer_handler(handler, context), context)?;
         self.timer_initialization_steps(handler, timeout, arguments, false, None, ec)
@@ -42,10 +42,10 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         handler: &JsValue,
         timeout: &JsValue,
         arguments: Vec<JsValue>,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<u32, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<u32, crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and true."
         let handler = crate::js::js_result_to_completion(timer_handler(handler, context), context)?;
         self.timer_initialization_steps(handler, timeout, arguments, true, None, ec)
@@ -71,10 +71,10 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         arguments: Vec<JsValue>,
         repeat: bool,
         previous_id: Option<u32>,
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<u32, BoaTypes> {
-        // SAFETY: ec is backed by BoaEngine repr(transparent) over Context.
-        let context = unsafe { crate::js::ec_to_ctx(ec) };
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<u32, crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "If method context is a Window object, then let thisArg be method context's WindowProxy object; otherwise let thisArg be method context."
         // Note: The callback invocation path always uses the current global object as `this`, so the Window case is implicit in the stored registration.
 

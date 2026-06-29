@@ -2,7 +2,7 @@ use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
-use js_engine::boa::BoaTypes;
+
 use js_engine::{Completion, ExecutionContext};
 
 use crate::streams::{
@@ -10,21 +10,21 @@ use crate::streams::{
     with_transform_stream_default_controller_ref, with_transform_stream_ref,
 };
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for TransformStream {
+impl WebIdlInterface<crate::js::Types> for TransformStream {
     const NAME: &'static str = "TransformStream";
 
     fn create_platform_object(
         this: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<Self, BoaTypes> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         let value_undefined = ec.value_undefined();
-        let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         (|| -> JsResult<Self> { construct_transform_stream(this, args, ctx) })()
             .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -56,10 +56,10 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for TransformStream {
     }
 }
 
-impl WebIdlInterface<js_engine::boa::BoaTypes> for TransformStreamDefaultController {
+impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
     const NAME: &'static str = "TransformStreamDefaultController";
 
-    fn define_members(def: &mut InterfaceDefinition<js_engine::boa::BoaTypes>) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -111,10 +111,10 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for TransformStreamDefaultControl
 fn get_readable(
     _this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = _this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("TransformStream.readable called on non-object")
@@ -130,10 +130,10 @@ fn get_readable(
 fn get_writable(
     _this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = _this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("TransformStream.writable called on non-object")
@@ -149,10 +149,10 @@ fn get_writable(
 fn get_desired_size(
     _this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = _this.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -172,10 +172,10 @@ fn get_desired_size(
 fn controller_enqueue(
     _this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = _this.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -199,10 +199,10 @@ fn controller_enqueue(
 fn controller_error(
     _this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = _this.as_object().ok_or_else(|| {
             JsNativeError::typ()
@@ -226,10 +226,10 @@ fn controller_error(
 fn controller_terminate(
     _this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<BoaTypes>,
-) -> Completion<JsValue, BoaTypes> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = _this.as_object().ok_or_else(|| {
             JsNativeError::typ()

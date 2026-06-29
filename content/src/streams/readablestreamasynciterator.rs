@@ -36,7 +36,7 @@ impl ReadableStreamAsyncIteratorState {
 
         if reader.stream_slot_value().is_some() {
             crate::js::completion_to_js_result(
-                reader.release_lock(crate::js::context_as_ec(context)),
+                reader.release_lock(js_engine::boa::context_as_ec(context)),
             )?;
         }
 
@@ -87,7 +87,7 @@ impl AsyncValueIterable for ReadableStream {
             JsNativeError::typ().with_message("ReadableStream async iterator is missing its reader")
         })?;
 
-        crate::js::completion_to_js_result(reader.read(crate::js::context_as_ec(context)))
+        crate::js::completion_to_js_result(reader.read(js_engine::boa::context_as_ec(context)))
     }
 
     fn finish_async_iterator(&self, state: &Self::State, context: &mut Context) -> JsResult<()> {
@@ -108,7 +108,7 @@ impl AsyncValueIterable for ReadableStream {
         let Some(reader) = state.reader() else {
             return crate::js::completion_to_js_result(resolved_promise(
                 JsValue::undefined(),
-                crate::js::context_as_ec(context),
+                js_engine::boa::context_as_ec(context),
             ));
         };
 
@@ -116,13 +116,13 @@ impl AsyncValueIterable for ReadableStream {
             state.finish(context)?;
             return crate::js::completion_to_js_result(resolved_promise(
                 JsValue::undefined(),
-                crate::js::context_as_ec(context),
+                js_engine::boa::context_as_ec(context),
             ));
         }
 
         let cancel_promise = reader
-            .cancel(value, crate::js::context_as_ec(context))
-            .or_else(|error_value| rejected_promise(error_value, crate::js::context_as_ec(context)))
+            .cancel(value, js_engine::boa::context_as_ec(context))
+            .or_else(|error_value| rejected_promise(error_value, js_engine::boa::context_as_ec(context)))
             .map_err(boa_engine::JsError::from_opaque)?;
 
         state.finish(context)?;
