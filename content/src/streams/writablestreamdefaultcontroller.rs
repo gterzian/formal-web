@@ -91,7 +91,10 @@ pub(crate) enum CloseAlgorithm {
 
 impl CloseAlgorithm {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-closealgorithm>
-    fn call(&self, ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsObject, crate::js::Types> {
+    fn call(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         match self {
             Self::ReturnUndefined => resolved_promise(JsValue::undefined(), ec),
             Self::JavaScript(callback) => {
@@ -442,7 +445,10 @@ impl WritableStreamDefaultController {
         }
     }
 
-    fn process_close(&self, ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types> {
+    fn process_close(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
         crate::js::js_result_to_completion(stream.mark_close_request_in_flight(), context)?;
@@ -502,8 +508,11 @@ impl WritableStreamDefaultController {
         let controller_object =
             crate::js::js_result_to_completion(self.controller_object(), context)?;
         let write_algo = crate::js::js_result_to_completion(self.write_algorithm(), context)?;
-        let sink_write_promise =
-            write_algo.call(&controller_object, chunk, js_engine::boa::context_as_ec(context))?;
+        let sink_write_promise = write_algo.call(
+            &controller_object,
+            chunk,
+            js_engine::boa::context_as_ec(context),
+        )?;
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();
@@ -534,9 +543,10 @@ impl WritableStreamDefaultController {
                     let backpressure = controller.get_backpressure()?;
 
                     // Step 4.5.2: "Perform ! WritableStreamUpdateBackpressure(stream, backpressure)."
-                    crate::js::completion_to_js_result(
-                        stream.update_backpressure(backpressure, js_engine::boa::context_as_ec(context)),
-                    )?;
+                    crate::js::completion_to_js_result(stream.update_backpressure(
+                        backpressure,
+                        js_engine::boa::context_as_ec(context),
+                    ))?;
                 }
 
                 // Step 4.6: "Perform ! WritableStreamDefaultControllerAdvanceQueueIfNeeded(controller)."
@@ -673,9 +683,7 @@ impl js_engine::EcmascriptHost<crate::js::Types> for ContextEventDispatchHost<'_
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
     }
 
-    fn perform_a_microtask_checkpoint(
-        &mut self,
-    ) -> js_engine::Completion<(), crate::js::Types> {
+    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
         let _ = self.context.run_jobs();
         Ok(())
     }
@@ -710,8 +718,11 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
     }
 
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        create_interface_instance::<crate::js::Types, Event>(event, js_engine::boa::context_as_ec(self.context))
-            .map_err(JsError::from_opaque)
+        create_interface_instance::<crate::js::Types, Event>(
+            event,
+            js_engine::boa::context_as_ec(self.context),
+        )
+        .map_err(JsError::from_opaque)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {
@@ -743,10 +754,10 @@ pub(crate) fn create_writable_stream_default_controller(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(WritableStreamDefaultController, JsObject), crate::js::Types> {
     let controller = WritableStreamDefaultController::new();
-    let controller_object = create_interface_instance::<crate::js::Types, WritableStreamDefaultController>(
-        controller.clone(),
-        ec,
-    )?
+    let controller_object = create_interface_instance::<
+        crate::js::Types,
+        WritableStreamDefaultController,
+    >(controller.clone(), ec)?
     .into();
     Ok((controller, controller_object))
 }

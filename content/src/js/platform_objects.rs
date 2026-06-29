@@ -11,7 +11,6 @@ use crate::html::{
 };
 use crate::webidl::bindings::create_interface_instance;
 
-
 pub(crate) fn with_global_scope<R>(
     context: &Context,
     f: impl FnOnce(&GlobalScope) -> JsResult<R>,

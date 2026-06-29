@@ -261,17 +261,14 @@ fn get_onload(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
-        Ok(window
-            .onload_value()
-            .map(|callback| callback.to_js_value())
-            .unwrap_or_else(JsValue::null))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = window_object
+        .downcast_ref::<Window>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a Window"))?;
+    Ok(window
+        .onload_value()
+        .map(|callback| callback.to_js_value())
+        .unwrap_or_else(JsValue::null))
 }
 
 fn set_onload(
@@ -320,10 +317,7 @@ fn get_parent(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> { Ok(JsValue::from(current_window_object(this, ctx))) })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    Ok(JsValue::from(current_window_object_from_ec(this, ec)))
 }
 
 fn get_top(
@@ -331,10 +325,7 @@ fn get_top(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> { Ok(JsValue::from(current_window_object(this, ctx))) })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    Ok(JsValue::from(current_window_object_from_ec(this, ec)))
 }
 
 fn get_location(
@@ -453,7 +444,9 @@ fn get_computed_style_method(
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
 
-fn location_object(ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsObject, crate::js::Types> {
+fn location_object(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsObject> {
@@ -479,7 +472,14 @@ fn location_object(ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completio
 /// Resolve the Window from a receiver that may be a Window or a WindowProxy.
 /// Delegates to the domain layer's `resolve_window`.
 fn current_window_object(this: &JsValue, ctx: &mut Context) -> JsObject {
-    resolve_window(this, js_engine::boa::context_as_ec(ctx))
+    current_window_object_from_ec(this, js_engine::boa::context_as_ec(ctx))
+}
+
+fn current_window_object_from_ec(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> JsObject {
+    resolve_window(this, ec)
 }
 
 fn downcast_window(object: &JsObject) -> JsResult<boa_gc::GcRef<'_, Window>> {

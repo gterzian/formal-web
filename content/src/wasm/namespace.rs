@@ -208,8 +208,12 @@ pub(crate) fn instantiate_continuation(
     //
     // Step 6.1.2: "Let instanceObject be a new Instance."
     // Step 6.1.3: "Initialize instanceObject from module and instance."
-    let instance_object =
-        initialize_an_instance_object(module, instance, store, js_engine::boa::context_as_ec(context))?;
+    let instance_object = initialize_an_instance_object(
+        module,
+        instance,
+        store,
+        js_engine::boa::context_as_ec(context),
+    )?;
     // Step 6.1.4: "Resolve promise with instanceObject."
     resolvers
         .resolve
@@ -384,7 +388,9 @@ fn get_wasm_module_prototype(ec: &mut dyn ExecutionContext<crate::js::Types>) ->
         .and_then(|p| p.as_object().map(|o| o.clone()))
 }
 
-fn get_wasm_instance_prototype(ec: &mut dyn ExecutionContext<crate::js::Types>) -> Option<JsObject> {
+fn get_wasm_instance_prototype(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Option<JsObject> {
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let ns = context
         .global_object()

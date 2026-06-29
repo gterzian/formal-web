@@ -718,7 +718,10 @@ fn set_volume(
 ) -> Completion<JsValue, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let vol = args.first().and_then(|v| crate::js::Types::value_as_number(v)).unwrap_or(1.0);
+    let vol = args
+        .first()
+        .and_then(|v| crate::js::Types::value_as_number(v))
+        .unwrap_or(1.0);
     if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
         media.set_volume(vol);
     } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {

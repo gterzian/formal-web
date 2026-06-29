@@ -76,16 +76,12 @@ pub fn context_as_engine(context: &mut boa_engine::Context) -> &mut BoaContext {
 }
 
 /// Cast `&mut Context` to `&mut dyn ExecutionContext<BoaTypes>`.
-pub fn context_as_ec(
-    context: &mut boa_engine::Context,
-) -> &mut dyn ExecutionContext<BoaTypes> {
+pub fn context_as_ec(context: &mut boa_engine::Context) -> &mut dyn ExecutionContext<BoaTypes> {
     context_as_engine(context)
 }
 
 /// Cast `&Context` to `&dyn ExecutionContext<BoaTypes>` (immutable).
-pub fn context_as_ec_ref(
-    context: &boa_engine::Context,
-) -> &dyn ExecutionContext<BoaTypes> {
+pub fn context_as_ec_ref(context: &boa_engine::Context) -> &dyn ExecutionContext<BoaTypes> {
     unsafe { &*(context as *const boa_engine::Context as *const BoaContext) }
 }
 
@@ -215,7 +211,8 @@ impl JsEngine<BoaTypes> for BoaContext {
                       context: &mut Context|
                       -> JsResult<JsValue> {
                     // SAFETY: BoaContext is repr(transparent) over Context.
-                    let engine: &mut BoaContext = &mut *(context as *mut Context as *mut BoaContext);
+                    let engine: &mut BoaContext =
+                        &mut *(context as *mut Context as *mut BoaContext);
                     behaviour(args, this.clone(), engine).map_err(|e| JsError::from_opaque(e))
                 },
             ))
@@ -1096,6 +1093,58 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         JsValue::from(err_obj)
     }
 
+    // ── String Utilities ─────────────────────────────────────────────
+
+    fn js_string_to_rust_string(&self, s: &boa_engine::JsString) -> String {
+        s.to_std_string_escaped()
+    }
+
+    // ── Array Construction ───────────────────────────────────────────
+
+    fn create_empty_array(&mut self) -> JsObject {
+        boa_engine::object::builtins::JsArray::new(&mut self.context)
+            .expect("JsArray::new should not fail")
+            .into()
+    }
+
+    fn array_push(&mut self, array: &JsObject, value: JsValue) -> Completion<(), BoaTypes> {
+        // Use the "length" property to determine the next index.
+        let length_val = into_completion(
+            array.get(
+                PropertyKey::from(boa_engine::js_string!("length")),
+                &mut self.context,
+            ),
+            &mut self.context,
+        )?;
+        let length = length_val.to_length(&mut self.context).map_err(|e| {
+            e.into_opaque(&mut self.context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
+        let index_key = PropertyKey::from(length);
+        // Set the value at the new index and update length.
+        into_completion(
+            array.set(index_key, value, false, &mut self.context),
+            &mut self.context,
+        )?;
+        let new_length = length + 1;
+        into_completion(
+            array.set(
+                PropertyKey::from(boa_engine::js_string!("length")),
+                JsValue::new(new_length as f64),
+                false,
+                &mut self.context,
+            ),
+            &mut self.context,
+        )?;
+        Ok(())
+    }
+
+    // ── Object Construction ──────────────────────────────────────────
+
+    fn create_plain_object(&mut self, prototype: Option<&JsObject>) -> JsObject {
+        let proto = prototype.cloned();
+        JsObject::from_proto_and_data(proto, ())
+    }
 }
 
 /// Wrapper that implements `NativeObject` for arbitrary `'static` data.

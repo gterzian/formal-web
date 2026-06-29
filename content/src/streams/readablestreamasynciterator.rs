@@ -122,7 +122,9 @@ impl AsyncValueIterable for ReadableStream {
 
         let cancel_promise = reader
             .cancel(value, js_engine::boa::context_as_ec(context))
-            .or_else(|error_value| rejected_promise(error_value, js_engine::boa::context_as_ec(context)))
+            .or_else(|error_value| {
+                rejected_promise(error_value, js_engine::boa::context_as_ec(context))
+            })
             .map_err(boa_engine::JsError::from_opaque)?;
 
         state.finish(context)?;

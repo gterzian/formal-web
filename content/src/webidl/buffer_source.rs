@@ -68,7 +68,10 @@ pub(crate) fn get_a_copy_of_the_buffer_source(
 }
 
 /// <https://webidl.spec.whatwg.org/#dfn-buffer-source-type>
-pub(crate) fn is_buffer_source(value: &JsValue, _ec: &mut dyn ExecutionContext<crate::js::Types>) -> bool {
+pub(crate) fn is_buffer_source(
+    value: &JsValue,
+    _ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };

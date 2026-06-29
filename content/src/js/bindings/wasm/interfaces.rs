@@ -15,7 +15,7 @@ use crate::wasm::{WasmInstance, WasmModule};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::get_a_copy_of_the_buffer_source;
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // WebIdlInterface: Module
 
@@ -170,19 +170,12 @@ fn get_instance_exports_binding(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("Instance.exports getter: receiver is not an object")
-        })?;
-        let instance = object.downcast_ref::<WasmInstance>().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("Instance.exports getter: receiver is not a WebAssembly.Instance")
-        })?;
-        Ok(JsValue::from(instance.exports.clone()))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let object = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("Instance.exports getter: receiver is not an object"))?;
+    let instance = object.downcast_ref::<WasmInstance>().ok_or_else(|| {
+        ec.new_type_error("Instance.exports getter: receiver is not a WebAssembly.Instance")
+    })?;
+    Ok(JsValue::from(instance.exports.clone()))
 }
 
 // Error types

@@ -496,7 +496,8 @@ fn create_readable_stream_default_reader(
 ) -> Completion<JsObject, crate::js::Types> {
     let reader = ReadableStreamDefaultReader::new();
     let reader_object: JsObject =
-        create_interface_instance::<crate::js::Types, ReadableStreamDefaultReader>(reader, ec)?.into();
+        create_interface_instance::<crate::js::Types, ReadableStreamDefaultReader>(reader, ec)?
+            .into();
     Ok(reader_object)
 }
 

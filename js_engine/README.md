@@ -265,6 +265,22 @@ Both map to the same spec operation (`#[sec-get-o-p]`).
 - **`report_error`** (default impl) is a logging convenience, not a
   spec operation.
 
+### `ExecutionContext<T>` utility methods
+
+Added to bridge engine-specific APIs without exposing `Context` to callers:
+
+| Method | Replaces | Spec basis |
+|---|---|---|
+| `js_string_to_rust_string(&self, &T::JsString) -> String` | `s.to_std_string_escaped()` | Pure operation, no JS execution |
+| `to_rust_string(&mut self, T::JsValue) -> Completion<String, T>` | `value.to_string(ctx)?.to_std_string_escaped()` | Combines `ToString` + extraction (default impl) |
+| `create_empty_array(&mut self) -> T::JsObject` | `JsArray::new(ctx)?` | <https://tc39.es/ecma262/#sec-arraycreate> |
+| `array_push(&mut self, &T::JsObject, T::JsValue) -> Completion<(), T>` | `arr.push(item, ctx)?` | <https://tc39.es/ecma262/#sec-array.prototype.push> |
+| `create_plain_object(&mut self, Option<&T::JsObject>) -> T::JsObject` | `ObjectInitializer::new(ctx)` | <https://tc39.es/ecma262/#sec-objectcreate> |
+| `object_set_property(&mut self, T::JsObject, &str, T::JsValue) -> Completion<(), T>` | `obj.set(js_string!(key), val, false, ctx)?` | Convenience for `set` with string key (default impl) |
+
+These are implemented in the Boa backend (`js_engine/src/boa/engine.rs`) with
+the `unsafe` cast contained internally.  JSC stubs (`todo!()`) are in place.
+
 ### `NativeFunction` barrier
 
 `JsEngine::create_builtin_function` takes a closure receiving
@@ -381,9 +397,9 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 
 ### What's still Boa-concrete
 
-- **Binding function bodies** (207 `ec_to_ctx` sites, down from ~437 across 24 files).  Key insight: `obj.downcast_ref::<T>()` on `JsObject` does NOT need `Context` — it's `&self`.  Simple getters that downcast + read a field + return via `ec.value_from_*()` need zero bridges.  Remaining bridges are concentrated in functions that extract Rust strings from `JsValue` (`to_std_string_escaped`), construct `JsArray`/`ObjectInitializer`, or register `NativeFunction::from_closure`.
+- **Binding function bodies** (~198 `ec_to_ctx` sites, down from ~437 across 24 files).  The remaining blockers are now solely `NativeFunction::from_closure` registration and initialization-time APIs (`Context::eval`, `with_global_scope`).  String extraction, array construction, and object creation all have `ExecutionContext<T>` trait methods now (`js_string_to_rust_string`, `to_rust_string`, `create_empty_array`, `array_push`, `create_plain_object`, `object_set_property`).
 - **Domain code** (HTML, WebAssembly, Web IDL) — public APIs take `ec`, internal helpers bridge via `ec_to_ctx`. `safe_passing_of_structured_data.rs` internal helpers and `async_iterable.rs` internal helpers still take `&mut Context` directly (called from entry points via `ec_to_ctx` bridge). Stream-domain, DOM, event dispatch all fully on `ec`.
-- **`EnvironmentSettingsObject` still owns `BoaContext`** — not yet a generic context. Blockers: (1) `Context::eval` called directly instead of `JsEngine::evaluate_script`, (2) `with_global_scope(&Context)` for GC heap traversal, (3) `value.to_json(&mut Context)` for JSON serialization, (4) `ObjectInitializer::new(ctx)` / `register_global_property` / `JsArray::from_iter(..., ctx)` for Boa object construction.  Some of these (1, 4) can move into `build_context` or use existing trait methods; others (2, 3) need new trait methods.
+- **`EnvironmentSettingsObject` still owns `BoaContext`** — not yet a generic context. Blockers: (1) `Context::eval` called directly instead of `JsEngine::evaluate_script`, (2) `with_global_scope(&Context)` for GC heap traversal, (3) `value.to_json(&mut Context)` for JSON serialization, (4) `register_global_property` for Boa global bindings.  Items 1 and 4 can move into `build_context`; items 2 and 3 need new trait methods.  (`ObjectInitializer::new(ctx)` and `JsArray::from_iter(..., ctx)` were solved by the new `create_plain_object` / `create_empty_array` / `array_push` trait methods.)
 - **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
 - **`js_engine::boa::context_as_ec` at `NativeFunction::from_closure` sites** can be centralized with a `native_fn_wrapper` helper (Step C).
@@ -420,12 +436,18 @@ unsafe, zero `ec_to_ctx` for simple getters) without adding a new
 trait method.  The `get_object_data` approach is deferred as an
 optional future clean-up.
 
-### Step B: Convert binding function bodies — IN PROGRESS (~53%)
+### Step B: Convert binding function bodies — IN PROGRESS (~60%)
 
 Replace the `js_engine::boa::ec_to_ctx` + `JsResult` closure bridge pattern with
 direct `obj.downcast_ref::<T>()` + `ec.value_from_*()` + `ec.new_type_error()`.
-The conversion was validated with `html_media_element.rs` (28→2) and scaled
-across 11 other files.
+
+The six new `ExecutionContext<T>` utility methods (`js_string_to_rust_string`,
+`to_rust_string`, `create_empty_array`, `array_push`, `create_plain_object`,
+`object_set_property`) now cover string extraction and object/array
+construction — the two largest categories of remaining `ec_to_ctx` sites.
+Binding code can use these directly on `ec`, eliminating the `ec_to_ctx` cast
+for those operations entirely.  Actual conversion of callers is a mechanical
+`s|ec_to_ctx|→ ec.method()|` replacement.
 
 Each binding function today:
 ```rust
@@ -510,13 +532,46 @@ Each sub-task requires `cargo check`.  Full verification (WPT + navigation)
 has not yet been validated with all Phase 7 domain files converted.
 Resume WPT and navigation verification at the next stable checkpoint.
 
+### End-of-task flow (during this migration)
+
+While working through this migration plan, the end-of-task flow is
+simplified to avoid slow or failing verification runs on mid-migration
+code:
+
+1. **`cargo check -p content`** — must be clean.
+2. **`cargo fmt`** — format any changed files.
+3. **Update this README** — file counts, status summaries, next steps.
+4. **Suggest a commit message** based on `git diff --stat HEAD`.
+
+Skip `cargo clippy --workspace` (pre-existing errors in paint/embedder
+crates hide migration-specific warnings) and skip WPT + navigation
+verification (they are expected to fail mid-migration).  Resume full
+verification after Step G when `ec_to_ctx` is deleted.
+
 ## Session-resume guide
 
-**Current step: Step B — convert binding function bodies.**
+**Current step: Step B — convert binding function bodies, now accelerated by
+new `ExecutionContext<T>` utility methods.**
 
-### Status: Step A superseded. Step B ~53% complete.
+### Status: Step B ~60% complete (~198 ec_to_ctx in bindings, down from ~437).
 
-Recent changes:
+Six new utility methods added to `ExecutionContext<T>` trait this session:
+- `js_string_to_rust_string` / `to_rust_string` — eliminate ~80 string-extraction ec_to_ctx
+- `create_empty_array` / `array_push` — eliminate ~15 array-construction ec_to_ctx
+- `create_plain_object` / `object_set_property` — eliminate ~20 object-construction ec_to_ctx
+
+These are now available for binding code to use.  Actual conversion of callers
+is mechanical `ec_to_ctx` → `ec.method()` replacement.
+
+Recent changes (this session):
+- `event_target.rs`: 5→4 — removed unnecessary closure bridge from create_platform_object
+- `abort_signal.rs`: 10→6 — converted get_aborted, get_reason, throw_if_aborted, get_onabort
+  to direct downcast + ec.new_type_error() pattern; removed with_abort_signal_ref import
+- `window.rs`: 14→11 — converted get_onload, get_parent, get_top;
+  added current_window_object_from_ec helper that takes ec directly
+- `wasm/interfaces.rs`: 3→2 — converted get_instance_exports_binding
+
+Earlier changes:
 - `BoaEngine` renamed to `BoaContext` — it is the runtime execution context
   (realm, heap, global object), not a "factory engine."  The `JsEngine<BoaTypes>`
   impl on it is a convenience; the factory should be a separate global.
@@ -528,10 +583,10 @@ Recent changes:
   `context_as_ec_ref`) moved from `content/src/js/mod.rs` into
   `js_engine/src/boa/engine.rs` — they are now `js_engine::boa::ec_to_ctx(...)` etc.
 
-Binding files: 207 `ec_to_ctx` sites remaining (down from ~437). Domain files: 146 sites.
-Total content crate: ~353 (down from ~583).
+Binding files: ~198 `ec_to_ctx` sites remaining (down from ~437). Domain files: ~145 sites.
+Total content crate: ~343 (down from ~583).
 
-11 of 24 binding files already converted:
+15 of 24 binding files converted or partially converted:
 - `dom_exception.rs`: 4→1 (create_platform_object still needs ctx for string extraction)
 - `ui_event.rs`: 3→1 (create_platform_object needs ctx)
 - `event.rs`: 15→1 (create_platform_object needs ctx)
@@ -543,11 +598,18 @@ Total content crate: ~353 (down from ~583).
 - `document.rs`: 14→12 (most ops need ctx for resolve_element_object)
 - `element.rs`: 21→18 (most ops need ctx for string extraction)
 - `html_iframe_element.rs`: 16→7 (string-extraction setters + event handler setters keep ctx)
+- `event_target.rs`: 5→4 (create_platform_object unnecessary closure bridge removed;
+  remaining ctx for event dispatch adapters)
+- `abort_signal.rs`: 10→6 (converted get_aborted, get_reason, throw_if_aborted, get_onabort;
+  remaining ctx for signal_abort_with_context, object(), DOMException construction)
+- `window.rs`: 14→11 (converted get_onload, get_parent, get_top;
+  added current_window_object_from_ec helper; remaining ctx for string extraction, timer ops)
+- `wasm/interfaces.rs`: 3→2 (converted get_instance_exports_binding;
+  remaining ctx for error conversion and JsArray construction)
 
 Remaining unconverted files: `readablestream.rs` (34), `location.rs` (22),
-`hyperlink_element_utils.rs` (21), `writablestream.rs` (18), `window.rs` (14),
-`abort_signal.rs` (10), `transformstream.rs` (7), `event_target.rs` (5),
-`wasm/interfaces.rs` (3), `strategy.rs` (2), `abort_controller.rs` (2).
+`hyperlink_element_utils.rs` (21), `writablestream.rs` (18), `transformstream.rs` (7),
+`strategy.rs` (2), `abort_controller.rs` (2).
 
 Conversion pattern: replace `ec_to_ctx` + `JsResult` closure bridge with
 direct `downcast_ref::<T>()`/`downcast_mut::<T>()` on `JsObject` (both are
@@ -571,9 +633,19 @@ Need zero `ec_to_ctx` calls.  `ec.new_type_error(msg)` replaces
 
 ### What still needs `ec_to_ctx`
 
+Before the trait methods were added:
 1. **String extraction**: `args.first().and_then(|v| v.as_string()).map(|s| s.to_std_string_escaped())` — `to_std_string_escaped` requires `&JsString` → `String` conversion that's Boa-specific (no trait equivalent yet).
 2. **Object construction**: `ObjectInitializer::new(ctx)`, `JsArray::from_iter(..., ctx)`
 3. **NativeFunction registration**: `NativeFunction::from_closure(...)` (Step C will centralize)
+
+**After adding `js_string_to_rust_string`, `to_rust_string`, `create_empty_array`,
+`array_push`, `create_plain_object`, and `object_set_property` to
+`ExecutionContext<T>` (this session):**
+
+Items 1 and 2 now have trait equivalents.  The remaining blockers are solely
+`NativeFunction` / `FunctionObjectBuilder` construction (Step C) and the
+initialization-time APIs (`Context::eval`, `with_global_scope`, `register_global_property`)
+that live in `build_context` / `EnvironmentSettingsObject::new` (Step G).
 
 ### Conversion patterns for Step B (binding function bodies)
 
@@ -618,6 +690,13 @@ Key replacements:
 | `obj.downcast_ref::<T>()` | `obj.downcast_ref::<T>()` (already `&self`, no `Context` needed) |
 | `obj.downcast_mut::<T>()` | `obj.downcast_mut::<T>()` (already `&self`, no `Context` needed) |
 | `JsValue::from(JsString::from(s))` | `ec.value_from_string(ec.js_string_from_str(s))` |
+| `JsString::from(s)` | `ec.value_from_string(ec.js_string_from_str(s))` |
+| `s.to_std_string_escaped()` | `ec.js_string_to_rust_string(&s)` |
+| `v.to_string(ctx)?.to_std_string_escaped()` | `ec.to_rust_string(v)?` |
+| `JsArray::new(ctx)?` | `ec.create_empty_array()` |
+| `arr.push(item, ctx)?` | `ec.array_push(&arr, item)?` |
+| `ObjectInitializer::new(ctx).build()` | `ec.create_plain_object(None)` |
+| `obj.set(js_string!(key), val, false, ctx)?` | `ec.object_set_property(obj, key, val)?` |
 | `JsValue::new(n)` | `ec.value_from_number(n)` |
 | `JsValue::undefined()` | `ec.value_undefined()` |
 | `JsValue::null()` | `ec.value_null()` |

@@ -220,12 +220,18 @@ pub(crate) fn upon_fulfillment<F>(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types>
 where
-    F: FnOnce(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
+    F: FnOnce(
+            JsValue,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>
         + 'static,
 {
     upon_settlement::<
         F,
-        fn(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>,
+        fn(
+            JsValue,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>,
     >(promise, Some(steps), None, ec)
 }
 
@@ -240,11 +246,17 @@ pub(crate) fn upon_rejection<R>(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types>
 where
-    R: FnOnce(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
+    R: FnOnce(
+            JsValue,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>
         + 'static,
 {
     upon_settlement::<
-        fn(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>,
+        fn(
+            JsValue,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>,
         R,
     >(promise, None, Some(steps), ec)
 }
@@ -261,9 +273,15 @@ pub(crate) fn upon_settlement<F, R>(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types>
 where
-    F: FnOnce(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
+    F: FnOnce(
+            JsValue,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>
         + 'static,
-    R: FnOnce(JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
+    R: FnOnce(
+            JsValue,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>
         + 'static,
 {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context.

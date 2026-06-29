@@ -11,7 +11,6 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
-
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{promise_from_value, rejected_promise, resolved_promise};
@@ -1257,12 +1256,13 @@ fn create_transform_stream_default_controller(
     context: &mut Context,
 ) -> JsResult<(TransformStreamDefaultController, JsObject)> {
     let controller = TransformStreamDefaultController::new();
-    let controller_object: JsObject = create_interface_instance::<
-        crate::js::Types,
-        TransformStreamDefaultController,
-    >(controller.clone(), js_engine::boa::context_as_ec(context))
-    .map_err(JsError::from_opaque)?
-    .into();
+    let controller_object: JsObject =
+        create_interface_instance::<crate::js::Types, TransformStreamDefaultController>(
+            controller.clone(),
+            js_engine::boa::context_as_ec(context),
+        )
+        .map_err(JsError::from_opaque)?
+        .into();
     Ok((controller, controller_object))
 }
 
@@ -1310,9 +1310,12 @@ pub(crate) fn construct_transform_stream(
 
     // Step 5: "Let readableHighWaterMark be ? ExtractHighWaterMark(readableStrategy, 0)."
     let readable_strategy = args.get(2).cloned().unwrap_or(JsValue::undefined());
-    let readable_high_water_mark =
-        extract_high_water_mark(&readable_strategy, 0.0, js_engine::boa::context_as_ec(context))
-            .map_err(JsError::from_opaque)?;
+    let readable_high_water_mark = extract_high_water_mark(
+        &readable_strategy,
+        0.0,
+        js_engine::boa::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?;
 
     // Step 6: "Let readableSizeAlgorithm be ! ExtractSizeAlgorithm(readableStrategy)."
     let readable_size_algorithm =
@@ -1321,9 +1324,12 @@ pub(crate) fn construct_transform_stream(
 
     // Step 7: "Let writableHighWaterMark be ? ExtractHighWaterMark(writableStrategy, 1)."
     let writable_strategy = args.get(1).cloned().unwrap_or(JsValue::undefined());
-    let writable_high_water_mark =
-        extract_high_water_mark(&writable_strategy, 1.0, js_engine::boa::context_as_ec(context))
-            .map_err(JsError::from_opaque)?;
+    let writable_high_water_mark = extract_high_water_mark(
+        &writable_strategy,
+        1.0,
+        js_engine::boa::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)?;
 
     // Step 8: "Let writableSizeAlgorithm be ! ExtractSizeAlgorithm(writableStrategy)."
     let writable_size_algorithm =

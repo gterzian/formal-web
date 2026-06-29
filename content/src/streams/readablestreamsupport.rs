@@ -342,9 +342,10 @@ where
                     if let Ok(rejected) =
                         rejected_promise(reason, js_engine::boa::context_as_ec(context))
                     {
-                        if let Err(error) =
-                            mark_promise_as_handled(&rejected, js_engine::boa::context_as_ec(context))
-                        {
+                        if let Err(error) = mark_promise_as_handled(
+                            &rejected,
+                            js_engine::boa::context_as_ec(context),
+                        ) {
                             log::warn!(
                                 "[readable-stream] failed to mark promise as handled: {:?}",
                                 error

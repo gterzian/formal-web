@@ -343,7 +343,9 @@ impl ReadableStreamDefaultController {
         let result = match cancel_algorithm {
             Some(cancel_algorithm) => {
                 let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                JsObject::from(cancel_algorithm.call(reason, js_engine::boa::context_as_ec(context)))
+                JsObject::from(
+                    cancel_algorithm.call(reason, js_engine::boa::context_as_ec(context)),
+                )
             }
             None => resolved_promise(JsValue::undefined(), ec)?,
         };
@@ -461,9 +463,10 @@ impl ReadableStreamDefaultController {
             Some(pull_algorithm) => {
                 pull_algorithm.call(&controller_object, js_engine::boa::context_as_ec(context))
             }
-            None => {
-                promise_from_completion(Ok(JsValue::undefined()), js_engine::boa::context_as_ec(context))
-            }
+            None => promise_from_completion(
+                Ok(JsValue::undefined()),
+                js_engine::boa::context_as_ec(context),
+            ),
         };
 
         let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
@@ -856,10 +859,10 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
-    let controller_object = create_interface_instance::<crate::js::Types, ReadableStreamDefaultController>(
-        controller.clone(),
-        js_engine::boa::context_as_ec(context),
-    )?;
+    let controller_object = create_interface_instance::<
+        crate::js::Types,
+        ReadableStreamDefaultController,
+    >(controller.clone(), js_engine::boa::context_as_ec(context))?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
@@ -871,7 +874,8 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     let mut cancel_algorithm = CancelAlgorithm::ReturnUndefined;
 
     // Step 5: "If underlyingSourceDict[\"start\"] exists, then set startAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"start\"] with argument list « controller » and callback this value underlyingSource."
-    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
+    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> =
+        js_engine::boa::context_as_ec(context);
     if let Some(start_method) =
         extract_source_method(underlying_source_object.as_ref(), "start", ec_ref)?
     {
@@ -879,7 +883,8 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     }
 
     // Step 6: "If underlyingSourceDict[\"pull\"] exists, then set pullAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"pull\"] with argument list « controller » and callback this value underlyingSource."
-    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
+    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> =
+        js_engine::boa::context_as_ec(context);
     if let Some(pull_method) =
         extract_source_method(underlying_source_object.as_ref(), "pull", ec_ref)?
     {
@@ -887,7 +892,8 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     }
 
     // Step 7: "If underlyingSourceDict[\"cancel\"] exists, then set cancelAlgorithm to an algorithm which takes an argument reason and returns the result of invoking underlyingSourceDict[\"cancel\"] with argument list « reason » and callback this value underlyingSource."
-    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
+    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> =
+        js_engine::boa::context_as_ec(context);
     if let Some(cancel_method) =
         extract_source_method(underlying_source_object.as_ref(), "cancel", ec_ref)?
     {

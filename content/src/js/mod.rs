@@ -9,13 +9,10 @@ pub(crate) use downcast::{
     with_event_target_mut, with_event_target_ref,
 };
 
-
 /// Content-level type alias for the concrete JS types in use.
 /// This is the **only** place `BoaTypes` is imported.  When we support
 /// a second backend (JSC), changing this one line switches the entire crate.
 pub(crate) type Types = js_engine::boa::BoaTypes;
-
-
 
 /// Convert a `JsResult<T>` into a `Completion<T, crate::js::Types>` by mapping
 /// `JsError` errors to their opaque `JsValue` form via `context`.

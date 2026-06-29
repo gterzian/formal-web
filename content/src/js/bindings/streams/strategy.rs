@@ -188,8 +188,11 @@ fn byte_length_size_function(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    byte_length_size(args.get_or_undefined(0), js_engine::boa::context_as_ec(context))
-        .map_err(JsError::from_opaque)
+    byte_length_size(
+        args.get_or_undefined(0),
+        js_engine::boa::context_as_ec(context),
+    )
+    .map_err(JsError::from_opaque)
 }
 
 fn count_size_function(_: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {

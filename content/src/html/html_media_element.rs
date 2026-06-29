@@ -228,7 +228,10 @@ impl HTMLMediaElement {
     /// are no-ops until promise-based play() and the media element event task source
     /// are implemented.  Step 6 (abort event for NETWORK_LOADING/IDLE) is deferred
     /// to event dispatch.
-    pub(crate) fn media_element_load_algorithm(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
+    pub(crate) fn media_element_load_algorithm(
+        &mut self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) {
         // Step 1: Set this element's is currently stalled to false.
         self.is_currently_stalled = false;
 
@@ -309,7 +312,10 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#resource-selection-algorithm>
-    pub(crate) fn resource_selection_algorithm(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
+    pub(crate) fn resource_selection_algorithm(
+        &mut self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) {
         // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: Set networkState to NETWORK_NO_SOURCE.

@@ -300,7 +300,10 @@ pub(crate) fn create_window_proxy(
 /// Note: This cannot use `Proxy::try_data()` (pub(crate) in upstream Boa)
 /// to extract the target, so it checks whether the object is a Proxy and
 /// falls back to `context.global_object()` for the same-origin case.
-pub(crate) fn resolve_window(value: &JsValue, ec: &mut dyn ExecutionContext<crate::js::Types>) -> JsObject {
+pub(crate) fn resolve_window(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> JsObject {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     if let Some(object) = value.as_object() {

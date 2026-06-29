@@ -13,7 +13,7 @@ use crate::streams::{
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::{create_value_async_iterator, rejected_promise};
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definitions (§3) ──
 
@@ -382,18 +382,12 @@ fn get_locked(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let stream_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-        })?;
-
-        with_readable_stream_ref(&stream_object, |stream: &ReadableStream| {
-            JsValue::from(stream.locked())
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let stream_object = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
+    let stream = stream_object
+        .downcast_ref::<ReadableStream>()
+        .ok_or_else(|| ec.new_type_error("object is not a ReadableStream"))?;
+    Ok(JsValue::from(stream.locked()))
 }
 
 fn cancel_method(

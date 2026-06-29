@@ -359,7 +359,10 @@ impl WritableStreamDefaultWriter {
         }
     }
 
-    fn release(&self, ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types> {
+    fn release(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         // SAFETY: ec is backed by BoaContext repr(transparent) over Context
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 

@@ -13,9 +13,7 @@ use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_context;
 use crate::js::platform_objects::{store_document_object, with_global_scope};
-use crate::js::{
-    install_console_namespace, install_css_namespace, install_document_property,
-};
+use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 use js_engine::boa::BoaContext;
 use js_engine::{EcmascriptHost, ExecutionContext};
@@ -369,9 +367,7 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
         self.engine.call(callable, this_arg, args)
     }
 
-    fn perform_a_microtask_checkpoint(
-        &mut self,
-    ) -> js_engine::Completion<(), crate::js::Types> {
+    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
         self.engine.perform_a_microtask_checkpoint()
     }
 

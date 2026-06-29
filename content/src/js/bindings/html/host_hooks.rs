@@ -63,9 +63,7 @@ impl HostHooks for WindowHostHooks {
 /// Returns a fully-initialized `BoaContext` with all interfaces, prototypes,
 /// and native functions registered.  Access the underlying `Context` via
 /// `engine.context()` for Boa-specific operations not yet abstracted.
-pub(crate) fn build_context(
-    document: Rc<RefCell<BaseDocument>>,
-) -> Result<BoaContext, String> {
+pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<BoaContext, String> {
     let context = build_boa_context(document)?;
     Ok(BoaContext::from_context(context))
 }
@@ -86,9 +84,9 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<crate::js::Types, $ty, _>(
-                js_engine::boa::context_as_engine(&mut context),
-            )
+            register_interface_spec::<crate::js::Types, $ty, _>(js_engine::boa::context_as_engine(
+                &mut context,
+            ))
             .map_err(|error| {
                 error
                     .to_string(&mut context)

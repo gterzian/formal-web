@@ -36,12 +36,9 @@ impl WebIdlInterface<crate::js::Types> for EventTarget {
     fn create_platform_object(
         _new_target: &JsValue,
         _args: &[JsValue],
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
+        _ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> { Ok(EventTarget::default()) })()
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        Ok(EventTarget::default())
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
@@ -153,7 +150,8 @@ fn dispatch_event(
     };
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let target = current_event_target_object(this, ctx);
-    let canceled = dispatch_event_with_context(&target, &event_obj, js_engine::boa::context_as_ec(ctx))?;
+    let canceled =
+        dispatch_event_with_context(&target, &event_obj, js_engine::boa::context_as_ec(ctx))?;
     Ok(JsValue::from(!canceled))
 }
 
@@ -216,9 +214,7 @@ impl js_engine::EcmascriptHost<crate::js::Types> for ContextEventDispatchHost<'_
             .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
     }
 
-    fn perform_a_microtask_checkpoint(
-        &mut self,
-    ) -> js_engine::Completion<(), crate::js::Types> {
+    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
         let _ = self.context.run_jobs();
         Ok(())
     }
@@ -253,8 +249,11 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
     }
 
     fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        create_interface_instance::<crate::js::Types, Event>(event, js_engine::boa::context_as_ec(self.context))
-            .map_err(JsError::from_opaque)
+        create_interface_instance::<crate::js::Types, Event>(
+            event,
+            js_engine::boa::context_as_ec(self.context),
+        )
+        .map_err(JsError::from_opaque)
     }
 
     fn document_object(&mut self) -> JsResult<JsObject> {

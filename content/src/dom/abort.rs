@@ -314,7 +314,8 @@ pub(crate) fn create_abort_signal(
     signal: AbortSignal,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<AbortSignal, crate::js::Types> {
-    let signal_object = create_interface_instance::<crate::js::Types, AbortSignal>(signal.clone(), ec)?;
+    let signal_object =
+        create_interface_instance::<crate::js::Types, AbortSignal>(signal.clone(), ec)?;
     signal.set_reflector(signal_object);
     Ok(signal)
 }

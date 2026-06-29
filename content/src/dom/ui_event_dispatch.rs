@@ -14,7 +14,6 @@ use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::ExecutionContext;
 
-
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
 fn input_debug_enabled() -> bool {
@@ -461,9 +460,7 @@ impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
         self.settings.engine.call(callable, this_arg, args)
     }
 
-    fn perform_a_microtask_checkpoint(
-        &mut self,
-    ) -> js_engine::Completion<(), crate::js::Types> {
+    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
         self.settings.engine.perform_a_microtask_checkpoint()
     }
 

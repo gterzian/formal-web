@@ -520,6 +520,51 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     fn report_error(&mut self, message: &str) {
         error!("unhandled exception: {message}");
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // String Utilities (bridge engine-specific JsString ↔ Rust String)
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Extract a Rust `String` from an engine-native `JsString`.
+    /// Pure operation — does not execute JS code.
+    fn js_string_to_rust_string(&self, s: &T::JsString) -> String;
+
+    /// Convenience: apply ECMA-262 `ToString` then extract as Rust `String`.
+    /// Combines `to_js_string(value).and_then(|s| Ok(js_string_to_rust_string(&s)))`.
+    fn to_rust_string(&mut self, value: T::JsValue) -> Completion<String, T> {
+        let js_string = self.to_js_string(value)?;
+        Ok(self.js_string_to_rust_string(&js_string))
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Array Construction (replaces engine-specific JsArray APIs)
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Create a new, empty JavaScript array.
+    fn create_empty_array(&mut self) -> T::JsObject;
+
+    /// Push a value onto a JavaScript array.
+    ///
+    /// <https://tc39.es/ecma262/#sec-array.prototype.push>
+    fn array_push(&mut self, array: &T::JsObject, value: T::JsValue) -> Completion<(), T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Object Construction (replaces engine-specific ObjectInitializer)
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Create a plain JavaScript object, optionally inheriting from a prototype.
+    fn create_plain_object(&mut self, prototype: Option<&T::JsObject>) -> T::JsObject;
+
+    /// Set a string-keyed property on a JS object.
+    /// Convenience wrapping `set` with a `PropertyKey::String`.
+    fn object_set_property(
+        &mut self,
+        object: T::JsObject,
+        key: &str,
+        value: T::JsValue,
+    ) -> Completion<(), T> {
+        self.set(object, self.property_key_from_str(key), value, false)
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

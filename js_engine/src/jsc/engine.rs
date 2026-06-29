@@ -1125,6 +1125,28 @@ impl ExecutionContext<JscTypes> for JscEngine {
     fn report_error(&mut self, message: &str) {
         log::error!("unhandled exception: {message}");
     }
+
+    // ── String Utilities ─────────────────────────────────────────────
+
+    fn js_string_to_rust_string(&self, _s: &JscString) -> String {
+        todo!("JSC: js_string_to_rust_string")
+    }
+
+    // ── Array Construction ───────────────────────────────────────────
+
+    fn create_empty_array(&mut self) -> JscObject {
+        todo!("JSC: create_empty_array")
+    }
+
+    fn array_push(&mut self, _array: &JscObject, _value: JscValue) -> Completion<(), JscTypes> {
+        todo!("JSC: array_push")
+    }
+
+    // ── Object Construction ──────────────────────────────────────────
+
+    fn create_plain_object(&mut self, _prototype: Option<&JscObject>) -> JscObject {
+        todo!("JSC: create_plain_object")
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
