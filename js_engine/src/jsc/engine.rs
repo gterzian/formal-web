@@ -864,6 +864,23 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
     }
     fn same_value(&self, x: &JscValue, y: &JscValue) -> bool {
+        // JSValueIsStrictEqual implements SameValueZero (+0 and -0 are equal).
+        // SameValue requires +0 ≠ -0.
+        if unsafe { JSValueGetType(self.context.as_context_ref(), x.raw) == JSType::kJSTypeNumber }
+            && unsafe {
+                JSValueGetType(self.context.as_context_ref(), y.raw) == JSType::kJSTypeNumber
+            }
+        {
+            let nx = unsafe {
+                JSValueToNumber(self.context.as_context_ref(), x.raw, std::ptr::null_mut())
+            };
+            let ny = unsafe {
+                JSValueToNumber(self.context.as_context_ref(), y.raw, std::ptr::null_mut())
+            };
+            if nx == 0.0 && ny == 0.0 && nx.to_bits() != ny.to_bits() {
+                return false;
+            }
+        }
         unsafe { JSValueIsStrictEqual(self.context.as_context_ref(), x.raw, y.raw) }
     }
     fn same_value_zero(&self, x: &JscValue, y: &JscValue) -> bool {

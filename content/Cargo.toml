@@ -9,6 +9,7 @@ autobins = false
 default = ["media", "boa"]
 media = []
 boa = []
+jsc = ["js_engine/jsc"]
 
 [lib]
 path = "src/main.rs"
