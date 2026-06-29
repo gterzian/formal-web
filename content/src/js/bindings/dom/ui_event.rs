@@ -1,4 +1,4 @@
-use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue, js_string};
+use boa_engine::{JsArgs, JsResult, JsValue, js_string};
 use std::marker::PhantomData;
 
 use crate::dom::{Event, UIEvent};
@@ -6,7 +6,7 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface
 
 use super::event::init_flag;
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -85,38 +85,21 @@ impl WebIdlInterface<js_engine::boa::BoaTypes> for UIEvent {
 
 // ── Member getters/setters/methods ──
 
-pub(crate) fn with_ui_event_ref<R>(
-    this: &boa_engine::object::JsObject,
-    f: impl FnOnce(&UIEvent) -> R,
-) -> JsResult<R> {
-    let Some(ui_event) = this.downcast_ref::<UIEvent>() else {
-        return Err(JsNativeError::typ()
-            .with_message("receiver is not a UIEvent")
-            .into());
-    };
-    Ok(f(&ui_event))
-}
-
 fn get_view(
     this: &JsValue,
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("UIEvent receiver is not an object")
-        })?;
-        with_ui_event_ref(&object, |ui_event| {
-            ui_event
-                .view_value()
-                .clone()
-                .map(JsValue::from)
-                .unwrap_or_else(JsValue::null)
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("UIEvent receiver is not an object"))?;
+    let ui_event = obj
+        .downcast_ref::<UIEvent>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a UIEvent"))?;
+    Ok(ui_event
+        .view_value()
+        .clone()
+        .map(JsValue::from)
+        .unwrap_or_else(|| ec.value_null()))
 }
 
 fn get_detail(
@@ -124,13 +107,10 @@ fn get_detail(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("UIEvent receiver is not an object")
-        })?;
-        with_ui_event_ref(&object, |ui_event| JsValue::from(ui_event.detail_value()))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("UIEvent receiver is not an object"))?;
+    let ui_event = obj
+        .downcast_ref::<UIEvent>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a UIEvent"))?;
+    Ok(JsValue::from(ui_event.detail_value()))
 }

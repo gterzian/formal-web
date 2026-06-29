@@ -1,12 +1,12 @@
 // ── HTMLInputElement JS bindings ──
 
-use boa_engine::{JsNativeError, JsResult, JsString, JsValue};
+use boa_engine::{JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLInputElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 impl WebIdlInterface<js_engine::boa::BoaTypes> for HTMLInputElement {
     const NAME: &'static str = "HTMLInputElement";
@@ -48,18 +48,12 @@ fn get_value(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        let input = obj
-            .downcast_ref::<HTMLInputElement>()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLInputElement"))?;
-        Ok(JsValue::from(JsString::from(input.value())))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let input = obj
+        .downcast_ref::<HTMLInputElement>()
+        .ok_or_else(|| ec.new_type_error("expected HTMLInputElement"))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&input.value())))
 }
 
 fn focus_method(
@@ -67,16 +61,10 @@ fn focus_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let _obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        // Note: focus() is a no-op — element focus management not yet implemented.
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let _obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    // Note: focus() is a no-op — element focus management not yet implemented.
+    Ok(ec.value_undefined())
 }
 
 fn set_value(

@@ -14,7 +14,7 @@ use crate::js::platform_objects::{
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -403,14 +403,12 @@ fn get_title(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_document(this, |document| {
-            JsValue::from(JsString::from(document.title().as_str()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("document receiver is not an object"))?;
+    let document = obj
+        .downcast_ref::<Document>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a Document"))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(document.title().as_str())))
 }
 
 fn set_title(
@@ -438,14 +436,12 @@ fn get_dir(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_document(this, |document| {
-            JsValue::from(JsString::from(document.dir().as_str()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("document receiver is not an object"))?;
+    let document = obj
+        .downcast_ref::<Document>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a Document"))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(document.dir().as_str())))
 }
 
 fn set_dir(

@@ -16,7 +16,7 @@ use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -210,17 +210,44 @@ pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R)
         .into())
 }
 
+fn try_with_element_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+    f: impl FnOnce(&Element) -> R,
+) -> Completion<R, BoaTypes> {
+    let object = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("element receiver is not an object"))?;
+    if let Some(element) = object.downcast_ref::<Element>() {
+        return Ok(f(&element));
+    }
+    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
+        return Ok(f(&html_element.element));
+    }
+    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
+        return Ok(f(&html_anchor_element.html_element.element));
+    }
+    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
+        return Ok(f(&html_iframe_element.html_element.element));
+    }
+    if let Some(html_input_element) = object.downcast_ref::<HTMLInputElement>() {
+        return Ok(f(&html_input_element.html_element.element));
+    }
+    if let Some(html_media_element) = object.downcast_ref::<HTMLMediaElement>() {
+        return Ok(f(&html_media_element.html_element.element));
+    }
+    if let Some(html_video_element) = object.downcast_ref::<HTMLVideoElement>() {
+        return Ok(f(&html_video_element.media_element.html_element.element));
+    }
+    Err(ec.new_type_error("receiver is not an Element"))
+}
+
 fn get_id(
     this: &JsValue,
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_element_ref(this, |element| JsValue::from(JsString::from(element.id())))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let id = try_with_element_ref(this, ec, |element| element.id())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&id)))
 }
 
 fn get_tag_name(
@@ -228,14 +255,8 @@ fn get_tag_name(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_element_ref(this, |element| {
-            JsValue::from(JsString::from(element.tag_name().as_str()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let name = try_with_element_ref(this, ec, |element| element.tag_name())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(name.as_str())))
 }
 
 fn get_inner_html(
@@ -243,14 +264,8 @@ fn get_inner_html(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_element_ref(this, |element| {
-            JsValue::from(JsString::from(element.inner_html().as_str()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let html = try_with_element_ref(this, ec, |element| element.inner_html())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(html.as_str())))
 }
 
 fn set_inner_html(

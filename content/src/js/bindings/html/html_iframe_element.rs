@@ -6,7 +6,7 @@ use crate::js::with_event_target_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 use crate::webidl::{callback_function_value, nullable_value};
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -172,17 +172,27 @@ fn with_html_iframe_element_mut<R>(
         .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLIFrameElement"))?;
     Ok(f(&mut html_iframe_element))
 }
+
+fn try_with_html_iframe_element_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+    f: impl FnOnce(&HTMLIFrameElement) -> R,
+) -> Completion<R, BoaTypes> {
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
+    let html_iframe_element = obj
+        .downcast_ref::<HTMLIFrameElement>()
+        .ok_or_else(|| ec.new_type_error("receiver is not an HTMLIFrameElement"))?;
+    Ok(f(&html_iframe_element))
+}
+
 fn get_src(
     this: &JsValue,
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.src())))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let src = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.src())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&src)))
 }
 
 fn get_onload(
@@ -190,17 +200,10 @@ fn get_onload(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_iframe_element_ref(this, |iframe| {
-            iframe
-                .onload_value()
-                .map(|callback| callback.to_js_value())
-                .unwrap_or_else(JsValue::null)
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let onload = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.onload_value())?;
+    Ok(onload
+        .map(|callback| callback.to_js_value())
+        .unwrap_or_else(|| ec.value_null()))
 }
 
 fn set_onload(
@@ -248,17 +251,10 @@ fn get_onerror(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_iframe_element_ref(this, |iframe| {
-            iframe
-                .onerror_value()
-                .map(|callback| callback.to_js_value())
-                .unwrap_or_else(JsValue::null)
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let onerror = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.onerror_value())?;
+    Ok(onerror
+        .map(|callback| callback.to_js_value())
+        .unwrap_or_else(|| ec.value_null()))
 }
 
 fn set_onerror(
@@ -324,14 +320,8 @@ fn get_srcdoc(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_iframe_element_ref(this, |iframe| {
-            JsValue::from(JsString::from(iframe.srcdoc()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let srcdoc = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.srcdoc())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&srcdoc)))
 }
 
 fn set_srcdoc(
@@ -357,12 +347,8 @@ fn get_name(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.name())))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let name = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.name())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&name)))
 }
 
 fn set_name(
@@ -388,12 +374,8 @@ fn get_width(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.width())))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let width = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.width())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&width)))
 }
 
 fn set_width(
@@ -419,14 +401,8 @@ fn get_height(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_iframe_element_ref(this, |iframe| {
-            JsValue::from(JsString::from(iframe.height()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let height = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.height())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&height)))
 }
 
 fn set_height(
@@ -452,10 +428,8 @@ fn get_content_document(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> { with_html_iframe_element_ref(this, |_iframe| JsValue::null()) })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let _ = try_with_html_iframe_element_ref(this, ec, |_iframe| ())?;
+    Ok(ec.value_null())
 }
 
 fn get_content_window(
@@ -463,8 +437,6 @@ fn get_content_window(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> { with_html_iframe_element_ref(this, |_iframe| JsValue::null()) })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let _ = try_with_html_iframe_element_ref(this, ec, |_iframe| ())?;
+    Ok(ec.value_null())
 }

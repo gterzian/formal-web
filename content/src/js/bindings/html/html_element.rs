@@ -15,7 +15,7 @@ use crate::html::{
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -126,19 +126,40 @@ fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -
         .into())
 }
 
+fn try_with_html_element_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+    f: impl FnOnce(&HTMLElement) -> R,
+) -> Completion<R, BoaTypes> {
+    let object = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLElement receiver is not an object"))?;
+
+    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
+        return Ok(f(&html_element));
+    }
+
+    if let Some(anchor) = object.downcast_ref::<HTMLAnchorElement>() {
+        return Ok(f(&anchor.html_element));
+    }
+
+    if let Some(input) = object.downcast_ref::<HTMLInputElement>() {
+        return Ok(f(&input.html_element));
+    }
+
+    if let Some(iframe) = object.downcast_ref::<HTMLIFrameElement>() {
+        return Ok(f(&iframe.html_element));
+    }
+
+    Err(ec.new_type_error("receiver is not an HTMLElement"))
+}
+
 fn get_title(
     this: &JsValue,
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_element_ref(this, |html_element| {
-            JsValue::from(JsString::from(html_element.title()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let title = try_with_html_element_ref(this, ec, |html_element| html_element.title())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&title)))
 }
 
 fn set_title(
@@ -164,14 +185,8 @@ fn get_lang(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_element_ref(this, |html_element| {
-            JsValue::from(JsString::from(html_element.lang()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let lang = try_with_html_element_ref(this, ec, |html_element| html_element.lang())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&lang)))
 }
 
 fn set_lang(
@@ -197,14 +212,8 @@ fn get_dir(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_element_ref(this, |html_element| {
-            JsValue::from(JsString::from(html_element.dir()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let dir = try_with_html_element_ref(this, ec, |html_element| html_element.dir())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&dir)))
 }
 
 fn set_dir(
@@ -230,12 +239,8 @@ fn get_hidden(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_element_ref(this, |html_element| JsValue::from(html_element.hidden()))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let hidden = try_with_html_element_ref(this, ec, |html_element| html_element.hidden())?;
+    Ok(ec.value_from_bool(hidden))
 }
 
 fn set_hidden(
@@ -243,14 +248,9 @@ fn set_hidden(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let hidden = args.get_or_undefined(0).to_boolean();
-        with_html_element_ref(this, |html_element| html_element.set_hidden(hidden))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let hidden = args.first().map_or(false, |v| v.to_boolean());
+    try_with_html_element_ref(this, ec, |html_element| html_element.set_hidden(hidden))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_style(

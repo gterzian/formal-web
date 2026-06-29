@@ -352,7 +352,7 @@ part.  Strategy: conditional compilation or a `GcBackend` trait.
 
 ### What's still Boa-concrete
 
-- **Binding function bodies** (~411 sites, down from ~437) use `ec_to_ctx(ec)` to cast back to `&mut Context`.  Key insight: `obj.downcast_ref::<T>()` on `JsObject` does NOT need `Context` — it's `&self`.  Simple getters that downcast + read a field + return via `ec.value_from_*()` need zero bridges.  The conversion pattern proven in `html_media_element.rs` (28→2 `ec_to_ctx` calls).  Remaining bridges are in functions that extract Rust strings from `JsValue` (`to_std_string_escaped`), construct `JsArray`/`ObjectInitializer`, or register `NativeFunction::from_closure`.
+- **Binding function bodies** (207 sites, down from ~437 across 24 files).  Key insight: `obj.downcast_ref::<T>()` on `JsObject` does NOT need `Context` — it's `&self`.  Simple getters that downcast + read a field + return via `ec.value_from_*()` need zero bridges.  The conversion pattern proven in `html_media_element.rs` (28→2 `ec_to_ctx` calls).  Remaining bridges are concentrated in functions that extract Rust strings from `JsValue` (`to_std_string_escaped`), construct `JsArray`/`ObjectInitializer`, or register `NativeFunction::from_closure`.
 - **Domain code** (HTML, WebAssembly, Web IDL) — public APIs take `ec`, internal helpers bridge via `ec_to_ctx`. `safe_passing_of_structured_data.rs` internal helpers and `async_iterable.rs` internal helpers still take `&mut Context` directly (called from entry points via `ec_to_ctx` bridge). Stream-domain, DOM, event dispatch all fully on `ec`.
 - **`Callback`** derives `boa_gc::Trace`/`Finalize` — blocks generic Web IDL callback algorithms.
 - **`EventDispatchHost` trait** has `ec()` instead of `context()`, fixing the engine-type leak. The trait itself is still Boa-concrete (not parameterized over `T`), but this is by design — event dispatch is a DOM concept that doesn't need engine genericity.
@@ -371,24 +371,28 @@ reverse direction. Both will be removed once all helpers and domain code are con
 
 ## Next steps (priority order)
 
-### Step A: Add `get_object_data` / `get_object_data_mut` to `ExecutionContext<T>`
+### Step A: Add `get_object_data` / `get_object_data_mut` to `ExecutionContext<T>` — SUPERSEDED
 
-Add generic platform object data retrieval to the trait.  The Boa
-implementation goes through `NativeDataWrapper` → `downcast_ref` →
-inner `dyn Any` downcast.  The JSC implementation is stubbed.
+The practical conversion uses direct `obj.downcast_ref::<T>()` and
+`obj.downcast_mut::<T>()` on `JsObject` — both are `&self` methods
+that do NOT require `Context`.  This achieves the same goal (zero
+unsafe, zero `ec_to_ctx` for simple getters) without adding a new
+trait method.  The `get_object_data` approach is deferred as an
+optional future clean-up.
 
-This unblocks removing `ec_to_ctx` + `obj.downcast_ref::<T>()` from
-binding function bodies, because `get_object_data` + `new_type_error`
-(already on the trait) are the only two Boa-specific operations in the
-hot path of every binding function.
+### Step B: Convert binding function bodies — IN PROGRESS (~53%)
 
-### Step B: Convert binding function bodies to use `get_object_data` + `new_type_error`
+Replace the `ec_to_ctx` + `JsResult` closure bridge pattern with direct
+downcast + `ec.value_from_*()` + `ec.new_type_error()`.  The conversion
+was validated with `html_media_element.rs` (28→2) and scaled across
+11 other files.
 
 Each binding function today:
 ```rust
 fn get_id(this: &JsValue, _: &[JsValue], ec: &mut dyn ExecutionContext<BoaTypes>)
     -> Completion<JsValue, BoaTypes>
 {
+    let value_undefined = ec.value_undefined();
     let ctx = unsafe { crate::js::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let obj = this.as_object().ok_or_else(|| JsNativeError::typ()...)?;
@@ -406,15 +410,16 @@ fn get_id(this: &BoaTypes::JsValue, _: &[BoaTypes::JsValue], ec: &mut dyn Execut
 {
     let obj = BoaTypes::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let element = ec.get_object_data::<Element>(&obj)
+    let element = obj.downcast_ref::<Element>()
         .ok_or_else(|| ec.new_type_error("expected Element"))?;
     Ok(ec.value_from_string(ec.js_string_from_str(element.id().as_str())))
 }
 ```
 
-No `unsafe`, no `ec_to_ctx`, no closure bridge.  The 437 `ec_to_ctx`
-calls drop to near zero (some remain for `ObjectInitializer`-based
-construction until platform object creation is generic).
+No `unsafe`, no `ec_to_ctx`, no closure bridge for getters/operations that
+only read/write domain data.  Remaining `ec_to_ctx` sites (207 in bindings)
+are concentrated in string-extraction setters, `ObjectInitializer`
+construction, and `NativeFunction::from_closure` registration.
 
 ### Step C: Centralize `context_as_ec` with a `NativeFunction` wrapper
 
@@ -448,11 +453,36 @@ Resume WPT and navigation verification at the next stable checkpoint.
 
 **Current step: Step B — convert binding function bodies.**
 
-### Status: Step A complete. Step B in progress.
+### Status: Step A complete. Step B ~53% complete.
 
-`html_media_element.rs` converted as proof-of-concept: 28→2 `ec_to_ctx`
-calls.  The two remaining are `set_src` and `set_preload` which extract
-Rust strings from `JsValue` (requires `Context::to_std_string_escaped`).
+Binding files: 207 `ec_to_ctx` sites remaining (down from ~437). Domain files: 146 sites.
+Total content crate: ~353 (down from ~583).
+
+11 of 24 binding files already converted:
+- `dom_exception.rs`: 4→1 (create_platform_object still needs ctx for string extraction)
+- `ui_event.rs`: 3→1 (create_platform_object needs ctx)
+- `event.rs`: 15→1 (create_platform_object needs ctx)
+- `html_input_element.rs`: 3→1 (set_value needs ctx for string extraction)
+- `html_element.rs`: 9→4 (string-extraction setters + get_style keep ctx)
+- `html_anchor_element.rs`: 10→6 (string-extraction setters + get_href keep ctx)
+- `html_video_element.rs`: 11→3 (string-extraction setters keep ctx)
+- `node.rs`: 18→12 (tree-traversal getters + mutation ops keep ctx)
+- `document.rs`: 14→12 (most ops need ctx for resolve_element_object)
+- `element.rs`: 21→18 (most ops need ctx for string extraction)
+- `html_iframe_element.rs`: 16→7 (string-extraction setters + event handler setters keep ctx)
+
+Remaining unconverted files: `readablestream.rs` (34), `location.rs` (22),
+`hyperlink_element_utils.rs` (21), `writablestream.rs` (18), `window.rs` (14),
+`abort_signal.rs` (10), `transformstream.rs` (7), `event_target.rs` (5),
+`wasm/interfaces.rs` (3), `strategy.rs` (2), `abort_controller.rs` (2).
+
+Conversion pattern: replace `ec_to_ctx` + `JsResult` closure bridge with
+direct `downcast_ref::<T>()`/`downcast_mut::<T>()` on `JsObject` (both are
+`&self` methods, no `Context` needed) + `ec.value_from_*()` + `ec.new_type_error()`.
+
+Multi-class downcast helpers (e.g. `with_node_ref` mapping through Node, Document,
+Element, HTMLElement, etc.) get a `try_*` Completion-returning counterpart
+that takes `ec: &mut dyn ExecutionContext<BoaTypes>`.
 
 ### Key architectural insight
 

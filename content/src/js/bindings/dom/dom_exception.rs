@@ -1,10 +1,10 @@
-use boa_engine::{JsNativeError, JsResult, JsString, JsValue};
+use boa_engine::{JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::dom::DOMException;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -85,14 +85,12 @@ fn get_name(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_dom_exception_ref(this, |exception| {
-            JsValue::from(JsString::from(exception.name_value()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
+    let exception = obj
+        .downcast_ref::<DOMException>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(exception.name_value())))
 }
 
 fn get_message(
@@ -100,14 +98,12 @@ fn get_message(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_dom_exception_ref(this, |exception| {
-            JsValue::from(JsString::from(exception.message_value()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
+    let exception = obj
+        .downcast_ref::<DOMException>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(exception.message_value())))
 }
 
 fn get_code(
@@ -115,20 +111,10 @@ fn get_code(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_dom_exception_ref(this, |exception| JsValue::from(exception.code_value()))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
-}
-
-fn with_dom_exception_ref<R>(this: &JsValue, f: impl FnOnce(&DOMException) -> R) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("DOMException receiver is not an object")
-    })?;
-    let exception = object
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
+    let exception = obj
         .downcast_ref::<DOMException>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not a DOMException"))?;
-    Ok(f(&exception))
+        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
+    Ok(ec.value_from_number(exception.code_value() as f64))
 }

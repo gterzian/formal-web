@@ -6,7 +6,7 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface
 
 use super::hyperlink_element_utils::document_creation_url;
 use js_engine::boa::BoaTypes;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -105,6 +105,19 @@ fn with_html_anchor_element_ref<R>(
     Ok(f(&html_anchor_element))
 }
 
+fn try_with_html_anchor_element_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+    f: impl FnOnce(&HTMLAnchorElement) -> R,
+) -> Completion<R, BoaTypes> {
+    let obj = BoaTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLAnchorElement receiver is not an object"))?;
+    let html_anchor_element = obj
+        .downcast_ref::<HTMLAnchorElement>()
+        .ok_or_else(|| ec.new_type_error("receiver is not an HTMLAnchorElement"))?;
+    Ok(f(&html_anchor_element))
+}
+
 fn get_href(
     this: &JsValue,
     _: &[JsValue],
@@ -144,14 +157,8 @@ fn get_target(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_anchor_element_ref(this, |anchor| {
-            JsValue::from(JsString::from(anchor.target()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let target = try_with_html_anchor_element_ref(this, ec, |anchor| anchor.target())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&target)))
 }
 
 fn set_target(
@@ -177,14 +184,8 @@ fn get_download(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_anchor_element_ref(this, |anchor| {
-            JsValue::from(JsString::from(anchor.download()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let download = try_with_html_anchor_element_ref(this, ec, |anchor| anchor.download())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&download)))
 }
 
 fn set_download(
@@ -210,12 +211,8 @@ fn get_rel(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_anchor_element_ref(this, |anchor| JsValue::from(JsString::from(anchor.rel())))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let rel = try_with_html_anchor_element_ref(this, ec, |anchor| anchor.rel())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&rel)))
 }
 
 fn set_rel(
@@ -241,14 +238,9 @@ fn get_referrer_policy(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> Completion<JsValue, BoaTypes> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { crate::js::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        with_html_anchor_element_ref(this, |anchor| {
-            JsValue::from(JsString::from(anchor.referrer_policy()))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let referrer_policy =
+        try_with_html_anchor_element_ref(this, ec, |anchor| anchor.referrer_policy())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&referrer_policy)))
 }
 
 fn set_referrer_policy(
