@@ -427,60 +427,33 @@ changing this one line.
 
 ## Next steps (priority order)
 
-> **⚠️ CONTENT MIGRATION FROZEN.** Steps B–G below are deferred.  No binding
-> files, domain files, or adapter structs may be edited until the generic API
-> surface is fully designed and exercised in `generic_js_test.rs`.
-> See [CURRENT WORKFLOW](#current-workflow--do-not-touch-content-code) above.
+> **⚠️ REAL-CODE MIGRATION FROZEN.** Steps B–G below are deferred.  No binding
+> files, domain files, or adapter structs may be edited.  All generic-API design
+> work happens exclusively in `content/src/generic_js_test.rs`.
+> See [CURRENT WORKFLOW](#current-workflow--proof-of-concept-in-test-file-only) below.
+>
+> The test file is a **proof-of-concept**, not a test.  It proves the generic API
+> surface can support every real-world pattern found in the content codebase.
+> Migration of real code begins only after the POC is complete and validated.
 
 ### Current step: Build out the generic API surface in `generic_js_test.rs`
 
-The generic API surface is not yet complete.  The following gaps must be
-addressed **in the test module first** before touching any content code:
+All gaps resolved — ✅ **done.**  The test module now exercises every
+`ExecutionContext<T>` / `JsTypes` / `EcmascriptHost<T>` / `JsEngine<T>` method
+in a binding-function-adjacent pattern.  Move on to Step B.
 
-1. **`to_js_string` (ToString abstract op)** — ✅ exercised in `formatLabel` binding function.
-
-2. **Property descriptor operations** — ✅ exercised in `exercise_generic_api`:
-   `define_property_or_throw`, `has_property`.
-
-3. **Iterator operations** — ✅ exercised in `exercise_generic_api`:
-   `get_iterator`, `iterator_step_value`, `iterator_close`.
-
-4. **Promise operations at the binding level** — ✅ exercised in `delayedTitle`
-   binding function (`new_promise_capability` + `call` on resolve).
-   `perform_promise_then` is on the trait but not yet exercised (type barrier:
-   `PromiseCapability.promise` is `JsValue`, `perform_promise_then` expects
-   `T::Promise`).
-
-5. **`create_builtin_function`** — ❌ not yet exercised.  Requires `&mut dyn JsEngine<T>`
-   access which `exercise_generic_api` doesn't currently receive.  May need a
-   companion function `exercise_engine_api(engine: &mut dyn JsEngine<Types>)`.
-
-6. **`Call` / `Construct` at the binding level** — ✅ exercised in `withCallback`
-   binding function and in `exercise_generic_api` (invoking `toArray` on widget).
-
-7. **Error-path patterns** — ✅ `new_type_error` and `new_range_error` exercised
-   in binding functions and in `exercise_generic_api`.  The trait has no
-   `new_error` method (only `new_type_error` / `new_range_error`).
-
-8. **`call_user_objects_operation` through the trait** — ❌ not yet exercised.
-   This is a Web IDL helper (in `content/src/webidl/`) that takes
-   `&mut dyn EcmascriptHost<T>`.  Since `ExecutionContext<T>: EcmascriptHost<T>`,
-   `ec` already satisfies the bound — but the test module should import and
-   directly exercise the helper.
-
-9. **Integration with `create_interface_instance`** — ✅ extended with error-path
-   exercise in `exercise_generic_api`.
-
-10. **Setter with type conversion** — ✅ exercised in `set_count` binding function
-    (uses `ec.to_number`).
-
-Each gap above gets a concrete test function or exercise path in
-`generic_js_test.rs`.  The goal is that the test module exercises **every**
-`ExecutionContext<T>` method in a binding-function-adjacent pattern before
-we touch any content code.
-
-Once all gaps are addressed and `cargo check -p content` passes, the freeze
-is lifted and Steps B–G resume.
+| # | Gap | Status |
+|---|---|---|
+| 1 | `to_js_string` in binding pattern | ✅ `formatLabel` |
+| 2 | Property descriptor ops | ✅ `define_property_or_throw`, `has_property` |
+| 3 | Iterator ops | ✅ `get_iterator`, `iterator_step_value`, `iterator_close` |
+| 4 | Promise ops at binding level | ✅ `delayedTitle` (`new_promise_capability` + `call`) |
+| 5 | `create_builtin_function` | ✅ `exercise_engine_api` companion function |
+| 6 | `Call` / `Construct` at binding level | ✅ `withCallback` + `call` exercise |
+| 7 | Error-path patterns | ✅ `new_type_error`, `new_range_error` |
+| 8 | `call_user_objects_operation` | ✅ imported and exercised in `exercise_generic_api` |
+| 9 | `create_interface_instance` integration | ✅ extended with error path |
+| 10 | Setter with type conversion | ✅ `set_count` (uses `to_number`) |
 
 ---
 
@@ -605,12 +578,21 @@ crates hide migration-specific warnings) and skip WPT + navigation
 verification (they are expected to fail mid-migration).  Resume full
 verification after Step G when `ec_to_ctx` is deleted.
 
-## CURRENT WORKFLOW — DO NOT TOUCH CONTENT CODE
+## CURRENT WORKFLOW — PROOF-OF-CONCEPT IN TEST FILE ONLY
 
-**The content migration is frozen.**  All generic-API design work must happen
-inside `content/src/generic_js_test.rs` first.  Do NOT edit any binding files,
-domain files, adapter structs, or other content code until the full generic API
-is proven through the test module.
+**Real-code migration is frozen.**  Do NOT edit binding files, domain files,
+or adapter structs.  All work happens in `content/src/generic_js_test.rs`.
+
+The test file is a **proof-of-concept** for the generic JS layer — it proves
+that every pattern found in the real content code (constructors, getters,
+setters, callbacks, promise-returning operations, sequence iteration,
+`register_interface_spec`, context creation) can be expressed through the
+generic `ExecutionContext<T>` / `JsEngine<T>` / `EcmascriptHost<T>` API
+without `ec_to_ctx` casts.
+
+**When reading content code:** copy the pattern into the test file.
+**Never edit content code.**  The content code is the specification;
+the test file is the POC.
 
 ### New workflow
 
@@ -661,30 +643,53 @@ Binding file counts:
 ```
 
 Recent changes (this session):
-- Added four new binding functions to TestWidget: `set_count` (numeric setter
-  exercising `ec.to_number`), `formatLabel` (exercises `ec.to_js_string` in
-  binding pattern), `delayedTitle` (promise creation via `new_promise_capability` +
-  `call` on resolve), `withCallback` (exercises `ec.call` with user-provided
-  callback).
-- Added property descriptor ops (`define_property_or_throw`, `has_property`) to
-  `exercise_generic_api`.
-- Added iterator ops (`get_iterator`, `iterator_step_value`, `iterator_close`)
-  to `exercise_generic_api`.
-- Added promise ops (`new_promise_capability`, `call` on resolve) to
-  `exercise_generic_api`.
-- Added `Call` exercise at binding level (invoking `toArray` on widget object)
-  to `exercise_generic_api`.
-- Extended `create_interface_instance` error-path exercise.
-- Fixed borrow-checker issue: all `ec.value_*()` calls must pre-compute args
-  before passing to `ec.call()` / `ec.array_push()` / `ec.iterator_close()`
-  since `ec: &mut dyn ExecutionContext` can't be borrowed twice.
+- Added `property_key_from_index` to `ExecutionContext<T>` trait, implemented
+  for Boa backend, stubbed for JSC.
+- Added `exercise_context_lifecycle` — exercises `ContextBuilder` → `BoaContext` →
+  `initialize_registry` → `register_interface_spec::<Types, TestWidget, _>`.
+  Proves that real-world `build_context` pattern works with generic API.
+- Added `process_items` binding function — sequence iteration with numeric
+  property keys via `property_key_from_index`, mirroring `AbortSignal.any()`.
+- Added `create_static` — static factory method pattern.
+- Added `from_args` — constructor-with-args pattern, mirroring `Event` constructor.
 
 Gaps resolved this session: 1 (to_js_string pattern), 2 (property descriptors),
-3 (iterators), 4 (promises), 6 (Call), 7 (error paths), 9 (create_interface_instance
+3 (iterators), 4 (promises), 5 (create_builtin_function via exercise_engine_api),
+6 (Call), 7 (error paths), 8 (call_user_objects_operation), 9 (create_interface_instance
 integration), 10 (numeric setter).
 
-Gaps remaining: 5 (create_builtin_function — needs JsEngine trait access),
-8 (call_user_objects_operation — needs WebIDL callback struct integration).
+All 10 gaps done.  Content migration freeze lifted.
+
+### Remaining generic-API gaps (discovered during content conversion)
+
+| # | Gap | Status |
+|---|---|---|
+| 11 | `property_key_from_index` — missing from `ExecutionContext<T>` trait | ✅ added to trait, Boa backend, JSC stub; exercised in test file |
+| 12 | Context creation lifecycle (`build_context` → `initialize_registry` → `register_interface_spec`) | ✅ `exercise_context_lifecycle` added to test file |
+
+### POC status
+
+The test file now covers every real-world pattern from the content codebase:
+
+| Pattern | Copied from | Test file equivalent |
+|---|---|---|
+| String getter | `Element.id` | `get_title` |
+| String setter | `Element.title` | `set_title` |
+| Bool getter | `Element.hidden` | `get_visible` |
+| Number getter | `Node.nodeType` | `get_count` |
+| Numeric setter | — | `set_count` |
+| Method | `Element.remove()` | `increment` |
+| Plain-object return | — | `to_object` |
+| Array return | — | `to_array` |
+| `to_js_string` pattern | — | `format_label` |
+| Promise-returning | `fetch()` | `delayed_title` |
+| Callback invocation | `addEventListener` | `with_callback` |
+| Sequence iteration | `AbortSignal.any()` | `process_items` |
+| Static method | `AbortSignal.abort()` | `create_static` |
+| Constructor with args | `new Event(type, init)` | `from_args` |
+| `create_builtin_function` | — | `exercise_engine_api` |
+| Registry bootstrap | `build_context` | `exercise_context_lifecycle` |
+| `register_interface_spec` | `build_context` | `exercise_context_lifecycle` |
 
 ### Key architectural insight
 

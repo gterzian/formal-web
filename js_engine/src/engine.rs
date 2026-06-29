@@ -480,6 +480,11 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// prototype objects.
     fn property_key_from_str(&self, s: &str) -> T::PropertyKey;
 
+    /// Create a numeric `PropertyKey` from a `u32` index.
+    /// Used for array-index access in binding functions (e.g. iterating
+    /// a sequence by numeric index).
+    fn property_key_from_index(&self, index: u32) -> T::PropertyKey;
+
     // ────────────────────────────────────────────────────────────────────────
     // Host-Defined Data Store (analogous to boa_engine::Context::get_data/insert_data)
     // ────────────────────────────────────────────────────────────────────────

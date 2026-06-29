@@ -1039,6 +1039,13 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         PropertyKey::from(boa_engine::js_string!(s))
     }
 
+    fn property_key_from_index(&self, index: u32) -> PropertyKey {
+        PropertyKey::Index(
+            boa_engine::property::NonMaxU32::new(index)
+                .expect("property_key_from_index: index exceeds NonMaxU32 range"),
+        )
+    }
+
     // ── Host-Defined Data Store ───────────────────────────────────────────
 
     // ── Error Reporting ──────────────────────────────────────────────────

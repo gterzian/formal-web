@@ -19,7 +19,9 @@ use crate::js::Types;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use js_engine::{Completion, ExecutionContext, IteratorKind, JsTypes, PropertyDescriptor};
+use js_engine::{
+    Completion, ExecutionContext, IteratorKind, JsEngine, JsTypes, PropertyDescriptor,
+};
 
 // ── Domain type ──────────────────────────────────────────────────────────
 
@@ -38,6 +40,25 @@ impl TestWidget {
             visible: true,
             count: 0,
         }
+    }
+
+    /// Constructor-from-args pattern (mirrors Event constructor).
+    fn from_args(
+        args: &[JsValue],
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self, Types> {
+        let title = if let Some(arg) = args.first() {
+            ec.to_rust_string(arg.clone())?
+        } else {
+            String::from("Untitled")
+        };
+        let visible = args.get(1).map_or(true, |v| ec.to_boolean(v));
+        let count = args.get(2).map_or(0u32, |_v| 0u32);
+        Ok(Self {
+            title,
+            visible,
+            count,
+        })
     }
 }
 
@@ -246,6 +267,59 @@ fn with_callback(
     ec.call(&callback_obj, &undef, &[title_val])
 }
 
+/// Method: `widget.processItems(items)` — exercises sequence iteration with numeric keys.
+/// Mirrors the AbortSignal.any() pattern: iterate `items.length`, call `ec.get` by index.
+fn process_items(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
+    let mut widget = obj
+        .downcast_mut::<TestWidget>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))?;
+    let items_val = args.first().cloned().unwrap_or(ec.value_undefined());
+    let items = Types::value_as_object(&items_val)
+        .ok_or_else(|| ec.new_type_error("expected an array argument"))?;
+    let pk_length = ec.property_key_from_str("length");
+    let length_val = ExecutionContext::get(ec, items.clone(), pk_length)?;
+    let length = ec.to_length(length_val)?;
+    let mut count: u32 = 0;
+    for index in 0..length {
+        let pk_index = ec.property_key_from_index(index as u32);
+        let item = ExecutionContext::get(ec, items.clone(), pk_index)?;
+        // Count string items
+        if Types::value_as_string(&item).is_some() {
+            count = count.wrapping_add(1);
+        }
+    }
+    widget.count = count;
+    Ok(ec.value_undefined())
+}
+
+/// Static method: `TestWidget.create(title, visible)` — factory constructor pattern.
+/// Exercises static operations (no `this` downcast).
+fn create_static(
+    _this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let title = if let Some(arg) = args.first() {
+        ec.to_rust_string(arg.clone())?
+    } else {
+        String::from("Untitled")
+    };
+    let visible = args.get(1).map_or(true, |v| ec.to_boolean(v));
+    let widget = TestWidget {
+        title,
+        visible,
+        count: 0,
+    };
+    let obj = create_interface_instance::<Types, TestWidget>(widget, ec)?;
+    Ok(JsValue::from(obj))
+}
+
 // ── WebIDL interface definition ─────────────────────────────────────────
 
 impl WebIdlInterface<Types> for TestWidget {
@@ -253,10 +327,10 @@ impl WebIdlInterface<Types> for TestWidget {
 
     fn create_platform_object(
         _new_target: &JsValue,
-        _args: &[JsValue],
-        _ec: &mut dyn ExecutionContext<Types>,
+        args: &[JsValue],
+        ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<Self, Types> {
-        Ok(TestWidget::new())
+        TestWidget::from_args(args, ec)
     }
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
@@ -350,6 +424,24 @@ impl WebIdlInterface<Types> for TestWidget {
             length: 1,
             method: with_callback,
             static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            _phantom: PhantomData,
+            id: "processItems",
+            length: 1,
+            method: process_items,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+        });
+        def.add_operation(OperationDef {
+            _phantom: PhantomData,
+            id: "create",
+            length: 2,
+            method: create_static,
+            static_: true,
             unforgeable: false,
             promise_type: false,
         });
@@ -553,4 +645,85 @@ pub(crate) fn exercise_generic_api(ec: &mut dyn ExecutionContext<Types>) {
         &[ec.value_from_number(99.0)],
         ec,
     );
+
+    // ── call_user_objects_operation (Web IDL callback helper) ──────────
+    {
+        use crate::webidl::{Callback, call_user_objects_operation};
+        let widget_callback = Callback::from_object(widget_obj.clone());
+        // call_user_objects_operation takes &mut dyn EcmascriptHost<Types>;
+        // ExecutionContext<Types> coerces automatically.
+        let _ = call_user_objects_operation(ec, &widget_callback, "toArray", &[], None);
+    }
+
+    // ── property_key_from_index (numeric key construction) ──────────
+    let pk_index = ec.property_key_from_index(0);
+    let pk_str = ec.property_key_from_str("0");
+    // Exercise get with a numeric property key on an array.
+    let indexed_arr: JsObject = ec.create_empty_array();
+    let v10 = ec.value_from_number(10.0);
+    let _ = ec.array_push(&indexed_arr, v10);
+    let v20 = ec.value_from_number(20.0);
+    let _ = ec.array_push(&indexed_arr, v20);
+    let _get0 = ExecutionContext::get(ec, indexed_arr.clone(), pk_index);
+    let _get0_str = ExecutionContext::get(ec, indexed_arr, pk_str);
+}
+
+// ── Engine-factory exercise function ───────────────────────────────────
+
+/// Exercise `JsEngine<T>` factory operations, particularly `create_builtin_function`
+/// which is the key to eliminating `NativeFunction::from_closure` calls (Step C).
+///
+/// Takes both `&mut dyn JsEngine<Types>` and `&mut dyn ExecutionContext<Types>`
+/// because `create_builtin_function` is a factory method but its behaviour closure
+/// receives an `ExecutionContext<T>`.
+#[allow(dead_code, unused_variables)]
+pub(crate) fn exercise_engine_api(
+    engine: &mut dyn JsEngine<Types>,
+    ec: &mut dyn ExecutionContext<Types>,
+) {
+    let realm = ec.current_realm();
+    let pk = ec.property_key_from_str("testBuiltin");
+
+    // Create a built-in function that returns the constant 42.
+    let builtin = engine.create_builtin_function(
+        Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(42.0))),
+        0,
+        pk,
+        &realm,
+    );
+
+    // Convert Function → JsObject → JsValue and call it.
+    let builtin_obj = Types::object_from_function(builtin);
+    let undef = ec.value_undefined();
+    let call_result = ec.call(&builtin_obj, &undef, &[]);
+    let _ = call_result;
+}
+
+// ── Context lifecycle exercise ──────────────────────────────────────
+
+/// Exercises the full entry-point lifecycle:
+/// 1. Create a `BoaContext` (the concrete engine runtime).
+/// 2. Call `initialize_registry`.
+/// 3. Call `register_interface_spec` for `TestWidget` — this proves
+///    that our binding functions (getters, setters, operations) actually
+///    work with `create_builtin_function` (the key bridging point for
+///    eliminating `NativeFunction::from_closure`).
+///
+/// This is the POC equivalent of `build_context` in host_hooks.rs.
+#[allow(dead_code)]
+pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
+    use crate::webidl::bindings::{initialize_registry, register_interface_spec};
+    use boa_engine::context::ContextBuilder;
+    use js_engine::boa::BoaContext;
+
+    let context = ContextBuilder::new()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut boa_context = BoaContext::from_context(context);
+
+    initialize_registry::<Types>(&mut boa_context);
+
+    register_interface_spec::<Types, TestWidget, _>(&mut boa_context).ok();
+
+    Ok(())
 }

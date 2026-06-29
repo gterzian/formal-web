@@ -1121,6 +1121,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         JscPropertyKey::String(JscString::from_rust(s))
     }
 
+    fn property_key_from_index(&self, _index: u32) -> JscPropertyKey {
+        todo!("JSC: property_key_from_index")
+    }
+
     // ── Error Reporting ──────────────────────────────────────────────────
     fn report_error(&mut self, message: &str) {
         log::error!("unhandled exception: {message}");
