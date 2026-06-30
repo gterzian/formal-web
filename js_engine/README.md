@@ -406,16 +406,16 @@ expressed through the generic API with zero structural `#[cfg]`.
 
 ### Remaining phases
 
-| # | Phase | Effort | Blocks |
-|---|---|---|---|
-| **A. GC derive conversion** | Replace `#[derive(boa_gc::Trace, Finalize, JsData)]` on 33 domain types + `Callback<T>` with `impl_gc_traits!` | Small — mechanical search/replace per file | Nothing |
-| **B. Binding body conversion** | Replace ~198 `ec_to_ctx` casts with direct `ec.*()` trait calls in 24 binding files. Each getter/setter is a 1:1 mechanical replacement per the table above. Remaining `ec_to_ctx` concentrated in `NativeFunction::from_closure` sites. | Medium — ~150 simple conversions, ~48 complex | Nothing |
-| **C. NativeFunction bridging** | Add a `native_fn_wrapper` helper in `js_engine/src/boa/engine.rs` that centralizes the `context_as_ec` cast at `NativeFunction::from_closure` sites. Then replace all ~200 scattered calls. | Medium — design the wrapper once, then mechanical replacement | Nothing |
+| # | Phase | Effort | Blocks | Status |
+|---|---|---|---|---|
+| **A. GC derive conversion** | Replace `#[derive(boa_gc::Trace, Finalize, JsData)]` on 33 domain types + `Callback<T>` with `impl_gc_traits!` | Small — mechanical search/replace per file | Nothing | ✅ DONE — 34 types converted |
+| **B. Binding body conversion** | Replace ~187 `ec_to_ctx` casts across 20 binding files. ~91 are simple getter/setter patterns; ~96 are complex (depend on shared Boa helpers like `object_for_existing_node`). | Medium — requires EC wrapper helpers first | A | 🔶 4/24 files done, strategy validated |
+| **C. NativeFunction bridging** | Add a `native_fn_wrapper` helper in `js_engine/src/boa/engine.rs` that centralizes the `context_as_ec` cast at `NativeFunction::from_closure` sites. Then replace all ~200 scattered calls. | Medium — design the wrapper once, then mechanical replacement | B (remaining complex sites) |
 | **D. Remove remaining adapters** | Two `ContextEventDispatchHost` adapters in `writablestreamdefaultcontroller.rs` and `event_target.rs`. | Small — two files | Nothing |
-| **E. Conditional Types alias** | Make `content/src/js/mod.rs` switch `Types` between `BoaTypes` and `JscTypes` via `#[cfg]`. Gate all Boa-specific APIs (`Context::eval`, `with_global_scope`, `NativeFunction`, `ObjectInitializer`) behind `#[cfg(feature = "boa")]`. Add JSC equivalents where needed. | Large — touches most files | A, B, C, D |
-| **F. Generic EnvironmentSettingsObject** | `EnvironmentSettingsObject` currently owns `BoaContext`. Blockers: (1) callers use `Context::eval` directly instead of `JsEngine::evaluate_script`; (2) `with_global_scope` for GC heap traversal; (3) `value.to_json` for JSON serialization; (4) `register_global_property`. Items 1 and 4 can move into `build_context`; items 2 and 3 need new `ExecutionContext<T>` trait methods. | Medium — 4 specific blockers to resolve | E |
-| **G. Delete ec_to_ctx** | Once binding bodies, domain code, initialization, and adapters all use the trait directly, `ec_to_ctx`, `context_as_ec`, `context_as_engine` can be deleted from `js_engine/src/boa/engine.rs`. This is the finish line: zero engine-specific code outside the backends. | Small — delete three functions + their call sites | F |
-| **H. JSC content tests** | Enable the 5 `#[ignore]` tests by: fixing `get_iterator` JSC impl, fixing `create_builtin_function` JSC impl, verifying `SharedArrayBuffer` availability, and re-testing `store_callback_then_flush_microtasks` (the SIGSEGV may be fixed by the generic `create_root` path). | Medium — specific JSC engine work | E |
+| **E. Conditional Types alias** | Make `content/src/js/mod.rs` switch `Types` between `BoaTypes` and `JscTypes` via `#[cfg]`. Gate all Boa-specific APIs behind `#[cfg(feature = "boa")]`. | Large — touches most files | A, B, C, D |
+| **F. Generic EnvironmentSettingsObject** | 4 specific blockers in EDS. | Medium | E |
+| **G. Delete ec_to_ctx** | Delete three functions + their call sites. | Small | F |
+| **H. JSC content tests** | Enable 5 `#[ignore]` tests. | Medium | E |
 
 ### Dependency order
 
@@ -439,35 +439,46 @@ To keep pi sessions cache-efficient (context stays focused, avoids bloat):
 
 | Session | Phases | Why together |
 |---|---|---|
-| **1. GC + simple bindings** | A, B (simple getter/setter files first) | A is mechanical `impl_gc_traits!` across 33 files. B's simple conversions (~150 sites) use the same reference table and the same POC test file as a template. Shared context: the conversion table, `with_object_any`/`with_ref` patterns, `ec.value_from_*` API. |
-| **2. Complex bindings + NativeFunction** | B (remaining ~48 complex sites), C | The complex `ec_to_ctx` sites are concentrated in `NativeFunction::from_closure` closures — exactly what Phase C addresses. Finishing B's tail naturally leads into designing the `native_fn_wrapper`. Shared context: the remaining `ec_to_ctx` call patterns, the Boa backend internals. |
-| **3. Adapters + cleanup** | D, then audit A–D completeness | Two small adapter files, then a final sweep to confirm zero Boa-specific code outside `#[cfg(feature = "boa")]` gates. Shared context: the adapter pattern, the full list of remaining Boa imports. |
-| **4. Conditional Types** | E | Fresh session — fundamentally different work: adding `#[cfg]` gates across the entire crate, making `Types` conditional, adding JSC equivalents. Touches most files. Needs the full codebase in context. |
-| **5. Generic EDS + delete ec_to_ctx** | F, G | F is focused on `EnvironmentSettingsObject` — 4 specific blockers, all in one subsystem. G is the ceremonial deletion of `ec_to_ctx` once nothing uses it. Shared context: EDS internals, the trait method gaps. |
-| **6. JSC tests** | H | Fresh session — JSC engine internals, C API debugging. Unrelated to the Rust generics work. |
+| **1. GC derives** | A | ✅ DONE this session. 34 platform types converted across 27 files. |
+| **2. EC wrappers + simple bindings** | Add `_ec` wrappers in `platform_objects.rs`, then convert DOM bindings (node, document, element, event_target, abort_signal, abort_controller — ~62 ec_to_ctx) | The wrappers are the enabler for all DOM bindings. Once they exist, the binding files collapse to the same mechanical pattern. Shared context: the wrapper signatures, `try_with_*` helpers, the conversion table. |
+| **3. HTML + Streams bindings + NativeFunction** | Convert remaining binding files (html_anchor, html_iframe, html_video, html_media_element, wasm, streams — ~96 ec_to_ctx), then Phase C (NativeFunction bridging) | The remaining complex sites (`get_style`, `signal_abort_with_context`) need Phase C. Finishing B's tail leads directly into designing the `native_fn_wrapper`. |
+| **4. Adapters + conditional Types** | D + E | Two small adapter files, then the large Phase E (cfg gates everywhere). Fresh context for the fundamental shift. |
+| **5. Generic EDS + delete ec_to_ctx** | F, G | Focused on `EnvironmentSettingsObject`. G is the ceremonial deletion. |
+| **6. JSC tests** | H | Fresh session — JSC engine internals. |
 
-Sessions 1–3 share a common reference (the POC test file, the conversion table)
-and can run sequentially in the same session if context size permits.
-They're split above as a safety boundary — the agent can decide at runtime
-based on how much file state has accumulated.
+### Current state: what's been done, what remains
 
-### Current state: what's still Boa-concrete
+**Phase A — DONE.** 34 platform object types (DOM, HTML, Streams, WebIDL)
+converted from `#[derive(..., Trace, Finalize, JsData)]` to
+`js_engine::impl_gc_traits!`.  ~50 internal types (enums/structs without
+`JsData`) remain unconverted — these are lower priority.
 
-**Binding function bodies** (~198 `ec_to_ctx` sites across 24 files, down from ~437).
-Each one bridges `dyn ExecutionContext` back to `&mut Context` for Boa APIs not yet
-covered by the trait.  Simple getters/setters already have trait equivalents.
+**Phase B — IN PROGRESS.** 4 binding files converted (dom_exception, event,
+ui_event, html_input_element).  ~187 `ec_to_ctx` sites remain across 20
+binding files.
 
-**33 domain type structs** derive `boa_gc::Trace`/`Finalize`/`JsData` directly.
-These need conversion to `impl_gc_traits!` (Phase A).  `Callback<T>` in
-`content/src/webidl/callback.rs` similarly derives Boa GC traits.
+Key discovery: binding files depend on shared helpers (`with_node_ref`,
+`object_for_existing_node`, `document_object`, `invalidate_cached_node_ids`,
+etc.) that return `JsResult` and take `&mut Context`.  Converting a binding
+file requires converting its helpers first, or wrapping them with EC-taking
+versions that bridge through `ec_to_ctx` internally.
 
-**`EnvironmentSettingsObject`** owns `BoaContext` directly (Phase F).
+### Phase B strategy (proven, ready to execute)
 
-**`content/src/js/mod.rs`** hardcodes `type Types = BoaTypes` (Phase E).
-
-**Three conversion helpers** (`js_result_to_completion`, `completion_to_js_result`,
-`native_error_to_js_value`) bridge `JsResult` ↔ `Completion`.  These are temporary
-and will be removed once no code returns `JsResult`.
+1. Add `_ec` wrapper variants of every shared helper in
+   `content/src/js/platform_objects.rs`.  Each wrapper takes
+   `&mut dyn ExecutionContext<Types>`, returns `Completion<T, Types>`,
+   and internally calls `ec_to_ctx` + the old `JsResult` helper.
+2. With wrappers in place, each binding file becomes a mechanical
+   conversion: `with_node_ref` → `try_with_node_ref` (already exists),
+   `object_for_existing_node(ctx)?.into()` →
+   `Types::value_from_object(object_for_existing_node_ec(ec)?)`,
+   `value.to_string(ctx)?.to_std_string_escaped()` → `ec.to_rust_string(v)?`.
+3. Functions that still need `ctx` for unconverted helpers (e.g. `appendable_node`)
+   keep `let ctx = unsafe { ec_to_ctx(ec) };` but drop the
+   `(|| -> JsResult<...> { ... })()...map_err(...)` bridge — just unwrap the
+   body and add explicit `.map_err(|e| e.into_opaque(ctx).unwrap_or(...))?`
+   at each `JsResult`-returning call.
 
 ### POC test file — reference implementation
 

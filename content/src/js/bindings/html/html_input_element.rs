@@ -1,6 +1,6 @@
 // ── HTMLInputElement JS bindings ──
 
-use boa_engine::{JsNativeError, JsResult, JsValue};
+use boa_engine::JsValue;
 use std::marker::PhantomData;
 
 use crate::html::HTMLInputElement;
@@ -72,23 +72,16 @@ fn set_value(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        let input = obj
-            .downcast_ref::<HTMLInputElement>()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLInputElement"))?;
-        let value = args
-            .first()
-            .map(|v| v.to_string(ctx))
-            .transpose()?
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        input.set_value(&value);
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let input = obj
+        .downcast_ref::<HTMLInputElement>()
+        .ok_or_else(|| ec.new_type_error("expected HTMLInputElement"))?;
+    let value = if let Some(v) = args.first() {
+        ec.to_rust_string(v.clone())?
+    } else {
+        String::default()
+    };
+    input.set_value(&value);
+    Ok(ec.value_undefined())
 }
