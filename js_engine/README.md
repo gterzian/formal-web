@@ -409,7 +409,7 @@ expressed through the generic API with zero structural `#[cfg]`.
 | # | Phase | Effort | Status |
 |---|---|---|---|
 | **A. GC derive conversion** | Replace Boa derives with `impl_gc_traits!` on 34 types | Small | ✅ DONE |
-| **B. Binding body conversion** | Replace ~187 `ec_to_ctx` across 20 binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~65% done (15/24 files, all headers + ~60% of bodies converted). Shared generic helpers in `downcast.rs` and `platform_objects.rs` ready. ~90 ec_to_ctx remain across 17 files — most are complex (need Boa Context) or document-scope (no generic equivalent yet). |
+| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~70% done. 49 ec_to_ctx eliminated this session (document.rs 18→5, element.rs 18→12, node.rs 14→4, hyperlink_element_utils.rs 21→3, html_anchor_element.rs 2→0). ~134 remain — most blocked on missing trait methods, not mechanical conversion. |
 | **C. NativeFunction bridging** | Add a `native_fn_wrapper` helper, replace ~200 scattered `context_as_ec` casts | Medium | Not started |
 | **D. Remove remaining adapters** | Two `ContextEventDispatchHost` adapters in `writablestreamdefaultcontroller.rs` and `event_target.rs` | Small | Not started |
 | **E. Conditional Types alias** | Switch `Types` between `BoaTypes`/`JscTypes` via `#[cfg]` | Large | Blocked on B, C, D |
@@ -421,7 +421,7 @@ expressed through the generic API with zero structural `#[cfg]`.
 
 ```
 A (GC derives) ─┐ ✅
-B (binding bodies) ─┤ 🔶 ~65%
+B (binding bodies) ─┤ 🔶 ~70%
 C (NativeFunction) ─┤ ⬜
 D (remaining adapters) ─┤ ⬜
                         ├──► E (conditional Types) ──► F (generic EDS) ──► G (delete ec_to_ctx)
@@ -435,39 +435,53 @@ Phases F and H depend on E.
 
 ### Next session plan
 
-| Session | What | Details |
+**⚠️ Before converting any more binding files: add missing trait methods and
+validate them in `generic_js_test.rs` first.**  The test file must cover every
+generic pattern before it can be applied to production code.  Several
+remaining `ec_to_ctx` calls are blocked on Boa APIs that have no generic
+equivalent yet — not on mechanical conversion work.
+
+| Step | What | Details |
 |---|---|---|
-| **Finish B: DOM bindings** | Convert remaining `document.rs`, `element.rs` functions (~20 ec_to_ctx) | Pattern proven — mechanical: replace `with_document`/`with_element` bridges with `try_with_*` helpers + `_ec` wrappers |
-| **Finish B: remaining binding files** | `hyperlink_element_utils.rs`, `location.rs`, `window.rs`, `strategy.rs`, `wasm/` (~60 ec_to_ctx) | Same mechanical pattern; some need `_ec` wrappers from `platform_objects.rs` |
-| **Streams bindings** | `readablestream.rs`, `transformstream.rs`, `writablestream.rs` (~58 ec_to_ctx) | Heaviest files; most ec_to_ctx are `context_as_ec` calls to domain methods — need care with borrow semantics |
-| **C: NativeFunction bridging** | Design `native_fn_wrapper`, apply to ~200 sites | Unblocks the remaining complex binding functions (`get_style`, `set_onload`, timeout callbacks, etc.) |
-| **D: Remove adapters** | Two `ContextEventDispatchHost` instances | Mechanical — replace with trait methods |
-| **E: Conditional Types** | `#[cfg]` gate all Boa imports | Large mechanical change; do in a fresh session |
+| **B1. Add `new_syntax_error` to trait** | `ExecutionContext::new_syntax_error(&str) -> JsValue` | Same pattern as `new_type_error` / `new_range_error`. Unblocks ~9 ec_to_ctx in `document.rs` + `element.rs`. Validate in test file, implement for Boa + JSC. |
+| **B2. Refactor DOMException helpers** | `dom_exception_error`, `map_location_value`, `map_location_result` in `location.rs` take `&mut Context` but `create_interface_instance` already takes `ec`. Refactor them to take `ec` directly, add `entry_settings_object_ec` wrapper + `try_with_location_ref` helper. | Unblocks all 22 ec_to_ctx in `location.rs`. Pattern already validated (create_interface_instance + value_from_object). |
+| **B3. Convert remaining binding files** | After B1+B2 unblock SyntaxError + DOMException: convert the remaining simple getter/setter functions in `document.rs`, `element.rs`, `location.rs`, `node.rs` | Mechanical: `ec.to_rust_string()`, `try_with_*` helpers, `_ec` wrappers. All patterns validated. |
+| **C. NativeFunction bridging** | Design `native_fn_wrapper`, apply to ~200 sites | Unblocks `strategy.rs`, `abort_signal.rs`, `link_property`, timeout callbacks, event handler setters |
+| **D. Remove adapters** | Two `ContextEventDispatchHost` instances | Unblocks `event_target.rs` (3 ec_to_ctx) |
+| **E. Conditional Types** | `#[cfg]` gate all Boa imports | Large mechanical change; blocked on B, C, D |
 
 ### Current state
 
 **Phase A — DONE.** 34 platform types converted to `impl_gc_traits!`.
 
-**Phase B — ~65% done.** 15 binding files converted (headers all done;
-bodies ~60% converted).  Shared infrastructure ready:
+**Phase B — ~70% done.** 49 ec_to_ctx eliminated across 5 files this session.
+Shared infrastructure ready:
 - `downcast.rs`: generic `try_with_event_target_mut/ref`,
   `try_with_abort_signal_mut/ref`, `try_with_event_mut` — all using
   `ec.with_object_any()` / `ec.with_object_any_mut()`
 - `platform_objects.rs`: `_ec` wrappers for `document_object`,
   `resolve_element_object`, `object_for_existing_node`,
-  `invalidate_cached_node_ids`, `take_animation_frame_callbacks`
-- `generic_js_test.rs`: `TestButton` subtype + multi-type downcast
-  chain tests (53/53 pass)
+  `invalidate_cached_node_ids`, `take_animation_frame_callbacks`,
+  `resolve_or_create_text_node_object`
+- `hyperlink_element_utils.rs`: `document_creation_url_ec` wrapper +
+  `try_with_hyperlink_element_utils_ref` helper
+- `generic_js_test.rs`: 53/53 pass
 
-Remaining `ec_to_ctx` calls fall into three categories:
-- **Document-scope helpers** (`document.rs`, `element.rs`,
-  `hyperlink_element_utils.rs`, `location.rs`, `window.rs`): need
-  `_ec` wrappers + `try_with_*` refactoring — mechanical
-- **Complex Boa APIs** (`get_style`, `set_onload`, timeout callbacks,
-  streams domain calls): need `NativeFunction` bridging (Phase C)
-- **Domain methods taking `ec_ref`** (play, pause, set_src): blocked
-  on `with_object_any_mut` borrow-limitation
-  until Phase F makes `EnvironmentSettingsObject` generic.
+**Remaining ec_to_ctx categorized by blocker:**
+
+| Blocker | Files | Count | Fix |
+|---|---|---|---|
+| No `new_syntax_error` on trait | document.rs, element.rs | ~9 | Add to trait + validate in test file |
+| `dom_exception_error` takes `&mut Context` | location.rs | 22 | Refactor helpers to take `ec` |
+| `ObjectInitializer` no generic eq | element.rs (class_list, getBoundingClientRect) | 8 | `create_plain_object` + `object_set_property` on trait — can build property-by-property |
+| `FunctionObjectBuilder` / `NativeFunction` | strategy.rs, abort_signal.rs, link_property | ~9 | Phase C |
+| `ContextEventDispatchHost` | event_target.rs | 3 | Phase D |
+| `with_*_mut` borrow limitation | html_media_element.rs, html_iframe_element.rs | 4 | Phase F |
+| `JsArray::from_iter` | node.rs (get_child_nodes) | 1 | `create_empty_array` + `array_push` on trait — mechanical |
+| `appendable_node` takes `&JsValue` | node.rs | 3 | Check if refactorable to not need ctx |
+| Structured clone, timers, etc. | window.rs | 11 | Mixed deep blockers |
+| Streams domain calls | readablestream.rs, writablestream.rs, transformstream.rs | ~58 | Separate session |
+| Misc (abort_controller, wasm, etc.) | various | 5 | Mixed |
 
 ### Phase B strategy: test-file-first workflow
 
