@@ -1,7 +1,7 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    Context, JsData, JsNativeError, JsResult, JsValue,
+    Context, JsNativeError, JsResult, JsValue,
     builtins::typed_array::TypedArrayKind,
     js_string,
     native_function::NativeFunction,
@@ -370,8 +370,8 @@ impl ByteQueueEntry {
     }
 }
 
-/// <https://streams.spec.whatwg.org/#readablestreambyobrequest>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#readablestreambyobrequest>
     #[derive(Clone)]
     pub struct ReadableStreamBYOBRequest {
         /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-controller>
@@ -444,8 +444,8 @@ impl ReadableStreamBYOBRequest {
     }
 }
 
-/// <https://streams.spec.whatwg.org/#readablebytestreamcontroller>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller>
     #[derive(Clone)]
     pub struct ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-stream>

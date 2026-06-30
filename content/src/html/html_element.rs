@@ -1,13 +1,11 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 
 use crate::dom::Element;
 
-/// <https://html.spec.whatwg.org/#htmlelement>
 js_engine::impl_gc_traits! {
+    /// <https://html.spec.whatwg.org/#htmlelement>
     pub struct HTMLElement {
         /// <https://dom.spec.whatwg.org/#interface-element>
         pub element: Element,

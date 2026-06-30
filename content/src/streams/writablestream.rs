@@ -4,9 +4,9 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Gc, GcRefCell};
 
 use js_engine::{Completion, ExecutionContext};
 
@@ -37,8 +37,8 @@ fn native_to_completion_err(
         .unwrap_or_else(|_| JsValue::undefined())
 }
 
-/// <https://streams.spec.whatwg.org/#ws-class>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#ws-class>
     #[derive(Clone)]
     pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-controller>

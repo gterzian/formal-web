@@ -1,4 +1,4 @@
-use boa_engine::{Context, JsArgs, JsResult, JsString, JsValue, js_string};
+use boa_engine::JsValue;
 use std::marker::PhantomData;
 
 use crate::dom::Event;
@@ -16,24 +16,17 @@ impl WebIdlInterface<crate::js::Types> for Event {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
-            let type_ = args
-                .get_or_undefined(0)
-                .to_string(ctx)?
-                .to_std_string_escaped();
-            let init = args.get_or_undefined(1);
-            Ok(Event::new(
-                type_,
-                init_flag(init, js_string!("bubbles"), ctx)?,
-                init_flag(init, js_string!("cancelable"), ctx)?,
-                init_flag(init, js_string!("composed"), ctx)?,
-                false,
-                0.0,
-            ))
-        })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        let undefined = ec.value_undefined();
+        let type_ = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
+        let init = args.get(1).cloned().unwrap_or(ec.value_undefined());
+        Ok(Event::new(
+            type_,
+            init_flag(&init, "bubbles", ec)?,
+            init_flag(&init, "cancelable", ec)?,
+            init_flag(&init, "composed", ec)?,
+            false,
+            0.0,
+        ))
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
@@ -213,11 +206,17 @@ impl WebIdlInterface<crate::js::Types> for Event {
     }
 }
 
-pub(crate) fn init_flag(init: &JsValue, key: JsString, context: &mut Context) -> JsResult<bool> {
-    let Some(object) = init.as_object() else {
+pub(crate) fn init_flag(
+    init: &JsValue,
+    key: &str,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<bool, crate::js::Types> {
+    let Some(object) = crate::js::Types::value_as_object(init) else {
         return Ok(false);
     };
-    Ok(object.get(key, context)?.to_boolean())
+    let property_key = ec.property_key_from_str(key);
+    let value = ExecutionContext::get(ec, object, property_key)?;
+    Ok(ec.to_boolean(&value))
 }
 
 fn get_type(
@@ -246,7 +245,7 @@ fn get_target(
     Ok(event
         .target_value()
         .clone()
-        .map(JsValue::from)
+        .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }
 
@@ -263,7 +262,7 @@ fn get_current_target(
     Ok(event
         .current_target_value()
         .clone()
-        .map(JsValue::from)
+        .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }
 

@@ -1,4 +1,4 @@
-use boa_engine::{JsArgs, JsNativeError, JsResult, JsString, JsValue};
+use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLIFrameElement;

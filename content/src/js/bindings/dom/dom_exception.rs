@@ -1,4 +1,4 @@
-use boa_engine::{JsResult, JsValue};
+use boa_engine::JsValue;
 use std::marker::PhantomData;
 
 use crate::dom::DOMException;
@@ -16,22 +16,17 @@ impl WebIdlInterface<crate::js::Types> for DOMException {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
-            let message = args
-                .get(0)
-                .map(|value| value.to_string(ctx).map(|v| v.to_std_string_escaped()))
-                .transpose()?
-                .unwrap_or_default();
-            let name = args
-                .get(1)
-                .map(|value| value.to_string(ctx).map(|v| v.to_std_string_escaped()))
-                .transpose()?
-                .unwrap_or_else(|| String::from("Error"));
-            Ok(DOMException::new(message, name))
-        })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        let message = if let Some(value) = args.first() {
+            ec.to_rust_string(value.clone())?
+        } else {
+            String::default()
+        };
+        let name = if let Some(value) = args.get(1) {
+            ec.to_rust_string(value.clone())?
+        } else {
+            String::from("Error")
+        };
+        Ok(DOMException::new(message, name))
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {

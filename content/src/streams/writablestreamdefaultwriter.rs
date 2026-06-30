@@ -1,9 +1,9 @@
 use boa_engine::{
-    JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
+    JsArgs, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     object::{JsObject, builtins::JsPromise},
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
@@ -16,8 +16,8 @@ use super::{
 
 use js_engine::{Completion, ExecutionContext};
 
-/// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
     #[derive(Clone)]
     pub struct WritableStreamDefaultWriter {
         /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>

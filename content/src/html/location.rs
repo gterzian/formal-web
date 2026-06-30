@@ -1,13 +1,12 @@
-use boa_engine::{JsData, object::JsObject};
-use boa_gc::{Finalize, Trace};
+use boa_engine::object::JsObject;
 use ipc_messages::content::UserNavigationInvolvement;
 use log::error;
 use url::{Host, Url};
 
 use super::Window;
 
-/// <https://html.spec.whatwg.org/#location>
 js_engine::impl_gc_traits! {
+    /// <https://html.spec.whatwg.org/#location>
     pub struct Location {
     /// Model-local backing URL used for Location attribute serialization and URL parsing.
     ///

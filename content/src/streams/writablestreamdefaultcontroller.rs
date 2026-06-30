@@ -5,7 +5,7 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
@@ -147,8 +147,8 @@ enum QueueEntryValue {
     CloseSentinel,
 }
 
-/// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller>
     #[derive(Clone)]
     pub struct WritableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-stream>

@@ -1,7 +1,7 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    JsArgs, JsData, JsNativeError, JsResult, JsString, JsValue,
+    JsArgs, JsNativeError, JsResult, JsString, JsValue,
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
@@ -197,8 +197,8 @@ struct QueueEntry {
     size: f64,
 }
 
-/// <https://streams.spec.whatwg.org/#rs-default-controller-class>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#rs-default-controller-class>
     #[derive(Clone)]
     pub struct ReadableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-stream>

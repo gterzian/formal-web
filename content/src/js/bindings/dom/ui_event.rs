@@ -1,4 +1,4 @@
-use boa_engine::{JsArgs, JsResult, JsValue, js_string};
+use boa_engine::JsValue;
 use std::marker::PhantomData;
 
 use crate::dom::{Event, UIEvent};
@@ -22,33 +22,28 @@ impl WebIdlInterface<crate::js::Types> for UIEvent {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> {
-            let type_ = args
-                .get_or_undefined(0)
-                .to_string(ctx)?
-                .to_std_string_escaped();
-            let init = args.get_or_undefined(1);
-            let detail = if let Some(object) = init.as_object() {
-                object.get(js_string!("detail"), ctx)?.to_i32(ctx)?
-            } else {
-                0
-            };
-            Ok(UIEvent {
-                event: Event::new(
-                    type_,
-                    init_flag(init, js_string!("bubbles"), ctx)?,
-                    init_flag(init, js_string!("cancelable"), ctx)?,
-                    init_flag(init, js_string!("composed"), ctx)?,
-                    false,
-                    0.0,
-                ),
-                view: None,
-                detail,
-            })
-        })()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        let undefined = ec.value_undefined();
+        let type_ = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
+        let init = args.get(1).cloned().unwrap_or(ec.value_undefined());
+        let detail = if let Some(object) = crate::js::Types::value_as_object(&init) {
+            let property_key = ec.property_key_from_str("detail");
+            let detail_value = ExecutionContext::get(ec, object, property_key)?;
+            ec.to_number(detail_value)? as i32
+        } else {
+            0
+        };
+        Ok(UIEvent {
+            event: Event::new(
+                type_,
+                init_flag(&init, "bubbles", ec)?,
+                init_flag(&init, "cancelable", ec)?,
+                init_flag(&init, "composed", ec)?,
+                false,
+                0.0,
+            ),
+            view: None,
+            detail,
+        })
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
@@ -98,7 +93,7 @@ fn get_view(
     Ok(ui_event
         .view_value()
         .clone()
-        .map(JsValue::from)
+        .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }
 
@@ -112,5 +107,5 @@ fn get_detail(
     let ui_event = obj
         .downcast_ref::<UIEvent>()
         .ok_or_else(|| ec.new_type_error("receiver is not a UIEvent"))?;
-    Ok(JsValue::from(ui_event.detail_value()))
+    Ok(ec.value_from_number(ui_event.detail_value() as f64))
 }

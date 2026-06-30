@@ -1,7 +1,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
     builtins::{iterable::create_iter_result_object, object::OrdinaryObject},
     js_string,
     native_function::NativeFunction,

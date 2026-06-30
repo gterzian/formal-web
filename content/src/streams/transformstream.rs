@@ -2,14 +2,14 @@ use log::debug;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Gc, GcRefCell};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
@@ -55,8 +55,8 @@ fn queued_resolved_promise(value: JsValue, context: &mut Context) -> JsResult<Js
     Ok(promise.into())
 }
 
-/// <https://streams.spec.whatwg.org/#ts-class>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#ts-class>
     #[derive(Clone)]
     pub struct TransformStream {
         /// <https://streams.spec.whatwg.org/#transformstream-backpressure>
@@ -153,8 +153,8 @@ impl TransformStream {
     }
 }
 
-/// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller>
     #[derive(Clone)]
     pub struct TransformStreamDefaultController {
         /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-stream>

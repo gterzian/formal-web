@@ -2,8 +2,7 @@ use log::error;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 
-use boa_engine::{JsData, JsNativeError, JsValue};
-use boa_gc::{Finalize, Trace};
+use boa_engine::{JsNativeError, JsValue};
 use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
 
@@ -17,8 +16,8 @@ use super::resolved_style_properties_for_element;
 use super::windowproxy::create_window_proxy;
 use super::{GlobalScope, the_rules_for_choosing_a_navigable};
 
-/// <https://html.spec.whatwg.org/#window>
 js_engine::impl_gc_traits! {
+    /// <https://html.spec.whatwg.org/#window>
     pub struct Window {
         /// <https://dom.spec.whatwg.org/#interface-eventtarget>
         pub event_target: EventTarget,

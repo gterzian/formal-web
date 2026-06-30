@@ -9,8 +9,6 @@ use std::{
 };
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 use html5ever::{local_name, ns};
 use url::Url;
 
@@ -19,8 +17,8 @@ use crate::{
     html::HTMLElement, html::navigate, webidl::Callback,
 };
 
-/// <https://html.spec.whatwg.org/#htmliframeelement>
 js_engine::impl_gc_traits! {
+    /// <https://html.spec.whatwg.org/#htmliframeelement>
     pub struct HTMLIFrameElement {
         /// <https://html.spec.whatwg.org/#htmlelement>
         pub html_element: HTMLElement,

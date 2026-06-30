@@ -1,8 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, NodeData};
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 
 use super::{DOMException, event::EventTarget};
 
@@ -14,8 +12,8 @@ enum NodeKind {
     Comment,
 }
 
-/// <https://dom.spec.whatwg.org/#interface-node>
 js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#interface-node>
     pub struct Node {
     /// <https://dom.spec.whatwg.org/#concept-node-document>
     #[unsafe_ignore_trace]

@@ -6,7 +6,7 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
     builtins::{
         iterable::create_iter_result_object,
         promise::{PromiseState, ResolvingFunctions},
@@ -45,8 +45,8 @@ use super::{
 };
 use js_engine::ExecutionContext;
 
-/// <https://streams.spec.whatwg.org/#rs-class>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#rs-class>
     #[derive(Clone)]
     pub struct ReadableStream {
     /// <https://streams.spec.whatwg.org/#readablestream-controller>

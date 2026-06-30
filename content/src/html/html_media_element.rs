@@ -2,9 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
 use boa_engine::JsValue;
-use boa_gc::{Finalize, Trace};
 use log::{debug, error};
 
 use crate::html::{HTMLElement, await_a_stable_state};
@@ -15,8 +13,8 @@ use ipc_messages::media::VideoPaintId;
 
 use js_engine::{Completion, ExecutionContext};
 
-/// <https://html.spec.whatwg.org/#media-elements>
 js_engine::impl_gc_traits! {
+    /// <https://html.spec.whatwg.org/#media-elements>
     pub struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
@@ -70,8 +68,8 @@ js_engine::impl_gc_traits! {
 }
 }
 
-/// <https://html.spec.whatwg.org/#mediaerror>
 js_engine::impl_gc_traits! {
+    /// <https://html.spec.whatwg.org/#mediaerror>
     #[derive(Clone, Debug)]
     pub struct MediaError {
         /// <https://html.spec.whatwg.org/#dom-mediaerror-code>

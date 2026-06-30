@@ -1,6 +1,5 @@
 use blitz_traits::events::{DomEvent, EventState};
-use boa_engine::{JsData, JsResult, object::JsObject};
-use boa_gc::{Finalize, Trace};
+use boa_engine::{JsResult, object::JsObject};
 
 use crate::webidl::Callback;
 
@@ -11,8 +10,8 @@ pub const CAPTURING_PHASE: u16 = 1;
 pub const AT_TARGET: u16 = 2;
 pub const BUBBLING_PHASE: u16 = 3;
 
-/// <https://dom.spec.whatwg.org/#concept-event-listener>
 js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#concept-event-listener>
     #[derive(Clone)]
     pub(crate) struct EventListener {
     #[unsafe_ignore_trace]
@@ -46,8 +45,8 @@ js_engine::impl_gc_traits! {
 }
 }
 
-/// <https://dom.spec.whatwg.org/#interface-eventtarget>
 js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#interface-eventtarget>
     #[derive(Default)]
     pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
@@ -156,8 +155,8 @@ impl EventTarget {
     }
 }
 
-/// <https://dom.spec.whatwg.org/#event>
 js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#event>
     #[derive(Clone)]
     pub struct Event {
     /// <https://dom.spec.whatwg.org/#dom-event-type>
@@ -324,8 +323,8 @@ impl Event {
     }
 }
 
-/// <https://w3c.github.io/uievents/#interface-uievent>
 js_engine::impl_gc_traits! {
+    /// <https://w3c.github.io/uievents/#interface-uievent>
     #[derive(Clone)]
     pub struct UIEvent {
     /// <https://dom.spec.whatwg.org/#event>

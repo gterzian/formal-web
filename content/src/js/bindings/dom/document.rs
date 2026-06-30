@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, js_string,
+    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string,
     object::{JsObject, builtins::JsArray},
     property::Attribute,
 };

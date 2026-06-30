@@ -1,12 +1,12 @@
-use boa_engine::{JsData, JsValue};
+use boa_engine::JsValue;
 use boa_gc::{Finalize, Trace};
 
 use js_engine::{Completion, ExecutionContext};
 
 use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
 
-/// <https://streams.spec.whatwg.org/#blqs-class>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#blqs-class>
     #[derive(Clone)]
     pub struct ByteLengthQueuingStrategy {
         /// <https://streams.spec.whatwg.org/#bytelengthqueuingstrategy-highwatermark>
@@ -27,8 +27,8 @@ impl ByteLengthQueuingStrategy {
     }
 }
 
-/// <https://streams.spec.whatwg.org/#cqs-class>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#cqs-class>
     #[derive(Clone)]
     pub struct CountQueuingStrategy {
         /// <https://streams.spec.whatwg.org/#countqueuingstrategy-highwatermark>

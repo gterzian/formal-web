@@ -1,8 +1,8 @@
 use boa_engine::{
-    JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions, object::JsObject,
+    JsArgs, JsError, JsNativeError, JsResult, JsValue, builtins::promise::ResolvingFunctions,
+    object::JsObject,
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::rejected_promise;
@@ -15,8 +15,8 @@ use super::{
 
 use js_engine::{Completion, ExecutionContext};
 
-/// <https://streams.spec.whatwg.org/#byob-reader-class>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#byob-reader-class>
     #[derive(Clone)]
     pub struct ReadableStreamBYOBReader {
         stream: Gc<GcRefCell<Option<ReadableStream>>>,

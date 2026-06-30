@@ -1,6 +1,6 @@
 use std::{mem, ptr};
 
-use boa_engine::{JsData, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::js::with_event_target_mut;
@@ -119,8 +119,8 @@ impl AbortSignalState {
     }
 }
 
-/// <https://dom.spec.whatwg.org/#abortsignal>
 js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#abortsignal>
     #[derive(Clone)]
     pub struct AbortSignal {
         shared: Gc<GcRefCell<AbortSignalState>>,
@@ -284,8 +284,8 @@ impl AbortSignal {
     }
 }
 
-/// <https://dom.spec.whatwg.org/#abortcontroller>
 js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#abortcontroller>
     pub struct AbortController {
         /// <https://dom.spec.whatwg.org/#abortcontroller-signal>
         signal: AbortSignal,

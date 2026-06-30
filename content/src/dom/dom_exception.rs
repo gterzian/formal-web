@@ -1,8 +1,5 @@
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
-
-/// <https://webidl.spec.whatwg.org/#idl-DOMException>
 js_engine::impl_gc_traits! {
+    /// <https://webidl.spec.whatwg.org/#idl-DOMException>
     #[derive(Clone)]
     pub struct DOMException {
         /// <https://webidl.spec.whatwg.org/#dom-domexception-message>

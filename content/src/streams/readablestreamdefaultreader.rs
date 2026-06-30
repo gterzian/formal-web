@@ -1,11 +1,11 @@
 use std::mem;
 
 use boa_engine::{
-    JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
+    JsArgs, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     object::{JsObject, builtins::JsPromise},
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise};
@@ -222,8 +222,8 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     }
 }
 
-/// <https://streams.spec.whatwg.org/#default-reader-class>
 js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#default-reader-class>
     #[derive(Clone)]
     pub struct ReadableStreamDefaultReader {
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-stream>
