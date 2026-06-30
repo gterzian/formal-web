@@ -16,11 +16,13 @@ use super::{
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://streams.spec.whatwg.org/#byob-reader-class>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct ReadableStreamBYOBReader {
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
-    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-    closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct ReadableStreamBYOBReader {
+        stream: Gc<GcRefCell<Option<ReadableStream>>>,
+        closed_promise: Gc<GcRefCell<Option<JsObject>>>,
+        closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+    }
 }
 
 impl ReadableStreamBYOBReader {

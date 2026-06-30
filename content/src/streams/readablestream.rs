@@ -46,8 +46,9 @@ use super::{
 use js_engine::ExecutionContext;
 
 /// <https://streams.spec.whatwg.org/#rs-class>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct ReadableStream {
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct ReadableStream {
     /// <https://streams.spec.whatwg.org/#readablestream-controller>
     controller: Gc<GcRefCell<Option<ReadableStreamController>>>,
 
@@ -66,6 +67,7 @@ pub struct ReadableStream {
 
     /// <https://streams.spec.whatwg.org/#readablestream-storederror>
     stored_error: Gc<GcRefCell<JsValue>>,
+}
 }
 
 impl ReadableStream {

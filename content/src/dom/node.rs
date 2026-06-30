@@ -15,8 +15,8 @@ enum NodeKind {
 }
 
 /// <https://dom.spec.whatwg.org/#interface-node>
-#[derive(Trace, Finalize, JsData)]
-pub struct Node {
+js_engine::impl_gc_traits! {
+    pub struct Node {
     /// <https://dom.spec.whatwg.org/#concept-node-document>
     #[unsafe_ignore_trace]
     pub document: Rc<RefCell<BaseDocument>>,
@@ -27,6 +27,7 @@ pub struct Node {
 
     /// <https://dom.spec.whatwg.org/#interface-eventtarget>
     pub event_target: EventTarget,
+}
 }
 
 impl Node {

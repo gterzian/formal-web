@@ -148,8 +148,9 @@ enum QueueEntryValue {
 }
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct WritableStreamDefaultController {
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct WritableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-stream>
     stream: Gc<GcRefCell<Option<WritableStream>>>,
 
@@ -182,6 +183,7 @@ pub struct WritableStreamDefaultController {
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-abortalgorithm>
     abort_algorithm: Gc<GcRefCell<Option<AbortAlgorithm>>>,
+}
 }
 
 impl WritableStreamDefaultController {

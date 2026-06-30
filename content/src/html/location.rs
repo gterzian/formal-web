@@ -7,8 +7,8 @@ use url::{Host, Url};
 use super::Window;
 
 /// <https://html.spec.whatwg.org/#location>
-#[derive(Trace, Finalize, JsData)]
-pub struct Location {
+js_engine::impl_gc_traits! {
+    pub struct Location {
     /// Model-local backing URL used for Location attribute serialization and URL parsing.
     ///
     /// Note: The spec defines Location.url in terms of the relevant Document URL. This implementation
@@ -25,6 +25,7 @@ pub struct Location {
     /// Location uses `downcast_ref` through this handle to access the native
     /// Window struct — this is safe and doesn't require raw pointer manipulation.
     window: JsObject,
+}
 }
 
 pub(crate) enum LocationError {

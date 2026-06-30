@@ -223,8 +223,9 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
 }
 
 /// <https://streams.spec.whatwg.org/#default-reader-class>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct ReadableStreamDefaultReader {
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct ReadableStreamDefaultReader {
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-stream>
     stream: Gc<GcRefCell<Option<ReadableStream>>>,
 
@@ -235,6 +236,7 @@ pub struct ReadableStreamDefaultReader {
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultreader-readrequests>
     read_requests: Gc<GcRefCell<Vec<ReadRequest>>>,
+}
 }
 
 impl ReadableStreamDefaultReader {

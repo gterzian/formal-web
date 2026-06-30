@@ -60,10 +60,11 @@ fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &
 }
 
 /// <https://dom.spec.whatwg.org/#interface-element>
-#[derive(Trace, Finalize, JsData)]
-pub struct Element {
-    /// <https://dom.spec.whatwg.org/#interface-node>
-    pub node: Node,
+js_engine::impl_gc_traits! {
+    pub struct Element {
+        /// <https://dom.spec.whatwg.org/#interface-node>
+        pub node: Node,
+    }
 }
 
 impl Element {

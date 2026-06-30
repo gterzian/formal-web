@@ -6,11 +6,13 @@ use js_engine::{Completion, ExecutionContext};
 use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
 
 /// <https://streams.spec.whatwg.org/#blqs-class>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct ByteLengthQueuingStrategy {
-    /// <https://streams.spec.whatwg.org/#bytelengthqueuingstrategy-highwatermark>
-    #[unsafe_ignore_trace]
-    high_water_mark: f64,
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct ByteLengthQueuingStrategy {
+        /// <https://streams.spec.whatwg.org/#bytelengthqueuingstrategy-highwatermark>
+        #[unsafe_ignore_trace]
+        high_water_mark: f64,
+    }
 }
 
 impl ByteLengthQueuingStrategy {
@@ -26,11 +28,13 @@ impl ByteLengthQueuingStrategy {
 }
 
 /// <https://streams.spec.whatwg.org/#cqs-class>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct CountQueuingStrategy {
-    /// <https://streams.spec.whatwg.org/#countqueuingstrategy-highwatermark>
-    #[unsafe_ignore_trace]
-    high_water_mark: f64,
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct CountQueuingStrategy {
+        /// <https://streams.spec.whatwg.org/#countqueuingstrategy-highwatermark>
+        #[unsafe_ignore_trace]
+        high_water_mark: f64,
+    }
 }
 
 impl CountQueuingStrategy {

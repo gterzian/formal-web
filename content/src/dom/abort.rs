@@ -120,9 +120,11 @@ impl AbortSignalState {
 }
 
 /// <https://dom.spec.whatwg.org/#abortsignal>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct AbortSignal {
-    shared: Gc<GcRefCell<AbortSignalState>>,
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct AbortSignal {
+        shared: Gc<GcRefCell<AbortSignalState>>,
+    }
 }
 
 impl AbortSignal {
@@ -283,10 +285,11 @@ impl AbortSignal {
 }
 
 /// <https://dom.spec.whatwg.org/#abortcontroller>
-#[derive(Trace, Finalize, JsData)]
-pub struct AbortController {
-    /// <https://dom.spec.whatwg.org/#abortcontroller-signal>
-    signal: AbortSignal,
+js_engine::impl_gc_traits! {
+    pub struct AbortController {
+        /// <https://dom.spec.whatwg.org/#abortcontroller-signal>
+        signal: AbortSignal,
+    }
 }
 
 impl AbortController {

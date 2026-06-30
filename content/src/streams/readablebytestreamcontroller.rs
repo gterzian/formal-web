@@ -371,12 +371,14 @@ impl ByteQueueEntry {
 }
 
 /// <https://streams.spec.whatwg.org/#readablestreambyobrequest>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct ReadableStreamBYOBRequest {
-    /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-controller>
-    controller: Gc<GcRefCell<Option<ReadableByteStreamController>>>,
-    /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-view>
-    view: Gc<GcRefCell<Option<JsObject>>>,
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct ReadableStreamBYOBRequest {
+        /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-controller>
+        controller: Gc<GcRefCell<Option<ReadableByteStreamController>>>,
+        /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-view>
+        view: Gc<GcRefCell<Option<JsObject>>>,
+    }
 }
 
 impl ReadableStreamBYOBRequest {
@@ -443,8 +445,9 @@ impl ReadableStreamBYOBRequest {
 }
 
 /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct ReadableByteStreamController {
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-stream>
     stream: Gc<GcRefCell<Option<ReadableStream>>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-queue>
@@ -478,6 +481,7 @@ pub struct ReadableByteStreamController {
     pending_pull_intos: Gc<GcRefCell<VecDeque<PullIntoDescriptor>>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-byobrequest>
     byob_request_object: Gc<GcRefCell<Option<JsObject>>>,
+}
 }
 
 impl ReadableByteStreamController {

@@ -20,16 +20,17 @@ use crate::{
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
-#[derive(Trace, Finalize, JsData)]
-pub struct HTMLIFrameElement {
-    /// <https://html.spec.whatwg.org/#htmlelement>
-    pub html_element: HTMLElement,
+js_engine::impl_gc_traits! {
+    pub struct HTMLIFrameElement {
+        /// <https://html.spec.whatwg.org/#htmlelement>
+        pub html_element: HTMLElement,
 
-    /// <https://html.spec.whatwg.org/#handler-onload>
-    onload: Option<Callback>,
+        /// <https://html.spec.whatwg.org/#handler-onload>
+        onload: Option<Callback>,
 
-    /// <https://html.spec.whatwg.org/#handler-onerror>
-    onerror: Option<Callback>,
+        /// <https://html.spec.whatwg.org/#handler-onerror>
+        onerror: Option<Callback>,
+    }
 }
 
 impl HTMLIFrameElement {

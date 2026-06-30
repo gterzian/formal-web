@@ -17,18 +17,20 @@ use super::{
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct WritableStreamDefaultWriter {
-    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
-    stream: Gc<GcRefCell<Option<WritableStream>>>,
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct WritableStreamDefaultWriter {
+        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
+        stream: Gc<GcRefCell<Option<WritableStream>>>,
 
-    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
-    ready_promise: Gc<GcRefCell<Option<JsObject>>>,
-    ready_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
+        ready_promise: Gc<GcRefCell<Option<JsObject>>>,
+        ready_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
 
-    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
-    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-    closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
+        closed_promise: Gc<GcRefCell<Option<JsObject>>>,
+        closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+    }
 }
 
 impl WritableStreamDefaultWriter {

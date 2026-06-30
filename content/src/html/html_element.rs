@@ -7,10 +7,11 @@ use boa_gc::{Finalize, Trace};
 use crate::dom::Element;
 
 /// <https://html.spec.whatwg.org/#htmlelement>
-#[derive(Trace, Finalize, JsData)]
-pub struct HTMLElement {
-    /// <https://dom.spec.whatwg.org/#interface-element>
-    pub element: Element,
+js_engine::impl_gc_traits! {
+    pub struct HTMLElement {
+        /// <https://dom.spec.whatwg.org/#interface-element>
+        pub element: Element,
+    }
 }
 
 impl HTMLElement {

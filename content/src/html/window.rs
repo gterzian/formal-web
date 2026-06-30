@@ -18,16 +18,17 @@ use super::windowproxy::create_window_proxy;
 use super::{GlobalScope, the_rules_for_choosing_a_navigable};
 
 /// <https://html.spec.whatwg.org/#window>
-#[derive(Trace, Finalize, JsData)]
-pub struct Window {
-    /// <https://dom.spec.whatwg.org/#interface-eventtarget>
-    pub event_target: EventTarget,
+js_engine::impl_gc_traits! {
+    pub struct Window {
+        /// <https://dom.spec.whatwg.org/#interface-eventtarget>
+        pub event_target: EventTarget,
 
-    /// <https://html.spec.whatwg.org/#global-object>
-    pub global_scope: GlobalScope,
+        /// <https://html.spec.whatwg.org/#global-object>
+        pub global_scope: GlobalScope,
 
-    /// <https://html.spec.whatwg.org/#handler-onload>
-    onload: Option<Callback>,
+        /// <https://html.spec.whatwg.org/#handler-onload>
+        onload: Option<Callback>,
+    }
 }
 
 impl Window {

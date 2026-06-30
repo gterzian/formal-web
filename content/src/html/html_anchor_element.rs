@@ -12,10 +12,11 @@ use crate::html::{
 };
 
 /// <https://html.spec.whatwg.org/#htmlanchorelement>
-#[derive(Trace, Finalize, JsData)]
-pub struct HTMLAnchorElement {
-    /// <https://html.spec.whatwg.org/#htmlelement>
-    pub html_element: HTMLElement,
+js_engine::impl_gc_traits! {
+    pub struct HTMLAnchorElement {
+        /// <https://html.spec.whatwg.org/#htmlelement>
+        pub html_element: HTMLElement,
+    }
 }
 
 impl HTMLAnchorElement {

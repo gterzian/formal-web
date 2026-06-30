@@ -16,8 +16,8 @@ use ipc_messages::media::VideoPaintId;
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://html.spec.whatwg.org/#media-elements>
-#[derive(Trace, Finalize, JsData)]
-pub struct HTMLMediaElement {
+js_engine::impl_gc_traits! {
+    pub struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
 
@@ -68,14 +68,17 @@ pub struct HTMLMediaElement {
     #[unsafe_ignore_trace]
     video_paint_id: VideoPaintId,
 }
+}
 
 /// <https://html.spec.whatwg.org/#mediaerror>
-#[derive(Trace, Finalize, JsData, Clone, Debug)]
-pub struct MediaError {
-    /// <https://html.spec.whatwg.org/#dom-mediaerror-code>
-    pub code: u16,
-    /// <https://html.spec.whatwg.org/#dom-mediaerror-message>
-    pub message: String,
+js_engine::impl_gc_traits! {
+    #[derive(Clone, Debug)]
+    pub struct MediaError {
+        /// <https://html.spec.whatwg.org/#dom-mediaerror-code>
+        pub code: u16,
+        /// <https://html.spec.whatwg.org/#dom-mediaerror-message>
+        pub message: String,
+    }
 }
 
 impl MediaError {

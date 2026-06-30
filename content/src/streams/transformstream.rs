@@ -56,27 +56,29 @@ fn queued_resolved_promise(value: JsValue, context: &mut Context) -> JsResult<Js
 }
 
 /// <https://streams.spec.whatwg.org/#ts-class>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct TransformStream {
-    /// <https://streams.spec.whatwg.org/#transformstream-backpressure>
-    #[unsafe_ignore_trace]
-    backpressure: Rc<Cell<bool>>,
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct TransformStream {
+        /// <https://streams.spec.whatwg.org/#transformstream-backpressure>
+        #[unsafe_ignore_trace]
+        backpressure: Rc<Cell<bool>>,
 
-    /// <https://streams.spec.whatwg.org/#transformstream-backpressurechangepromise>
-    backpressure_change_promise: Gc<GcRefCell<Option<JsObject>>>,
-    backpressure_change_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        /// <https://streams.spec.whatwg.org/#transformstream-backpressurechangepromise>
+        backpressure_change_promise: Gc<GcRefCell<Option<JsObject>>>,
+        backpressure_change_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
 
-    /// <https://streams.spec.whatwg.org/#transformstream-controller>
-    controller: Gc<GcRefCell<Option<TransformStreamDefaultController>>>,
-    controller_object: Gc<GcRefCell<Option<JsObject>>>,
+        /// <https://streams.spec.whatwg.org/#transformstream-controller>
+        controller: Gc<GcRefCell<Option<TransformStreamDefaultController>>>,
+        controller_object: Gc<GcRefCell<Option<JsObject>>>,
 
-    /// <https://streams.spec.whatwg.org/#transformstream-readable>
-    readable: Gc<GcRefCell<Option<ReadableStream>>>,
-    readable_object: Gc<GcRefCell<Option<JsObject>>>,
+        /// <https://streams.spec.whatwg.org/#transformstream-readable>
+        readable: Gc<GcRefCell<Option<ReadableStream>>>,
+        readable_object: Gc<GcRefCell<Option<JsObject>>>,
 
-    /// <https://streams.spec.whatwg.org/#transformstream-writable>
-    writable: Gc<GcRefCell<Option<WritableStream>>>,
-    writable_object: Gc<GcRefCell<Option<JsObject>>>,
+        /// <https://streams.spec.whatwg.org/#transformstream-writable>
+        writable: Gc<GcRefCell<Option<WritableStream>>>,
+        writable_object: Gc<GcRefCell<Option<JsObject>>>,
+    }
 }
 
 impl TransformStream {
@@ -152,44 +154,52 @@ impl TransformStream {
 }
 
 /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct TransformStreamDefaultController {
-    /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-stream>
-    stream: Gc<GcRefCell<Option<TransformStream>>>,
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct TransformStreamDefaultController {
+        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-stream>
+        stream: Gc<GcRefCell<Option<TransformStream>>>,
 
+        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
+        transform_algorithm: Gc<GcRefCell<Option<TransformAlgorithm>>>,
+
+        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
+        flush_algorithm: Gc<GcRefCell<Option<FlushAlgorithm>>>,
+
+        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
+        cancel_algorithm: Gc<GcRefCell<Option<TransformCancelAlgorithm>>>,
+
+        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-finishpromise>
+        finish_promise: Gc<GcRefCell<Option<JsObject>>>,
+        finish_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+    }
+}
+
+js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
-    transform_algorithm: Gc<GcRefCell<Option<TransformAlgorithm>>>,
+    #[derive(Clone)]
+    pub(crate) enum TransformAlgorithm {
+        Identity,
+        JavaScript(SourceMethod),
+    }
+}
 
+js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
-    flush_algorithm: Gc<GcRefCell<Option<FlushAlgorithm>>>,
+    #[derive(Clone)]
+    pub(crate) enum FlushAlgorithm {
+        ReturnUndefined,
+        JavaScript(SourceMethod),
+    }
+}
 
+js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
-    cancel_algorithm: Gc<GcRefCell<Option<TransformCancelAlgorithm>>>,
-
-    /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-finishpromise>
-    finish_promise: Gc<GcRefCell<Option<JsObject>>>,
-    finish_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
-}
-
-/// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
-#[derive(Clone, Trace, Finalize)]
-pub(crate) enum TransformAlgorithm {
-    Identity,
-    JavaScript(SourceMethod),
-}
-
-/// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
-#[derive(Clone, Trace, Finalize)]
-pub(crate) enum FlushAlgorithm {
-    ReturnUndefined,
-    JavaScript(SourceMethod),
-}
-
-/// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
-#[derive(Clone, Trace, Finalize)]
-pub(crate) enum TransformCancelAlgorithm {
-    ReturnUndefined,
-    JavaScript(SourceMethod),
+    #[derive(Clone)]
+    pub(crate) enum TransformCancelAlgorithm {
+        ReturnUndefined,
+        JavaScript(SourceMethod),
+    }
 }
 
 impl TransformStreamDefaultController {

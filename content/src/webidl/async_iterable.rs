@@ -14,10 +14,12 @@ use super::promise::{rejected_promise, resolved_promise};
 
 use js_engine::{Completion, ExecutionContext};
 
-#[derive(Clone, Trace, Finalize)]
-enum IteratorOperation {
-    Next,
-    Return(JsValue),
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    enum IteratorOperation {
+        Next,
+        Return(JsValue),
+    }
 }
 
 /// <https://webidl.spec.whatwg.org/#asynchronous-iterator-initialization-steps>
@@ -86,7 +88,11 @@ where
 }
 
 /// <https://webidl.spec.whatwg.org/#js-default-asynchronous-iterator-object>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[derive(Clone)]
+#[cfg_attr(
+    feature = "boa",
+    derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
+)]
 struct DefaultAsyncIterator<T>
 where
     T: AsyncValueIterable,
@@ -97,6 +103,11 @@ where
     #[unsafe_ignore_trace]
     finished: Rc<Cell<bool>>,
 }
+
+#[cfg(not(feature = "boa"))]
+unsafe impl<T: AsyncValueIterable> js_engine::gc::Trace for DefaultAsyncIterator<T> {}
+#[cfg(not(feature = "boa"))]
+impl<T: AsyncValueIterable> js_engine::gc::Finalize for DefaultAsyncIterator<T> {}
 
 impl<T> DefaultAsyncIterator<T>
 where

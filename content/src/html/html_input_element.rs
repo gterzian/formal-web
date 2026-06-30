@@ -7,10 +7,11 @@ use boa_gc::{Finalize, Trace};
 use crate::html::HTMLElement;
 
 /// <https://html.spec.whatwg.org/#the-input-element>
-#[derive(Trace, Finalize, JsData)]
-pub struct HTMLInputElement {
-    /// <https://html.spec.whatwg.org/#htmlelement>
-    pub html_element: HTMLElement,
+js_engine::impl_gc_traits! {
+    pub struct HTMLInputElement {
+        /// <https://html.spec.whatwg.org/#htmlelement>
+        pub html_element: HTMLElement,
+    }
 }
 
 impl HTMLInputElement {

@@ -76,39 +76,68 @@ impl<T: JsTypes> Drop for GcRootHandle<T> {
 // SECTION III: GC-TRAIT MACRO
 // ============================================================================
 
-/// Declarative macro that derives the correct GC traits for a struct
+/// Declarative macro that derives the correct GC traits for a type
 /// regardless of the active JS engine backend.
 ///
-/// On Boa: attaches `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]`.
-/// On JSC: generates no-op `Trace` and `Finalize` impls.
+/// For structs: attaches `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]`
+/// on Boa (or no-op Trace/Finalize impls on JSC).
+///
+/// For enums: attaches `#[derive(boa_gc::Finalize, boa_gc::Trace)]` without `JsData`,
+/// since enums are not stored as platform objects.
 ///
 /// Usage:
 /// ```ignore
-/// js_engine::gc::impl_gc_traits! {
+/// js_engine::impl_gc_traits! {
 ///     /// Optional doc comment.
 ///     pub(crate) struct MyWidget {
 ///         field: String,
 ///         callback: Option<GcRootHandle<TestTypes>>,
 ///     }
 /// }
+///
+/// js_engine::impl_gc_traits! {
+///     pub(crate) enum MyState {
+///         Idle,
+///         Active { count: u32 },
+///     }
+/// }
 /// ```
 #[macro_export]
 macro_rules! impl_gc_traits {
-    ($(#[$attr:meta])* $vis:vis struct $name:ident { $($fields:tt)* }) => {
+    // Struct variant — includes JsData for platform-object storage.
+    ($(#[$attr:meta])* $vis:vis struct $name:ident $(<$($generic:tt),+>)? { $($fields:tt)* }) => {
         $(#[$attr])*
         #[cfg_attr(
             feature = "boa",
             derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
         )]
-        $vis struct $name {
+        $vis struct $name $(<$($generic),+>)? {
             $($fields)*
         }
 
         #[cfg(not(feature = "boa"))]
-        unsafe impl $crate::gc::Trace for $name {}
+        unsafe impl $(<$($generic),+>)? $crate::gc::Trace for $name $(<$($generic),+>)? {}
 
         #[cfg(not(feature = "boa"))]
-        impl $crate::gc::Finalize for $name {}
+        impl $(<$($generic),+>)? $crate::gc::Finalize for $name $(<$($generic),+>)? {}
+    };
+
+    // Enum variant — no JsData (enums aren't platform objects).
+    ($(#[$attr:meta])* $vis:vis enum $name:ident $(<$($generic:tt),+>)? { $($variants:tt)* }) => {
+        $(#[$attr])*
+        #[cfg_attr(
+            feature = "boa",
+            derive(boa_gc::Finalize, boa_gc::Trace)
+        )]
+        $vis enum $name $(<$($generic),+>)? {
+            $($variants)*
+        }
+
+        #[cfg(not(feature = "boa"))]
+        unsafe impl $(<$($generic),+>)? $crate::gc::Trace for $name $(<$($generic),+>)? {}
+
+        #[cfg(not(feature = "boa"))]
+        impl $(<$($generic),+>)? $crate::gc::Finalize for $name $(<$($generic),+>)? {}
     };
 }
 

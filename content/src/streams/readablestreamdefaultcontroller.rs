@@ -198,8 +198,9 @@ struct QueueEntry {
 }
 
 /// <https://streams.spec.whatwg.org/#rs-default-controller-class>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct ReadableStreamDefaultController {
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct ReadableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-stream>
     stream: Gc<GcRefCell<Option<ReadableStream>>>,
 
@@ -238,6 +239,7 @@ pub struct ReadableStreamDefaultController {
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-cancelalgorithm>
     cancel_algorithm: Gc<GcRefCell<Option<CancelAlgorithm>>>,
+}
 }
 
 impl ReadableStreamDefaultController {

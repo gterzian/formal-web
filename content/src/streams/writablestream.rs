@@ -38,8 +38,9 @@ fn native_to_completion_err(
 }
 
 /// <https://streams.spec.whatwg.org/#ws-class>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct WritableStream {
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-controller>
     controller: Gc<GcRefCell<Option<WritableStreamController>>>,
     controller_object: Gc<GcRefCell<Option<JsObject>>>,
@@ -72,6 +73,7 @@ pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-backpressure>
     #[unsafe_ignore_trace]
     backpressure: Rc<Cell<bool>>,
+}
 }
 
 impl WritableStream {
