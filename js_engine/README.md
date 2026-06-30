@@ -583,14 +583,16 @@ Phases F and H depend on E.
 
 ### Next session plan
 
-The three validation patterns are filled, and the class_list, html_media_element,
-and node conversions are done.  Remaining blockers fall into three categories:
+Web IDL callback helper `_ec` variants are created and applied to
+abort_signal set_onabort and html_iframe_element set_onload/set_onerror.
+The `add_event_listener` JsResult→Completion conversion is the remaining
+narrow blocker in those functions (needs generic JsError extraction).
 
 | Step | What | Details |
 |---|---|---|
-| **Web IDL callback helpers `_ec` variants** | Create `nullable_value_ec` and `callback_function_value_ec` that take `ec` instead of returning `JsResult`.  Unblocks abort_signal (1), html_iframe_element (2), event_target addEventListener/removeEventListener. | ~5 ec_to_ctx |
-| **D. Remove adapters** | Two `ContextEventDispatchHost` instances in `event_target.rs` and `writablestreamdefaultcontroller.rs`.  Replace with trait-level dispatch that takes `ec`. | Unblocks `event_target.rs` (3) |
-| **Streams domain calls** | ~58 ec_to_ctx across readablestream, writablestream, transformstream.  These are Boa-heavy with internal controller state. | Separate dedicated session |
+| **Generic JsError bridge** | `EventTarget::add_event_listener` returns `JsResult<()>`.  Need a trait method or bridge to extract the inner `JsValue` from `JsError` without `Context`.  Unblocks the narrow ec_to_ctx in set_onload/set_onerror/set_onabort. | ~3 ec_to_ctx |
+| **D. Remove adapters** | `ContextEventDispatchHost` in `event_target.rs`, `writablestreamdefaultcontroller.rs`, and `signal_abort_with_context`.  Replace with trait-level `EventDispatchHost` impl for `&mut dyn ExecutionContext`. | Unblocks `event_target.rs` (3) + abort_controller (1) + timeout_static (1) |
+| **Streams domain calls** | ~58 ec_to_ctx across readablestream, writablestream, transformstream.  Domain methods take `&mut Context` internally. | Separate dedicated session |
 | **window.rs blockers** | Structured clone, timers, DOM manipulation — 11 ec_to_ctx with mixed deep dependencies. | Post-Phase D |
 | **E. Conditional Types** | `#[cfg]` gate all Boa imports | Large mechanical change; blocked on completed binding conversion |
 
@@ -600,11 +602,16 @@ and node conversions are done.  Remaining blockers fall into three categories:
 `new_syntax_error` added to trait, DOMException helpers refactored to take `ec`.
 `define_property_or_throw` Boa backend fixed to pass `get`/`set` fields through.
 
-**~115 ec_to_ctx eliminated across 11 binding files:**
+**~120 ec_to_ctx eliminated across 13 binding files:**
 `document.rs` (18→0), `location.rs` (22→0), `strategy.rs` (2→0),
 `html_anchor_element.rs` (2→0), `node.rs` (14→0), `element.rs` (18→0),
 `html_media_element.rs` (3→0), `hyperlink_element_utils.rs` (21→1),
-`abort_signal.rs` (4→2).
+`abort_signal.rs` (4→2 narrow), `html_iframe_element.rs` (2→2 narrow).
+
+New generic infrastructure:
+- `callback.rs`: `callback_function_value_ec`, `callback_interface_type_value_ec`,
+  `nullable_value_ec` — Web IDL callback helpers taking `ec` instead of `Context`
+- `event_target.rs`: `flatten_ec` — event listener options parsing via EC trait
 
 Shared infrastructure ready:
 - `generic_js_test.rs`: 58/58 pass — three new validation tests:
@@ -620,7 +627,11 @@ Shared infrastructure ready:
   `document_creation_url_ec` bridge (1 remaining)
 - `node.rs`: `appendable_node_ec` helper; `append_child`/`insert_before`/
   `remove_child` converted to use `try_with_node_ref` + `dom_exception_error`
-- `abort_signal.rs`: `sequence_abort_signals` + `abort_error_value` converted
+- `abort_signal.rs`: `sequence_abort_signals` + `abort_error_value` + `set_onabort`
+  (mostly) converted; remaining narrow ec_to_ctx for `add_event_listener` JsResult
+- `html_iframe_element.rs`: `set_onload` + `set_onerror` converted to use
+  `downcast_mut` + `try_with_event_target_mut` + `_ec` callback helpers;
+  remaining narrow ec_to_ctx for `add_event_listener` JsResult
 - `element.rs`: `class_list` fully generic — uses `create_builtin_function` +
   `create_plain_object` + `object_set_property` + `PropertyDescriptor`
 
@@ -628,12 +639,10 @@ Shared infrastructure ready:
 
 | Blocker | Files | Count | Status |
 |---|---|---|---|
-| `Nullable/callback` Web IDL helpers | abort_signal.rs, html_iframe_element.rs, event_target.rs | 5 | Need `_ec` variants of `nullable_value`, `callback_function_value` |
-| `NativeFunction` timeout + timer | abort_signal.rs | 1 | `timeout_static` uses `NativeFunction::from_copy_closure_with_captures` |
-| `ContextEventDispatchHost` | event_target.rs | 3 | Phase D — adapter takes `&mut Context` |
+| `EventTarget::add_event_listener` JsResult | abort_signal, html_iframe_element | 3 narrow | Returns `JsResult<()>`; needs generic `JsError`→Completion bridge |
+| `ContextEventDispatchHost` | event_target, abort_controller, abort_signal timeout | 5 | Phase D — adapter takes `&mut Context`; blocks dispatch_event, add/removeEventListener, signal_abort_with_context, timeout_static |
 | `document_creation_url` | hyperlink_element_utils.rs | 1 | Takes `&Context`; needs global-scope accessor on trait |
 | `ObjectInitializer` (style.cssText) | html_element.rs | 1 | Blocked on Boa object construction API abstraction |
-| `signal_abort_with_context` | abort_controller.rs | 1 | Takes `&mut Context` |
 | Structured clone, timers, etc. | window.rs | 11 | Mixed deep blockers |
 | Streams domain calls | readablestream.rs, writablestream.rs, transformstream.rs | ~58 | Separate session |
 | Wasm + misc | wasm/mod.rs, wasm/interfaces.rs | 3 | Mixed |

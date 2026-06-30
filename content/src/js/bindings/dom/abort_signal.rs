@@ -12,7 +12,7 @@ use crate::js::downcast::{try_with_abort_signal_mut, try_with_event_target_mut};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use crate::webidl::{callback_function_value, nullable_value};
+use crate::webidl::{callback_function_value, callback_function_value_ec, nullable_value, nullable_value_ec};
 
 use super::event_target::ContextEventDispatchHost;
 
@@ -288,31 +288,27 @@ fn set_onabort(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx — nullable_value and callback_function_value
-    // return JsResult.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
+    let signal_object = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
+    let callback = nullable_value_ec(
+        args.get_or_undefined(0),
+        ec,
+        callback_function_value_ec,
+    )?;
 
-    let signal_object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("AbortSignal receiver is not an object")
-    }).map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined.clone()))?;
-    let callback = nullable_value(args.get_or_undefined(0), callback_function_value)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
-
-    // Create ec_ref AFTER the closures that capture ctx.
-    let ec_ref = js_engine::boa::context_as_ec(ctx);
-    let previous = try_with_abort_signal_mut(this, ec_ref, |signal| {
+    let previous = try_with_abort_signal_mut(this, ec, |signal| {
         signal.replace_onabort(callback.clone())
     })?;
 
     if let Some(previous) = previous {
-        try_with_event_target_mut(this, ec_ref, |target| {
+        try_with_event_target_mut(this, ec, |target| {
             target.remove_event_listener_entry("abort", &previous, false);
         })?;
     }
 
     if let Some(callback) = callback {
-        try_with_event_target_mut(this, ec_ref, |target| {
+        // Note: keeps ec_to_ctx — add_event_listener returns JsResult.
+        let add_result = try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
                 &signal_object,
                 String::from("abort"),
@@ -322,11 +318,13 @@ fn set_onabort(
                 Some(false),
                 None,
             )
-        })?
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
+        })?;
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        let undefined = JsValue::undefined();
+        add_result.map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
     }
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn sequence_abort_signals(

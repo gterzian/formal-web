@@ -2,9 +2,9 @@ use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLIFrameElement;
-use crate::js::with_event_target_mut;
+use crate::js::downcast::try_with_event_target_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
-use crate::webidl::{callback_function_value, nullable_value};
+use crate::webidl::{callback_function_value_ec, nullable_value_ec};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -213,41 +213,46 @@ fn set_onload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx — with_event_target_mut and
-    // with_html_iframe_element_mut are not yet generic.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
-    (|| -> JsResult<JsValue> {
-        let iframe_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
+    let iframe_object = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
+    let callback = nullable_value_ec(
+        args.get_or_undefined(0),
+        ec,
+        callback_function_value_ec,
+    )?;
+
+    // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
+    let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
+        iframe.replace_onload(callback.clone())
+    } else {
+        return Err(ec.new_type_error("receiver is not an HTMLIFrameElement"));
+    };
+
+    if let Some(previous) = previous {
+        try_with_event_target_mut(this, ec, |target| {
+            target.remove_event_listener_entry("load", &previous, false);
         })?;
-        let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
-        let previous =
-            with_html_iframe_element_mut(this, |iframe| iframe.replace_onload(callback.clone()))?;
+    }
 
-        if let Some(previous) = previous {
-            with_event_target_mut(this, |target| {
-                target.remove_event_listener_entry("load", &previous, false);
-            })?;
-        }
+    if let Some(callback) = callback {
+        // Note: keeps ec_to_ctx — add_event_listener returns JsResult.
+        let add_result = try_with_event_target_mut(this, ec, |target| {
+            target.add_event_listener(
+                &iframe_object,
+                String::from("load"),
+                Some(callback),
+                false,
+                false,
+                Some(false),
+                None,
+            )
+        })?;
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        let undefined = JsValue::undefined();
+        add_result.map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
+    }
 
-        if let Some(callback) = callback {
-            with_event_target_mut(this, |target| {
-                target.add_event_listener(
-                    &iframe_object,
-                    String::from("load"),
-                    Some(callback),
-                    false,
-                    false,
-                    Some(false),
-                    None,
-                )
-            })??;
-        }
-
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))
+    Ok(ec.value_undefined())
 }
 
 fn get_onerror(
@@ -266,41 +271,46 @@ fn set_onerror(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx — with_event_target_mut and
-    // with_html_iframe_element_mut are not yet generic.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
-    (|| -> JsResult<JsValue> {
-        let iframe_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
+    let iframe_object = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
+    let callback = nullable_value_ec(
+        args.get_or_undefined(0),
+        ec,
+        callback_function_value_ec,
+    )?;
+
+    // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
+    let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
+        iframe.replace_onerror(callback.clone())
+    } else {
+        return Err(ec.new_type_error("receiver is not an HTMLIFrameElement"));
+    };
+
+    if let Some(previous) = previous {
+        try_with_event_target_mut(this, ec, |target| {
+            target.remove_event_listener_entry("error", &previous, false);
         })?;
-        let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
-        let previous =
-            with_html_iframe_element_mut(this, |iframe| iframe.replace_onerror(callback.clone()))?;
+    }
 
-        if let Some(previous) = previous {
-            with_event_target_mut(this, |target| {
-                target.remove_event_listener_entry("error", &previous, false);
-            })?;
-        }
+    if let Some(callback) = callback {
+        // Note: keeps ec_to_ctx — add_event_listener returns JsResult.
+        let add_result = try_with_event_target_mut(this, ec, |target| {
+            target.add_event_listener(
+                &iframe_object,
+                String::from("error"),
+                Some(callback),
+                false,
+                false,
+                Some(false),
+                None,
+            )
+        })?;
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        let undefined = JsValue::undefined();
+        add_result.map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
+    }
 
-        if let Some(callback) = callback {
-            with_event_target_mut(this, |target| {
-                target.add_event_listener(
-                    &iframe_object,
-                    String::from("error"),
-                    Some(callback),
-                    false,
-                    false,
-                    Some(false),
-                    None,
-                )
-            })??;
-        }
-
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))
+    Ok(ec.value_undefined())
 }
 
 fn set_src(

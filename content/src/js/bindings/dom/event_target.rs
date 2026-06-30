@@ -296,6 +296,21 @@ pub(crate) fn flatten(options: &JsValue, context: &mut Context) -> JsResult<bool
     Ok(object.get(js_string!("capture"), context)?.to_boolean())
 }
 
+pub(crate) fn flatten_ec(
+    options: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<bool, crate::js::Types> {
+    if let Some(boolean) = crate::js::Types::value_as_bool(options) {
+        return Ok(boolean);
+    }
+    let Some(object) = crate::js::Types::value_as_object(options) else {
+        return Ok(false);
+    };
+    let capture_key = ec.property_key_from_str("capture");
+    let capture_val = ExecutionContext::get(ec, object, capture_key)?;
+    Ok(ec.to_boolean(&capture_val))
+}
+
 pub(crate) fn flatten_more(
     options: &JsValue,
     context: &mut Context,

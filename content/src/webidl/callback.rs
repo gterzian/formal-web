@@ -1,4 +1,5 @@
 use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // Note: The content process reuses `Callback` for both [callback function](https://webidl.spec.whatwg.org/#idl-callback-function) type values and objects implementing a [callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) because both Web IDL representations are a tuple of (object reference, callback context).
 // Note: The callback context remains implicit in the current single-realm content process until callback-realm bookkeeping is modeled explicitly.
@@ -50,6 +51,15 @@ pub(crate) fn callback_interface_type_value(value: &JsValue) -> JsResult<Callbac
     Ok(Callback::from_object(object.clone()))
 }
 
+pub(crate) fn callback_interface_type_value_ec(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Callback, crate::js::Types> {
+    let object = crate::js::Types::value_as_object(value)
+        .ok_or_else(|| ec.new_type_error("callback interface value is not an object"))?;
+    Ok(Callback::from_object(object.clone()))
+}
+
 /// <https://webidl.spec.whatwg.org/#js-to-callback-function>
 pub(crate) fn callback_function_value(value: &JsValue) -> JsResult<Callback> {
     // Step 1: "If the result of calling IsCallable(V) is false and the conversion to an IDL value is not being performed due to V being assigned to an attribute whose type is a nullable callback function that is annotated with [LegacyTreatNonObjectAsNull], then throw a TypeError."
@@ -65,6 +75,18 @@ pub(crate) fn callback_function_value(value: &JsValue) -> JsResult<Callback> {
 
     // Step 2: "Return the IDL callback function type value that represents a reference to the same object that V represents, with the incumbent settings object as the callback context."
     // Note: The `Callback` stores the referenced [object implementing a callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) or callback function; the callback context remains implicit in the current single-realm implementation.
+    Ok(Callback::from_object(object.clone()))
+}
+
+pub(crate) fn callback_function_value_ec(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Callback, crate::js::Types> {
+    let object = crate::js::Types::value_as_object(value)
+        .ok_or_else(|| ec.new_type_error("callback function value is not callable"))?;
+    if !ec.is_callable(value) {
+        return Err(ec.new_type_error("callback function value is not callable"));
+    }
     Ok(Callback::from_object(object.clone()))
 }
 
@@ -88,6 +110,20 @@ pub(crate) fn nullable_value<T>(
 
     // Step 4: "Otherwise, return the result of converting V using the rules for the inner IDL type T."
     convert_inner(value).map(Some)
+}
+
+pub(crate) fn nullable_value_ec<T>(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    convert_inner: impl FnOnce(
+        &JsValue,
+        &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<T, crate::js::Types>,
+) -> Completion<Option<T>, crate::js::Types> {
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    convert_inner(value, ec).map(Some)
 }
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
