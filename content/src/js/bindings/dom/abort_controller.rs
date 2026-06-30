@@ -70,16 +70,17 @@ fn abort(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — signal_abort_with_context takes &mut Context.
     let reason = abort_reason_from_argument(args.get(0), ec)?;
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("AbortController receiver is not an object")
-        })?;
-        let signal = with_abort_controller_ref(&controller, |controller| controller.signal())?;
-        signal_abort_with_context(&signal, reason, ctx)?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let undefined = JsValue::undefined();
+
+    let controller = this.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("AbortController receiver is not an object")
+    }).map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    let signal = with_abort_controller_ref(&controller, |controller| controller.signal())
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    signal_abort_with_context(&signal, reason, ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
+    Ok(JsValue::undefined())
 }

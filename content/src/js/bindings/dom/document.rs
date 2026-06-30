@@ -9,7 +9,8 @@ use boa_engine::{
 
 use crate::dom::Document;
 use crate::js::platform_objects::{
-    document_object, invalidate_cached_node_ids, resolve_element_object,
+    document_object, document_object_ec, invalidate_cached_node_ids,
+    resolve_element_object, resolve_element_object_ec,
     resolve_or_create_text_node_object,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -178,25 +179,43 @@ fn with_document<R>(this: &JsValue, f: impl FnOnce(&Document) -> R) -> JsResult<
     Ok(f(&document))
 }
 
+fn try_with_document<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&Document) -> R,
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("document receiver is not an object"))?;
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(doc) = data.downcast_ref::<Document>() {
+            return Ok(f(doc));
+        }
+    }
+    Err(ec.new_type_error("receiver is not a Document"))
+}
+
 fn get_element_by_id(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — .to_string(ctx)? needs Context.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let id = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let node_id = with_document(this, |document| document.get_element_by_id(&id))?;
-        match node_id {
-            Some(node_id) => Ok(resolve_element_object(node_id, ctx)?.into()),
-            None => Ok(JsValue::null()),
+    let undefined = JsValue::undefined();
+    let id = args
+        .get_or_undefined(0)
+        .to_string(ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+        .to_std_string_escaped();
+    let node_id = with_document(this, |document| document.get_element_by_id(&id))
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
+    match node_id {
+        Some(node_id) => {
+            let obj = resolve_element_object_ec(node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
         }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        None => Ok(ec.value_null()),
+    }
 }
 
 fn query_selector(
@@ -204,21 +223,25 @@ fn query_selector(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — .to_string(ctx)? needs Context.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let selector = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let node_id = with_document(this, |document| document.query_selector(&selector))?
-            .map_err(|error| JsNativeError::syntax().with_message(error))?;
-        match node_id {
-            Some(node_id) => Ok(resolve_element_object(node_id, ctx)?.into()),
-            None => Ok(JsValue::null()),
+    let undefined = JsValue::undefined();
+    let selector = args
+        .get_or_undefined(0)
+        .to_string(ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+        .to_std_string_escaped();
+    let node_id = with_document(this, |document| document.query_selector(&selector))
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+        .map_err(|error| JsNativeError::syntax().with_message(error))
+        .map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined))?;
+    match node_id {
+        Some(node_id) => {
+            let obj = resolve_element_object_ec(node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
         }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        None => Ok(ec.value_null()),
+    }
 }
 
 fn query_selector_all(
@@ -226,22 +249,24 @@ fn query_selector_all(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — .to_string(ctx)? and JsArray::from_iter.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let selector = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let node_ids = with_document(this, |document| document.query_selector_all(&selector))?
-            .map_err(|error| JsNativeError::syntax().with_message(error))?;
-        let values = node_ids
-            .into_iter()
-            .map(|node_id| resolve_element_object(node_id, ctx).map(JsValue::from))
-            .collect::<JsResult<Vec<_>>>()?;
-        Ok(JsArray::from_iter(values, ctx).into())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let undefined = JsValue::undefined();
+    let selector = args
+        .get_or_undefined(0)
+        .to_string(ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+        .to_std_string_escaped();
+    let node_ids = with_document(this, |document| document.query_selector_all(&selector))
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+        .map_err(|error| JsNativeError::syntax().with_message(error))
+        .map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    let values = node_ids
+        .into_iter()
+        .map(|node_id| resolve_element_object(node_id, ctx).map(JsValue::from))
+        .collect::<JsResult<Vec<_>>>()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    Ok(JsArray::from_iter(values, ctx).into())
 }
 
 fn get_elements_by_tag_name(
@@ -249,24 +274,26 @@ fn get_elements_by_tag_name(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — .to_string(ctx)? and JsArray::from_iter.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let qualified_name = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let node_ids = with_document(this, |document| {
-            document.get_elements_by_tag_name(&qualified_name)
-        })?
-        .map_err(|error| JsNativeError::syntax().with_message(error))?;
-        let values = node_ids
-            .into_iter()
-            .map(|node_id| resolve_element_object(node_id, ctx).map(JsValue::from))
-            .collect::<JsResult<Vec<_>>>()?;
-        Ok(JsArray::from_iter(values, ctx).into())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let undefined = JsValue::undefined();
+    let qualified_name = args
+        .get_or_undefined(0)
+        .to_string(ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+        .to_std_string_escaped();
+    let node_ids = with_document(this, |document| {
+        document.get_elements_by_tag_name(&qualified_name)
+    })
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+    .map_err(|error| JsNativeError::syntax().with_message(error))
+    .map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    let values = node_ids
+        .into_iter()
+        .map(|node_id| resolve_element_object(node_id, ctx).map(JsValue::from))
+        .collect::<JsResult<Vec<_>>>()
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    Ok(JsArray::from_iter(values, ctx).into())
 }
 
 fn create_element(
@@ -274,17 +301,18 @@ fn create_element(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — .to_string(ctx)? needs Context.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let local_name = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let node_id = with_document(this, |document| document.create_element(&local_name))?;
-        Ok(resolve_element_object(node_id, ctx)?.into())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let undefined = JsValue::undefined();
+    let local_name = args
+        .get_or_undefined(0)
+        .to_string(ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+        .to_std_string_escaped();
+    let node_id = with_document(this, |document| document.create_element(&local_name))
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
+    let obj = resolve_element_object_ec(node_id, ec)?;
+    Ok(crate::js::Types::value_from_object(obj))
 }
 
 fn create_element_ns(
@@ -292,30 +320,33 @@ fn create_element_ns(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — .to_string(ctx)? needs Context.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let namespace =
-            if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined() {
-                None
-            } else {
-                Some(
-                    args.get_or_undefined(0)
-                        .to_string(ctx)?
-                        .to_std_string_escaped(),
-                )
-            };
-        let qualified_name = args
-            .get_or_undefined(1)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let node_id = with_document(this, |document| {
-            document.create_element_ns(namespace.as_deref(), &qualified_name)
-        })?
-        .map_err(|error| JsNativeError::syntax().with_message(error))?;
-        Ok(resolve_element_object(node_id, ctx)?.into())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let undefined = JsValue::undefined();
+    let namespace =
+        if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined() {
+            None
+        } else {
+            Some(
+                args.get_or_undefined(0)
+                    .to_string(ctx)
+                    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+                    .to_std_string_escaped(),
+            )
+        };
+    let qualified_name = args
+        .get_or_undefined(1)
+        .to_string(ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+        .to_std_string_escaped();
+    let node_id = with_document(this, |document| {
+        document.create_element_ns(namespace.as_deref(), &qualified_name)
+    })
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
+    .map_err(|error| JsNativeError::syntax().with_message(error))
+    .map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined))?;
+    let obj = resolve_element_object_ec(node_id, ec)?;
+    Ok(crate::js::Types::value_from_object(obj))
 }
 
 fn create_text_node(
