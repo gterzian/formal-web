@@ -73,7 +73,47 @@ impl<T: JsTypes> Drop for GcRootHandle<T> {
 }
 
 // ============================================================================
-// SECTION III: ENGINE-SPECIFIC IMPLEMENTATIONS
+// SECTION III: GC-TRAIT MACRO
+// ============================================================================
+
+/// Declarative macro that derives the correct GC traits for a struct
+/// regardless of the active JS engine backend.
+///
+/// On Boa: attaches `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]`.
+/// On JSC: generates no-op `Trace` and `Finalize` impls.
+///
+/// Usage:
+/// ```ignore
+/// js_engine::gc::impl_gc_traits! {
+///     /// Optional doc comment.
+///     pub(crate) struct MyWidget {
+///         field: String,
+///         callback: Option<GcRootHandle<TestTypes>>,
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! impl_gc_traits {
+    ($(#[$attr:meta])* $vis:vis struct $name:ident { $($fields:tt)* }) => {
+        $(#[$attr])*
+        #[cfg_attr(
+            feature = "boa",
+            derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
+        )]
+        $vis struct $name {
+            $($fields)*
+        }
+
+        #[cfg(not(feature = "boa"))]
+        unsafe impl $crate::gc::Trace for $name {}
+
+        #[cfg(not(feature = "boa"))]
+        impl $crate::gc::Finalize for $name {}
+    };
+}
+
+// ============================================================================
+// SECTION IV: ENGINE-SPECIFIC IMPLEMENTATIONS
 // ============================================================================
 
 // ── Boa backend ───────────────────────────────────────────────────────────

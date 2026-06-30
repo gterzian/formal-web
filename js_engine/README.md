@@ -300,7 +300,7 @@ See module docs for implementation status and quirks:
 |---|---|---|
 | Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, 12 unit tests pass |
 | JSC | `src/jsc/mod.rs` | ✅ Full parity — all trait methods implemented, 15 unit tests pass. Complex ops (promises, BigInt, JSON) use `JSEvaluateScript` fallbacks. 1 known crash (`JSObjectSetProperty` on eval-created plain objects). |
-| GC | `src/gc.rs` | ✅ POC complete — `cfg_attr(feature = "boa", derive(...))` pattern proven in `TestWidget`. Real-code migration deferred. |
+| GC | `src/gc.rs` | ✅ POC complete — `impl_gc_traits!` macro eliminates cfg from struct definitions. Both backends supported. Real-code migration deferred. |
 
 ## Migration plan
 
@@ -376,8 +376,8 @@ has zero Boa or JSC imports — the POC is fully engine-agnostic.
 ### Current state after Phase 5
 
 - `Callback<T: JsTypes>` stores `T::JsObject`
-- `TestWidget` derives `GcObject` (engine-agnostic macro expanding to the
-  right backend's traits)
+- `TestWidget` uses `impl_gc_traits!` (engine-agnostic macro expanding to
+  the right backend's traits)
 - The test file compiles with both `--features boa` and `--features jsc`
   (assuming content crate gains a `jsc` feature flag)
 - All 27 unit tests (12 Boa + 15 JSC) continue passing
@@ -396,9 +396,9 @@ has zero Boa or JSC imports — the POC is fully engine-agnostic.
 | 6b. EDS context leak | `EventDispatchHost::context()` replaced with `ec()` returning `&mut dyn ExecutionContext<BoaTypes>`. `host.context()` call sites in dispatch/abort updated. | ✅ |
 | 6c. EDS adapter removal | `ContextEventDispatchHost` × 2 removed. Stream objects route dispatch through `EnvironmentSettingsObject` directly. | ❌ |
 | 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>`. All domain files converted: `window.rs`, `window_or_worker_global_scope.rs`, `windowproxy.rs`, `location.rs`, `html_media_element.rs`, `safe_passing_of_structured_data.rs`, `environment_settings_object.rs`, `conversions.rs`, `namespace.rs`, `async_iterable.rs`. Streams done earlier. Internal helpers in structured-data and async-iterable remain as `&mut Context` (called via `ec_to_ctx` bridge). | ✅ |
-| 8. Generic Callback | GC derives abstracted in POC (`cfg_attr` on TestWidget, JSC `GcRootHandle` example). Real-code `Callback<T>` deferred. | ✅ POC |
+| 8. Generic Callback | GC derives abstracted via `impl_gc_traits!` macro (engine-agnostic). Real-code `Callback<T>` deferred. | ✅ |
 | 9. JSC parity | Missing JSC methods implemented. 25 `todo!()` stubs filled. Both backends compile and pass unit tests (Boa 12/12, JSC 15/16). | ✅ |
-| 10. JSC content | Content crate compiles & tests pass with `--features jsc`. Requires: (1) feature flag wiring, (2) conditional `Types` alias, (3) gate Boa-specific content, (4) JSC object creation/rooting. Test file has cfg arms ready. | ❌ next |
+| 10. JSC content | Content crate compiles & tests pass with `--features jsc`. Requires: (1) conditional `Types` alias, (2) gate Boa-specific content, (3) JSC object creation/rooting. Test file has JSC setup + 5 ignored tests ready. | ❌ next |
 
 ## Current state
 
@@ -457,7 +457,7 @@ changing this one line.
 > surface can support every real-world pattern found in the content codebase.
 > Migration of real code begins only after the POC is complete and validated.
 
-### Current step: POC complete — 49 tests pass (Boa), real-code migration next
+### Current step: POC complete — 50 tests pass (Boa), real-code migration next
 
 The generic JS layer POC is complete.  `content/src/generic_js_test.rs`
 contains a full TestWidget domain type with 49 passing unit tests covering
@@ -468,8 +468,9 @@ every JS integration pattern found in content/:
   callback storage, sequence iteration, array construction
 - **Engine operations**: all `ExecutionContext` / `JsEngine` / `EcmascriptHost`
   methods exercised through generic API calls
-- **GC**: `cfg_attr(feature = "boa", derive(...))` on TestWidget with
-  documented JSC equivalent (`GcRootHandle`).  `create_root` is on
+- **GC**: `impl_gc_traits!` macro on TestWidget handles both backends.
+  `GcRootHandle<TestTypes>` for callback storage, `create_object_with_any` /
+  `with_object_any` for platform-object data.  `create_root` is on
   `ExecutionContext<T>` (added as part of this phase).
 
 The exercise functions (`exercise_generic_api`, `exercise_engine_api`,

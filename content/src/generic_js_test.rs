@@ -22,47 +22,23 @@ type JsObject = <TestTypes as JsTypes>::JsObject;
 
 // ── Domain type ──────────────────────────────────────────────────────────
 
-/// A toy domain struct exercising the full generic-API binding pattern.
-///
-/// GC derives are engine-specific and conditional on the active backend.
-/// When `feature = "jsc"` is added to the content crate, a corresponding
-/// `cfg_attr` arm (or empty, since JSC GCs natively) will be added here.
-///
-/// ## Example: keeping a JS reference alive
-///
-/// The `on_change` field demonstrates how a domain struct holds a JS
-/// callback reference:
-///
-/// | Backend | Mechanism | Field type |
-/// |---|---|---|
-/// A toy domain struct exercising the full generic-API binding pattern.
-///
-/// The `on_change` field uses `GcRootHandle<TestTypes>` which is a generic
-/// RAII guard: on Boa it wraps a `JsValue` that the GC traces natively;
-/// on JSC it calls `JSValueProtect` / `JSValueUnprotect` for explicit rooting.
-///
-/// GC tracing is the one genuinely engine-specific concern.  The
-/// `#[cfg_attr(feature = "boa", derive(...))]` and the manual JSC impls
-/// below are the only `#[cfg]` in this file.  A future `#[derive(GcTrace)]`
-/// macro in `js_engine` will eliminate even these.
-#[cfg_attr(
-    feature = "boa",
-    derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
-)]
-pub(crate) struct TestWidget {
-    title: String,
-    visible: bool,
-    count: u32,
-    on_change: Option<GcRootHandle<TestTypes>>,
+js_engine::impl_gc_traits! {
+    /// A toy domain struct exercising the full generic-API binding pattern.
+    ///
+    /// The `on_change` field uses `GcRootHandle<TestTypes>` which is a generic
+    /// RAII guard: on Boa it wraps a `JsValue` that the GC traces natively;
+    /// on JSC it calls `JSValueProtect` / `JSValueUnprotect` for explicit
+    /// rooting.
+    ///
+    /// GC trait derivation is handled by [`js_engine::impl_gc_traits`] which
+    /// expands to the correct backend-specific traits.
+    pub(crate) struct TestWidget {
+        title: String,
+        visible: bool,
+        count: u32,
+        on_change: Option<GcRootHandle<TestTypes>>,
+    }
 }
-
-// JSC backend: no derive macro — implement Trace/Finalize by hand.
-#[cfg(feature = "jsc")]
-#[allow(unexpected_cfgs)]
-unsafe impl js_engine::gc::Trace for TestWidget {}
-#[cfg(feature = "jsc")]
-#[allow(unexpected_cfgs)]
-impl js_engine::gc::Finalize for TestWidget {}
 
 impl TestWidget {
     #[allow(dead_code)]
