@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, js_string,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string,
     native_function::NativeFunction,
     object::{FunctionObjectBuilder, ObjectInitializer, builtins::JsArray},
     property::Attribute,
@@ -11,7 +11,7 @@ use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
     HTMLVideoElement,
 };
-use crate::js::platform_objects::invalidate_cached_node_ids;
+use crate::js::platform_objects::invalidate_cached_node_ids_ec;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -274,20 +274,11 @@ fn set_inner_html(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let html = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let dropped_node_ids = with_element_ref(this, Element::child_subtree_node_ids)?;
-        invalidate_cached_node_ids(ctx, &dropped_node_ids)?;
-        with_element_ref(this, |element| {
-            element.set_inner_html(&html);
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let html = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    let dropped_node_ids = try_with_element_ref(this, ec, Element::child_subtree_node_ids)?;
+    invalidate_cached_node_ids_ec(ec, &dropped_node_ids)?;
+    try_with_element_ref(this, ec, |element| element.set_inner_html(&html))?;
+    Ok(ec.value_undefined())
 }
 
 /// <https://dom.spec.whatwg.org/#dom-element-classlist>
@@ -743,20 +734,11 @@ fn get_attribute(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let name = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        Ok(
-            match with_element_ref(this, |element| element.get_attribute(&name))? {
-                Some(value) => JsValue::from(JsString::from(value.as_str())),
-                None => JsValue::null(),
-            },
-        )
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let name = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    match try_with_element_ref(this, ec, |element| element.get_attribute(&name))? {
+        Some(value) => Ok(ec.value_from_string(ec.js_string_from_str(value.as_str()))),
+        None => Ok(ec.value_null()),
+    }
 }
 
 fn has_attribute(
@@ -765,17 +747,9 @@ fn has_attribute(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let name = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        Ok(JsValue::from(with_element_ref(this, |element| {
-            element.has_attribute(&name)
-        })?))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let name = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    let result = try_with_element_ref(this, ec, |element| element.has_attribute(&name))?;
+    Ok(ec.value_from_bool(result))
 }
 
 fn set_attribute(
@@ -784,22 +758,10 @@ fn set_attribute(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let name = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let value = args
-            .get_or_undefined(1)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_element_ref(this, |element| {
-            element.set_attribute(&name, &value);
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let name = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined.clone()))?;
+    let value = ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined))?;
+    try_with_element_ref(this, ec, |element| element.set_attribute(&name, &value))?;
+    Ok(ec.value_undefined())
 }
 
 fn set_attribute_ns(
@@ -808,32 +770,20 @@ fn set_attribute_ns(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let namespace =
-            if args.get_or_undefined(0).is_null() || args.get_or_undefined(0).is_undefined() {
-                None
-            } else {
-                Some(
-                    args.get_or_undefined(0)
-                        .to_string(ctx)?
-                        .to_std_string_escaped(),
-                )
-            };
-        let qualified_name = args
-            .get_or_undefined(1)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let value = args
-            .get_or_undefined(2)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_element_ref(this, |element| {
-            element.set_attribute_ns(namespace.as_deref(), &qualified_name, &value);
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let first = args.first().cloned().unwrap_or(value_undefined.clone());
+    let is_nullish =
+        crate::js::Types::value_is_null(&first) || crate::js::Types::value_is_undefined(&first);
+    let namespace = if is_nullish {
+        None
+    } else {
+        Some(ec.to_rust_string(first)?)
+    };
+    let qualified_name = ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined.clone()))?;
+    let value = ec.to_rust_string(args.get(2).cloned().unwrap_or(value_undefined))?;
+    try_with_element_ref(this, ec, |element| {
+        element.set_attribute_ns(namespace.as_deref(), &qualified_name, &value);
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn remove_attribute(
@@ -842,18 +792,9 @@ fn remove_attribute(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let name = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_element_ref(this, |element| {
-            element.remove_attribute(&name);
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let name = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_element_ref(this, ec, |element| element.remove_attribute(&name))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_bounding_client_rect(

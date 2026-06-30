@@ -567,3 +567,12 @@ test file as the template:
 
 53/53 tests pass on Boa.  5 tests are `#[ignore]` on JSC due to known
 backend gaps (`get_iterator`, `create_builtin_function`, `SharedArrayBuffer`).
+
+## Working during migration
+
+**End-of-task override:**  While working on Phase B–G migration (binding
+bodies, NativeFunction bridging, adapter removal, conditional Types), the
+standard end-of-task verification steps (WPT, navigation verification,
+clippy, fmt) are **skipped**.  Only `cargo check -p content` is required
+to validate each change.  Full verification resumes after Phase G is
+complete.

@@ -148,6 +148,16 @@ pub(crate) fn take_animation_frame_callbacks_ec(
         .map_err(ec_to_context_error("take_animation_frame_callbacks_ec"))
 }
 
+pub(crate) fn resolve_or_create_text_node_object_ec(
+    document: Rc<RefCell<BaseDocument>>,
+    node_id: usize,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    resolve_or_create_text_node_object(document, node_id, ctx)
+        .map_err(ec_to_context_error("resolve_or_create_text_node_object_ec"))
+}
+
 fn cached_node_object(context: &Context, node_id: usize) -> JsResult<Option<JsObject>> {
     with_global_scope(context, |global_scope| {
         Ok(global_scope.cached_node_object(node_id))
