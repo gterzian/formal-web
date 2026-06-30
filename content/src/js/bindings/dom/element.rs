@@ -690,30 +690,16 @@ fn insert_adjacent_text(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let where_ = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let data = args
-            .get_or_undefined(1)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_element_ref(this, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
-            |error| {
-                JsError::from_opaque(JsValue::from(
-                    create_interface_instance::<crate::js::Types, DOMException>(
-                        error,
-                        js_engine::boa::context_as_ec(ctx),
-                    )
-                    .expect("DOMException construction should not fail"),
-                ))
-            },
-        )?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let where_ = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined.clone()))?;
+    let data = ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined))?;
+    try_with_element_ref(this, ec, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
+        |error| {
+            create_interface_instance::<crate::js::Types, DOMException>(error, ec)
+                .map(|obj| crate::js::Types::value_from_object(obj))
+                .unwrap_or_else(|err| err)
+        },
+    )?;
+    Ok(ec.value_undefined())
 }
 
 fn get_attribute(
@@ -790,22 +776,25 @@ fn get_bounding_client_rect(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let rect = with_element_ref(this, |element| {
-            element.bounding_client_rect().unwrap_or_default()
-        })?;
-        let mut initializer = ObjectInitializer::new(ctx);
-        initializer.property(js_string!("x"), rect.x, Attribute::all());
-        initializer.property(js_string!("y"), rect.y, Attribute::all());
-        initializer.property(js_string!("width"), rect.width, Attribute::all());
-        initializer.property(js_string!("height"), rect.height, Attribute::all());
-        initializer.property(js_string!("top"), rect.top, Attribute::all());
-        initializer.property(js_string!("right"), rect.right, Attribute::all());
-        initializer.property(js_string!("bottom"), rect.bottom, Attribute::all());
-        initializer.property(js_string!("left"), rect.left, Attribute::all());
-        Ok(initializer.build().into())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let rect = try_with_element_ref(this, ec, |element| {
+        element.bounding_client_rect().unwrap_or_default()
+    })?;
+    let obj = ec.create_plain_object(None);
+    let vx = ec.value_from_number(rect.x);
+    let vy = ec.value_from_number(rect.y);
+    let vw = ec.value_from_number(rect.width);
+    let vh = ec.value_from_number(rect.height);
+    let vt = ec.value_from_number(rect.top);
+    let vr = ec.value_from_number(rect.right);
+    let vb = ec.value_from_number(rect.bottom);
+    let vl = ec.value_from_number(rect.left);
+    ec.object_set_property(obj.clone(), "x", vx)?;
+    ec.object_set_property(obj.clone(), "y", vy)?;
+    ec.object_set_property(obj.clone(), "width", vw)?;
+    ec.object_set_property(obj.clone(), "height", vh)?;
+    ec.object_set_property(obj.clone(), "top", vt)?;
+    ec.object_set_property(obj.clone(), "right", vr)?;
+    ec.object_set_property(obj.clone(), "bottom", vb)?;
+    ec.object_set_property(obj.clone(), "left", vl)?;
+    Ok(crate::js::Types::value_from_object(obj))
 }

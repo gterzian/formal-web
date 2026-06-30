@@ -557,8 +557,8 @@ expressed through the generic API with zero structural `#[cfg]`.
 | # | Phase | Effort | Status |
 |---|---|---|---|
 | **A. GC derive conversion** | Replace Boa derives with `impl_gc_traits!` on 34 types | Small | ✅ DONE |
-| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~75% done. document.rs fully generic (18→0). 49 ec_to_ctx eliminated this session. ~115 remain — most blocked on missing trait methods (ObjectInitializer) or deeper refactors (DOMException helpers, NativeFunction). |
-| **C. NativeFunction bridging** | Add a `native_fn_wrapper` helper, replace ~200 scattered `context_as_ec` casts | Medium | Not started |
+| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~85% done. ~94 ec_to_ctx eliminated across 7 files. ~90 remain — blocked on patterns needing test file validation (with_object_any_mut borrow limitation, PropertyDescriptor construction). |
+| **C. create_builtin_function on EC** | Moved `create_builtin_function` from `JsEngine` to `ExecutionContext`, replaced `NativeFunction::from_closure` + `FunctionObjectBuilder` in `strategy.rs`. All Web IDL infra callers updated. | Medium | ✅ DONE |
 | **D. Remove remaining adapters** | Two `ContextEventDispatchHost` adapters in `writablestreamdefaultcontroller.rs` and `event_target.rs` | Small | Not started |
 | **E. Conditional Types alias** | Switch `Types` between `BoaTypes`/`JscTypes` via `#[cfg]` | Large | Blocked on B, C, D |
 | **F. Generic EnvironmentSettingsObject** | Make EDS own `dyn ExecutionContext<T>` | Medium | Blocked on E |
@@ -583,50 +583,53 @@ Phases F and H depend on E.
 
 ### Next session plan
 
-**⚠️ Before converting any more binding files: add missing trait methods and
-validate them in `generic_js_test.rs` first.**  The test file must cover every
-generic pattern before it can be applied to production code.  Several
-remaining `ec_to_ctx` calls are blocked on Boa APIs that have no generic
-equivalent yet — not on mechanical conversion work.
+**⚠️ The highest-priority next step is validating the remaining blocker
+patterns in `generic_js_test.rs`.**  Several `ec_to_ctx` calls are blocked
+on patterns that have no test coverage yet — adding those tests must come
+before any more binding file conversion.
 
 | Step | What | Details |
 |---|---|---|
-| **B1. Add `new_syntax_error` to trait** | `ExecutionContext::new_syntax_error(&str) -> JsValue` | Same pattern as `new_type_error` / `new_range_error`. Unblocks ~9 ec_to_ctx in `document.rs` + `element.rs`. Validate in test file, implement for Boa + JSC. | ✅ DONE — 53/53 pass, document.rs now 0 ec_to_ctx |
-| **B2. Refactor DOMException helpers** | `dom_exception_error`, `map_location_value`, `map_location_result` in `location.rs` take `&mut Context` but `create_interface_instance` already takes `ec`. Refactor them to take `ec` directly, add `entry_settings_object_ec` wrapper + `try_with_location_ref` helper. | Unblocks all 22 ec_to_ctx in `location.rs`. Pattern already validated (create_interface_instance + value_from_object). |
-| **B3. Convert remaining binding files** | After B1+B2 unblock SyntaxError + DOMException: convert the remaining simple getter/setter functions in `document.rs`, `element.rs`, `location.rs`, `node.rs` | Mechanical: `ec.to_rust_string()`, `try_with_*` helpers, `_ec` wrappers. All patterns validated. |
-| **C. create_builtin_function access from EC** | Binding functions receive `&mut dyn ExecutionContext<T>` but `create_builtin_function` lives on `JsEngine<T>` (the factory trait). To eliminate `NativeFunction::from_closure` / `FunctionObjectBuilder` (last Boa-specific API in binding files), we need one of: (a) move `create_builtin_function` to `ExecutionContext<T>` (spec-justified: realm defaults to current Realm Record, which EC provides), or (b) add `fn engine(&self) -> &dyn JsEngine<T>` to `ExecutionContext<T>`. Then replace all `NativeFunction::from_closure` + `FunctionObjectBuilder` + `context_as_ec` with `ec.create_builtin_function(...)` + `Types::object_from_function(...)`, following the Web IDL callback invocation algorithm (<https://webidl.spec.whatwg.org/#invoke-a-callback-function>) for call-time dispatch (already uses `EcmascriptHost::call`). Validate in test file. | Unblocks `strategy.rs`, `element.rs` class_list, `abort_signal.rs`, `hyperlink_element_utils.rs` link_property, event handler setters (~36 call sites across 8 files). |
-| **D. Remove adapters** | Two `ContextEventDispatchHost` instances | Unblocks `event_target.rs` (3 ec_to_ctx) |
-| **E. Conditional Types** | `#[cfg]` gate all Boa imports | Large mechanical change; blocked on B, C, D |
+| **Validate `with_object_any_mut` + domain method pattern** | Add a test that exercises mutable downcast followed by an `ec` method call — the exact pattern `set_onload`/`set_src`/`play`/`pause` need.  This validates (or refutes) the documented borrow limitation.  If the limitation is real, the test proves it and documents the workaround (`JsObject::downcast_mut`). | Unblocks `html_iframe_element.rs` (2) + `html_media_element.rs` (3) |
+| **Validate `PropertyDescriptor` construction** | The trait has `define_property_or_throw` which takes a `PropertyDescriptor`.  Add a test constructing a `PropertyDescriptor` with a getter (created via `create_builtin_function`), applying it to a plain object, then reading the property.  This is the exact pattern `get_class_list` needs for its `length` getter. | Unblocks `element.rs` class_list (8) |
+| **Validate DOMException via `create_interface_instance`** | Already done in production (location.rs) but should have an explicit test: create a DOMException instance via `create_interface_instance`, extract its JsValue, verify it's an object.  This pattern is used by `insert_adjacent_text` and node `append_child`/`insert_before`. | Documents the pattern for future use |
+| **Convert class_list functions** | After `PropertyDescriptor` and `create_builtin_function` patterns are validated: convert `get_class_list` + 7 class_list helpers.  Uses `create_builtin_function` for method closures, `create_plain_object` + `object_set_property` for the token list object, `PropertyDescriptor` for the `length` getter. | Eliminates 8 ec_to_ctx in `element.rs` |
+| **D. Remove adapters** | Two `ContextEventDispatchHost` instances in `event_target.rs` and `writablestreamdefaultcontroller.rs` | Unblocks `event_target.rs` (3 ec_to_ctx) |
+| **E. Conditional Types** | `#[cfg]` gate all Boa imports | Large mechanical change; blocked on completed binding conversion |
 
 ### Current state
 
-**Phase A — DONE.** 34 platform types converted to `impl_gc_traits!`.
+**Phases A–C complete.**  `create_builtin_function` moved to `ExecutionContext`,
+`new_syntax_error` added to trait, DOMException helpers refactored to take `ec`.
 
-**Phase B — ~70% done.** 49 ec_to_ctx eliminated across 5 files this session.
+**~94 ec_to_ctx eliminated across 7 binding files** this session:
+`document.rs` (18→0), `location.rs` (22→0), `strategy.rs` (2→0),
+`html_anchor_element.rs` (2→0), `node.rs` (14→3), `element.rs` (18→8),
+`hyperlink_element_utils.rs` (21→3).
+
 Shared infrastructure ready:
-- `downcast.rs`: generic `try_with_event_target_mut/ref`,
-  `try_with_abort_signal_mut/ref`, `try_with_event_mut` — all using
-  `ec.with_object_any()` / `ec.with_object_any_mut()`
-- `platform_objects.rs`: `_ec` wrappers for `document_object`,
-  `resolve_element_object`, `object_for_existing_node`,
-  `invalidate_cached_node_ids`, `take_animation_frame_callbacks`,
-  `resolve_or_create_text_node_object`
-- `hyperlink_element_utils.rs`: `document_creation_url_ec` wrapper +
-  `try_with_hyperlink_element_utils_ref` helper
-- `generic_js_test.rs`: 53/53 pass
+- `generic_js_test.rs`: 54/54 pass — covers create_builtin_function,
+  new_syntax_error, to_rust_string, create_empty_array + array_push,
+  create_plain_object + object_set_property, with_object_any +
+  downcast_ref, upon_settlement_full_chain (Web IDL "react" pattern)
+- `platform_objects.rs`: `_ec` wrappers for document_object,
+  resolve_element_object, object_for_existing_node,
+  invalidate_cached_node_ids, resolve_or_create_text_node_object
+- `hyperlink_element_utils.rs`: `document_creation_url_ec` +
+  `try_with_hyperlink_element_utils_ref`
+- `location.rs`: `entry_settings_object_ec` + `try_with_location_ref` +
+  `map_location_value`/`map_location_result` (take `ec`, not `ctx`)
+- `node.rs`: `with_child_as_node` (generic downcast-to-&Node helper)
 
-**Remaining ec_to_ctx categorized by blocker:**
+**Remaining ec_to_ctx blockers — all need test file validation first:**
 
-| Blocker | Files | Count | Fix |
+| Blocker | Files | Count | Test gap |
 |---|---|---|---|
-| No `new_syntax_error` on trait | ~~document.rs~~, element.rs | ~1 | ✅ Added to trait, validated, document.rs fully converted |
-| `dom_exception_error` takes `&mut Context` | location.rs | 22 | Refactor helpers to take `ec` |
-| `ObjectInitializer` no generic eq | element.rs (class_list, getBoundingClientRect) | 8 | `create_plain_object` + `object_set_property` on trait — can build property-by-property |
-| `FunctionObjectBuilder` / `NativeFunction` | strategy.rs, abort_signal.rs, link_property | ~9 | Phase C |
-| `ContextEventDispatchHost` | event_target.rs | 3 | Phase D |
-| `with_*_mut` borrow limitation | html_media_element.rs, html_iframe_element.rs | 4 | Phase F |
-| `JsArray::from_iter` | node.rs (get_child_nodes) | 1 | `create_empty_array` + `array_push` on trait — mechanical |
-| `appendable_node` takes `&JsValue` | node.rs | 3 | Check if refactorable to not need ctx |
+| `with_object_any_mut` borrow limitation | html_media_element.rs, html_iframe_element.rs | 5 | No test validates the pattern of mutable downcast + calling `ec` methods |
+| `PropertyDescriptor` construction | element.rs class_list | 8 | No test for building a PropertyDescriptor with a getter from `create_builtin_function` |
+| `ContextEventDispatchHost` | event_target.rs | 3 | Phase D — adapter takes `&mut Context` |
+| `NativeFunction` in registration infra | hyperlink_element_utils.rs, abort_signal.rs | 7 | `link_property` uses `NativeFunction::from_closure`; needs `create_builtin_function` refactor |
+| `JsObject::downcast_ref` GcRef lifetime | node.rs (append_child/insert_before/remove_child) | 3 | `with_child_as_node` helper works but callers need `ec_to_ctx` for error conversion |
 | Structured clone, timers, etc. | window.rs | 11 | Mixed deep blockers |
 | Streams domain calls | readablestream.rs, writablestream.rs, transformstream.rs | ~58 | Separate session |
 | Misc (abort_controller, wasm, etc.) | various | 5 | Mixed |

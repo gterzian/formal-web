@@ -10,7 +10,7 @@ use boa_engine::{
     },
 };
 
-use js_engine::{Completion, ExecutionContext, JsEngine};
+use js_engine::{Completion, ExecutionContext};
 use log::error;
 
 /// **Web IDL Promise Manipulation**

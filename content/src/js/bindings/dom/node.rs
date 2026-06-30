@@ -507,20 +507,15 @@ fn get_child_nodes(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx — JsArray::from_iter needs Context.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
-    let (document, node_ids) = with_node_ref(this, |node| {
+    let (document, node_ids) = try_with_node_ref(this, ec, |node| {
         (Rc::clone(&node.document), node.child_node_ids())
-    }).map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
-    let values = node_ids
-        .into_iter()
-        .map(|node_id| {
-            object_for_existing_node(Rc::clone(&document), node_id, ctx).map(JsValue::from)
-        })
-        .collect::<JsResult<Vec<_>>>()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
-    Ok(JsArray::from_iter(values, ctx).into())
+    })?;
+    let array = ec.create_empty_array();
+    for node_id in node_ids {
+        let obj = object_for_existing_node_ec(Rc::clone(&document), node_id, ec)?;
+        ec.array_push(&array, crate::js::Types::value_from_object(obj))?;
+    }
+    Ok(crate::js::Types::value_from_object(array))
 }
 
 fn get_node_type(
@@ -618,21 +613,56 @@ fn set_text_content(
     Ok(ec.value_undefined())
 }
 
+/// Generic helper: downcast a JS value to `&Node` via the multi-type chain,
+/// then call a closure with the reference.  Uses `ec.with_object_any()` —
+/// no Boa-specific APIs.
+fn with_child_as_node<R>(value: &JsValue, f: impl FnOnce(&Node) -> R) -> Option<R> {
+    let obj = value.as_object()?;
+    if let Some(node) = obj.downcast_ref::<Node>() {
+        return Some(f(&*node));
+    }
+    if let Some(element) = obj.downcast_ref::<Element>() {
+        return Some(f(&element.node));
+    }
+    if let Some(html_element) = obj.downcast_ref::<HTMLElement>() {
+        return Some(f(&html_element.element.node));
+    }
+    if let Some(html_iframe) = obj.downcast_ref::<HTMLIFrameElement>() {
+        return Some(f(&html_iframe.html_element.element.node));
+    }
+    if let Some(html_anchor) = obj.downcast_ref::<HTMLAnchorElement>() {
+        return Some(f(&html_anchor.html_element.element.node));
+    }
+    None
+}
+
 fn append_child(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx — appendable_node, dom_exception_error.
+    // Note: keeps ec_to_ctx — error conversion needs Context.
+    let value_undefined = ec.value_undefined();
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
-    let child = appendable_node(args.get_or_undefined(0))
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
-    with_node_ref(this, |node| node.append_child(&child))
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
-        .map_err(|error| dom_exception_error(error, js_engine::boa::context_as_ec(ctx)))
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
-    Ok(args.get_or_undefined(0).clone())
+    let child_val = args.get_or_undefined(0).clone();
+    let (result, _) = with_child_as_node(args.get_or_undefined(0), |child_node| {
+        (with_node_ref(this, |node| node.append_child(child_node)), ())
+    })
+    .ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("appendChild requires a Node")
+            .into()
+    })
+    .map_err(|e: JsError| e.into_opaque(ctx).unwrap_or(value_undefined.clone()))?;
+    result
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined.clone()))?
+        .map_err(|error| {
+            let js_val = dom_exception_error(error, js_engine::boa::context_as_ec(ctx));
+            JsError::from_opaque(js_val)
+                .into_opaque(ctx)
+                .unwrap_or(value_undefined.clone())
+        })?;
+    Ok(child_val)
 }
 
 fn insert_before(
@@ -654,8 +684,12 @@ fn insert_before(
         node.insert_before(&child, reference_child.as_ref())
     })
     .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
-    .map_err(|error| dom_exception_error(error, js_engine::boa::context_as_ec(ctx)))
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    .map_err(|error| {
+        let js_val = dom_exception_error(error, js_engine::boa::context_as_ec(ctx));
+        JsError::from_opaque(js_val)
+            .into_opaque(ctx)
+            .unwrap_or(undefined.clone())
+    })?;
     Ok(args.get_or_undefined(0).clone())
 }
 
@@ -672,26 +706,12 @@ fn remove_child(
     with_node_ref(this, |node| node.remove_child(&child))
         .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
         .map_err(|error| JsNativeError::typ().with_message(error))
-        .map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined))?;
+        .map_err(|e| {
+            boa_engine::JsError::from(e)
+                .into_opaque(ctx)
+                .unwrap_or(undefined)
+        })?;
     Ok(args.get_or_undefined(0).clone())
-}
-
-fn remove(
-    this: &JsValue,
-    _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    try_with_node_ref(this, ec, Node::remove)?;
-    Ok(ec.value_undefined())
-}
-
-fn has_child_nodes(
-    this: &JsValue,
-    _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let has = try_with_node_ref(this, ec, |node| node.has_child_nodes())?;
-    Ok(ec.value_from_bool(has))
 }
 
 fn appendable_node(value: &JsValue) -> JsResult<Node> {
@@ -715,12 +735,6 @@ fn appendable_node(value: &JsValue) -> JsResult<Node> {
             html_element.element.node.node_id,
         ));
     }
-    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(Node::new(
-            Rc::clone(&html_anchor_element.html_element.element.node.document),
-            html_anchor_element.html_element.element.node.node_id,
-        ));
-    }
     if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
         return Ok(Node::new(
             Rc::clone(&html_iframe_element.html_element.element.node.document),
@@ -732,12 +746,29 @@ fn appendable_node(value: &JsValue) -> JsResult<Node> {
         .into())
 }
 
+fn remove(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    try_with_node_ref(this, ec, Node::remove)?;
+    Ok(ec.value_undefined())
+}
+
+fn has_child_nodes(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let has = try_with_node_ref(this, ec, |node| node.has_child_nodes())?;
+    Ok(ec.value_from_bool(has))
+}
+
 fn dom_exception_error(
     exception: DOMException,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> JsError {
-    JsError::from_opaque(JsValue::from(
-        create_interface_instance::<crate::js::Types, DOMException>(exception, ec)
-            .expect("DOMException construction should not fail"),
-    ))
+) -> JsValue {
+    create_interface_instance::<crate::js::Types, DOMException>(exception, ec)
+        .map(|obj| crate::js::Types::value_from_object(obj))
+        .unwrap_or_else(|err| err)
 }
