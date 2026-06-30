@@ -1,11 +1,13 @@
 # content/src/js
 
-`content/src/js` integrates Boa (the JavaScript engine) with the content
+`content/src/js` integrates the generic `js_engine` trait with the content
 process and keeps JavaScript-facing wrapper identity separate from DOM and
 HTML [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)
-state.
+state.  The actual engine backend (Boa or JSC) is selected by a feature flag
+in `js_engine`; content code only sees the generic traits.
 
-- `content/src/html/environment_settings_object.rs` owns the Boa `Context`,
+- `content/src/html/environment_settings_object.rs` owns the realm execution
+  context (currently `BoaContext` implementing `ExecutionContext<T>`),
   global-object construction, and the Rust state that corresponds to an HTML
   environment settings object.
 - `content/src/html/global_scope.rs` owns per-global wrapper caches and

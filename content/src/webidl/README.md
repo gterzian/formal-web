@@ -1,15 +1,17 @@
 # content/src/webidl
 
-`content/src/webidl` stores the shared Web IDL algorithms that sit between
-DOM, HTML, and Streams code and the ECMAScript operations used by the
-current JavaScript engine.
+`content/src/webidl` implements the algorithms defined in Web IDL §3
+(JavaScript binding): type conversion between IDL and JavaScript values,
+promise manipulation ("react", "a new promise", "upon fulfillment"),
+and the binding infrastructure for exposing Web IDL interfaces to JS.
 
-**Architecture:** Web specs (Streams, HTML, DOM) delegate JS operations
-through Web IDL algorithms (invoke a callback function, call a user
-object's operation), which in turn call ECMA-262 abstract operations
-(`Get`, `IsCallable`, `Call`).  This layer implements the Web IDL
-half of that chain and delegates to the generic `js_engine` trait for
-the ECMA-262 half.
+**Architecture:** This layer sits between domain code (streams, HTML, DOM)
+and the generic `js_engine` trait.  When a spec algorithm calls Web IDL —
+for type conversion, callback invocation, or promise reaction — domain code
+routes through here.  When a spec algorithm calls ECMA-262 directly (e.g.
+realm creation in HTML §8.1.3.3), domain code calls `js_engine` directly,
+bypassing this layer.  See `js_engine/README.md` for the full design
+philosophy.
 
 ```
 Web spec  →  content/src/webidl/  →  js_engine trait

@@ -21,6 +21,148 @@ Web spec (Streams, HTML, DOM)
         → Boa / JSC backend (engine-specific impl detail)
 ```
 
+Concrete example — the full chain for a Streams operation:
+
+```
+Streams spec: readable stream cancel
+  → Web IDL: perform steps once promise is settled
+    → ECMA-262: CreateBuiltinFunction (§10.3.4)
+    → ECMA-262: NewPromiseCapability (§27.2.1.5)
+    → ECMA-262: PerformPromiseThen (§27.2.1.7)
+      → js_engine trait: create_builtin_function, new_promise_capability,
+                          perform_promise_then
+```
+
+### Design philosophy: follow the standards, not the engine
+
+The `js_engine` crate exposes **only** the ECMA-262 operations that other
+standards call into.  This is a mechanical mapping: read the spec call
+chain, expose the JS spec operation on the trait, implement it per engine.
+No new abstractions beyond what the JS spec already defines.
+
+**The layering mirrors the spec's layering — whatever it is.**  The web
+platform has two paths from domain specs to JavaScript:
+
+**Path 1: Domain → Web IDL → ECMA-262.**  Most web-exposed APIs go
+through Web IDL's JavaScript binding (§3), which defines how IDL types
+map to JS values and provides algorithms like "react", "upon
+fulfillment", "a new promise", etc.  Web IDL calls ECMA-262 for the
+actual JS operations (CreateBuiltinFunction, Call, Get, etc.).
+
+```
+Streams spec                         Our code
+───────────                          ────────
+readable stream cancel               content/src/streams/
+  → react (Web IDL §3.2.24.1)          → content/src/webidl/
+    → CreateBuiltinFunction              → js_engine::create_builtin_function
+    → NewPromiseCapability               → js_engine::new_promise_capability
+    → PerformPromiseThen                 → js_engine::perform_promise_then
+
+DOM spec                             Our code
+────────                             ────────
+eventTarget.addEventListener()       content/src/js/bindings/dom/
+  → Web IDL operation binding          → content/src/webidl/bindings/
+    → convert JS args to IDL types     → content/src/webidl/ type converters
+    → call user object's operation     → domain method (content/src/dom/)
+    → convert return to JS value       → js_engine trait
+```
+
+**Path 2: Domain → ECMA-262 (bypasses Web IDL).**  Some HTML algorithms
+call ECMA-262 abstract operations directly, without Web IDL
+intermediation.  Realm creation, script evaluation, and agent
+management all work this way.
+
+```
+HTML spec                            Our code
+─────────                            ────────
+creating a new JavaScript realm      content/src/html/
+  (§8.1.3.3)                           → js_engine::create_realm
+  → InitializeHostDefinedRealm         → js_engine::set_realm_global_object
+
+running a classic script             content/src/html/
+  (§8.1.4.4)                           → js_engine::evaluate_script
+```
+
+The rule: **read the spec, follow its call chain exactly.**  Route
+through `content/src/webidl/` only when the spec calls Web IDL.  Call
+`js_engine` directly when the spec calls ECMA-262 directly.  Never
+insert an artificial intermediary layer that doesn't exist in the spec.
+
+**How realms and execution contexts map to our code:**
+
+HTML §8.1.3.2 defines the environment settings object, which owns a
+**realm execution context** — the JS runtime state shared by all
+scripts in a realm.  Our `EnvironmentSettingsObject` (in
+`content/src/html/`) owns a `BoaContext` which implements
+`ExecutionContext<T>`.  When the spec says "prepare to run script",
+the EDS's realm execution context becomes the top of the JS execution
+context stack.  The `ExecutionContext<T>` trait IS the generic
+interface to that realm execution context.
+
+```
+HTML §8.1.3.2                         Our code
+──────────────                         ────────
+environment settings object            content/src/html/environment_settings_object.rs
+  .realm execution context               owns BoaContext : ExecutionContext<T>
+
+HTML §8.1.4.4                         Our code
+──────────────                         ────────
+prepare to run script                   EDS.realm_execution_context → top of stack
+  → run a classic script                → js_engine::evaluate_script
+```
+
+```
+content/src/<domain>/           ← domain spec algorithms (streams, HTML, DOM)
+  → content/src/webidl/          ← only when the spec calls Web IDL (§3)
+  → content/src/js/bindings/     ← Web IDL interface definitions (which members)
+  → js_engine trait               ← ECMA-262 abstract operations
+    → js_engine/src/boa/          ← Boa-specific impl (only here)
+    → js_engine/src/jsc/          ← JSC-specific impl (only here)
+```
+
+**Rules:**
+
+1. **Content code never calls Boa APIs directly.**  Domain code calls
+   into `content/src/webidl/` when the spec calls Web IDL (§3 type
+   conversion, promise manipulation), or into the `js_engine` trait
+   when the spec calls ECMA-262 directly.  The Boa/JSC backend is
+   invisible above `js_engine/src/{boa,jsc}/`.
+
+2. **The js_engine trait only exposes ECMA-262 operations.**  Operations
+   like "report an exception" or "perform a microtask checkpoint" are
+   HTML concepts, not ECMA-262 — they live on `EcmascriptHost` because
+   Web IDL needs them.  The trait never defines "convenience" methods
+   that don't correspond to a spec algorithm.
+
+3. **The webidl/ layer implements Web IDL §3.**  Type conversion
+   algorithms ("convert a JavaScript value to DOMString", "convert a
+   JavaScript value to Promise<T>"), promise manipulation ("react",
+   "a new promise", "upon fulfillment"), and the binding
+   infrastructure (interface prototypes, operation/attribute
+   definitions) all live in `content/src/webidl/`.  This layer calls
+   `js_engine` for the actual ECMA-262 operations.
+
+4. **The js/bindings/ layer defines which members exist.**  Each
+   `WebIdlInterface` impl in `content/src/js/bindings/` registers
+   operations and attributes via the Web IDL binding infrastructure.
+   The binding functions themselves are thin: extract JS args, call
+   domain, wrap result.
+
+5. **Ad-hoc Boa patterns must be replaced by spec algorithms.**  For
+   example, `NativeFunction::from_closure` → `create_builtin_function`,
+   `JsArray::from_iter` → `create_empty_array` + `array_push`, and
+   `JsNativeError::syntax()` → `new_syntax_error`.  If a Boa pattern
+   doesn't have a spec equivalent, it's a gap to fill, not a wrapper
+   to build.
+
+6. **Test the full chain end-to-end.**  The generic test file
+   (`content/src/generic_js_test.rs`) is a miniature version of the
+   full `content/` crate.  It demonstrates both paths: realm creation
+   (HTML → ECMA-262 directly, tested via `create_realm_and_set_bindings`)
+   and promise reaction (Streams → Web IDL "react" → ECMA-262, tested
+   via `upon_settlement_full_chain`).  No Boa-specific APIs appear in
+   any test body.
+
 The `js_engine` crate exposes **only** the ECMA-262 operations that other
 standards call into (usually via Web IDL).  This is a mechanical mapping:
 read the spec call chain, expose the JS spec operation on the trait,

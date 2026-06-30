@@ -22,11 +22,19 @@ From inside out:
 
 2. **JS bindings functions downcast then delegate.**  A binding function looks like:
    ```rust
-   fn my_method_binding(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> Completion<JsValue, BoaTypes> {
-       let obj = this.as_object().ok_or_else(|| /* TypeError */)?;
-       let domain = obj.downcast_ref::<MyDomainType>().ok_or_else(|| /* TypeError */)?;
-       let result: RustType = domain.my_method(arg1, arg2);
-       Ok(JsValue::from(result))
+   fn my_method_binding(
+       this: &T::JsValue,
+       args: &[T::JsValue],
+       ec: &mut dyn ExecutionContext<T>,
+   ) -> Completion<T::JsValue, T> {
+       let obj = T::value_as_object(this).ok_or_else(|| ec.new_type_error("..."))?;
+       if let Some(data) = ec.with_object_any(&obj) {
+           if let Some(domain) = data.downcast_ref::<MyDomainType>() {
+               let result: RustType = domain.my_method(arg1, arg2);
+               return Ok(ec.value_from_string(ec.js_string_from_str(&result)));
+           }
+       }
+       Err(ec.new_type_error("receiver is not a MyDomainType"))
    }
    ```
 
@@ -157,7 +165,7 @@ Domain                           content/src/wasm/functions.rs
   }
 
 JS bindings glue                 content/src/js/bindings/wasm/interfaces.rs
-  impl WebIdlInterface<js_engine::boa::BoaTypes> for WasmModule {
+  impl WebIdlInterface<crate::js::Types> for WasmModule {
       fn define_members(def) { def.add_operation(OperationDef { method: binding_fn, … }) }
   }
   fn binding_fn(this, args, ec: &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T> {
