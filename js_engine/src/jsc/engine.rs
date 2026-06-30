@@ -12,6 +12,8 @@
 //! - **SharedArrayBuffer** — available on newer macOS only.
 
 use std::collections::HashMap;
+use std::ffi::{c_char, c_void};
+use std::sync::LazyLock;
 
 use super::types::*;
 use crate::jsc_sys::*;
@@ -24,6 +26,141 @@ use crate::{
 
 /// Marker type for JSC engine implementations.
 pub struct JscTypes;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Builtin-function machinery
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `JSObjectMakeFunctionWithCallback` has no user-data parameter, so the
+// C callback can't access Rust state.  Instead we:
+//
+// 1. Define a JSClass with `callAsFunction` + `finalize`.
+// 2. In `create_builtin_function`, wrap the user's behaviour to capture an
+//    engine raw pointer (stable for the engine's lifetime).  Box the
+//    wrapper, leak the Box, and store the pointer as private data via
+//    `JSObjectMake`.
+// 3. The C callback retrieves the Box via `JSObjectGetPrivate`, calls
+//    the wrapped closure (which needs no `ec` param — it uses the captured
+//    pointer internally), and returns the result.
+// 4. The `finalize` callback drops the Box, freeing the closure.
+
+/// Type stored as private data on each builtin function object.
+/// Captures an engine pointer so it can produce `&mut dyn ExecutionContext`
+/// without receiving it from the C callback.
+type StoredBehaviour = Box<
+    dyn Fn(&[JscValue], JscValue) -> Completion<JscValue, JscTypes>,
+>;
+
+/// Wrapper around `*mut JSClassRef` that implements `Sync` + `Send` so it
+/// can be stored in a `LazyLock` static.  The content process is
+/// single-threaded; `Send`/`Sync` impls are a formality.
+pub(crate) struct JscClass(pub(crate) *mut JSClassRef);
+unsafe impl Send for JscClass {}
+unsafe impl Sync for JscClass {}
+
+/// JSClass for builtin function objects.  Created once, reused for all
+/// `create_builtin_function` calls.
+static BUILTIN_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
+    let def = JSClassDefinition {
+        version: 0,
+        attributes: kJSClassAttributeNone,
+        className: b"FormalWebBuiltin\0".as_ptr() as *const c_char,
+        parentClass: std::ptr::null_mut(),
+        staticValues: std::ptr::null(),
+        staticFunctions: std::ptr::null(),
+        initialize: None,
+        finalize: Some(builtin_finalize),
+        hasProperty: None,
+        getProperty: None,
+        setProperty: None,
+        deleteProperty: None,
+        getPropertyNames: None,
+        callAsFunction: Some(builtin_call_as_function),
+        callAsConstructor: None,
+        hasInstance: None,
+        convertToType: None,
+    };
+    JscClass(unsafe { JSClassCreate(&def) })
+});
+
+/// `callAsFunction` for builtin objects.  Retrieves the `StoredBehaviour`
+/// pointer from private data, converts C args to `JscValue` slices, and
+/// calls the wrapped closure.
+extern "C" fn builtin_call_as_function(
+    ctx: *mut JSContextRef,
+    function: *mut JSObjectRef,
+    this_object: *mut JSObjectRef,
+    argument_count: usize,
+    arguments: *const *mut JSValueRef,
+    exception: *mut *mut JSValueRef,
+) -> *mut JSValueRef {
+    let stored_ptr =
+        unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
+    if stored_ptr.is_null() {
+        return unsafe { JSValueMakeUndefined(ctx) };
+    }
+    let stored: &StoredBehaviour = unsafe { &*stored_ptr };
+
+    let args_slice = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
+    let jsc_args: Vec<JscValue> = args_slice
+        .iter()
+        .map(|raw| JscValue {
+            raw: *raw,
+            ctx,
+        })
+        .collect();
+    let this_val = JscValue {
+        raw: this_object as *mut JSValueRef,
+        ctx,
+    };
+
+    match stored(&jsc_args, this_val) {
+        Ok(result) => result.raw,
+        Err(err) => {
+            unsafe {
+                *exception = err.raw;
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `finalize` for builtin objects.  Drops the `StoredBehaviour` Box,
+/// freeing the captured closure and engine pointer.
+extern "C" fn builtin_finalize(object: *mut JSObjectRef) {
+    let stored_ptr =
+        unsafe { JSObjectGetPrivate(object) } as *mut StoredBehaviour;
+    if !stored_ptr.is_null() {
+        unsafe {
+            drop(Box::from_raw(stored_ptr));
+        }
+    }
+}
+
+/// JSClassDefinition for the global context.  We use a custom class instead
+/// of NULL so the global object supports `JSObjectSetPrivate` / `getPrivate`.
+pub(crate) static GLOBAL_CONTEXT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
+    let def = JSClassDefinition {
+        version: 0,
+        attributes: kJSClassAttributeNone,
+        className: b"FormalWebGlobal\0".as_ptr() as *const c_char,
+        parentClass: std::ptr::null_mut(),
+        staticValues: std::ptr::null(),
+        staticFunctions: std::ptr::null(),
+        initialize: None,
+        finalize: None,
+        hasProperty: None,
+        getProperty: None,
+        setProperty: None,
+        deleteProperty: None,
+        getPropertyNames: None,
+        callAsFunction: None,
+        callAsConstructor: None,
+        hasInstance: None,
+        convertToType: None,
+    };
+    JscClass(unsafe { JSClassCreate(&def) })
+});
 
 impl JsTypes for JscTypes {
     type JsString = JscString;
@@ -1954,33 +2091,86 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn create_builtin_function(
         &mut self,
-        _behaviour: Box<
+        behaviour: Box<
             dyn Fn(
                 &[JscValue],
                 JscValue,
                 &mut dyn ExecutionContext<JscTypes>,
             ) -> Completion<JscValue, JscTypes>,
         >,
-        _length: u32,
+        length: u32,
         name: JscPropertyKey,
     ) -> JscFunction {
-        let name_str = match &name {
-            JscPropertyKey::String(s) => s.to_rust(),
-            JscPropertyKey::Symbol(_) => String::from(""),
+        // Capture a raw engine pointer so the wrapped closure can produce
+        // `&mut dyn ExecutionContext` without receiving it from the C callback.
+        // SAFETY: the content process is single-threaded, and the engine
+        // outlives all builtin function objects created from it.
+        let engine_ptr: *mut JscEngine = self;
+
+        // Wrap the user's behaviour: capture engine_ptr and use it as `ec`.
+        let wrapped: StoredBehaviour = Box::new(move |args, this_val| {
+            let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
+            let ec: &mut dyn ExecutionContext<JscTypes> = engine;
+            behaviour(args, this_val, ec)
+        });
+
+        // Leak the Box to get a stable raw pointer for JSC private data.
+        // The `builtin_finalize` callback will reconstruct and drop the Box
+        // when the JS function object is garbage-collected.
+        let leaked: *mut StoredBehaviour = Box::into_raw(Box::new(wrapped));
+
+        let ctx_ptr = self.ctx_ptr();
+        let raw = unsafe {
+            JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void)
         };
-        let stub_source = format!("(function {}(...args) {{ return args[0]; }})", name_str);
-        let (result, exception) = self.eval_script_raw(&stub_source);
-        if !exception.is_null() {
-            let fallback = "(function() {})";
-            let (result, _) = self.eval_script_raw(fallback);
-            return JscObject {
-                raw: result as *mut JSObjectRef,
-                ctx: self.ctx_ptr(),
-            };
+
+        // Set `Function.prototype` as the prototype so `typeof fn === "function"`.
+        let realm = self.current_realm();
+        let intrinsics = self.realm_intrinsics(&realm);
+        unsafe {
+            JSObjectSetPrototype(ctx_ptr, raw, intrinsics.function_prototype.as_value_ref());
         }
+
+        // Set the `length` property.
+        let length_key = JscString::from_rust("length");
+        let length_val = JscValue {
+            raw: unsafe { JSValueMakeNumber(ctx_ptr, length as f64) },
+            ctx: ctx_ptr,
+        };
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr,
+                raw,
+                length_key.raw,
+                length_val.raw,
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+
+        // Set the `name` property if the name is a string.
+        if let JscPropertyKey::String(name_str) = &name {
+            let name_key = JscString::from_rust("name");
+            let name_val = JscValue {
+                raw: unsafe { JSValueMakeString(ctx_ptr, name_str.raw) },
+                ctx: ctx_ptr,
+            };
+            unsafe {
+                JSObjectSetProperty(
+                    ctx_ptr,
+                    raw,
+                    name_key.raw,
+                    name_val.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                );
+            }
+        }
+
         JscObject {
-            raw: result as *mut JSObjectRef,
-            ctx: self.ctx_ptr(),
+            raw,
+            ctx: ctx_ptr,
         }
     }
 
@@ -2510,15 +2700,13 @@ mod tests {
     }
 
     #[test]
-    fn create_builtin_function_stub() {
+    fn create_builtin_function_roundtrip() {
         let mut engine = JscEngine::new();
-        let realm = engine.current_realm();
         let pk = engine.property_key_from_str("testFn");
         let func = engine.create_builtin_function(
             Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(42.0))),
             0,
             pk,
-            &realm,
         );
         assert!(!func.raw.is_null());
     }

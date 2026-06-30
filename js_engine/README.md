@@ -530,12 +530,10 @@ Phase C moved `create_builtin_function` from `JsEngine<T>` to
 This eliminated all `NativeFunction::from_closure` + `FunctionObjectBuilder`
 sites in the bindings layer.
 
-**JSC backend note:** `create_builtin_function` on JSC is a stub that
-creates a JS function from `eval(...)` but does **not** wire the behavior
-closure — the created function returns `args[0]` regardless of what the
-closure would do.  This means accessor-based properties and callback
-invocation silently produce wrong results on JSC.  This is a release
-blocker for JSC, not a polish item.
+**JSC backend:** implemented via a custom JSClass (`FormalWebBuiltin`) with
+`callAsFunction` + `finalize` callbacks.  The behaviour closure is wrapped
+to capture a raw engine pointer, boxed, and stored as private data on the
+JSObject.  The `finalize` callback frees the Box on GC.
 
 ### `with_object_any_mut` and `with_object_any_mut_with`
 
@@ -558,7 +556,7 @@ See module docs for implementation status and quirks:
 | Backend | Module | Status |
 |---|---|---|
 | Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, all generic_js_test tests pass |
-| JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete, but 3 functional blockers: `create_builtin_function` is a stub (behavior closure not executed), `GcRootHandle`/`create_root` SIGSEGVs on eval results, and `get_iterator`/`get_iterator_step_value` crash. 8 of 58 generic_js_test tests are `#[ignore]` on JSC. Complex ops (promises, BigInt, JSON) use `JSEvaluateScript` fallbacks. |
+| JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete. `create_builtin_function` implements behaviour closures via JSClass + private data (was a stub). 2 remaining functional blockers: `GcRootHandle`/`create_root` SIGSEGVs on eval results, and iterator ops crash. 4 of 60 generic_js_test tests are `#[ignore]` on JSC. Complex ops (promises, BigInt, JSON) use `JSEvaluateScript` fallbacks. |
 | GC | `src/gc.rs` | ✅ Complete — `impl_gc_traits!` macro, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. GC-pressure testing gap: no test forces a collection to prove rooted values survive. |
 
 ## Migration status
@@ -788,7 +786,7 @@ only — the template for other binding files) and `ecma_ops_test.rs`
 (standalone ECMA-262 operation smoke tests).  No behavior change — just
 keeps the reference file legible as a template.
 
-60/60 tests pass on Boa.  8 tests are `#[ignore]` on JSC:
+60/60 tests pass on Boa.  4 tests are `#[ignore]` on JSC:
 
 | Test | JSC blocker |
 |---|---|
@@ -796,14 +794,10 @@ keeps the reference file legible as a template.
 | `get_iterator_and_step_value` | `get_iterator` / `get_iterator_step_value` crash |
 | `async_iterator_close_completes` | Depends on `get_iterator` |
 | `allocate_shared_array_buffer` | May not be available on current macOS |
-| `create_builtin_function_and_call` | Stub doesn't execute the behavior closure |
-| `property_descriptor_with_builtin_getter` | Stub doesn't execute the behavior closure |
-| `property_descriptor_with_builtin_getter_and_setter` | Stub doesn't execute the behavior closure |
-| `upon_settlement_full_chain` | Stub doesn't execute the behavior closure |
 
-`create_builtin_function` and `GcRootHandle` are **functional blockers** for the
-Web IDL binding strategy on JSC: anything that stores a JS callback or needs a
-native-backed accessor will either crash or silently do nothing.
+`GcRootHandle` is the remaining **functional blocker** for the
+Web IDL binding strategy on JSC: anything that stores a JS callback
+will crash.
 
 ## Working during migration
 

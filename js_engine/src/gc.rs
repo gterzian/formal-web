@@ -228,14 +228,10 @@ mod jsc_gc_impl {
         }
     }
 
-    unsafe extern "C" {
-        fn JSObjectGetPrivate(object: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-    }
-
     #[allow(dead_code)]
     pub extern "C" fn jsc_generic_finalizer<V>(object: *mut std::ffi::c_void) {
         unsafe {
-            let private_data = JSObjectGetPrivate(object);
+            let private_data = crate::jsc_sys::JSObjectGetPrivate(object as *mut crate::jsc_sys::JSObjectRef);
             if !private_data.is_null() {
                 drop(std::sync::Arc::from_raw(
                     private_data as *const std::cell::RefCell<V>,

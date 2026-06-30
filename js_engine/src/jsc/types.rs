@@ -28,7 +28,7 @@ unsafe impl Sync for JscContext {}
 
 impl JscContext {
     pub fn new() -> Self {
-        let raw = unsafe { JSGlobalContextCreate(std::ptr::null_mut()) };
+        let raw = unsafe { JSGlobalContextCreate(super::engine::GLOBAL_CONTEXT_CLASS.0) };
         assert!(!raw.is_null(), "JSGlobalContextCreate returned null");
         Self { raw }
     }

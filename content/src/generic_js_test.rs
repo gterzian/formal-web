@@ -1528,10 +1528,6 @@ mod tests {
 
     // ── Engine factory operations ──────────────────────────────────
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: create_builtin_function stub doesn't execute behavior closure"
-    )]
     #[test]
     fn create_builtin_function_and_call() {
         let mut engine = setup();
@@ -1574,10 +1570,6 @@ mod tests {
     /// Validates that the generic JS layer supports the exact pattern
     /// real content code (streams, DOM, HTML) needs — no Boa-specific
     /// APIs, just the ECMA-262 operations the spec calls for.
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: create_builtin_function stub doesn't execute behaviour closure"
-    )]
     #[test]
     fn upon_settlement_full_chain() {
         let mut engine = setup();
@@ -1767,10 +1759,6 @@ mod tests {
     /// function created via `create_builtin_function`, applying it to an
     /// object, and reading the property — the exact pattern `get_class_list`
     /// needs for its `length` getter.
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: create_builtin_function stub doesn't execute behaviour closure"
-    )]
     #[test]
     fn property_descriptor_with_builtin_getter() {
         let mut engine = setup();
@@ -1812,10 +1800,6 @@ mod tests {
 
     /// Validates `PropertyDescriptor` with both getter and setter from
     /// `create_builtin_function` — the full accessor pattern.
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: create_builtin_function stub doesn't execute behaviour closure"
-    )]
     #[test]
     fn property_descriptor_with_builtin_getter_and_setter() {
         let mut engine = setup();

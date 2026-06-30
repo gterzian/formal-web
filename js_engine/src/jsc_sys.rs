@@ -11,7 +11,7 @@
 
 #![allow(non_camel_case_types, non_upper_case_globals, dead_code)]
 
-use std::os::raw::{c_char, c_double, c_uint, c_void};
+use std::os::raw::{c_char, c_double, c_int, c_uint, c_void};
 
 // ── Opaque pointer types ──────────────────────────────────────────────────
 
@@ -200,4 +200,160 @@ unsafe extern "C" {
     // ── GC protection (not in public headers; available on macOS) ────────
     pub fn JSValueProtect(ctx: *mut JSContextRef, value: *mut JSValueRef);
     pub fn JSValueUnprotect(ctx: *mut JSContextRef, value: *mut JSValueRef);
+}
+
+// ── Function construction ─────────────────────────────────────────────────
+
+pub type JSObjectCallAsFunctionCallback = unsafe extern "C" fn(
+    ctx: *mut JSContextRef,
+    function: *mut JSObjectRef,
+    thisObject: *mut JSObjectRef,
+    argumentCount: usize,
+    arguments: *const *mut JSValueRef,
+    exception: *mut *mut JSValueRef,
+) -> *mut JSValueRef;
+
+pub type JSObjectFinalizeCallback = unsafe extern "C" fn(object: *mut JSObjectRef);
+
+unsafe extern "C" {
+    /// Creates a JS function backed by a C callback.  The callback receives
+    /// the context, function object, this, arguments, and an exception
+    /// out-parameter.  No user-data parameter — use a side registry or
+    /// `JSObjectSetPrivate` with a custom class for stateful callbacks.
+    pub fn JSObjectMakeFunctionWithCallback(
+        ctx: *mut JSContextRef,
+        name: *mut JSStringRef,
+        callAsFunction: Option<JSObjectCallAsFunctionCallback>,
+    ) -> *mut JSObjectRef;
+}
+
+// ── Private data (requires object created with a JSClass that supports it) ─
+
+unsafe extern "C" {
+    pub fn JSObjectSetPrivate(object: *mut JSObjectRef, data: *mut c_void) -> bool;
+    pub fn JSObjectGetPrivate(object: *mut JSObjectRef) -> *mut c_void;
+}
+
+// ── JSClass (for custom object types with private data + finalize) ────────
+
+pub type JSClassAttributes = c_uint;
+pub const kJSClassAttributeNone: JSClassAttributes = 0;
+pub const kJSClassAttributeNoAutomaticPrototype: JSClassAttributes = 1 << 1;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct JSStaticValue {
+    pub name: *const c_char,
+    pub getProperty: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            object: *mut JSObjectRef,
+            exception: *mut *mut JSValueRef,
+        ) -> *mut JSValueRef,
+    >,
+    pub setProperty: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            object: *mut JSObjectRef,
+            exception: *mut *mut JSValueRef,
+        ) -> bool,
+    >,
+    pub attributes: JSPropertyAttributes,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct JSStaticFunction {
+    pub name: *const c_char,
+    pub callAsFunction: Option<JSObjectCallAsFunctionCallback>,
+    pub attributes: JSPropertyAttributes,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct JSClassDefinition {
+    pub version: c_int,
+    pub attributes: JSClassAttributes,
+    pub className: *const c_char,
+    pub parentClass: *mut JSClassRef,
+    pub staticValues: *const JSStaticValue,
+    pub staticFunctions: *const JSStaticFunction,
+    pub initialize: Option<
+        unsafe extern "C" fn(ctx: *mut JSContextRef, object: *mut JSObjectRef),
+    >,
+    pub finalize: Option<JSObjectFinalizeCallback>,
+    pub hasProperty: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            object: *mut JSObjectRef,
+            propertyName: *mut JSStringRef,
+        ) -> bool,
+    >,
+    pub getProperty: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            object: *mut JSObjectRef,
+            propertyName: *mut JSStringRef,
+            exception: *mut *mut JSValueRef,
+        ) -> *mut JSValueRef,
+    >,
+    pub setProperty: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            object: *mut JSObjectRef,
+            propertyName: *mut JSStringRef,
+            value: *mut JSValueRef,
+            exception: *mut *mut JSValueRef,
+        ) -> bool,
+    >,
+    pub deleteProperty: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            object: *mut JSObjectRef,
+            propertyName: *mut JSStringRef,
+            exception: *mut *mut JSValueRef,
+        ) -> bool,
+    >,
+    pub getPropertyNames: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            object: *mut JSObjectRef,
+            propertyNameArray: *mut JSObjectRef, // JSPropertyNameAccumulatorRef in C API
+        ),
+    >,
+    pub callAsFunction: Option<JSObjectCallAsFunctionCallback>,
+    pub callAsConstructor: Option<JSObjectCallAsFunctionCallback>,
+    pub hasInstance: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            constructor: *mut JSObjectRef,
+            possibleInstance: *mut JSValueRef,
+            exception: *mut *mut JSValueRef,
+        ) -> bool,
+    >,
+    pub convertToType: Option<
+        unsafe extern "C" fn(
+            ctx: *mut JSContextRef,
+            object: *mut JSObjectRef,
+            ty: JSType,
+            exception: *mut *mut JSValueRef,
+        ) -> *mut JSValueRef,
+    >,
+}
+
+unsafe extern "C" {
+    pub fn JSClassCreate(definition: *const JSClassDefinition) -> *mut JSClassRef;
+    pub fn JSClassRetain(jsClass: *mut JSClassRef);
+    pub fn JSClassRelease(jsClass: *mut JSClassRef);
+}
+
+unsafe extern "C" {
+    /// Creates a JS object of the given class.  The `data` pointer is stored
+    /// as private data accessible via `JSObjectGetPrivate`.  It is freed by
+    /// the class's `finalize` callback.
+    pub fn JSObjectMake(
+        ctx: *mut JSContextRef,
+        jsClass: *mut JSClassRef,
+        data: *mut c_void,
+    ) -> *mut JSObjectRef;
 }
