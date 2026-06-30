@@ -354,6 +354,8 @@ impl JsTypesWithRealm for JscTypes {
 pub struct JscEngine {
     context: JscContext,
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
+    /// Monotonically-increasing counter for GC-root property names.
+    next_root_id: u64,
 }
 
 impl JscEngine {
@@ -361,6 +363,7 @@ impl JscEngine {
         Self {
             context: JscContext::new(),
             host_data: HashMap::new(),
+            next_root_id: 0,
         }
     }
     pub fn context(&self) -> &JscContext {
@@ -1005,28 +1008,84 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         property_key: JscPropertyKey,
     ) -> Completion<JscValue, JscTypes> {
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Err(JscUndefined::get(&self.context));
-        };
-        let mut exception: *mut JSValueRef = std::ptr::null_mut();
-        let result = unsafe {
-            JSObjectGetProperty(
-                self.context.as_context_ref(),
-                object.raw,
-                prop_str.raw,
-                &mut exception,
-            )
-        };
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
+        match &property_key {
+            JscPropertyKey::String(prop_str) => {
+                let mut exception: *mut JSValueRef = std::ptr::null_mut();
+                let result = unsafe {
+                    JSObjectGetProperty(
+                        self.context.as_context_ref(),
+                        object.raw,
+                        prop_str.raw,
+                        &mut exception,
+                    )
+                };
+                if !exception.is_null() {
+                    return Err(JscValue {
+                        raw: exception,
+                        ctx: self.ctx_ptr(),
+                    });
+                }
+                Ok(JscValue {
+                    raw: result,
+                    ctx: self.ctx_ptr(),
+                })
+            }
+            JscPropertyKey::Symbol(sym) => {
+                // JSC's C API `JSObjectGetProperty` only takes a JSStringRef,
+                // not a symbol.  Fall back to eval: `obj[sym]`.
+                let global = self.context.global_object();
+                let ctx_ptr = self.ctx_ptr();
+                let obj_key = JscString::from_rust("__fw_get_obj");
+                let sym_key = JscString::from_rust("__fw_get_sym");
+                let mut exc: *mut JSValueRef = std::ptr::null_mut();
+                unsafe {
+                    JSObjectSetProperty(
+                        ctx_ptr,
+                        global.raw,
+                        obj_key.raw,
+                        object.as_value_ref(),
+                        kJSPropertyAttributeNone,
+                        &mut exc,
+                    );
+                    if exc.is_null() {
+                        JSObjectSetProperty(
+                            ctx_ptr,
+                            global.raw,
+                            sym_key.raw,
+                            sym.value.raw,
+                            kJSPropertyAttributeNone,
+                            &mut exc,
+                        );
+                    }
+                }
+                if !exc.is_null() {
+                    unsafe {
+                        JSObjectDeleteProperty(ctx_ptr, global.raw, obj_key.raw, &mut exc);
+                    }
+                    return Err(JscValue {
+                        raw: exc,
+                        ctx: ctx_ptr,
+                    });
+                }
+                let (result, exception) =
+                    self.eval_script_raw("__fw_get_obj[__fw_get_sym]");
+                // Cleanup temporary globals.
+                unsafe {
+                    JSObjectDeleteProperty(ctx_ptr, global.raw, obj_key.raw, &mut exc);
+                    JSObjectDeleteProperty(ctx_ptr, global.raw, sym_key.raw, &mut exc);
+                }
+                if !exception.is_null() {
+                    return Err(JscValue {
+                        raw: exception,
+                        ctx: ctx_ptr,
+                    });
+                }
+                Ok(JscValue {
+                    raw: result,
+                    ctx: ctx_ptr,
+                })
+            }
         }
-        Ok(JscValue {
-            raw: result,
-            ctx: self.ctx_ptr(),
-        })
     }
     fn get_v(
         &mut self,
@@ -2398,15 +2457,39 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn create_root(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
+        // Store the value as a non-enumerable property on the global object
+        // to keep it alive in JSC's GC graph.  This avoids JSValueProtect
+        // which SIGSEGVs on eval-created values on some macOS versions.
+        let root_id = self.next_root_id;
+        self.next_root_id = self.next_root_id.wrapping_add(1);
+        let prop_name = format!("__fw_root_{root_id}");
+        let key = JscString::from_rust(&prop_name);
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let global = self.context.global_object();
         let ctx_ptr = self.ctx_ptr();
-        let val_ptr = value.as_raw();
         unsafe {
-            crate::jsc_sys::JSValueProtect(ctx_ptr, val_ptr);
+            JSObjectSetProperty(
+                ctx_ptr,
+                global.raw,
+                key.raw,
+                value.raw,
+                kJSPropertyAttributeDontEnum,
+                &mut exc,
+            );
         }
+        // On drop, delete the property to allow GC.
+        let cleanup_key = key;
+        let cleanup_ctx = ctx_ptr;
+        let cleanup_global_raw = global.raw;
         crate::gc::GcRootHandle {
             value: *value,
             unroot_action: Some(Box::new(move |_val| unsafe {
-                crate::jsc_sys::JSValueUnprotect(ctx_ptr, val_ptr);
+                JSObjectDeleteProperty(
+                    cleanup_ctx,
+                    cleanup_global_raw,
+                    cleanup_key.raw,
+                    std::ptr::null_mut(),
+                );
             })),
         }
     }

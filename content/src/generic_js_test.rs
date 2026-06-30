@@ -1184,10 +1184,6 @@ mod tests {
         assert!((engine.to_number(len_val).unwrap() - 3.0).abs() < 0.001);
     }
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: create_root / GcRootHandle SIGSEGV (JSValueProtect on eval result)"
-    )]
     #[test]
     fn store_callback_then_flush_microtasks() {
         let mut engine = setup();
@@ -1209,7 +1205,6 @@ mod tests {
 
     // ── Iterator operations (§7.4) ─────────────────────────────────
 
-    #[cfg_attr(feature = "jsc", ignore = "JSC: get_iterator not fully implemented")]
     #[test]
     fn get_iterator_and_step_value() {
         let mut engine = setup();
@@ -1232,10 +1227,6 @@ mod tests {
         let _ = engine.iterator_close(iter_record, Ok(undef));
     }
 
-    #[cfg_attr(
-        feature = "jsc",
-        ignore = "JSC: async_iterator_close depends on get_iterator"
-    )]
     #[test]
     fn async_iterator_close_completes() {
         let mut engine = setup();

@@ -556,7 +556,7 @@ See module docs for implementation status and quirks:
 | Backend | Module | Status |
 |---|---|---|
 | Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, all generic_js_test tests pass |
-| JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete. `create_builtin_function` implements behaviour closures via JSClass + private data (was a stub). 2 remaining functional blockers: `GcRootHandle`/`create_root` SIGSEGVs on eval results, and iterator ops crash. 4 of 60 generic_js_test tests are `#[ignore]` on JSC. Complex ops (promises, BigInt, JSON) use `JSEvaluateScript` fallbacks. |
+| JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete. `create_builtin_function` implements behaviour closures via JSClass + private data. `create_root` uses global-object properties instead of `JSValueProtect`. `get` handles Symbol keys via eval fallback. 1 remaining ignore: `SharedArrayBuffer` (may not be available). |
 | GC | `src/gc.rs` | ✅ Complete — `impl_gc_traits!` macro, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. GC-pressure testing gap: no test forces a collection to prove rooted values survive. |
 
 ## Migration status
@@ -631,38 +631,35 @@ narrow blocker in those functions (needs generic JsError extraction).
 `new_syntax_error` added to trait, DOMException helpers refactored to take `ec`.
 `define_property_or_throw` Boa backend fixed to pass `get`/`set` fields through.
 
+**JSC backend:** `create_builtin_function` implemented via JSClass + private
+data.  `GcRootHandle`/`create_root` uses global-object property attachment
+instead of `JSValueProtect`.  `get` handles Symbol keys via eval fallback.
+60/60 generic_js_test pass on Boa, 1 `#[ignore]` on JSC (SharedArrayBuffer).
+
 **~120 ec_to_ctx eliminated across 13 binding files:**
 `document.rs` (18→0), `location.rs` (22→0), `strategy.rs` (2→0),
 `html_anchor_element.rs` (2→0), `node.rs` (14→0), `element.rs` (18→0),
 `html_media_element.rs` (3→0), `hyperlink_element_utils.rs` (21→1),
 `abort_signal.rs` (4→2 narrow), `html_iframe_element.rs` (2→2 narrow).
 
-New generic infrastructure:
-- `callback.rs`: `callback_function_value_ec`, `callback_interface_type_value_ec`,
-  `nullable_value_ec` — Web IDL callback helpers taking `ec` instead of `Context`
-- `event_target.rs`: `flatten_ec` — event listener options parsing via EC trait
+New generic infrastructure available for next session:
+- **`with_object_any_mut_with`** — closure-based mutable access that passes both
+  `&mut dyn Any` and `&mut dyn ExecutionContext<T>` to the closure.  Use for
+  `set_onload`, `set_src`, `play`, `pause` conversions.
+- **`create_builtin_function` on EC** — use with `PropertyDescriptor` for
+  accessor-based property patterns (class_list-style getters/setters).
+- `callback.rs`: `_ec` variants of callback helpers take `ec` instead of `Context`.
+- `event_target.rs`: `flatten_ec` — event listener options via EC trait.
 
-Shared infrastructure ready:
-- `generic_js_test.rs`: 58/58 pass — three new validation tests:
-  `with_object_any_mut_then_ec_call` (mutable downcast + ec call),
-  `create_interface_instance_roundtrip` (platform object creation),
-  `property_descriptor_with_builtin_getter` + `_and_setter`
-  (PropertyDescriptor with getter/setter from create_builtin_function)
-- `platform_objects.rs`: `_ec` wrappers for document_object,
-  resolve_element_object, object_for_existing_node,
-  invalidate_cached_node_ids, resolve_or_create_text_node_object
-- `hyperlink_element_utils.rs`: `link_property` refactored to use
-  `create_builtin_function` + `js_engine::PropertyDescriptor`;
-  `document_creation_url_ec` bridge (1 remaining)
-- `node.rs`: `appendable_node_ec` helper; `append_child`/`insert_before`/
-  `remove_child` converted to use `try_with_node_ref` + `dom_exception_error`
-- `abort_signal.rs`: `sequence_abort_signals` + `abort_error_value` + `set_onabort`
-  (mostly) converted; remaining narrow ec_to_ctx for `add_event_listener` JsResult
-- `html_iframe_element.rs`: `set_onload` + `set_onerror` converted to use
-  `downcast_mut` + `try_with_event_target_mut` + `_ec` callback helpers;
-  remaining narrow ec_to_ctx for `add_event_listener` JsResult
-- `element.rs`: `class_list` fully generic — uses `create_builtin_function` +
-  `create_plain_object` + `object_set_property` + `PropertyDescriptor`
+Test file reference patterns (60/60 Boa):
+| Pattern | Test | Production use |
+|---|---|---|
+| Mutable downcast + ec inside closure | `with_object_any_mut_with_ec_inside_closure` | `set_onload`, `play`, `pause`, `set_src` |
+| PropertyDescriptor + builtin getter | `property_descriptor_with_builtin_getter` | class_list length getter |
+| PropertyDescriptor + builtin getter+setter | `property_descriptor_with_builtin_getter_and_setter` | Accessor attributes |
+| Platform object creation | `create_interface_instance_roundtrip` | DOMException, Event, Location |
+| GC rooting + pressure | `gc_root_survives_throwaway_pressure` | Callback storage |
+| Nested GC root propagation | `nested_struct_gc_root_propagates` | Subtype hierarchies |
 
 **Remaining ec_to_ctx blockers:**
 
@@ -675,6 +672,21 @@ Shared infrastructure ready:
 | Structured clone, timers, etc. | window.rs | 11 | Mixed deep blockers |
 | Streams domain calls | readablestream.rs, writablestream.rs, transformstream.rs | ~58 | Separate session |
 | Wasm + misc | wasm/mod.rs, wasm/interfaces.rs | 3 | Mixed |
+
+### Next session: recommended order
+
+1. **Narrow ec_to_ctx blockers (3)** — `add_event_listener` JsResult bridge
+   in abort_signal + html_iframe_element.  Smallest impact per ec_to_ctx.
+2. **Phase D: remove adapters (5)** — `ContextEventDispatchHost` in
+   event_target, abort_controller, abort_signal, timeout.  Unblocks
+   dispatch_event and add/removeEventListener.
+3. **html_media_element.rs: set_src/play/pause** — use
+   `with_object_any_mut_with` for the mutable-access + ec-call pattern.
+4. **Streams domain calls (58)** — dedicated session.  Domain methods
+   take `&mut Context` internally and need per-method conversion.
+5. **window.rs blockers (11)** — structured clone, timers, DOM manipulation.
+6. **Phase E: conditional Types** — `#[cfg]` gate all Boa imports,
+   blocked on near-zero ec_to_ctx.
 
 ### Phase B strategy: test-file-first workflow
 
@@ -786,18 +798,11 @@ only — the template for other binding files) and `ecma_ops_test.rs`
 (standalone ECMA-262 operation smoke tests).  No behavior change — just
 keeps the reference file legible as a template.
 
-60/60 tests pass on Boa.  4 tests are `#[ignore]` on JSC:
+60/60 tests pass on Boa.  1 test is `#[ignore]` on JSC:
 
 | Test | JSC blocker |
 |---|---|
-| `store_callback_then_flush_microtasks` | SIGSEGV in `create_root` / `GcRootHandle` (`JSValueProtect` on eval result) |
-| `get_iterator_and_step_value` | `get_iterator` / `get_iterator_step_value` crash |
-| `async_iterator_close_completes` | Depends on `get_iterator` |
 | `allocate_shared_array_buffer` | May not be available on current macOS |
-
-`GcRootHandle` is the remaining **functional blocker** for the
-Web IDL binding strategy on JSC: anything that stores a JS callback
-will crash.
 
 ## Working during migration
 
