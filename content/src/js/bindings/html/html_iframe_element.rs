@@ -235,8 +235,7 @@ fn set_onload(
     }
 
     if let Some(callback) = callback {
-        // Note: keeps ec_to_ctx — add_event_listener returns JsResult.
-        let add_result = try_with_event_target_mut(this, ec, |target| {
+        try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
                 &iframe_object,
                 String::from("load"),
@@ -245,11 +244,8 @@ fn set_onload(
                 false,
                 Some(false),
                 None,
-            )
+            );
         })?;
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let undefined = JsValue::undefined();
-        add_result.map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
     }
 
     Ok(ec.value_undefined())
@@ -293,8 +289,7 @@ fn set_onerror(
     }
 
     if let Some(callback) = callback {
-        // Note: keeps ec_to_ctx — add_event_listener returns JsResult.
-        let add_result = try_with_event_target_mut(this, ec, |target| {
+        try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
                 &iframe_object,
                 String::from("error"),
@@ -303,11 +298,8 @@ fn set_onerror(
                 false,
                 Some(false),
                 None,
-            )
+            );
         })?;
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let undefined = JsValue::undefined();
-        add_result.map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
     }
 
     Ok(ec.value_undefined())

@@ -107,9 +107,8 @@ fn add_event_listener(
             options.once,
             options.passive,
             options.signal,
-        )
-    })?
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
+        );
+    })?;
 
     Ok(JsValue::undefined())
 }
@@ -156,7 +155,7 @@ fn dispatch_event(
         Some(obj) => obj,
         None => return Err(ec.new_type_error("dispatchEvent requires an Event")),
     };
-    // Note: keeps ec_to_ctx — ContextEventDispatchHost needs &mut Context.
+    // Note: keeps ec_to_ctx — current_event_target_object needs &Context.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let undefined = JsValue::undefined();
     let target = current_event_target_object(this, ctx);
@@ -271,6 +270,110 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
         node_id: usize,
     ) -> JsResult<JsObject> {
         object_for_existing_node(document, node_id, self.context)
+    }
+
+    fn current_time_millis(&self) -> f64 {
+        0.0
+    }
+}
+
+/// Event-dispatch host backed by `&mut dyn ExecutionContext<T>`.
+///
+/// Replaces `ContextEventDispatchHost` — the adapter that wraps `&mut Context`.
+/// Uses `ec_to_ctx` internally for methods that need Boa `Context`, but callers
+/// never see `Context`.
+pub(crate) struct EcDispatchHost<'a, T: JsTypes> {
+    ec: &'a mut dyn ExecutionContext<T>,
+}
+
+impl<'a, T: JsTypes> EcDispatchHost<'a, T> {
+    pub(crate) fn new(ec: &'a mut dyn ExecutionContext<T>) -> Self {
+        Self { ec }
+    }
+}
+
+impl<T: JsTypes + js_engine::JsTypesWithRealm> js_engine::EcmascriptHost<T> for EcDispatchHost<'_, T> {
+    fn get(
+        &mut self,
+        object: &T::JsObject,
+        property: &str,
+    ) -> js_engine::Completion<T::JsValue, T> {
+        let key = self.ec.property_key_from_str(property);
+        ExecutionContext::get(self.ec, object.clone(), key)
+    }
+
+    fn is_callable(&self, value: &T::JsValue) -> bool {
+        self.ec.is_callable(value)
+    }
+
+    fn call(
+        &mut self,
+        callable: &T::JsObject,
+        this_arg: &T::JsValue,
+        args: &[T::JsValue],
+    ) -> js_engine::Completion<T::JsValue, T> {
+        self.ec.call(callable, this_arg, args)
+    }
+
+    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), T> {
+        self.ec.perform_a_microtask_checkpoint()
+    }
+
+    fn report_exception(&mut self, error: T::JsValue) {
+        self.ec.report_exception(error);
+    }
+
+    fn value_undefined(&mut self) -> T::JsValue {
+        self.ec.value_undefined()
+    }
+    fn value_null(&mut self) -> T::JsValue {
+        self.ec.value_null()
+    }
+    fn value_from_bool(&mut self, b: bool) -> T::JsValue {
+        self.ec.value_from_bool(b)
+    }
+    fn value_from_number(&mut self, n: f64) -> T::JsValue {
+        self.ec.value_from_number(n)
+    }
+    fn value_from_string(&mut self, s: T::JsString) -> T::JsValue {
+        self.ec.value_from_string(s)
+    }
+    fn js_string_from_str(&self, s: &str) -> T::JsString {
+        self.ec.js_string_from_str(s)
+    }
+}
+
+impl EventDispatchHost for EcDispatchHost<'_, crate::js::Types> {
+    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
+        self.ec
+    }
+
+    fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
+        create_interface_instance::<crate::js::Types, Event>(event, self.ec).map_err(JsError::from_opaque)
+    }
+
+    fn document_object(&mut self) -> JsResult<JsObject> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(self.ec) };
+        document_object(ctx)
+    }
+
+    fn global_object(&mut self) -> JsObject {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(self.ec) };
+        ctx.global_object()
+    }
+
+    fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(self.ec) };
+        resolve_element_object(node_id, ctx)
+    }
+
+    fn resolve_existing_node_object(
+        &mut self,
+        document: Rc<RefCell<BaseDocument>>,
+        node_id: usize,
+    ) -> JsResult<JsObject> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(self.ec) };
+        object_for_existing_node(document, node_id, ctx)
     }
 
     fn current_time_millis(&self) -> f64 {

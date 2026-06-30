@@ -303,8 +303,8 @@ fn set_onload(
                     false,
                     Some(false),
                     None,
-                )
-            })??;
+                );
+            })?;
         }
 
         Ok(JsValue::undefined())

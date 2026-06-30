@@ -588,7 +588,7 @@ expressed through the generic API with zero structural `#[cfg]`.
 | **A. GC derive conversion** | Replace Boa derives with `impl_gc_traits!` on 34 types | Small | ✅ DONE |
 | **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~85% done. ~94 ec_to_ctx eliminated across 7 files. ~90 remain — `with_object_any_mut_with` (closure-based mutable access) resolves the main borrow-limitation blocker. |
 | **C. create_builtin_function on EC** | Moved `create_builtin_function` from `JsEngine` to `ExecutionContext`, replaced `NativeFunction::from_closure` + `FunctionObjectBuilder` in `strategy.rs`. All Web IDL infra callers updated. | Medium | ✅ DONE |
-| **D. Remove remaining adapters** | Two `ContextEventDispatchHost` adapters in `writablestreamdefaultcontroller.rs` and `event_target.rs` | Small | Not started |
+| **D. Remove remaining adapters** | Two `ContextEventDispatchHost` adapters in `writablestreamdefaultcontroller.rs` and `event_target.rs` | Small | 🔶 In progress — `EcDispatchHost` created; `signal_abort_ec` done; borrow-conflict at 2 remaining sites |
 | **E. Conditional Types alias** | Switch `Types` between `BoaTypes`/`JscTypes` via `#[cfg]` | Large | Blocked on B, C, D |
 | **F. Generic EnvironmentSettingsObject** | Make EDS own `dyn ExecutionContext<T>` | Medium | Blocked on E |
 | **G. Delete ec_to_ctx bridge functions** | Delete `ec_to_ctx`, `context_as_ec`, `context_as_ec_ref`, `context_as_engine` | Small | Blocked on F |
@@ -612,18 +612,27 @@ Phases F and H depend on E.
 
 ### Next session plan
 
-Web IDL callback helper `_ec` variants are created and applied to
-abort_signal set_onabort and html_iframe_element set_onload/set_onerror.
-The `add_event_listener` JsResult→Completion conversion is the remaining
-narrow blocker in those functions (needs generic JsError extraction).
+**Step 1 complete** — `EventTarget::add_event_listener` return type changed from
+`JsResult<()>` to `()`.  Eliminated 3 narrow ec_to_ctx in `html_iframe_element.rs`
+(set_onload, set_onerror) and `abort_signal.rs` (set_onabort).
+
+**Phase D started** — `EcDispatchHost<T>` created wrapping `&mut dyn
+ExecutionContext<T>`, implementing `EcmascriptHost<T>` and `EventDispatchHost`.
+`signal_abort_ec` replaces `signal_abort_with_context` in `abort_signal.rs`.
+`abort_controller.rs` `abort` updated to use `signal_abort_ec`.
+`ContextEventDispatchHost` still used in `event_target.rs` `dispatch_event`
+(borrow-conflict with `current_event_target_object`) and
+`writablestreamdefaultcontroller.rs` `signal_abort` (borrow-conflict with
+`js_result_to_completion`).  Full elimination needs `signal_abort` to return
+`Completion` directly.
 
 | Step | What | Details |
 |---|---|---|
-| **Generic JsError bridge** | `EventTarget::add_event_listener` returns `JsResult<()>`.  Need a trait method or bridge to extract the inner `JsValue` from `JsError` without `Context`.  Unblocks the narrow ec_to_ctx in set_onload/set_onerror/set_onabort. | ~3 ec_to_ctx |
-| **D. Remove adapters** | `ContextEventDispatchHost` in `event_target.rs`, `writablestreamdefaultcontroller.rs`, and `signal_abort_with_context`.  Replace with trait-level `EventDispatchHost` impl for `&mut dyn ExecutionContext`. | Unblocks `event_target.rs` (3) + abort_controller (1) + timeout_static (1) |
-| **Streams domain calls** | ~58 ec_to_ctx across readablestream, writablestream, transformstream.  Domain methods take `&mut Context` internally. | Separate dedicated session |
-| **window.rs blockers** | Structured clone, timers, DOM manipulation — 11 ec_to_ctx with mixed deep dependencies. | Post-Phase D |
-| **E. Conditional Types** | `#[cfg]` gate all Boa imports | Large mechanical change; blocked on completed binding conversion |
+| **Generic JsError bridge** ✅ | `EventTarget::add_event_listener` changed to return `()`.  No JsError extraction needed. | ~3 ec_to_ctx eliminated |
+| **D. Remove adapters** 🔶 | `EcDispatchHost` created with `EcmascriptHost`+`EventDispatchHost` impls. `signal_abort_ec` replaces `signal_abort_with_context`. `ContextEventDispatchHost` still used where borrow-conflict with `ec_to_ctx` exists. | Eliminated 2 adapter sites; 3 remaining (borrow-conflict) |
+| **Streams domain calls** | ~58 ec_to_ctx across readablestream, writablestream, transformstream. | Separate dedicated session |
+| **window.rs blockers** | Structured clone, timers, DOM manipulation — 11 ec_to_ctx. | Post-Phase D |
+| **E. Conditional Types** | `#[cfg]` gate all Boa imports. | Blocked on completed binding conversion |
 
 ### Current state
 
@@ -636,11 +645,11 @@ data.  `GcRootHandle`/`create_root` uses global-object property attachment
 instead of `JSValueProtect`.  `get` handles Symbol keys via eval fallback.
 60/60 generic_js_test pass on Boa, 1 `#[ignore]` on JSC (SharedArrayBuffer).
 
-**~120 ec_to_ctx eliminated across 13 binding files:**
+**~123 ec_to_ctx eliminated across 13 binding files:**
 `document.rs` (18→0), `location.rs` (22→0), `strategy.rs` (2→0),
 `html_anchor_element.rs` (2→0), `node.rs` (14→0), `element.rs` (18→0),
 `html_media_element.rs` (3→0), `hyperlink_element_utils.rs` (21→1),
-`abort_signal.rs` (4→2 narrow), `html_iframe_element.rs` (2→2 narrow).
+`abort_signal.rs` (4→1 narrow), `html_iframe_element.rs` (2→0 narrow).
 
 New generic infrastructure available for next session:
 - **`with_object_any_mut_with`** — closure-based mutable access that passes both
@@ -665,8 +674,8 @@ Test file reference patterns (60/60 Boa):
 
 | Blocker | Files | Count | Status |
 |---|---|---|---|
-| `EventTarget::add_event_listener` JsResult | abort_signal, html_iframe_element | 3 narrow | Returns `JsResult<()>`; needs generic `JsError`→Completion bridge |
-| `ContextEventDispatchHost` | event_target, abort_controller, abort_signal timeout | 5 | Phase D — adapter takes `&mut Context`; blocks dispatch_event, add/removeEventListener, signal_abort_with_context, timeout_static |
+| `EventTarget::add_event_listener` JsResult ✅ | abort_signal, html_iframe_element | 0 | Resolved — return type changed to `()` |
+| `ContextEventDispatchHost` | event_target, writablestreamdefaultcontroller, abort_controller | 3 | Phase D started — `EcDispatchHost` created, `signal_abort_ec` replaces `signal_abort_with_context`. Remaining 2 sites have borrow-conflict (`current_event_target_object` + `dispatch`, `js_result_to_completion` + `signal_abort`). |
 | `document_creation_url` | hyperlink_element_utils.rs | 1 | Takes `&Context`; needs global-scope accessor on trait |
 | `ObjectInitializer` (style.cssText) | html_element.rs | 1 | Blocked on Boa object construction API abstraction |
 | Structured clone, timers, etc. | window.rs | 11 | Mixed deep blockers |
@@ -675,17 +684,14 @@ Test file reference patterns (60/60 Boa):
 
 ### Next session: recommended order
 
-1. **Narrow ec_to_ctx blockers (3)** — `add_event_listener` JsResult bridge
-   in abort_signal + html_iframe_element.  Smallest impact per ec_to_ctx.
-2. **Phase D: remove adapters (5)** — `ContextEventDispatchHost` in
-   event_target, abort_controller, abort_signal, timeout.  Unblocks
-   dispatch_event and add/removeEventListener.
-3. **html_media_element.rs: set_src/play/pause** — use
-   `with_object_any_mut_with` for the mutable-access + ec-call pattern.
-4. **Streams domain calls (58)** — dedicated session.  Domain methods
+1. **Streams domain calls (58)** — dedicated session.  Domain methods
    take `&mut Context` internally and need per-method conversion.
-5. **window.rs blockers (11)** — structured clone, timers, DOM manipulation.
-6. **Phase E: conditional Types** — `#[cfg]` gate all Boa imports,
+2. **Phase D completion** — Resolve borrow-conflict in
+   `writablestreamdefaultcontroller.rs` by converting `signal_abort` to
+   return `Completion`.  Resolve `dispatch_event` borrow-conflict by
+   converting `current_event_target_object` to EC-based variant.
+3. **window.rs blockers (11)** — structured clone, timers, DOM manipulation.
+4. **Phase E: conditional Types** — `#[cfg]` gate all Boa imports,
    blocked on near-zero ec_to_ctx.
 
 ### Phase B strategy: test-file-first workflow

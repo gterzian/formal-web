@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string,
+    Context, JsArgs, JsNativeError, JsResult, JsValue,
     native_function::NativeFunction,
 };
 use std::marker::PhantomData;
@@ -14,7 +14,7 @@ use crate::webidl::bindings::{
 };
 use crate::webidl::{callback_function_value, callback_function_value_ec, nullable_value, nullable_value_ec};
 
-use super::event_target::ContextEventDispatchHost;
+use super::event_target::EcDispatchHost;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -139,12 +139,12 @@ pub(crate) fn timeout_reason(context: &mut Context) -> Completion<JsValue, crate
     )?))
 }
 
-pub(crate) fn signal_abort_with_context(
+pub(crate) fn signal_abort_ec(
     signal: &AbortSignal,
     reason: JsValue,
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsResult<()> {
-    let mut host = ContextEventDispatchHost::new(context);
+    let mut host = EcDispatchHost::new(ec);
     signal_abort(&mut host, signal, reason)
 }
 
@@ -173,7 +173,7 @@ pub(crate) fn timeout_static(
     let callback = NativeFunction::from_copy_closure_with_captures(
         |_, _, signal: &AbortSignal, context| {
             let reason = timeout_reason(context).unwrap_or_else(|_| JsValue::undefined());
-            signal_abort_with_context(signal, reason, context)?;
+            signal_abort_ec(signal, reason, js_engine::boa::context_as_ec(context))?;
             Ok(JsValue::undefined())
         },
         signal.clone(),
@@ -307,8 +307,7 @@ fn set_onabort(
     }
 
     if let Some(callback) = callback {
-        // Note: keeps ec_to_ctx — add_event_listener returns JsResult.
-        let add_result = try_with_event_target_mut(this, ec, |target| {
+        try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
                 &signal_object,
                 String::from("abort"),
@@ -317,11 +316,8 @@ fn set_onabort(
                 false,
                 Some(false),
                 None,
-            )
+            );
         })?;
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let undefined = JsValue::undefined();
-        add_result.map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
     }
 
     Ok(ec.value_undefined())

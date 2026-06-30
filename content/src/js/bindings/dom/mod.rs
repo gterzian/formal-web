@@ -10,3 +10,4 @@ mod ui_event;
 
 pub(crate) use document::install_document_property;
 pub(crate) use element::with_element_ref;
+pub(crate) use event_target::EcDispatchHost;

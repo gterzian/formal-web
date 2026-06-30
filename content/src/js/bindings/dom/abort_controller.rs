@@ -1,11 +1,11 @@
-use boa_engine::{JsNativeError, JsResult, JsValue};
+use boa_engine::JsValue;
 use std::marker::PhantomData;
 
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};
 use crate::js::{try_with_abort_controller_ref, with_abort_controller_ref};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
-use super::abort_signal::{abort_reason_from_argument, signal_abort_with_context};
+use super::abort_signal::{abort_reason_from_argument, signal_abort_ec};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -70,17 +70,18 @@ fn abort(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx — signal_abort_with_context takes &mut Context.
     let reason = abort_reason_from_argument(args.get(0), ec)?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
-
-    let controller = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("AbortController receiver is not an object")
-    }).map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    let controller = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("AbortController receiver is not an object"))?;
     let signal = with_abort_controller_ref(&controller, |controller| controller.signal())
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
-    signal_abort_with_context(&signal, reason, ctx)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
-    Ok(JsValue::undefined())
+        .map_err(|e| {
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+            e.into_opaque(ctx).unwrap_or(ec.value_undefined())
+        })?;
+    signal_abort_ec(&signal, reason, ec)
+        .map_err(|e| {
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+            e.into_opaque(ctx).unwrap_or(ec.value_undefined())
+        })?;
+    Ok(ec.value_undefined())
 }

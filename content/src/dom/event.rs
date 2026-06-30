@@ -68,15 +68,15 @@ impl EventTarget {
         once: bool,
         passive: Option<bool>,
         signal: Option<AbortSignal>,
-    ) -> JsResult<()> {
+    ) {
         if let Some(signal) = signal.as_ref() {
             if signal.aborted_value() {
-                return Ok(());
+                return;
             }
         }
 
         let Some(callback) = callback else {
-            return Ok(());
+            return;
         };
 
         let passive = passive.or(Some(false));
@@ -110,8 +110,6 @@ impl EventTarget {
                 });
             }
         }
-
-        Ok(())
     }
 
     /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
