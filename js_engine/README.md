@@ -453,37 +453,96 @@ converted from `#[derive(..., Trace, Finalize, JsData)]` to
 `js_engine::impl_gc_traits!`.  ~50 internal types (enums/structs without
 `JsData`) remain unconverted — these are lower priority.
 
-**Phase B — IN PROGRESS.** 4 binding files converted (dom_exception, event,
-ui_event, html_input_element).  ~187 `ec_to_ctx` sites remain across 20
-binding files.
+**Phase B — IN PROGRESS.** 7 binding files converted (dom_exception,
+event, ui_event, html_input_element, html_anchor_element, html_element,
+html_iframe_element).  The simple getter/setter pattern (downcast +
+`ec.value_from_*()` / `ec.to_rust_string()`) is fully mechanical.
 
-Key discovery: binding files depend on shared helpers (`with_node_ref`,
-`object_for_existing_node`, `document_object`, `invalidate_cached_node_ids`,
-etc.) that return `JsResult` and take `&mut Context`.  Converting a binding
-file requires converting its helpers first, or wrapping them with EC-taking
-versions that bridge through `ec_to_ctx` internally.
+Remaining `ec_to_ctx` calls fall into two categories:
+- **Complex functions** that need Boa-specific APIs (`ObjectInitializer`,
+  `NativeFunction`, `with_event_target_mut`, `document_creation_url`, etc.)
+- **Document-scope helpers** (`document_object`, `object_for_existing_node`,
+  etc.) that access `GlobalScope` through `Context` — no generic
+  equivalent exists yet; these need `_ec` wrappers in `platform_objects.rs`
+  until Phase F makes `EnvironmentSettingsObject` generic.
 
-### Phase B strategy (proven, ready to execute)
+### Phase B strategy: test-file-first workflow
 
-1. Add `_ec` wrapper variants of every shared helper in
-   `content/src/js/platform_objects.rs`.  Each wrapper takes
-   `&mut dyn ExecutionContext<Types>`, returns `Completion<T, Types>`,
-   and internally calls `ec_to_ctx` + the old `JsResult` helper.
-2. With wrappers in place, each binding file becomes a mechanical
-   conversion: `with_node_ref` → `try_with_node_ref` (already exists),
-   `object_for_existing_node(ctx)?.into()` →
-   `Types::value_from_object(object_for_existing_node_ec(ec)?)`,
-   `value.to_string(ctx)?.to_std_string_escaped()` → `ec.to_rust_string(v)?`.
-3. Functions that still need `ctx` for unconverted helpers (e.g. `appendable_node`)
-   keep `let ctx = unsafe { ec_to_ctx(ec) };` but drop the
-   `(|| -> JsResult<...> { ... })()...map_err(...)` bridge — just unwrap the
-   body and add explicit `.map_err(|e| e.into_opaque(ctx).unwrap_or(...))?`
+**Never add a new generic pattern directly to production code.**
+Every downcast helper, binding-function signature, or data-access
+abstraction must first be validated in `content/src/generic_js_test.rs`
+with compilation and passing unit tests on **both backends** (Boa and
+JSC) before it can be applied to any real binding file.
+
+This means: before converting a binding file, check whether the generic
+test file already covers the patterns that file needs.  If not, add a
+minimal test first (compiles + passes), then apply the proven pattern.
+
+**Patterns already validated in the test file:**
+
+| Pattern | Test file reference | Production equivalent |
+|---|---|---|
+| Single-type downcast (immutable) | `widget_data::with_ref` | `try_with_*_ref` in `downcast.rs` or local helpers |
+| Single-type downcast (mutable) | `widget_data::with_mut` | `try_with_*_mut` in `downcast.rs` |
+| Multi-type downcast chain (immutable) | `widget_or_button_with_ref` | `try_with_node_ref`, `try_with_html_element_ref`, etc. |
+| Multi-type downcast chain (mutable) | `widget_or_button_with_mut` | `try_with_event_target_mut` (future) |
+| Platform object creation | `create_test_widget` | `create_interface_instance` (already uses `create_object_with_any`) |
+| String extraction | `ec.to_rust_string(v)` | Direct use in binding functions |
+| Value construction | `ec.value_from_string(...)`, etc. | Direct use in binding functions |
+| Error construction | `ec.new_type_error(msg)` | Direct use in binding functions |
+
+**Conversion recipe for a binding file:**
+
+1. Rewrite its local `try_with_*` helpers to use `ec.with_object_any()` /
+   `ec.with_object_any_mut()` + `dyn Any::downcast_ref()` /
+   `downcast_mut()`, following the proven multi-type-chaining pattern
+   from the test file.
+2. Replace `JsNativeError::typ().with_message(...)` with
+   `ec.new_type_error(...)`.
+3. Replace `.to_string(ctx)?.to_std_string_escaped()` with
+   `ec.to_rust_string(v)?`.
+4. Replace `JsValue::undefined()` with `ec.value_undefined()`, etc.
+5. Functions that still need `ctx` for Boa-specific APIs
+   (`ObjectInitializer`, `NativeFunction`, `FunctionObjectBuilder`,
+   `document_creation_url`, etc.) keep
+   `let ctx = unsafe { ec_to_ctx(ec) };` but flatten the
+   `(|| -> JsResult<...> { ... })() .map_err(...)` bridge — unwrap the
+   body and add explicit
+   `.map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?`
    at each `JsResult`-returning call.
+6. Delete the old `with_*` helper if no callers remain.
+
+**`with_object_any_mut` borrow-limitation:**
+`with_object_any_mut` returns a reference whose (unsafe-extended)
+lifetime borrows from `ec`, not from the JS object.  This means you
+cannot call an `ec` method while the returned reference is alive.
+When a domain method itself takes `&mut dyn ExecutionContext` (e.g.
+`play()`, `pause()`, `set_src()`), use the old
+`JsObject::downcast_mut::<T>()` + `ec_to_ctx` pattern instead:
+`JsObject::downcast_mut` borrows from the object, leaving `ec` free.
+
+**What NOT to do:**
+
+- Do NOT add new `try_with_*` helpers that use Boa's
+  `JsObject::downcast_ref::<T>()` / `downcast_mut::<T>()`.  Use
+  `ec.with_object_any()` / `ec.with_object_any_mut()` instead — that is
+  the generic, cross-engine equivalent validated in the test file.
+- Do NOT convert a file without first checking that the test file covers
+  the patterns it needs.  Gaps in test coverage must be filled first.
+- Do NOT add new Boa-specific bridge functions when a generic equivalent
+  exists.  For platform-object downcast, the generic equivalent is
+  `ec.with_object_any()` / `ec.with_object_any_mut()`.  For
+  document-scope helpers (`document_object`, `object_for_existing_node`,
+  etc.) no generic equivalent exists yet — `_ec` wrappers in
+  `platform_objects.rs` are acceptable bridges until Phase F makes
+  `EnvironmentSettingsObject` generic.
 
 ### POC test file — reference implementation
 
 `content/src/generic_js_test.rs` is the **reference implementation** for the
-generic layer.  When converting real code, use the test file as the template:
+generic layer.  Every generic pattern must be validated here before being
+applied to production binding files.  When converting real code, use the
+test file as the template:
 
 - **Struct with GC fields**: `impl_gc_traits! { struct ... }` with
   `GcRootHandle<Types>` for JS references
@@ -494,6 +553,14 @@ generic layer.  When converting real code, use the test file as the template:
   Box::new(data))`
 - **Callback storage**: `ec.create_root(&callback_val)` → store as
   `GcRootHandle<Types>`
+- **Multi-type downcast chain**: `widget_or_button_with_ref` /
+  `widget_or_button_with_mut` — tries `TestButton` first, falls back to
+  `TestWidget`, demonstrating the same pattern as `try_with_node_ref`
+  (tries `Document`, `Element`, `HTMLElement`, …, `Node`) or
+  `try_with_event_target_mut` (tries 12 types including `Window`,
+  `Document`, …, `EventTarget`).  Uses
+  `ec.with_object_any()` / `ec.with_object_any_mut()` + Rust's
+  `dyn Any::downcast_ref()` / `downcast_mut()` — no Boa-specific APIs.
 
-50/50 tests pass on Boa.  5 tests are `#[ignore]` on JSC due to known
+53/53 tests pass on Boa.  5 tests are `#[ignore]` on JSC due to known
 backend gaps (`get_iterator`, `create_builtin_function`, `SharedArrayBuffer`).

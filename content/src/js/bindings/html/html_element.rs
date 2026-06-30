@@ -131,25 +131,23 @@ fn try_with_html_element_ref<R>(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&HTMLElement) -> R,
 ) -> Completion<R, crate::js::Types> {
-    let object = crate::js::Types::value_as_object(this)
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLElement receiver is not an object"))?;
 
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(f(&html_element));
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            return Ok(f(html_element));
+        }
+        if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
+            return Ok(f(&anchor.html_element));
+        }
+        if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
+            return Ok(f(&input.html_element));
+        }
+        if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
+            return Ok(f(&iframe.html_element));
+        }
     }
-
-    if let Some(anchor) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(f(&anchor.html_element));
-    }
-
-    if let Some(input) = object.downcast_ref::<HTMLInputElement>() {
-        return Ok(f(&input.html_element));
-    }
-
-    if let Some(iframe) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(f(&iframe.html_element));
-    }
-
     Err(ec.new_type_error("receiver is not an HTMLElement"))
 }
 
@@ -234,7 +232,10 @@ fn get_style(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx because get_style uses ObjectInitializer,
+    // NativeFunction, FunctionObjectBuilder — Boa-specific APIs not yet
+    // available on the ExecutionContext trait.
+    let undefined = JsValue::undefined();
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<JsValue> {
         let object = this.as_object().ok_or_else(|| {
@@ -293,7 +294,7 @@ fn get_style(
 
         Ok(style_obj.into())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))
 }
 
 fn resolve_style_element(this: &JsValue, context: &mut Context) -> JsResult<JsValue> {

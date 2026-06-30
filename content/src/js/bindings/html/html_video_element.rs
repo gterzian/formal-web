@@ -1,6 +1,6 @@
 // ── HTMLVideoElement JS bindings ──
 
-use boa_engine::{JsNativeError, JsResult, JsValue};
+use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLVideoElement;
@@ -126,17 +126,28 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
     }
 }
 
+fn try_with_video_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&HTMLVideoElement) -> R,
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(video) = data.downcast_ref::<HTMLVideoElement>() {
+            return Ok(f(video));
+        }
+    }
+    Err(ec.new_type_error("expected HTMLVideoElement"))
+}
+
 fn get_video_width(
     this: &JsValue,
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLVideoElement"))?;
-    Ok(ec.value_from_number(video.video_width() as f64))
+    let width = try_with_video_ref(this, ec, |v| v.video_width())?;
+    Ok(ec.value_from_number(width as f64))
 }
 
 fn get_video_height(
@@ -144,12 +155,8 @@ fn get_video_height(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLVideoElement"))?;
-    Ok(ec.value_from_number(video.video_height() as f64))
+    let height = try_with_video_ref(this, ec, |v| v.video_height())?;
+    Ok(ec.value_from_number(height as f64))
 }
 
 fn get_poster(
@@ -157,12 +164,8 @@ fn get_poster(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLVideoElement"))?;
-    Ok(ec.value_from_string(ec.js_string_from_str(&video.poster())))
+    let poster = try_with_video_ref(this, ec, |v| v.poster())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&poster)))
 }
 
 fn set_poster(
@@ -170,24 +173,9 @@ fn set_poster(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        let video = obj
-            .downcast_ref::<HTMLVideoElement>()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-        let poster = args
-            .first()
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        video.set_poster(&poster);
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let poster = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_video_ref(this, ec, |v| v.set_poster(&poster))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_plays_inline(
@@ -195,12 +183,8 @@ fn get_plays_inline(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLVideoElement"))?;
-    Ok(ec.value_from_bool(video.plays_inline()))
+    let plays = try_with_video_ref(this, ec, |v| v.plays_inline())?;
+    Ok(ec.value_from_bool(plays))
 }
 
 fn set_plays_inline(
@@ -208,13 +192,8 @@ fn set_plays_inline(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLVideoElement"))?;
     let value = args.first().map_or(false, |v| v.to_boolean());
-    video.set_plays_inline(value);
+    try_with_video_ref(this, ec, |v| v.set_plays_inline(value))?;
     Ok(ec.value_undefined())
 }
 
@@ -223,12 +202,8 @@ fn get_width(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLVideoElement"))?;
-    Ok(ec.value_from_string(ec.js_string_from_str(&video.width())))
+    let width = try_with_video_ref(this, ec, |v| v.width())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&width)))
 }
 
 fn set_width(
@@ -236,24 +211,9 @@ fn set_width(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        let video = obj
-            .downcast_ref::<HTMLVideoElement>()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-        let value = args
-            .first()
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        video.set_width(&value);
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let value = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_video_ref(this, ec, |v| v.set_width(&value))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_height(
@@ -261,12 +221,8 @@ fn get_height(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let video = obj
-        .downcast_ref::<HTMLVideoElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLVideoElement"))?;
-    Ok(ec.value_from_string(ec.js_string_from_str(&video.height())))
+    let height = try_with_video_ref(this, ec, |v| v.height())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&height)))
 }
 
 fn set_height(
@@ -274,22 +230,7 @@ fn set_height(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        let video = obj
-            .downcast_ref::<HTMLVideoElement>()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected HTMLVideoElement"))?;
-        let value = args
-            .first()
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        video.set_height(&value);
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let value = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_video_ref(this, ec, |v| v.set_height(&value))?;
+    Ok(ec.value_undefined())
 }

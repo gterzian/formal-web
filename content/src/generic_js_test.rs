@@ -113,6 +113,83 @@ mod widget_data {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Subtype hierarchy — exercises multi-type downcast chains (mirrors
+// the real codebase's with_event_target_mut / with_node_ref pattern)
+// ═══════════════════════════════════════════════════════════════════════════
+
+js_engine::impl_gc_traits! {
+    /// A toy subtype that wraps TestWidget — mirrors how HTMLInputElement
+    /// wraps HTMLElement, which wraps Element, which wraps Node.
+    pub(crate) struct TestButton {
+        label: String,
+        widget: TestWidget,
+    }
+}
+
+impl TestButton {
+    fn new(label: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            widget: TestWidget::new(),
+        }
+    }
+
+    fn label_value(&self) -> &str {
+        &self.label
+    }
+
+    fn set_label(&mut self, label: &str) {
+        self.label = label.to_string();
+    }
+}
+
+/// A multi-type downcast helper that tries TestButton first, then
+/// falls back to TestWidget.  This is the generic equivalent of
+/// `with_event_target_mut` trying Window → Document → Element → ...
+/// → EventTarget in the production downcast.rs.
+pub(crate) fn widget_or_button_with_mut<T>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<TestTypes>,
+    f: impl FnOnce(&mut TestWidget) -> T,
+) -> Completion<T, TestTypes> {
+    let obj = TestTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("receiver is not an object"))?;
+
+    if let Some(data) = ec.with_object_any_mut(&obj) {
+        // Try the most-specific type first.
+        if let Some(button) = data.downcast_mut::<TestButton>() {
+            return Ok(f(&mut button.widget));
+        }
+        // Fall back to the base type.
+        if let Some(widget) = data.downcast_mut::<TestWidget>() {
+            return Ok(f(widget));
+        }
+    }
+    // `data` borrow is dropped here; `ec` is free for error construction.
+    Err(ec.new_type_error("receiver is not a TestWidget or TestButton"))
+}
+
+/// Immutable multi-type downcast — same chain, read-only.
+pub(crate) fn widget_or_button_with_ref<T>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<TestTypes>,
+    f: impl FnOnce(&TestWidget) -> T,
+) -> Completion<T, TestTypes> {
+    let obj = TestTypes::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("receiver is not an object"))?;
+
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(button) = data.downcast_ref::<TestButton>() {
+            return Ok(f(&button.widget));
+        }
+        if let Some(widget) = data.downcast_ref::<TestWidget>() {
+            return Ok(f(widget));
+        }
+    }
+    Err(ec.new_type_error("receiver is not a TestWidget or TestButton"))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Platform object creation — uses the generic `create_object_with_any` API
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -124,6 +201,16 @@ fn create_test_widget(
     let prototype = get_prototype_from_host_defined::<TestTypes, TestWidget>(ec)
         .ok_or_else(|| ec.new_type_error("TestWidget not registered"))?;
     Ok(ec.create_object_with_any(prototype, Box::new(widget)))
+}
+
+fn create_test_button(
+    button: TestButton,
+    ec: &mut dyn ExecutionContext<TestTypes>,
+) -> Completion<JsObject, TestTypes> {
+    use crate::webidl::bindings::registry::get_prototype_from_host_defined;
+    let prototype = get_prototype_from_host_defined::<TestTypes, TestButton>(ec)
+        .ok_or_else(|| ec.new_type_error("TestButton not registered"))?;
+    Ok(ec.create_object_with_any(prototype, Box::new(button)))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -590,6 +677,26 @@ impl WebIdlInterface<TestTypes> for TestWidget {
 // Context lifecycle exercise (Boa-only)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ── TestButton Web IDL interface (minimal — just for registration) ──
+
+impl WebIdlInterface<TestTypes> for TestButton {
+    const NAME: &'static str = "TestButton";
+
+    fn parent_name() -> Option<&'static str> {
+        Some("TestWidget")
+    }
+
+    fn create_platform_object(
+        _new_target: &JsValue,
+        _args: &[JsValue],
+        _ec: &mut dyn ExecutionContext<TestTypes>,
+    ) -> Completion<Self, TestTypes> {
+        Ok(TestButton::new("Default"))
+    }
+
+    fn define_members(_def: &mut InterfaceDefinition<TestTypes>) {}
+}
+
 #[cfg(feature = "boa")]
 #[allow(dead_code)]
 pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
@@ -605,6 +712,7 @@ pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
     initialize_registry::<TestTypes>(&mut boa_context);
 
     register_interface_spec::<TestTypes, TestWidget, _>(&mut boa_context).ok();
+    register_interface_spec::<TestTypes, TestButton, _>(&mut boa_context).ok();
 
     Ok(())
 }
@@ -635,6 +743,7 @@ mod tests {
         let mut engine = BoaContext::from_context(context);
         initialize_registry::<TestTypes>(&mut engine);
         register_interface_spec::<TestTypes, TestWidget, _>(&mut engine).ok();
+        register_interface_spec::<TestTypes, TestButton, _>(&mut engine).ok();
         engine
     }
 
@@ -648,6 +757,7 @@ mod tests {
         // (JSC create_builtin_function is limited), but it populates
         // the registry so create_test_widget can find the prototype.
         register_interface_spec::<TestTypes, TestWidget, _>(&mut engine).ok();
+        register_interface_spec::<TestTypes, TestButton, _>(&mut engine).ok();
         engine
     }
 
@@ -657,6 +767,55 @@ mod tests {
     /// `create_test_widget` helper.
     fn create_widget(widget: TestWidget, ec: &mut dyn ExecutionContext<TestTypes>) -> JsObject {
         create_test_widget(widget, ec).unwrap()
+    }
+
+    /// Create a TestButton platform object.
+    fn create_button(button: TestButton, ec: &mut dyn ExecutionContext<TestTypes>) -> JsObject {
+        create_test_button(button, ec).unwrap()
+    }
+
+    // ── Multi-type downcast chain tests ────────────────────────────
+
+    #[test]
+    fn multi_downcast_button_seen_as_button_and_widget() {
+        let mut engine = setup();
+        let mut button = TestButton::new("ClickMe");
+        button.widget.title = "BtnWidget".into();
+        let obj = create_button(button, &mut engine);
+        let js_obj = TestTypes::value_from_object(obj);
+
+        // Through the multi-type helper, we should see the widget fields.
+        let title = widget_or_button_with_ref(&js_obj, &mut engine, |w| w.title.clone()).unwrap();
+        assert_eq!(title, "BtnWidget");
+
+        // Mutable access through the multi-type helper.
+        widget_or_button_with_mut(&js_obj, &mut engine, |w| w.title = "Changed".into()).unwrap();
+        let title = widget_or_button_with_ref(&js_obj, &mut engine, |w| w.title.clone()).unwrap();
+        assert_eq!(title, "Changed");
+    }
+
+    #[test]
+    fn multi_downcast_pure_widget_works() {
+        let mut engine = setup();
+        let mut widget = TestWidget::new();
+        widget.title = "PureWidget".into();
+        let obj = create_widget(widget, &mut engine);
+        let js_obj = TestTypes::value_from_object(obj);
+
+        // A pure TestWidget (not a TestButton) should still be found
+        // by the multi-type helper (it falls back to TestWidget).
+        let title = widget_or_button_with_ref(&js_obj, &mut engine, |w| w.title.clone()).unwrap();
+        assert_eq!(title, "PureWidget");
+    }
+
+    #[test]
+    fn multi_downcast_unknown_type_errors() {
+        let mut engine = setup();
+        let plain = engine.create_plain_object(None);
+        let js_obj = TestTypes::value_from_object(plain);
+
+        let result = widget_or_button_with_ref(&js_obj, &mut engine, |w| w.title.clone());
+        assert!(result.is_err());
     }
 
     // ── Tests ────────────────────────────────────────────────────────

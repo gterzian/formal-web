@@ -5,7 +5,7 @@
 //
 // Only a subset of the full IDL is exposed for the initial video cut.
 
-use boa_engine::{JsNativeError, JsResult, JsValue};
+use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLMediaElement;
@@ -359,6 +359,27 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
     }
 }
 
+// ── Multi-type downcast helper ──────────────────────────────────────
+// Tries HTMLMediaElement first, then HTMLVideoElement → .media_element.
+
+fn try_with_media_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&HTMLMediaElement) -> R,
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(media) = data.downcast_ref::<HTMLMediaElement>() {
+            return Ok(f(media));
+        }
+        if let Some(video) = data.downcast_ref::<HTMLVideoElement>() {
+            return Ok(f(&video.media_element));
+        }
+    }
+    Err(ec.new_type_error("expected HTMLMediaElement"))
+}
+
 // ── Attribute getters/setters ──
 
 fn get_network_state(
@@ -366,15 +387,7 @@ fn get_network_state(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let state = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.network_state()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.network_state()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let state = try_with_media_ref(this, ec, |media| media.network_state())?;
     Ok(ec.value_from_number(state as f64))
 }
 
@@ -383,15 +396,7 @@ fn get_ready_state(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let state = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.ready_state()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.ready_state()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let state = try_with_media_ref(this, ec, |media| media.ready_state())?;
     Ok(ec.value_from_number(state as f64))
 }
 
@@ -400,15 +405,7 @@ fn get_src(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let src = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.src()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.src()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let src = try_with_media_ref(this, ec, |media| media.src())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&src)))
 }
 
@@ -417,29 +414,20 @@ fn set_src(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx and JsObject::downcast_mut.
+    // with_object_any_mut borrows ec_ref, preventing re-use.
+    let src = ec.to_rust_string(args.get_or_undefined(0).clone())?;
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let ec_ref = js_engine::boa::context_as_ec(ctx);
-    let obj = match this.as_object() {
-        Some(o) => o,
-        None => return Ok(value_undefined),
-    };
-    let src = args
-        .first()
-        .and_then(|v| v.as_string())
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.set_src(&src, ec_ref);
-    } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.set_src(&src, ec_ref);
-    } else {
-        return Err(crate::js::native_error_to_js_value(
-            JsNativeError::typ().with_message("expected HTMLMediaElement"),
-            ctx,
-        ));
+    let obj = this.as_object();
+    if let Some(obj) = obj {
+        if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
+            media.set_src(&src, ec_ref);
+        } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
+            video.media_element.set_src(&src, ec_ref);
+        }
     }
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn get_current_src(
@@ -447,15 +435,7 @@ fn get_current_src(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let src = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.current_src()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.current_src()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let src = try_with_media_ref(this, ec, |media| media.current_src())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&src)))
 }
 
@@ -464,15 +444,7 @@ fn get_duration(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let duration = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.duration()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.duration()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let duration = try_with_media_ref(this, ec, |media| media.duration())?;
     Ok(ec.value_from_number(duration))
 }
 
@@ -481,15 +453,7 @@ fn get_paused(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let paused = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.paused()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.paused()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let paused = try_with_media_ref(this, ec, |media| media.paused())?;
     Ok(ec.value_from_bool(paused))
 }
 
@@ -498,15 +462,7 @@ fn get_seeking(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let seeking = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.seeking()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.seeking()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let seeking = try_with_media_ref(this, ec, |media| media.seeking())?;
     Ok(ec.value_from_bool(seeking))
 }
 
@@ -515,15 +471,7 @@ fn get_current_time(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let time = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.current_time()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.current_time()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let time = try_with_media_ref(this, ec, |media| media.current_time())?;
     Ok(ec.value_from_number(time))
 }
 
@@ -532,8 +480,7 @@ fn set_current_time(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let _obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let _ = try_with_media_ref(this, ec, |_media| ())?;
     // TODO: Implement using interior mutability.
     Ok(ec.value_undefined())
 }
@@ -543,15 +490,8 @@ fn get_error(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    if obj.downcast_ref::<HTMLMediaElement>().is_some()
-        || obj.downcast_ref::<HTMLVideoElement>().is_some()
-    {
-        Ok(ec.value_null())
-    } else {
-        Err(ec.new_type_error("expected HTMLMediaElement"))
-    }
+    let _ = try_with_media_ref(this, ec, |_media| ())?;
+    Ok(ec.value_null())
 }
 
 fn get_autoplay(
@@ -559,15 +499,7 @@ fn get_autoplay(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let val = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.autoplay()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.autoplay()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let val = try_with_media_ref(this, ec, |media| media.autoplay())?;
     Ok(ec.value_from_bool(val))
 }
 
@@ -576,16 +508,8 @@ fn set_autoplay(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
     let value = args.first().map_or(false, |v| ec.to_boolean(v));
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_autoplay(value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_autoplay(value);
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    }
+    try_with_media_ref(this, ec, |media| media.set_autoplay(value))?;
     Ok(ec.value_undefined())
 }
 
@@ -594,15 +518,7 @@ fn get_loop(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let val = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.loop_()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.loop_()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let val = try_with_media_ref(this, ec, |media| media.loop_())?;
     Ok(ec.value_from_bool(val))
 }
 
@@ -611,16 +527,8 @@ fn set_loop(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
     let value = args.first().map_or(false, |v| ec.to_boolean(v));
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_loop(value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_loop(value);
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    }
+    try_with_media_ref(this, ec, |media| media.set_loop(value))?;
     Ok(ec.value_undefined())
 }
 
@@ -629,15 +537,7 @@ fn get_controls(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let val = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.controls()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.controls()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let val = try_with_media_ref(this, ec, |media| media.controls())?;
     Ok(ec.value_from_bool(val))
 }
 
@@ -646,16 +546,8 @@ fn set_controls(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
     let value = args.first().map_or(false, |v| ec.to_boolean(v));
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_controls(value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_controls(value);
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    }
+    try_with_media_ref(this, ec, |media| media.set_controls(value))?;
     Ok(ec.value_undefined())
 }
 
@@ -664,15 +556,7 @@ fn get_muted(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let val = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.muted()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.muted()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let val = try_with_media_ref(this, ec, |media| media.muted())?;
     Ok(ec.value_from_bool(val))
 }
 
@@ -681,16 +565,8 @@ fn set_muted(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
     let value = args.first().map_or(false, |v| ec.to_boolean(v));
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_muted(value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_muted(value);
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    }
+    try_with_media_ref(this, ec, |media| media.set_muted(value))?;
     Ok(ec.value_undefined())
 }
 
@@ -699,15 +575,7 @@ fn get_volume(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let vol = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.volume()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.volume()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let vol = try_with_media_ref(this, ec, |media| media.volume())?;
     Ok(ec.value_from_number(vol))
 }
 
@@ -716,19 +584,11 @@ fn set_volume(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
     let vol = args
         .first()
         .and_then(|v| crate::js::Types::value_as_number(v))
         .unwrap_or(1.0);
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_volume(vol);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_volume(vol);
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    }
+    try_with_media_ref(this, ec, |media| media.set_volume(vol))?;
     Ok(ec.value_undefined())
 }
 
@@ -737,15 +597,7 @@ fn get_preload(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let preload = if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.preload()
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.preload()
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
-    };
+    let preload = try_with_media_ref(this, ec, |media| media.preload())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&preload)))
 }
 
@@ -754,29 +606,9 @@ fn set_preload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        let value = args
-            .first()
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
-        if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-            media.set_preload(&value);
-        } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-            video.media_element.set_preload(&value);
-        } else {
-            return Err(JsNativeError::typ()
-                .with_message("expected HTMLMediaElement")
-                .into());
-        }
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let value = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_media_ref(this, ec, |media| media.set_preload(&value))?;
+    Ok(ec.value_undefined())
 }
 
 // ── Operations ──
@@ -786,8 +618,7 @@ fn load_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let _obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let _ = try_with_media_ref(this, ec, |_media| ())?;
     // Note: load() takes &mut self and requires interior mutability. The HTMLMediaElement
     // is behind a plain &ref in the binding layer. Adding RefCell support is tracked
     // as a separate gap — this binding currently returns undefined.
@@ -799,14 +630,18 @@ fn play_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    // Note: keeps ec_to_ctx and JsObject::downcast_mut.
+    // with_object_any_mut borrows ec_ref, preventing re-use.
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let ec_ref = js_engine::boa::context_as_ec(ctx);
     let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
+        .ok_or_else(|| ec_ref.new_type_error("expected object"))?;
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        return media.play(ec);
+        return media.play(ec_ref);
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        return video.media_element.play(ec);
+        return video.media_element.play(ec_ref);
     }
-    Err(ec.new_type_error("expected HTMLMediaElement"))
+    Err(ec_ref.new_type_error("expected HTMLMediaElement"))
 }
 
 fn pause_method(
@@ -814,16 +649,20 @@ fn pause_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    // Note: keeps ec_to_ctx and JsObject::downcast_mut.
+    // with_object_any_mut borrows ec_ref, preventing re-use.
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let ec_ref = js_engine::boa::context_as_ec(ctx);
     let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
+        .ok_or_else(|| ec_ref.new_type_error("expected object"))?;
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.pause(ec);
+        media.pause(ec_ref);
+        return Ok(ec_ref.value_undefined());
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.pause(ec);
-    } else {
-        return Err(ec.new_type_error("expected HTMLMediaElement"));
+        video.media_element.pause(ec_ref);
+        return Ok(ec_ref.value_undefined());
     }
-    Ok(ec.value_undefined())
+    Err(ec_ref.new_type_error("expected HTMLMediaElement"))
 }
 
 fn can_play_type(
@@ -831,8 +670,7 @@ fn can_play_type(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let _obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let _ = try_with_media_ref(this, ec, |_media| ())?;
     // Step 1: Return "probably" if the type is a media type that can be rendered.
     // Initial cut: return empty string (no types supported).
     Ok(ec.value_from_string(ec.js_string_from_str("")))

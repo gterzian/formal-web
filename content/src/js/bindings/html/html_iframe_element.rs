@@ -180,10 +180,12 @@ fn try_with_html_iframe_element_ref<R>(
 ) -> Completion<R, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
-    let html_iframe_element = obj
-        .downcast_ref::<HTMLIFrameElement>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an HTMLIFrameElement"))?;
-    Ok(f(&html_iframe_element))
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
+            return Ok(f(iframe));
+        }
+    }
+    Err(ec.new_type_error("receiver is not an HTMLIFrameElement"))
 }
 
 fn get_src(
@@ -211,8 +213,10 @@ fn set_onload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — with_event_target_mut and
+    // with_html_iframe_element_mut are not yet generic.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let undefined = JsValue::undefined();
     (|| -> JsResult<JsValue> {
         let iframe_object = this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
@@ -243,7 +247,7 @@ fn set_onload(
 
         Ok(JsValue::undefined())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))
 }
 
 fn get_onerror(
@@ -262,8 +266,10 @@ fn set_onerror(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx — with_event_target_mut and
+    // with_html_iframe_element_mut are not yet generic.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let undefined = JsValue::undefined();
     (|| -> JsResult<JsValue> {
         let iframe_object = this.as_object().ok_or_else(|| {
             JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
@@ -294,7 +300,7 @@ fn set_onerror(
 
         Ok(JsValue::undefined())
     })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))
 }
 
 fn set_src(
@@ -302,17 +308,9 @@ fn set_src(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let src = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_iframe_element_ref(this, |iframe| iframe.set_src(&src))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let src = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_src(&src))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_srcdoc(
@@ -329,17 +327,9 @@ fn set_srcdoc(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let srcdoc = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_iframe_element_ref(this, |iframe| iframe.set_srcdoc(&srcdoc))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let srcdoc = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_srcdoc(&srcdoc))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_name(
@@ -356,17 +346,9 @@ fn set_name(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let name = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_iframe_element_ref(this, |iframe| iframe.set_name(&name))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let name = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_name(&name))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_width(
@@ -383,17 +365,9 @@ fn set_width(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let width = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_iframe_element_ref(this, |iframe| iframe.set_width(&width))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let width = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_width(&width))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_height(
@@ -410,17 +384,9 @@ fn set_height(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let height = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_iframe_element_ref(this, |iframe| iframe.set_height(&height))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let height = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_height(&height))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_content_document(

@@ -1,15 +1,18 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
-use boa_engine::{Context, JsError, JsNativeError, JsResult, object::JsObject};
+use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use html5ever::{local_name, ns};
+use log::error;
 
 use crate::dom::{Element, Node};
 use crate::html::{
     GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
     HTMLVideoElement, Window,
 };
+use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
+use js_engine::{Completion, ExecutionContext};
 
 pub(crate) fn with_global_scope<R>(
     context: &Context,
@@ -88,6 +91,61 @@ pub(crate) fn take_animation_frame_callbacks(
     with_global_scope(context, |global_scope| {
         Ok(global_scope.take_animation_frame_callbacks())
     })
+}
+
+// ── _ec wrappers ────────────────────────────────────────────────────────
+//
+// Each wrapper takes &mut dyn ExecutionContext<Types>, returns
+// Completion<T, Types>, and bridges through ec_to_ctx internally.
+// These are the enablers for Phase B binding-file conversion.
+
+fn ec_to_context_error(value: &str) -> impl FnOnce(JsError) -> JsValue + '_ {
+    let msg = format!("{value}: could not convert JsError to opaque");
+    move |e| {
+        error!("{msg}: {e}");
+        JsValue::undefined()
+    }
+}
+
+pub(crate) fn document_object_ec(
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    document_object(ctx).map_err(ec_to_context_error("document_object_ec"))
+}
+
+pub(crate) fn resolve_element_object_ec(
+    node_id: usize,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    resolve_element_object(node_id, ctx).map_err(ec_to_context_error("resolve_element_object_ec"))
+}
+
+pub(crate) fn object_for_existing_node_ec(
+    document: Rc<RefCell<BaseDocument>>,
+    node_id: usize,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    object_for_existing_node(document, node_id, ctx)
+        .map_err(ec_to_context_error("object_for_existing_node_ec"))
+}
+
+pub(crate) fn invalidate_cached_node_ids_ec(
+    ec: &mut dyn ExecutionContext<Types>,
+    node_ids: &[usize],
+) -> Completion<(), Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    invalidate_cached_node_ids(ctx, node_ids).map_err(ec_to_context_error("invalidate_cached_node_ids_ec"))
+}
+
+pub(crate) fn take_animation_frame_callbacks_ec(
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Vec<crate::webidl::Callback>, Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    take_animation_frame_callbacks(ctx)
+        .map_err(ec_to_context_error("take_animation_frame_callbacks_ec"))
 }
 
 fn cached_node_object(context: &Context, node_id: usize) -> JsResult<Option<JsObject>> {

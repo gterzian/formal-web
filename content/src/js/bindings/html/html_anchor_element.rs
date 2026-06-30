@@ -1,4 +1,4 @@
-use boa_engine::{JsArgs, JsNativeError, JsResult, JsString, JsValue};
+use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLAnchorElement;
@@ -92,19 +92,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
     }
 }
 
-fn with_html_anchor_element_ref<R>(
-    this: &JsValue,
-    f: impl FnOnce(&HTMLAnchorElement) -> R,
-) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("HTMLAnchorElement receiver is not an object")
-    })?;
-    let html_anchor_element = object
-        .downcast_ref::<HTMLAnchorElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLAnchorElement"))?;
-    Ok(f(&html_anchor_element))
-}
-
 fn try_with_html_anchor_element_ref<R>(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -112,10 +99,12 @@ fn try_with_html_anchor_element_ref<R>(
 ) -> Completion<R, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLAnchorElement receiver is not an object"))?;
-    let html_anchor_element = obj
-        .downcast_ref::<HTMLAnchorElement>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an HTMLAnchorElement"))?;
-    Ok(f(&html_anchor_element))
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
+            return Ok(f(anchor));
+        }
+    }
+    Err(ec.new_type_error("receiver is not an HTMLAnchorElement"))
 }
 
 fn get_href(
@@ -123,15 +112,13 @@ fn get_href(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    // Note: keeps ec_to_ctx because document_creation_url requires Context.
+    let undefined = JsValue::undefined();
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let base_url = document_creation_url(ctx)?;
-        with_html_anchor_element_ref(this, |anchor| {
-            JsValue::from(JsString::from(anchor.href(&base_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let base_url = document_creation_url(ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined))?;
+    let href = try_with_html_anchor_element_ref(this, ec, |anchor| anchor.href(&base_url))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&href)))
 }
 
 fn set_href(
@@ -139,17 +126,9 @@ fn set_href(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let href = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_anchor_element_ref(this, |anchor| anchor.set_href(&href))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let href = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_href(&href))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_target(
@@ -166,17 +145,9 @@ fn set_target(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let target = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_anchor_element_ref(this, |anchor| anchor.set_target(&target))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let target = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_target(&target))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_download(
@@ -193,17 +164,9 @@ fn set_download(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let download = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_anchor_element_ref(this, |anchor| anchor.set_download(&download))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let download = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_download(&download))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_rel(
@@ -220,17 +183,9 @@ fn set_rel(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let rel = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_anchor_element_ref(this, |anchor| anchor.set_rel(&rel))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let rel = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_rel(&rel))?;
+    Ok(ec.value_undefined())
 }
 
 fn get_referrer_policy(
@@ -248,15 +203,7 @@ fn set_referrer_policy(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let referrer_policy = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_html_anchor_element_ref(this, |anchor| anchor.set_referrer_policy(&referrer_policy))?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let referrer_policy = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_referrer_policy(&referrer_policy))?;
+    Ok(ec.value_undefined())
 }
