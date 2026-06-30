@@ -12,25 +12,11 @@
 
 use std::marker::PhantomData;
 
-use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
-};
-use js_engine::{Completion, ExecutionContext, JsTypes, PropertyDescriptor};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
+use js_engine::gc::GcRootHandle;
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Backend-specific type aliases
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[cfg(feature = "boa")]
-mod backend {
-    pub(crate) type TestTypes = crate::js::Types;
-}
-#[cfg(feature = "jsc")]
-mod backend {
-    pub(crate) type TestTypes = js_engine::jsc::JscTypes;
-}
-
-use backend::TestTypes;
+type TestTypes = crate::js::Types;
 type JsValue = <TestTypes as JsTypes>::JsValue;
 type JsObject = <TestTypes as JsTypes>::JsObject;
 
@@ -49,12 +35,16 @@ type JsObject = <TestTypes as JsTypes>::JsObject;
 ///
 /// | Backend | Mechanism | Field type |
 /// |---|---|---|
-/// | Boa | `#[derive(boa_gc::Trace)]` auto-traces `JsObject` fields | `Option<JsObject>` |
-/// | JSC | `GcRootHandle` protects value from GC via `JSValueProtect` | `Option<GcRootHandle<JscTypes>>` |
+/// A toy domain struct exercising the full generic-API binding pattern.
 ///
-/// For JSC, `Trace` and `Finalize` are implemented manually since there's
-/// no derive macro.  The manual impls are empty because `GcRootHandle` is
-/// self-rooting (it calls `JSValueUnprotect` on drop).
+/// The `on_change` field uses `GcRootHandle<TestTypes>` which is a generic
+/// RAII guard: on Boa it wraps a `JsValue` that the GC traces natively;
+/// on JSC it calls `JSValueProtect` / `JSValueUnprotect` for explicit rooting.
+///
+/// GC tracing is the one genuinely engine-specific concern.  The
+/// `#[cfg_attr(feature = "boa", derive(...))]` and the manual JSC impls
+/// below are the only `#[cfg]` in this file.  A future `#[derive(GcTrace)]`
+/// macro in `js_engine` will eliminate even these.
 #[cfg_attr(
     feature = "boa",
     derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
@@ -63,12 +53,7 @@ pub(crate) struct TestWidget {
     title: String,
     visible: bool,
     count: u32,
-    /// Optional change callback — kept alive per-backend (see struct doc).
-    #[cfg(feature = "boa")]
-    on_change: Option<boa_engine::object::JsObject>,
-    #[cfg(feature = "jsc")]
-    #[allow(unexpected_cfgs)]
-    on_change: Option<js_engine::gc::GcRootHandle<js_engine::jsc::JscTypes>>,
+    on_change: Option<GcRootHandle<TestTypes>>,
 }
 
 // JSC backend: no derive macro — implement Trace/Finalize by hand.
@@ -80,15 +65,12 @@ unsafe impl js_engine::gc::Trace for TestWidget {}
 impl js_engine::gc::Finalize for TestWidget {}
 
 impl TestWidget {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             title: String::from("Untitled"),
             visible: true,
             count: 0,
-            #[cfg(feature = "boa")]
-            on_change: None,
-            #[cfg(feature = "jsc")]
-            #[allow(unexpected_cfgs)]
             on_change: None,
         }
     }
@@ -109,22 +91,15 @@ impl TestWidget {
             title,
             visible,
             count,
-            #[cfg(feature = "boa")]
-            on_change: None,
-            #[cfg(feature = "jsc")]
-            #[allow(unexpected_cfgs)]
             on_change: None,
         })
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Backend-specific widget data access helpers
+// Widget data access — uses the generic `with_object_any` API
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// For Boa: access TestWidget data via native downcast_ref/downcast_mut on
-/// JsData objects.  TestWidget derives `boa_gc::Trace` / `boa_engine::JsData`.
-#[cfg(feature = "boa")]
 mod widget_data {
     use super::*;
 
@@ -133,10 +108,15 @@ mod widget_data {
         ec: &mut dyn ExecutionContext<TestTypes>,
         f: impl FnOnce(&TestWidget) -> T,
     ) -> Completion<T, TestTypes> {
-        let widget = obj
-            .downcast_ref::<TestWidget>()
-            .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))?;
-        Ok(f(&*widget))
+        let data = match ec.with_object_any(obj) {
+            Some(d) => d,
+            None => return Err(ec.new_type_error("receiver is not a TestWidget")),
+        };
+        let widget = match data.downcast_ref::<TestWidget>() {
+            Some(w) => w,
+            None => return Err(ec.new_type_error("receiver is not a TestWidget")),
+        };
+        Ok(f(widget))
     }
 
     pub(crate) fn with_mut<T>(
@@ -144,131 +124,30 @@ mod widget_data {
         ec: &mut dyn ExecutionContext<TestTypes>,
         f: impl FnOnce(&mut TestWidget) -> T,
     ) -> Completion<T, TestTypes> {
-        let mut widget = obj
-            .downcast_mut::<TestWidget>()
-            .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))?;
-        Ok(f(&mut *widget))
-    }
-}
-
-/// For JSC: access TestWidget data via a side-table stored in host_data,
-/// keyed by object raw pointer.  Uses `RefCell` for interior mutability
-/// so that both `&self` and `&mut self` access work through `get_host_any`.
-#[cfg(feature = "jsc")]
-mod widget_data {
-    use super::*;
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-
-    type WidgetMap = HashMap<usize, RefCell<TestWidget>>;
-
-    fn map_type_id() -> std::any::TypeId {
-        std::any::TypeId::of::<WidgetMap>()
-    }
-
-    fn get_or_create_map(ec: &mut dyn ExecutionContext<TestTypes>) {
-        let type_id = map_type_id();
-        if ec.get_host_any(&type_id).is_none() {
-            ec.store_host_any(type_id, Box::new(WidgetMap::new()));
-        }
-    }
-
-    pub(crate) fn store(
-        ec: &mut dyn ExecutionContext<TestTypes>,
-        obj: &JsObject,
-        widget: TestWidget,
-    ) {
-        get_or_create_map(ec);
-        let type_id = map_type_id();
-        let map = ec
-            .get_host_any(&type_id)
-            .unwrap()
-            .downcast_ref::<WidgetMap>()
-            .unwrap();
-        // SAFETY: we have &mut ec, and the HashMap uses RefCell for
-        // interior mutability — removing and re-inserting for the
-        // specific key is safe.
-        let key = obj.as_raw() as usize;
-        // We must remove+insert because get_host_any gives &, not &mut.
-        // Use remove + re-insert to mutate the map.
-        let mut map_owned = ec
-            .remove_host_any(&type_id)
-            .map(|b| *b.downcast::<WidgetMap>().unwrap())
-            .unwrap_or_default();
-        map_owned.insert(key, RefCell::new(widget));
-        ec.store_host_any(type_id, Box::new(map_owned));
-    }
-
-    fn with_cell<T>(
-        ec: &dyn ExecutionContext<TestTypes>,
-        obj: &JsObject,
-        f: impl FnOnce(&RefCell<TestWidget>) -> T,
-    ) -> Option<T> {
-        let type_id = map_type_id();
-        let map = ec.get_host_any(&type_id)?;
-        let map = map.downcast_ref::<WidgetMap>()?;
-        let key = obj.as_raw() as usize;
-        let cell = map.get(&key)?;
-        Some(f(cell))
-    }
-
-    pub(crate) fn with_ref<T>(
-        obj: &JsObject,
-        ec: &mut dyn ExecutionContext<TestTypes>,
-        f: impl FnOnce(&TestWidget) -> T,
-    ) -> Completion<T, TestTypes> {
-        with_cell(ec, obj, |cell| f(&*cell.borrow()))
-            .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))
-    }
-
-    pub(crate) fn with_mut<T>(
-        obj: &JsObject,
-        ec: &mut dyn ExecutionContext<TestTypes>,
-        f: impl FnOnce(&mut TestWidget) -> T,
-    ) -> Completion<T, TestTypes> {
-        with_cell(ec, obj, |cell| f(&mut *cell.borrow_mut()))
-            .ok_or_else(|| ec.new_type_error("receiver is not a TestWidget"))
+        let data = match ec.with_object_any_mut(obj) {
+            Some(d) => d,
+            None => return Err(ec.new_type_error("receiver is not a TestWidget")),
+        };
+        let widget = match data.downcast_mut::<TestWidget>() {
+            Some(w) => w,
+            None => return Err(ec.new_type_error("receiver is not a TestWidget")),
+        };
+        Ok(f(widget))
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Backend-specific create_test_widget + setup
+// Platform object creation — uses the generic `create_object_with_any` API
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Boa: create a TestWidget platform object via from_proto_and_data
-/// (bypasses NativeDataWrapper so downcast_ref works).
-#[cfg(feature = "boa")]
 fn create_test_widget(
     widget: TestWidget,
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsObject, TestTypes> {
     use crate::webidl::bindings::registry::get_prototype_from_host_defined;
-    use boa_engine::object::JsObject as BoaJsObject;
     let prototype = get_prototype_from_host_defined::<TestTypes, TestWidget>(ec)
         .ok_or_else(|| ec.new_type_error("TestWidget not registered"))?;
-    Ok(BoaJsObject::from_proto_and_data(Some(prototype), widget))
-}
-
-/// JSC: create a TestWidget platform object via side-table storage.
-/// JSC objects don't support native downcast, so widget data lives in
-/// a host_data side-table keyed by object pointer.
-#[cfg(feature = "jsc")]
-fn create_test_widget(
-    widget: TestWidget,
-    ec: &mut dyn ExecutionContext<TestTypes>,
-) -> Completion<JsObject, TestTypes> {
-    // For JSC tests, create a plain object with the prototype from the
-    // registry (if available) and store widget data in our side-table.
-    let obj = if let Some(prototype) =
-        crate::webidl::bindings::registry::get_prototype_from_host_defined::<TestTypes, TestWidget>(
-            ec,
-        ) {
-        ec.create_plain_object(Some(&prototype))
-    } else {
-        ec.create_plain_object(None)
-    };
-    widget_data::store(ec, &obj, widget);
-    Ok(obj)
+    Ok(ec.create_object_with_any(prototype, Box::new(widget)))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -496,10 +375,6 @@ fn create_static(
         title,
         visible,
         count: 0,
-        #[cfg(feature = "boa")]
-        on_change: None,
-        #[cfg(feature = "jsc")]
-        #[allow(unexpected_cfgs)]
         on_change: None,
     };
     let obj = create_test_widget(widget, ec)?;
@@ -522,17 +397,13 @@ fn store_callback(
     if !ec.is_callable(&callback_val) {
         return Err(ec.new_type_error("argument is not callable"));
     }
-    #[cfg(feature = "boa")]
-    widget_data::with_mut(&obj, ec, |w| w.on_change = Some(callback_obj))?;
-    #[cfg(feature = "jsc")]
-    {
-        let root = ec.create_root(&callback_val);
-        widget_data::with_mut(&obj, ec, |w| w.on_change = Some(root))?;
-    }
+    let root = ec.create_root(&callback_val);
+    widget_data::with_mut(&obj, ec, |w| w.on_change = Some(root))?;
     Ok(ec.value_undefined())
 }
 
 /// Test helper: calls `perform_a_microtask_checkpoint` and `run_jobs`.
+#[allow(dead_code)]
 fn flush_microtasks_test(
     this: &JsValue,
     _args: &[JsValue],
@@ -547,6 +418,7 @@ fn flush_microtasks_test(
 }
 
 /// Test helper: returns a rejected promise.
+#[allow(dead_code)]
 fn reject_with_message_test(
     this: &JsValue,
     args: &[JsValue],
@@ -768,6 +640,7 @@ pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use js_engine::PropertyDescriptor;
     use js_engine::{EcmascriptHost, ExecutionContext, JsEngine, JsTypesWithRealm};
 
     // ── Backend-specific setup ───────────────────────────────────────
@@ -1169,12 +1042,13 @@ mod tests {
         store_callback(&js_obj, &[fn_val.clone()], &mut engine).unwrap();
         flush_microtasks_test(&js_obj, &[], &mut engine).unwrap();
 
-        #[cfg(feature = "boa")]
-        {
-            let obj_ref = TestTypes::value_as_object(&js_obj).unwrap();
-            let widget = obj_ref.downcast_ref::<TestWidget>().unwrap();
-            assert!(widget.on_change.is_some());
-        }
+        let obj_ref = TestTypes::value_as_object(&js_obj).unwrap();
+        let has_callback = engine
+            .with_object_any(&obj_ref)
+            .and_then(|d| d.downcast_ref::<TestWidget>())
+            .map(|w| w.on_change.is_some())
+            .unwrap();
+        assert!(has_callback);
     }
 
     // ── Iterator operations (§7.4) ─────────────────────────────────
@@ -1573,10 +1447,6 @@ mod tests {
             title: "GC-test".into(),
             visible: false,
             count: 7,
-            #[cfg(feature = "boa")]
-            on_change: None,
-            #[cfg(feature = "jsc")]
-            #[allow(unexpected_cfgs)]
             on_change: None,
         };
 
@@ -1586,19 +1456,24 @@ mod tests {
 
         // Retrieve immutable.
         let title = engine
-            .with_object_any(&obj, |d| {
-                d.downcast_ref::<TestWidget>().unwrap().title.clone()
-            })
-            .unwrap();
+            .with_object_any(&obj)
+            .and_then(|d| d.downcast_ref::<TestWidget>())
+            .unwrap()
+            .title
+            .clone();
         assert_eq!(title, "GC-test");
 
         // Retrieve mutable.
-        engine.with_object_any_mut(&obj, |d| {
-            d.downcast_mut::<TestWidget>().unwrap().count = 99;
-        });
+        engine
+            .with_object_any_mut(&obj)
+            .and_then(|d| d.downcast_mut::<TestWidget>())
+            .unwrap()
+            .count = 99;
         let count = engine
-            .with_object_any(&obj, |d| d.downcast_ref::<TestWidget>().unwrap().count)
-            .unwrap();
+            .with_object_any(&obj)
+            .and_then(|d| d.downcast_ref::<TestWidget>())
+            .unwrap()
+            .count;
         assert_eq!(count, 99);
     }
 }

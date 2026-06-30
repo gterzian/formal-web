@@ -104,6 +104,27 @@ mod boa_gc_impl {
             Some(reflector.clone())
         }
     }
+
+    // SAFETY: GcRootHandle wraps a JsValue which implements boa_gc::Trace.
+    // We delegate tracing to the inner value so that structs containing
+    // GcRootHandle fields (e.g. on_change callbacks) are properly traced.
+    unsafe impl boa_gc::Trace for super::GcRootHandle<BoaTypes> {
+        unsafe fn trace(&self, tracer: &mut boa_gc::Tracer) {
+            unsafe {
+                boa_gc::Trace::trace(&self.value, tracer);
+            }
+        }
+        unsafe fn trace_non_roots(&self) {
+            unsafe {
+                boa_gc::Trace::trace_non_roots(&self.value);
+            }
+        }
+        fn run_finalizer(&self) {
+            boa_gc::Trace::run_finalizer(&self.value);
+        }
+    }
+
+    impl boa_gc::Finalize for super::GcRootHandle<BoaTypes> {}
 }
 
 // ── JSC backend ───────────────────────────────────────────────────────────

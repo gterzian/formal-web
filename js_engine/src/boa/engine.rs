@@ -1084,22 +1084,19 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         JsObject::from_proto_and_data(Some(prototype), wrapper)
     }
 
-    fn with_object_any<R>(
-        &self,
-        object: &JsObject,
-        f: impl FnOnce(&dyn std::any::Any) -> R,
-    ) -> Option<R> {
+    fn with_object_any(&self, object: &JsObject) -> Option<&dyn std::any::Any> {
         let wrapper = object.downcast_ref::<NativeDataWrapper<Box<dyn std::any::Any>>>()?;
-        Some(f(wrapper.0.as_ref()))
+        // SAFETY: The NativeDataWrapper is stored inside the JsObject which
+        // lives in the GC heap rooted by `self`.  The data is valid for the
+        // lifetime of `&self`.
+        Some(unsafe { &*(wrapper.0.as_ref() as *const dyn std::any::Any) })
     }
 
-    fn with_object_any_mut<R>(
-        &mut self,
-        object: &JsObject,
-        f: impl FnOnce(&mut dyn std::any::Any) -> R,
-    ) -> Option<R> {
+    fn with_object_any_mut(&mut self, object: &JsObject) -> Option<&mut dyn std::any::Any> {
         let mut wrapper = object.downcast_mut::<NativeDataWrapper<Box<dyn std::any::Any>>>()?;
-        Some(f(wrapper.0.as_mut()))
+        // SAFETY: Same as `with_object_any` — the data lives in the GC heap
+        // rooted by `self`.
+        Some(unsafe { &mut *(wrapper.0.as_mut() as *mut dyn std::any::Any) })
     }
 
     fn new_type_error(&mut self, msg: &str) -> JsValue {

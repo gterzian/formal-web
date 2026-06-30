@@ -1889,39 +1889,27 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     /// Retrieve data stored via `create_object_with_any`.
-    fn with_object_any<R>(
-        &self,
-        object: &JscObject,
-        f: impl FnOnce(&dyn std::any::Any) -> R,
-    ) -> Option<R> {
+    fn with_object_any(&self, object: &JscObject) -> Option<&dyn std::any::Any> {
         let map_type_id =
             std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
         let map = self
-            .get_host_any(&map_type_id)?
+            .host_data
+            .get(&map_type_id)?
             .downcast_ref::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()?;
         let key = object.as_raw() as usize;
-        let data = map.get(&key)?;
-        Some(f(data.as_ref()))
+        Some(map.get(&key)?.as_ref())
     }
 
     /// Retrieve mutable data stored via `create_object_with_any`.
-    fn with_object_any_mut<R>(
-        &mut self,
-        object: &JscObject,
-        f: impl FnOnce(&mut dyn std::any::Any) -> R,
-    ) -> Option<R> {
+    fn with_object_any_mut(&mut self, object: &JscObject) -> Option<&mut dyn std::any::Any> {
         let map_type_id =
             std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
-        // Remove, look up, modify, re-insert.
-        let mut map: std::collections::HashMap<usize, Box<dyn std::any::Any>> = self
-            .remove_host_any(&map_type_id)
-            .map(|boxed| *boxed.downcast::<_>().unwrap())
-            .unwrap_or_default();
+        let map = self
+            .host_data
+            .get_mut(&map_type_id)?
+            .downcast_mut::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()?;
         let key = object.as_raw() as usize;
-        let data = map.get_mut(&key)?;
-        let result = f(data.as_mut());
-        self.store_host_any(map_type_id, Box::new(map));
-        Some(result)
+        Some(map.get_mut(&key)?.as_mut())
     }
 
     fn new_type_error(&mut self, msg: &str) -> JscValue {
