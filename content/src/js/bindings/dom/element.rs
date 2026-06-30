@@ -1,9 +1,4 @@
-use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string,
-    native_function::NativeFunction,
-    object::{FunctionObjectBuilder, ObjectInitializer},
-    property::Attribute,
-};
+use boa_engine::{JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::dom::{DOMException, Element};
@@ -289,106 +284,114 @@ fn get_class_list(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let realm = ctx.realm().clone();
-        let obj = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("classList receiver is not an object")
-        })?;
-        let obj_clone = JsValue::from(obj.clone());
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("classList receiver is not an object"))?;
+    let obj_clone = crate::js::Types::value_from_object(obj.clone());
 
-        // Build a simple JS object that wraps class attribute manipulation.
-        // <https://dom.spec.whatwg.org/#domtokenlist>
-        let token_list = ObjectInitializer::new(ctx)
-            .function(
-                unsafe {
-                    NativeFunction::from_closure(Box::new(
-                        move |this: &JsValue,
-                              args: &[JsValue],
-                              ctx: &mut Context|
-                              -> JsResult<JsValue> {
-                            let ec = js_engine::boa::context_as_ec(ctx);
-                            class_list_add(this, args, ec).map_err(JsError::from_opaque)
-                        },
-                    ))
-                },
-                js_string!("add"),
-                1,
-            )
-            .function(
-                unsafe {
-                    NativeFunction::from_closure(Box::new(
-                        move |this: &JsValue,
-                              args: &[JsValue],
-                              ctx: &mut Context|
-                              -> JsResult<JsValue> {
-                            let ec = js_engine::boa::context_as_ec(ctx);
-                            class_list_remove(this, args, ec).map_err(JsError::from_opaque)
-                        },
-                    ))
-                },
-                js_string!("remove"),
-                1,
-            )
-            .function(
-                unsafe {
-                    NativeFunction::from_closure(Box::new(
-                        move |this: &JsValue,
-                              args: &[JsValue],
-                              ctx: &mut Context|
-                              -> JsResult<JsValue> {
-                            let ec = js_engine::boa::context_as_ec(ctx);
-                            class_list_toggle(this, args, ec).map_err(JsError::from_opaque)
-                        },
-                    ))
-                },
-                js_string!("toggle"),
-                1,
-            )
-            .function(
-                unsafe {
-                    NativeFunction::from_closure(Box::new(
-                        move |this: &JsValue,
-                              args: &[JsValue],
-                              ctx: &mut Context|
-                              -> JsResult<JsValue> {
-                            let ec = js_engine::boa::context_as_ec(ctx);
-                            class_list_contains(this, args, ec).map_err(JsError::from_opaque)
-                        },
-                    ))
-                },
-                js_string!("contains"),
-                1,
-            )
-            .build();
+    // Build a simple JS object that wraps class attribute manipulation.
+    // <https://dom.spec.whatwg.org/#domtokenlist>
+    let token_list = ec.create_plain_object(None);
 
-        // Store a reference to the element so closures can access it.
-        // Note: The spec requires that DOMTokenList is "live" — changes to
-        // the element's class attribute are reflected. Our implementation
-        // reads the class attribute fresh on each call.
-        token_list.set(js_string!("__element"), obj_clone, false, ctx)?;
+    // "add" method
+    let add_fn = ec.create_builtin_function(
+        Box::new(move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
+            class_list_add(&this_val, args, inner_ec)
+        }),
+        1,
+        ec.property_key_from_str("add"),
+    );
+    ec.object_set_property(
+        token_list.clone(),
+        "add",
+        crate::js::Types::value_from_object(crate::js::Types::object_from_function(add_fn)),
+    )?;
 
-        // length getter
-        let len_fn = unsafe {
-            NativeFunction::from_closure(Box::new(
-                move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> JsResult<JsValue> {
-                    let ec = js_engine::boa::context_as_ec(ctx);
-                    class_list_length(this, args, ec).map_err(JsError::from_opaque)
-                },
-            ))
-        };
-        let len_fn_obj = FunctionObjectBuilder::new(&realm, len_fn).build();
-        let len_desc = boa_engine::property::PropertyDescriptor::builder()
-            .get(len_fn_obj)
-            .enumerable(true)
-            .configurable(true)
-            .build();
-        token_list.define_property_or_throw(js_string!("length"), len_desc, ctx)?;
+    // "remove" method
+    let remove_fn = ec.create_builtin_function(
+        Box::new(move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
+            class_list_remove(&this_val, args, inner_ec)
+        }),
+        1,
+        ec.property_key_from_str("remove"),
+    );
+    ec.object_set_property(
+        token_list.clone(),
+        "remove",
+        crate::js::Types::value_from_object(crate::js::Types::object_from_function(remove_fn)),
+    )?;
 
-        Ok(token_list.into())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    // "toggle" method
+    let toggle_fn = ec.create_builtin_function(
+        Box::new(move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
+            class_list_toggle(&this_val, args, inner_ec)
+        }),
+        1,
+        ec.property_key_from_str("toggle"),
+    );
+    ec.object_set_property(
+        token_list.clone(),
+        "toggle",
+        crate::js::Types::value_from_object(crate::js::Types::object_from_function(toggle_fn)),
+    )?;
+
+    // "contains" method
+    let contains_fn = ec.create_builtin_function(
+        Box::new(move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
+            class_list_contains(&this_val, args, inner_ec)
+        }),
+        1,
+        ec.property_key_from_str("contains"),
+    );
+    ec.object_set_property(
+        token_list.clone(),
+        "contains",
+        crate::js::Types::value_from_object(crate::js::Types::object_from_function(contains_fn)),
+    )?;
+
+    // Store a reference to the element so closures can access it.
+    // Note: The spec requires that DOMTokenList is "live" — changes to
+    // the element's class attribute are reflected. Our implementation
+    // reads the class attribute fresh on each call.
+    ec.object_set_property(token_list.clone(), "__element", obj_clone)?;
+
+    // length getter
+    let len_fn = ec.create_builtin_function(
+        Box::new(move |_args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
+            class_list_length(&this_val, &[], inner_ec)
+        }),
+        0,
+        ec.property_key_from_str("get_length"),
+    );
+    let len_desc = js_engine::PropertyDescriptor {
+        value: None,
+        writable: None,
+        get: Some(len_fn),
+        set: None,
+        enumerable: Some(true),
+        configurable: Some(true),
+    };
+    ec.define_property_or_throw(
+        token_list.clone(),
+        ec.property_key_from_str("length"),
+        len_desc,
+    )?;
+
+    Ok(crate::js::Types::value_from_object(token_list))
 }
 
 fn class_list_value(
@@ -396,57 +399,51 @@ fn class_list_value(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<String, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<String> {
-        let obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        let element_val = obj.get(js_string!("__element"), ctx)?;
-        let element_obj = element_val
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("classList: element not found"))?;
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let element_key = ec.property_key_from_str("__element");
+    let element_val = ExecutionContext::get(ec, obj.clone(), element_key)?;
+    let element_obj = crate::js::Types::value_as_object(&element_val)
+        .ok_or_else(|| ec.new_type_error("classList: element not found"))?;
 
-        if let Some(el) = element_obj.downcast_ref::<Element>() {
-            Ok(el.get_attribute("class").unwrap_or_default())
-        } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
-            Ok(html_el.element.get_attribute("class").unwrap_or_default())
-        } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
-            Ok(media
-                .html_element
-                .element
-                .get_attribute("class")
-                .unwrap_or_default())
-        } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
-            Ok(video
-                .media_element
-                .html_element
-                .element
-                .get_attribute("class")
-                .unwrap_or_default())
-        } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
-            Ok(ifr
-                .html_element
-                .element
-                .get_attribute("class")
-                .unwrap_or_default())
-        } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
-            Ok(input
-                .html_element
-                .element
-                .get_attribute("class")
-                .unwrap_or_default())
-        } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
-            Ok(anc
-                .html_element
-                .element
-                .get_attribute("class")
-                .unwrap_or_default())
-        } else {
-            Ok(String::new())
-        }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    if let Some(el) = element_obj.downcast_ref::<Element>() {
+        Ok(el.get_attribute("class").unwrap_or_default())
+    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
+        Ok(html_el.element.get_attribute("class").unwrap_or_default())
+    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
+        Ok(media
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
+    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
+        Ok(video
+            .media_element
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
+    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
+        Ok(ifr
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
+    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
+        Ok(input
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
+    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
+        Ok(anc
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default())
+    } else {
+        Ok(String::new())
+    }
 }
 
 fn class_list_set_value(
@@ -454,71 +451,65 @@ fn class_list_set_value(
     value: &str,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<()> {
-        let obj = this
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-        let element_val = obj.get(js_string!("__element"), ctx)?;
-        let element_obj = element_val
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("classList: element not found"))?;
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let element_key = ec.property_key_from_str("__element");
+    let element_val = ExecutionContext::get(ec, obj.clone(), element_key)?;
+    let element_obj = crate::js::Types::value_as_object(&element_val)
+        .ok_or_else(|| ec.new_type_error("classList: element not found"))?;
 
-        if let Some(el) = element_obj.downcast_ref::<Element>() {
-            if value.is_empty() {
-                el.remove_attribute("class");
-            } else {
-                el.set_attribute("class", value);
-            }
-        } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
-            if value.is_empty() {
-                html_el.element.remove_attribute("class");
-            } else {
-                html_el.element.set_attribute("class", value);
-            }
-        } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
-            if value.is_empty() {
-                media.html_element.element.remove_attribute("class");
-            } else {
-                media.html_element.element.set_attribute("class", value);
-            }
-        } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
-            if value.is_empty() {
-                video
-                    .media_element
-                    .html_element
-                    .element
-                    .remove_attribute("class");
-            } else {
-                video
-                    .media_element
-                    .html_element
-                    .element
-                    .set_attribute("class", value);
-            }
-        } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
-            if value.is_empty() {
-                ifr.html_element.element.remove_attribute("class");
-            } else {
-                ifr.html_element.element.set_attribute("class", value);
-            }
-        } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
-            if value.is_empty() {
-                input.html_element.element.remove_attribute("class");
-            } else {
-                input.html_element.element.set_attribute("class", value);
-            }
-        } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
-            if value.is_empty() {
-                anc.html_element.element.remove_attribute("class");
-            } else {
-                anc.html_element.element.set_attribute("class", value);
-            }
+    if let Some(el) = element_obj.downcast_ref::<Element>() {
+        if value.is_empty() {
+            el.remove_attribute("class");
+        } else {
+            el.set_attribute("class", value);
         }
-        Ok(())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
+        if value.is_empty() {
+            html_el.element.remove_attribute("class");
+        } else {
+            html_el.element.set_attribute("class", value);
+        }
+    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
+        if value.is_empty() {
+            media.html_element.element.remove_attribute("class");
+        } else {
+            media.html_element.element.set_attribute("class", value);
+        }
+    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
+        if value.is_empty() {
+            video
+                .media_element
+                .html_element
+                .element
+                .remove_attribute("class");
+        } else {
+            video
+                .media_element
+                .html_element
+                .element
+                .set_attribute("class", value);
+        }
+    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
+        if value.is_empty() {
+            ifr.html_element.element.remove_attribute("class");
+        } else {
+            ifr.html_element.element.set_attribute("class", value);
+        }
+    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
+        if value.is_empty() {
+            input.html_element.element.remove_attribute("class");
+        } else {
+            input.html_element.element.set_attribute("class", value);
+        }
+    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
+        if value.is_empty() {
+            anc.html_element.element.remove_attribute("class");
+        } else {
+            anc.html_element.element.set_attribute("class", value);
+        }
+    }
+    Ok(())
 }
 
 fn class_list_add(
@@ -526,28 +517,20 @@ fn class_list_add(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let token = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let mut classes: Vec<String> = if current.is_empty() {
-            Vec::new()
-        } else {
-            current.split(' ').map(|s| s.to_string()).collect()
-        };
-        if !classes.contains(&token) {
-            classes.push(token);
-            let new_value = classes.join(" ");
-            class_list_set_value(this, &new_value, js_engine::boa::context_as_ec(ctx))
-                .map_err(JsError::from_opaque)?;
-        }
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let value_undefined = ec.value_undefined();
+    let token = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    let mut classes: Vec<String> = if current.is_empty() {
+        Vec::new()
+    } else {
+        current.split(' ').map(|s| s.to_string()).collect()
+    };
+    if !classes.contains(&token) {
+        classes.push(token);
+        let new_value = classes.join(" ");
+        class_list_set_value(this, &new_value, ec)?;
+    }
+    Ok(ec.value_undefined())
 }
 
 fn class_list_remove(
@@ -555,25 +538,17 @@ fn class_list_remove(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let token = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let classes: Vec<String> = current
-            .split(' ')
-            .filter(|c| !c.is_empty() && *c != token)
-            .map(|s| s.to_string())
-            .collect();
-        let new_value = classes.join(" ");
-        class_list_set_value(this, &new_value, js_engine::boa::context_as_ec(ctx))
-            .map_err(JsError::from_opaque)?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let value_undefined = ec.value_undefined();
+    let token = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    let classes: Vec<String> = current
+        .split(' ')
+        .filter(|c| !c.is_empty() && *c != token)
+        .map(|s| s.to_string())
+        .collect();
+    let new_value = classes.join(" ");
+    class_list_set_value(this, &new_value, ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn class_list_toggle(
@@ -581,34 +556,25 @@ fn class_list_toggle(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let token = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let mut classes: Vec<String> = if current.is_empty() {
-            Vec::new()
-        } else {
-            current.split(' ').map(|s| s.to_string()).collect()
-        };
-        if let Some(pos) = classes.iter().position(|c| c == &token) {
-            classes.remove(pos);
-            let new_value = classes.join(" ");
-            class_list_set_value(this, &new_value, js_engine::boa::context_as_ec(ctx))
-                .map_err(JsError::from_opaque)?;
-            Ok(JsValue::new(false))
-        } else {
-            classes.push(token);
-            let new_value = classes.join(" ");
-            class_list_set_value(this, &new_value, js_engine::boa::context_as_ec(ctx))
-                .map_err(JsError::from_opaque)?;
-            Ok(JsValue::new(true))
-        }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let value_undefined = ec.value_undefined();
+    let token = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    let mut classes: Vec<String> = if current.is_empty() {
+        Vec::new()
+    } else {
+        current.split(' ').map(|s| s.to_string()).collect()
+    };
+    if let Some(pos) = classes.iter().position(|c| c == &token) {
+        classes.remove(pos);
+        let new_value = classes.join(" ");
+        class_list_set_value(this, &new_value, ec)?;
+        Ok(ec.value_from_bool(false))
+    } else {
+        classes.push(token);
+        let new_value = classes.join(" ");
+        class_list_set_value(this, &new_value, ec)?;
+        Ok(ec.value_from_bool(true))
+    }
 }
 
 fn class_list_contains(
@@ -616,18 +582,11 @@ fn class_list_contains(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let token = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let classes: Vec<&str> = current.split(' ').collect();
-        Ok(JsValue::new(classes.contains(&token.as_str())))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let value_undefined = ec.value_undefined();
+    let token = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    let classes: Vec<&str> = current.split(' ').collect();
+    Ok(ec.value_from_bool(classes.contains(&token.as_str())))
 }
 
 fn class_list_length(
@@ -635,18 +594,13 @@ fn class_list_length(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
     let current = class_list_value(this, &[], ec)?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let count = if current.is_empty() {
-            0
-        } else {
-            current.split(' ').count()
-        };
-        Ok(JsValue::new(count))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let count = if current.is_empty() {
+        0
+    } else {
+        current.split(' ').count()
+    };
+    Ok(ec.value_from_number(count as f64))
 }
 
 fn query_selector(

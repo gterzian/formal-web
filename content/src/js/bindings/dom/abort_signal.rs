@@ -333,35 +333,22 @@ fn sequence_abort_signals(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Vec<AbortSignal>, crate::js::Types> {
-    // Note: keeps ec_to_ctx — object.get(index, ctx) needs Context.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
-
-    let object = value.as_object().ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("AbortSignal.any() requires a sequence of AbortSignal objects")
-    }).map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined.clone()))?;
-    let length = object
-        .get(js_string!("length"), ctx)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?
-        .to_length(ctx)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    let object = crate::js::Types::value_as_object(value)
+        .ok_or_else(|| ec.new_type_error("AbortSignal.any() requires a sequence of AbortSignal objects"))?;
+    let length_key = ec.property_key_from_str("length");
+    let length_val = ExecutionContext::get(ec, object.clone(), length_key)?;
+    let length = ec.to_length(length_val)?;
     let mut signals = Vec::with_capacity(length as usize);
 
     for index in 0..length {
-        let signal_value = object
-            .get(index, ctx)
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
-        let signal_object = signal_value.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("AbortSignal.any() requires AbortSignal objects")
-        }).map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined.clone()))?;
+        let index_key = ec.property_key_from_index(index as u32);
+        let signal_value = ExecutionContext::get(ec, object.clone(), index_key)?;
+        let signal_object = crate::js::Types::value_as_object(&signal_value)
+            .ok_or_else(|| ec.new_type_error("AbortSignal.any() requires AbortSignal objects"))?;
         let signal = signal_object
             .downcast_ref::<AbortSignal>()
-            .map(|signal| signal.clone())
-            .ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("AbortSignal.any() requires AbortSignal objects")
-            }).map_err(|e| boa_engine::JsError::from(e).into_opaque(ctx).unwrap_or(undefined.clone()))?;
+            .map(|s| s.clone())
+            .ok_or_else(|| ec.new_type_error("AbortSignal.any() requires AbortSignal objects"))?;
         signals.push(signal);
     }
 
@@ -371,14 +358,11 @@ fn sequence_abort_signals(
 fn abort_error_value(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx — create_interface_instance through context_as_ec.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
     match create_interface_instance::<crate::js::Types, DOMException>(
         DOMException::abort_error(),
-        js_engine::boa::context_as_ec(ctx),
+        ec,
     ) {
-        Ok(obj) => Ok(JsValue::from(obj)),
+        Ok(obj) => Ok(crate::js::Types::value_from_object(obj)),
         Err(e) => Err(e),
     }
 }

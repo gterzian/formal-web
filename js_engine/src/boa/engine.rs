@@ -544,6 +544,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         let boa_desc = boa_engine::property::PropertyDescriptor::builder()
             .maybe_value(descriptor.value)
             .maybe_writable(descriptor.writable)
+            .maybe_get(descriptor.get)
+            .maybe_set(descriptor.set)
             .maybe_enumerable(descriptor.enumerable)
             .maybe_configurable(descriptor.configurable)
             .build();

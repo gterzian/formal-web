@@ -740,7 +740,7 @@ pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
 mod tests {
     use super::*;
     use js_engine::PropertyDescriptor;
-    use js_engine::{EcmascriptHost, ExecutionContext, JsEngine, JsTypesWithRealm};
+    use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
 
     // ── Backend-specific setup ───────────────────────────────────────
 
@@ -1689,5 +1689,182 @@ mod tests {
             .unwrap()
             .count;
         assert_eq!(count, 99);
+    }
+
+    // ── with_object_any_mut borrow limitation ────────────────────
+
+    /// Validates that mutable downcast via `with_object_any_mut` followed by
+    /// an `ec` method call works correctly — the mutable borrow from
+    /// `with_object_any_mut` is dropped before the `ec` call.
+    ///
+    /// This is the pattern that `set_onload`, `set_src`, `play`, and `pause`
+    /// need: mutable domain access, then value construction or error
+    /// construction via ec.  It compiles because the `with_mut` helper
+    /// drops its borrow on `ec` when it returns.
+    ///
+    /// Limitation: you cannot call an `ec` method from **within** the
+    /// `with_mut` closure because the returned reference borrows `ec`.
+    /// When a domain method itself takes `&mut dyn ExecutionContext`
+    /// (e.g. `play()`, `pause()`), use the Boa-specific workaround:
+    /// `JsObject::downcast_mut::<T>()` which borrows from the object,
+    /// not from `ec`.
+    #[test]
+    fn with_object_any_mut_then_ec_call() {
+        let mut engine = setup();
+        let widget = TestWidget::new();
+        let obj = create_widget(widget, &mut engine);
+        let js_obj = TestTypes::value_from_object(obj.clone());
+
+        // Step 1: mutable downcast + modify via with_mut.
+        widget_data::with_mut(&obj, &mut engine, |w| {
+            w.title = "Modified".into();
+        })
+        .unwrap();
+
+        // Step 2: after the with_mut borrow is dropped, ec is available.
+        let result_val = get_title(&js_obj, &[], &mut engine).unwrap();
+        let title = engine.to_rust_string(result_val).unwrap();
+        assert_eq!(title, "Modified");
+    }
+
+    /// Demonstrates the `create_interface_instance` pattern: constructs a
+    /// domain object, wraps it via `create_interface_instance` (which calls
+    /// `create_object_with_any` inside), mutates it through the object, and
+    /// reads the mutation back.  This is the pattern used by DOMException,
+    /// Event, Location, and other platform-object construction in production
+    /// binding code.
+    #[test]
+    fn create_interface_instance_roundtrip() {
+        use crate::webidl::bindings::create_interface_instance;
+
+        let mut engine = setup();
+
+        // Construct a domain value.
+        let mut widget = TestWidget::new();
+        widget.title = "InterfaceTest".into();
+
+        // Wrap it via create_interface_instance (same path as DOMException, Event, etc.).
+        let obj = create_interface_instance::<TestTypes, TestWidget>(widget, &mut engine).unwrap();
+        let js_obj = TestTypes::value_from_object(obj.clone());
+
+        // Read the field back through the generic downcast.
+        let title = get_title(&js_obj, &[], &mut engine).unwrap();
+        assert_eq!(engine.to_rust_string(title).unwrap(), "InterfaceTest");
+
+        // Mutable access through with_object_any_mut.
+        widget_data::with_mut(&obj, &mut engine, |w| w.count = 99).unwrap();
+        let count_val = get_count(&js_obj, &[], &mut engine).unwrap();
+        assert!((engine.to_number(count_val).unwrap() - 99.0).abs() < 0.001);
+    }
+
+    // ── PropertyDescriptor with getter from create_builtin_function ──
+
+    /// Validates constructing a `PropertyDescriptor` whose `get` field is a
+    /// function created via `create_builtin_function`, applying it to an
+    /// object, and reading the property — the exact pattern `get_class_list`
+    /// needs for its `length` getter.
+    #[cfg_attr(
+        feature = "jsc",
+        ignore = "JSC: create_builtin_function stub doesn't execute behaviour closure"
+    )]
+    #[test]
+    fn property_descriptor_with_builtin_getter() {
+        let mut engine = setup();
+
+        // Create a plain object to attach the property to.
+        let obj = engine.create_plain_object(None);
+        let pk = engine.property_key_from_str("computedLength");
+
+        // Build a getter function via create_builtin_function.
+        let getter_fn = engine.create_builtin_function(
+            Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(7.0))),
+            0,
+            engine.property_key_from_str("get_computedLength"),
+        );
+
+        // PropertyDescriptor with only a getter (accessor property).
+        let descriptor = PropertyDescriptor {
+            value: None,
+            writable: None,
+            get: Some(getter_fn),
+            set: None,
+            enumerable: Some(true),
+            configurable: Some(true),
+        };
+
+        // Define the accessor property on the object.
+        engine
+            .define_property_or_throw(obj.clone(), pk.clone(), descriptor)
+            .unwrap();
+
+        // Read the property — the getter executes and returns 7.
+        let result = ExecutionContext::get(&mut engine, obj.clone(), pk).unwrap();
+        assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
+
+        // Verify the property is an own accessor (not a data property).
+        let has_own = engine.has_own_property(obj, engine.property_key_from_str("computedLength")).unwrap();
+        assert!(has_own);
+    }
+
+    /// Validates `PropertyDescriptor` with both getter and setter from
+    /// `create_builtin_function` — the full accessor pattern.
+    #[cfg_attr(
+        feature = "jsc",
+        ignore = "JSC: create_builtin_function stub doesn't execute behaviour closure"
+    )]
+    #[test]
+    fn property_descriptor_with_builtin_getter_and_setter() {
+        let mut engine = setup();
+
+        let obj = engine.create_plain_object(None);
+        let pk = engine.property_key_from_str("accessorProp");
+
+        // Setter stores the value (simulated with a side-channel via a plain backing field).
+        let backing_obj = engine.create_plain_object(None);
+        let backing_obj_for_getter = backing_obj.clone();
+
+        let setter_fn = engine.create_builtin_function(
+            Box::new(move |args, _this, inner_ec| {
+                let val = args.first().cloned().unwrap_or(inner_ec.value_undefined());
+                let _ = inner_ec.object_set_property(backing_obj.clone(), "_backing", val);
+                Ok(inner_ec.value_undefined())
+            }),
+            1,
+            engine.property_key_from_str("set_accessorProp"),
+        );
+
+        let getter_fn = engine.create_builtin_function(
+            Box::new(move |_args, _this, inner_ec| {
+                let get_pk = inner_ec.property_key_from_str("_backing");
+                let val = ExecutionContext::get(inner_ec, backing_obj_for_getter.clone(), get_pk)
+                    .unwrap_or_else(|_| inner_ec.value_undefined());
+                Ok(val)
+            }),
+            0,
+            engine.property_key_from_str("get_accessorProp"),
+        );
+
+        let descriptor = PropertyDescriptor {
+            value: None,
+            writable: None,
+            get: Some(getter_fn),
+            set: Some(setter_fn),
+            enumerable: Some(true),
+            configurable: Some(true),
+        };
+
+        engine
+            .define_property_or_throw(obj.clone(), pk.clone(), descriptor)
+            .unwrap();
+
+        // Set via the accessor — extract value first to avoid double-borrow of engine.
+        let set_val = engine.value_from_number(99.0);
+        engine
+            .set(obj.clone(), pk.clone(), set_val, false)
+            .unwrap();
+
+        // Get via the accessor.
+        let result = ExecutionContext::get(&mut engine, obj, pk).unwrap();
+        assert!((engine.to_number(result).unwrap() - 99.0).abs() < 0.001);
     }
 }

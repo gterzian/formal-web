@@ -414,17 +414,15 @@ fn set_src(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx and JsObject::downcast_mut.
-    // with_object_any_mut borrows ec_ref, preventing re-use.
+    // Note: uses JsObject::downcast_mut.
+    // with_object_any_mut borrows ec, preventing domain method calls that need ec.
     let src = ec.to_rust_string(args.get_or_undefined(0).clone())?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let ec_ref = js_engine::boa::context_as_ec(ctx);
     let obj = this.as_object();
     if let Some(obj) = obj {
         if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-            media.set_src(&src, ec_ref);
+            media.set_src(&src, ec);
         } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-            video.media_element.set_src(&src, ec_ref);
+            video.media_element.set_src(&src, ec);
         }
     }
     Ok(ec.value_undefined())
@@ -630,18 +628,16 @@ fn play_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx and JsObject::downcast_mut.
-    // with_object_any_mut borrows ec_ref, preventing re-use.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let ec_ref = js_engine::boa::context_as_ec(ctx);
+    // Note: uses JsObject::downcast_mut.
+    // with_object_any_mut borrows ec, preventing domain method calls that need ec.
     let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec_ref.new_type_error("expected object"))?;
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        return media.play(ec_ref);
+        return media.play(ec);
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        return video.media_element.play(ec_ref);
+        return video.media_element.play(ec);
     }
-    Err(ec_ref.new_type_error("expected HTMLMediaElement"))
+    Err(ec.new_type_error("expected HTMLMediaElement"))
 }
 
 fn pause_method(
@@ -649,20 +645,18 @@ fn pause_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx and JsObject::downcast_mut.
-    // with_object_any_mut borrows ec_ref, preventing re-use.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let ec_ref = js_engine::boa::context_as_ec(ctx);
+    // Note: uses JsObject::downcast_mut.
+    // with_object_any_mut borrows ec, preventing domain method calls that need ec.
     let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec_ref.new_type_error("expected object"))?;
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
     if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.pause(ec_ref);
-        return Ok(ec_ref.value_undefined());
+        media.pause(ec);
+        return Ok(ec.value_undefined());
     } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.pause(ec_ref);
-        return Ok(ec_ref.value_undefined());
+        video.media_element.pause(ec);
+        return Ok(ec.value_undefined());
     }
-    Err(ec_ref.new_type_error("expected HTMLMediaElement"))
+    Err(ec.new_type_error("expected HTMLMediaElement"))
 }
 
 fn can_play_type(
