@@ -1,7 +1,7 @@
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string,
     native_function::NativeFunction,
-    object::{FunctionObjectBuilder, ObjectInitializer, builtins::JsArray},
+    object::{FunctionObjectBuilder, ObjectInitializer},
     property::Attribute,
 };
 use std::marker::PhantomData;
@@ -11,7 +11,9 @@ use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
     HTMLVideoElement,
 };
-use crate::js::platform_objects::invalidate_cached_node_ids_ec;
+use crate::js::platform_objects::{
+    invalidate_cached_node_ids_ec, resolve_element_object_ec,
+};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -653,22 +655,16 @@ fn query_selector(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let selector = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let node_id = with_element_ref(this, |element| element.query_selector(&selector))?
-            .map_err(|error| JsNativeError::syntax().with_message(error))?;
-        match node_id {
-            Some(node_id) => {
-                Ok(crate::js::platform_objects::resolve_element_object(node_id, ctx)?.into())
-            }
-            None => Ok(JsValue::null()),
+    let selector = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined.clone()))?;
+    let node_id = try_with_element_ref(this, ec, |element| element.query_selector(&selector))?
+        .map_err(|error| ec.new_syntax_error(&error))?;
+    match node_id {
+        Some(node_id) => {
+            let obj = resolve_element_object_ec(node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
         }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        None => Ok(ec.value_null()),
+    }
 }
 
 fn query_selector_all(
@@ -677,23 +673,15 @@ fn query_selector_all(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let selector = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        let node_ids = with_element_ref(this, |element| element.query_selector_all(&selector))?
-            .map_err(|error| JsNativeError::syntax().with_message(error))?;
-        let values = node_ids
-            .into_iter()
-            .map(|node_id| {
-                crate::js::platform_objects::resolve_element_object(node_id, ctx).map(JsValue::from)
-            })
-            .collect::<JsResult<Vec<_>>>()?;
-        Ok(JsArray::from_iter(values, ctx).into())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let selector = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined.clone()))?;
+    let node_ids = try_with_element_ref(this, ec, |element| element.query_selector_all(&selector))?
+        .map_err(|error| ec.new_syntax_error(&error))?;
+    let array = ec.create_empty_array();
+    for node_id in node_ids {
+        let obj = resolve_element_object_ec(node_id, ec)?;
+        ec.array_push(&array, crate::js::Types::value_from_object(obj))?;
+    }
+    Ok(crate::js::Types::value_from_object(array))
 }
 
 fn insert_adjacent_text(

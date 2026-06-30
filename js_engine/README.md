@@ -138,11 +138,11 @@ same struct because Boa's `Context` serves both roles internally.
 - `report_exception`
 - Value construction (shared with `ExecutionContext<T>`)
 
-### What does NOT get abstracted
+### What does NOT get abstracted (yet)
 
 | Operation | Reason |
 |---|---|
-| Native function registration (`NativeFunction`) | Engine-specific API shape — but call sites can use a `native_fn_wrapper` helper to centralize the `context_as_ec` cast |
+| Native function registration (`NativeFunction::from_closure`) | `create_builtin_function` on `JsEngine<T>` is the spec-correct equivalent, but binding functions only have `&mut dyn ExecutionContext<T>`. Phase C will either move it to `ExecutionContext<T>` or add an `engine()` accessor. |
 | Platform object construction | Uses Boa `ObjectInitializer` — needs realm's intrinsics table; passes through EC |
 | Proxy creation | Boa's proxy builder not publicly creatable |
 | `Context::eval` (script evaluation) | `JsEngine::evaluate_script` exists on the trait but callers use `Context::eval` directly; needs migration |
@@ -362,16 +362,22 @@ Both map to the same spec operation (`#[sec-get-o-p]`).
 - **`report_error`** (default impl) is a logging convenience, not a
   spec operation.
 
-### `NativeFunction` barrier
+### `create_builtin_function` barrier
 
 `JsEngine::create_builtin_function` takes a closure receiving
 `&mut dyn ExecutionContext<T>` — architecturally correct for a generic
-layer.  But content code still uses Boa's `FunctionObjectBuilder` +
-`NativeFunction::from_fn_ptr` because (a) `create_builtin_function`
-requires `T: JsTypesWithRealm` and returns `T::Function`, which
-creates type-erasure issues with the current interface registry, and
-(b) converting all native function registrations is a large mechanical
-change.  This is the P3 problem noted in the migration plan.
+layer, and the Web IDL bindings infra (`operation.rs`, `attribute.rs`)
+already uses it successfully with `Types::object_from_function()` to
+convert `T::Function` → `T::JsObject`.  But binding files can't use it
+because they receive `&mut dyn ExecutionContext<T>`, not `&mut dyn JsEngine<T>`.
+Two options: (a) move `create_builtin_function` to `ExecutionContext<T>`
+(spec-justified: its realm parameter defaults to the current Realm Record,
+which EC provides via `current_realm()`), or (b) add `fn engine(&self) ->
+&dyn JsEngine<T>` to `ExecutionContext<T>`.  Either way, all
+`NativeFunction::from_closure` + `FunctionObjectBuilder` + `context_as_ec`
+sites get replaced with `create_builtin_function` + Web IDL callback
+invocation (<https://webidl.spec.whatwg.org/#invoke-a-callback-function>).
+This is Phase C.
 
 ## Per-backend details
 
@@ -409,7 +415,7 @@ expressed through the generic API with zero structural `#[cfg]`.
 | # | Phase | Effort | Status |
 |---|---|---|---|
 | **A. GC derive conversion** | Replace Boa derives with `impl_gc_traits!` on 34 types | Small | ✅ DONE |
-| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~70% done. 49 ec_to_ctx eliminated this session (document.rs 18→5, element.rs 18→12, node.rs 14→4, hyperlink_element_utils.rs 21→3, html_anchor_element.rs 2→0). ~134 remain — most blocked on missing trait methods, not mechanical conversion. |
+| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~75% done. document.rs fully generic (18→0). 49 ec_to_ctx eliminated this session. ~115 remain — most blocked on missing trait methods (ObjectInitializer) or deeper refactors (DOMException helpers, NativeFunction). |
 | **C. NativeFunction bridging** | Add a `native_fn_wrapper` helper, replace ~200 scattered `context_as_ec` casts | Medium | Not started |
 | **D. Remove remaining adapters** | Two `ContextEventDispatchHost` adapters in `writablestreamdefaultcontroller.rs` and `event_target.rs` | Small | Not started |
 | **E. Conditional Types alias** | Switch `Types` between `BoaTypes`/`JscTypes` via `#[cfg]` | Large | Blocked on B, C, D |
@@ -443,10 +449,10 @@ equivalent yet — not on mechanical conversion work.
 
 | Step | What | Details |
 |---|---|---|
-| **B1. Add `new_syntax_error` to trait** | `ExecutionContext::new_syntax_error(&str) -> JsValue` | Same pattern as `new_type_error` / `new_range_error`. Unblocks ~9 ec_to_ctx in `document.rs` + `element.rs`. Validate in test file, implement for Boa + JSC. |
+| **B1. Add `new_syntax_error` to trait** | `ExecutionContext::new_syntax_error(&str) -> JsValue` | Same pattern as `new_type_error` / `new_range_error`. Unblocks ~9 ec_to_ctx in `document.rs` + `element.rs`. Validate in test file, implement for Boa + JSC. | ✅ DONE — 53/53 pass, document.rs now 0 ec_to_ctx |
 | **B2. Refactor DOMException helpers** | `dom_exception_error`, `map_location_value`, `map_location_result` in `location.rs` take `&mut Context` but `create_interface_instance` already takes `ec`. Refactor them to take `ec` directly, add `entry_settings_object_ec` wrapper + `try_with_location_ref` helper. | Unblocks all 22 ec_to_ctx in `location.rs`. Pattern already validated (create_interface_instance + value_from_object). |
 | **B3. Convert remaining binding files** | After B1+B2 unblock SyntaxError + DOMException: convert the remaining simple getter/setter functions in `document.rs`, `element.rs`, `location.rs`, `node.rs` | Mechanical: `ec.to_rust_string()`, `try_with_*` helpers, `_ec` wrappers. All patterns validated. |
-| **C. NativeFunction bridging** | Design `native_fn_wrapper`, apply to ~200 sites | Unblocks `strategy.rs`, `abort_signal.rs`, `link_property`, timeout callbacks, event handler setters |
+| **C. create_builtin_function access from EC** | Binding functions receive `&mut dyn ExecutionContext<T>` but `create_builtin_function` lives on `JsEngine<T>` (the factory trait). To eliminate `NativeFunction::from_closure` / `FunctionObjectBuilder` (last Boa-specific API in binding files), we need one of: (a) move `create_builtin_function` to `ExecutionContext<T>` (spec-justified: realm defaults to current Realm Record, which EC provides), or (b) add `fn engine(&self) -> &dyn JsEngine<T>` to `ExecutionContext<T>`. Then replace all `NativeFunction::from_closure` + `FunctionObjectBuilder` + `context_as_ec` with `ec.create_builtin_function(...)` + `Types::object_from_function(...)`, following the Web IDL callback invocation algorithm (<https://webidl.spec.whatwg.org/#invoke-a-callback-function>) for call-time dispatch (already uses `EcmascriptHost::call`). Validate in test file. | Unblocks `strategy.rs`, `element.rs` class_list, `abort_signal.rs`, `hyperlink_element_utils.rs` link_property, event handler setters (~36 call sites across 8 files). |
 | **D. Remove adapters** | Two `ContextEventDispatchHost` instances | Unblocks `event_target.rs` (3 ec_to_ctx) |
 | **E. Conditional Types** | `#[cfg]` gate all Boa imports | Large mechanical change; blocked on B, C, D |
 
@@ -471,7 +477,7 @@ Shared infrastructure ready:
 
 | Blocker | Files | Count | Fix |
 |---|---|---|---|
-| No `new_syntax_error` on trait | document.rs, element.rs | ~9 | Add to trait + validate in test file |
+| No `new_syntax_error` on trait | ~~document.rs~~, element.rs | ~1 | ✅ Added to trait, validated, document.rs fully converted |
 | `dom_exception_error` takes `&mut Context` | location.rs | 22 | Refactor helpers to take `ec` |
 | `ObjectInitializer` no generic eq | element.rs (class_list, getBoundingClientRect) | 8 | `create_plain_object` + `object_set_property` on trait — can build property-by-property |
 | `FunctionObjectBuilder` / `NativeFunction` | strategy.rs, abort_signal.rs, link_property | ~9 | Phase C |

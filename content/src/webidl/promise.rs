@@ -333,7 +333,6 @@ where
             ),
             1,
             engine.property_key_from_str(""),
-            &realm,
         ))
     } else {
         None
@@ -361,7 +360,6 @@ where
             ),
             1,
             engine.property_key_from_str(""),
-            &realm,
         ))
     } else {
         None

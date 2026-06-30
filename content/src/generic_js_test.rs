@@ -1003,9 +1003,11 @@ mod tests {
         let mut engine = setup();
         let type_err = engine.new_type_error("bad");
         let range_err = engine.new_range_error("range");
+        let syntax_err = engine.new_syntax_error("parse");
 
         assert!(TestTypes::value_as_object(&type_err).is_some());
         assert!(TestTypes::value_as_object(&range_err).is_some());
+        assert!(TestTypes::value_as_object(&syntax_err).is_some());
         assert!(TestTypes::value_is_undefined(&engine.value_undefined()));
         assert!(TestTypes::value_is_null(&engine.value_null()));
         assert_eq!(
@@ -1514,13 +1516,11 @@ mod tests {
     #[test]
     fn create_builtin_function_and_call() {
         let mut engine = setup();
-        let realm = engine.current_realm();
         let pk = engine.property_key_from_str("testBuiltin");
         let builtin = engine.create_builtin_function(
             Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(42.0))),
             0,
             pk,
-            &realm,
         );
         let builtin_obj = TestTypes::object_from_function(builtin);
         let undef = engine.value_undefined();

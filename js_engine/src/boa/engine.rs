@@ -174,56 +174,6 @@ impl JsEngine<BoaTypes> for BoaContext {
     // ── §10.3 Built-in Function Objects ──────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    fn create_builtin_function(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JsValue],
-                JsValue,
-                &mut dyn ExecutionContext<BoaTypes>,
-            ) -> Completion<JsValue, BoaTypes>,
-        >,
-        length: u32,
-        name: PropertyKey,
-        realm: &boa_engine::realm::Realm,
-    ) -> JsFunction
-    where
-        BoaTypes: JsTypesWithRealm,
-    {
-        // Extract the name string for FunctionObjectBuilder.
-        let name_str = match &name {
-            PropertyKey::String(s) => s.clone(),
-            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
-            _ => boa_engine::js_string!(""),
-        };
-
-        // SAFETY: BoaContext is `#[repr(transparent)]` over Context, so
-        // a `&mut Context` pointer can be safely cast to `&mut BoaContext`.
-        // The resulting reference has the same lifetime as the `context`
-        // parameter and does not alias any other mutable reference.
-        //
-        // The closure is `'static` — `behaviour` is an owned Box that
-        // does not borrow from the engine.
-        let native = unsafe {
-            NativeFunction::from_closure(Box::new(
-                move |this: &JsValue,
-                      args: &[JsValue],
-                      context: &mut Context|
-                      -> JsResult<JsValue> {
-                    // SAFETY: BoaContext is repr(transparent) over Context.
-                    let engine: &mut BoaContext =
-                        &mut *(context as *mut Context as *mut BoaContext);
-                    behaviour(args, this.clone(), engine).map_err(|e| JsError::from_opaque(e))
-                },
-            ))
-        };
-
-        FunctionObjectBuilder::new(realm, native)
-            .name(name_str)
-            .length(length as usize)
-            .build()
-    }
-
     // ── §16 Script and Module evaluation ──────────────────────────────────
 
     fn evaluate_script(
@@ -1113,6 +1063,53 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             .with_message(owned)
             .into_opaque(&mut self.context);
         JsValue::from(err_obj)
+    }
+
+    fn new_syntax_error(&mut self, msg: &str) -> JsValue {
+        let owned: String = msg.to_string();
+        let err_obj = JsNativeError::syntax()
+            .with_message(owned)
+            .into_opaque(&mut self.context);
+        JsValue::from(err_obj)
+    }
+
+    fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JsValue],
+                JsValue,
+                &mut dyn ExecutionContext<BoaTypes>,
+            ) -> Completion<JsValue, BoaTypes>,
+        >,
+        length: u32,
+        name: PropertyKey,
+    ) -> JsFunction {
+        let realm = self.current_realm();
+        let name_str = match &name {
+            PropertyKey::String(s) => s.clone(),
+            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
+            _ => boa_engine::js_string!(""),
+        };
+
+        // SAFETY: BoaContext is `#[repr(transparent)]` over Context.
+        let native = unsafe {
+            NativeFunction::from_closure(Box::new(
+                move |this: &JsValue,
+                      args: &[JsValue],
+                      context: &mut Context|
+                      -> JsResult<JsValue> {
+                    let engine: &mut BoaContext =
+                        &mut *(context as *mut Context as *mut BoaContext);
+                    behaviour(args, this.clone(), engine).map_err(|e| JsError::from_opaque(e))
+                },
+            ))
+        };
+
+        FunctionObjectBuilder::new(&realm, native)
+            .name(name_str)
+            .length(length as usize)
+            .build()
     }
 
     // ── String Utilities ─────────────────────────────────────────────

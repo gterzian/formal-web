@@ -1,12 +1,10 @@
-use boa_engine::{
-    Context, JsArgs, JsError, JsResult, JsValue, js_string, native_function::NativeFunction,
-    object::FunctionObjectBuilder,
-};
 use std::marker::PhantomData;
+
+use boa_engine::JsValue;
 
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, byte_length_size, count_size,
@@ -120,13 +118,14 @@ fn get_byte_length_high_water_mark(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let strategy = this
-        .as_object()
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ByteLengthQueuingStrategy receiver is not an object"))?;
-    let strategy = strategy
-        .downcast_ref::<ByteLengthQueuingStrategy>()
-        .ok_or_else(|| ec.new_type_error("receiver is not a ByteLengthQueuingStrategy"))?;
-    Ok(JsValue::from(strategy.high_water_mark()))
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(strategy) = data.downcast_ref::<ByteLengthQueuingStrategy>() {
+            return Ok(ec.value_from_number(strategy.high_water_mark()));
+        }
+    }
+    Err(ec.new_type_error("receiver is not a ByteLengthQueuingStrategy"))
 }
 
 fn get_count_high_water_mark(
@@ -134,13 +133,14 @@ fn get_count_high_water_mark(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let strategy = this
-        .as_object()
+    let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("CountQueuingStrategy receiver is not an object"))?;
-    let strategy = strategy
-        .downcast_ref::<CountQueuingStrategy>()
-        .ok_or_else(|| ec.new_type_error("receiver is not a CountQueuingStrategy"))?;
-    Ok(JsValue::from(strategy.high_water_mark()))
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(strategy) = data.downcast_ref::<CountQueuingStrategy>() {
+            return Ok(ec.value_from_number(strategy.high_water_mark()));
+        }
+    }
+    Err(ec.new_type_error("receiver is not a CountQueuingStrategy"))
 }
 
 fn get_byte_length_size(
@@ -148,19 +148,17 @@ fn get_byte_length_size(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let function = FunctionObjectBuilder::new(
-            ctx.realm(),
-            NativeFunction::from_fn_ptr(byte_length_size_function),
-        )
-        .name(js_string!("size"))
-        .length(1)
-        .build();
-        Ok(JsValue::from(function))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let function = ec.create_builtin_function(
+        Box::new(move |args, _this, inner_ec| {
+            byte_length_size(
+                &args.first().cloned().unwrap_or(inner_ec.value_undefined()),
+                inner_ec,
+            )
+        }),
+        1,
+        ec.property_key_from_str("size"),
+    );
+    Ok(crate::js::Types::value_from_object(crate::js::Types::object_from_function(function)))
 }
 
 fn get_count_size(
@@ -168,33 +166,14 @@ fn get_count_size(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let function = FunctionObjectBuilder::new(
-            ctx.realm(),
-            NativeFunction::from_fn_ptr(count_size_function),
-        )
-        .name(js_string!("size"))
-        .length(1)
-        .build();
-        Ok(JsValue::from(function))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
-}
-
-fn byte_length_size_function(
-    _: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    byte_length_size(
-        args.get_or_undefined(0),
-        js_engine::boa::context_as_ec(context),
-    )
-    .map_err(JsError::from_opaque)
-}
-
-fn count_size_function(_: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    Ok(count_size(args.get_or_undefined(0)))
+    let function = ec.create_builtin_function(
+        Box::new(move |args, _this, inner_ec| {
+            Ok(count_size(
+                &args.first().cloned().unwrap_or(inner_ec.value_undefined()),
+            ))
+        }),
+        1,
+        ec.property_key_from_str("size"),
+    );
+    Ok(crate::js::Types::value_from_object(crate::js::Types::object_from_function(function)))
 }

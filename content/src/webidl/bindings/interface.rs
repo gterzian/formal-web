@@ -123,7 +123,6 @@ where
         ),
         I::constructor_length() as u32,
         engine.property_key_from_str(I::NAME),
-        &realm,
     );
     let f_obj = Ty::object_from_function(constructor_fn);
     let proto_desc = JsPropertyDescriptor {

@@ -340,46 +340,6 @@ impl JsEngine<JscTypes> for JscEngine {
         Ok(())
     }
 
-    // ── §10.3 Built-in Function Objects ──────────────────────────────────
-    fn create_builtin_function(
-        &mut self,
-        _behaviour: Box<
-            dyn Fn(
-                &[JscValue],
-                JscValue,
-                &mut dyn ExecutionContext<JscTypes>,
-            ) -> Completion<JscValue, JscTypes>,
-        >,
-        _length: u32,
-        name: JscPropertyKey,
-        _realm: &JscRealm,
-    ) -> JscFunction
-    where
-        JscTypes: JsTypesWithRealm,
-    {
-        // Create a stub function via JS evaluation.
-        // The behaviour closure is stored in the host data for later retrieval.
-        let name_str = match &name {
-            JscPropertyKey::String(s) => s.to_rust(),
-            JscPropertyKey::Symbol(_) => String::from(""),
-        };
-        let stub_source = format!("(function {}(...args) {{ return args[0]; }})", name_str);
-        let (result, exception) = self.eval_script_raw(&stub_source);
-        if !exception.is_null() {
-            // Fallback: create a no-op function
-            let fallback = "(function() {})";
-            let (result, _) = self.eval_script_raw(fallback);
-            return JscObject {
-                raw: result as *mut JSObjectRef,
-                ctx: self.ctx_ptr(),
-            };
-        }
-        JscObject {
-            raw: result as *mut JSObjectRef,
-            ctx: self.ctx_ptr(),
-        }
-    }
-
     // ── §16 Script ────────────────────────────────────────────────────────
     fn evaluate_script(&mut self, source: &str, _realm: &JscRealm) -> Completion<JscValue, JscTypes>
     where
@@ -1940,6 +1900,54 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
         JscValue {
             raw: result,
+            ctx: self.ctx_ptr(),
+        }
+    }
+
+    fn new_syntax_error(&mut self, msg: &str) -> JscValue {
+        let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!("new SyntaxError('{}')", escaped);
+        let (result, exception) = self.eval_script_raw(&script);
+        if !exception.is_null() {
+            return self.make_string(msg);
+        }
+        if result.is_null() {
+            return self.make_string(msg);
+        }
+        JscValue {
+            raw: result,
+            ctx: self.ctx_ptr(),
+        }
+    }
+
+    fn create_builtin_function(
+        &mut self,
+        _behaviour: Box<
+            dyn Fn(
+                &[JscValue],
+                JscValue,
+                &mut dyn ExecutionContext<JscTypes>,
+            ) -> Completion<JscValue, JscTypes>,
+        >,
+        _length: u32,
+        name: JscPropertyKey,
+    ) -> JscFunction {
+        let name_str = match &name {
+            JscPropertyKey::String(s) => s.to_rust(),
+            JscPropertyKey::Symbol(_) => String::from(""),
+        };
+        let stub_source = format!("(function {}(...args) {{ return args[0]; }})", name_str);
+        let (result, exception) = self.eval_script_raw(&stub_source);
+        if !exception.is_null() {
+            let fallback = "(function() {})";
+            let (result, _) = self.eval_script_raw(fallback);
+            return JscObject {
+                raw: result as *mut JSObjectRef,
+                ctx: self.ctx_ptr(),
+            };
+        }
+        JscObject {
+            raw: result as *mut JSObjectRef,
             ctx: self.ctx_ptr(),
         }
     }

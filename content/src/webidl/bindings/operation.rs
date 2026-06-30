@@ -63,7 +63,6 @@ where
     Ty: JsTypes + JsTypesWithRealm,
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
-    let realm = engine.current_realm();
     let target_obj = Ty::value_as_object(target)
         .ok_or_else(|| engine.new_type_error("target is not an object in operation definition"))?;
 
@@ -75,7 +74,6 @@ where
             }),
             op.length as u32,
             engine.property_key_from_str(op.id),
-            &realm,
         );
         let modifiable = !op.unforgeable;
         let desc = PropertyDescriptor {

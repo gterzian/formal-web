@@ -63,7 +63,6 @@ where
     Ty: JsTypes + JsTypesWithRealm,
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
-    let realm = engine.current_realm();
     let target_obj = Ty::value_as_object(target)
         .ok_or_else(|| engine.new_type_error("target is not an object in attribute definition"))?;
     for attr in attributes {
@@ -74,7 +73,6 @@ where
             }),
             0,
             engine.property_key_from_str(attr.id),
-            &realm,
         );
         let mut desc = PropertyDescriptor {
             value: None,
@@ -89,7 +87,6 @@ where
                 Box::new(move |args, this, ec| setter(&this, args, ec)),
                 1,
                 engine.property_key_from_str(attr.id),
-                &realm,
             );
             desc.set = Some(setter_fn);
         }

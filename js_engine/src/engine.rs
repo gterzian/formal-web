@@ -524,6 +524,30 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// Create a new RangeError with the given message.
     fn new_range_error(&mut self, msg: &str) -> T::JsValue;
 
+    /// <https://tc39.es/ecma262/#sec-native-error-types-used-in-this-standard-syntaxerror>
+    /// Create a new SyntaxError with the given message.
+    fn new_syntax_error(&mut self, msg: &str) -> T::JsValue;
+
+    // ── Built-in Function Construction (§10.3.4) ─────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    ///
+    /// The behaviour closure receives the JS arguments, the `this` value,
+    /// and a `&mut dyn ExecutionContext<T>` for calling any ECMA-262
+    /// runtime operation.  The realm defaults to the current Realm Record.
+    fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[T::JsValue],
+                T::JsValue,
+                &mut dyn ExecutionContext<T>,
+            ) -> Completion<T::JsValue, T>,
+        >,
+        length: u32,
+        name: T::PropertyKey,
+    ) -> T::Function;
+
     // ────────────────────────────────────────────────────────────────────────
     // Error Reporting
     // ────────────────────────────────────────────────────────────────────────
@@ -645,31 +669,6 @@ pub trait JsEngine<T: JsTypes> {
     // ────────────────────────────────────────────────────────────────────────
     // §10.3 Built-in Function Objects
     // ────────────────────────────────────────────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    ///
-    /// Creates a JS-callable function object from native behaviour steps,
-    /// following the same pattern Web IDL uses for observable arrays,
-    /// callback interfaces, and other native-to-JS bridges.
-    ///
-    /// The behaviour closure receives the JS arguments, the `this` value,
-    /// and a `&mut dyn ExecutionContext<T>` for calling any ECMA-262
-    /// runtime operation.
-    fn create_builtin_function(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[T::JsValue],
-                T::JsValue,
-                &mut dyn ExecutionContext<T>,
-            ) -> Completion<T::JsValue, T>,
-        >,
-        length: u32,
-        name: T::PropertyKey,
-        realm: &T::Realm,
-    ) -> T::Function
-    where
-        T: JsTypesWithRealm;
 
     // ────────────────────────────────────────────────────────────────────────
     // §16.1 / §16.2 Script and Module evaluation
