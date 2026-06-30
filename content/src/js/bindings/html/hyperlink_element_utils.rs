@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, js_string,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string,
     native_function::NativeFunction, object::JsObject, property::PropertyDescriptor,
 };
 use url::Url;
@@ -10,7 +10,7 @@ use crate::{
     html::{HTMLAnchorElement, HyperlinkElementUtils},
 };
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 pub(crate) fn document_creation_url(context: &Context) -> JsResult<Url> {
     let object = platform_objects::document_object(context)?;
@@ -18,6 +18,13 @@ pub(crate) fn document_creation_url(context: &Context) -> JsResult<Url> {
         .downcast_ref::<Document>()
         .ok_or_else(|| JsNativeError::typ().with_message("document object is not a Document"))?;
     Ok(document.creation_url.clone())
+}
+
+pub(crate) fn document_creation_url_ec(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Url, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    document_creation_url(ctx).map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 fn with_hyperlink_element_utils_ref<R>(
@@ -35,6 +42,21 @@ fn with_hyperlink_element_utils_ref<R>(
         .into())
 }
 
+fn try_with_hyperlink_element_utils_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&dyn HyperlinkElementUtils) -> R,
+) -> Completion<R, crate::js::Types> {
+    let object = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("hyperlink receiver is not an object"))?;
+    if let Some(data) = ec.with_object_any(&object) {
+        if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
+            return Ok(f(&*anchor));
+        }
+    }
+    Err(ec.new_type_error("receiver does not implement HyperlinkElementUtils"))
+}
+
 /// Register HTMLHyperlinkElementUtils members directly on an interface prototype.
 ///
 /// This is the prototype-based equivalent of `register_hyperlink_element_utils_methods`,
@@ -44,6 +66,7 @@ pub(crate) fn register_hyperlink_element_utils_on_prototype(
     proto: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
+    // Note: keeps ec_to_ctx — NativeFunction::from_closure needs Context.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let realm = ctx.realm().clone();
     link_property(proto, ec, &realm, "origin", get_origin, None)?;
@@ -112,6 +135,7 @@ fn link_property(
         ) -> Completion<JsValue, crate::js::Types>,
     >,
 ) -> Completion<(), crate::js::Types> {
+    // Note: keeps ec_to_ctx — NativeFunction::from_closure needs Context.
     let value_undefined = ec.value_undefined();
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     (|| -> JsResult<()> {
@@ -141,6 +165,7 @@ fn ec_fn_ptr_to_js_function(
     ) -> Completion<JsValue, crate::js::Types>,
     realm: &boa_engine::realm::Realm,
 ) -> JsObject {
+    // Note: keeps ec_to_ctx — NativeFunction::from_closure needs Context.
     // SAFETY: BoaContext is `#[repr(transparent)]` over `Context`, and
     // `ExecutionContext<crate::js::Types>` is implemented by `BoaContext`.
     // Casting `&mut Context` → `&mut dyn ExecutionContext<crate::js::Types>` via
@@ -162,15 +187,11 @@ fn get_origin(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.origin(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let origin = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.origin(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(origin.as_str())))
 }
 
 fn get_protocol(
@@ -178,15 +199,11 @@ fn get_protocol(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.protocol(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let protocol = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.protocol(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(protocol.as_str())))
 }
 
 fn set_protocol(
@@ -195,19 +212,12 @@ fn set_protocol(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_protocol(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_protocol(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn get_username(
@@ -215,15 +225,11 @@ fn get_username(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.username(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let username = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.username(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(username.as_str())))
 }
 
 fn set_username(
@@ -232,19 +238,12 @@ fn set_username(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_username(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_username(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn get_password(
@@ -252,15 +251,11 @@ fn get_password(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.password(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let password = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.password(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(password.as_str())))
 }
 
 fn set_password(
@@ -269,19 +264,12 @@ fn set_password(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_password(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_password(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn get_host(
@@ -289,15 +277,11 @@ fn get_host(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.host(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let host = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.host(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(host.as_str())))
 }
 
 fn set_host(
@@ -306,19 +290,12 @@ fn set_host(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_host(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_host(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn get_hostname(
@@ -326,15 +303,11 @@ fn get_hostname(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.hostname(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let hostname = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.hostname(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(hostname.as_str())))
 }
 
 fn set_hostname(
@@ -343,19 +316,12 @@ fn set_hostname(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_hostname(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_hostname(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn get_port(
@@ -363,15 +329,11 @@ fn get_port(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.port(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let port = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.port(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(port.as_str())))
 }
 
 fn set_port(
@@ -380,19 +342,12 @@ fn set_port(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_port(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_port(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn get_pathname(
@@ -400,15 +355,11 @@ fn get_pathname(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.pathname(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let pathname = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.pathname(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(pathname.as_str())))
 }
 
 fn set_pathname(
@@ -417,19 +368,12 @@ fn set_pathname(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_pathname(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_pathname(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn get_search(
@@ -437,15 +381,11 @@ fn get_search(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.search(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let search = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.search(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(search.as_str())))
 }
 
 fn set_search(
@@ -454,19 +394,12 @@ fn set_search(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_search(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_search(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
 
 fn get_hash(
@@ -474,15 +407,11 @@ fn get_hash(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            JsValue::from(JsString::from(hyperlink.hash(&document_creation_url)))
-        })
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let hash = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.hash(&creation_url)
+    })?;
+    Ok(ec.value_from_string(ec.js_string_from_str(hash.as_str())))
 }
 
 fn set_hash(
@@ -491,17 +420,10 @@ fn set_hash(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let document_creation_url = document_creation_url(ctx)?;
-        let value = args
-            .get_or_undefined(0)
-            .to_string(ctx)?
-            .to_std_string_escaped();
-        with_hyperlink_element_utils_ref(this, |hyperlink| {
-            hyperlink.set_hash(&document_creation_url, &value)
-        })?;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let creation_url = document_creation_url_ec(ec)?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
+        hyperlink.set_hash(&creation_url, &value)
+    })?;
+    Ok(ec.value_undefined())
 }
