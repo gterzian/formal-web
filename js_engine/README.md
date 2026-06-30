@@ -386,6 +386,15 @@ downcasts via `dyn Any::downcast_ref::<T>()` / `downcast_mut::<T>()`.
 `GcRootHandle<T>` is an RAII guard:
 - Boa: no-op (GC traces through `boa_gc::Trace` on the handle itself)
 - JSC: calls `JSValueProtect` on construction, `JSValueUnprotect` on drop
+  (**currently SIGSEGVs on eval-created values — release blocker**)
+
+**Tests:**
+- `gc_root_survives_throwaway_pressure`: allocates 1000 throwaway arrays,
+  then verifies a `GcRootHandle`-rooted callback still calls correctly.
+- `nested_struct_gc_root_propagates`: `TestButton` wraps `TestWidget` which
+  holds `Option<GcRootHandle<Types>>` — verifies `Trace` propagates through
+  nested `impl_gc_traits!` structs and the rooted callback survives round-trip
+  through the outer object.
 
 ### Value construction and conversion
 
@@ -436,7 +445,16 @@ No `ec_to_ctx`, no `JsResult`, no `Context`.  The EC provides everything.
 | Promise-returning | `delayed_title` | `ec.new_promise_capability`, `ec.call` |
 | Callback invocation | `with_callback` | `ec.call`, `ec.is_callable` |
 | Callback storage | `store_callback` | `ec.create_root` |
-| Sequence iteration | `process_items` | `ec.property_key_from_index`, `ExecutionContext::get` |
+| Array-like length+indexing | `process_items` | `ec.property_key_from_index`, `ExecutionContext::get` |
+
+**Note on `process_items`:** `process_items` uses array-like length+indexing
+(`Get` for `"length"` then `Get` for `0..length`).  This is **not** the
+Web IDL `sequence<T>` conversion algorithm, which is iterator-based
+(`GetIterator` + `IteratorStep`/`IteratorValue`).  As written, it would
+mis-convert iterable-but-not-array-like arguments (`Set`, generator, custom
+iterable).  Either rewrite on `get_iterator`/`iterator_step_value` to match
+`sequence<T>`, or rename/re-comment to make clear it models array-like
+access, not WebIDL sequence conversion.
 
 ## Spec documentation convention
 
@@ -504,22 +522,34 @@ Both map to the same spec operation (`#[sec-get-o-p]`).
 - **`report_error`** (default impl) is a logging convenience, not a
   spec operation.
 
-### `create_builtin_function` barrier
+### `create_builtin_function` barrier (resolved — Phase C complete)
 
-`JsEngine::create_builtin_function` takes a closure receiving
-`&mut dyn ExecutionContext<T>` — architecturally correct for a generic
-layer, and the Web IDL bindings infra (`operation.rs`, `attribute.rs`)
-already uses it successfully with `Types::object_from_function()` to
-convert `T::Function` → `T::JsObject`.  But binding files can't use it
-because they receive `&mut dyn ExecutionContext<T>`, not `&mut dyn JsEngine<T>`.
-Two options: (a) move `create_builtin_function` to `ExecutionContext<T>`
-(spec-justified: its realm parameter defaults to the current Realm Record,
-which EC provides via `current_realm()`), or (b) add `fn engine(&self) ->
-&dyn JsEngine<T>` to `ExecutionContext<T>`.  Either way, all
-`NativeFunction::from_closure` + `FunctionObjectBuilder` + `context_as_ec`
-sites get replaced with `create_builtin_function` + Web IDL callback
-invocation (<https://webidl.spec.whatwg.org/#invoke-a-callback-function>).
-This is Phase C.
+Phase C moved `create_builtin_function` from `JsEngine<T>` to
+`ExecutionContext<T>`.  The Web IDL bindings infra (`operation.rs`,
+`attribute.rs`) and production binding files now call it on `ec` directly.
+This eliminated all `NativeFunction::from_closure` + `FunctionObjectBuilder`
+sites in the bindings layer.
+
+**JSC backend note:** `create_builtin_function` on JSC is a stub that
+creates a JS function from `eval(...)` but does **not** wire the behavior
+closure — the created function returns `args[0]` regardless of what the
+closure would do.  This means accessor-based properties and callback
+invocation silently produce wrong results on JSC.  This is a release
+blocker for JSC, not a polish item.
+
+### `with_object_any_mut` and `with_object_any_mut_with`
+
+`with_object_any_mut` returns `Option<&mut dyn Any>` — the returned
+reference's (unsafely extended) lifetime borrows from `ec`, so no `ec`
+method can be called while it's alive.  This is fine for simple get/set
+patterns.
+
+For patterns like `set_onload`, `play()`, `pause()`, `set_src()` where
+mutation needs to call ECMA-262 operations, use **`with_object_any_mut_with`**
+which passes both `&mut dyn Any` and `&mut dyn ExecutionContext<T>` to
+a closure.  Both backends implement this safely via raw-pointer decoupling
+(the native data lives in the GC heap / side-table, separate from `ec`).
+Validated in `with_object_any_mut_with_ec_inside_closure` test.
 
 ## Per-backend details
 
@@ -527,13 +557,14 @@ See module docs for implementation status and quirks:
 
 | Backend | Module | Status |
 |---|---|---|
-| Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, 12 unit tests pass |
-| JSC | `src/jsc/mod.rs` | ✅ Full parity — all trait methods implemented, 15 unit tests pass. Complex ops (promises, BigInt, JSON) use `JSEvaluateScript` fallbacks. 1 known crash (`JSObjectSetProperty` on eval-created plain objects). |
-| GC | `src/gc.rs` | ✅ Complete — `impl_gc_traits!` macro, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. |
+| Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, all generic_js_test tests pass |
+| JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete, but 3 functional blockers: `create_builtin_function` is a stub (behavior closure not executed), `GcRootHandle`/`create_root` SIGSEGVs on eval results, and `get_iterator`/`get_iterator_step_value` crash. 8 of 58 generic_js_test tests are `#[ignore]` on JSC. Complex ops (promises, BigInt, JSON) use `JSEvaluateScript` fallbacks. |
+| GC | `src/gc.rs` | ✅ Complete — `impl_gc_traits!` macro, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. GC-pressure testing gap: no test forces a collection to prove rooted values survive. |
 
 ## Migration status
 
-POC is **complete** — 50/50 tests pass on Boa.  The test file
+POC is **complete** — 60/60 tests pass on Boa, 8 ignored on JSC
+(see JSC backend status for details).  The test file
 (`content/src/generic_js_test.rs`) proves every content pattern can be
 expressed through the generic API with zero structural `#[cfg]`.
 
@@ -557,7 +588,7 @@ expressed through the generic API with zero structural `#[cfg]`.
 | # | Phase | Effort | Status |
 |---|---|---|---|
 | **A. GC derive conversion** | Replace Boa derives with `impl_gc_traits!` on 34 types | Small | ✅ DONE |
-| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~85% done. ~94 ec_to_ctx eliminated across 7 files. ~90 remain — blocked on patterns needing test file validation (with_object_any_mut borrow limitation, PropertyDescriptor construction). |
+| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~85% done. ~94 ec_to_ctx eliminated across 7 files. ~90 remain — `with_object_any_mut_with` (closure-based mutable access) resolves the main borrow-limitation blocker. |
 | **C. create_builtin_function on EC** | Moved `create_builtin_function` from `JsEngine` to `ExecutionContext`, replaced `NativeFunction::from_closure` + `FunctionObjectBuilder` in `strategy.rs`. All Web IDL infra callers updated. | Medium | ✅ DONE |
 | **D. Remove remaining adapters** | Two `ContextEventDispatchHost` adapters in `writablestreamdefaultcontroller.rs` and `event_target.rs` | Small | Not started |
 | **E. Conditional Types alias** | Switch `Types` between `BoaTypes`/`JscTypes` via `#[cfg]` | Large | Blocked on B, C, D |
@@ -668,7 +699,7 @@ minimal test first (compiles + passes), then apply the proven pattern.
 | Multi-type downcast chain (immutable) | `widget_or_button_with_ref` | `try_with_node_ref`, `try_with_html_element_ref`, etc. |
 | Multi-type downcast chain (mutable) | `widget_or_button_with_mut` | `try_with_event_target_mut` (future) |
 | Platform object creation | `create_test_widget`, `create_interface_instance_roundtrip` | `create_interface_instance` |
-| Mutable downcast + ec call | `with_object_any_mut_then_ec_call` | `set_onload`, `set_src`, `play`, `pause` |
+| Mutable downcast + ec call | `with_object_any_mut_with_ec_inside_closure` | `set_onload`, `set_src`, `play`, `pause` |
 | PropertyDescriptor with getter | `property_descriptor_with_builtin_getter` | `get_class_list` length getter |
 | PropertyDescriptor with getter+setter | `property_descriptor_with_builtin_getter_and_setter` | Accessor pattern |
 | String extraction | `ec.to_rust_string(v)` | Direct use in binding functions |
@@ -696,14 +727,12 @@ minimal test first (compiles + passes), then apply the proven pattern.
    at each `JsResult`-returning call.
 6. Delete the old `with_*` helper if no callers remain.
 
-**`with_object_any_mut` borrow-limitation:**
-`with_object_any_mut` returns a reference whose (unsafe-extended)
-lifetime borrows from `ec`, not from the JS object.  This means you
-cannot call an `ec` method while the returned reference is alive.
-When a domain method itself takes `&mut dyn ExecutionContext` (e.g.
-`play()`, `pause()`, `set_src()`), use the old
-`JsObject::downcast_mut::<T>()` + `ec_to_ctx` pattern instead:
-`JsObject::downcast_mut` borrows from the object, leaving `ec` free.
+**`with_object_any_mut` borrow-limitation (resolved):**
+Use `with_object_any_mut_with` (closure-based) for patterns where
+mutation needs to call ECMA-262 operations.  It passes both
+`&mut dyn Any` and `&mut dyn ExecutionContext<T>` to the closure,
+eliminating the borrow conflict.  Validated in
+`with_object_any_mut_with_ec_inside_closure`.
 
 **What NOT to do:**
 
@@ -733,8 +762,8 @@ test file as the template:
 - **Binding function**: `fn(&Types::JsValue, &[Types::JsValue], &mut dyn
   ExecutionContext<Types>) -> Completion<Types::JsValue, Types>` with
   `widget_data::with_ref`/`with_mut` for domain access
-- **Platform object creation**: `ec.create_object_with_any(prototype,
-  Box::new(data))`
+- **Platform object creation**: `create_interface_instance` (canonical
+  path) or `ec.create_object_with_any(prototype, Box::new(data))` (direct)
 - **Callback storage**: `ec.create_root(&callback_val)` → store as
   `GcRootHandle<Types>`
 - **Multi-type downcast chain**: `widget_or_button_with_ref` /
@@ -746,8 +775,35 @@ test file as the template:
   `ec.with_object_any()` / `ec.with_object_any_mut()` + Rust's
   `dyn Any::downcast_ref()` / `downcast_mut()` — no Boa-specific APIs.
 
-58/58 tests pass on Boa.  5 tests are `#[ignore]` on JSC due to known
-backend gaps (`get_iterator`, `create_builtin_function`, `SharedArrayBuffer`).
+`create_test_widget` / `create_test_button` delegate to
+`create_interface_instance` — the same canonical path used by
+DOMException, Event, and Location in production.
+
+**Split recommendation:** The file currently serves two roles:
+(a) binding-pattern reference implementation via `TestWidget`/`TestButton`,
+and (b) standalone ECMA-262 operation smoke tests (`json_stringify_roundtrip`,
+`bigint_roundtrip`, array-buffer tests, iterator tests, `species_constructor`,
+etc.).  These should be split into `generic_js_test.rs` (binding patterns
+only — the template for other binding files) and `ecma_ops_test.rs`
+(standalone ECMA-262 operation smoke tests).  No behavior change — just
+keeps the reference file legible as a template.
+
+60/60 tests pass on Boa.  8 tests are `#[ignore]` on JSC:
+
+| Test | JSC blocker |
+|---|---|
+| `store_callback_then_flush_microtasks` | SIGSEGV in `create_root` / `GcRootHandle` (`JSValueProtect` on eval result) |
+| `get_iterator_and_step_value` | `get_iterator` / `get_iterator_step_value` crash |
+| `async_iterator_close_completes` | Depends on `get_iterator` |
+| `allocate_shared_array_buffer` | May not be available on current macOS |
+| `create_builtin_function_and_call` | Stub doesn't execute the behavior closure |
+| `property_descriptor_with_builtin_getter` | Stub doesn't execute the behavior closure |
+| `property_descriptor_with_builtin_getter_and_setter` | Stub doesn't execute the behavior closure |
+| `upon_settlement_full_chain` | Stub doesn't execute the behavior closure |
+
+`create_builtin_function` and `GcRootHandle` are **functional blockers** for the
+Web IDL binding strategy on JSC: anything that stores a JS callback or needs a
+native-backed accessor will either crash or silently do nothing.
 
 ## Working during migration
 

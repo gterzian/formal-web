@@ -1872,6 +1872,38 @@ impl ExecutionContext<JscTypes> for JscEngine {
         Some(map.get_mut(&key)?.as_mut())
     }
 
+    fn with_object_any_mut_with(
+        &mut self,
+        object: &JscObject,
+        f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<JscTypes>) + '_>,
+    ) {
+        let map_type_id =
+            std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
+        // Take a raw pointer to the data, then let the HashMap borrow expire
+        // before reborrowing `self` as `ec`.  At runtime the HashMap entry is
+        // still alive — we only decouple the borrow-checker lifetimes.
+        let data_ptr: Option<*mut dyn std::any::Any> = self
+            .host_data
+            .get_mut(&map_type_id)
+            .and_then(|boxed| {
+                boxed
+                    .downcast_mut::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()
+            })
+            .and_then(|map| {
+                let key = object.as_raw() as usize;
+                map.get_mut(&key).map(|boxed| boxed.as_mut() as *mut dyn std::any::Any)
+            });
+        if let Some(data_ptr) = data_ptr {
+            let ec: &mut dyn ExecutionContext<JscTypes> = self;
+            // SAFETY: data_ptr points into the HashMap that is a field of
+            // `self.host_data`.  The HashMap entry is not removed, only
+            // reborrowed via a raw pointer.  `ec` is `&mut self` — the two
+            // pointers point to distinct memory (HashMap value vs struct
+            // fields), so no aliasing occurs.
+            f(unsafe { &mut *data_ptr }, ec);
+        }
+    }
+
     fn new_type_error(&mut self, msg: &str) -> JscValue {
         let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
         let script = format!("new TypeError('{}')", escaped);

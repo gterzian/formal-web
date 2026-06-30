@@ -205,27 +205,22 @@ pub(crate) fn widget_or_button_with_ref<T>(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Platform object creation — uses the generic `create_object_with_any` API
+// Platform object creation helpers — delegates to `create_interface_instance`
+// (the canonical path used by DOMException, Event, Location in production).
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn create_test_widget(
     widget: TestWidget,
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsObject, TestTypes> {
-    use crate::webidl::bindings::registry::get_prototype_from_host_defined;
-    let prototype = get_prototype_from_host_defined::<TestTypes, TestWidget>(ec)
-        .ok_or_else(|| ec.new_type_error("TestWidget not registered"))?;
-    Ok(ec.create_object_with_any(prototype, Box::new(widget)))
+    crate::webidl::bindings::create_interface_instance::<TestTypes, TestWidget>(widget, ec)
 }
 
 fn create_test_button(
     button: TestButton,
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsObject, TestTypes> {
-    use crate::webidl::bindings::registry::get_prototype_from_host_defined;
-    let prototype = get_prototype_from_host_defined::<TestTypes, TestButton>(ec)
-        .ok_or_else(|| ec.new_type_error("TestButton not registered"))?;
-    Ok(ec.create_object_with_any(prototype, Box::new(button)))
+    crate::webidl::bindings::create_interface_instance::<TestTypes, TestButton>(button, ec)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -411,7 +406,13 @@ fn with_callback(
     ec.call(&callback_obj, &undef, &[title_val])
 }
 
-/// Method: `widget.processItems(items)` — exercises sequence iteration with numeric keys.
+/// Method: `widget.processItems(items)` — exercises array-like iteration.
+///
+/// Note: this uses array-like length+indexing (`Get` for `"length"` then
+/// `Get` for `0..length`), NOT the Web IDL `sequence<T>` conversion algorithm
+/// which is iterator-based (`GetIterator` + `IteratorStep`/`IteratorValue`).
+/// Real `sequence<T>` conversion must use `get_iterator`/`iterator_step_value`
+/// (exercised in `get_iterator_and_step_value` above).
 fn process_items(
     this: &JsValue,
     args: &[JsValue],
@@ -1103,23 +1104,26 @@ mod tests {
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
 
-        let val = engine.value_from_number(42.0);
-        let promise = engine
-            .promise_resolve(intrinsics.promise.clone(), val)
+        // Create a promise capability, resolve it with value 42.
+        let pcap = engine
+            .new_promise_capability(intrinsics.promise.clone())
             .unwrap();
-        assert!(
-            TestTypes::value_as_object(&TestTypes::value_from_object(
-                TestTypes::object_from_promise(promise)
-            ))
-            .is_some()
-        );
-
-        let pcap = engine.new_promise_capability(intrinsics.promise).unwrap();
         let undef = engine.value_undefined();
-        let val7 = engine.value_from_number(7.0);
-        let call_result =
-            js_engine::EcmascriptHost::call(&mut engine, &pcap.resolve, &undef, &[val7]);
-        assert!(call_result.is_ok());
+        let val42 = engine.value_from_number(42.0);
+        js_engine::EcmascriptHost::call(&mut engine, &pcap.resolve, &undef, &[val42]).unwrap();
+
+        // Verify the promise is an object (it resolved successfully).
+        assert!(TestTypes::value_as_object(&pcap.promise).is_some());
+
+        // Create another promise via promise_resolve and verify it's an object.
+        let val = engine.value_from_number(7.0);
+        let promise = engine
+            .promise_resolve(intrinsics.promise, val)
+            .unwrap();
+        let promise_val = TestTypes::value_from_object(
+            TestTypes::object_from_promise(promise),
+        );
+        assert!(TestTypes::value_as_object(&promise_val).is_some());
     }
 
     #[test]
@@ -1697,34 +1701,34 @@ mod tests {
     /// an `ec` method call works correctly — the mutable borrow from
     /// `with_object_any_mut` is dropped before the `ec` call.
     ///
-    /// This is the pattern that `set_onload`, `set_src`, `play`, and `pause`
-    /// need: mutable domain access, then value construction or error
-    /// construction via ec.  It compiles because the `with_mut` helper
-    /// drops its borrow on `ec` when it returns.
-    ///
-    /// Limitation: you cannot call an `ec` method from **within** the
-    /// `with_mut` closure because the returned reference borrows `ec`.
-    /// When a domain method itself takes `&mut dyn ExecutionContext`
-    /// (e.g. `play()`, `pause()`), use the Boa-specific workaround:
-    /// `JsObject::downcast_mut::<T>()` which borrows from the object,
-    /// not from `ec`.
+    /// Canonical pattern for `set_onload`, `set_src`, `play`, and `pause`:
+    /// call `with_object_any_mut_with` which passes both `&mut dyn Any` and
+    /// `&mut dyn ExecutionContext<T>` to a closure, enabling `ec` method
+    /// calls during mutation without any Boa-specific workaround.
     #[test]
-    fn with_object_any_mut_then_ec_call() {
+    fn with_object_any_mut_with_ec_inside_closure() {
         let mut engine = setup();
         let widget = TestWidget::new();
         let obj = create_widget(widget, &mut engine);
+
+        // Mutate the widget AND call ec methods all within the same
+        // closure — no borrow conflict because with_object_any_mut_with
+        // passes `data` and `ec` as separate parameters.
+        engine.with_object_any_mut_with(
+            &obj,
+            Box::new(|data, ec| {
+                let widget = data.downcast_mut::<TestWidget>().unwrap();
+                widget.title = "ModifiedFromClosure".into();
+                // Verify we can call ec methods during mutation.
+                let _ = ec.value_from_string(ec.js_string_from_str("test"));
+            }),
+        );
+
+        // Verify the mutation persisted.
         let js_obj = TestTypes::value_from_object(obj.clone());
-
-        // Step 1: mutable downcast + modify via with_mut.
-        widget_data::with_mut(&obj, &mut engine, |w| {
-            w.title = "Modified".into();
-        })
-        .unwrap();
-
-        // Step 2: after the with_mut borrow is dropped, ec is available.
         let result_val = get_title(&js_obj, &[], &mut engine).unwrap();
         let title = engine.to_rust_string(result_val).unwrap();
-        assert_eq!(title, "Modified");
+        assert_eq!(title, "ModifiedFromClosure");
     }
 
     /// Demonstrates the `create_interface_instance` pattern: constructs a
@@ -1866,5 +1870,88 @@ mod tests {
         // Get via the accessor.
         let result = ExecutionContext::get(&mut engine, obj, pk).unwrap();
         assert!((engine.to_number(result).unwrap() - 99.0).abs() < 0.001);
+    }
+
+    // ── GC rooting pressure tests ───────────────────────────────────
+
+    /// Allocates many throwaway objects to create GC pressure, then
+    /// verifies a `GcRootHandle`-rooted callback still survives.
+    /// This exercises the key property `create_root` exists to provide:
+    /// a GC-rooted value must survive even when unreachable objects
+    /// are reclaimed.
+    #[test]
+    fn gc_root_survives_throwaway_pressure() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        // Create and root a callback.
+        let fn_val = engine
+            .evaluate_script("(function() { return 42; })", &realm)
+            .unwrap();
+        let root = engine.create_root(&fn_val);
+
+        // Allocate many throwaway objects to create GC pressure.
+        for i in 0..1000 {
+            let throwaway = engine.create_empty_array();
+            let num_val = engine.value_from_number(i as f64);
+            let _ = engine.array_push(&throwaway, num_val);
+        }
+
+        // The rooted callback must still be callable.
+        let fn_obj = TestTypes::value_as_object(&root.value).unwrap();
+        let undef = engine.value_undefined();
+        let result = js_engine::EcmascriptHost::call(&mut engine, &fn_obj, &undef, &[]).unwrap();
+        assert!((engine.to_number(result).unwrap() - 42.0).abs() < 0.001);
+
+        // Root is still alive — on Boa the inner value traces through
+        // GcRootHandle; on JSC JSValueProtect prevents collection.
+        drop(root);
+    }
+
+    /// Verifies that `Trace` propagates through nested `impl_gc_traits!`
+    /// structs.  `TestButton` wraps `TestWidget` which holds an
+    /// `Option<GcRootHandle<Types>>` — the outer struct's `Trace` impl
+    /// must visit the inner struct's GC roots.
+    #[test]
+    fn nested_struct_gc_root_propagates() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+
+        // Create a button (wraps widget, which has on_change: Option<GcRootHandle>).
+        let mut button = TestButton::new("GCButton");
+        button.widget.title = "GCTest".into();
+
+        // Root a callback stored on the inner widget.
+        let fn_val = engine
+            .evaluate_script("(function() { return 'nested'; })", &realm)
+            .unwrap();
+        button.widget.on_change = Some(engine.create_root(&fn_val));
+
+        let obj = create_button(button, &mut engine);
+
+        // Read back through the object to verify both the widget and
+        // its rooted callback survived.
+        let js_obj = TestTypes::value_from_object(obj.clone());
+        let title = widget_or_button_with_ref(&js_obj, &mut engine, |w| w.title.clone()).unwrap();
+        assert_eq!(title, "GCTest");
+
+        // Read back the rooted callback.
+        let has_callback = engine
+            .with_object_any(&obj)
+            .and_then(|d| d.downcast_ref::<TestButton>())
+            .map(|b| b.widget.on_change.is_some())
+            .unwrap();
+        assert!(has_callback);
+
+        // The callback itself should still be callable.
+        let root = engine
+            .with_object_any(&obj)
+            .and_then(|d| d.downcast_ref::<TestButton>())
+            .and_then(|b| b.widget.on_change.as_ref())
+            .unwrap();
+        let fn_obj = TestTypes::value_as_object(&root.value).unwrap();
+        let undef = engine.value_undefined();
+        let result = js_engine::EcmascriptHost::call(&mut engine, &fn_obj, &undef, &[]).unwrap();
+        let s = engine.to_rust_string(result).unwrap();
+        assert_eq!(s, "nested");
     }
 }

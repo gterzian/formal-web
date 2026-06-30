@@ -60,7 +60,9 @@ pub trait JsTypesGcExt: JsTypes + Sized + 'static {
 
 /// An RAII guard that unroots a protected JS value when dropped.
 pub struct GcRootHandle<T: JsTypes> {
-    pub(crate) value: T::JsValue,
+    /// The rooted JS value.  Callers can read this to pass the value
+    /// to trait methods like `EcmascriptHost::call`.
+    pub value: T::JsValue,
     pub(crate) unroot_action: Option<Box<dyn FnOnce(&T::JsValue)>>,
 }
 

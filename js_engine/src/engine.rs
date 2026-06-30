@@ -512,7 +512,23 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     fn with_object_any(&self, object: &T::JsObject) -> Option<&dyn std::any::Any>;
 
     /// Access data stored via `create_object_with_any` mutably.
+    ///
+    /// The returned reference borrows from `ec`, not from the JS object.
+    /// This means no `ec` method can be called while the reference is alive.
+    /// For mutation that needs to call `ec` methods, use
+    /// [`with_object_any_mut_with`](Self::with_object_any_mut_with) instead.
     fn with_object_any_mut(&mut self, object: &T::JsObject) -> Option<&mut dyn std::any::Any>;
+
+    /// Like [`with_object_any_mut`](Self::with_object_any_mut) but receives both the
+    /// mutable native data and `ec` in a closure, enabling `ec` method calls
+    /// during mutation.  This is the canonical API for patterns like
+    /// `set_onload`, `play()`, `pause()`, `set_src()` where the mutation
+    /// needs to call back into ECMA-262 operations.
+    fn with_object_any_mut_with(
+        &mut self,
+        object: &T::JsObject,
+        f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<T>) + '_>,
+    );
 
     // ── Error Construction ──────────────────────────────────────────────
 

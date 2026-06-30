@@ -1051,6 +1051,29 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         Some(unsafe { &mut *(wrapper.0.as_mut() as *mut dyn std::any::Any) })
     }
 
+    fn with_object_any_mut_with(
+        &mut self,
+        object: &JsObject,
+        f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<BoaTypes>) + '_>,
+    ) {
+        let mut wrapper = match object
+            .downcast_mut::<NativeDataWrapper<Box<dyn std::any::Any>>>()
+        {
+            Some(w) => w,
+            None => return,
+        };
+        // SAFETY: The NativeDataWrapper lives in the JsObject's GC heap,
+        // which is separate from `self` (the BoaContext stack value).
+        // `wrapper` is a RefMut guard borrowing from the JsObject's GcCell,
+        // not from `self`.  The `&mut dyn ExecutionContext` parameter to `f`
+        // borrows `self` — these are independent memory locations.
+        let data: &mut dyn std::any::Any = unsafe {
+            &mut *(wrapper.0.as_mut() as *mut dyn std::any::Any)
+        };
+        let ec: &mut dyn ExecutionContext<BoaTypes> = self;
+        f(data, ec);
+    }
+
     fn new_type_error(&mut self, msg: &str) -> JsValue {
         let owned: String = msg.to_string();
         let err_obj = JsNativeError::typ()
