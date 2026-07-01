@@ -384,6 +384,39 @@ impl ReadableStream {
         // Step 1: "Return ? ReadableStreamTee(this, false)."
         Ok(readable_stream_tee(self.clone(), false, context)?.into_js_value(context))
     }
+
+    /// <https://streams.spec.whatwg.org/#rs-pipe-through>
+    pub(crate) fn pipe_through_ec(
+        &mut self,
+        transform: &JsValue,
+        options: &JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.pipe_through(transform, options, ctx)
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
+    /// <https://streams.spec.whatwg.org/#rs-pipe-to>
+    pub(crate) fn pipe_to_ec(
+        &mut self,
+        destination: &JsValue,
+        options: &JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        Ok(self.pipe_to(destination, options, ctx))
+    }
+
+    /// <https://streams.spec.whatwg.org/#rs-tee>
+    pub(crate) fn tee_ec(
+        &mut self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.tee(ctx)
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
 }
 
 struct ReadableStreamTeeBranches {
@@ -1265,6 +1298,16 @@ pub(crate) fn readable_stream_from_iterable(
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
+pub(crate) fn readable_stream_from_iterable_ec(
+    async_iterable: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    readable_stream_from_iterable(async_iterable, ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+}
+
+/// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
 pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     state: ReadableStreamFromIterableState,
     context: &mut Context,
@@ -1546,6 +1589,21 @@ pub(crate) fn with_readable_stream_ref<R>(
         .downcast_ref::<ReadableStream>()
         .ok_or_else(|| JsNativeError::typ().with_message("object is not a ReadableStream"))?;
     Ok(f(&stream))
+}
+
+pub(crate) fn with_readable_stream_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&ReadableStream) -> R,
+) -> Completion<R, crate::js::Types> {
+    let stream_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<ReadableStream>());
+    let stream = match stream_ref {
+        Some(s) => s,
+        None => return Err(ec.new_type_error("object is not a ReadableStream")),
+    };
+    Ok(f(stream))
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-cancel>

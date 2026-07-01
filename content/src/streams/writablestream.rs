@@ -752,6 +752,21 @@ pub(crate) fn with_writable_stream_ref<R>(
     Ok(f(&stream))
 }
 
+pub(crate) fn with_writable_stream_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&WritableStream) -> R,
+) -> Completion<R, crate::js::Types> {
+    let stream_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<WritableStream>());
+    let stream = match stream_ref {
+        Some(s) => s,
+        None => return Err(ec.new_type_error("object is not a WritableStream")),
+    };
+    Ok(f(stream))
+}
+
 fn underlying_sink_type(
     underlying_sink: Option<&JsObject>,
     context: &mut Context,

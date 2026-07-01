@@ -285,6 +285,15 @@ impl ReadableStreamDefaultController {
         self.get_desired_size()
     }
 
+    pub(crate) fn desired_size_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<f64>, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.desired_size()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     /// <https://streams.spec.whatwg.org/#rs-default-controller-close>
     pub(crate) fn close(
         &self,

@@ -1,11 +1,10 @@
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     rc::Rc,
 };
 
-use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
+    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
@@ -14,8 +13,8 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use js_engine::{Completion, ExecutionContext};
 
 use crate::{
-    dom::{AbortSignal, Event, EventDispatchHost, create_abort_signal, signal_abort},
-    js::platform_objects::{document_object, object_for_existing_node, resolve_element_object},
+    dom::{AbortSignal, create_abort_signal, signal_abort},
+    js::bindings::dom::EcDispatchHost,
     streams::SizeAlgorithm,
     webidl::bindings::create_interface_instance,
     webidl::{promise_from_value, rejected_promise, resolved_promise},
@@ -248,6 +247,15 @@ impl WritableStreamDefaultController {
         })
     }
 
+    pub(crate) fn signal_value_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.signal_value()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     /// <https://streams.spec.whatwg.org/#ws-default-controller-error>
     pub(crate) fn error(
         &self,
@@ -288,7 +296,7 @@ impl WritableStreamDefaultController {
         // Note: self.signal() returns JsResult; bridge to Completion.
         let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let signal = crate::js::js_result_to_completion(self.signal(), ctx)?;
-        let mut host = ContextEventDispatchHost::new(ctx);
+        let mut host = EcDispatchHost::new(ec);
         signal_abort(&mut host, &signal, reason)
     }
 
@@ -644,124 +652,6 @@ impl WritableStreamDefaultController {
     }
 }
 
-/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
-// Note: This helper keeps the DOM event-dispatch pieces needed for `AbortSignal` dispatch inside Streams, while delegating generic ECMAScript callback operations through `EcmascriptHost<crate::js::Types>`.
-struct ContextEventDispatchHost<'a> {
-    context: &'a mut Context,
-}
-
-impl<'a> ContextEventDispatchHost<'a> {
-    fn new(context: &'a mut Context) -> Self {
-        Self { context }
-    }
-}
-
-impl js_engine::EcmascriptHost<crate::js::Types> for ContextEventDispatchHost<'_> {
-    fn get(
-        &mut self,
-        object: &JsObject,
-        property: &str,
-    ) -> js_engine::Completion<JsValue, crate::js::Types> {
-        object
-            .get(boa_engine::js_string!(property), self.context)
-            .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
-    }
-
-    fn is_callable(&self, value: &JsValue) -> bool {
-        value.as_object().is_some_and(|o| o.is_callable())
-    }
-
-    fn call(
-        &mut self,
-        callable: &JsObject,
-        this_arg: &JsValue,
-        args: &[JsValue],
-    ) -> js_engine::Completion<JsValue, crate::js::Types> {
-        let function = boa_engine::object::builtins::JsFunction::from_object(callable.clone())
-            .ok_or_else(|| {
-                JsValue::from(
-                    JsNativeError::typ()
-                        .with_message("callback is not callable")
-                        .into_opaque(self.context),
-                )
-            })?;
-        function
-            .call(this_arg, args, self.context)
-            .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
-    }
-
-    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
-        let _ = self.context.run_jobs();
-        Ok(())
-    }
-
-    fn report_exception(&mut self, error: JsValue) {
-        log::error!("uncaught abort callback error: {error:?}");
-    }
-
-    fn value_undefined(&mut self) -> JsValue {
-        JsValue::undefined()
-    }
-    fn value_null(&mut self) -> JsValue {
-        JsValue::null()
-    }
-    fn value_from_bool(&mut self, b: bool) -> JsValue {
-        JsValue::from(b)
-    }
-    fn value_from_number(&mut self, n: f64) -> JsValue {
-        JsValue::from(n)
-    }
-    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
-        JsValue::from(s)
-    }
-    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
-        boa_engine::js_string!(s)
-    }
-}
-
-impl EventDispatchHost for ContextEventDispatchHost<'_> {
-    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
-        js_engine::boa::context_as_ec(self.context)
-    }
-
-    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types> {
-        create_interface_instance::<crate::js::Types, Event>(
-            event,
-            js_engine::boa::context_as_ec(self.context),
-        )
-    }
-
-    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
-        document_object(self.context).map_err(|e| {
-            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
-        })
-    }
-
-    fn global_object(&mut self) -> JsObject {
-        self.context.global_object()
-    }
-
-    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
-        resolve_element_object(node_id, self.context).map_err(|e| {
-            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
-        })
-    }
-
-    fn resolve_existing_node_object(
-        &mut self,
-        document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
-    ) -> Completion<JsObject, crate::js::Types> {
-        object_for_existing_node(document, node_id, self.context).map_err(|e| {
-            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
-        })
-    }
-
-    fn current_time_millis(&self) -> f64 {
-        0.0
-    }
-}
-
 pub(crate) fn create_writable_stream_default_controller(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(WritableStreamDefaultController, JsObject), crate::js::Types> {
@@ -784,6 +674,21 @@ pub(crate) fn with_writable_stream_default_controller_ref<R>(
             JsNativeError::typ().with_message("object is not a WritableStreamDefaultController")
         })?;
     Ok(f(&controller))
+}
+
+pub(crate) fn with_writable_stream_default_controller_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&WritableStreamDefaultController) -> R,
+) -> Completion<R, crate::js::Types> {
+    let ctrl_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<WritableStreamDefaultController>());
+    let controller = match ctrl_ref {
+        Some(c) => c,
+        None => return Err(ec.new_type_error("object is not a WritableStreamDefaultController")),
+    };
+    Ok(f(controller))
 }
 
 /// <https://streams.spec.whatwg.org/#set-up-writable-stream-default-controller>

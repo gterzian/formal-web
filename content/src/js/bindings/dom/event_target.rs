@@ -3,8 +3,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string,
-    object::{JsObject, builtins::JsFunction},
+    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string,
+    object::JsObject,
 };
 
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
@@ -164,127 +164,8 @@ fn dispatch_event(
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
-// Note: This helper keeps the DOM-specific event object and target resolution for `dispatch`, while delegating generic ECMAScript callback operations through `EcmascriptHost<crate::js::Types>`.
-pub(crate) struct ContextEventDispatchHost<'a> {
-    context: &'a mut Context,
-}
-
-impl<'a> ContextEventDispatchHost<'a> {
-    pub(crate) fn new(context: &'a mut Context) -> Self {
-        Self { context }
-    }
-}
-
-impl js_engine::EcmascriptHost<crate::js::Types> for ContextEventDispatchHost<'_> {
-    fn get(
-        &mut self,
-        object: &JsObject,
-        property: &str,
-    ) -> js_engine::Completion<JsValue, crate::js::Types> {
-        object
-            .get(js_string!(property), self.context)
-            .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
-    }
-
-    fn is_callable(&self, value: &JsValue) -> bool {
-        value.as_object().is_some_and(|o| o.is_callable())
-    }
-
-    fn call(
-        &mut self,
-        callable: &JsObject,
-        this_arg: &JsValue,
-        args: &[JsValue],
-    ) -> js_engine::Completion<JsValue, crate::js::Types> {
-        let function = JsFunction::from_object(callable.clone()).ok_or_else(|| {
-            JsValue::from(
-                JsNativeError::typ()
-                    .with_message("callback is not callable")
-                    .into_opaque(self.context),
-            )
-        })?;
-        function
-            .call(this_arg, args, self.context)
-            .map_err(|e| e.into_opaque(self.context).unwrap_or(JsValue::undefined()))
-    }
-
-    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
-        let _ = self.context.run_jobs();
-        Ok(())
-    }
-
-    fn report_exception(&mut self, error: JsValue) {
-        log::error!("uncaught event listener error: {error:?}");
-    }
-
-    fn value_undefined(&mut self) -> JsValue {
-        JsValue::undefined()
-    }
-    fn value_null(&mut self) -> JsValue {
-        JsValue::null()
-    }
-    fn value_from_bool(&mut self, b: bool) -> JsValue {
-        JsValue::from(b)
-    }
-    fn value_from_number(&mut self, n: f64) -> JsValue {
-        JsValue::from(n)
-    }
-    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
-        JsValue::from(s)
-    }
-    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
-        boa_engine::js_string!(s)
-    }
-}
-
-impl EventDispatchHost for ContextEventDispatchHost<'_> {
-    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
-        js_engine::boa::context_as_ec(self.context)
-    }
-
-    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types> {
-        create_interface_instance::<crate::js::Types, Event>(
-            event,
-            js_engine::boa::context_as_ec(self.context),
-        )
-    }
-
-    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
-        document_object(self.context).map_err(|e| {
-            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
-        })
-    }
-
-    fn global_object(&mut self) -> JsObject {
-        self.context.global_object()
-    }
-
-    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
-        resolve_element_object(node_id, self.context).map_err(|e| {
-            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
-        })
-    }
-
-    fn resolve_existing_node_object(
-        &mut self,
-        document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
-    ) -> Completion<JsObject, crate::js::Types> {
-        object_for_existing_node(document, node_id, self.context).map_err(|e| {
-            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
-        })
-    }
-
-    fn current_time_millis(&self) -> f64 {
-        0.0
-    }
-}
-
-/// Event-dispatch host backed by `&mut dyn ExecutionContext<T>`.
-///
-/// Replaces `ContextEventDispatchHost` — the adapter that wraps `&mut Context`.
-/// Uses `ec_to_ctx` internally for methods that need Boa `Context`, but callers
-/// never see `Context`.
+// Note: Uses `ec_to_ctx` internally for methods that need Boa `Context`, but callers
+// never see `Context`.
 pub(crate) struct EcDispatchHost<'a, T: JsTypes> {
     ec: &'a mut dyn ExecutionContext<T>,
 }

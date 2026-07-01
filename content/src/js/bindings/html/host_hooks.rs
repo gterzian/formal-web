@@ -34,7 +34,7 @@ use crate::webidl::bindings::{
 };
 // Note: AbortSignal static methods (abort, timeout, any) are registered via
 // static operations in `AbortSignal::define_members`.
-use super::super::streams::readablestream::{pipe_to_native_method, values_method};
+use super::super::streams::readablestream::{pipe_to_native_method_adapter, values_method_adapter};
 
 pub(crate) struct WindowHostHooks {
     document: Rc<RefCell<BaseDocument>>,
@@ -166,7 +166,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
         // values() and @@asyncIterator
         let values_fn =
-            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(values_method))
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(values_method_adapter))
                 .name(js_string!("values"))
                 .length(0)
                 .constructor(false)
@@ -195,7 +195,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
         // pipeTo with JS wrapper workaround
         let pipe_to_native_fn =
-            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(pipe_to_native_method))
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(pipe_to_native_method_adapter))
                 .name(js_string!("pipeTo"))
                 .length(2)
                 .constructor(false)

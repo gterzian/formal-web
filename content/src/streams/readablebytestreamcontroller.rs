@@ -596,6 +596,15 @@ impl ReadableByteStreamController {
         }
     }
 
+    pub(crate) fn desired_size_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<f64>, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.desired_size()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     /// <https://streams.spec.whatwg.org/#rbs-controller-byob-request>
     pub(crate) fn byob_request(
         &self,
@@ -1386,6 +1395,21 @@ pub(crate) fn with_readable_byte_stream_controller_ref<R>(
     Ok(f(&controller))
 }
 
+pub(crate) fn with_readable_byte_stream_controller_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&ReadableByteStreamController) -> R,
+) -> Completion<R, crate::js::Types> {
+    let ctrl_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<ReadableByteStreamController>());
+    let controller = match ctrl_ref {
+        Some(c) => c,
+        None => return Err(ec.new_type_error("object is not a ReadableByteStreamController")),
+    };
+    Ok(f(controller))
+}
+
 pub(crate) fn with_readable_stream_byob_request_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&ReadableStreamBYOBRequest) -> R,
@@ -1396,6 +1420,21 @@ pub(crate) fn with_readable_stream_byob_request_ref<R>(
             JsNativeError::typ().with_message("object is not a ReadableStreamBYOBRequest")
         })?;
     Ok(f(&request))
+}
+
+pub(crate) fn with_readable_stream_byob_request_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&ReadableStreamBYOBRequest) -> R,
+) -> Completion<R, crate::js::Types> {
+    let req_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<ReadableStreamBYOBRequest>());
+    let request = match req_ref {
+        Some(r) => r,
+        None => return Err(ec.new_type_error("object is not a ReadableStreamBYOBRequest")),
+    };
+    Ok(f(request))
 }
 
 /// <https://streams.spec.whatwg.org/#set-up-readable-byte-stream-controller-from-underlying-source>

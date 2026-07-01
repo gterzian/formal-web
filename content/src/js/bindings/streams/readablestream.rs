@@ -5,10 +5,12 @@ use crate::streams::{
     ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader,
     ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader,
     construct_readable_stream, construct_readable_stream_byob_reader,
-    construct_readable_stream_default_reader, readable_stream_from_iterable,
-    with_readable_byte_stream_controller_ref, with_readable_stream_byob_reader_ref,
-    with_readable_stream_byob_request_ref, with_readable_stream_default_reader_ref,
-    with_readable_stream_ref,
+    construct_readable_stream_default_reader, readable_stream_from_iterable_ec,
+    with_readable_byte_stream_controller_ref, with_readable_byte_stream_controller_ref_ec,
+    with_readable_stream_byob_reader_ref, with_readable_stream_byob_reader_ref_ec,
+    with_readable_stream_byob_request_ref, with_readable_stream_byob_request_ref_ec,
+    with_readable_stream_default_reader_ref, with_readable_stream_default_reader_ref_ec,
+    with_readable_stream_ref_ec,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::{create_value_async_iterator, rejected_promise};
@@ -25,6 +27,7 @@ impl WebIdlInterface<crate::js::Types> for ReadableStream {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
+        // Note: construct_readable_stream takes &mut Context; ec_to_ctx bridge until Phase S adds _ec entry point.
         let value_undefined = ec.value_undefined();
         let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         (|| -> JsResult<Self> { construct_readable_stream(new_target, args, ctx) })()
@@ -397,12 +400,8 @@ fn cancel_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
-
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let mut stream = with_readable_stream_ref(&stream_object, |s: &ReadableStream| s.clone())
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    let mut stream = with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
     let promise = stream.cancel_ec(args.get_or_undefined(0).clone(), ec)?;
-
     Ok(JsValue::from(promise))
 }
 
@@ -413,12 +412,8 @@ fn get_reader_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
-
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let mut stream = with_readable_stream_ref(&stream_object, |s: &ReadableStream| s.clone())
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    let mut stream = with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
     let reader = stream.get_reader_ec(args.get_or_undefined(0), ec)?;
-
     Ok(JsValue::from(reader))
 }
 
@@ -427,18 +422,10 @@ fn pipe_through_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let stream_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-        })?;
-
-        let mut stream =
-            with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())?;
-        stream.pipe_through(args.get_or_undefined(0), args.get_or_undefined(1), ctx)
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
+    let mut stream = with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
+    stream.pipe_through_ec(args.get_or_undefined(0), args.get_or_undefined(1), ec)
 }
 
 fn pipe_to_operation(
@@ -446,32 +433,29 @@ fn pipe_to_operation(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsObject> {
-        let stream_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-        })?;
-
-        let mut stream =
-            with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())?;
-        Ok(stream.pipe_to(args.get_or_undefined(0), args.get_or_undefined(1), ctx))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
+    let mut stream = with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
+    stream.pipe_to_ec(args.get_or_undefined(0), args.get_or_undefined(1), ec)
 }
 
 pub(crate) fn pipe_to_native_method(
     this: &JsValue,
     args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let promise = pipe_to_operation(this, args, ec)?;
+    Ok(JsValue::from(promise))
+}
+
+// Adapter for host_hooks.rs which still uses NativeFunction::from_fn_ptr with Context.
+pub(crate) fn pipe_to_native_method_adapter(
+    this: &JsValue,
+    args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ec = js_engine::boa::context_as_ec(context);
-    let promise = match pipe_to_operation(this, args, ec) {
-        Ok(promise) => promise,
-        Err(error) => rejected_promise(error, js_engine::boa::context_as_ec(context))
-            .map_err(boa_engine::JsError::from_opaque)?,
-    };
-    Ok(JsValue::from(promise))
+    pipe_to_native_method(this, args, ec).map_err(JsError::from_opaque)
 }
 
 fn tee_method(
@@ -479,37 +463,32 @@ fn tee_method(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let stream_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-        })?;
-
-        let mut stream =
-            with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())?;
-        stream.tee(ctx)
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
+    let mut stream = with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
+    stream.tee_ec(ec)
 }
 
 pub(crate) fn values_method(
     this: &JsValue,
     args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
+    let stream = with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
+    let iterator = create_value_async_iterator(stream, args, ec)?;
+    Ok(JsValue::from(iterator))
+}
+
+// Adapter for host_hooks.rs which still uses NativeFunction::from_fn_ptr with Context.
+pub(crate) fn values_method_adapter(
+    this: &JsValue,
+    args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let stream_object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-    })?;
-
-    let iterator = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| {
-        crate::js::completion_to_js_result(create_value_async_iterator(
-            stream.clone(),
-            args,
-            js_engine::boa::context_as_ec(context),
-        ))
-    })??;
-    Ok(JsValue::from(iterator))
+    let ec = js_engine::boa::context_as_ec(context);
+    values_method(this, args, ec).map_err(JsError::from_opaque)
 }
 
 pub(crate) fn from_static(
@@ -517,12 +496,10 @@ pub(crate) fn from_static(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    Ok(JsValue::from(
-        readable_stream_from_iterable(args.get_or_undefined(0).clone(), ctx)
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))?,
-    ))
+    Ok(JsValue::from(readable_stream_from_iterable_ec(
+        args.get_or_undefined(0).clone(),
+        ec,
+    )?))
 }
 
 fn get_desired_size(
@@ -530,22 +507,14 @@ fn get_desired_size(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStreamDefaultController receiver is not an object")
-        })?;
-
-        match with_readable_stream_default_controller_ref(&controller_object, |controller| {
-            controller.desired_size()
-        })?? {
-            Some(size) => Ok(JsValue::from(size)),
-            None => Ok(JsValue::null()),
-        }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamDefaultController receiver is not an object"))?;
+    let controller = with_readable_stream_default_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    let size = controller.desired_size_ec(ec)?;
+    Ok(match size {
+        Some(s) => JsValue::from(s),
+        None => JsValue::null(),
+    })
 }
 
 fn get_byte_desired_size(
@@ -553,22 +522,14 @@ fn get_byte_desired_size(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableByteStreamController receiver is not an object")
-        })?;
-
-        match with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            controller.desired_size()
-        })?? {
-            Some(size) => Ok(JsValue::from(size)),
-            None => Ok(JsValue::null()),
-        }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableByteStreamController receiver is not an object"))?;
+    let controller = with_readable_byte_stream_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    let size = controller.desired_size_ec(ec)?;
+    Ok(match size {
+        Some(s) => JsValue::from(s),
+        None => JsValue::null(),
+    })
 }
 
 fn get_byob_request(
@@ -576,24 +537,14 @@ fn get_byob_request(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableByteStreamController receiver is not an object")
-        })?;
-
-        match with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            crate::js::completion_to_js_result(
-                controller.byob_request(js_engine::boa::context_as_ec(ctx)),
-            )
-        })?? {
-            Some(byob_request) => Ok(JsValue::from(byob_request)),
-            None => Ok(JsValue::null()),
-        }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableByteStreamController receiver is not an object"))?;
+    let controller = with_readable_byte_stream_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    let byob_request = controller.byob_request(ec)?;
+    Ok(match byob_request {
+        Some(req) => JsValue::from(req),
+        None => JsValue::null(),
+    })
 }
 
 fn close_method(
@@ -601,20 +552,11 @@ fn close_method(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStreamDefaultController receiver is not an object")
-        })?;
-
-        with_readable_stream_default_controller_ref(&controller_object, |controller| {
-            crate::js::completion_to_js_result(controller.close(js_engine::boa::context_as_ec(ctx)))
-        })??;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamDefaultController receiver is not an object"))?;
+    let controller = with_readable_stream_default_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    controller.close(ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn close_byte_method(
@@ -622,20 +564,11 @@ fn close_byte_method(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableByteStreamController receiver is not an object")
-        })?;
-
-        with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            crate::js::completion_to_js_result(controller.close(js_engine::boa::context_as_ec(ctx)))
-        })??;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableByteStreamController receiver is not an object"))?;
+    let controller = with_readable_byte_stream_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    controller.close(ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn enqueue_method(
@@ -643,23 +576,11 @@ fn enqueue_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStreamDefaultController receiver is not an object")
-        })?;
-
-        with_readable_stream_default_controller_ref(&controller_object, |controller| {
-            crate::js::completion_to_js_result(controller.enqueue(
-                args.get_or_undefined(0).clone(),
-                js_engine::boa::context_as_ec(ctx),
-            ))
-        })??;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamDefaultController receiver is not an object"))?;
+    let controller = with_readable_stream_default_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    controller.enqueue(args.get_or_undefined(0).clone(), ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn enqueue_byte_method(
@@ -667,23 +588,11 @@ fn enqueue_byte_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableByteStreamController receiver is not an object")
-        })?;
-
-        with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            crate::js::completion_to_js_result(controller.enqueue(
-                args.get_or_undefined(0).clone(),
-                js_engine::boa::context_as_ec(ctx),
-            ))
-        })??;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableByteStreamController receiver is not an object"))?;
+    let controller = with_readable_byte_stream_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    controller.enqueue(args.get_or_undefined(0).clone(), ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn error_method(
@@ -691,23 +600,11 @@ fn error_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStreamDefaultController receiver is not an object")
-        })?;
-
-        with_readable_stream_default_controller_ref(&controller_object, |controller| {
-            crate::js::completion_to_js_result(controller.error(
-                args.get_or_undefined(0).clone(),
-                js_engine::boa::context_as_ec(ctx),
-            ))
-        })??;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamDefaultController receiver is not an object"))?;
+    let controller = with_readable_stream_default_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    controller.error(args.get_or_undefined(0).clone(), ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn error_byte_method(
@@ -715,23 +612,11 @@ fn error_byte_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let controller_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableByteStreamController receiver is not an object")
-        })?;
-
-        with_readable_byte_stream_controller_ref(&controller_object, |controller| {
-            crate::js::completion_to_js_result(controller.error(
-                args.get_or_undefined(0).clone(),
-                js_engine::boa::context_as_ec(ctx),
-            ))
-        })??;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableByteStreamController receiver is not an object"))?;
+    let controller = with_readable_byte_stream_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+    controller.error(args.get_or_undefined(0).clone(), ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn get_closed(
@@ -739,19 +624,11 @@ fn get_closed(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let reader_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStreamDefaultReader receiver is not an object")
-        })?;
-
-        let closed =
-            with_readable_stream_default_reader_ref(&reader_object, |reader| reader.closed())??;
-        Ok(JsValue::from(closed))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamDefaultReader receiver is not an object"))?;
+    let reader = with_readable_stream_default_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    let closed = reader.closed_ec(ec)?;
+    Ok(JsValue::from(closed))
 }
 
 fn get_byob_closed(
@@ -759,18 +636,11 @@ fn get_byob_closed(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let reader_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStreamBYOBReader receiver is not an object")
-        })?;
-
-        let closed =
-            with_readable_stream_byob_reader_ref(&reader_object, |reader| reader.closed())??;
-        Ok(JsValue::from(closed))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader receiver is not an object"))?;
+    let reader = with_readable_stream_byob_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    let closed = reader.closed_ec(ec)?;
+    Ok(JsValue::from(closed))
 }
 
 fn cancel_reader_method(
@@ -778,24 +648,11 @@ fn cancel_reader_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let reader_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let error: JsError = JsNativeError::typ()
-            .with_message("ReadableStreamDefaultReader receiver is not an object")
-            .into();
-        error
-            .into_opaque(ctx)
-            .unwrap_or_else(|_| JsValue::undefined())
-    })?;
-    with_readable_stream_default_reader_ref(&reader_object, |reader| {
-        reader
-            .cancel(args.get_or_undefined(0).clone(), ec)
-            .map(JsValue::from)
-    })
-    .map_err(|e| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-    })?
+    let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamDefaultReader receiver is not an object"))?;
+    let reader = with_readable_stream_default_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    let promise = reader.cancel(args.get_or_undefined(0).clone(), ec)?;
+    Ok(JsValue::from(promise))
 }
 
 fn read_method(
@@ -803,22 +660,11 @@ fn read_method(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let reader_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let error: JsError = JsNativeError::typ()
-            .with_message("ReadableStreamDefaultReader receiver is not an object")
-            .into();
-        error
-            .into_opaque(ctx)
-            .unwrap_or_else(|_| JsValue::undefined())
-    })?;
-    with_readable_stream_default_reader_ref(&reader_object, |reader| {
-        reader.read(ec).map(JsValue::from)
-    })
-    .map_err(|e| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-    })?
+    let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamDefaultReader receiver is not an object"))?;
+    let reader = with_readable_stream_default_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    let promise = reader.read(ec)?;
+    Ok(JsValue::from(promise))
 }
 
 fn cancel_byob_reader_method(
@@ -826,24 +672,11 @@ fn cancel_byob_reader_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let reader_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let error: JsError = JsNativeError::typ()
-            .with_message("ReadableStreamBYOBReader receiver is not an object")
-            .into();
-        error
-            .into_opaque(ctx)
-            .unwrap_or_else(|_| JsValue::undefined())
-    })?;
-    with_readable_stream_byob_reader_ref(&reader_object, |reader| {
-        reader
-            .cancel(args.get_or_undefined(0).clone(), ec)
-            .map(JsValue::from)
-    })
-    .map_err(|e| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-    })?
+    let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader receiver is not an object"))?;
+    let reader = with_readable_stream_byob_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    let promise = reader.cancel(args.get_or_undefined(0).clone(), ec)?;
+    Ok(JsValue::from(promise))
 }
 
 fn read_byob_method(
@@ -851,24 +684,11 @@ fn read_byob_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let reader_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let error: JsError = JsNativeError::typ()
-            .with_message("ReadableStreamBYOBReader receiver is not an object")
-            .into();
-        error
-            .into_opaque(ctx)
-            .unwrap_or_else(|_| JsValue::undefined())
-    })?;
-    with_readable_stream_byob_reader_ref(&reader_object, |reader| {
-        reader
-            .read(args.get_or_undefined(0), args.get_or_undefined(1), ec)
-            .map(JsValue::from)
-    })
-    .map_err(|e| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-    })?
+    let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader receiver is not an object"))?;
+    let reader = with_readable_stream_byob_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    let promise = reader.read(args.get_or_undefined(0), args.get_or_undefined(1), ec)?;
+    Ok(JsValue::from(promise))
 }
 
 fn release_lock_method(
@@ -876,21 +696,11 @@ fn release_lock_method(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let reader_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let error: JsError = JsNativeError::typ()
-            .with_message("ReadableStreamDefaultReader receiver is not an object")
-            .into();
-        error
-            .into_opaque(ctx)
-            .unwrap_or_else(|_| JsValue::undefined())
-    })?;
-    with_readable_stream_default_reader_ref(&reader_object, |reader| reader.release_lock(ec))
-        .map_err(|e| {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-        })??;
-    Ok(JsValue::undefined())
+    let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamDefaultReader receiver is not an object"))?;
+    let reader = with_readable_stream_default_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    reader.release_lock(ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn release_byob_lock_method(
@@ -898,21 +708,11 @@ fn release_byob_lock_method(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let reader_object = this.as_object().ok_or_else(|| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let error: JsError = JsNativeError::typ()
-            .with_message("ReadableStreamBYOBReader receiver is not an object")
-            .into();
-        error
-            .into_opaque(ctx)
-            .unwrap_or_else(|_| JsValue::undefined())
-    })?;
-    with_readable_stream_byob_reader_ref(&reader_object, |reader| reader.release_lock(ec))
-        .map_err(|e| {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-        })??;
-    Ok(JsValue::undefined())
+    let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader receiver is not an object"))?;
+    let reader = with_readable_stream_byob_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    reader.release_lock(ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn get_byob_view(
@@ -920,19 +720,13 @@ fn get_byob_view(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let request_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStreamBYOBRequest receiver is not an object")
-        })?;
-
-        match with_readable_stream_byob_request_ref(&request_object, |request| request.view())? {
-            Some(view) => Ok(JsValue::from(view)),
-            None => Ok(JsValue::null()),
-        }
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let request_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBRequest receiver is not an object"))?;
+    let view = with_readable_stream_byob_request_ref_ec(&request_object, ec, |request| request.view())?;
+    Ok(match view {
+        Some(v) => JsValue::from(v),
+        None => ec.value_null(),
+    })
 }
 
 fn respond_method(
@@ -940,26 +734,12 @@ fn respond_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let request_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStreamBYOBRequest receiver is not an object")
-        })?;
-        let bytes_written = args.get_or_undefined(0).to_number(ctx)?;
-        if !bytes_written.is_finite() || bytes_written < 0.0 || bytes_written.fract() != 0.0 {
-            return Err(JsNativeError::typ()
-                .with_message("bytesWritten must be a non-negative integer")
-                .into());
-        }
-        with_readable_stream_byob_request_ref(&request_object, |request| {
-            crate::js::completion_to_js_result(
-                request.respond(bytes_written as usize, js_engine::boa::context_as_ec(ctx)),
-            )
-        })??;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let request_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBRequest receiver is not an object"))?;
+    let bytes_written = ec.to_uint32(args.get_or_undefined(0).clone())?;
+    let request = with_readable_stream_byob_request_ref_ec(&request_object, ec, |r| r.clone())?;
+    request.respond(bytes_written as usize, ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn respond_with_new_view_method(
@@ -967,21 +747,11 @@ fn respond_with_new_view_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let request_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStreamBYOBRequest receiver is not an object")
-        })?;
-        with_readable_stream_byob_request_ref(&request_object, |request| {
-            crate::js::completion_to_js_result(request.respond_with_new_view(
-                args.get_or_undefined(0).clone(),
-                js_engine::boa::context_as_ec(ctx),
-            ))
-        })??;
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let request_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBRequest receiver is not an object"))?;
+    let request = with_readable_stream_byob_request_ref_ec(&request_object, ec, |r| r.clone())?;
+    request.respond_with_new_view(args.get_or_undefined(0).clone(), ec)?;
+    Ok(ec.value_undefined())
 }
 
 fn with_readable_stream_default_controller_ref<R>(
@@ -994,4 +764,19 @@ fn with_readable_stream_default_controller_ref<R>(
             JsNativeError::typ().with_message("object is not a ReadableStreamDefaultController")
         })?;
     Ok(f(&controller))
+}
+
+fn with_readable_stream_default_controller_ref_ec<R>(
+    object: &boa_engine::object::JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&ReadableStreamDefaultController) -> R,
+) -> Completion<R, crate::js::Types> {
+    let ctrl_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<ReadableStreamDefaultController>());
+    let controller = match ctrl_ref {
+        Some(c) => c,
+        None => return Err(ec.new_type_error("object is not a ReadableStreamDefaultController")),
+    };
+    Ok(f(controller))
 }

@@ -75,6 +75,15 @@ impl ReadableStreamBYOBReader {
         <Self as ReadableStreamGenericReader>::closed(self)
     }
 
+    pub(crate) fn closed_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.closed()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     pub(crate) fn cancel(
         &self,
         reason: JsValue,
@@ -298,6 +307,21 @@ pub(crate) fn with_readable_stream_byob_reader_ref<R>(
             JsNativeError::typ().with_message("object is not a ReadableStreamBYOBReader")
         })?;
     Ok(f(&reader))
+}
+
+pub(crate) fn with_readable_stream_byob_reader_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&ReadableStreamBYOBReader) -> R,
+) -> Completion<R, crate::js::Types> {
+    let reader_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<ReadableStreamBYOBReader>());
+    let reader = match reader_ref {
+        Some(r) => r,
+        None => return Err(ec.new_type_error("object is not a ReadableStreamBYOBReader")),
+    };
+    Ok(f(reader))
 }
 
 fn normalize_min(

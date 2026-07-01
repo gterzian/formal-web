@@ -131,12 +131,30 @@ impl WritableStreamDefaultWriter {
         })
     }
 
+    pub(crate) fn closed_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.closed()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     /// <https://streams.spec.whatwg.org/#default-writer-desired-size>
     pub(crate) fn desired_size(&self) -> JsResult<Option<f64>> {
         let stream = self.stream_slot_value().ok_or_else(|| {
             JsNativeError::typ().with_message("WritableStreamDefaultWriter has been released")
         })?;
         self.get_desired_size_from_stream(stream)
+    }
+
+    pub(crate) fn desired_size_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<f64>, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.desired_size()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-ready>
@@ -146,6 +164,15 @@ impl WritableStreamDefaultWriter {
                 .with_message("WritableStreamDefaultWriter is missing its ready promise")
                 .into()
         })
+    }
+
+    pub(crate) fn ready_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.ready()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-abort>
@@ -519,6 +546,21 @@ pub(crate) fn with_writable_stream_default_writer_ref<R>(
             JsNativeError::typ().with_message("object is not a WritableStreamDefaultWriter")
         })?;
     Ok(f(&writer))
+}
+
+pub(crate) fn with_writable_stream_default_writer_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&WritableStreamDefaultWriter) -> R,
+) -> Completion<R, crate::js::Types> {
+    let writer_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<WritableStreamDefaultWriter>());
+    let writer = match writer_ref {
+        Some(w) => w,
+        None => return Err(ec.new_type_error("object is not a WritableStreamDefaultWriter")),
+    };
+    Ok(f(writer))
 }
 
 /// <https://streams.spec.whatwg.org/#writable-stream-default-writer-release>
