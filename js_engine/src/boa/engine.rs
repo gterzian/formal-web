@@ -25,6 +25,7 @@
 use boa_engine::{
     Context, JsBigInt, JsError, JsNativeError, JsResult, JsSymbol, JsValue,
     builtins::array_buffer::AlignedVec,
+    job::{GenericJob, Job},
     native_function::NativeFunction,
     object::{
         FunctionObjectBuilder, JsObject,
@@ -621,6 +622,100 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         )
     }
 
+    fn own_property_keys(&mut self, object: JsObject) -> Completion<Vec<PropertyKey>, BoaTypes> {
+        into_completion(object.own_property_keys(&mut self.context), &mut self.context)
+    }
+
+    fn get_own_property(
+        &mut self,
+        object: JsObject,
+        property_key: PropertyKey,
+    ) -> Completion<Option<PropertyDescriptor<BoaTypes>>, BoaTypes> {
+        let global = self.context.global_object();
+        let object_ctor_val = into_completion(
+            global.get(
+                PropertyKey::from(boa_engine::js_string!("Object")),
+                &mut self.context,
+            ),
+            &mut self.context,
+        )?;
+        let object_ctor = object_ctor_val.as_object().ok_or_else(|| {
+            JsValue::from(
+                JsNativeError::typ()
+                    .with_message("Object constructor is not available")
+                    .into_opaque(&mut self.context),
+            )
+        })?;
+        let descriptor_fn_val = into_completion(
+            object_ctor.get(
+                PropertyKey::from(boa_engine::js_string!("getOwnPropertyDescriptor")),
+                &mut self.context,
+            ),
+            &mut self.context,
+        )?;
+        let descriptor_fn = JsFunction::from_object(
+            descriptor_fn_val.as_object().ok_or_else(|| {
+                JsValue::from(
+                    JsNativeError::typ()
+                        .with_message("Object.getOwnPropertyDescriptor is not callable")
+                        .into_opaque(&mut self.context),
+                )
+            })?,
+        )
+        .ok_or_else(|| {
+            JsValue::from(
+                JsNativeError::typ()
+                    .with_message("Object.getOwnPropertyDescriptor is not callable")
+                    .into_opaque(&mut self.context),
+            )
+        })?;
+
+        let key_value = boa_property_key_to_value(&property_key);
+        let descriptor_val = into_completion(
+            descriptor_fn.call(
+                &JsValue::from(object_ctor.clone()),
+                &[JsValue::from(object), key_value],
+                &mut self.context,
+            ),
+            &mut self.context,
+        )?;
+
+        if descriptor_val.is_undefined() {
+            return Ok(None);
+        }
+
+        let descriptor_obj = descriptor_val.as_object().ok_or_else(|| {
+            JsValue::from(
+                JsNativeError::typ()
+                    .with_message("Object.getOwnPropertyDescriptor returned a non-object")
+                    .into_opaque(&mut self.context),
+            )
+        })?;
+
+        let value = descriptor_field_value(&descriptor_obj, "value", &mut self.context)?;
+        let writable = descriptor_field_value(&descriptor_obj, "writable", &mut self.context)?
+            .map(|field| field.to_boolean());
+        let get = descriptor_field_value(&descriptor_obj, "get", &mut self.context)?
+            .and_then(|field| field.as_object())
+            .and_then(JsFunction::from_object);
+        let set = descriptor_field_value(&descriptor_obj, "set", &mut self.context)?
+            .and_then(|field| field.as_object())
+            .and_then(JsFunction::from_object);
+        let enumerable = descriptor_field_value(&descriptor_obj, "enumerable", &mut self.context)?
+            .map(|field| field.to_boolean());
+        let configurable = descriptor_field_value(&descriptor_obj, "configurable", &mut self.context)?
+            .map(|field| field.to_boolean());
+
+        Ok(Some(PropertyDescriptor {
+            value,
+            writable,
+            get,
+            set,
+            enumerable,
+            configurable,
+        }))
+    }
+
     fn construct(
         &mut self,
         function: JsFunction,
@@ -893,7 +988,18 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
 
     fn enqueue_job(&mut self, _job: Box<dyn FnOnce() + Send>) {
-        // HARD: Boa's job executor model requires wrapping jobs for Boa's Job trait
+        let realm = self.context.realm().clone();
+        let mut deferred_job = Some(_job);
+        let job = GenericJob::new(
+            move |_context| {
+                if let Some(job) = deferred_job.take() {
+                    job();
+                }
+                Ok(JsValue::undefined())
+            },
+            realm,
+        );
+        self.context.enqueue_job(Job::from(job));
     }
 
     fn run_jobs(&mut self) {
@@ -1008,16 +1114,29 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     // ── Host-Defined Data Store (type-erased) ──────────────────────────
 
-    fn store_host_any(&mut self, _id: std::any::TypeId, value: Box<dyn std::any::Any>) {
-        self.context.insert_data(HostAny(value));
+    fn store_host_any(&mut self, id: std::any::TypeId, value: Box<dyn std::any::Any>) {
+        let mut host_any_map = self
+            .context
+            .remove_data::<HostAnyMap>()
+            .map(|boxed| *boxed)
+            .unwrap_or_default();
+        host_any_map.0.insert(id, value);
+        self.context.insert_data(host_any_map);
     }
 
-    fn get_host_any(&self, _id: &std::any::TypeId) -> Option<&dyn std::any::Any> {
-        self.context.get_data::<HostAny>().map(|h| h.0.as_ref())
+    fn get_host_any(&self, id: &std::any::TypeId) -> Option<&dyn std::any::Any> {
+        self.context
+            .get_data::<HostAnyMap>()
+            .and_then(|host_any_map| host_any_map.0.get(id).map(|boxed| boxed.as_ref()))
     }
 
-    fn remove_host_any(&mut self, _id: &std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
-        self.context.remove_data::<HostAny>().map(|h| h.0)
+    fn remove_host_any(&mut self, id: &std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        let mut host_any_map = *self.context.remove_data::<HostAnyMap>()?;
+        let removed = host_any_map.0.remove(id);
+        if !host_any_map.0.is_empty() {
+            self.context.insert_data(host_any_map);
+        }
+        removed
     }
 
     // ── Platform Object Creation ─────────────────────────────────────────
@@ -1217,15 +1336,16 @@ struct NativeDataWrapper<T: std::any::Any + 'static>(T);
 // SAFETY: The content process is single-threaded.  `NativeDataWrapper`
 // only stores `'static` data that does not contain GC roots.
 /// Type-erased storage wrapper for the host-defined data store.
-struct HostAny(Box<dyn std::any::Any>);
+#[derive(Default)]
+struct HostAnyMap(std::collections::HashMap<std::any::TypeId, Box<dyn std::any::Any>>);
 
 // SAFETY: The stored data is only accessed through type-safe downcasts.
-unsafe impl boa_gc::Trace for HostAny {
+unsafe impl boa_gc::Trace for HostAnyMap {
     unsafe fn trace(&self, _: &mut boa_gc::Tracer) {}
     unsafe fn trace_non_roots(&self) {}
     fn run_finalizer(&self) {}
 }
-impl boa_gc::Finalize for HostAny {}
+impl boa_gc::Finalize for HostAnyMap {}
 
 // SAFETY: The wrapped data does not contain GC roots — it is only
 // accessed through the JS object's internal slot via `downcast_ref`.
@@ -1358,6 +1478,32 @@ fn get_iterator_from_method(
     })
 }
 
+fn boa_property_key_to_value(property_key: &PropertyKey) -> JsValue {
+    match property_key {
+        PropertyKey::String(string) => JsValue::from(string.clone()),
+        PropertyKey::Symbol(symbol) => JsValue::from(symbol.clone()),
+        PropertyKey::Index(index) => JsValue::from(index.get()),
+    }
+}
+
+fn descriptor_field_value(
+    descriptor_obj: &JsObject,
+    field_name: &str,
+    context: &mut Context,
+) -> Completion<Option<JsValue>, BoaTypes> {
+    let field_key = PropertyKey::from(boa_engine::js_string!(field_name));
+    let present = descriptor_obj
+        .has_property(field_key.clone(), context)
+        .map_err(|error| error.into_opaque(context).unwrap_or_else(|_| JsValue::undefined()))?;
+    if !present {
+        return Ok(None);
+    }
+    let value = descriptor_obj
+        .get(field_key, context)
+        .map_err(|error| error.into_opaque(context).unwrap_or_else(|_| JsValue::undefined()))?;
+    Ok(Some(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1368,7 +1514,6 @@ mod tests {
     #[test]
     fn create_builtin_function_doubles() {
         let mut engine = BoaContext::new();
-        let realm = engine.context.realm().clone();
 
         // Create a function that doubles its first argument using
         // generic ExecutionContext operations (to_number, value_from_number).
@@ -1379,7 +1524,6 @@ mod tests {
             }),
             1,
             PropertyKey::from(boa_engine::js_string!("double")),
-            &realm,
         );
 
         // Register the function on the global object.

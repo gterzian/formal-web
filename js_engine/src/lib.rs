@@ -50,5 +50,6 @@ pub use enums::{
 pub use gc::{Finalize, GcRootHandle, JsTypesGcExt, Trace};
 pub use records::{
     IteratorRecord, ModuleRequest, PromiseCapability, PropertyDescriptor, RealmIntrinsics,
+    RootedPromiseCapability,
 };
 pub use types::{JsTypes, JsTypesWithRealm};

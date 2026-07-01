@@ -13,6 +13,7 @@
 //! with no engine-specific representation.
 
 use crate::JsTypes;
+use crate::gc::GcRootHandle;
 
 /// <https://tc39.es/ecma262/#sec-iterator-record>
 #[derive(Debug, Clone)]
@@ -28,6 +29,13 @@ pub struct PromiseCapability<T: JsTypes> {
     pub promise: T::JsValue,
     pub resolve: T::Function,
     pub reject: T::Function,
+}
+
+/// A GC-safe, long-lived form of a promise capability for host-side state.
+pub struct RootedPromiseCapability<T: JsTypes> {
+    pub promise: GcRootHandle<T>,
+    pub resolve: GcRootHandle<T>,
+    pub reject: GcRootHandle<T>,
 }
 
 /// <https://tc39.es/ecma262/#sec-property-descriptor-specification-type>

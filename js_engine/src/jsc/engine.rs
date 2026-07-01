@@ -356,6 +356,7 @@ pub struct JscEngine {
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
     /// Monotonically-increasing counter for GC-root property names.
     next_root_id: u64,
+    queued_jobs: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 impl JscEngine {
@@ -364,6 +365,7 @@ impl JscEngine {
             context: JscContext::new(),
             host_data: HashMap::new(),
             next_root_id: 0,
+            queued_jobs: Vec::new(),
         }
     }
     pub fn context(&self) -> &JscContext {
@@ -405,6 +407,50 @@ impl JscEngine {
             JscPropertyKey::String(s) => Some(s.clone()),
             JscPropertyKey::Symbol(_) => None,
         }
+    }
+
+    fn property_key_to_value(&self, key: &JscPropertyKey) -> JscValue {
+        match key {
+            JscPropertyKey::String(string) => JscValue {
+                raw: unsafe { JSValueMakeString(self.ctx_ptr(), string.raw) },
+                ctx: self.ctx_ptr(),
+            },
+            JscPropertyKey::Symbol(symbol) => *symbol.as_value(),
+        }
+    }
+
+    fn descriptor_field_value(
+        &self,
+        descriptor_object: *mut JSObjectRef,
+        field_name: &str,
+    ) -> Result<Option<JscValue>, JscValue> {
+        let field = JscString::from_rust(field_name);
+        if !unsafe {
+            JSObjectHasProperty(self.context.as_context_ref(), descriptor_object, field.raw)
+        } {
+            return Ok(None);
+        }
+
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let value = unsafe {
+            JSObjectGetProperty(
+                self.context.as_context_ref(),
+                descriptor_object,
+                field.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        Ok(Some(JscValue {
+            raw: value,
+            ctx: self.ctx_ptr(),
+        }))
     }
 
     /// Evaluate a JS expression and return the raw result + any exception.
@@ -1252,10 +1298,209 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         property_key: JscPropertyKey,
     ) -> Completion<bool, JscTypes> {
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(false);
+        Ok(self.get_own_property(object, property_key)?.is_some())
+    }
+    fn own_property_keys(&mut self, object: JscObject) -> Completion<Vec<JscPropertyKey>, JscTypes> {
+        let global = self.context.global_object();
+        let object_key = JscString::from_rust("__formal_web_own_keys_target");
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                object_key.raw,
+                object.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exception,
+            )
         };
-        Ok(unsafe { JSObjectHasProperty(self.context.as_context_ref(), object.raw, prop_str.raw) })
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        let (result, exception) = self.eval_script_raw("Reflect.ownKeys(__formal_web_own_keys_target)");
+        unsafe {
+            JSObjectDeleteProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                object_key.raw,
+                std::ptr::null_mut(),
+            );
+        }
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        let result_object = result as *mut JSObjectRef;
+        let length_key = JscString::from_rust("length");
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let length_value = unsafe {
+            JSObjectGetProperty(
+                self.context.as_context_ref(),
+                result_object,
+                length_key.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        let length = unsafe {
+            JSValueToNumber(self.context.as_context_ref(), length_value, &mut exception)
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        let mut keys = Vec::new();
+        for index in 0..(length as u32) {
+            let index_key = JscString::from_rust(&index.to_string());
+            let key_value = unsafe {
+                JSObjectGetProperty(
+                    self.context.as_context_ref(),
+                    result_object,
+                    index_key.raw,
+                    &mut exception,
+                )
+            };
+            if !exception.is_null() {
+                return Err(JscValue {
+                    raw: exception,
+                    ctx: self.ctx_ptr(),
+                });
+            }
+            keys.push(self.to_property_key(JscValue {
+                raw: key_value,
+                ctx: self.ctx_ptr(),
+            })?);
+        }
+
+        Ok(keys)
+    }
+    fn get_own_property(
+        &mut self,
+        object: JscObject,
+        property_key: JscPropertyKey,
+    ) -> Completion<Option<PropertyDescriptor<JscTypes>>, JscTypes> {
+        let global = self.context.global_object();
+        let object_key = JscString::from_rust("__formal_web_desc_target");
+        let property_key_name = JscString::from_rust("__formal_web_desc_key");
+        let property_value = self.property_key_to_value(&property_key);
+
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                object_key.raw,
+                object.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exception,
+            );
+            JSObjectSetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                property_key_name.raw,
+                property_value.raw,
+                kJSPropertyAttributeNone,
+                &mut exception,
+            );
+        }
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        let (result, exception) = self.eval_script_raw(
+            "Object.getOwnPropertyDescriptor(__formal_web_desc_target, __formal_web_desc_key)",
+        );
+
+        unsafe {
+            JSObjectDeleteProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                object_key.raw,
+                std::ptr::null_mut(),
+            );
+            JSObjectDeleteProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                property_key_name.raw,
+                std::ptr::null_mut(),
+            );
+        }
+
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let result_value = JscValue {
+            raw: result,
+            ctx: self.ctx_ptr(),
+        };
+        if JscTypes::value_is_undefined(&result_value) {
+            return Ok(None);
+        }
+
+        let descriptor_object = result as *mut JSObjectRef;
+        let value = self.descriptor_field_value(descriptor_object, "value")?;
+        let writable = self
+            .descriptor_field_value(descriptor_object, "writable")?
+            .map(|field| unsafe { JSValueToBoolean(self.context.as_context_ref(), field.raw) });
+        let get = self
+            .descriptor_field_value(descriptor_object, "get")?
+            .and_then(|field| {
+                if self.is_callable(&field) {
+                    JscTypes::value_as_object(&field)
+                } else {
+                    None
+                }
+            });
+        let set = self
+            .descriptor_field_value(descriptor_object, "set")?
+            .and_then(|field| {
+                if self.is_callable(&field) {
+                    JscTypes::value_as_object(&field)
+                } else {
+                    None
+                }
+            });
+        let enumerable = self
+            .descriptor_field_value(descriptor_object, "enumerable")?
+            .map(|field| unsafe { JSValueToBoolean(self.context.as_context_ref(), field.raw) });
+        let configurable = self
+            .descriptor_field_value(descriptor_object, "configurable")?
+            .map(|field| unsafe { JSValueToBoolean(self.context.as_context_ref(), field.raw) });
+
+        Ok(Some(PropertyDescriptor {
+            value,
+            writable,
+            get,
+            set,
+            enumerable,
+            configurable,
+        }))
     }
     fn construct(
         &mut self,
@@ -1581,8 +1826,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
-    fn enqueue_job(&mut self, _job: Box<dyn FnOnce() + Send>) {}
-    fn run_jobs(&mut self) {}
+    fn enqueue_job(&mut self, job: Box<dyn FnOnce() + Send>) {
+        self.queued_jobs.push(job);
+    }
+    fn run_jobs(&mut self) {
+        let jobs = std::mem::take(&mut self.queued_jobs);
+        for job in jobs {
+            job();
+        }
+    }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
     fn is_detached_buffer(&self, array_buffer: &JscArrayBuffer) -> bool {
@@ -2567,6 +2819,7 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         })
     }
     fn perform_a_microtask_checkpoint(&mut self) -> Completion<(), JscTypes> {
+        self.run_jobs();
         Ok(())
     }
     fn report_exception(&mut self, error: JscValue) {

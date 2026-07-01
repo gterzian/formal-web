@@ -61,7 +61,7 @@ use crate::enums::{
 };
 use crate::records::{IteratorRecord, PromiseCapability, RealmIntrinsics};
 use crate::types::{JsTypes, JsTypesWithRealm};
-use crate::{Numeric, PreferredType, PropertyDescriptor};
+use crate::{Numeric, PreferredType, PropertyDescriptor, RootedPromiseCapability};
 
 /// The type of a Completion — an ECMAScript abstract operation's result.
 ///
@@ -313,6 +313,16 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         object: T::JsObject,
         property_key: T::PropertyKey,
     ) -> Completion<bool, T>;
+
+    /// <https://tc39.es/ecma262/#sec-ordinaryownpropertykeys>
+    fn own_property_keys(&mut self, object: T::JsObject) -> Completion<Vec<T::PropertyKey>, T>;
+
+    /// <https://tc39.es/ecma262/#sec-ordinarygetownproperty>
+    fn get_own_property(
+        &mut self,
+        object: T::JsObject,
+        property_key: T::PropertyKey,
+    ) -> Completion<Option<PropertyDescriptor<T>>, T>;
 
     /// <https://tc39.es/ecma262/#sec-construct>
     fn construct(
@@ -646,6 +656,20 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         crate::gc::GcRootHandle {
             value: value.clone(),
             unroot_action: None,
+        }
+    }
+
+    /// Root a promise capability so it can be stored across algorithm steps.
+    fn root_promise_capability(
+        &mut self,
+        capability: PromiseCapability<T>,
+    ) -> RootedPromiseCapability<T> {
+        let resolve_value = T::value_from_object(T::object_from_function(capability.resolve));
+        let reject_value = T::value_from_object(T::object_from_function(capability.reject));
+        RootedPromiseCapability {
+            promise: self.create_root(&capability.promise),
+            resolve: self.create_root(&resolve_value),
+            reject: self.create_root(&reject_value),
         }
     }
 }

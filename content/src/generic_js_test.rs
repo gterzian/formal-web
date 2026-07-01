@@ -42,8 +42,8 @@ js_engine::impl_gc_traits! {
     ///
     /// The `on_change` field uses `GcRootHandle<TestTypes>` which is a generic
     /// RAII guard: on Boa it wraps a `JsValue` that the GC traces natively;
-    /// on JSC it calls `JSValueProtect` / `JSValueUnprotect` for explicit
-    /// rooting.
+    /// on JSC it keeps the value alive through a hidden global-object root
+    /// that is removed when the handle drops.
     ///
     /// GC trait derivation is handled by [`js_engine::impl_gc_traits`] which
     /// expands to the correct backend-specific traits.
@@ -223,6 +223,10 @@ fn create_test_button(
     crate::webidl::bindings::create_interface_instance::<TestTypes, TestButton>(button, ec)
 }
 
+fn wire_test_interface_prototypes(ec: &mut dyn ExecutionContext<TestTypes>) {
+    crate::webidl::bindings::registry::wire_prototype::<TestTypes, TestButton, TestWidget>(ec);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Binding functions (dual-backend — use widget_data helpers for downcast)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -233,9 +237,7 @@ fn get_title(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let title = widget_data::with_ref(&obj, ec, |w| w.title.clone())?;
+    let title = widget_or_button_with_ref(this, ec, |w| w.title.clone())?;
     Ok(ec.value_from_string(ec.js_string_from_str(&title)))
 }
 
@@ -247,9 +249,7 @@ fn set_title(
 ) -> Completion<JsValue, TestTypes> {
     let fallback = ec.value_undefined();
     let new_title = ec.to_rust_string(args.first().cloned().unwrap_or(fallback))?;
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    widget_data::with_mut(&obj, ec, |w| w.title = new_title)?;
+    widget_or_button_with_mut(this, ec, |w| w.title = new_title)?;
     Ok(ec.value_undefined())
 }
 
@@ -259,9 +259,7 @@ fn get_visible(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let visible = widget_data::with_ref(&obj, ec, |w| w.visible)?;
+    let visible = widget_or_button_with_ref(this, ec, |w| w.visible)?;
     Ok(ec.value_from_bool(visible))
 }
 
@@ -271,9 +269,7 @@ fn get_count(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let count = widget_data::with_ref(&obj, ec, |w| w.count)?;
+    let count = widget_or_button_with_ref(this, ec, |w| w.count)?;
     Ok(ec.value_from_number(count as f64))
 }
 
@@ -283,9 +279,7 @@ fn increment(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let old = widget_data::with_mut(&obj, ec, |w| {
+    let old = widget_or_button_with_mut(this, ec, |w| {
         let old = w.count;
         w.count = old.wrapping_add(1);
         old
@@ -299,10 +293,8 @@ fn to_object(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
     let (title, visible, count) =
-        widget_data::with_ref(&obj, ec, |w| (w.title.clone(), w.visible, w.count))?;
+        widget_or_button_with_ref(this, ec, |w| (w.title.clone(), w.visible, w.count))?;
     let result = ec.create_plain_object(None);
     let title_val = ec.value_from_string(ec.js_string_from_str(&title));
     let visible_val = ec.value_from_bool(visible);
@@ -319,10 +311,8 @@ fn to_array(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
     let (title, visible, count) =
-        widget_data::with_ref(&obj, ec, |w| (w.title.clone(), w.visible, w.count))?;
+        widget_or_button_with_ref(this, ec, |w| (w.title.clone(), w.visible, w.count))?;
     let array = ec.create_empty_array();
     let title_val = ec.value_from_string(ec.js_string_from_str(&title));
     let visible_val = ec.value_from_bool(visible);
@@ -339,11 +329,9 @@ fn set_count(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
     let num_val = args.first().cloned().unwrap_or(ec.value_undefined());
     let new_count = ec.to_uint32(num_val)?;
-    widget_data::with_mut(&obj, ec, |w| w.count = new_count)?;
+    widget_or_button_with_mut(this, ec, |w| w.count = new_count)?;
     Ok(ec.value_undefined())
 }
 
@@ -353,9 +341,7 @@ fn format_label(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let title = widget_data::with_ref(&obj, ec, |w| w.title.clone())?;
+    let title = widget_or_button_with_ref(this, ec, |w| w.title.clone())?;
     let prefix = if let Some(arg) = args.first() {
         let js_str = ec.to_js_string(arg.clone())?;
         ec.js_string_to_rust_string(&js_str)
@@ -372,9 +358,7 @@ fn delayed_title(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let title = widget_data::with_ref(&obj, ec, |w| w.title.clone())?;
+    let title = widget_or_button_with_ref(this, ec, |w| w.title.clone())?;
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
     let cap = ec.new_promise_capability(intrinsics.promise)?;
@@ -390,9 +374,7 @@ fn with_callback(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let title = widget_data::with_ref(&obj, ec, |w| w.title.clone())?;
+    let title = widget_or_button_with_ref(this, ec, |w| w.title.clone())?;
     let callback_obj = args
         .first()
         .and_then(|v| TestTypes::value_as_object(v))
@@ -418,8 +400,6 @@ fn process_items(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
     let items_val = args.first().cloned().unwrap_or(ec.value_undefined());
     let items = TestTypes::value_as_object(&items_val)
         .ok_or_else(|| ec.new_type_error("expected an array argument"))?;
@@ -434,7 +414,7 @@ fn process_items(
             count = count.wrapping_add(1);
         }
     }
-    widget_data::with_mut(&obj, ec, |w| w.count = count)?;
+    widget_or_button_with_mut(this, ec, |w| w.count = count)?;
     Ok(ec.value_undefined())
 }
 
@@ -466,8 +446,6 @@ fn store_callback(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
     let callback_obj = args
         .first()
         .and_then(|v| TestTypes::value_as_object(v))
@@ -477,7 +455,7 @@ fn store_callback(
         return Err(ec.new_type_error("argument is not callable"));
     }
     let root = ec.create_root(&callback_val);
-    widget_data::with_mut(&obj, ec, |w| w.on_change = Some(root))?;
+    widget_or_button_with_mut(this, ec, |w| w.on_change = Some(root))?;
     Ok(ec.value_undefined())
 }
 
@@ -488,9 +466,7 @@ fn flush_microtasks_test(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let _ = widget_data::with_ref(&obj, ec, |_| ())?;
+    let _ = widget_or_button_with_ref(this, ec, |_| ())?;
     ec.perform_a_microtask_checkpoint()?;
     ec.run_jobs();
     Ok(ec.value_undefined())
@@ -503,9 +479,7 @@ fn reject_with_message_test(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let obj = TestTypes::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("TestWidget receiver is not an object"))?;
-    let _ = widget_data::with_ref(&obj, ec, |_| ())?;
+    let _ = widget_or_button_with_ref(this, ec, |_| ())?;
     let msg = if let Some(arg) = args.first() {
         ec.to_rust_string(arg.clone())?
     } else {
@@ -729,6 +703,7 @@ pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
 
     register_interface_spec::<TestTypes, TestWidget, _>(&mut boa_context).ok();
     register_interface_spec::<TestTypes, TestButton, _>(&mut boa_context).ok();
+    wire_test_interface_prototypes(&mut boa_context);
 
     Ok(())
 }
@@ -740,6 +715,13 @@ pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use js_engine::PropertyDescriptor;
     use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
 
@@ -760,6 +742,7 @@ mod tests {
         initialize_registry::<TestTypes>(&mut engine);
         register_interface_spec::<TestTypes, TestWidget, _>(&mut engine).ok();
         register_interface_spec::<TestTypes, TestButton, _>(&mut engine).ok();
+        wire_test_interface_prototypes(&mut engine);
         engine
     }
 
@@ -774,6 +757,7 @@ mod tests {
         // the registry so create_test_widget can find the prototype.
         register_interface_spec::<TestTypes, TestWidget, _>(&mut engine).ok();
         register_interface_spec::<TestTypes, TestButton, _>(&mut engine).ok();
+        wire_test_interface_prototypes(&mut engine);
         engine
     }
 
@@ -832,6 +816,48 @@ mod tests {
 
         let result = widget_or_button_with_ref(&js_obj, &mut engine, |w| w.title.clone());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_button_inherits_widget_accessors_via_prototype_chain() {
+        let mut engine = setup();
+        let mut button = TestButton::new("ProtoButton");
+        button.widget.title = "ProtoTitle".into();
+        let obj = create_button(button, &mut engine);
+
+        let title_key = engine.property_key_from_str("title");
+        let title_val = ExecutionContext::get(&mut engine, obj.clone(), title_key.clone()).unwrap();
+        assert_eq!(engine.to_rust_string(title_val).unwrap(), "ProtoTitle");
+
+        let new_title = engine.value_from_string(engine.js_string_from_str("InheritedSet"));
+        engine.set(obj.clone(), title_key, new_title, false).unwrap();
+
+        let updated_title_key = engine.property_key_from_str("title");
+        let updated_title =
+            ExecutionContext::get(&mut engine, obj, updated_title_key).unwrap();
+        assert_eq!(engine.to_rust_string(updated_title).unwrap(), "InheritedSet");
+    }
+
+    #[test]
+    fn test_button_inherits_widget_methods_via_prototype_chain() {
+        let mut engine = setup();
+        let obj = create_button(TestButton::new("ProtoButton"), &mut engine);
+        let receiver = TestTypes::value_from_object(obj.clone());
+
+        let increment = engine
+            .get_method(receiver.clone(), engine.property_key_from_str("increment"))
+            .unwrap()
+            .expect("inherited increment method");
+        let increment_obj = TestTypes::object_from_function(increment);
+
+        let old_val = js_engine::EcmascriptHost::call(&mut engine, &increment_obj, &receiver, &[])
+            .unwrap();
+        assert!((engine.to_number(old_val).unwrap() - 0.0).abs() < 0.001);
+
+        let count_key = engine.property_key_from_str("count");
+        let count_val =
+            ExecutionContext::get(&mut engine, obj, count_key).unwrap();
+        assert!((engine.to_number(count_val).unwrap() - 1.0).abs() < 0.001);
     }
 
     // ── Tests ────────────────────────────────────────────────────────
@@ -1052,6 +1078,63 @@ mod tests {
     }
 
     #[test]
+    fn host_data_store_multiple_entries() {
+        let mut engine = setup();
+        let string_id = std::any::TypeId::of::<String>();
+        let number_id = std::any::TypeId::of::<u32>();
+
+        engine.store_host_any(string_id, Box::new("session-data".to_string()));
+        engine.store_host_any(number_id, Box::new(7_u32));
+
+        let stored_string = engine
+            .get_host_any(&string_id)
+            .and_then(|value| value.downcast_ref::<String>())
+            .cloned();
+        let stored_number = engine
+            .get_host_any(&number_id)
+            .and_then(|value| value.downcast_ref::<u32>())
+            .copied();
+
+        assert_eq!(stored_string.as_deref(), Some("session-data"));
+        assert_eq!(stored_number, Some(7_u32));
+
+        let removed_string = engine
+            .remove_host_any(&string_id)
+            .and_then(|value| value.downcast::<String>().ok())
+            .map(|value| *value);
+        assert_eq!(removed_string.as_deref(), Some("session-data"));
+        assert_eq!(
+            engine
+                .get_host_any(&number_id)
+                .and_then(|value| value.downcast_ref::<u32>())
+                .copied(),
+            Some(7_u32)
+        );
+    }
+
+    #[test]
+    fn enqueue_job_and_microtask_checkpoint_run_deferred_work() {
+        let mut engine = setup();
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        let first_job_counter = Arc::clone(&counter);
+        engine.enqueue_job(Box::new(move || {
+            first_job_counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        engine.perform_a_microtask_checkpoint().unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        let second_job_counter = Arc::clone(&counter);
+        engine.enqueue_job(Box::new(move || {
+            second_job_counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        engine.run_jobs();
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn create_plain_object_with_properties() {
         let mut engine = setup();
         let obj = engine.create_plain_object(None);
@@ -1124,6 +1207,52 @@ mod tests {
             TestTypes::object_from_promise(promise),
         );
         assert!(TestTypes::value_as_object(&promise_val).is_some());
+    }
+
+    #[test]
+    fn rooted_promise_capability_survives_gc_pressure() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        let capability = engine
+            .new_promise_capability(intrinsics.promise.clone())
+            .unwrap();
+        let rooted_capability = engine.root_promise_capability(capability);
+
+        let observed = Rc::new(Cell::new(0_u32));
+        let observed_for_handler = Rc::clone(&observed);
+        let on_fulfilled = engine.create_builtin_function(
+            Box::new(move |args, _this, inner_ec| {
+                let value = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| inner_ec.value_undefined());
+                observed_for_handler.set(inner_ec.to_uint32(value).unwrap_or(0));
+                Ok(inner_ec.value_undefined())
+            }),
+            1,
+            engine.property_key_from_str("observe_fulfillment"),
+        );
+
+        let promise_obj = TestTypes::value_as_object(&rooted_capability.promise.value).unwrap();
+        let promise = TestTypes::object_as_promise(&promise_obj).unwrap();
+        engine
+            .perform_promise_then(promise, Some(on_fulfilled), None, None)
+            .unwrap();
+
+        for i in 0..1000 {
+            let throwaway = engine.create_empty_array();
+            let num_val = engine.value_from_number(i as f64);
+            let _ = engine.array_push(&throwaway, num_val);
+        }
+
+        let resolve_obj = TestTypes::value_as_object(&rooted_capability.resolve.value).unwrap();
+        let undef = engine.value_undefined();
+        let value = engine.value_from_number(42.0);
+        js_engine::EcmascriptHost::call(&mut engine, &resolve_obj, &undef, &[value]).unwrap();
+        engine.run_jobs();
+
+        assert_eq!(observed.get(), 42_u32);
     }
 
     #[test]
@@ -1363,6 +1492,90 @@ mod tests {
         assert!(has);
         let has_own = engine.has_own_property(obj, pk).unwrap();
         assert!(has_own);
+    }
+
+    #[test]
+    fn own_property_keys_and_descriptors_reflect_data_and_accessor_properties() {
+        let mut engine = setup();
+        let obj = engine.create_plain_object(None);
+
+        let visible_key = engine.property_key_from_str("visible");
+        let hidden_key = engine.property_key_from_str("hidden");
+        let computed_key = engine.property_key_from_str("computed");
+
+        let visible_desc = PropertyDescriptor {
+            value: Some(engine.value_from_number(1.0)),
+            writable: Some(true),
+            get: None,
+            set: None,
+            enumerable: Some(true),
+            configurable: Some(true),
+        };
+        engine
+            .define_property_or_throw(obj.clone(), visible_key.clone(), visible_desc)
+            .unwrap();
+
+        let hidden_desc = PropertyDescriptor {
+            value: Some(engine.value_from_number(2.0)),
+            writable: Some(false),
+            get: None,
+            set: None,
+            enumerable: Some(false),
+            configurable: Some(false),
+        };
+        engine
+            .define_property_or_throw(obj.clone(), hidden_key.clone(), hidden_desc)
+            .unwrap();
+
+        let getter_fn = engine.create_builtin_function(
+            Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(7.0))),
+            0,
+            engine.property_key_from_str("get_computed"),
+        );
+        let accessor_desc = PropertyDescriptor {
+            value: None,
+            writable: None,
+            get: Some(getter_fn),
+            set: None,
+            enumerable: Some(true),
+            configurable: Some(true),
+        };
+        engine
+            .define_property_or_throw(obj.clone(), computed_key.clone(), accessor_desc)
+            .unwrap();
+
+        let own_keys = engine.own_property_keys(obj.clone()).unwrap();
+        assert_eq!(own_keys.len(), 3);
+
+        let visible_descriptor = engine
+            .get_own_property(obj.clone(), visible_key)
+            .unwrap()
+            .unwrap();
+        assert!(visible_descriptor.value.is_some());
+        assert_eq!(visible_descriptor.writable, Some(true));
+        assert_eq!(visible_descriptor.enumerable, Some(true));
+        assert_eq!(visible_descriptor.configurable, Some(true));
+        assert!((engine.to_number(visible_descriptor.value.unwrap()).unwrap() - 1.0).abs() < 0.001);
+
+        let hidden_descriptor = engine
+            .get_own_property(obj.clone(), hidden_key)
+            .unwrap()
+            .unwrap();
+        assert!(hidden_descriptor.value.is_some());
+        assert_eq!(hidden_descriptor.writable, Some(false));
+        assert_eq!(hidden_descriptor.enumerable, Some(false));
+        assert_eq!(hidden_descriptor.configurable, Some(false));
+        assert!((engine.to_number(hidden_descriptor.value.unwrap()).unwrap() - 2.0).abs() < 0.001);
+
+        let accessor_descriptor = engine
+            .get_own_property(obj, computed_key)
+            .unwrap()
+            .unwrap();
+        assert!(accessor_descriptor.value.is_none());
+        assert!(accessor_descriptor.get.is_some());
+        assert!(accessor_descriptor.set.is_none());
+        assert_eq!(accessor_descriptor.enumerable, Some(true));
+        assert_eq!(accessor_descriptor.configurable, Some(true));
     }
 
     #[test]
@@ -1878,7 +2091,7 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 42.0).abs() < 0.001);
 
         // Root is still alive — on Boa the inner value traces through
-        // GcRootHandle; on JSC JSValueProtect prevents collection.
+        // GcRootHandle; on JSC the hidden global-object root prevents collection.
         drop(root);
     }
 
