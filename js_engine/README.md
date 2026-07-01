@@ -252,7 +252,7 @@ same struct because Boa's `Context` serves both roles internally.
 | Proxy creation | Boa's proxy builder not publicly creatable |
 | `Context::eval` (script evaluation) | `JsEngine::evaluate_script` exists on the trait but callers use `Context::eval` directly; needs migration |
 | `JsValue::to_json(&mut Context)` | Boa-specific JSON serialization; needs a trait method |
-| `with_global_scope(&Context, ...)` | Boa GC heap traversal to access `GlobalScope`; needs a trait-level host-data accessor |
+| `with_global_scope(&Context, ...)` | Boa GC heap traversal to access `GlobalScope`; partially resolved by `realm_global_object()` on `ExecutionContext` — `platform_objects.rs` `_ec` wrappers now use only trait methods. Non-`_ec` callers (`main.rs`, `environment_settings_object.rs`, `html_media_element.rs`) still use `with_global_scope` via `&Context`. |
 | `register_global_property`, `ObjectInitializer::new(ctx)`, `JsArray::from_iter(..., ctx)` | Boa object model construction APIs; need trait equivalents or centralized construction in `build_context` |
 
 These are the blockers to `EnvironmentSettingsObject` owning a purely generic context
@@ -288,6 +288,7 @@ string extraction (`to_std_string_escaped`) or object construction
 Full GC abstraction (trait-level `get_object_data`) is blocked by Boa's
 `GcCell` returning `Ref<T>` guards, not `&T`.  This is resolvable but not
 on the critical path for eliminating most `ec_to_ctx` calls.
+(See Design notes → "Why `downcast_ref` on `JsObject` doesn't need `Context`" for more context.)
 
 ## Layout
 
@@ -327,6 +328,7 @@ through the generic API.  See the test file for working examples of each.
 | Operation | Trait method | POC example |
 |---|---|---|
 | Create object with native data | `ec.create_object_with_any(prototype, Box::new(data))` | `create_test_widget` |
+| Get realm's global object | `ec.realm_global_object() -> T::JsObject` | `realm_global_object_returns_valid_js_object` |
 | Read native data (immutable) | `ec.with_object_any(obj) -> Option<&dyn Any>` | `widget_data::with_ref` |
 | Read native data (mutable) | `ec.with_object_any_mut(obj) -> Option<&mut dyn Any>` | `widget_data::with_mut` |
 
@@ -348,8 +350,10 @@ downcasts via `dyn Any::downcast_ref::<T>()` / `downcast_mut::<T>()`.
 
 `GcRootHandle<T>` is an RAII guard:
 - Boa: no-op (GC traces through `boa_gc::Trace` on the handle itself)
-- JSC: calls `JSValueProtect` on construction, `JSValueUnprotect` on drop
-  (**currently SIGSEGVs on eval-created values — release blocker**)
+- JSC: stores the value as a non-enumerable property on the global object
+  to keep it alive in JSC's GC graph; deletes the property on drop.
+  (Avoids `JSValueProtect` which SIGSEGVs on eval-created values on
+  some macOS versions.)
 
 **Tests:**
 - `gc_root_survives_throwaway_pressure`: allocates 1000 throwaway arrays,
@@ -458,6 +462,8 @@ string extraction (`to_std_string_escaped`) or object construction
 Full GC abstraction (trait-level `get_object_data`) is blocked by Boa's
 `GcCell` returning `Ref<T>` guards, not `&T`.  This is resolvable but not
 on the critical path for eliminating most `ec_to_ctx` calls.
+(Duplicated above under "Platform object downcast without GC abstraction"
+for discoverability — keep both in sync.)
 
 ### Why `value_*` methods are `&mut self`
 
@@ -519,12 +525,13 @@ See module docs for implementation status and quirks:
 | Backend | Module | Status |
 |---|---|---|
 | Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, all generic_js_test tests pass |
-| JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete. `create_builtin_function` implements behaviour closures via JSClass + private data. `create_root` uses global-object properties instead of `JSValueProtect`. `get` handles Symbol keys via eval fallback. 1 remaining ignore: `SharedArrayBuffer` (may not be available). |
-| GC | `src/gc.rs` | ✅ Complete — `impl_gc_traits!` macro, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. GC-pressure testing gap: no test forces a collection to prove rooted values survive. |
+| JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete. `create_builtin_function` implements behaviour closures via JSClass + private data. `create_root` uses global-object properties instead of `JSValueProtect`. `get` handles Symbol keys via eval fallback. 1 remaining ignore: `SharedArrayBuffer` (may not be available). `exercise_context_lifecycle` (registry init + interface registration end-to-end) is Boa-only — no JSC counterpart yet. |
+| GC | `src/gc.rs` | 🔶 API surface complete — `impl_gc_traits!` macro, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. GC-pressure testing gap: no test forces an explicit GC collection to prove rooted values survive; current tests use allocation-count pressure as a proxy. |
 
 ## Migration status
 
-POC is **complete** — 70/70 tests pass on Boa (content JSC blocked on Phase E).
+POC is **complete** — 70/70 tests pass on Boa in `content/src/generic_js_test.rs`
+(content JSC blocked on Phase E).
 (see JSC backend status for details).  The test file
 (`content/src/generic_js_test.rs`) proves every content pattern can be
 expressed through the generic API with zero structural `#[cfg]`.
@@ -585,7 +592,7 @@ Concrete per-phase validation requirements:
 | 6b. EDS context leak | `EventDispatchHost::context()` → `ec()`. | ✅ |
 | 7. Domain threading | Domain methods take `&mut dyn ExecutionContext<T>`. | ✅ |
 | 8. GC abstraction | `impl_gc_traits!` macro, `GcRootHandle<T>`, `create_root`. POC proven. | ✅ |
-| 9. JSC backend | All trait methods implemented. 15/16 js_engine tests pass. | ✅ |
+| 9. JSC backend | All trait methods implemented. 15/16 js_engine crate tests pass (JSC). Content generic_js_test: 70/70 pass on Boa, 1 `#[ignore]` on JSC. | ✅ |
 | D. Dispatch host cleanup | `ContextEventDispatchHost` deleted from both locations. `EcDispatchHost` is sole dispatch host. | ✅ |
 | S1. writablestream.rs bindings | 10 of 14 binding functions zero ec_to_ctx (8 remain). | ✅ |
 | S2. readablestream.rs bindings | 33 → 2 ec_to_ctx. 26 of 28 functions zero ec_to_ctx. Only create_platform_object remains (construct_readable_stream takes &mut Context). | ✅ |
@@ -596,6 +603,7 @@ Concrete per-phase validation requirements:
 | S7. event_target.rs bindings + EcDispatchHost | 10 → **0 ec_to_ctx**. Converted `addEventListener`, `removeEventListener`, `dispatchEvent`, plus `document_object`, `resolve_element_object`, `resolve_existing_node_object` in EcDispatchHost. Added `current_event_target_object_ec`, `flatten_more_ec`. | ✅ |
 | P1. platform_objects `_ec` wrappers | Added `location_object_ec`, `store_location_object_ec`. | ✅ |
 | P2. readablebytestreamcontroller.rs | Added `_ec` wrappers for `stream_slot`, `controller_object`, `invalidate_byob_request`, `should_call_pull`. Eliminated ec_to_ctx from `cancel_steps`. | ✅ |
+| P3. platform_objects ec_to_ctx consolidation | `platform_objects.rs`: 8 → **0 ec_to_ctx**. Added `realm_global_object()` trait method on `ExecutionContext` (§8.1.3 `[[GlobalObject]]`). `with_global_scope_ec` uses `ec.realm_global_object()` → `ec.with_object_any()` → `downcast_ref::<Window>()` — pure trait-method access, no `ec_to_ctx`. Simple `_ec` wrappers pre-create errors to avoid borrow conflicts; complex wrappers use block scoping. Tested: `realm_global_object_returns_valid_js_object`, `host_any_stored_object_downcast_via_with_object_any`. | ✅ |
 
 ### Remaining phases
 
@@ -608,7 +616,7 @@ first** (see test-file-first discipline above).
 |---|---|---|---|---|
 | **Blocker 1** — Dispatch result-model mismatch | **Phase D** | Convert `EventDispatchHost` trait methods from `JsResult` to `Completion`. Delete `ContextEventDispatchHost` (both copies). Eliminate `js_result_to_completion` bridges from the dispatch path. | Small | ✅ Done — `EcDispatchHost` is the sole dispatch host; `ContextEventDispatchHost` deleted from both locations. |
 | **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. **Bindings complete** — all streams binding files at 0 ec_to_ctx. ~136 domain-internal calls remain; require per-function borrow-checker analysis (call `_ec` methods before `ec_to_ctx`). | Large | 🔶 Bindings done. Domain-internal in progress. |
-| **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping, OR add `_ec` wrappers for remaining `&Context`-taking functions. `store_host_any` / `get_host_any` already validated. WindowProxy needs `JsProxyBuilder` which has no trait equivalent yet — may need `create_proxy` on `ExecutionContext`. | Medium | Not started |
+| **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping, OR add `_ec` wrappers for remaining `&Context`-taking functions. `store_host_any` / `get_host_any` already validated. `realm_global_object()` trait method on `ExecutionContext` provides generic access to the global object (§8.1.3). `with_global_scope_ec` in `platform_objects.rs` combines `realm_global_object()` + `with_object_any` + `downcast_ref::<Window>()` — zero `ec_to_ctx`. WindowProxy needs `JsProxyBuilder` which has no trait equivalent yet — may need `create_proxy` on `ExecutionContext`. | Medium | 🔶 platform_objects.rs 8→0 ec_to_ctx. Remaining: abort.rs (3), windowproxy.rs (2), singletons (2). |
 | **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Same `_ec` wrapper pattern as Phase S/P — no new generic interfaces needed. Only `buffer_source.rs` (1 `ec_to_ctx`) may need a new trait method for `JsTypedArray`. | Medium | Not started |
 | **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |
 | **Blocker 6** — Global-scope helpers are implicitly Boa | **Phase G** | Move `document_creation_url`, `with_global_scope`, etc. behind content-owned query helpers. | Small | Part of Phase P |
@@ -652,7 +660,9 @@ test-file-first discipline proved correct.
 **POC test suite: 70/70 pass on Boa.**  All production-relevant patterns are
 now validated in `content/src/generic_js_test.rs`.
 
-**~171 ec_to_ctx remain across all files** (down from ~181 at previous update, ~245 at start of Phase D/S, ~300 originally). Non-streams: ~35 (down from 48); streams domain: ~136.
+**~157 ec_to_ctx remain across all files** (down from ~164 at previous update). Non-streams: ~21 (down from ~28); streams domain: ~136.
+
+**platform_objects.rs: 0 ec_to_ctx.** Uses `realm_global_object()` (new `ExecutionContext` trait method, §8.1.3) + `with_object_any` + `downcast_ref::<Window>()` for generic `GlobalScope` access. No Boa-specific imports in `_ec` wrapper bodies.
 
 **Streams binding files converted:**
 
@@ -691,13 +701,7 @@ returns `Completion`.
 
 ### Next session: recommended order
 
-1. **Phase P — Platform-object host-data store** — Two approaches:
-   (a) Replace `platform_objects.rs` with `store_host_any`/`get_host_any`
-   (already validated). (b) Add `_ec` wrappers for remaining `&Context`
-   functions (`with_global_scope_ec`, `abort_algorithm_ec`).
-   WindowProxy (2) needs `JsProxyBuilder` which has no trait equivalent —
-   may need `create_proxy` on `ExecutionContext`. Also covers Blocker 6.
-   Unblocks: ~7 ec_to_ctx.
+1. **Phase P — Remaining singletons** — `abort.rs` (3 `ec_to_ctx`): add `_ec` wrappers for `run_abort_algorithm`, `JsError::into_opaque` bridges. `windowproxy.rs` (2): needs `JsProxyBuilder` — may need `create_proxy` on `ExecutionContext`. `html_media_element.rs` (1), `ui_event_dispatch.rs` (1). Total: ~7 ec_to_ctx.
 
 2. **Phase W — Remaining subsystem entry points** — Structured clone (1),
    Web IDL promise helpers (10), Wasm namespace + bindings (15),
@@ -851,7 +855,8 @@ only — the template for other binding files) and `ecma_ops_test.rs`
 (standalone ECMA-262 operation smoke tests).  No behavior change — just
 keeps the reference file legible as a template.
 
-70/70 tests pass on Boa.  1 test is `#[ignore]` on JSC:
+70/70 tests pass on Boa in `content/src/generic_js_test.rs`.
+1 test is `#[ignore]` on JSC:
 
 | Test | JSC blocker |
 |---|---|

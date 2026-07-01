@@ -1891,6 +1891,65 @@ mod tests {
         assert_eq!(count, 99);
     }
 
+    // ── Host data JsObject round-trip ──────────────────────────────
+
+    /// Validates the global-object access pattern: store a `JsObject` in
+    /// `host_any`, retrieve it later, and downcast to native data through
+    /// `with_object_any`.  This is the generic equivalent of
+    /// `context.global_object().downcast_ref::<Window>()` — the
+    /// `GlobalObjectSlot` pattern used by `with_global_scope_ec` in
+    /// `platform_objects.rs`.
+    #[test]
+    fn host_any_stored_object_downcast_via_with_object_any() {
+        let mut engine = setup();
+
+        // Create a domain object with native data and store its JsObject in host_any.
+        let widget = TestWidget {
+            title: "Hosted".into(),
+            visible: true,
+            count: 1,
+            on_change: None,
+        };
+        let obj = create_widget(widget, &mut engine);
+
+        let slot_type_id = std::any::TypeId::of::<crate::js::platform_objects::GlobalObjectSlot>();
+        engine.store_host_any(slot_type_id, Box::new(obj.clone()));
+
+        // Retrieve the JsObject from host_any and downcast through with_object_any.
+        let stored_obj = engine
+            .get_host_any(&slot_type_id)
+            .and_then(|data| data.downcast_ref::<JsObject>())
+            .unwrap()
+            .clone();
+
+        let title = engine
+            .with_object_any(&stored_obj)
+            .and_then(|data| data.downcast_ref::<TestWidget>())
+            .unwrap()
+            .title
+            .clone();
+        assert_eq!(title, "Hosted");
+
+        // The original object path should still work too.
+        let title2 = engine
+            .with_object_any(&obj)
+            .and_then(|data| data.downcast_ref::<TestWidget>())
+            .unwrap()
+            .title
+            .clone();
+        assert_eq!(title2, "Hosted");
+    }
+
+    /// Validates `realm_global_object()` — the trait method that returns the
+    /// realm's `[[GlobalObject]]` (§8.1.3).
+    #[test]
+    fn realm_global_object_returns_valid_js_object() {
+        let engine = setup();
+        let global_obj = engine.realm_global_object();
+        // It's a valid JsObject.
+        assert!(TestTypes::value_as_object(&TestTypes::value_from_object(global_obj)).is_some());
+    }
+
     // ── with_object_any_mut borrow limitation ────────────────────
 
     /// Validates that mutable downcast via `with_object_any_mut` followed by

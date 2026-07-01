@@ -77,6 +77,16 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
     initialize_registry::<crate::js::Types>(js_engine::boa::context_as_ec(&mut context));
 
+    // Store the global object in host_any so that platform_objects.rs can
+    // reach GlobalScope through the generic ExecutionContext trait.
+    {
+        let global_obj = context.global_object().clone();
+        crate::js::platform_objects::init_global_object_slot(
+            js_engine::boa::context_as_ec(&mut context),
+            global_obj,
+        );
+    }
+
     // ── Install WebAssembly namespace ──
     if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut context) {
         error!("[content] failed to install WebAssembly namespace: {error}");

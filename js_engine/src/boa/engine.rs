@@ -985,6 +985,13 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         }
     }
 
+    fn realm_global_object(&self) -> JsObject
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        self.context.global_object()
+    }
+
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
 
     fn enqueue_job(&mut self, _job: Box<dyn FnOnce() + Send>) {

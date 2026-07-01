@@ -392,6 +392,13 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// <https://tc39.es/ecma262/#sec-execution-contexts>
     fn current_realm(&self) -> T::Realm;
 
+    /// <https://html.spec.whatwg.org/#global-object>
+    ///
+    /// The realm's `[[GlobalObject]]` — the JavaScript global object for
+    /// this realm execution context.  Callers downcast to domain types
+    /// (e.g. `Window`) via `with_object_any`.
+    fn realm_global_object(&self) -> T::JsObject;
+
     /// <https://tc39.es/ecma262/#sec-completion-record-specification-type>
     fn realm_intrinsics(&self, realm: &T::Realm) -> RealmIntrinsics<T>;
 

@@ -1825,6 +1825,13 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
     }
 
+    fn realm_global_object(&self) -> JscObject
+    where
+        JscTypes: JsTypesWithRealm,
+    {
+        self.context.global_object()
+    }
+
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
     fn enqueue_job(&mut self, job: Box<dyn FnOnce() + Send>) {
         self.queued_jobs.push(job);

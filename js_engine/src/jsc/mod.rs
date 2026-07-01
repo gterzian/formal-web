@@ -23,8 +23,6 @@
 //! - **`create_plain_object` → `JSObjectSetProperty` crash**: setting a
 //!   property on an object returned by `eval("{}")` causes SIGSEGV on
 //!   current macOS.  `create_empty_array` + `array_push` works fine.
-//! - **`GcRootHandle`/`create_root` SIGSEGV**: `JSValueProtect` on an
-//!   eval-created value crashes.  Root cause under investigation.
 //! - **Iterator operations crash**: `get_iterator` / `get_iterator_step_value`
 //!   not yet stable.
 //! - **Value type queries need context**: `JscValue` carries a `ctx`
