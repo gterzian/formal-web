@@ -182,7 +182,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     target_name: &str,
     noopener: bool,
     global_scope: Option<&GlobalScope>,
-    context: Option<&mut Context>,
+    window_global: Option<<crate::js::Types as js_engine::JsTypes>::JsObject>,
 ) -> ChosenNavigableResult {
     // Step 1: Let chosen be null.
     let mut chosen: Option<NavigableId> = None;
@@ -246,50 +246,59 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
 
         // ---- Opener branch (auxiliary BC) ----
         // <https://html.spec.whatwg.org/#creating-a-new-auxiliary-browsing-context>
-        if let (Some(global_scope), Some(_context)) = (global_scope, context) {
-            // window.open path with opener: create the about:blank document
-            // locally since the new auxiliary BC reuses the opener's BCG.
-            // The UA continues via `new_traversable_info` in NavigateRequest.
-            let new_traversable_id = NavigableId::new();
-            let new_document_id = DocumentId::new();
+        if let Some(global_scope) = global_scope {
+            if window_global.is_some() {
+                // window.open path with opener: create the about:blank document
+                // locally since the new auxiliary BC reuses the opener's BCG.
+                // The UA continues via `new_traversable_info` in NavigateRequest.
+                let new_traversable_id = NavigableId::new();
+                let new_document_id = DocumentId::new();
 
-            let (global_object, settings, document) = match global_scope.create_document(
-                new_traversable_id,
-                new_document_id,
-                None,
-                new_traversable_id,
-            ) {
-                Ok(result) => result,
-                Err(error) => {
-                    error!(
-                        "the_rules_for_choosing_a_navigable: failed to create document: {error}"
-                    );
-                    return ChosenNavigableResult {
-                        chosen_navigable_id: None,
-                        new_traversable_info: None,
-                        return_window: None,
-                    };
+                let (global_object, settings, document) = match global_scope.create_document(
+                    new_traversable_id,
+                    new_document_id,
+                    None,
+                    new_traversable_id,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        error!(
+                            "the_rules_for_choosing_a_navigable: failed to create document: {error}"
+                        );
+                        return ChosenNavigableResult {
+                            chosen_navigable_id: None,
+                            new_traversable_info: None,
+                            return_window: None,
+                        };
+                    }
+                };
+                if let Err(error) = global_scope
+                    .register_new_traversable_document(new_document_id, settings, document)
+                {
+                    error!("the_rules_for_choosing_a_navigable: failed to register document: {error}");
                 }
-            };
-            if let Err(error) =
-                global_scope.register_new_traversable_document(new_document_id, settings, document)
-            {
-                error!("the_rules_for_choosing_a_navigable: failed to register document: {error}");
+
+                let new_info = NewTraversableInfo {
+                    document_id: new_document_id,
+                    target_name: target_name.to_owned(),
+                };
+
+                return ChosenNavigableResult {
+                    chosen_navigable_id: Some(new_traversable_id),
+                    new_traversable_info: Some(new_info),
+                    return_window: Some(global_object),
+                };
             }
 
-            let new_info = NewTraversableInfo {
-                document_id: new_document_id,
-                target_name: target_name.to_owned(),
-            };
-
+            // Anchor-navigation path (or missing window context): delegate to UA.
             return ChosenNavigableResult {
-                chosen_navigable_id: Some(new_traversable_id),
-                new_traversable_info: Some(new_info),
-                return_window: Some(global_object),
+                chosen_navigable_id: None,
+                new_traversable_info: None,
+                return_window: None,
             };
         }
 
-        // Anchor-navigation path (or missing GlobalScope): delegate to UA.
+        // No GlobalScope: delegate to UA.
         return ChosenNavigableResult {
             chosen_navigable_id: None,
             new_traversable_info: None,
@@ -302,7 +311,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     // The return_window for _self / _parent / _top is the source document's
     // global object (correct for _self; _parent and _top that target a
     // different process are a known gap — see content/src/html/README.md).
-    let return_window = context.map(|ctx| ctx.global_object());
+    let return_window = window_global;
     ChosenNavigableResult {
         chosen_navigable_id: Some(chosen),
         new_traversable_info: None,

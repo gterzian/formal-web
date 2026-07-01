@@ -595,17 +595,13 @@ fn inner_invoke(
         // Step 2.11: "Call a user object's operation with listener's callback, `handleEvent`, « event », and event's currentTarget attribute value."
         if let Some(callback) = listener.callback.as_ref() {
             if let Err(error) = call_user_objects_operation(
-                host as &mut dyn EcmascriptHost<crate::js::Types>,
+                host.ec(),
                 callback,
                 "handleEvent",
                 &[JsValue::from(event.clone())],
                 Some(&JsValue::from(current_target.clone())),
             ) {
-                // SAFETY: EventDispatchHost::ec() returns a &mut dyn ExecutionContext
-                // backed by BoaContext which is #[repr(transparent)] over Context.
-                let ctx = unsafe { js_engine::boa::ec_to_ctx(host.ec()) };
-                let error_value = error.into_opaque(ctx).unwrap_or(JsValue::undefined());
-                host.report_exception(error_value);
+                host.report_exception(error);
             }
         }
 

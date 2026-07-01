@@ -122,9 +122,6 @@ pub(crate) fn window_open_steps(
     global_scope: &GlobalScope,
     event_sender: &IpcSender<ContentEvent>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: ec_to_ctx kept for the_rules_for_choosing_a_navigable which
-    // takes Option<&mut Context>.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
     // TODO: Content process does not yet track termination nesting.
 
@@ -245,7 +242,7 @@ pub(crate) fn window_open_steps(
         target,
         noopener,
         Some(global_scope),
-        Some(context),
+        Some(ec.global_object()),
     );
 
     let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));

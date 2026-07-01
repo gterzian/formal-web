@@ -82,7 +82,7 @@ impl HTMLAnchorElement {
             &target,
             noopener,
             None, // no GlobalScope: anchor nav delegates new traversables to UA
-            None, // no Context: no return window needed
+            None, // anchor nav uses no return window
         );
 
         navigate(

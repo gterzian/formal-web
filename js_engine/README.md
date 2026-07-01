@@ -622,26 +622,32 @@ now validated in `content/src/generic_js_test.rs`:
 |---|---|---|
 | ObjectInitializer composite | `object_initializer_composite_build_and_reflect` | `get_style` in html_element.rs ✅ |
 | Closure with captured state | `create_builtin_function_captures_mutable_state` | `timeout_static` in abort_signal.rs ✅ |
-| Timer callback detection | `timer_handler_detects_callable_vs_string` | `timer_handler` in window_or_worker_global_scope.rs |
-| Timeout value conversion | `timeout_ms_conversion_pattern` | `timeout_ms` in window_or_worker_global_scope.rs |
-| Mutable downcast + ec closure | `with_object_any_mut_with_ec_inside_closure` | `set_onload`, `play`, `pause`, `set_src` |
+| Timer callback detection | `timer_handler_detects_callable_vs_string` | `timer_handler` in window_or_worker_global_scope.rs ✅ |
+| Timeout value conversion | `timeout_ms_conversion_pattern` | `timeout_ms` in window_or_worker_global_scope.rs ✅ |
+| Mutable downcast + ec closure | `with_object_any_mut_with_ec_inside_closure` | `set_onload`, `play`, `pause`, `set_src`, `timeout_static` |
 | PropertyDescriptor + getter | `property_descriptor_with_builtin_getter` | class_list length getter |
-| PropertyDescriptor + getter+setter | `property_descriptor_with_builtin_getter_and_setter` | Accessor attributes (cssText) |
+| PropertyDescriptor + getter+setter | `property_descriptor_with_builtin_getter_and_setter` | Accessor attributes (cssText) ✅ |
 | Platform object creation | `create_interface_instance_roundtrip` | DOMException, Event, Location |
 | GC rooting + pressure | `gc_root_survives_throwaway_pressure` | Callback storage |
 | Nested GC root propagation | `nested_struct_gc_root_propagates` | Subtype hierarchies |
 
-**~135 ec_to_ctx eliminated across 16 binding/domain files.**
-Fully converted binding files: `document.rs`, `location.rs`, `node.rs`,
-`element.rs`, `html_anchor_element.rs`, `html_media_element.rs`,
-`html_iframe_element.rs`, `abort_controller.rs`, `html_element.rs` (get_style).
+**~155 ec_to_ctx eliminated across 18 binding/domain files.**
+Fully converted binding files (0 ec_to_ctx): `document.rs`, `location.rs`,
+`node.rs`, `element.rs`, `html_anchor_element.rs`, `html_media_element.rs`,
+`html_iframe_element.rs`, `abort_controller.rs`, `html_element.rs`,
+`dispatch.rs`, `html/window.rs`, `window_or_worker_global_scope.rs`.
 
 Domain helpers converted to generic EC trait: `timer_handler_ec`,
 `timeout_ms_ec`, `signal_abort_ec`.
 
-**~60 ec_to_ctx remain in binding files** (streams + event_target + window).
+`call_user_objects_operation` now takes `&mut dyn ExecutionContext<T>` and
+returns `Completion` (eliminated dispatch.rs ec_to_ctx).
+`the_rules_for_choosing_a_navigable` now takes `Option<JsObject>` instead of
+`Option<&mut Context>` (eliminated html/window.rs ec_to_ctx).
+
+**~50 ec_to_ctx remain in binding files** (streams + event_target + window bindings).
 **~300 ec_to_ctx remain in streams domain files** (methods take `&mut Context`).
-**~120 ec_to_ctx remain in other domain/WebIDL/wasm files.**
+**~100 ec_to_ctx remain in other domain/WebIDL/wasm files.**
 
 ### Remaining ec_to_ctx blockers (prioritized)
 
@@ -649,41 +655,32 @@ Domain helpers converted to generic EC trait: `timer_handler_ec`,
 |---|---|---|---|
 | **Streams domain methods** | streams/*.rs | ~300 | Convert domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. Dedicated session. |
 | **Streams bindings** | js/bindings/streams/*.rs | ~65 | Uses `ec_to_ctx` because domain methods take `Context`. Follows after domain conversion. |
-| **EventDispatchHost trait** | dispatch.rs, event_target.rs, abort.rs | ~15 | Trait methods return `JsResult`. Convert to `Completion` to eliminate bridges. |
-| **platform_objects** | platform_objects.rs | ~13 | `document_object`, `global_object`, etc. need generic equivalents. |
-| **Structured clone internals** | safe_passing_of_structured_data.rs | ~10 | 500-line function takes `&mut Context`. Pattern validated in POC. |
-| **WebIDL promise/async_iterable** | promise.rs, async_iterable.rs | ~20 | Mixed Boa dependencies. |
-| **Wasm** | namespace.rs, mod.rs, interfaces.rs | ~25 | Mixed Boa dependencies. |
-| **signal_abort_ec bridge** | abort_signal.rs | 1 | Blocked on Phase D (EventDispatchHost trait). |
-| **the_rules_for_choosing_a_navigable** | window.rs | 1 | Takes `Option<&mut Context>`. Needs Phase F (generic EDS). |
+| **Window bindings** | window.rs (bindings) | 11 | `set_timeout`, `clear_timeout`, `location_object` — need Boa helpers converted. |
+| **WebIDL promise** | promise.rs | 10 | Mixed Boa dependencies. |
+| **Wasm** | namespace.rs | 12 | Mixed Boa dependencies. |
+| **platform_objects bridges** | platform_objects.rs | 7 | `_ec` wrappers use ec_to_ctx internally; need underlying functions converted. |
+| **EventDispatchHost trait** | event_target.rs, abort.rs, abort_signal.rs | 7 | `EcDispatchHost` methods return `JsResult`; need trait → `Completion` conversion (Phase D). |
+| **EventTarget bindings** | event_target.rs (bindings) | 3 | `addEventListener`, `removeEventListener`, `dispatchEvent` need Boa helpers converted. |
+| **Structured clone** | safe_passing_of_structured_data.rs | 1 | 500-line function takes `&mut Context`. |
 | **document_creation_url** | hyperlink_element_utils.rs | 1 | Needs generic global-scope accessor. |
 | **with_global_scope** | html_media_element.rs | 1 | Needs trait-level host-data accessor. |
+| **PipeToState** | abort.rs | 1 | Streams `run_abort_algorithm` takes `&mut Context`. |
 
 ### Next session: recommended order
 
-1. **Phase D completion** — Convert `EventDispatchHost` trait methods from
-   `JsResult` to `Completion`. This eliminates the `js_result_to_completion` /
-   `ec_to_ctx` bridges in all dispatch/abort callers (~15 ec_to_ctx).
-   Also eliminates the `signal_abort_ec` bridge (1 ec_to_ctx in abort_signal.rs).
-   Most impactful remaining non-streams item.
-
-2. **Streams domain calls (~300)** — Dedicated session. Domain methods
+1. **Streams domain calls (~300)** — Dedicated session. Domain methods
    take `&mut Context` internally and need per-method conversion. This is
    the elephant. Each method follows the same recipe: change signature to
    `&mut dyn ExecutionContext<T>`, replace `JsObject::get(key, ctx)` with
    `ExecutionContext::get(ec, obj, key)`, replace `JsNativeError::typ()` with
    `ec.new_type_error(...)`, etc.
 
+2. **Phase D completion** — Convert `EventDispatchHost` trait methods from
+   `JsResult` to `Completion`. Also convert `EcDispatchHost` methods to use
+   `_ec` platform-objects helpers directly (eliminate 4 ec_to_ctx).
+
 3. **Phase E: conditional Types** — `#[cfg]` gate all Boa imports.
    Blocked on near-zero ec_to_ctx in binding/domain files.
-
-### Completed this session
-
-| Item | Files | Eliminated |
-|---|---|---|
-| ObjectInitializer (get_style) | html_element.rs | 2 ec_to_ctx removed; `get_style` uses `ec.create_plain_object` + `ec.set` + `ec.create_builtin_function` + `ec.define_property_or_throw`. Removed `with_html_element_ref`, `resolve_style_element`, `style_css_text_getter`, `style_css_text_setter`. |
-| timeout_static | abort_signal.rs | 1 ec_to_ctx removed; `NativeFunction::from_copy_closure_with_captures` replaced with `ec.create_builtin_function`. `timeout_reason` converted to take `ec`. Used `with_object_any_mut_with` for borrow-safe Window downcast. |
-| Error conversion | window_or_worker_global_scope.rs, html/window.rs | 5 Boa error construction sites converted to `ec.new_type_error`. `context_as_ec` removed from window.rs. |
 
 ### Phase B strategy: test-file-first workflow
 

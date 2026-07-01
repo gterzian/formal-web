@@ -358,8 +358,7 @@ impl EventDispatchHost for EcDispatchHost<'_, crate::js::Types> {
     }
 
     fn global_object(&mut self) -> JsObject {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(self.ec) };
-        ctx.global_object()
+        self.ec.global_object()
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {

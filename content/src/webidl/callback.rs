@@ -128,16 +128,16 @@ pub(crate) fn nullable_value_ec<T>(
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 pub(crate) fn call_user_objects_operation(
-    host: &mut dyn EcmascriptHost<crate::js::Types>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     value: &Callback,
     op_name: &str,
     args: &[JsValue],
     this_arg: Option<&JsValue>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, crate::js::Types> {
     // Step 1: "Let completion be an uninitialized variable."
 
     // Step 2: "If thisArg was not given, let thisArg be undefined."
-    let mut effective_this_arg = this_arg.cloned().unwrap_or_else(JsValue::undefined);
+    let mut effective_this_arg = this_arg.cloned().unwrap_or_else(|| ec.value_undefined());
 
     // Step 3: "Let O be the JavaScript object corresponding to value."
     let object = value.object.clone();
@@ -154,33 +154,31 @@ pub(crate) fn call_user_objects_operation(
     let mut callable = object.clone();
 
     // Step 10: "If IsCallable(O) is false, then:"
-    if !host.is_callable(&object_value) {
+    if !ec.is_callable(&object_value) {
         // Step 10.1: "Let getResult be Completion(Get(O, opName))."
-        let operation = host.get(&object, op_name).map_err(into_js_error)?;
+        let key = ec.property_key_from_str(op_name);
+        let operation = ExecutionContext::get(ec, object.clone(), key)?;
 
         // Step 10.2: "If getResult is an abrupt completion, set completion to getResult and jump to the step labeled return."
         // Note: `?` returns the abrupt completion directly in this Rust implementation.
 
         // Step 10.3: "Set X to getResult.[[Value]]."
         // Step 10.4: "If IsCallable(X) is false, then set completion to a TypeError and jump to the step labeled return."
-        if !host.is_callable(&operation) {
-            return Err(JsNativeError::typ()
-                .with_message(format!("callback operation `{op_name}` is not callable"))
-                .into());
+        if !ec.is_callable(&operation) {
+            let msg = format!("callback operation `{op_name}` is not callable");
+            return Err(ec.new_type_error(&msg));
         }
 
-        let operation = operation.as_object().ok_or_else(|| {
+        let Some(operation_obj) = operation.as_object() else {
             debug_assert!(
                 false,
                 "IsCallable returned true for a non-object callback operation"
             );
-            JsError::from(
-                JsNativeError::typ()
-                    .with_message(format!("callback operation `{op_name}` is not callable")),
-            )
-        })?;
+            let msg = format!("callback operation `{op_name}` is not callable");
+            return Err(ec.new_type_error(&msg));
+        };
 
-        callable = operation;
+        callable = operation_obj;
 
         // Step 10.5: "Set thisArg to O (overriding the provided value)."
         effective_this_arg = object_value;
@@ -190,9 +188,7 @@ pub(crate) fn call_user_objects_operation(
     // Note: DOM event dispatch already provides ECMAScript values, so there is no additional conversion layer here yet.
 
     // Step 12: "Let callResult be Completion(Call(X, thisArg, jsArgs))."
-    let result = host
-        .call(&callable, &effective_this_arg, args)
-        .map_err(into_js_error)?;
+    let result = ec.call(&callable, &effective_this_arg, args)?;
 
     // Step 13: "If callResult is an abrupt completion, set completion to callResult and jump to the step labeled return."
     // Note: `?` returns the abrupt completion directly in this Rust implementation.
