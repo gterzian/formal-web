@@ -5,6 +5,7 @@ pub(crate) mod ui_event;
 pub mod css;
 pub mod dom;
 pub(crate) mod fetch;
+mod generic_js_test;
 pub mod html;
 pub mod infra;
 pub mod js;
@@ -709,7 +710,7 @@ impl ContentProcess {
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
         let registry = Rc::clone(&self.new_document_registry);
-        with_global_scope(&content_document.settings.context, |global_scope| {
+        with_global_scope(content_document.settings.context_ref(), |global_scope| {
             global_scope.set_new_document_registry(registry);
             Ok(())
         })
@@ -727,7 +728,7 @@ impl ContentProcess {
             .documents
             .get(document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        with_global_scope(&content_document.settings.context, |global_scope| {
+        with_global_scope(content_document.settings.context_ref(), |global_scope| {
             global_scope.clear_new_document_registry();
             Ok(())
         })
@@ -753,7 +754,7 @@ impl ContentProcess {
                 continue;
             }
             // Read the traversable_id from the new document's own GlobalScope.
-            let new_traversable_id = with_global_scope(&settings.context, |global_scope| {
+            let new_traversable_id = with_global_scope(settings.context_ref(), |global_scope| {
                 Ok(global_scope.source_navigable_id())
             })
             .map_err(|error| format!("failed to read new traversable id: {error}"))?
@@ -859,9 +860,9 @@ impl ContentProcess {
             }
         }
 
-        let window = content_document.settings.context.global_object();
+        let window = content_document.settings.context().global_object();
         fire_event(&mut content_document.settings, &window, "load", true)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;
         self.active_documents_by_traversable
@@ -911,7 +912,7 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(&settings.context, |global_scope| {
+        if let Err(error) = with_global_scope(settings.context_ref(), |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
             if let Some(ref sender) = self.media_extension_sender {
                 global_scope.set_media_extension_sender(sender.clone());
@@ -1013,7 +1014,7 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(&settings.context, |global_scope| {
+        if let Err(error) = with_global_scope(settings.context_ref(), |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
             if let Some(ref sender) = self.media_extension_sender {
                 global_scope.set_media_extension_sender(sender.clone());
@@ -1263,7 +1264,7 @@ impl ContentProcess {
         {
             let navigable_id = document.traversable_id;
             let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
             (Some(navigable_id), canceled)
         } else {
             (None, false)
@@ -1813,7 +1814,7 @@ impl ContentProcess {
         };
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        with_global_scope(&content_document.settings.context, |global_scope| {
+        with_global_scope(content_document.settings.context_ref(), |global_scope| {
             global_scope.set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
             Ok(())
         })
@@ -1897,12 +1898,12 @@ impl ContentProcess {
                     request_id: _,
                     module,
                 } => {
-                    if let Err(error) = compile_continuation(
+                    if let Err(error) = crate::js::completion_to_js_result(compile_continuation(
                         &resolvers,
                         module,
                         Vec::new(),
-                        &mut content_document.settings.context,
-                    ) {
+                        js_engine::boa::context_as_ec(content_document.settings.context()),
+                    )) {
                         error!("WebAssembly: failed to resolve compile promise: {error}");
                     }
                 }
@@ -1910,11 +1911,11 @@ impl ContentProcess {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = compile_rejection(
+                    if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
                         &resolvers,
                         message,
-                        &mut content_document.settings.context,
-                    ) {
+                        js_engine::boa::context_as_ec(content_document.settings.context()),
+                    )) {
                         error!("WebAssembly: failed to reject compile promise: {error}");
                     }
                 }
@@ -1932,13 +1933,15 @@ impl ContentProcess {
                         self.pending_wasm_requests.remove(&request_id);
                         continue;
                     };
-                    if let Err(error) = instantiate_continuation(
-                        &module,
-                        &instance,
-                        &store,
-                        &resolvers,
-                        &mut content_document.settings.context,
-                    ) {
+                    if let Err(error) =
+                        crate::js::completion_to_js_result(instantiate_continuation(
+                            &module,
+                            &instance,
+                            &store,
+                            &resolvers,
+                            js_engine::boa::context_as_ec(content_document.settings.context()),
+                        ))
+                    {
                         error!("WebAssembly: failed to resolve instantiate promise: {error}");
                     }
                 }
@@ -1946,11 +1949,11 @@ impl ContentProcess {
                     request_id: _,
                     message,
                 } => {
-                    if let Err(error) = compile_rejection(
+                    if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
                         &resolvers,
                         message,
-                        &mut content_document.settings.context,
-                    ) {
+                        js_engine::boa::context_as_ec(content_document.settings.context()),
+                    )) {
                         error!("WebAssembly: failed to reject instantiate promise: {error}");
                     }
                 }

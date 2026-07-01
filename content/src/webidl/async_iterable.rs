@@ -1,7 +1,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
     builtins::{iterable::create_iter_result_object, object::OrdinaryObject},
     js_string,
     native_function::NativeFunction,
@@ -12,10 +12,14 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use super::promise::{rejected_promise, resolved_promise};
 
-#[derive(Clone, Trace, Finalize)]
-enum IteratorOperation {
-    Next,
-    Return(JsValue),
+use js_engine::{Completion, ExecutionContext};
+
+js_engine::impl_gc_traits! {
+    #[derive(Clone)]
+    enum IteratorOperation {
+        Next,
+        Return(JsValue),
+    }
 }
 
 /// <https://webidl.spec.whatwg.org/#asynchronous-iterator-initialization-steps>
@@ -48,7 +52,10 @@ pub(crate) trait AsyncValueIterable: Clone + Trace + Finalize + 'static {
         _value: JsValue,
         context: &mut Context,
     ) -> JsResult<JsObject> {
-        resolved_promise(JsValue::undefined(), context)
+        crate::js::completion_to_js_result(resolved_promise(
+            JsValue::undefined(),
+            js_engine::boa::context_as_ec(context),
+        ))
     }
 }
 
@@ -56,24 +63,48 @@ pub(crate) trait AsyncValueIterable: Clone + Trace + Finalize + 'static {
 pub(crate) fn create_value_async_iterator<T>(
     target: T,
     args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types>
+where
+    T: AsyncValueIterable,
+{
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    create_value_async_iterator_boa(target, args, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#js-asynchronous-iterable>
+fn create_value_async_iterator_boa<T>(
+    target: T,
+    args: &[JsValue],
     context: &mut Context,
-) -> JsResult<JsObject>
+) -> Completion<JsObject, crate::js::Types>
 where
     T: AsyncValueIterable,
 {
     // Step 6: "Let iterator be a newly created default asynchronous iterator object for definition with idlObject as its target, \"value\" as its kind, and is finished set to false."
     // Step 7: "Run the asynchronous iterator initialization steps for definition with idlObject, iterator, and idlArgs, if any such steps exist."
     // Note: No current content-process async iterable needs the JavaScript iterator object's identity during initialization, so the interface-specific hook returns the iterator state before the wrapper object is allocated.
-    let state = target.create_async_iterator_state(args, context)?;
+    let state = crate::js::js_result_to_completion(
+        target.create_async_iterator_state(args, context),
+        context,
+    )?;
 
     let iterator = DefaultAsyncIterator::new(target, state);
 
     // Step 8: "Return iterator."
-    create_default_async_iterator_object(iterator, context)
+    crate::js::js_result_to_completion(
+        create_default_async_iterator_object(iterator, context),
+        context,
+    )
 }
 
 /// <https://webidl.spec.whatwg.org/#js-default-asynchronous-iterator-object>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[derive(Clone)]
+#[cfg_attr(
+    feature = "boa",
+    derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
+)]
 struct DefaultAsyncIterator<T>
 where
     T: AsyncValueIterable,
@@ -84,6 +115,11 @@ where
     #[unsafe_ignore_trace]
     finished: Rc<Cell<bool>>,
 }
+
+#[cfg(not(feature = "boa"))]
+unsafe impl<T: AsyncValueIterable> js_engine::gc::Trace for DefaultAsyncIterator<T> {}
+#[cfg(not(feature = "boa"))]
+impl<T: AsyncValueIterable> js_engine::gc::Finalize for DefaultAsyncIterator<T> {}
 
 impl<T> DefaultAsyncIterator<T>
 where
@@ -147,16 +183,20 @@ where
     fn start_next(&self, context: &mut Context) -> JsResult<JsObject> {
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
-            return resolved_promise(
+            return crate::js::completion_to_js_result(resolved_promise(
                 create_iter_result_object(JsValue::undefined(), true, context),
-                context,
-            );
+                js_engine::boa::context_as_ec(context),
+            ));
         }
 
         // Step 8.4: "Let nextPromise be the result of getting the next iteration result with object's target and object."
         let next_promise = match self.target.get_next_iteration_result(&self.state, context) {
             Ok(next_promise) => next_promise,
-            Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+            Err(error) => {
+                let reason = error.into_opaque(context)?;
+                rejected_promise(reason, js_engine::boa::context_as_ec(context))
+                    .map_err(boa_engine::JsError::from_opaque)?
+            }
         };
 
         let on_fulfilled = FunctionObjectBuilder::new(
@@ -219,12 +259,18 @@ where
     fn start_return(&self, value: JsValue, context: &mut Context) -> JsResult<JsObject> {
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
-            return resolved_promise(create_iter_result_object(value, true, context), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                create_iter_result_object(value, true, context),
+                js_engine::boa::context_as_ec(context),
+            ));
         }
 
         if !T::has_async_iterator_return() {
             self.finished.set(true);
-            return resolved_promise(create_iter_result_object(value, true, context), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                create_iter_result_object(value, true, context),
+                js_engine::boa::context_as_ec(context),
+            ));
         }
 
         // Step 8.3: "Set object's is finished to true."
@@ -237,7 +283,11 @@ where
                 .return_async_iterator(&self.state, value.clone(), context)
             {
                 Ok(return_promise) => return_promise,
-                Err(error) => rejected_promise(error.into_opaque(context)?, context)?,
+                Err(error) => {
+                    let reason = error.into_opaque(context)?;
+                    rejected_promise(reason, js_engine::boa::context_as_ec(context))
+                        .map_err(boa_engine::JsError::from_opaque)?
+                }
             };
 
         let on_fulfilled = FunctionObjectBuilder::new(
@@ -356,9 +406,11 @@ where
     let iterator = match default_async_iterator_from_this::<T>(this, context) {
         Ok(iterator) => iterator,
         Err(error) => {
-            return Ok(JsValue::from(rejected_promise(
-                error.into_opaque(context)?,
-                context,
+            return Ok(JsValue::from(crate::js::completion_to_js_result(
+                rejected_promise(
+                    error.into_opaque(context)?,
+                    js_engine::boa::context_as_ec(context),
+                ),
             )?));
         }
     };
@@ -385,9 +437,11 @@ where
     let iterator = match default_async_iterator_from_this::<T>(this, context) {
         Ok(iterator) => iterator,
         Err(error) => {
-            return Ok(JsValue::from(rejected_promise(
-                error.into_opaque(context)?,
-                context,
+            return Ok(JsValue::from(crate::js::completion_to_js_result(
+                rejected_promise(
+                    error.into_opaque(context)?,
+                    js_engine::boa::context_as_ec(context),
+                ),
             )?));
         }
     };

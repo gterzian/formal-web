@@ -1,16 +1,15 @@
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
+js_engine::impl_gc_traits! {
+    /// <https://webidl.spec.whatwg.org/#idl-DOMException>
+    #[derive(Clone)]
+    pub struct DOMException {
+        /// <https://webidl.spec.whatwg.org/#dom-domexception-message>
+        #[unsafe_ignore_trace]
+        message: String,
 
-/// <https://webidl.spec.whatwg.org/#idl-DOMException>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct DOMException {
-    /// <https://webidl.spec.whatwg.org/#dom-domexception-message>
-    #[unsafe_ignore_trace]
-    message: String,
-
-    /// <https://webidl.spec.whatwg.org/#dom-domexception-name>
-    #[unsafe_ignore_trace]
-    name: String,
+        /// <https://webidl.spec.whatwg.org/#dom-domexception-name>
+        #[unsafe_ignore_trace]
+        name: String,
+    }
 }
 
 impl DOMException {

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::IpcError;
 use ipc_channel::ipc::{self as ipc_ch, IpcSharedMemory};
 use ipc_channel::router::ROUTER;
-use crate::IpcError;
 
 /// An opaque token representing a bootstrap server address.
 #[derive(Debug, Clone)]
@@ -115,7 +115,8 @@ impl<T: IpcSerialize + IpcDeserialize> serde::Serialize for IpcSender<T> {
 #[cfg(feature = "ipc-channel-backend")]
 impl<'de, T: IpcSerialize + IpcDeserialize> serde::Deserialize<'de> for IpcSender<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let sender = ipc_channel::ipc::IpcSender::<IpcChannelMessage<T>>::deserialize(deserializer)?;
+        let sender =
+            ipc_channel::ipc::IpcSender::<IpcChannelMessage<T>>::deserialize(deserializer)?;
         Ok(IpcSender {
             transport: IpcTransport::IpcChannel(sender),
         })
@@ -127,10 +128,10 @@ impl<'de, T: IpcSerialize + IpcDeserialize> serde::Deserialize<'de> for IpcSende
 /// The sender and receiver form a channel pair.  One end can be sent
 /// to another process via `IpcSender`'s Serialize impl (Mach port rights
 /// are transferred through ipc-channel's serde layer).
-pub fn channel<T: IpcSerialize + IpcDeserialize>() -> Result<(IpcSender<T>, IpcReceiver<T>), IpcError> {
-    let (tx, rx) = ipc_ch::channel::<IpcChannelMessage<T>>().map_err(|error| {
-        IpcError::Transport(format!("failed to create IPC channel: {error}"))
-    })?;
+pub fn channel<T: IpcSerialize + IpcDeserialize>()
+-> Result<(IpcSender<T>, IpcReceiver<T>), IpcError> {
+    let (tx, rx) = ipc_ch::channel::<IpcChannelMessage<T>>()
+        .map_err(|error| IpcError::Transport(format!("failed to create IPC channel: {error}")))?;
     let sender = IpcSender {
         transport: IpcTransport::IpcChannel(tx),
     };
@@ -226,7 +227,9 @@ impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
         }
         #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
         {
-            Err(IpcError::Transport("XPC receiver not yet implemented".into()))
+            Err(IpcError::Transport(
+                "XPC receiver not yet implemented".into(),
+            ))
         }
     }
 
@@ -234,8 +237,10 @@ impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
     pub fn recv_timeout(&self, timeout: Duration) -> Result<IpcIncoming<T>, IpcError> {
         #[cfg(feature = "ipc-channel-backend")]
         {
-            let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) =
-                self.inner.try_recv_timeout(timeout).map_err(|_| IpcError::Disconnected)?;
+            let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) = self
+                .inner
+                .try_recv_timeout(timeout)
+                .map_err(|_| IpcError::Disconnected)?;
             let regions: HashMap<usize, IpcSharedRegion> = shmem_map
                 .into_iter()
                 .map(|(key, raw)| (key, IpcSharedRegion::from_ipc_shmem(raw)))
@@ -247,7 +252,9 @@ impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
         }
         #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
         {
-            Err(IpcError::Transport("XPC receiver not yet implemented".into()))
+            Err(IpcError::Transport(
+                "XPC receiver not yet implemented".into(),
+            ))
         }
     }
 
@@ -268,13 +275,17 @@ impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
         }
         #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
         {
-            Err(IpcError::Transport("XPC receiver not yet implemented".into()))
+            Err(IpcError::Transport(
+                "XPC receiver not yet implemented".into(),
+            ))
         }
     }
 
     /// Internal: create from a raw ipc-channel receiver.
     #[cfg(feature = "ipc-channel-backend")]
-    pub(crate) fn from_ipc_channel(rx: ipc_channel::ipc::IpcReceiver<IpcChannelMessage<T>>) -> Self {
+    pub(crate) fn from_ipc_channel(
+        rx: ipc_channel::ipc::IpcReceiver<IpcChannelMessage<T>>,
+    ) -> Self {
         IpcReceiver { inner: rx }
     }
 
@@ -321,10 +332,7 @@ pub fn crossbeam_proxy<T: IpcSerialize + IpcDeserialize + Send + 'static>(
     ROUTER.add_typed_route(
         rx,
         Box::new(
-            move |message: Result<
-                (T, std::collections::HashMap<usize, IpcSharedMemory>),
-                _,
-            >| {
+            move |message: Result<(T, std::collections::HashMap<usize, IpcSharedMemory>), _>| {
                 if let Ok((payload, shmem_map)) = message {
                     let regions: std::collections::HashMap<usize, IpcSharedRegion> = shmem_map
                         .into_iter()
@@ -353,14 +361,16 @@ pub fn crossbeam_proxy<T: IpcSerialize + IpcDeserialize + Send + 'static>(
     let (tx, rx) = crossbeam_channel::unbounded();
     std::thread::Builder::new()
         .name("formal-web:ipc-crossbeam-proxy".into())
-        .spawn(move || loop {
-            match receiver.recv() {
-                Ok(msg) => {
-                    if tx.send(msg).is_err() {
-                        break;
+        .spawn(move || {
+            loop {
+                match receiver.recv() {
+                    Ok(msg) => {
+                        if tx.send(msg).is_err() {
+                            break;
+                        }
                     }
+                    Err(_) => break,
                 }
-                Err(_) => break,
             }
         })
         .expect("failed to spawn crossbeam proxy thread");
@@ -398,18 +408,14 @@ pub(crate) enum ExtensionHandleImpl {
         _bootstrap_token: String,
     },
     #[cfg(all(not(feature = "ipc-channel-backend"), target_vendor = "apple"))]
-    XpcSingleton {
-        service_name: &'static str,
-    },
+    XpcSingleton { service_name: &'static str },
     #[cfg(feature = "bek")]
     Bek,
 }
 
 impl ExtensionHandle {
     /// Start an extension process from its manifest.
-    pub fn launch<M, Out, In>(
-        manifest: &M,
-    ) -> Result<(Self, IpcConnection<Out, In>), IpcError>
+    pub fn launch<M, Out, In>(manifest: &M) -> Result<(Self, IpcConnection<Out, In>), IpcError>
     where
         M: ExtensionManifest,
         Out: IpcSerialize + IpcDeserialize + Send + 'static,
@@ -523,10 +529,8 @@ pub struct ExtensionServer<
     pub connection: IpcConnection<In, Out>,
 }
 
-impl<
-        In: IpcSerialize + IpcDeserialize + 'static,
-        Out: IpcSerialize + IpcDeserialize + 'static,
-    > ExtensionServer<In, Out>
+impl<In: IpcSerialize + IpcDeserialize + 'static, Out: IpcSerialize + IpcDeserialize + 'static>
+    ExtensionServer<In, Out>
 {
     pub fn new(connection: IpcConnection<In, Out>) -> Self {
         ExtensionServer { connection }

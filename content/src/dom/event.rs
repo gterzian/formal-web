@@ -1,6 +1,5 @@
 use blitz_traits::events::{DomEvent, EventState};
-use boa_engine::{JsData, JsResult, object::JsObject};
-use boa_gc::{Finalize, Trace};
+use boa_engine::{JsResult, object::JsObject};
 
 use crate::webidl::Callback;
 
@@ -11,9 +10,10 @@ pub const CAPTURING_PHASE: u16 = 1;
 pub const AT_TARGET: u16 = 2;
 pub const BUBBLING_PHASE: u16 = 3;
 
-/// <https://dom.spec.whatwg.org/#concept-event-listener>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub(crate) struct EventListener {
+js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#concept-event-listener>
+    #[derive(Clone)]
+    pub(crate) struct EventListener {
     #[unsafe_ignore_trace]
     pub id: u64,
 
@@ -43,15 +43,18 @@ pub(crate) struct EventListener {
     #[unsafe_ignore_trace]
     pub removed: bool,
 }
+}
 
-/// <https://dom.spec.whatwg.org/#interface-eventtarget>
-#[derive(Default, Trace, Finalize, JsData)]
-pub struct EventTarget {
+js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#interface-eventtarget>
+    #[derive(Default)]
+    pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
     pub(crate) event_listener_list: Vec<EventListener>,
 
     #[unsafe_ignore_trace]
     next_listener_id: u64,
+}
 }
 
 impl EventTarget {
@@ -65,15 +68,15 @@ impl EventTarget {
         once: bool,
         passive: Option<bool>,
         signal: Option<AbortSignal>,
-    ) -> JsResult<()> {
+    ) {
         if let Some(signal) = signal.as_ref() {
             if signal.aborted_value() {
-                return Ok(());
+                return;
             }
         }
 
         let Some(callback) = callback else {
-            return Ok(());
+            return;
         };
 
         let passive = passive.or(Some(false));
@@ -107,8 +110,6 @@ impl EventTarget {
                 });
             }
         }
-
-        Ok(())
     }
 
     /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
@@ -152,9 +153,10 @@ impl EventTarget {
     }
 }
 
-/// <https://dom.spec.whatwg.org/#event>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct Event {
+js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#event>
+    #[derive(Clone)]
+    pub struct Event {
     /// <https://dom.spec.whatwg.org/#dom-event-type>
     #[unsafe_ignore_trace]
     pub type_: String,
@@ -212,6 +214,7 @@ pub struct Event {
     /// <https://dom.spec.whatwg.org/#event>
     #[unsafe_ignore_trace]
     pub initialized_flag: bool,
+}
 }
 
 impl Event {
@@ -318,9 +321,10 @@ impl Event {
     }
 }
 
-/// <https://w3c.github.io/uievents/#interface-uievent>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct UIEvent {
+js_engine::impl_gc_traits! {
+    /// <https://w3c.github.io/uievents/#interface-uievent>
+    #[derive(Clone)]
+    pub struct UIEvent {
     /// <https://dom.spec.whatwg.org/#event>
     pub event: Event,
 
@@ -330,6 +334,7 @@ pub struct UIEvent {
     /// <https://w3c.github.io/uievents/#dom-uievent-detail>
     #[unsafe_ignore_trace]
     pub detail: i32,
+}
 }
 
 impl UIEvent {

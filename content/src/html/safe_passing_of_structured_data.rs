@@ -34,6 +34,8 @@ use boa_engine::{
 use crate::dom::DOMException;
 use crate::webidl::bindings::create_interface_instance;
 
+use js_engine::{Completion, ExecutionContext};
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Traits for platform objects (bridge layer)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -205,12 +207,12 @@ impl MemoryMap {
 
 fn data_clone_error(context: &mut Context) -> JsError {
     JsError::from_opaque(JsValue::from(
-        create_interface_instance::<DOMException>(
+        create_interface_instance::<crate::js::Types, DOMException>(
             DOMException::new(
                 String::from("The object could not be cloned."),
                 String::from("DataCloneError"),
             ),
-            context,
+            js_engine::boa::context_as_ec(context),
         )
         .expect("DOMException construction should not fail"),
     ))
@@ -1414,18 +1416,34 @@ pub fn structured_deserialize_with_transfer(
 pub fn structured_clone(
     value: JsValue,
     options: Option<StructuredCloneOptions>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    structured_clone_boa(value, options, context)
+}
+
+/// <https://html.spec.whatwg.org/#dom-structuredclone>
+fn structured_clone_boa(
+    value: JsValue,
+    options: Option<StructuredCloneOptions>,
     context: &mut Context,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, crate::js::Types> {
     // Step 1: Let serialized be ? StructuredSerializeWithTransfer(value, options["transfer"]).
     let transfer = options
         .as_ref()
         .and_then(|o| o.transfer.clone())
         .unwrap_or_default();
-    let serialized = structured_serialize_with_transfer(&value, transfer, context)?;
+    let serialized = crate::js::js_result_to_completion(
+        structured_serialize_with_transfer(&value, transfer, context),
+        context,
+    )?;
 
     // Step 2: Let deserializeRecord be ? StructuredDeserializeWithTransfer(...).
-    let desc_result =
-        structured_deserialize_with_transfer(&serialized, &JsValue::undefined(), context)?;
+    let desc_result = crate::js::js_result_to_completion(
+        structured_deserialize_with_transfer(&serialized, &JsValue::undefined(), context),
+        context,
+    )?;
 
     // Step 3: Return deserializeRecord.[[Deserialized]].
     Ok(desc_result.deserialized)

@@ -11,6 +11,8 @@ use boa_engine::{
 use crate::html::Window;
 use crate::webidl::is_array_index_key;
 
+use js_engine::{Completion, ExecutionContext};
+
 // ── Trap functions ──
 //
 // Each trap is a `NativeFunctionPointer`:
@@ -262,7 +264,12 @@ fn desc_from_obj(desc_obj: &JsValue, context: &mut Context) -> JsResult<Property
 /// construct the WindowProxy with native-function traps for each of the
 /// 10 overridden internal methods.  This is a Boa-specific convenience;
 /// the ECMAScript spec constructs a Proxy via `ProxyCreate(target, handler)`.
-pub(crate) fn create_window_proxy(window: &JsObject, context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn create_window_proxy(
+    window: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let proxy = JsProxyBuilder::new(window.clone())
         .get_prototype_of(trap_get_prototype_of)
         .set_prototype_of(trap_set_prototype_of)
@@ -274,7 +281,13 @@ pub(crate) fn create_window_proxy(window: &JsObject, context: &mut Context) -> J
         .delete_property(trap_delete_property)
         .has(trap_has)
         .own_keys(trap_own_keys)
-        .build(context)?;
+        .build(context)
+        .map_err(|_error| {
+            crate::js::native_error_to_js_value(
+                JsNativeError::typ().with_message("WindowProxy creation failed"),
+                context,
+            )
+        })?;
     Ok(JsValue::from(proxy))
 }
 
@@ -287,7 +300,12 @@ pub(crate) fn create_window_proxy(window: &JsObject, context: &mut Context) -> J
 /// Note: This cannot use `Proxy::try_data()` (pub(crate) in upstream Boa)
 /// to extract the target, so it checks whether the object is a Proxy and
 /// falls back to `context.global_object()` for the same-origin case.
-pub(crate) fn resolve_window(value: &JsValue, context: &Context) -> JsObject {
+pub(crate) fn resolve_window(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> JsObject {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     if let Some(object) = value.as_object() {
         // Direct Window: return as-is.
         if object.is::<Window>() {

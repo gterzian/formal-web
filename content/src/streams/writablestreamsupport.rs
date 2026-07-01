@@ -1,9 +1,11 @@
 use boa_engine::{
-    Context, JsResult, JsValue,
+    Context, JsValue,
     builtins::promise::ResolvingFunctions,
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Trace};
+
+use js_engine::{Completion, ExecutionContext};
 
 use super::writablestreamdefaultcontroller::WritableStreamDefaultController;
 use super::writablestreamdefaultwriter::WritableStreamDefaultWriter;
@@ -27,17 +29,21 @@ impl WriteRequest {
         let (promise, resolvers) = JsPromise::new_pending(context);
         (Self { resolvers }, promise.into())
     }
-    pub(crate) fn resolve(self, context: &mut Context) -> JsResult<()> {
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
-        Ok(())
+    pub(crate) fn resolve(
+        self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let undefined = JsValue::undefined();
+        let args = [undefined];
+        ec.call(&self.resolvers.resolve, &args[0], &args).map(|_| ())
     }
-    pub(crate) fn reject(self, error: JsValue, context: &mut Context) -> JsResult<()> {
-        self.resolvers
-            .reject
-            .call(&JsValue::undefined(), &[error], context)?;
-        Ok(())
+    pub(crate) fn reject(
+        self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let undefined = JsValue::undefined();
+        ec.call(&self.resolvers.reject, &undefined, &[error]).map(|_| ())
     }
 }
 #[derive(Clone, Trace, Finalize)]
@@ -71,17 +77,21 @@ impl PendingAbortRequest {
     pub(crate) fn was_already_erroring(&self) -> bool {
         self.was_already_erroring
     }
-    pub(crate) fn resolve(&self, context: &mut Context) -> JsResult<()> {
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
-        Ok(())
+    pub(crate) fn resolve(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let undefined = JsValue::undefined();
+        let args = [undefined];
+        ec.call(&self.resolvers.resolve, &args[0], &args).map(|_| ())
     }
-    pub(crate) fn reject(&self, error: JsValue, context: &mut Context) -> JsResult<()> {
-        self.resolvers
-            .reject
-            .call(&JsValue::undefined(), &[error], context)?;
-        Ok(())
+    pub(crate) fn reject(
+        &self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let undefined = JsValue::undefined();
+        ec.call(&self.resolvers.reject, &undefined, &[error]).map(|_| ())
     }
 }
 #[derive(Clone, Trace, Finalize)]
@@ -90,9 +100,13 @@ pub(crate) enum WritableStreamController {
 }
 
 impl WritableStreamController {
-    pub(crate) fn abort_steps(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn abort_steps(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         match self {
-            Self::Default(controller) => controller.abort_steps(reason, context),
+            Self::Default(controller) => controller.abort_steps(reason, ec),
         }
     }
     pub(crate) fn error_steps(&self) {
@@ -100,9 +114,13 @@ impl WritableStreamController {
             Self::Default(controller) => controller.error_steps(),
         }
     }
-    pub(crate) fn signal_abort(&self, reason: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn signal_abort(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match self {
-            Self::Default(controller) => controller.signal_abort(reason, context),
+            Self::Default(controller) => controller.signal_abort(reason, ec),
         }
     }
     pub(crate) fn as_default_controller(&self) -> WritableStreamDefaultController {

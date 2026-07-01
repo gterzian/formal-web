@@ -6,13 +6,14 @@ use boa_engine::{
     object::{JsObject, ObjectInitializer, builtins::JsPromise},
     property::Attribute,
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
-use log::error;
+
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::webidl::{
-    Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function,
-    mark_promise_as_handled, rejected_promise,
+    Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
+    rejected_promise,
 };
+use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestream::{
@@ -53,11 +54,14 @@ impl SourceMethod {
     }
 
     /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
-    pub(crate) fn call(&self, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-        let mut host = ContextCallbackHost::new(context, "stream callback");
+    pub(crate) fn call(
+        &self,
+        args: &[JsValue],
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
         let this_value = JsValue::from(self.this_value.clone());
         invoke_callback_function(
-            &mut host,
+            ec,
             &self.callback,
             args,
             ExceptionBehavior::Rethrow,
@@ -94,114 +98,177 @@ impl ReadIntoRequest {
         (Self { resolvers }, promise.into())
     }
 
-    pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
-        let result = create_read_result(chunk, false, context)?;
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[result], context)?;
-        Ok(())
+    pub(crate) fn chunk_steps(
+        self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let result = create_read_result(chunk, false, ec)?;
+        ec.call(&self.resolvers.resolve, &JsValue::undefined(), &[result])
+            .map(|_| ())
     }
 
-    pub(crate) fn close_steps(self, chunk: Option<JsValue>, context: &mut Context) -> JsResult<()> {
-        let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, context)?;
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[result], context)?;
-        Ok(())
+    pub(crate) fn close_steps(
+        self,
+        chunk: Option<JsValue>,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, ec)?;
+        ec.call(&self.resolvers.resolve, &JsValue::undefined(), &[result])
+            .map(|_| ())
     }
 
-    pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
-        self.resolvers
-            .reject
-            .call(&JsValue::undefined(), &[error], context)?;
-        Ok(())
+    pub(crate) fn error_steps(
+        self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        ec.call(&self.resolvers.reject, &JsValue::undefined(), &[error])
+            .map(|_| ())
     }
 }
 
 impl ReadRequest {
-    pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn chunk_steps(
+        self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                let result = create_read_result(chunk, false, context)?;
-                resolvers
-                    .resolve
-                    .call(&JsValue::undefined(), &[result], context)?;
-                Ok(())
+                let result = create_read_result(chunk, false, ec)?;
+                ec.call(&resolvers.resolve, &JsValue::undefined(), &[result])
+                    .map(|_| ())
             }
             Self::ReadableStreamDefaultTee {
                 tee_state,
                 clone_for_branch2,
-            } => readable_stream_default_tee_read_request_chunk_steps(
-                tee_state.clone(),
-                *clone_for_branch2,
-                chunk,
-                context,
-            ),
+            } => {
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+                // Tee algorithms still take Boa's Context.
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    readable_stream_default_tee_read_request_chunk_steps(
+                        tee_state.clone(),
+                        *clone_for_branch2,
+                        chunk,
+                        context,
+                    ),
+                    context,
+                )
+            }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_chunk_steps(
-                    tee_state.clone(),
-                    chunk,
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+                // Tee algorithms still take Boa's Context.
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    readable_byte_stream_tee_default_reader_chunk_steps(
+                        tee_state.clone(),
+                        chunk,
+                        context,
+                    ),
                     context,
                 )
             }
             Self::ReadableStreamPipeTo { state } => {
-                let result = create_read_result(chunk, false, context)?;
+                let result = create_read_result(chunk, false, ec)?;
                 let state = state.clone();
+                let pending_err = ec.new_type_error("microtask queueing failed");
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+                // queue_internal_stream_microtask requires Boa's Context.
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 queue_internal_stream_microtask(
                     move |context| state.on_read_request_settled(result, context),
                     context,
                 )
+                .map_err(|_| pending_err)
             }
         }
     }
 
-    /// closure.
-    pub(crate) fn close_steps(self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn close_steps(
+        self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                let result = create_read_result(JsValue::undefined(), true, context)?;
-                resolvers
-                    .resolve
-                    .call(&JsValue::undefined(), &[result], context)?;
-                Ok(())
+                let result = create_read_result(JsValue::undefined(), true, ec)?;
+                ec.call(&resolvers.resolve, &JsValue::undefined(), &[result])
+                    .map(|_| ())
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                readable_stream_default_tee_read_request_close_steps(tee_state.clone(), context)
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+                // Tee algorithms still take Boa's Context.
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    readable_stream_default_tee_read_request_close_steps(
+                        tee_state.clone(),
+                        context,
+                    ),
+                    context,
+                )
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), context)
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+                // Tee algorithms still take Boa's Context.
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), context),
+                    context,
+                )
             }
             Self::ReadableStreamPipeTo { state } => {
-                let result = create_read_result(JsValue::undefined(), true, context)?;
+                let result = create_read_result(JsValue::undefined(), true, ec)?;
                 let state = state.clone();
+                let pending_err = ec.new_type_error("microtask queueing failed");
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+                // queue_internal_stream_microtask requires Boa's Context.
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 queue_internal_stream_microtask(
                     move |context| state.on_read_request_settled(result, context),
                     context,
                 )
+                .map_err(|_| pending_err)
             }
         }
     }
 
-    pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn error_steps(
+        self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                resolvers
-                    .reject
-                    .call(&JsValue::undefined(), &[error], context)?;
-                Ok(())
-            }
+                ec.call(&resolvers.reject, &JsValue::undefined(), &[error])
+                    .map(|_| ())
+            },
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                readable_stream_default_tee_read_request_error_steps(tee_state.clone(), context)
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    readable_stream_default_tee_read_request_error_steps(tee_state.clone(), context),
+                    context,
+                )
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_error_steps(tee_state.clone(), context)
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                crate::js::js_result_to_completion(
+                    readable_byte_stream_tee_default_reader_error_steps(tee_state.clone(), context),
+                    context,
+                )
             }
             Self::ReadableStreamPipeTo { state } => {
                 let state = state.clone();
+                let pending_err = ec.new_type_error("microtask queueing failed");
+                // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 queue_internal_stream_microtask(
                     move |context| state.on_read_request_settled(error, context),
                     context,
                 )
+                .map_err(|_| pending_err)
             }
         }
     }
@@ -219,9 +286,17 @@ where
                     let reason = error
                         .into_opaque(context)
                         .unwrap_or_else(|_| JsValue::undefined());
-                    if let Ok(rejected) = rejected_promise(reason, context) {
-                        if let Err(error) = mark_promise_as_handled(&rejected, context) {
-                            error!("[readable-stream] failed to mark promise as handled: {error}");
+                    if let Ok(rejected) =
+                        rejected_promise(reason, js_engine::boa::context_as_ec(context))
+                    {
+                        if let Err(error) = mark_promise_as_handled(
+                            &rejected,
+                            js_engine::boa::context_as_ec(context),
+                        ) {
+                            log::warn!(
+                                "[readable-stream] failed to mark promise as handled: {:?}",
+                                error
+                            );
                         }
                     }
                 }
@@ -243,27 +318,30 @@ impl ReadableStreamController {
     pub(crate) fn cancel_steps(
         &self,
         reason: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         match self {
-            Self::Default(controller) => controller.cancel_steps(reason, context),
-            Self::Byte(controller) => controller.cancel_steps(reason, context),
+            Self::Default(controller) => controller.cancel_steps(reason, ec),
+            Self::Byte(controller) => controller.cancel_steps(reason, ec),
         }
     }
     pub(crate) fn pull_steps(
         &self,
         read_request: ReadRequest,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match self {
-            Self::Default(controller) => controller.pull_steps(read_request, context),
-            Self::Byte(controller) => controller.pull_steps(read_request, context),
+            Self::Default(controller) => controller.pull_steps(read_request, ec),
+            Self::Byte(controller) => controller.pull_steps(read_request, ec),
         }
     }
-    pub(crate) fn release_steps(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn release_steps(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         match self {
-            Self::Default(controller) => controller.release_steps(context),
-            Self::Byte(controller) => controller.release_steps(context),
+            Self::Default(controller) => controller.release_steps(ec),
+            Self::Byte(controller) => controller.release_steps(ec),
         }
     }
     /// readable-stream implementation.
@@ -306,30 +384,36 @@ impl ReadableStreamReader {
         }
     }
 }
-fn create_read_result(value: JsValue, done: bool, context: &mut Context) -> JsResult<JsValue> {
-    let mut initializer = ObjectInitializer::new(context);
-    initializer.property(js_string!("value"), value, Attribute::all());
-    initializer.property(js_string!("done"), done, Attribute::all());
-    Ok(JsValue::from(initializer.build()))
+fn create_read_result(
+    value: JsValue,
+    done: bool,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = ec.create_plain_object(None);
+    let done_val = ec.value_from_bool(done);
+    ec.object_set_property(obj.clone(), "value", value)?;
+    ec.object_set_property(obj.clone(), "done", done_val)?;
+    Ok(<crate::js::Types as JsTypes>::value_from_object(obj))
 }
 
 pub(crate) fn rejected_type_error_promise(
     message: &'static str,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    crate::webidl::rejected_promise(type_error_value(message, context)?, context)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let reason = type_error_value(message, ec)?;
+    crate::webidl::rejected_promise(reason, ec)
 }
-pub(crate) fn type_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(
-        JsNativeError::typ()
-            .with_message(message)
-            .into_opaque(context),
-    ))
+
+pub(crate) fn type_error_value(
+    message: &'static str,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    Ok(ec.new_type_error(message))
 }
-pub(crate) fn range_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(
-        JsNativeError::range()
-            .with_message(message)
-            .into_opaque(context),
-    ))
+
+pub(crate) fn range_error_value(
+    message: &'static str,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    Ok(ec.new_range_error(message))
 }

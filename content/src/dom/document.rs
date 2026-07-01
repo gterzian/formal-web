@@ -1,8 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 use html5ever::{LocalName, QualName, ns};
 use url::Url;
 
@@ -31,15 +29,16 @@ fn canonical_document_dir(value: &str) -> &str {
     }
 }
 
-/// <https://dom.spec.whatwg.org/#interface-document>
-#[derive(Trace, Finalize, JsData)]
-pub struct Document {
-    /// <https://dom.spec.whatwg.org/#interface-node>
-    pub node: Node,
+js_engine::impl_gc_traits! {
+    /// <https://dom.spec.whatwg.org/#interface-document>
+    pub struct Document {
+        /// <https://dom.spec.whatwg.org/#interface-node>
+        pub node: Node,
 
-    /// Model-local mirror of <https://html.spec.whatwg.org/#concept-environment-creation-url>.
-    #[unsafe_ignore_trace]
-    pub creation_url: Url,
+        /// Model-local mirror of <https://html.spec.whatwg.org/#concept-environment-creation-url>.
+        #[unsafe_ignore_trace]
+        pub creation_url: Url,
+    }
 }
 
 impl Document {

@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, js_string,
+    Context, JsArgs, JsResult, JsString, JsValue, js_string,
     native_function::NativeFunction,
-    object::{FunctionObjectBuilder, JsObject, ObjectInitializer},
+    object::{JsObject, ObjectInitializer},
     property::Attribute,
 };
 
@@ -14,17 +15,21 @@ use crate::html::{
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for HTMLElement {
+impl WebIdlInterface<crate::js::Types> for HTMLElement {
     const NAME: &'static str = "HTMLElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("Element")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "title",
             getter: get_title,
             setter: Some(set_title),
@@ -37,6 +42,8 @@ impl WebIdlInterface for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "lang",
             getter: get_lang,
             setter: Some(set_lang),
@@ -49,6 +56,8 @@ impl WebIdlInterface for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "dir",
             getter: get_dir,
             setter: Some(set_dir),
@@ -61,6 +70,8 @@ impl WebIdlInterface for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "hidden",
             getter: get_hidden,
             setter: Some(set_hidden),
@@ -73,6 +84,8 @@ impl WebIdlInterface for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "style",
             getter: get_style,
             setter: None,
@@ -87,262 +100,297 @@ impl WebIdlInterface for HTMLElement {
     }
 }
 
-fn with_html_element_ref<R>(this: &JsValue, f: impl FnOnce(&HTMLElement) -> R) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("HTMLElement receiver is not an object")
-    })?;
+fn try_with_html_element_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&HTMLElement) -> R,
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLElement receiver is not an object"))?;
 
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(f(&html_element));
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            return Ok(f(html_element));
+        }
+        if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
+            return Ok(f(&anchor.html_element));
+        }
+        if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
+            return Ok(f(&input.html_element));
+        }
+        if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
+            return Ok(f(&iframe.html_element));
+        }
     }
-
-    if let Some(anchor) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(f(&anchor.html_element));
-    }
-
-    if let Some(input) = object.downcast_ref::<HTMLInputElement>() {
-        return Ok(f(&input.html_element));
-    }
-
-    if let Some(iframe) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(f(&iframe.html_element));
-    }
-
-    Err(JsNativeError::typ()
-        .with_message("receiver is not an HTMLElement")
-        .into())
+    Err(ec.new_type_error("receiver is not an HTMLElement"))
 }
 
-fn get_title(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_element_ref(this, |html_element| {
-        JsValue::from(JsString::from(html_element.title()))
-    })
+fn get_title(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let title = try_with_html_element_ref(this, ec, |html_element| html_element.title())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&title)))
 }
 
-fn set_title(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let title = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    with_html_element_ref(this, |html_element| html_element.set_title(&title))?;
-    Ok(JsValue::undefined())
+fn set_title(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let title = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_element_ref(this, ec, |html_element| html_element.set_title(&title))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_lang(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_element_ref(this, |html_element| {
-        JsValue::from(JsString::from(html_element.lang()))
-    })
+fn get_lang(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let lang = try_with_html_element_ref(this, ec, |html_element| html_element.lang())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&lang)))
 }
 
-fn set_lang(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let lang = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    with_html_element_ref(this, |html_element| html_element.set_lang(&lang))?;
-    Ok(JsValue::undefined())
+fn set_lang(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let lang = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_element_ref(this, ec, |html_element| html_element.set_lang(&lang))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_dir(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_element_ref(this, |html_element| {
-        JsValue::from(JsString::from(html_element.dir()))
-    })
+fn get_dir(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let dir = try_with_html_element_ref(this, ec, |html_element| html_element.dir())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&dir)))
 }
 
-fn set_dir(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let dir = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    with_html_element_ref(this, |html_element| html_element.set_dir(&dir))?;
-    Ok(JsValue::undefined())
+fn set_dir(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let dir = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    try_with_html_element_ref(this, ec, |html_element| html_element.set_dir(&dir))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_hidden(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_element_ref(this, |html_element| JsValue::from(html_element.hidden()))
+fn get_hidden(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let hidden = try_with_html_element_ref(this, ec, |html_element| html_element.hidden())?;
+    Ok(ec.value_from_bool(hidden))
 }
 
-fn set_hidden(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let hidden = args.get_or_undefined(0).to_boolean();
-    with_html_element_ref(this, |html_element| html_element.set_hidden(hidden))?;
-    Ok(JsValue::undefined())
+fn set_hidden(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let hidden = args.first().map_or(false, |v| v.to_boolean());
+    try_with_html_element_ref(this, ec, |html_element| html_element.set_hidden(hidden))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("style getter: receiver is not an object")
-    })?;
-    let element_ref = JsValue::from(object.clone());
-    let realm = context.realm().clone();
+fn get_style(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    use crate::js::Types;
+
+    let object = Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("style getter: receiver is not an object"))?;
+    let element_ref = Types::value_from_object(object.clone());
 
     // Build the style declaration object with a reference to the element,
     // so that cssText and individual property setters can write back.
-    let properties = with_html_element_ref(this, |html_element| {
+    let properties = try_with_html_element_ref(this, ec, |html_element| {
         inline_style_properties_for_element(&html_element.element)
     })?;
 
-    let mut initializer = ObjectInitializer::new(context);
+    let style_obj = ec.create_plain_object(None);
+
     for (name, value) in &properties {
         // cssText is handled separately; skip it here to avoid conflict.
         if name == "cssText" {
             continue;
         }
-        let js_value = JsValue::from(JsString::from(value.as_str()));
-        initializer.property(
-            JsString::from(name.as_str()),
-            js_value.clone(),
-            Attribute::all(),
-        );
+        let js_value = ec.value_from_string(ec.js_string_from_str(value.as_str()));
+        let name_key = ec.property_key_from_str(name);
+        ec.set(style_obj.clone(), name_key, js_value.clone(), false)?;
         let alias = camel_case_property_name(name);
         if alias != *name {
-            initializer.property(JsString::from(alias.as_str()), js_value, Attribute::all());
+            let alias_key = ec.property_key_from_str(&alias);
+            ec.set(style_obj.clone(), alias_key, js_value, false)?;
         }
     }
 
-    initializer.function(
-        NativeFunction::from_fn_ptr(get_style_property_value),
-        js_string!("getPropertyValue"),
+    // getPropertyValue method
+    let get_property_value_fn = ec.create_builtin_function(
+        Box::new(move |args, this_ec_val, inner_ec| {
+            let property_name = if let Some(arg) = args.first() {
+                inner_ec.to_rust_string(arg.clone())?.trim().to_ascii_lowercase()
+            } else {
+                String::new()
+            };
+            let Some(object) = Types::value_as_object(&this_ec_val) else {
+                return Ok(inner_ec.value_from_string(inner_ec.js_string_from_str("")));
+            };
+            let key = inner_ec.property_key_from_str(&property_name);
+            let value = ExecutionContext::get(inner_ec, object, key)?;
+            if Types::value_is_undefined(&value) {
+                return Ok(inner_ec.value_from_string(inner_ec.js_string_from_str("")));
+            }
+            Ok(value)
+        }),
         1,
+        ec.property_key_from_str("getPropertyValue"),
     );
-
-    let style_obj = initializer.build();
+    let method_val =
+        Types::value_from_object(Types::object_from_function(get_property_value_fn));
+    ec.set(
+        style_obj.clone(),
+        ec.property_key_from_str("getPropertyValue"),
+        method_val,
+        false,
+    )?;
 
     // Store a reference to the element so cssText setter can write back.
-    style_obj.set(js_string!("__element"), element_ref, false, context)?;
+    ec.set(
+        style_obj.clone(),
+        ec.property_key_from_str("__element"),
+        element_ref,
+        false,
+    )?;
 
     // Implement cssText as a live getter/setter backed by the element's style attribute.
-    let css_text_getter = NativeFunction::from_fn_ptr(style_css_text_getter);
-    let css_text_setter = NativeFunction::from_fn_ptr(style_css_text_setter);
-    let css_text_getter_obj = FunctionObjectBuilder::new(&realm, css_text_getter).build();
-    let css_text_setter_obj = FunctionObjectBuilder::new(&realm, css_text_setter).build();
-    let css_text_desc = boa_engine::property::PropertyDescriptor::builder()
-        .get(css_text_getter_obj)
-        .set(css_text_setter_obj)
-        .enumerable(true)
-        .configurable(true)
-        .build();
-    style_obj.define_property_or_throw(js_string!("cssText"), css_text_desc, context)?;
+    let css_text_getter = ec.create_builtin_function(
+        Box::new(move |_args, this_ec_val, inner_ec| {
+            let element_val = {
+                let this_obj =
+                    Types::value_as_object(&this_ec_val).ok_or_else(|| {
+                        inner_ec.new_type_error("cssText getter: receiver is not an object")
+                    })?;
+                ExecutionContext::get(inner_ec, this_obj, inner_ec.property_key_from_str("__element"))?
+            };
+            let style =
+                element_style_attribute_ec(&element_val, inner_ec).unwrap_or_default();
+            Ok(inner_ec.value_from_string(inner_ec.js_string_from_str(&style)))
+        }),
+        0,
+        ec.property_key_from_str("get cssText"),
+    );
 
-    Ok(style_obj.into())
-}
+    let css_text_setter = ec.create_builtin_function(
+        Box::new(move |args, this_ec_val, inner_ec| {
+            let value = if let Some(arg) = args.first() {
+                inner_ec.to_rust_string(arg.clone())?
+            } else {
+                String::new()
+            };
+            let element_val = {
+                let this_obj =
+                    Types::value_as_object(&this_ec_val).ok_or_else(|| {
+                        inner_ec.new_type_error("cssText setter: receiver is not an object")
+                    })?;
+                ExecutionContext::get(inner_ec, this_obj, inner_ec.property_key_from_str("__element"))?
+            };
+            set_element_style_attribute_ec(&element_val, &value, inner_ec);
+            Ok(inner_ec.value_undefined())
+        }),
+        1,
+        ec.property_key_from_str("set cssText"),
+    );
 
-fn resolve_style_element(this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected style object"))?;
-    obj.get(js_string!("__element"), context)
-}
-
-fn style_css_text_getter(
-    this: &JsValue,
-    _: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    // Read the element's style attribute.
-    let element_val = resolve_style_element(this, context)?;
-    let element_obj = element_val
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("cssText getter: element not found"))?;
-
-    let style_attr = if let Some(el) = element_obj.downcast_ref::<Element>() {
-        el.get_attribute("style").unwrap_or_default()
-    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
-        html_el.element.get_attribute("style").unwrap_or_default()
-    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
-        media
-            .html_element
-            .element
-            .get_attribute("style")
-            .unwrap_or_default()
-    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
-        video
-            .media_element
-            .html_element
-            .element
-            .get_attribute("style")
-            .unwrap_or_default()
-    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
-        ifr.html_element
-            .element
-            .get_attribute("style")
-            .unwrap_or_default()
-    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
-        anc.html_element
-            .element
-            .get_attribute("style")
-            .unwrap_or_default()
-    } else {
-        String::new()
+    let css_text_key = ec.property_key_from_str("cssText");
+    let accessor_desc = js_engine::PropertyDescriptor {
+        value: None,
+        writable: None,
+        get: Some(css_text_getter),
+        set: Some(css_text_setter),
+        enumerable: Some(true),
+        configurable: Some(true),
     };
-    Ok(JsValue::from(JsString::from(style_attr)))
+    ec.define_property_or_throw(style_obj.clone(), css_text_key, accessor_desc)?;
+
+    Ok(Types::value_from_object(style_obj))
 }
 
-fn style_css_text_setter(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let value = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    let element_val = resolve_style_element(this, context)?;
-    let element_obj = element_val
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("cssText setter: element not found"))?;
+/// Read the element's `style` attribute via the generic EC trait.
+fn element_style_attribute_ec(
+    element_val: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Option<String> {
+    use crate::js::Types;
+    let obj = Types::value_as_object(element_val)?;
+    let data = ec.with_object_any(&obj)?;
 
-    if let Some(el) = element_obj.downcast_ref::<Element>() {
-        if value.is_empty() {
-            el.remove_attribute("style");
-        } else {
-            el.set_attribute("style", &value);
-        }
-    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
-        if value.is_empty() {
-            html_el.element.remove_attribute("style");
-        } else {
-            html_el.element.set_attribute("style", &value);
-        }
-    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
-        if value.is_empty() {
-            media.html_element.element.remove_attribute("style");
-        } else {
-            media.html_element.element.set_attribute("style", &value);
-        }
-    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
-        if value.is_empty() {
-            video
-                .media_element
-                .html_element
-                .element
-                .remove_attribute("style");
-        } else {
-            video
-                .media_element
-                .html_element
-                .element
-                .set_attribute("style", &value);
-        }
-    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
-        if value.is_empty() {
-            ifr.html_element.element.remove_attribute("style");
-        } else {
-            ifr.html_element.element.set_attribute("style", &value);
-        }
-    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
-        if value.is_empty() {
-            input.html_element.element.remove_attribute("style");
-        } else {
-            input.html_element.element.set_attribute("style", &value);
-        }
-    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
-        if value.is_empty() {
-            anc.html_element.element.remove_attribute("style");
-        } else {
-            anc.html_element.element.set_attribute("style", &value);
-        }
+    // Note: dyn Any::downcast_ref matches exact type only, so we check
+    // most-derived types first and walk up to base types.
+    if let Some(el) = data.downcast_ref::<HTMLVideoElement>() {
+        Some(el.media_element.html_element.element.get_attribute("style").unwrap_or_default())
+    } else if let Some(el) = data.downcast_ref::<HTMLMediaElement>() {
+        Some(el.html_element.element.get_attribute("style").unwrap_or_default())
+    } else if let Some(el) = data.downcast_ref::<HTMLAnchorElement>() {
+        Some(el.html_element.element.get_attribute("style").unwrap_or_default())
+    } else if let Some(el) = data.downcast_ref::<HTMLIFrameElement>() {
+        Some(el.html_element.element.get_attribute("style").unwrap_or_default())
+    } else if let Some(el) = data.downcast_ref::<HTMLInputElement>() {
+        Some(el.html_element.element.get_attribute("style").unwrap_or_default())
+    } else if let Some(el) = data.downcast_ref::<HTMLElement>() {
+        Some(el.element.get_attribute("style").unwrap_or_default())
+    } else if let Some(el) = data.downcast_ref::<Element>() {
+        Some(el.get_attribute("style").unwrap_or_default())
+    } else {
+        None
     }
-    Ok(JsValue::undefined())
+}
+
+/// Set/remove the element's `style` attribute via the generic EC trait.
+fn set_element_style_attribute_ec(
+    element_val: &JsValue,
+    value: &str,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) {
+    use crate::js::Types;
+    let Some(obj) = Types::value_as_object(element_val) else {
+        return;
+    };
+    let Some(data) = ec.with_object_any(&obj) else {
+        return;
+    };
+
+    if let Some(el) = data.downcast_ref::<HTMLVideoElement>() {
+        let elem = &el.media_element.html_element.element;
+        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+    } else if let Some(el) = data.downcast_ref::<HTMLMediaElement>() {
+        let elem = &el.html_element.element;
+        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+    } else if let Some(el) = data.downcast_ref::<HTMLAnchorElement>() {
+        let elem = &el.html_element.element;
+        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+    } else if let Some(el) = data.downcast_ref::<HTMLIFrameElement>() {
+        let elem = &el.html_element.element;
+        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+    } else if let Some(el) = data.downcast_ref::<HTMLInputElement>() {
+        let elem = &el.html_element.element;
+        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+    } else if let Some(el) = data.downcast_ref::<HTMLElement>() {
+        let elem = &el.element;
+        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+    } else if let Some(el) = data.downcast_ref::<Element>() {
+        if value.is_empty() { el.remove_attribute("style"); } else { el.set_attribute("style", value); }
+    }
 }
 
 pub(crate) fn style_declaration_object(
@@ -369,6 +417,15 @@ pub(crate) fn style_declaration_object(
         1,
     );
     Ok(initializer.build())
+}
+
+pub(crate) fn style_declaration_object_ec(
+    properties: &BTreeMap<String, String>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    style_declaration_object(properties, ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
 }
 
 fn get_style_property_value(

@@ -1,9 +1,9 @@
 use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
+    JsArgs, JsError, JsNativeError, JsResult, JsValue,
     builtins::promise::ResolvingFunctions,
     object::{JsObject, builtins::JsPromise},
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
@@ -14,19 +14,23 @@ use super::{
     writable_stream_default_controller_get_desired_size, writable_stream_default_controller_write,
 };
 
-/// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
-#[derive(Clone, Trace, Finalize, JsData)]
-pub struct WritableStreamDefaultWriter {
-    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
-    stream: Gc<GcRefCell<Option<WritableStream>>>,
+use js_engine::{Completion, ExecutionContext};
 
-    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
-    ready_promise: Gc<GcRefCell<Option<JsObject>>>,
-    ready_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+js_engine::impl_gc_traits! {
+    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
+    #[derive(Clone)]
+    pub struct WritableStreamDefaultWriter {
+        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
+        stream: Gc<GcRefCell<Option<WritableStream>>>,
 
-    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
-    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-    closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
+        ready_promise: Gc<GcRefCell<Option<JsObject>>>,
+        ready_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+
+        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
+        closed_promise: Gc<GcRefCell<Option<JsObject>>>,
+        closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+    }
 }
 
 impl WritableStreamDefaultWriter {
@@ -74,12 +78,10 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn set_up_writable_stream_default_writer(
         &self,
         stream: WritableStream,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if stream.is_writable_stream_locked() {
-            return Err(JsNativeError::typ()
-                .with_message("Cannot create a writer for a stream that already has a writer")
-                .into());
+            return Err(ec.new_type_error("Cannot create a writer for a stream that already has a writer"));
         }
 
         self.set_stream_slot_value(Some(stream.clone()));
@@ -88,24 +90,24 @@ impl WritableStreamDefaultWriter {
         match stream.state() {
             WritableStreamState::Writable => {
                 if !stream.close_queued_or_in_flight() && stream.backpressure() {
-                    self.reset_ready_promise(context)?;
+                    self.reset_ready_promise(ec)?;
                 } else {
-                    self.resolve_ready_promise(context)?;
+                    self.resolve_ready_promise(ec)?;
                 }
-                self.reset_closed_promise(context);
+                self.reset_closed_promise(ec);
             }
             WritableStreamState::Erroring => {
-                self.reject_ready_promise(stream.stored_error(), context)?;
-                self.reset_closed_promise(context);
+                self.reject_ready_promise(stream.stored_error(), ec)?;
+                self.reset_closed_promise(ec);
             }
             WritableStreamState::Closed => {
-                self.resolve_ready_promise(context)?;
-                self.resolve_closed_promise(context)?;
+                self.resolve_ready_promise(ec)?;
+                self.resolve_closed_promise(ec)?;
             }
             WritableStreamState::Errored => {
                 let stored_error = stream.stored_error();
-                self.reject_ready_promise(stored_error.clone(), context)?;
-                self.reject_closed_promise(stored_error, context)?;
+                self.reject_ready_promise(stored_error.clone(), ec)?;
+                self.reject_closed_promise(stored_error, ec)?;
             }
         }
 
@@ -121,12 +123,28 @@ impl WritableStreamDefaultWriter {
         })
     }
 
+    pub(crate) fn closed_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let err = ec.new_type_error("WritableStreamDefaultWriter is missing its closed promise");
+        self.closed().map_err(|_| err)
+    }
+
     /// <https://streams.spec.whatwg.org/#default-writer-desired-size>
     pub(crate) fn desired_size(&self) -> JsResult<Option<f64>> {
         let stream = self.stream_slot_value().ok_or_else(|| {
             JsNativeError::typ().with_message("WritableStreamDefaultWriter has been released")
         })?;
         self.get_desired_size_from_stream(stream)
+    }
+
+    pub(crate) fn desired_size_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<f64>, crate::js::Types> {
+        let err = ec.new_type_error("WritableStreamDefaultWriter has been released");
+        self.desired_size().map_err(|_| err)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-ready>
@@ -138,127 +156,168 @@ impl WritableStreamDefaultWriter {
         })
     }
 
+    pub(crate) fn ready_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let err = ec.new_type_error("WritableStreamDefaultWriter is missing its ready promise");
+        self.ready().map_err(|_| err)
+    }
+
     /// <https://streams.spec.whatwg.org/#default-writer-abort>
-    pub(crate) fn abort(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn abort(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot abort using a released WritableStreamDefaultWriter",
-                context,
+                ec,
             );
         };
 
-        stream.abort_stream(reason, context)
+        stream.abort_stream(reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-close>
-    pub(crate) fn close(&self, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn close(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot close using a released WritableStreamDefaultWriter",
-                context,
+                ec,
             );
         };
 
         if stream.close_queued_or_in_flight() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that is already closing",
-                context,
+                ec,
             );
         }
 
-        stream.close_stream(context)
+        stream.close_stream(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-release-lock>
-    pub(crate) fn release_lock(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn release_lock(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let Some(_) = self.stream_slot_value() else {
             return Ok(());
         };
 
-        self.release(context)
+        self.release(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-write>
-    pub(crate) fn write(&self, chunk: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn write(
+        &self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         let Some(stream) = self.stream_slot_value() else {
             return rejected_type_error_promise(
                 "Cannot write using a released WritableStreamDefaultWriter",
-                context,
+                ec,
             );
         };
 
-        self.write_with_stream(stream, chunk, context)
+        self.write_with_stream(stream, chunk, ec)
     }
-    pub(crate) fn reset_ready_promise(&self, context: &mut Context) -> JsResult<()> {
+
+    pub(crate) fn reset_ready_promise(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let (promise, resolvers) = JsPromise::new_pending(context);
         self.set_ready_promise_value(Some(promise.into()));
         self.set_ready_resolvers_value(Some(resolvers));
         Ok(())
     }
-    pub(crate) fn resolve_ready_promise(&self, context: &mut Context) -> JsResult<()> {
+
+    pub(crate) fn resolve_ready_promise(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if let Some(resolvers) = self.ready_resolvers_value() {
-            resolvers
-                .resolve
-                .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+            let undefined = JsValue::undefined();
+            let args = [undefined];
+            ec.call(&resolvers.resolve, &args[0], &args)?;
             self.set_ready_resolvers_value(None);
             return Ok(());
         }
 
-        self.set_ready_promise_value(Some(resolved_promise(JsValue::undefined(), context)?));
+        let promise = resolved_promise(JsValue::undefined(), ec)?;
+        self.set_ready_promise_value(Some(promise));
         Ok(())
     }
+
     pub(crate) fn reject_ready_promise(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if let Some(resolvers) = self.ready_resolvers_value() {
-            resolvers
-                .reject
-                .call(&JsValue::undefined(), &[error.clone()], context)?;
+            let undefined = JsValue::undefined();
+            ec.call(&resolvers.reject, &undefined, &[error])?;
             self.set_ready_resolvers_value(None);
         } else {
-            self.set_ready_promise_value(Some(rejected_promise(error, context)?));
+            self.set_ready_promise_value(Some(rejected_promise(error, ec)?));
         }
 
         if let Some(ready_promise) = self.ready_promise_value() {
-            mark_promise_as_handled(&ready_promise, context)?;
+            mark_promise_as_handled(&ready_promise, ec)?;
         }
         Ok(())
     }
-    pub(crate) fn reset_closed_promise(&self, context: &mut Context) {
+
+    pub(crate) fn reset_closed_promise(&self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let (promise, resolvers) = JsPromise::new_pending(context);
         self.set_closed_promise_value(Some(promise.into()));
         self.set_closed_resolvers_value(Some(resolvers));
     }
-    pub(crate) fn resolve_closed_promise(&self, context: &mut Context) -> JsResult<()> {
+
+    pub(crate) fn resolve_closed_promise(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if let Some(resolvers) = self.closed_resolvers_value() {
-            resolvers
-                .resolve
-                .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+            let undefined = JsValue::undefined();
+            let args = [undefined];
+            ec.call(&resolvers.resolve, &args[0], &args)?;
             self.set_closed_resolvers_value(None);
             return Ok(());
         }
 
-        self.set_closed_promise_value(Some(resolved_promise(JsValue::undefined(), context)?));
+        let promise = resolved_promise(JsValue::undefined(), ec)?;
+        self.set_closed_promise_value(Some(promise));
         Ok(())
     }
+
     pub(crate) fn reject_closed_promise(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if let Some(resolvers) = self.closed_resolvers_value() {
-            resolvers
-                .reject
-                .call(&JsValue::undefined(), &[error.clone()], context)?;
+            let undefined = JsValue::undefined();
+            ec.call(&resolvers.reject, &undefined, &[error])?;
             self.set_closed_resolvers_value(None);
         } else {
-            self.set_closed_promise_value(Some(rejected_promise(error, context)?));
+            self.set_closed_promise_value(Some(rejected_promise(error, ec)?));
         }
 
         if let Some(closed_promise) = self.closed_promise_value() {
-            mark_promise_as_handled(&closed_promise, context)?;
+            mark_promise_as_handled(&closed_promise, ec)?;
         }
         Ok(())
     }
@@ -266,17 +325,17 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn ensure_closed_promise_rejected(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
-        self.reject_closed_promise(error, context)
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        self.reject_closed_promise(error, ec)
     }
 
     pub(crate) fn ensure_ready_promise_rejected(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
-        self.reject_ready_promise(error, context)
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        self.reject_ready_promise(error, ec)
     }
 
     fn get_desired_size_from_stream(&self, stream: WritableStream) -> JsResult<Option<f64>> {
@@ -294,15 +353,17 @@ impl WritableStreamDefaultWriter {
         }
     }
 
-    fn release(&self, context: &mut Context) -> JsResult<()> {
-        let stream = self.stream_slot_value().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStreamDefaultWriter has been released")
-        })?;
+    fn release(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let released = ec.new_type_error("WritableStreamDefaultWriter has been released");
+        let stream = self.stream_slot_value().ok_or_else(|| released)?;
         debug_assert!(stream.writer_slot().is_some());
 
-        let released_error = type_error_value("Writer was released", context)?;
-        self.ensure_ready_promise_rejected(released_error.clone(), context)?;
-        self.ensure_closed_promise_rejected(released_error, context)?;
+        let released_error = type_error_value("Writer was released", ec)?;
+        self.ensure_ready_promise_rejected(released_error.clone(), ec)?;
+        self.ensure_closed_promise_rejected(released_error, ec)?;
         stream.set_writer_slot(None);
         self.set_stream_slot_value(None);
         Ok(())
@@ -312,43 +373,42 @@ impl WritableStreamDefaultWriter {
         &self,
         stream: WritableStream,
         chunk: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
-        let controller = stream.controller_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its controller")
-        })?;
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let no_ctrl = ec.new_type_error("WritableStream is missing its controller");
+        let controller = stream.controller_slot().ok_or_else(|| no_ctrl)?;
         let chunk_size = writable_stream_default_controller_get_chunk_size(
             controller.as_default_controller(),
             &chunk,
-            context,
+            ec,
         )?;
 
         if let Some(current_stream) = self.stream_slot_value() {
             if !current_stream.same_instance(&stream) {
                 return rejected_type_error_promise(
                     "Cannot write using a released WritableStreamDefaultWriter",
-                    context,
+                    ec,
                 );
             }
         } else {
             return rejected_type_error_promise(
                 "Cannot write using a released WritableStreamDefaultWriter",
-                context,
+                ec,
             );
         }
 
         match stream.state() {
             WritableStreamState::Errored => {
-                return rejected_promise(stream.stored_error(), context);
+                return rejected_promise(stream.stored_error(), ec);
             }
             WritableStreamState::Closed => {
                 return rejected_type_error_promise(
                     "Cannot write to a WritableStream that is closing or closed",
-                    context,
+                    ec,
                 );
             }
             WritableStreamState::Erroring => {
-                return rejected_promise(stream.stored_error(), context);
+                return rejected_promise(stream.stored_error(), ec);
             }
             WritableStreamState::Writable => {}
         }
@@ -356,50 +416,60 @@ impl WritableStreamDefaultWriter {
         if stream.close_queued_or_in_flight() {
             return rejected_type_error_promise(
                 "Cannot write to a WritableStream that is closing or closed",
-                context,
+                ec,
             );
         }
 
-        let promise = stream.add_write_request(context)?;
+        let promise = stream.add_write_request(ec)?;
         writable_stream_default_controller_write(
             controller.as_default_controller(),
             chunk,
             chunk_size,
-            context,
+            ec,
         )?;
         Ok(promise)
     }
 }
+
+/// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-constructor>
 pub(crate) fn construct_writable_stream_default_writer(
     _this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<WritableStreamDefaultWriter> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<WritableStreamDefaultWriter, crate::js::Types> {
     let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("WritableStreamDefaultWriter requires a WritableStream")
+        ec.new_type_error("WritableStreamDefaultWriter requires a WritableStream")
     })?;
-    let stream = with_writable_stream_ref(&stream_object, |stream| stream.clone())?;
+    let not_stream_err = ec.new_type_error("object is not a WritableStream");
+    let stream =
+        with_writable_stream_ref(&stream_object, |stream| stream.clone()).map_err(|_: JsError| not_stream_err)?;
     let writer = WritableStreamDefaultWriter::new();
-    writer.set_up_writable_stream_default_writer(stream, context)?;
+    writer.set_up_writable_stream_default_writer(stream, ec)?;
     Ok(writer)
 }
 
 /// <https://streams.spec.whatwg.org/#acquire-writable-stream-default-writer>
 pub(crate) fn acquire_writable_stream_default_writer(
     stream: WritableStream,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    let writer_object = create_writable_stream_default_writer(context)?;
-    let writer = with_writable_stream_default_writer_ref(&writer_object, |writer| writer.clone())?;
-    writer.set_up_writable_stream_default_writer(stream, context)?;
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let writer_object = create_writable_stream_default_writer(ec)?;
+    let not_writer_err = ec.new_type_error("object is not a WritableStreamDefaultWriter");
+    let writer = with_writable_stream_default_writer_ref(&writer_object, |writer| writer.clone())
+        .map_err(|_: JsError| not_writer_err)?;
+    writer.set_up_writable_stream_default_writer(stream, ec)?;
     Ok(writer_object)
 }
-fn create_writable_stream_default_writer(context: &mut Context) -> JsResult<JsObject> {
+
+fn create_writable_stream_default_writer(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let writer = WritableStreamDefaultWriter::new();
-    let writer_object: JsObject =
-        create_interface_instance::<WritableStreamDefaultWriter>(writer, context)?.into();
+    let writer_object =
+        create_interface_instance::<crate::js::Types, WritableStreamDefaultWriter>(writer, ec)?;
     Ok(writer_object)
 }
+
 pub(crate) fn with_writable_stream_default_writer_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&WritableStreamDefaultWriter) -> R,
@@ -412,10 +482,25 @@ pub(crate) fn with_writable_stream_default_writer_ref<R>(
     Ok(f(&writer))
 }
 
+pub(crate) fn with_writable_stream_default_writer_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&WritableStreamDefaultWriter) -> R,
+) -> Completion<R, crate::js::Types> {
+    let writer_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<WritableStreamDefaultWriter>());
+    let writer = match writer_ref {
+        Some(w) => w,
+        None => return Err(ec.new_type_error("object is not a WritableStreamDefaultWriter")),
+    };
+    Ok(f(writer))
+}
+
 /// <https://streams.spec.whatwg.org/#writable-stream-default-writer-release>
 pub(crate) fn writable_stream_default_writer_release(
     writer: WritableStreamDefaultWriter,
-    context: &mut Context,
-) -> JsResult<()> {
-    writer.release(context)
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    writer.release(ec)
 }

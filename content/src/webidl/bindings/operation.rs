@@ -1,126 +1,94 @@
-use boa_engine::{
-    Context, JsObject, JsResult, JsValue, js_string, native_function::NativeFunction,
-    property::PropertyDescriptor,
+use std::marker::PhantomData;
+
+use js_engine::{
+    Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
 
 /// Describes a single operation (method) on an interface.
 ///
 /// https://webidl.spec.whatwg.org/#dfn-operation
-pub(crate) struct OperationDef {
-    /// The operation's identifier.
+///
+/// Generic fn pointer: receives `&Ty::JsValue`, `&[Ty::JsValue]`, and
+/// `&mut dyn ExecutionContext<Ty>`.  Binding functions use
+/// `Ty::value_as_object` and `ec.with_platform_data` for upcast/downcast,
+/// avoiding engine-specific dependencies.
+pub(crate) struct OperationDef<T: JsTypes> {
     pub id: &'static str,
-
-    /// The `length` property value: length of the shortest argument list
-    /// in the effective overload set for argument count 0.
     pub length: usize,
-
-    /// The method steps: given `this`, the JavaScript argument values, and
-    /// the context, returns the converted result.
-    ///
-    /// This function pointer must downcast `this` to the platform object
-    /// type internally.
-    pub method: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
-
-    /// Whether the operation is static.
+    pub method:
+        fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>,
     pub static_: bool,
-
-    /// Whether the operation is unforgeable.
     pub unforgeable: bool,
-
-    /// Whether the return type is a promise type.
     pub promise_type: bool,
+    pub _phantom: PhantomData<T>,
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-regular-operations>
-pub(crate) fn define_regular_operations(
-    proto: &JsObject,
-    context: &mut Context,
-    operations: &[OperationDef],
-) -> JsResult<()> {
-    // Step 1: "Let operations be the list of regular operations that are
-    //          members of definition."
-    // Step 2: "Remove from operations all the operations that are
-    //          unforgeable."
-    let regular: Vec<&OperationDef> = operations
+pub(crate) fn define_regular_operations<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    operations: &[OperationDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let regular: Vec<&OperationDef<Ty>> = operations
         .iter()
         .filter(|o| !o.static_ && !o.unforgeable)
         .collect();
-
-    // Step 3: "Define the operations operations of definition on target
-    //          given realm."
-    define_operations_on_target(proto, context, &regular)
-}
-
-/// <https://webidl.spec.whatwg.org/#define-the-unforgeable-regular-operations>
-pub(crate) fn define_unforgeable_regular_operations(
-    proto: &JsObject,
-    context: &mut Context,
-    operations: &[OperationDef],
-) -> JsResult<()> {
-    // Step 1: "Let operations be the list of unforgeable regular operations
-    //          that are members of definition."
-    let unforgeable: Vec<&OperationDef> = operations
-        .iter()
-        .filter(|o| o.unforgeable && !o.static_)
-        .collect();
-
-    // Step 2: "Define the operations operations of definition on target
-    //          given realm."
-    define_operations_on_target(proto, context, &unforgeable)
+    define_operations_on_target(engine, target, &regular)
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-static-operations>
-pub(crate) fn define_static_operations(
-    constructor: &JsObject,
-    context: &mut Context,
-    operations: &[OperationDef],
-) -> JsResult<()> {
-    // Step 1: "Let operations be the list of static operations that are
-    //          members of definition."
-    let static_ops: Vec<&OperationDef> = operations.iter().filter(|o| o.static_).collect();
-
-    // Step 2: "Define the operations operations of definition on target
-    //          given realm."
-    // Note: This reuses the same algorithm as `define_operations_on_target`
-    // but with the constructor as the target.
-    define_operations_on_target(constructor, context, &static_ops)
+pub(crate) fn define_static_operations<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    operations: &[OperationDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let static_ops: Vec<&OperationDef<Ty>> = operations.iter().filter(|o| o.static_).collect();
+    define_operations_on_target(engine, target, &static_ops)
 }
 
-/// <https://webidl.spec.whatwg.org/#define-the-operations>
-fn define_operations_on_target(
-    proto: &JsObject,
-    context: &mut Context,
-    operations: &[&OperationDef],
-) -> JsResult<()> {
-    let realm = context.realm().clone();
+fn define_operations_on_target<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    operations: &[&OperationDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let target_obj = Ty::value_as_object(target)
+        .ok_or_else(|| engine.new_type_error("target is not an object in operation definition"))?;
 
-    // Step 1: "For each operation op of operations:"
     for op in operations {
-        // Step 1.1: "If op is not exposed in realm, then continue."
-        // Note: Exposure checks are not yet implemented.
-
-        // Step 1.2: "Let method be the result of creating an operation
-        //            function given op, definition, and realm."
-        let method = NativeFunction::from_fn_ptr(op.method).to_js_function(&realm);
-
-        // Step 1.3: "Let modifiable be false if op is unforgeable
-        //            and true otherwise."
+        let method = engine.create_builtin_function(
+            Box::new({
+                let op_method = op.method;
+                move |args, this, ec| op_method(&this, args, ec)
+            }),
+            op.length as u32,
+            engine.property_key_from_str(op.id),
+        );
         let modifiable = !op.unforgeable;
-
-        // Step 1.4: "Let desc be the PropertyDescriptor{[[Value]]: method,
-        //            [[Writable]]: modifiable, [[Enumerable]]: true,
-        //            [[Configurable]]: modifiable}."
-        let desc = PropertyDescriptor::builder()
-            .value(method)
-            .writable(modifiable)
-            .enumerable(true)
-            .configurable(modifiable)
-            .build();
-
-        // Step 1.5: "Let id be op's identifier."
-        // Step 1.6: "Perform ! DefinePropertyOrThrow(target, id, desc)."
-        proto.define_property_or_throw(js_string!(op.id), desc, context)?;
+        let desc = PropertyDescriptor {
+            value: Some(Ty::value_from_object(Ty::object_from_function(method))),
+            get: None,
+            set: None,
+            writable: Some(modifiable),
+            enumerable: Some(true),
+            configurable: Some(modifiable),
+        };
+        engine.define_property_or_throw(
+            target_obj.clone(),
+            engine.property_key_from_str(op.id),
+            desc,
+        )?;
     }
-
     Ok(())
 }

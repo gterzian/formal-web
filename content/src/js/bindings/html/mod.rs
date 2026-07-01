@@ -9,5 +9,5 @@ mod hyperlink_element_utils;
 mod location;
 mod window;
 
-pub(crate) use host_hooks::build_boa_context;
-pub(crate) use html_element::style_declaration_object;
+pub(crate) use host_hooks::build_context;
+pub(crate) use html_element::{style_declaration_object, style_declaration_object_ec};

@@ -35,7 +35,9 @@ impl ReadableStreamAsyncIteratorState {
         };
 
         if reader.stream_slot_value().is_some() {
-            reader.release_lock(context)?;
+            crate::js::completion_to_js_result(
+                reader.release_lock(js_engine::boa::context_as_ec(context)),
+            )?;
         }
 
         *self.reader.borrow_mut() = None;
@@ -85,7 +87,7 @@ impl AsyncValueIterable for ReadableStream {
             JsNativeError::typ().with_message("ReadableStream async iterator is missing its reader")
         })?;
 
-        reader.read(context)
+        crate::js::completion_to_js_result(reader.read(js_engine::boa::context_as_ec(context)))
     }
 
     fn finish_async_iterator(&self, state: &Self::State, context: &mut Context) -> JsResult<()> {
@@ -104,17 +106,26 @@ impl AsyncValueIterable for ReadableStream {
         context: &mut Context,
     ) -> JsResult<JsObject> {
         let Some(reader) = state.reader() else {
-            return resolved_promise(JsValue::undefined(), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                js_engine::boa::context_as_ec(context),
+            ));
         };
 
         if state.prevent_cancel.get() {
             state.finish(context)?;
-            return resolved_promise(JsValue::undefined(), context);
+            return crate::js::completion_to_js_result(resolved_promise(
+                JsValue::undefined(),
+                js_engine::boa::context_as_ec(context),
+            ));
         }
 
         let cancel_promise = reader
-            .cancel(value, context)
-            .or_else(|error| rejected_promise(error.into_opaque(context)?, context))?;
+            .cancel(value, js_engine::boa::context_as_ec(context))
+            .or_else(|error_value| {
+                rejected_promise(error_value, js_engine::boa::context_as_ec(context))
+            })
+            .map_err(boa_engine::JsError::from_opaque)?;
 
         state.finish(context)?;
         Ok(cancel_promise)

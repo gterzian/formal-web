@@ -1,8 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{JsData, JsNativeError, JsResult, object::JsObject};
-use boa_gc::{Finalize, Trace};
+use boa_engine::object::JsObject;
 use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
 use url::Url;
@@ -11,11 +10,12 @@ use crate::html::{
     HTMLElement, HyperlinkElementUtils, navigate, the_rules_for_choosing_a_navigable,
 };
 
-/// <https://html.spec.whatwg.org/#htmlanchorelement>
-#[derive(Trace, Finalize, JsData)]
-pub struct HTMLAnchorElement {
-    /// <https://html.spec.whatwg.org/#htmlelement>
-    pub html_element: HTMLElement,
+js_engine::impl_gc_traits! {
+    /// <https://html.spec.whatwg.org/#htmlanchorelement>
+    pub struct HTMLAnchorElement {
+        /// <https://html.spec.whatwg.org/#htmlelement>
+        pub html_element: HTMLElement,
+    }
 }
 
 impl HTMLAnchorElement {
@@ -42,7 +42,7 @@ impl HTMLAnchorElement {
         document_creation_url: &Url,
         _event: &JsObject,
         event_sender: &IpcSender<ContentEvent>,
-    ) -> JsResult<()> {
+    ) -> Result<(), String> {
         // Step 1: "If element has no href attribute, then return."
         if self.href_attribute().is_none() {
             return Ok(());
@@ -82,7 +82,7 @@ impl HTMLAnchorElement {
             &target,
             noopener,
             None, // no GlobalScope: anchor nav delegates new traversables to UA
-            None, // no Context: no return window needed
+            None, // anchor nav uses no return window
         );
 
         navigate(
@@ -98,13 +98,7 @@ impl HTMLAnchorElement {
             result.new_traversable_info,
             None,
         )
-        .map_err(|error| {
-            JsNativeError::typ()
-                .with_message(format!(
-                    "failed to send hyperlink activation navigation request: {error}"
-                ))
-                .into()
-        })
+        .map_err(|error| format!("failed to send hyperlink activation navigation request: {error}"))
     }
 
     /// <https://html.spec.whatwg.org/#get-an-element's-noopener>

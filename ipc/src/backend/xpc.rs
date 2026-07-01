@@ -102,9 +102,7 @@ where
 
 // ── run_extension (child side) ──────────────────────────────────────────────
 
-pub fn run_extension<Out, In>(
-    _token: &str,
-) -> Result<ExtensionServer<In, Out>, IpcError>
+pub fn run_extension<Out, In>(_token: &str) -> Result<ExtensionServer<In, Out>, IpcError>
 where
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
     In: IpcSerialize + DeserializeOwned + Send + 'static,
@@ -173,7 +171,6 @@ where
     };
 
     Ok(ExtensionServer::new(IpcConnection::new(tx, crossbeam_rx)))
-}
 }
 
 // ── create_connection (additional connection to the same service) ───────────

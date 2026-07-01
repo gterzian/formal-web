@@ -9,8 +9,6 @@ use std::{
 };
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 use html5ever::{local_name, ns};
 use url::Url;
 
@@ -19,17 +17,18 @@ use crate::{
     html::HTMLElement, html::navigate, webidl::Callback,
 };
 
-/// <https://html.spec.whatwg.org/#htmliframeelement>
-#[derive(Trace, Finalize, JsData)]
-pub struct HTMLIFrameElement {
-    /// <https://html.spec.whatwg.org/#htmlelement>
-    pub html_element: HTMLElement,
+js_engine::impl_gc_traits! {
+    /// <https://html.spec.whatwg.org/#htmliframeelement>
+    pub struct HTMLIFrameElement {
+        /// <https://html.spec.whatwg.org/#htmlelement>
+        pub html_element: HTMLElement,
 
-    /// <https://html.spec.whatwg.org/#handler-onload>
-    onload: Option<Callback>,
+        /// <https://html.spec.whatwg.org/#handler-onload>
+        onload: Option<Callback>,
 
-    /// <https://html.spec.whatwg.org/#handler-onerror>
-    onerror: Option<Callback>,
+        /// <https://html.spec.whatwg.org/#handler-onerror>
+        onerror: Option<Callback>,
+    }
 }
 
 impl HTMLIFrameElement {
@@ -604,7 +603,7 @@ fn run_iframe_load_event_steps(
 
     let iframe_object = crate::js::platform_objects::resolve_element_object(
         iframe_node_id,
-        &mut content_document.settings.context,
+        content_document.settings.context(),
     )
     .map_err(|error| error.to_string())?;
 
@@ -621,7 +620,7 @@ fn run_iframe_load_event_steps(
         "load",
         false,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
     // Step 7: "Unset childDocument's iframe load in progress flag."
     // TODO: Implement clearing of iframe load in progress flag.

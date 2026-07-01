@@ -1,11 +1,13 @@
 # content/src/js
 
-`content/src/js` integrates Boa (the JavaScript engine) with the content
+`content/src/js` integrates the generic `js_engine` trait with the content
 process and keeps JavaScript-facing wrapper identity separate from DOM and
 HTML [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)
-state.
+state.  The actual engine backend (Boa or JSC) is selected by a feature flag
+in `js_engine`; content code only sees the generic traits.
 
-- `content/src/html/environment_settings_object.rs` owns the Boa `Context`,
+- `content/src/html/environment_settings_object.rs` owns the realm execution
+  context (currently `BoaContext` implementing `ExecutionContext<T>`),
   global-object construction, and the Rust state that corresponds to an HTML
   environment settings object.
 - `content/src/html/global_scope.rs` owns per-global wrapper caches and
@@ -122,8 +124,8 @@ tag, add a domain struct in `content/src/html/`, a `WebIdlInterface` impl in
    `with_element_ref` for the new type.  Also add arms in `class_list_value`
    and `class_list_set_value` if they use the element-punning pattern.
 6. **`content/src/js/bindings/html/html_element.rs`** — add a downcast arm
-   in `with_html_element_ref`, and arms in `style_css_text_getter` and
-   `style_css_text_setter`.
+   in `try_with_html_element_ref`, and arms in `element_style_attribute_ec`
+   and `set_element_style_attribute_ec`.
 7. **`content/src/js/downcast.rs`** — add arms in both
    `with_event_target_mut` and `with_event_target_ref`.
 8. **`content/src/dom/dispatch.rs`** — add an arm in `path_for_target`.

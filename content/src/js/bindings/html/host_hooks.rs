@@ -12,6 +12,7 @@ use boa_engine::{
     property::PropertyDescriptor,
     symbol::JsSymbol,
 };
+use js_engine::boa::BoaContext;
 
 use super::hyperlink_element_utils;
 use crate::dom::{
@@ -33,7 +34,7 @@ use crate::webidl::bindings::{
 };
 // Note: AbortSignal static methods (abort, timeout, any) are registered via
 // static operations in `AbortSignal::define_members`.
-use super::super::streams::readablestream::{pipe_to_native_method, values_method};
+use super::super::streams::readablestream::{pipe_to_native_method_adapter, values_method_adapter};
 
 pub(crate) struct WindowHostHooks {
     document: Rc<RefCell<BaseDocument>>,
@@ -57,14 +58,34 @@ impl HostHooks for WindowHostHooks {
     }
 }
 
-pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
+/// Build a Boa context, registering all native bindings.
+///
+/// Returns a fully-initialized `BoaContext` with all interfaces, prototypes,
+/// and native functions registered.  Access the underlying `Context` via
+/// `engine.context()` for Boa-specific operations not yet abstracted.
+pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<BoaContext, String> {
+    let context = build_boa_context(document)?;
+    Ok(BoaContext::from_context(context))
+}
+
+fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
     let mut context = ContextBuilder::new()
         .host_hooks(Rc::new(WindowHostHooks::new(document)))
         .job_executor(Rc::new(SimpleJobExecutor::new()))
         .build()
         .map_err(|error| error.to_string())?;
 
-    initialize_registry(&mut context);
+    initialize_registry::<crate::js::Types>(js_engine::boa::context_as_ec(&mut context));
+
+    // Store the global object in host_any so that platform_objects.rs can
+    // reach GlobalScope through the generic ExecutionContext trait.
+    {
+        let global_obj = context.global_object().clone();
+        crate::js::platform_objects::init_global_object_slot(
+            js_engine::boa::context_as_ec(&mut context),
+            global_obj,
+        );
+    }
 
     // ── Install WebAssembly namespace ──
     if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut context) {
@@ -73,7 +94,15 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
 
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<$ty>(&mut context).map_err(|error| error.to_string())?;
+            register_interface_spec::<crate::js::Types, $ty, _>(js_engine::boa::context_as_engine(
+                &mut context,
+            ))
+            .map_err(|error| {
+                error
+                    .to_string(&mut context)
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_else(|_| String::from("unknown error"))
+            })?;
         };
     }
 
@@ -133,9 +162,9 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
     if let Some(proto) = get_registry_prototype::<HTMLAnchorElement>(&context) {
         hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(
             &proto,
-            &mut context,
+            js_engine::boa::context_as_ec(&mut context),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.display().to_string())?;
     }
 
     // ReadableStream: async iterator, pipeTo (§ReadableStream)
@@ -147,7 +176,7 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
 
         // values() and @@asyncIterator
         let values_fn =
-            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(values_method))
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(values_method_adapter))
                 .name(js_string!("values"))
                 .length(0)
                 .constructor(false)
@@ -176,7 +205,7 @@ pub(crate) fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<C
 
         // pipeTo with JS wrapper workaround
         let pipe_to_native_fn =
-            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(pipe_to_native_method))
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(pipe_to_native_method_adapter))
                 .name(js_string!("pipeTo"))
                 .length(2)
                 .constructor(false)

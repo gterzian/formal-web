@@ -1,41 +1,38 @@
-use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
+use boa_engine::JsValue;
+use std::marker::PhantomData;
 
 use crate::dom::DOMException;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface for DOMException {
+impl WebIdlInterface<crate::js::Types> for DOMException {
     const NAME: &'static str = "DOMException";
 
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self> {
-        let message = args
-            .get(0)
-            .map(|value| {
-                value
-                    .to_string(context)
-                    .map(|value| value.to_std_string_escaped())
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let name = args
-            .get(1)
-            .map(|value| {
-                value
-                    .to_string(context)
-                    .map(|value| value.to_std_string_escaped())
-            })
-            .transpose()?
-            .unwrap_or_else(|| String::from("Error"));
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
+        let message = if let Some(value) = args.first() {
+            ec.to_rust_string(value.clone())?
+        } else {
+            String::default()
+        };
+        let name = if let Some(value) = args.get(1) {
+            ec.to_rust_string(value.clone())?
+        } else {
+            String::from("Error")
+        };
         Ok(DOMException::new(message, name))
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "name",
             getter: get_name,
             setter: None,
@@ -48,6 +45,8 @@ impl WebIdlInterface for DOMException {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "message",
             getter: get_message,
             setter: None,
@@ -60,6 +59,8 @@ impl WebIdlInterface for DOMException {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
+            _phantom: PhantomData,
+
             id: "code",
             getter: get_code,
             setter: None,
@@ -74,28 +75,41 @@ impl WebIdlInterface for DOMException {
     }
 }
 
-fn get_name(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_dom_exception_ref(this, |exception| {
-        JsValue::from(JsString::from(exception.name_value()))
-    })
-}
-
-fn get_message(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_dom_exception_ref(this, |exception| {
-        JsValue::from(JsString::from(exception.message_value()))
-    })
-}
-
-fn get_code(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_dom_exception_ref(this, |exception| JsValue::from(exception.code_value()))
-}
-
-fn with_dom_exception_ref<R>(this: &JsValue, f: impl FnOnce(&DOMException) -> R) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("DOMException receiver is not an object")
-    })?;
-    let exception = object
+fn get_name(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
+    let exception = obj
         .downcast_ref::<DOMException>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not a DOMException"))?;
-    Ok(f(&exception))
+        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(exception.name_value())))
+}
+
+fn get_message(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
+    let exception = obj
+        .downcast_ref::<DOMException>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(exception.message_value())))
+}
+
+fn get_code(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
+    let exception = obj
+        .downcast_ref::<DOMException>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
+    Ok(ec.value_from_number(exception.code_value() as f64))
 }

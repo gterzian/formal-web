@@ -5,11 +5,11 @@ use ipc_channel::ipc::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+use crate::IpcError;
 use crate::types::{
     BootstrapToken, ExtensionHandle, ExtensionHandleImpl, ExtensionManifest, ExtensionServer,
     IpcConnection, IpcReceiver, IpcSender, IpcSerialize, IpcTransport,
 };
-use crate::IpcError;
 
 type ChannelMessage<T> = (T, HashMap<usize, IpcSharedMemory>);
 
@@ -29,9 +29,7 @@ where
 {
     let (server, token): (IpcOneShotServer<BootstrapMessage<Out, In>>, String) =
         IpcOneShotServer::new().map_err(|error| {
-            IpcError::Transport(format!(
-                "failed to create IPC one-shot server: {error}"
-            ))
+            IpcError::Transport(format!("failed to create IPC one-shot server: {error}"))
         })?;
 
     let bootstrap_token = BootstrapToken {
@@ -63,9 +61,7 @@ where
     Ok((handle, IpcConnection::new(sender, receiver)))
 }
 
-pub fn run_extension<Out, In>(
-    token: &str,
-) -> Result<ExtensionServer<In, Out>, IpcError>
+pub fn run_extension<Out, In>(token: &str) -> Result<ExtensionServer<In, Out>, IpcError>
 where
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
     In: IpcSerialize + DeserializeOwned + Send + 'static,
