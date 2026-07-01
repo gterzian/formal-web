@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
 use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, DomEvent, DomEventData, EventState, UiEvent};
-use boa_engine::{JsResult, JsValue, object::JsObject};
+use boa_engine::{JsValue, object::JsObject};
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 #[cfg(target_os = "macos")]
@@ -433,23 +433,11 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
                 event,
                 self.event_sender,
             );
-            bridged(result, self)?;
+            if let Err(error_msg) = result {
+                return Err(self.ec().new_type_error(&error_msg));
+            }
         }
         Ok(())
-    }
-}
-
-/// Bridge a `JsResult<T>` to `Completion<T>` using the handler's EC for error conversion.
-fn bridged<T>(
-    result: JsResult<T>,
-    handler: &mut BlitzJSEventHandler,
-) -> Completion<T, crate::js::Types> {
-    match result {
-        Ok(val) => Ok(val),
-        Err(e) => {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(handler.ec()) };
-            Err(e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
-        }
     }
 }
 

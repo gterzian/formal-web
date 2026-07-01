@@ -4,7 +4,7 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
+    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
 };
 use boa_gc::{Gc, GcRefCell};
 
@@ -23,19 +23,6 @@ use super::{
     set_up_writable_stream_default_controller_from_underlying_sink,
     writable_stream_default_controller_close,
 };
-
-/// Helper: convert a JsNativeError into a JsValue for use as a Completion error.
-fn native_to_completion_err(
-    error: JsNativeError,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> JsValue {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let js_error: JsError = error.into();
-    js_error
-        .into_opaque(context)
-        .unwrap_or_else(|_| JsValue::undefined())
-}
 
 js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#ws-class>
@@ -268,10 +255,7 @@ impl WritableStream {
         }
 
         let controller = self.controller_slot().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ().with_message("WritableStream is missing its controller"),
-                ec,
-            )
+            ec.new_type_error("WritableStream is missing its controller")
         })?;
         controller.signal_abort(reason.clone(), ec)?;
 
@@ -340,10 +324,7 @@ impl WritableStream {
         }
 
         let controller = self.controller_slot().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ().with_message("WritableStream is missing its controller"),
-                ec,
-            )
+            ec.new_type_error("WritableStream is missing its controller")
         })?;
         writable_stream_default_controller_close(controller.as_default_controller(), ec)?;
         Ok(promise)
@@ -395,10 +376,7 @@ impl WritableStream {
 
         self.set_state(WritableStreamState::Errored);
         let controller = self.controller_slot().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ().with_message("WritableStream is missing its controller"),
-                ec,
-            )
+            ec.new_type_error("WritableStream is missing its controller")
         })?;
         controller.error_steps();
 
@@ -450,11 +428,7 @@ impl WritableStream {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ()
-                    .with_message("WritableStream is missing its in-flight close request"),
-                ec,
-            )
+            ec.new_type_error("WritableStream is missing its in-flight close request")
         })?;
         close_request.resolve(ec)?;
 
@@ -488,11 +462,7 @@ impl WritableStream {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ()
-                    .with_message("WritableStream is missing its in-flight close request"),
-                ec,
-            )
+            ec.new_type_error("WritableStream is missing its in-flight close request")
         })?;
         close_request.reject(error.clone(), ec)?;
 
@@ -509,11 +479,7 @@ impl WritableStream {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ()
-                    .with_message("WritableStream is missing its in-flight write request"),
-                ec,
-            )
+            ec.new_type_error("WritableStream is missing its in-flight write request")
         })?;
         write_request.resolve(ec)?;
         Ok(())
@@ -526,11 +492,7 @@ impl WritableStream {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ()
-                    .with_message("WritableStream is missing its in-flight write request"),
-                ec,
-            )
+            ec.new_type_error("WritableStream is missing its in-flight write request")
         })?;
         write_request.reject(error.clone(), ec)?;
         self.deal_with_rejection(error, ec)
@@ -593,10 +555,7 @@ impl WritableStream {
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
         let controller = self.controller_slot().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ().with_message("WritableStream is missing its controller"),
-                ec,
-            )
+            ec.new_type_error("WritableStream is missing its controller")
         })?;
         self.set_state(WritableStreamState::Erroring);
         self.set_stored_error(reason.clone());
@@ -661,11 +620,7 @@ pub(crate) fn construct_writable_stream(
         None
     } else {
         Some(underlying_sink.as_object().ok_or_else(|| {
-            native_to_completion_err(
-                JsNativeError::typ()
-                    .with_message("WritableStream underlyingSink must be an object"),
-                ec,
-            )
+            ec.new_type_error("WritableStream underlyingSink must be an object")
         })?)
     };
 
@@ -678,12 +633,9 @@ pub(crate) fn construct_writable_stream(
                 .unwrap_or_else(|_| JsValue::undefined())
         })?
     {
-        return Err(native_to_completion_err(
-            JsNativeError::range().with_message(format!(
-                "WritableStream underlyingSink.type must be undefined, got {sink_type}"
-            )),
-            ec,
-        ));
+        return Err(ec.new_range_error(&format!(
+            "WritableStream underlyingSink.type must be undefined, got {sink_type}"
+        )));
     }
 
     // Step 5: "Perform ! InitializeWritableStream(this)."

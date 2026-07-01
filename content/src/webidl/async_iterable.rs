@@ -70,6 +70,18 @@ where
 {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    create_value_async_iterator_boa(target, args, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#js-asynchronous-iterable>
+fn create_value_async_iterator_boa<T>(
+    target: T,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Completion<JsObject, crate::js::Types>
+where
+    T: AsyncValueIterable,
+{
     // Step 6: "Let iterator be a newly created default asynchronous iterator object for definition with idlObject as its target, \"value\" as its kind, and is finished set to false."
     // Step 7: "Run the asynchronous iterator initialization steps for definition with idlObject, iterator, and idlArgs, if any such steps exist."
     // Note: No current content-process async iterable needs the JavaScript iterator object's identity during initialization, so the interface-specific hook returns the iterator state before the wrapper object is allocated.

@@ -199,14 +199,15 @@ impl EnvironmentSettingsObject {
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
-            crate::webidl::invoke_callback_function(
+            if let Err(error) = crate::webidl::invoke_callback_function(
                 &mut self.engine as &mut dyn EcmascriptHost<crate::js::Types>,
                 &callback,
                 &[JsValue::from(now)],
                 crate::webidl::ExceptionBehavior::Report,
                 None,
-            )
-            .map_err(|error| error.to_string())?;
+            ) {
+                error!("callback error: {error:?}");
+            }
         }
 
         Ok(())
@@ -255,15 +256,14 @@ impl EnvironmentSettingsObject {
                     timer_id, timer_key
                 ));
                 let global = JsValue::from(self.context().global_object());
-                let callback_result = crate::webidl::invoke_callback_function(
+                if let Err(error) = crate::webidl::invoke_callback_function(
                     &mut self.engine as &mut dyn EcmascriptHost<crate::js::Types>,
                     callback,
                     &timer.arguments,
                     crate::webidl::ExceptionBehavior::Report,
                     Some(&global),
-                );
-                if let Err(error) = callback_result {
-                    error!("content error: {error}");
+                ) {
+                    error!("content error: {error:?}");
                 }
             }
             TimerHandler::String { source } => {

@@ -33,32 +33,17 @@ impl WriteRequest {
         self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)
-            .map(|_| ())
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })
+        let undefined = JsValue::undefined();
+        let args = [undefined];
+        ec.call(&self.resolvers.resolve, &args[0], &args).map(|_| ())
     }
     pub(crate) fn reject(
         self,
         error: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.resolvers
-            .reject
-            .call(&JsValue::undefined(), &[error], context)
-            .map(|_| ())
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })
+        let undefined = JsValue::undefined();
+        ec.call(&self.resolvers.reject, &undefined, &[error]).map(|_| ())
     }
 }
 #[derive(Clone, Trace, Finalize)]
@@ -96,32 +81,17 @@ impl PendingAbortRequest {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)
-            .map(|_| ())
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })
+        let undefined = JsValue::undefined();
+        let args = [undefined];
+        ec.call(&self.resolvers.resolve, &args[0], &args).map(|_| ())
     }
     pub(crate) fn reject(
         &self,
         error: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.resolvers
-            .reject
-            .call(&JsValue::undefined(), &[error], context)
-            .map(|_| ())
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })
+        let undefined = JsValue::undefined();
+        ec.call(&self.resolvers.reject, &undefined, &[error]).map(|_| ())
     }
 }
 #[derive(Clone, Trace, Finalize)]

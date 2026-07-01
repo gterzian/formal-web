@@ -3280,6 +3280,17 @@ impl PipeToState {
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
+    pub(crate) fn run_abort_algorithm_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.run_abort_algorithm(context)
+            .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+    }
+
+    /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
     fn wait_for_writer_ready(&self, context: &mut Context) -> JsResult<()> {
         self.set_state(PipePumpState::PendingReady);
 

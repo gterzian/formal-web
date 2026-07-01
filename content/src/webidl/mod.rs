@@ -3,7 +3,7 @@ mod async_iterable;
 pub(crate) mod bindings;
 mod buffer_source;
 mod callback;
-mod promise;
+pub(crate) mod promise;
 
 pub(crate) use array_index::is_array_index_key;
 pub(crate) use async_iterable::{AsyncValueIterable, create_value_async_iterator};
@@ -14,7 +14,7 @@ pub(crate) use callback::{
     invoke_callback_function, nullable_value, nullable_value_ec,
 };
 pub(crate) use promise::{
-    a_new_promise, error_to_rejection_reason, mark_promise_as_handled, promise_from_completion,
-    promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
-    transform_promise_to_undefined, upon_settlement,
+    a_new_promise, a_new_promise_boa, error_to_rejection_reason, mark_promise_as_handled,
+    promise_from_completion, promise_from_value, rejected_promise, rejected_promise_from_error,
+    resolved_promise, transform_promise_to_undefined, upon_settlement,
 };

@@ -33,6 +33,17 @@ pub(crate) fn js_result_to_completion<T>(
     })
 }
 
+/// Generic `_ec` wrapper for `js_result_to_completion` that takes
+/// `&mut dyn ExecutionContext<T>` instead of `&mut Context`.
+pub(crate) fn js_result_to_completion_ec<T>(
+    result: boa_engine::JsResult<T>,
+    ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+) -> js_engine::Completion<T, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    js_result_to_completion(result, context)
+}
+
 /// Convert a `Completion<T, crate::js::Types>` back to `JsResult<T>` by wrapping
 /// the error JsValue in a `JsError`.  Used as a bridge at unconverted
 /// domain files that still return `JsResult` and call `Completion`-returning

@@ -1,7 +1,7 @@
 //! <https://webidl.spec.whatwg.org/#js-buffer-source-types>
 
 use boa_engine::{
-    JsNativeError, JsResult, JsValue, object::builtins::JsArrayBuffer,
+    Context, JsNativeError, JsResult, JsValue, object::builtins::JsArrayBuffer,
     object::builtins::JsTypedArray,
 };
 
@@ -14,6 +14,14 @@ pub(crate) fn get_a_copy_of_the_buffer_source(
 ) -> Completion<Vec<u8>, crate::js::Types> {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    get_a_copy_of_the_buffer_source_boa(value, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy>
+fn get_a_copy_of_the_buffer_source_boa(
+    value: &JsValue,
+    context: &mut Context,
+) -> Completion<Vec<u8>, crate::js::Types> {
     let result: JsResult<Vec<u8>> = (|| {
         // Step 1: "Let jsBufferSource be the result of converting bufferSource
         //          to a JavaScript value."

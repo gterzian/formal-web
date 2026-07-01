@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{JsNativeError, JsResult, object::JsObject};
+use boa_engine::object::JsObject;
 use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
 use url::Url;
@@ -42,7 +42,7 @@ impl HTMLAnchorElement {
         document_creation_url: &Url,
         _event: &JsObject,
         event_sender: &IpcSender<ContentEvent>,
-    ) -> JsResult<()> {
+    ) -> Result<(), String> {
         // Step 1: "If element has no href attribute, then return."
         if self.href_attribute().is_none() {
             return Ok(());
@@ -98,13 +98,7 @@ impl HTMLAnchorElement {
             result.new_traversable_info,
             None,
         )
-        .map_err(|error| {
-            JsNativeError::typ()
-                .with_message(format!(
-                    "failed to send hyperlink activation navigation request: {error}"
-                ))
-                .into()
-        })
+        .map_err(|error| format!("failed to send hyperlink activation navigation request: {error}"))
     }
 
     /// <https://html.spec.whatwg.org/#get-an-element's-noopener>

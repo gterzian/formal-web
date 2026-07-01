@@ -40,32 +40,14 @@ impl ReadableStreamBYOBReader {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         if stream.is_readable_stream_locked() {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            let error: JsError = JsNativeError::typ()
-                .with_message("Cannot create a BYOB reader for a locked stream")
-                .into();
-            return Err(error
-                .into_opaque(ctx)
-                .unwrap_or_else(|_| JsValue::undefined()));
+            return Err(ec.new_type_error("Cannot create a BYOB reader for a locked stream"));
         }
 
         let Some(controller) = stream.controller_slot() else {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            let error: JsError = JsNativeError::typ()
-                .with_message("ReadableStream is missing its controller")
-                .into();
-            return Err(error
-                .into_opaque(ctx)
-                .unwrap_or_else(|_| JsValue::undefined()));
+            return Err(ec.new_type_error("ReadableStream is missing its controller"));
         };
         if controller.as_byte_controller().is_none() {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            let error: JsError = JsNativeError::typ()
-                .with_message("ReadableStreamBYOBReader requires a byte stream")
-                .into();
-            return Err(error
-                .into_opaque(ctx)
-                .unwrap_or_else(|_| JsValue::undefined()));
+            return Err(ec.new_type_error("ReadableStreamBYOBReader requires a byte stream"));
         }
 
         self.readable_stream_reader_generic_initialize(stream, ec)
@@ -79,9 +61,8 @@ impl ReadableStreamBYOBReader {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.closed()
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+        let err = ec.new_type_error("ReadableStreamBYOBReader is missing its closed promise");
+        self.closed().map_err(|_| err)
     }
 
     pub(crate) fn cancel(
@@ -139,15 +120,8 @@ impl ReadableStreamBYOBReader {
         read_into_request: ReadIntoRequest,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let stream = self.stream_slot_value().ok_or_else(|| {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            let error: JsError = JsNativeError::typ()
-                .with_message("reader is not attached to a stream")
-                .into();
-            error
-                .into_opaque(ctx)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        let not_attached = ec.new_type_error("reader is not attached to a stream");
+        let stream = self.stream_slot_value().ok_or_else(|| not_attached)?;
 
         stream.set_disturbed(true);
 
@@ -167,24 +141,10 @@ impl ReadableStreamBYOBReader {
             return read_into_request.error_steps(stream.stored_error(), ec);
         }
 
-        let controller = stream.controller_slot().ok_or_else(|| {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            let error: JsError = JsNativeError::typ()
-                .with_message("ReadableStream is missing its controller")
-                .into();
-            error
-                .into_opaque(ctx)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
-        let controller = controller.as_byte_controller().ok_or_else(|| {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            let error: JsError = JsNativeError::typ()
-                .with_message("ReadableStreamBYOBReader requires a byte stream")
-                .into();
-            error
-                .into_opaque(ctx)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        let no_ctrl = ec.new_type_error("ReadableStream is missing its controller");
+        let controller = stream.controller_slot().ok_or_else(|| no_ctrl.clone())?;
+        let not_byte = ec.new_type_error("ReadableStreamBYOBReader requires a byte stream");
+        let controller = controller.as_byte_controller().ok_or_else(|| not_byte)?;
         controller.pull_into(view, min, read_into_request, ec)
     }
 
@@ -235,22 +195,12 @@ pub(crate) fn construct_readable_stream_byob_reader(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<ReadableStreamBYOBReader, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
     let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
-        let error: JsError = JsNativeError::typ()
-            .with_message("ReadableStreamBYOBReader requires a ReadableStream")
-            .into();
-        error
-            .into_opaque(context)
-            .unwrap_or_else(|_| JsValue::undefined())
+        ec.new_type_error("ReadableStreamBYOBReader requires a ReadableStream")
     })?;
+    let not_stream_err = ec.new_type_error("object is not a ReadableStream");
     let stream = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())
-        .map_err(|e: JsError| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        .map_err(|_: JsError| not_stream_err)?;
     let reader = ReadableStreamBYOBReader::new();
     reader.set_up_readable_stream_byob_reader(stream, ec)?;
     Ok(reader)
@@ -262,11 +212,9 @@ pub(crate) fn acquire_readable_stream_byob_reader(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     let reader_object = create_readable_stream_byob_reader(ec)?;
+    let not_reader_err = ec.new_type_error("object is not a ReadableStreamBYOBReader");
     let reader = with_readable_stream_byob_reader_ref(&reader_object, |reader| reader.clone())
-        .map_err(|e: JsError| {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        .map_err(|_: JsError| not_reader_err)?;
     reader.set_up_readable_stream_byob_reader(stream, ec)?;
     Ok(reader_object)
 }

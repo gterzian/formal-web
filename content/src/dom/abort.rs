@@ -38,32 +38,27 @@ impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
     pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> Completion<(), crate::js::Types> {
         match self {
-            Self::Native { callback } => callback()
-                .map_err(|e| {
-                    // Note: Native callbacks still return JsResult; bridge to Completion.
-                    let ctx = unsafe { js_engine::boa::ec_to_ctx(host.ec()) };
-                    e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-                })?,
+            Self::Native { callback } => {
+                let err = host.ec().new_type_error("abort algorithm native callback failed");
+                if callback().is_err() {
+                    return Err(err);
+                }
+            }
             Self::RemoveEventListener {
                 event_target,
                 listener_id,
             } => {
-                with_event_target_mut(&JsValue::from(event_target.clone()), |target| {
+                let err = host.ec().new_type_error("receiver is not an EventTarget");
+                if with_event_target_mut(&JsValue::from(event_target.clone()), |target| {
                     target.remove_event_listener_by_id(*listener_id);
                 })
-                .map_err(|e| {
-                    let ctx = unsafe { js_engine::boa::ec_to_ctx(host.ec()) };
-                    e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-                })?;
+                .is_err()
+                {
+                    return Err(err);
+                }
             }
             Self::ReadableStreamPipeTo { state } => {
-                // SAFETY: EventDispatchHost::ec() returns a &mut dyn ExecutionContext
-                // backed by BoaContext which is #[repr(transparent)] over Context.
-                let context = unsafe { js_engine::boa::ec_to_ctx(host.ec()) };
-                state.run_abort_algorithm(context)
-                    .map_err(|e| {
-                        e.into_opaque(context).unwrap_or(JsValue::undefined())
-                    })?;
+                state.run_abort_algorithm_ec(host.ec())?;
             }
         }
 

@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsValue;
+use boa_engine::{Context, JsValue};
 use log::{debug, error};
 
 use crate::html::{HTMLElement, await_a_stable_state};
@@ -319,6 +319,10 @@ impl HTMLMediaElement {
     ) {
         // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.resource_selection_algorithm_boa(context);
+    }
+
+    fn resource_selection_algorithm_boa(&mut self, context: &mut Context) {
         // Step 1: Set networkState to NETWORK_NO_SOURCE.
         self.network_state = Self::NETWORK_NO_SOURCE;
 

@@ -1420,7 +1420,15 @@ pub fn structured_clone(
 ) -> Completion<JsValue, crate::js::Types> {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    structured_clone_boa(value, options, context)
+}
 
+/// <https://html.spec.whatwg.org/#dom-structuredclone>
+fn structured_clone_boa(
+    value: JsValue,
+    options: Option<StructuredCloneOptions>,
+    context: &mut Context,
+) -> Completion<JsValue, crate::js::Types> {
     // Step 1: Let serialized be ? StructuredSerializeWithTransfer(value, options["transfer"]).
     let transfer = options
         .as_ref()

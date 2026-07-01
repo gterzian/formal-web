@@ -29,7 +29,7 @@ use crate::webidl::{
 };
 use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
 use js_engine::boa::BoaContext;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 use std::marker::PhantomData;
 
 // ── Namespace type ──
@@ -128,18 +128,14 @@ pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
 fn resolve_wasm_namespace(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsObject> {
-        let ns_value = ctx.global_object().get(js_string!("WebAssembly"), ctx)?;
-        let Some(namespace) = ns_value.as_object() else {
-            return Err(JsNativeError::error()
-                .with_message("WebAssembly namespace not found after registration")
-                .into());
-        };
-        Ok(namespace.clone())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let global = ec.realm_global_object();
+    let ns_value = ExecutionContext::get(ec, global, ec.property_key_from_str("WebAssembly"))?;
+    let Some(namespace) = <crate::js::Types as JsTypes>::value_as_object(&ns_value) else {
+        return Err(ec.new_type_error(
+            "WebAssembly namespace not found after registration",
+        ));
+    };
+    Ok(namespace)
 }
 
 // ── Namespace operation bindings ──

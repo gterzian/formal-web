@@ -10,7 +10,7 @@ use boa_engine::{
     },
 };
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 
 /// **Web IDL Promise Manipulation**
@@ -24,11 +24,17 @@ use log::error;
 /// - `transform_promise_to_undefined` → § dfn-perform-steps-once-promise-is-settled
 
 /// <https://webidl.spec.whatwg.org/#a-new-promise>
+#[inline]
 pub(crate) fn a_new_promise(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> (JsObject, ResolvingFunctions) {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    a_new_promise_boa(context)
+}
+
+/// <https://webidl.spec.whatwg.org/#a-new-promise>
+pub(crate) fn a_new_promise_boa(context: &mut Context) -> (JsObject, ResolvingFunctions) {
     let (promise, resolvers) = JsPromise::new_pending(context);
     (promise.into(), resolvers)
 }
@@ -41,6 +47,15 @@ pub(crate) fn resolved_promise(
     // Step 1: "Return a promise resolved with value."
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    resolved_promise_boa(value, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
+fn resolved_promise_boa(
+    value: JsValue,
+    context: &mut Context,
+) -> Completion<JsObject, crate::js::Types> {
+    // Step 1: "Return a promise resolved with value."
     JsPromise::resolve(value, context)
         .map(JsObject::from)
         .map_err(|e| {
@@ -57,6 +72,15 @@ pub(crate) fn rejected_promise(
     // Step 1: "Return a promise rejected with reason."
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    rejected_promise_boa(reason, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
+fn rejected_promise_boa(
+    reason: JsValue,
+    context: &mut Context,
+) -> Completion<JsObject, crate::js::Types> {
+    // Step 1: "Return a promise rejected with reason."
     JsPromise::reject(JsError::from_opaque(reason.clone()), context)
         .map(JsObject::from)
         .map_err(|e| {
@@ -79,6 +103,14 @@ pub(crate) fn promise_from_value(
 ) -> Completion<JsObject, crate::js::Types> {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    promise_from_value_boa(value, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#js-to-promise>
+fn promise_from_value_boa(
+    value: JsValue,
+    context: &mut Context,
+) -> Completion<JsObject, crate::js::Types> {
     JsPromise::resolve(value, context)
         .map(JsObject::from)
         .map_err(|e| {
@@ -96,8 +128,16 @@ pub(crate) fn promise_from_completion(
 ) -> JsPromise {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    promise_from_completion_boa(completion, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#js-to-promise>
+fn promise_from_completion_boa(
+    completion: boa_engine::JsResult<JsValue>,
+    context: &mut Context,
+) -> JsPromise {
     JsPromise::from_result(completion, context).unwrap_or_else(|error| {
-        JsPromise::from_object(rejected_promise_from_error(error, ec))
+        JsPromise::from_object(rejected_promise_from_error_boa(error, context))
             .expect("rejected_promise_from_error must return a Promise object")
     })
 }
@@ -110,12 +150,17 @@ pub(crate) fn rejected_promise_from_error(
     error: JsError,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsObject {
-    let reason = error_to_rejection_reason(error, ec);
-    if let Ok(promise) = rejected_promise(reason, ec) {
-        return promise;
-    }
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    rejected_promise_from_error_boa(error, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
+fn rejected_promise_from_error_boa(error: JsError, context: &mut Context) -> JsObject {
+    let reason = error_to_rejection_reason_boa(error, context);
+    if let Ok(promise) = resolved_promise_boa(reason, context) {
+        return promise;
+    }
     let (promise, resolvers) = JsPromise::new_pending(context);
     if let Err(error) =
         resolvers
@@ -138,12 +183,17 @@ pub(crate) fn error_to_rejection_reason(
     error: JsError,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsValue {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    error_to_rejection_reason_boa(error, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
+fn error_to_rejection_reason_boa(error: JsError, context: &mut Context) -> JsValue {
     if let Some(reason) = error.as_opaque().cloned() {
         return reason;
     }
 
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     match error.into_opaque(context) {
         Ok(reason) => reason,
         Err(_js_error) => JsNativeError::typ()
@@ -165,6 +215,14 @@ pub(crate) fn transform_promise_to_undefined(
 ) -> Completion<JsObject, crate::js::Types> {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    transform_promise_to_undefined_boa(promise_object, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>
+fn transform_promise_to_undefined_boa(
+    promise_object: &JsObject,
+    context: &mut Context,
+) -> Completion<JsObject, crate::js::Types> {
     let on_fulfilled =
         NativeFunction::from_fn_ptr(return_undefined).to_js_function(context.realm());
     JsPromise::from_object(promise_object.clone())
@@ -185,6 +243,14 @@ pub(crate) fn mark_promise_as_handled(
 ) -> Completion<(), crate::js::Types> {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    mark_promise_as_handled_boa(promise_object, context)
+}
+
+/// <https://webidl.spec.whatwg.org/#mark-a-promise-as-handled>
+fn mark_promise_as_handled_boa(
+    promise_object: &JsObject,
+    context: &mut Context,
+) -> Completion<(), crate::js::Types> {
     let on_rejected = NativeFunction::from_fn_ptr(return_undefined).to_js_function(context.realm());
     let _ = JsPromise::from_object(promise_object.clone())
         .and_then(|p| p.catch(on_rejected, context))
@@ -284,26 +350,11 @@ where
         ) -> Completion<JsValue, crate::js::Types>
         + 'static,
 {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    // We extract the concrete engine so we can call create_builtin_function
-    // (on JsEngine) and new_promise_capability / perform_promise_then
-    // (on ExecutionContext) through the same object.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
-    // Extract everything we need from `context` before creating `engine`,
-    // since both reference the same underlying Boa Context.
-    let realm = context.realm().clone();
-    let global = context.global_object();
-    let not_promise_err: JsValue = {
-        let js_error: JsError = JsNativeError::typ()
-            .with_message("upon_settlement: value is not a Promise")
-            .into();
-        js_error
-            .into_opaque(context)
-            .unwrap_or_else(|_| JsValue::undefined())
-    };
-
-    let engine = js_engine::boa::context_as_engine(context);
+    // Extract everything we need from `ec` before creating closures,
+    // since create_builtin_function takes &mut self.
+    let realm = ec.current_realm();
+    let global = ec.realm_global_object();
+    let not_promise_err = ec.new_type_error("upon_settlement: value is not a Promise");
 
     // Wrap FnOnce steps in RefCell so they satisfy the Fn bound required
     // by create_builtin_function.  Each callback is called at most once
@@ -312,70 +363,74 @@ where
     let rejected_cell = on_rejected.map(|s| RefCell::new(Some(s)));
 
     // Step 2 of react: CreateBuiltinFunction(onFulfilledSteps, 1, "", « »)
-    let on_fulfilled_fn: Option<JsFunction> = if fulfilled_cell.is_some() {
-        let cell = fulfilled_cell.unwrap();
-        Some(engine.create_builtin_function(
-            Box::new(
-                move |args: &[JsValue],
-                      _this: JsValue,
-                      inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                      -> Completion<JsValue, crate::js::Types> {
-                    let value = args
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| inner_ec.value_undefined());
-                    if let Some(steps) = cell.borrow_mut().take() {
-                        steps(value, inner_ec)
-                    } else {
-                        Ok(inner_ec.value_undefined())
-                    }
-                },
-            ),
-            1,
-            engine.property_key_from_str(""),
-        ))
-    } else {
-        None
-    };
+    let on_fulfilled_fn: Option<<crate::js::Types as JsTypes>::Function> =
+        if fulfilled_cell.is_some() {
+            let cell = fulfilled_cell.unwrap();
+            Some(ec.create_builtin_function(
+                Box::new(
+                    move |args: &[JsValue],
+                          _this: JsValue,
+                          inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                          -> Completion<JsValue, crate::js::Types> {
+                        let value = args
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| inner_ec.value_undefined());
+                        if let Some(steps) = cell.borrow_mut().take() {
+                            steps(value, inner_ec)
+                        } else {
+                            Ok(inner_ec.value_undefined())
+                        }
+                    },
+                ),
+                1,
+                ec.property_key_from_str(""),
+            ))
+        } else {
+            None
+        };
 
     // Step 4 of react: CreateBuiltinFunction(onRejectedSteps, 1, "", « »)
-    let on_rejected_fn: Option<JsFunction> = if rejected_cell.is_some() {
-        let cell = rejected_cell.unwrap();
-        Some(engine.create_builtin_function(
-            Box::new(
-                move |args: &[JsValue],
-                      _this: JsValue,
-                      inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                      -> Completion<JsValue, crate::js::Types> {
-                    let reason = args
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| inner_ec.value_undefined());
-                    if let Some(steps) = cell.borrow_mut().take() {
-                        steps(reason, inner_ec)
-                    } else {
-                        Ok(inner_ec.value_undefined())
-                    }
-                },
-            ),
-            1,
-            engine.property_key_from_str(""),
-        ))
-    } else {
-        None
-    };
+    let on_rejected_fn: Option<<crate::js::Types as JsTypes>::Function> =
+        if rejected_cell.is_some() {
+            let cell = rejected_cell.unwrap();
+            Some(ec.create_builtin_function(
+                Box::new(
+                    move |args: &[JsValue],
+                          _this: JsValue,
+                          inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                          -> Completion<JsValue, crate::js::Types> {
+                        let reason = args
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| inner_ec.value_undefined());
+                        if let Some(steps) = cell.borrow_mut().take() {
+                            steps(reason, inner_ec)
+                        } else {
+                            Ok(inner_ec.value_undefined())
+                        }
+                    },
+                ),
+                1,
+                ec.property_key_from_str(""),
+            ))
+        } else {
+            None
+        };
 
     // Step 5 of react: Let constructor be %Promise%.
-    let intrinsics = engine.realm_intrinsics(&realm);
+    let intrinsics = ec.realm_intrinsics(&realm);
     let promise_constructor = intrinsics.promise;
 
     // Step 6 of react: Let newCapability be ? NewPromiseCapability(constructor).
-    let capability = engine.new_promise_capability(promise_constructor)?;
+    let capability = ec.new_promise_capability(promise_constructor)?;
     let result_promise = capability.promise.clone();
 
     // Step 7 of react: PerformPromiseThen(promise, onFulfilled, onRejected, newCapability).
-    let js_promise = JsPromise::from_object(promise).map_err(|_| not_promise_err.clone())?;
-    engine.perform_promise_then(
+    let js_promise =
+        <crate::js::Types as JsTypes>::object_as_promise(&promise)
+            .ok_or_else(|| not_promise_err.clone())?;
+    ec.perform_promise_then(
         js_promise,
         on_fulfilled_fn,
         on_rejected_fn,
@@ -383,8 +438,5 @@ where
     )?;
 
     // Step 8 of react: Return newCapability.
-    Ok(result_promise
-        .as_object()
-        .map(|o| o.clone())
-        .unwrap_or(global))
+    Ok(crate::js::Types::value_as_object(&result_promise).unwrap_or(global))
 }

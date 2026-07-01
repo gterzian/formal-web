@@ -211,7 +211,7 @@ pub(crate) fn invoke_callback_function(
     args: &[JsValue],
     exception_behavior: ExceptionBehavior,
     this_arg: Option<&JsValue>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, crate::js::Types> {
     // Step 1: "Let completion be an uninitialized variable."
 
     // Step 2: "If thisArg was not given, let thisArg be undefined."
@@ -253,7 +253,7 @@ pub(crate) fn invoke_callback_function(
 
             // Return.5: "If exceptionBehavior is \"rethrow\", throw completion.[[Value]]."
             if exception_behavior == ExceptionBehavior::Rethrow {
-                return Err(into_js_error(error));
+                return Err(error);
             }
 
             // Return.6.2: "Report an exception completion.[[Value]] for realm's global object."
@@ -263,10 +263,4 @@ pub(crate) fn invoke_callback_function(
             Ok(JsValue::undefined())
         }
     }
-}
-
-/// Convert a `JsValue` (from the generic `Completion` model) back into a
-/// `JsError` for compatibility with existing callers that expect `JsResult`.
-pub(crate) fn into_js_error(value: JsValue) -> JsError {
-    JsError::from_opaque(value)
 }

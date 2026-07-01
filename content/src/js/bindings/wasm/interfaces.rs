@@ -84,11 +84,7 @@ impl WebIdlInterface<crate::js::Types> for WasmModule {
         let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ec)?;
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            crate::js::native_error_to_js_value(
-                JsNativeError::typ().with_message(format!("CompileError: {}", error)),
-                ctx,
-            )
+            ec.new_type_error(&format!("CompileError: {}", error))
         })?;
         // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
         Ok(WasmModule::new(module, stable_bytes))
@@ -130,39 +126,32 @@ fn module_exports_binding(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let module_value = args
-            .first()
-            .ok_or_else(|| JsNativeError::typ().with_message("Module.exports: missing argument"))?;
-        let module_object = module_value.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("Module.exports: argument must be a Module object")
+    let module_value = args
+        .first()
+        .ok_or_else(|| ec.new_type_error("Module.exports: missing argument"))?;
+    let module_object =
+        <crate::js::Types as JsTypes>::value_as_object(module_value).ok_or_else(|| {
+            ec.new_type_error("Module.exports: argument must be a Module object")
         })?;
-        let wasm_module = module_object.downcast_ref::<WasmModule>().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("Module.exports: argument is not a WebAssembly.Module")
+    let wasm_module =
+        module_object.downcast_ref::<WasmModule>().ok_or_else(|| {
+            ec.new_type_error("Module.exports: argument is not a WebAssembly.Module")
         })?;
 
-        let descriptors = wasm_module.export_descriptors();
-        let exports_array = boa_engine::object::builtins::JsArray::new(ctx)?;
-        for (name, kind) in &descriptors {
-            let entry = ctx
-                .intrinsics()
-                .constructors()
-                .object()
-                .constructor()
-                .call(&JsValue::undefined(), &[], ctx)?;
-            let entry_obj = entry.as_object().ok_or_else(|| {
-                JsNativeError::typ().with_message("failed to create export descriptor")
-            })?;
-            entry_obj.set(js_string!("name"), js_string!(name.as_str()), false, ctx)?;
-            entry_obj.set(js_string!("kind"), js_string!(*kind), false, ctx)?;
-            exports_array.push(entry, ctx)?;
-        }
-        Ok(JsValue::from(exports_array))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let descriptors = wasm_module.export_descriptors();
+    let exports_array = ec.create_empty_array();
+    for (name, kind) in &descriptors {
+        let entry = ec.create_plain_object(None);
+        let name_key = ec.property_key_from_str("name");
+        let name_value = ec.value_from_string(ec.js_string_from_str(name.as_str()));
+        let kind_key = ec.property_key_from_str("kind");
+        let kind_value = ec.value_from_string(ec.js_string_from_str(*kind));
+        ec.set(entry.clone(), name_key, name_value, false)?;
+        ec.set(entry.clone(), kind_key, kind_value, false)?;
+        let entry_value = <crate::js::Types as JsTypes>::value_from_object(entry);
+        ec.array_push(&exports_array, entry_value)?;
+    }
+    Ok(<crate::js::Types as JsTypes>::value_from_object(exports_array))
 }
 
 fn get_instance_exports_binding(

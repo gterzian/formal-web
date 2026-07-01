@@ -68,22 +68,13 @@ impl SizeAlgorithm {
             Self::Callback { callback } => {
                 // "Return the result of invoking strategy[\"size\"] with argument
                 // list « chunk »."
-                let result = invoke_callback_function(
+                let value = invoke_callback_function(
                     ec,
                     callback,
                     &[chunk.clone()],
                     ExceptionBehavior::Rethrow,
                     None,
-                );
-                let value = match result {
-                    Ok(value) => value,
-                    Err(js_error) => {
-                        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-                        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                        let opaque = js_error.into_opaque(ctx);
-                        return Err(opaque.unwrap_or(JsValue::undefined()));
-                    }
-                };
+                )?;
                 to_non_negative_number(&value, ec)
             }
         }
