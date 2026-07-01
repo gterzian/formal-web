@@ -2018,6 +2018,84 @@ impl ExecutionContext<JscTypes> for JscEngine {
         Ok(())
     }
 
+    // ── §23.2 TypedArray Objects ──────────────────────────────────────────
+
+    fn typed_array_buffer(
+        &mut self,
+        _typed_array: &JscTypedArray,
+    ) -> Completion<JscArrayBuffer, JscTypes> {
+        todo!("typed_array_buffer not yet implemented for JSC")
+    }
+
+    fn typed_array_byte_offset(
+        &mut self,
+        _typed_array: &JscTypedArray,
+    ) -> Completion<u64, JscTypes> {
+        todo!("typed_array_byte_offset not yet implemented for JSC")
+    }
+
+    fn typed_array_byte_length(
+        &mut self,
+        _typed_array: &JscTypedArray,
+    ) -> Completion<u64, JscTypes> {
+        todo!("typed_array_byte_length not yet implemented for JSC")
+    }
+
+    fn typed_array_element_type(
+        &self,
+        _typed_array: &JscTypedArray,
+    ) -> Option<TypedArrayElementType> {
+        None
+    }
+
+    fn construct_typed_array_view(
+        &mut self,
+        _element_type: TypedArrayElementType,
+        _buffer: JscArrayBuffer,
+        _byte_offset: u64,
+        _byte_length: u64,
+    ) -> Completion<JscTypedArray, JscTypes> {
+        todo!("construct_typed_array_view not yet implemented for JSC")
+    }
+
+    // ── §25.3 DataView Objects ────────────────────────────────────────────
+
+    fn data_view_buffer(
+        &mut self,
+        _data_view: &JscDataView,
+    ) -> Completion<JscArrayBuffer, JscTypes> {
+        todo!("data_view_buffer not yet implemented for JSC")
+    }
+
+    fn data_view_byte_offset(
+        &mut self,
+        _data_view: &JscDataView,
+    ) -> Completion<u64, JscTypes> {
+        todo!("data_view_byte_offset not yet implemented for JSC")
+    }
+
+    fn data_view_byte_length(
+        &mut self,
+        _data_view: &JscDataView,
+    ) -> Completion<u64, JscTypes> {
+        todo!("data_view_byte_length not yet implemented for JSC")
+    }
+
+    fn construct_data_view_from_buffer(
+        &mut self,
+        _buffer: JscArrayBuffer,
+        _byte_offset: u64,
+        _byte_length: u64,
+    ) -> Completion<JscDataView, JscTypes> {
+        todo!("construct_data_view_from_buffer not yet implemented for JSC")
+    }
+
+    // ── §25.1 ArrayBuffer — data access ───────────────────────────────────
+
+    fn array_buffer_data(&self, _array_buffer: &JscArrayBuffer) -> Option<Vec<u8>> {
+        None
+    }
+
     // ── §27 Promise ───────────────────────────────────────────────────────
     fn promise_resolve(
         &mut self,

@@ -29,7 +29,10 @@ use boa_engine::{
     native_function::NativeFunction,
     object::{
         FunctionObjectBuilder, JsObject,
-        builtins::{JsArrayBuffer, JsFunction, JsGenerator, JsPromise, JsSharedArrayBuffer},
+        builtins::{
+            JsArrayBuffer, JsDataView, JsFunction, JsGenerator, JsPromise,
+            JsSharedArrayBuffer, JsTypedArray,
+        },
     },
     property::PropertyKey,
     value::PreferredType as BoaPreferredType,
@@ -133,6 +136,23 @@ impl Default for BoaContext {
 
 fn into_completion<T>(result: JsResult<T>, context: &mut Context) -> Completion<T, BoaTypes> {
     result.map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+}
+
+fn typed_array_element_size(element_type: TypedArrayElementType) -> u64 {
+    match element_type {
+        TypedArrayElementType::Int8 => 1,
+        TypedArrayElementType::Uint8 => 1,
+        TypedArrayElementType::Uint8Clamped => 1,
+        TypedArrayElementType::Int16 => 2,
+        TypedArrayElementType::Uint16 => 2,
+        TypedArrayElementType::Int32 => 4,
+        TypedArrayElementType::Uint32 => 4,
+        TypedArrayElementType::Float16 => 2,
+        TypedArrayElementType::Float32 => 4,
+        TypedArrayElementType::Float64 => 8,
+        TypedArrayElementType::BigInt64 => 8,
+        TypedArrayElementType::BigUint64 => 8,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1044,6 +1064,156 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         _order: SharedMemoryOrder,
     ) -> Completion<(), BoaTypes> {
         Ok(())
+    }
+
+    // ── §23.2 TypedArray Objects ──────────────────────────────────────────
+
+    fn typed_array_buffer(
+        &mut self,
+        typed_array: &JsTypedArray,
+    ) -> Completion<JsArrayBuffer, BoaTypes> {
+        let buffer_val =
+            into_completion(typed_array.buffer(&mut self.context), &mut self.context)?;
+        let buffer_obj = buffer_val
+            .as_object()
+            .ok_or_else(|| self.new_type_error("TypedArray buffer is not an object"))?;
+        JsArrayBuffer::from_object(buffer_obj.clone())
+            .map_err(|_| self.new_type_error("TypedArray buffer is not an ArrayBuffer"))
+    }
+
+    fn typed_array_byte_offset(
+        &mut self,
+        typed_array: &JsTypedArray,
+    ) -> Completion<u64, BoaTypes> {
+        let offset =
+            into_completion(typed_array.byte_offset(&mut self.context), &mut self.context)?;
+        Ok(offset as u64)
+    }
+
+    fn typed_array_byte_length(
+        &mut self,
+        typed_array: &JsTypedArray,
+    ) -> Completion<u64, BoaTypes> {
+        let length =
+            into_completion(typed_array.byte_length(&mut self.context), &mut self.context)?;
+        Ok(length as u64)
+    }
+
+    fn typed_array_element_type(
+        &self,
+        typed_array: &JsTypedArray,
+    ) -> Option<TypedArrayElementType> {
+        // HARD: TypedArrayKind is not publicly accessible from Boa.
+        // Callers should use BYTES_PER_ELEMENT via JS getter instead.
+        let _ = typed_array.kind();
+        None
+    }
+
+    fn construct_typed_array_view(
+        &mut self,
+        element_type: TypedArrayElementType,
+        buffer: JsArrayBuffer,
+        byte_offset: u64,
+        byte_length: u64,
+    ) -> Completion<JsTypedArray, BoaTypes> {
+        let constructor_name = match element_type {
+            TypedArrayElementType::Int8 => "Int8Array",
+            TypedArrayElementType::Uint8 => "Uint8Array",
+            TypedArrayElementType::Uint8Clamped => "Uint8ClampedArray",
+            TypedArrayElementType::Int16 => "Int16Array",
+            TypedArrayElementType::Uint16 => "Uint16Array",
+            TypedArrayElementType::Int32 => "Int32Array",
+            TypedArrayElementType::Uint32 => "Uint32Array",
+            TypedArrayElementType::Float16 => "Float16Array",
+            TypedArrayElementType::Float32 => "Float32Array",
+            TypedArrayElementType::Float64 => "Float64Array",
+            TypedArrayElementType::BigInt64 => "BigInt64Array",
+            TypedArrayElementType::BigUint64 => "BigUint64Array",
+        };
+        let global = self.context.global_object();
+        let constructor_val = into_completion(
+            global.get(
+                boa_engine::JsString::from(constructor_name),
+                &mut self.context,
+            ),
+            &mut self.context,
+        )?;
+        let element_size = typed_array_element_size(element_type);
+        let length = byte_length / element_size;
+        let buffer_val: JsValue = JsValue::from(buffer);
+        let offset_val = JsValue::new(byte_offset as f64);
+        let length_val = JsValue::new(length as f64);
+        let constructor_obj = constructor_val
+            .as_object()
+            .ok_or_else(|| self.new_type_error("typed array constructor is not an object"))?;
+        let result = into_completion(
+            constructor_obj.construct(
+                    &[buffer_val, offset_val, length_val],
+                    None,
+                    &mut self.context,
+                ),
+            &mut self.context,
+        )?;
+        JsTypedArray::from_object(result)
+            .map_err(|_| self.new_type_error("Failed to create TypedArray view"))
+    }
+
+    // ── §25.3 DataView Objects ────────────────────────────────────────────
+
+    fn data_view_buffer(
+        &mut self,
+        data_view: &JsDataView,
+    ) -> Completion<JsArrayBuffer, BoaTypes> {
+        let buffer_val =
+            into_completion(data_view.buffer(&mut self.context), &mut self.context)?;
+        let buffer_obj = buffer_val
+            .as_object()
+            .ok_or_else(|| self.new_type_error("DataView buffer is not an object"))?;
+        JsArrayBuffer::from_object(buffer_obj.clone())
+            .map_err(|_| self.new_type_error("DataView buffer is not an ArrayBuffer"))
+    }
+
+    fn data_view_byte_offset(
+        &mut self,
+        data_view: &JsDataView,
+    ) -> Completion<u64, BoaTypes> {
+        into_completion(
+            data_view.byte_offset(&mut self.context),
+            &mut self.context,
+        )
+    }
+
+    fn data_view_byte_length(
+        &mut self,
+        data_view: &JsDataView,
+    ) -> Completion<u64, BoaTypes> {
+        into_completion(
+            data_view.byte_length(&mut self.context),
+            &mut self.context,
+        )
+    }
+
+    fn construct_data_view_from_buffer(
+        &mut self,
+        buffer: JsArrayBuffer,
+        byte_offset: u64,
+        byte_length: u64,
+    ) -> Completion<JsDataView, BoaTypes> {
+        into_completion(
+            JsDataView::from_js_array_buffer(
+                buffer,
+                Some(byte_offset),
+                Some(byte_length),
+                &mut self.context,
+            ),
+            &mut self.context,
+        )
+    }
+
+    // ── §25.1 ArrayBuffer — data access ───────────────────────────────────
+
+    fn array_buffer_data(&self, array_buffer: &JsArrayBuffer) -> Option<Vec<u8>> {
+        array_buffer.data().map(|aligned| aligned.to_vec())
     }
 
     // ── §27 Promise ───────────────────────────────────────────────────────

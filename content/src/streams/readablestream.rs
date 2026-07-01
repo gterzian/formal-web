@@ -2162,21 +2162,19 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
             // Step 18.2 chunk steps 1.4: "If canceled1 is false and canceled2 is false,"
             if !canceled1 && !canceled2 {
                 // Step 18.2 chunk steps 1.4.1: "Let cloneResult be CloneAsUint8Array(chunk)."
-                match clone_as_uint8_array(chunk1.clone(), context) {
+                match clone_as_uint8_array(chunk1.clone(), js_engine::boa::context_as_ec(context)) {
                     Ok(cloned_chunk) => {
                         // Step 18.2 chunk steps 1.4.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
                         chunk2 = cloned_chunk;
                     }
                     Err(error) => {
-                        let error = error.into_opaque(context)?;
-
                         // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
-                            if let Err(error) =
+                            if let Err(inner_error) =
                                 byte_tee_error_branch(branch1, error.clone(), context)
                             {
                                 error!(
-                                    "[readable-stream] byte tee error branch1 (chunk) failed: {error}"
+                                    "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error}"
                                 );
                             }
                         }
@@ -2337,7 +2335,13 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     for_branch2: bool,
     context: &mut Context,
 ) -> JsResult<()> {
-    let view = ArrayBufferViewDescriptor::from_value(view_value.clone(), context)?;
+    let view = match ArrayBufferViewDescriptor::from_value(
+        view_value.clone(),
+        js_engine::boa::context_as_ec(context),
+    ) {
+        Ok(v) => v,
+        Err(js_error) => return Err(boa_engine::JsError::from_opaque(js_error)),
+    };
 
     // Step 19.1: "If reader implements ReadableStreamDefaultReader,"
     byte_tee_switch_to_byob_reader(&tee_state, context)?;
@@ -2404,10 +2408,16 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
                                 // Step 19.4 close steps 6.2: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
                                 if !byob_canceled {
                                     if let Some(branch) = byob_branch.as_ref() {
-                                        if let (Ok(view), Some(view_object)) = (
-                                            ArrayBufferViewDescriptor::from_value(chunk.clone(), context),
-                                            chunk.as_object(),
+                                        let view = match ArrayBufferViewDescriptor::from_value(
+                                            chunk.clone(),
+                                            js_engine::boa::context_as_ec(context),
                                         ) {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                return Err(boa_engine::JsError::from_opaque(e));
+                                            }
+                                        };
+                                        if let Some(view_object) = chunk.as_object() {
                                             if let Some(controller) = branch
                                                 .controller_slot()
                                                 .and_then(|c| c.as_byte_controller())
@@ -2447,22 +2457,24 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
                         // Step 19.4 chunk steps 1.4: "Let otherCanceled be canceled2 if forBranch2 is false, and canceled1 otherwise."
                         if !other_canceled {
                             // Step 19.4 chunk steps 1.5.1: "Let cloneResult be CloneAsUint8Array(chunk)."
-                            match clone_as_uint8_array(chunk.clone(), context) {
+                            match clone_as_uint8_array(chunk.clone(), js_engine::boa::context_as_ec(context)) {
                                 Ok(cloned_chunk) => {
                                     // Step 19.4 chunk steps 1.5.3: "Otherwise, let clonedChunk be cloneResult.[[Value]]."
                                     // Step 19.4 chunk steps 1.5.4: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
                                     if !byob_canceled {
                                         if let Some(branch) = byob_branch.as_ref() {
-                                            if let (Ok(view), Some(view_object)) = (
-                                                ArrayBufferViewDescriptor::from_value(chunk.clone(), context),
-                                                chunk.as_object(),
+                                            if let Ok(view) = ArrayBufferViewDescriptor::from_value(
+                                                chunk.clone(),
+                                                js_engine::boa::context_as_ec(context),
                                             ) {
-                                                if let Some(controller) = branch
-                                                    .controller_slot()
-                                                    .and_then(|c| c.as_byte_controller())
-                                                {
-                                                    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
-                                                    crate::js::completion_to_js_result(controller.respond_with_new_view(view, view_object, ec_ref))?;
+                                                if let Some(view_object) = chunk.as_object() {
+                                                    if let Some(controller) = branch
+                                                        .controller_slot()
+                                                        .and_then(|c| c.as_byte_controller())
+                                                    {
+                                                        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
+                                                        crate::js::completion_to_js_result(controller.respond_with_new_view(view, view_object, ec_ref))?;
+                                                    }
                                                 }
                                             }
                                         }
@@ -2474,8 +2486,6 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
                                     }
                                 }
                                 Err(error) => {
-                                    let error = error.into_opaque(context)?;
-
                                     // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
                                     if let Some(branch) = byob_branch.as_ref() {
                                         if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
@@ -2508,16 +2518,18 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
                         } else if !byob_canceled {
                             // Step 19.4 chunk steps 1.6: "Otherwise, if byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
                             if let Some(branch) = byob_branch.as_ref() {
-                                if let (Ok(view), Some(view_object)) = (
-                                    ArrayBufferViewDescriptor::from_value(chunk.clone(), context),
-                                    chunk.as_object(),
+                                if let Ok(view) = ArrayBufferViewDescriptor::from_value(
+                                    chunk.clone(),
+                                    js_engine::boa::context_as_ec(context),
                                 ) {
-                                    if let Some(controller) = branch
-                                        .controller_slot()
-                                        .and_then(|c| c.as_byte_controller())
-                                    {
-                                        let ec: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
-                                        crate::js::completion_to_js_result(controller.respond_with_new_view(view, view_object, ec))?;
+                                    if let Some(view_object) = chunk.as_object() {
+                                        if let Some(controller) = branch
+                                            .controller_slot()
+                                            .and_then(|c| c.as_byte_controller())
+                                        {
+                                            let ec: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
+                                            crate::js::completion_to_js_result(controller.respond_with_new_view(view, view_object, ec))?;
+                                        }
                                     }
                                 }
                             }
@@ -2840,11 +2852,17 @@ fn readable_byte_stream_tee(
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-cloneasuint8array>
-fn clone_as_uint8_array(chunk: JsValue, context: &mut Context) -> JsResult<JsValue> {
+fn clone_as_uint8_array(
+    chunk: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     use boa_engine::object::builtins::JsUint8Array;
-    let view = ArrayBufferViewDescriptor::from_value(chunk, context)?;
-    let src_bytes = view.bytes()?;
-    let array = JsUint8Array::from_iter(src_bytes, context)?;
+    let view = ArrayBufferViewDescriptor::from_value(chunk, ec)?;
+    let src_bytes = view.bytes(ec)?;
+    // SAFETY: JsUint8Array::from_iter requires Boa's Context
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let array = JsUint8Array::from_iter(src_bytes, context)
+        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))?;
     Ok(array.into())
 }
 

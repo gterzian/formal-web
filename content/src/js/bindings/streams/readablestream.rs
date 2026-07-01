@@ -521,7 +521,7 @@ fn get_byte_desired_size(
     let controller_object = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ReadableByteStreamController receiver is not an object"))?;
     let controller = with_readable_byte_stream_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
-    let size = controller.desired_size_ec(ec)?;
+    let size = controller.desired_size(ec)?;
     Ok(match size {
         Some(s) => JsValue::from(s),
         None => JsValue::null(),

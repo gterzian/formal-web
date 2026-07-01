@@ -83,13 +83,7 @@ impl ReadableStreamBYOBReader {
             return rejected_type_error_promise("Cannot read from a released reader", ec);
         }
 
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // ArrayBufferViewDescriptor::from_value requires Boa's Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let view = ArrayBufferViewDescriptor::from_value(view.clone(), context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
+        let view = ArrayBufferViewDescriptor::from_value(view.clone(), ec)?;
         if view.byte_length() == 0 {
             return rejected_type_error_promise(
                 "ReadableStreamBYOBReader.read() requires a non-empty view",
@@ -97,6 +91,8 @@ impl ReadableStreamBYOBReader {
             );
         }
 
+        // SAFETY: normalize_min and ReadIntoRequest::new still require &mut Context
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let min = match normalize_min(options, &view, context) {
             Ok(min) => min,
             Err(error) => {
@@ -126,13 +122,9 @@ impl ReadableStreamBYOBReader {
         stream.set_disturbed(true);
 
         if stream.state() == ReadableStreamState::Closed {
-            // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-            // create_result_view requires Boa's Context.
-            let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+            let result_view = view.create_result_view(0, ec)?;
             return read_into_request.close_steps(
-                Some(JsValue::from(view.create_result_view(0, ctx).map_err(
-                    |e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()),
-                )?)),
+                Some(JsValue::from(result_view)),
                 ec,
             );
         }

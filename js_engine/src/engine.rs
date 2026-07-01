@@ -444,6 +444,75 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ) -> Completion<(), T>;
 
     // ────────────────────────────────────────────────────────────────────────
+    // §23.2 TypedArray Objects
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-gettypedarraybuffer>
+    /// Get the backing ArrayBuffer of a TypedArray.
+    fn typed_array_buffer(
+        &mut self,
+        typed_array: &T::TypedArray,
+    ) -> Completion<T::ArrayBuffer, T>;
+
+    /// <https://tc39.es/ecma262/#sec-gettypedarraybyteoffset>
+    /// Get the byte offset of a TypedArray.
+    fn typed_array_byte_offset(&mut self, typed_array: &T::TypedArray) -> Completion<u64, T>;
+
+    /// <https://tc39.es/ecma262/#sec-gettypedarraybytelength>
+    /// Get the byte length of a TypedArray.
+    fn typed_array_byte_length(&mut self, typed_array: &T::TypedArray) -> Completion<u64, T>;
+
+    /// Get the TypedArray element type (e.g., Uint8, Int16).
+    /// Returns None if the kind cannot be determined.
+    fn typed_array_element_type(&self, typed_array: &T::TypedArray) -> Option<TypedArrayElementType>;
+
+    /// <https://tc39.es/ecma262/#sec-typedarraycreate>
+    /// Create a new TypedArray view backed by the given ArrayBuffer.
+    fn construct_typed_array_view(
+        &mut self,
+        element_type: TypedArrayElementType,
+        buffer: T::ArrayBuffer,
+        byte_offset: u64,
+        byte_length: u64,
+    ) -> Completion<T::TypedArray, T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §25.3 DataView Objects
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-getdataviewbuffer>
+    /// Get the backing ArrayBuffer of a DataView.
+    fn data_view_buffer(
+        &mut self,
+        data_view: &T::DataView,
+    ) -> Completion<T::ArrayBuffer, T>;
+
+    /// <https://tc39.es/ecma262/#sec-getdataviewbyteoffset>
+    /// Get the byte offset of a DataView.
+    fn data_view_byte_offset(&mut self, data_view: &T::DataView) -> Completion<u64, T>;
+
+    /// <https://tc39.es/ecma262/#sec-getdataviewbytelength>
+    /// Get the byte length of a DataView.
+    fn data_view_byte_length(&mut self, data_view: &T::DataView) -> Completion<u64, T>;
+
+    /// <https://tc39.es/ecma262/#sec-construct>
+    /// Construct a DataView backed by the given ArrayBuffer.
+    fn construct_data_view_from_buffer(
+        &mut self,
+        buffer: T::ArrayBuffer,
+        byte_offset: u64,
+        byte_length: u64,
+    ) -> Completion<T::DataView, T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §25.1 ArrayBuffer Abstract Operations — data access
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Get the raw bytes of an ArrayBuffer.
+    /// Returns None if the buffer is detached.
+    fn array_buffer_data(&self, array_buffer: &T::ArrayBuffer) -> Option<Vec<u8>>;
+
+    // ────────────────────────────────────────────────────────────────────────
     // §27.2 Promise Abstract Operations
     // ────────────────────────────────────────────────────────────────────────
 

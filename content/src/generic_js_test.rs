@@ -29,7 +29,7 @@ use std::marker::PhantomData;
 
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::gc::GcRootHandle;
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
 
 type TestTypes = crate::js::Types;
 type JsValue = <TestTypes as JsTypes>::JsValue;
@@ -1703,6 +1703,64 @@ mod tests {
         let _sab = engine
             .allocate_shared_array_buffer(intrinsics.shared_array_buffer.clone(), 16)
             .unwrap();
+    }
+
+    // ── TypedArray §23.2 Construction and Metadata ──────────────────
+
+    #[test]
+    fn construct_typed_array_view_and_read_metadata() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        let ab = engine
+            .allocate_array_buffer(intrinsics.array_buffer, 16, None)
+            .unwrap();
+        let ta = engine
+            .construct_typed_array_view(
+                TypedArrayElementType::Uint8,
+                ab.clone(),
+                0,
+                16,
+            )
+            .unwrap();
+        let buffer = engine.typed_array_buffer(&ta).unwrap();
+        let byte_offset = engine.typed_array_byte_offset(&ta).unwrap();
+        let byte_length = engine.typed_array_byte_length(&ta).unwrap();
+        assert_eq!(byte_offset, 0);
+        assert_eq!(byte_length, 16);
+        assert!(!engine.is_detached_buffer(&buffer));
+    }
+
+    #[test]
+    fn construct_data_view_and_read_metadata() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        let ab = engine
+            .allocate_array_buffer(intrinsics.array_buffer, 32, None)
+            .unwrap();
+        let dv = engine
+            .construct_data_view_from_buffer(ab.clone(), 4, 24)
+            .unwrap();
+        let buffer = engine.data_view_buffer(&dv).unwrap();
+        let byte_offset = engine.data_view_byte_offset(&dv).unwrap();
+        let byte_length = engine.data_view_byte_length(&dv).unwrap();
+        assert_eq!(byte_offset, 4);
+        assert_eq!(byte_length, 24);
+        assert!(!engine.is_detached_buffer(&buffer));
+    }
+
+    #[test]
+    fn array_buffer_data_reads_bytes() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        let ab = engine
+            .allocate_array_buffer(intrinsics.array_buffer, 8, None)
+            .unwrap();
+        let data = engine.array_buffer_data(&ab);
+        assert!(data.is_some());
+        assert_eq!(data.unwrap().len(), 8);
     }
 
     // ── JSON and BigInt ────────────────────────────────────────────
