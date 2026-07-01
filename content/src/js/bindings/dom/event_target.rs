@@ -157,11 +157,9 @@ fn dispatch_event(
     };
     // Note: keeps ec_to_ctx — current_event_target_object needs &Context.
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
     let target = current_event_target_object(this, ctx);
-    let mut host = ContextEventDispatchHost::new(ctx);
-    let canceled = dispatch(&mut host, &target, &event_obj, false)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(undefined.clone()))?;
+    let mut host = EcDispatchHost::new(ec);
+    let canceled = dispatch(&mut host, &target, &event_obj, false)?;
     Ok(JsValue::from(!canceled))
 }
 
@@ -244,32 +242,37 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
         js_engine::boa::context_as_ec(self.context)
     }
 
-    fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
+    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types> {
         create_interface_instance::<crate::js::Types, Event>(
             event,
             js_engine::boa::context_as_ec(self.context),
         )
-        .map_err(JsError::from_opaque)
     }
 
-    fn document_object(&mut self) -> JsResult<JsObject> {
-        document_object(self.context)
+    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
+        document_object(self.context).map_err(|e| {
+            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn global_object(&mut self) -> JsObject {
         self.context.global_object()
     }
 
-    fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        resolve_element_object(node_id, self.context)
+    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
+        resolve_element_object(node_id, self.context).map_err(|e| {
+            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn resolve_existing_node_object(
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
-    ) -> JsResult<JsObject> {
-        object_for_existing_node(document, node_id, self.context)
+    ) -> Completion<JsObject, crate::js::Types> {
+        object_for_existing_node(document, node_id, self.context).map_err(|e| {
+            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn current_time_millis(&self) -> f64 {
@@ -348,31 +351,37 @@ impl EventDispatchHost for EcDispatchHost<'_, crate::js::Types> {
         self.ec
     }
 
-    fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
-        create_interface_instance::<crate::js::Types, Event>(event, self.ec).map_err(JsError::from_opaque)
+    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types> {
+        create_interface_instance::<crate::js::Types, Event>(event, self.ec)
     }
 
-    fn document_object(&mut self) -> JsResult<JsObject> {
+    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
         let ctx = unsafe { js_engine::boa::ec_to_ctx(self.ec) };
-        document_object(ctx)
+        document_object(ctx).map_err(|e| {
+            e.into_opaque(ctx).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn global_object(&mut self) -> JsObject {
         self.ec.global_object()
     }
 
-    fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
+    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
         let ctx = unsafe { js_engine::boa::ec_to_ctx(self.ec) };
-        resolve_element_object(node_id, ctx)
+        resolve_element_object(node_id, ctx).map_err(|e| {
+            e.into_opaque(ctx).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn resolve_existing_node_object(
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
-    ) -> JsResult<JsObject> {
+    ) -> Completion<JsObject, crate::js::Types> {
         let ctx = unsafe { js_engine::boa::ec_to_ctx(self.ec) };
-        object_for_existing_node(document, node_id, ctx)
+        object_for_existing_node(document, node_id, ctx).map_err(|e| {
+            e.into_opaque(ctx).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn current_time_millis(&self) -> f64 {

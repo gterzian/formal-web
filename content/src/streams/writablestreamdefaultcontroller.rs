@@ -285,10 +285,11 @@ impl WritableStreamDefaultController {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let signal = crate::js::js_result_to_completion(self.signal(), context)?;
-        let mut host = ContextEventDispatchHost::new(context);
-        crate::js::js_result_to_completion(signal_abort(&mut host, &signal, reason), context)
+        // Note: self.signal() returns JsResult; bridge to Completion.
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        let signal = crate::js::js_result_to_completion(self.signal(), ctx)?;
+        let mut host = ContextEventDispatchHost::new(ctx);
+        signal_abort(&mut host, &signal, reason)
     }
 
     fn write_algorithm(&self) -> JsResult<WriteAlgorithm> {
@@ -723,32 +724,37 @@ impl EventDispatchHost for ContextEventDispatchHost<'_> {
         js_engine::boa::context_as_ec(self.context)
     }
 
-    fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
+    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types> {
         create_interface_instance::<crate::js::Types, Event>(
             event,
             js_engine::boa::context_as_ec(self.context),
         )
-        .map_err(JsError::from_opaque)
     }
 
-    fn document_object(&mut self) -> JsResult<JsObject> {
-        document_object(self.context)
+    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
+        document_object(self.context).map_err(|e| {
+            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn global_object(&mut self) -> JsObject {
         self.context.global_object()
     }
 
-    fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        resolve_element_object(node_id, self.context)
+    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
+        resolve_element_object(node_id, self.context).map_err(|e| {
+            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn resolve_existing_node_object(
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
-    ) -> JsResult<JsObject> {
-        object_for_existing_node(document, node_id, self.context)
+    ) -> Completion<JsObject, crate::js::Types> {
+        object_for_existing_node(document, node_id, self.context).map_err(|e| {
+            e.into_opaque(self.context).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn current_time_millis(&self) -> f64 {

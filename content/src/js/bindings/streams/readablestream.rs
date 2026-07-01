@@ -395,20 +395,15 @@ fn cancel_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
+
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let stream_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-        })?;
+    let mut stream = with_readable_stream_ref(&stream_object, |s: &ReadableStream| s.clone())
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    let promise = stream.cancel_ec(args.get_or_undefined(0).clone(), ec)?;
 
-        let mut stream =
-            with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())?;
-        let promise = stream.cancel(args.get_or_undefined(0).clone(), ctx)?;
-
-        Ok(JsValue::from(promise))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    Ok(JsValue::from(promise))
 }
 
 fn get_reader_method(
@@ -416,20 +411,15 @@ fn get_reader_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
+    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
+
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let stream_object = this.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream receiver is not an object")
-        })?;
+    let mut stream = with_readable_stream_ref(&stream_object, |s: &ReadableStream| s.clone())
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    let reader = stream.get_reader_ec(args.get_or_undefined(0), ec)?;
 
-        let mut stream =
-            with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())?;
-        let reader = stream.get_reader(args.get_or_undefined(0), ctx)?;
-
-        Ok(JsValue::from(reader))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    Ok(JsValue::from(reader))
 }
 
 fn pipe_through_method(

@@ -862,7 +862,7 @@ impl ContentProcess {
 
         let window = content_document.settings.context().global_object();
         fire_event(&mut content_document.settings, &window, "load", true)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;
         self.active_documents_by_traversable
@@ -1264,7 +1264,7 @@ impl ContentProcess {
         {
             let navigable_id = document.traversable_id;
             let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
             (Some(navigable_id), canceled)
         } else {
             (None, false)

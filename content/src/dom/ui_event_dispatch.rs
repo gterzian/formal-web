@@ -12,7 +12,7 @@ use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
 use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
 use crate::webidl::bindings::create_interface_instance;
-use js_engine::ExecutionContext;
+use js_engine::{Completion, ExecutionContext};
 
 use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
@@ -328,7 +328,7 @@ pub(crate) fn dispatch_trusted_click_event(
     );
     let target = handler
         .resolve_element_object(target_node_id)
-        .map_err(|error| format!("failed to resolve click target element: {error}"))?;
+        .map_err(|error| format!("failed to resolve click target element: {error:?}"))?;
     let event = handler
         .create_event_object(Event::new(
             String::from("click"),
@@ -338,14 +338,14 @@ pub(crate) fn dispatch_trusted_click_event(
             true,
             handler.current_time_millis(),
         ))
-        .map_err(|error| format!("failed to construct trusted click event: {error}"))?;
+        .map_err(|error| format!("failed to construct trusted click event: {error:?}"))?;
     dispatch(&mut handler, &target, &event, false)
-        .map_err(|error| format!("failed to dispatch trusted click event: {error}"))?;
+        .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
     handler
         .settings
         .perform_a_microtask_checkpoint()
         .map_err(|error| {
-            format!("failed to run a microtask checkpoint after trusted click dispatch: {error}")
+            format!("failed to run a microtask checkpoint after trusted click dispatch: {error:?}")
         })?;
     Ok(())
 }
@@ -390,11 +390,11 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
         self.settings.ec()
     }
 
-    fn create_event_object(&mut self, event: Event) -> JsResult<JsObject> {
+    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types> {
         self.settings.create_event_object(event)
     }
 
-    fn document_object(&mut self) -> JsResult<JsObject> {
+    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
         self.settings.document_object()
     }
 
@@ -402,7 +402,7 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
         self.settings.global_object()
     }
 
-    fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
+    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
         self.settings.resolve_element_object(node_id)
     }
 
@@ -410,7 +410,7 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
-    ) -> JsResult<JsObject> {
+    ) -> Completion<JsObject, crate::js::Types> {
         self.settings
             .resolve_existing_node_object(document, node_id)
     }
@@ -423,18 +423,33 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
         target.downcast_ref::<HTMLAnchorElement>().is_some()
     }
 
-    fn run_activation_behavior(&mut self, target: &JsObject, event: &JsObject) -> JsResult<()> {
+    fn run_activation_behavior(&mut self, target: &JsObject, event: &JsObject) -> Completion<(), crate::js::Types> {
         if let Some(anchor) = target.downcast_ref::<HTMLAnchorElement>() {
-            anchor.activation_behavior(
+            let result = anchor.activation_behavior(
                 self.source_navigable_id,
                 self.parent_navigable_id,
                 self.top_level_navigable_id,
                 &self.settings.creation_url,
                 event,
                 self.event_sender,
-            )?;
+            );
+            bridged(result, self)?;
         }
         Ok(())
+    }
+}
+
+/// Bridge a `JsResult<T>` to `Completion<T>` using the handler's EC for error conversion.
+fn bridged<T>(
+    result: JsResult<T>,
+    handler: &mut BlitzJSEventHandler,
+) -> Completion<T, crate::js::Types> {
+    match result {
+        Ok(val) => Ok(val),
+        Err(e) => {
+            let ctx = unsafe { js_engine::boa::ec_to_ctx(handler.ec()) };
+            Err(e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+        }
     }
 }
 
@@ -526,7 +541,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         )
         .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
-            error!("failed to dispatch UI event through JavaScript listeners: {error}");
+            error!("failed to dispatch UI event through JavaScript listeners: {error:?}");
             return;
         }
 

@@ -43,7 +43,7 @@ use super::{
     set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
     with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
 };
-use js_engine::ExecutionContext;
+use js_engine::{Completion, ExecutionContext};
 
 js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#rs-class>
@@ -168,11 +168,26 @@ impl ReadableStream {
         }
 
         // Step 2: "Return ! ReadableStreamCancel(this, reason)."
-        readable_stream_cancel(self.clone(), reason, context).map_err(|e| {
-            JsNativeError::typ()
-                .with_message(format!("Failed to cancel stream: {}", e))
-                .into()
-        })
+        readable_stream_cancel(self.clone(), reason, context)
+    }
+
+    /// Generic entry point for <https://streams.spec.whatwg.org/#rs-cancel>.
+    /// Returns `Completion` — the binding layer uses this directly without bridging.
+    pub(crate) fn cancel_ec(
+        &mut self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        // Step 1: "If ! IsReadableStreamLocked(this) is true, return a promise rejected with a TypeError exception."
+        if self.is_readable_stream_locked() {
+            return rejected_type_error_promise(
+                "Cannot cancel a stream that already has a reader",
+                ec,
+            );
+        }
+
+        // Step 2: "Return ! ReadableStreamCancel(this, reason)."
+        readable_stream_cancel_ec(self.clone(), reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-get-reader>
@@ -181,62 +196,57 @@ impl ReadableStream {
         options: &JsValue,
         context: &mut Context,
     ) -> JsResult<JsObject> {
+        self.get_reader_ec(options, js_engine::boa::context_as_ec(context))
+            .map_err(|e| JsError::from_opaque(e))
+    }
+
+    /// Generic entry point for <https://streams.spec.whatwg.org/#rs-get-reader>.
+    /// Returns `Completion` — the binding layer uses this directly without bridging.
+    pub(crate) fn get_reader_ec(
+        &mut self,
+        options: &JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         let options_object: Option<JsObject> = if options.is_undefined() || options.is_null() {
             None
         } else {
             Some(options.as_object().ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("ReadableStream.getReader() options must be an object")
+                ec.new_type_error("ReadableStream.getReader() options must be an object")
             })?)
         };
 
         // Step 1: "If options[\"mode\"] does not exist, return ? AcquireReadableStreamDefaultReader(this)."
         let Some(options_object) = options_object else {
-            return crate::js::completion_to_js_result(acquire_readable_stream_default_reader(
-                self.clone(),
-                js_engine::boa::context_as_ec(context),
-            ));
+            return acquire_readable_stream_default_reader(self.clone(), ec);
         };
 
-        if !options_object.has_property(js_string!("mode"), context)? {
-            return crate::js::completion_to_js_result(acquire_readable_stream_default_reader(
-                self.clone(),
-                js_engine::boa::context_as_ec(context),
-            ));
+        let mode_key = ec.property_key_from_str("mode");
+        if !ec.has_property(options_object.clone(), mode_key.clone())? {
+            return acquire_readable_stream_default_reader(self.clone(), ec);
         }
 
-        let mode = options_object.get(js_string!("mode"), context)?;
+        let mode = ExecutionContext::get(ec, options_object.clone(), mode_key)?;
         if mode.is_undefined() {
-            return crate::js::completion_to_js_result(acquire_readable_stream_default_reader(
-                self.clone(),
-                js_engine::boa::context_as_ec(context),
-            ));
+            return acquire_readable_stream_default_reader(self.clone(), ec);
         }
 
         // Step 2: "Assert: options[\"mode\"] is \"byob\"."
-        let mode = mode.to_string(context)?.to_std_string_escaped();
+        let mode = ec.to_rust_string(mode)?;
         if mode != "byob" {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream.getReader() only supports the default reader mode")
-                .into());
+            return Err(ec.new_type_error(
+                "ReadableStream.getReader() only supports the default reader mode",
+            ));
         }
 
         // Step 3: "Return ? AcquireReadableStreamBYOBReader(this)."
         let Some(controller) = self.controller_slot() else {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream is missing its controller")
-                .into());
+            return Err(ec.new_type_error("ReadableStream is missing its controller"));
         };
         if controller.as_byte_controller().is_none() {
-            return Err(JsNativeError::typ()
-                .with_message("Cannot acquire a BYOB reader for a non-byte stream")
-                .into());
+            return Err(ec.new_type_error("Cannot acquire a BYOB reader for a non-byte stream"));
         }
 
-        crate::js::completion_to_js_result(acquire_readable_stream_byob_reader(
-            self.clone(),
-            js_engine::boa::context_as_ec(context),
-        ))
+        acquire_readable_stream_byob_reader(self.clone(), ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-pipe-through>
@@ -1544,27 +1554,32 @@ pub(crate) fn readable_stream_cancel(
     reason: JsValue,
     context: &mut Context,
 ) -> JsResult<JsObject> {
+    readable_stream_cancel_ec(stream, reason, js_engine::boa::context_as_ec(context))
+        .map_err(|e| JsError::from_opaque(e))
+}
+
+/// Generic entry point for <https://streams.spec.whatwg.org/#readable-stream-cancel>.
+/// Returns `Completion` — the binding layer uses this directly without bridging.
+pub(crate) fn readable_stream_cancel_ec(
+    stream: ReadableStream,
+    reason: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Set stream.[[disturbed]] to true."
     stream.set_disturbed(true);
 
     // Step 2: "If stream.[[state]] is \"closed\", return a promise resolved with undefined."
     if stream.state() == ReadableStreamState::Closed {
-        return crate::js::completion_to_js_result(resolved_promise(
-            JsValue::undefined(),
-            js_engine::boa::context_as_ec(context),
-        ));
+        return resolved_promise(ec.value_undefined(), ec);
     }
 
     // Step 3: "If stream.[[state]] is \"errored\", return a promise rejected with stream.[[storedError]]."
     if stream.state() == ReadableStreamState::Errored {
-        return crate::js::completion_to_js_result(rejected_promise(
-            stream.stored_error(),
-            js_engine::boa::context_as_ec(context),
-        ));
+        return rejected_promise(stream.stored_error(), ec);
     }
 
     // Step 4: "Perform ! ReadableStreamClose(stream)."
-    readable_stream_close(stream.clone(), context)?;
+    readable_stream_close_ec(stream.clone(), ec)?;
 
     // Step 5: "Let reader be stream.[[reader]]."
     let reader = stream.reader_slot();
@@ -1575,22 +1590,31 @@ pub(crate) fn readable_stream_cancel(
 
     // Step 7: "Let sourceCancelPromise be ! stream.[[controller]].[[CancelSteps]](reason)."
     let controller = stream.controller_slot().ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream is missing its controller")
+        ec.new_type_error("ReadableStream is missing its controller")
     })?;
-    let source_cancel_promise = crate::js::completion_to_js_result(
-        controller.cancel_steps(reason, js_engine::boa::context_as_ec(context)),
-    )?;
+    let source_cancel_promise = controller.cancel_steps(reason, ec)?;
 
     // Step 8: "Return the result of reacting to sourceCancelPromise with a fulfillment step that returns undefined."
-    transform_promise_to_undefined(
-        &source_cancel_promise,
-        js_engine::boa::context_as_ec(context),
-    )
-    .map_err(boa_engine::JsError::from_opaque)
+    // This implements <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>
+    // by calling Web IDL's transform_promise_to_undefined which wraps PerformPromiseThen.
+    transform_promise_to_undefined(&source_cancel_promise, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-close>
-pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Context) -> JsResult<()> {
+pub(crate) fn readable_stream_close(
+    stream: ReadableStream,
+    context: &mut Context,
+) -> JsResult<()> {
+    readable_stream_close_ec(stream, js_engine::boa::context_as_ec(context))
+        .map_err(|e| JsError::from_opaque(e))
+}
+
+/// Generic entry point for <https://streams.spec.whatwg.org/#readable-stream-close>.
+/// Returns `Completion` — the binding layer uses this directly without bridging.
+pub(crate) fn readable_stream_close_ec(
+    stream: ReadableStream,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 1: "Assert: stream.[[state]] is \"readable\"."
     debug_assert_eq!(stream.state(), ReadableStreamState::Readable);
 
@@ -1608,10 +1632,13 @@ pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Contex
     match &reader {
         ReadableStreamReader::Default(reader) => {
             // Step 5: "Resolve reader.[[closedPromise]] with undefined."
+            // Note: ec_to_ctx — ResolvingFunctions::resolve.call requires Boa Context.
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
+                let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 resolvers
                     .resolve
-                    .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                    .call(&JsValue::undefined(), &[JsValue::undefined()], ctx)
+                    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
                 reader.set_closed_resolvers_slot_value(None);
             }
 
@@ -1624,16 +1651,17 @@ pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Contex
             // Step 6.3: "For each readRequest of readRequests,"
             for read_request in read_requests {
                 // Step 6.3.1: "Perform readRequest's close steps."
-                let ec: &mut dyn ExecutionContext<crate::js::Types> =
-                    js_engine::boa::context_as_ec(context);
-                crate::js::completion_to_js_result(read_request.close_steps(ec))?;
+                read_request.close_steps(ec)?;
             }
         }
         ReadableStreamReader::BYOB(reader) => {
+            // Note: ec_to_ctx — ResolvingFunctions::resolve.call requires Boa Context.
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
+                let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 resolvers
                     .resolve
-                    .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                    .call(&JsValue::undefined(), &[JsValue::undefined()], ctx)
+                    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
                 reader.set_closed_resolvers_slot_value(None);
             }
         }

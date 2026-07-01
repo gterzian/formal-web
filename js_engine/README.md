@@ -7,117 +7,80 @@ HTML/DOM/WebIDL layers.
 
 ## Architecture
 
-### Standards call chain
+> **Principle:** The architecture is defined by the standards.  We don't
+> invent new layers — we follow the spec chain exactly and make it generic.
 
-Every web standard (HTML, Streams, DOM) delegates JS operations through
-Web IDL, which in turn calls ECMA-262 abstract operations.  The layering
-is:
+### 1. The ownership model
 
-```
-Web spec (Streams, HTML, DOM)
-  → Web IDL (invoke a callback function, call a user object's operation)
-    → ECMA-262 (§7.1–§7.4, §9.3, §9.6, §27.2)
-      → js_engine trait (mirrors the JS spec's public API)
-        → Boa / JSC backend (engine-specific impl detail)
-```
+<https://html.spec.whatwg.org/#environment-settings-objects> (§8.1.3.2)
+defines the **environment settings object**, which owns a **realm execution
+context** — a JavaScript execution context shared by all scripts in a given
+realm.  When we <https://html.spec.whatwg.org/#prepare-to-run-script>
+(§8.1.4.4), this context becomes the top of the execution context stack.
 
-Concrete example — the full chain for a Streams operation:
+Our `EnvironmentSettingsObject` (`content/src/html/environment_settings_object.rs`)
+owns a `BoaContext` which implements `ExecutionContext<T>`.  The
+`ExecutionContext<T>` trait **is** the generic interface to that realm
+execution context.  The migration end state is for the EDS to own the
+generic trait type instead of the concrete `BoaContext` — the ownership
+boundary is already correct, only the type needs to become generic.
 
-```
-Streams spec: readable stream cancel
-  → Web IDL: perform steps once promise is settled
-    → ECMA-262: CreateBuiltinFunction (§10.3.4)
-    → ECMA-262: NewPromiseCapability (§27.2.1.5)
-    → ECMA-262: PerformPromiseThen (§27.2.1.7)
-      → js_engine trait: create_builtin_function, new_promise_capability,
-                          perform_promise_then
-```
+### 2. The two paths into JavaScript
 
-### Design philosophy: follow the standards, not the engine
+Every web standard reaches JavaScript through one of two paths.
+We follow the exact spec call chain in each case.
 
-The `js_engine` crate exposes **only** the ECMA-262 operations that other
-standards call into.  This is a mechanical mapping: read the spec call
-chain, expose the JS spec operation on the trait, implement it per engine.
-No new abstractions beyond what the JS spec already defines.
+#### Path 1: Domain → Web IDL → ECMA-262
 
-**The layering mirrors the spec's layering — whatever it is.**  The web
-platform has two paths from domain specs to JavaScript:
+Most web-exposed APIs (Streams, DOM) call Web IDL, which calls ECMA-262.
 
-**Path 1: Domain → Web IDL → ECMA-262.**  Most web-exposed APIs go
-through Web IDL's JavaScript binding (§3), which defines how IDL types
-map to JS values and provides algorithms like "react", "upon
-fulfillment", "a new promise", etc.  Web IDL calls ECMA-262 for the
-actual JS operations (CreateBuiltinFunction, Call, Get, etc.).
+**Example — `readableStream.cancel(reason)`:**
 
-```
-Streams spec                         Our code
-───────────                          ────────
-readable stream cancel               content/src/streams/
-  → react (Web IDL §3.2.24.1)          → content/src/webidl/
-    → CreateBuiltinFunction              → js_engine::create_builtin_function
-    → NewPromiseCapability               → js_engine::new_promise_capability
-    → PerformPromiseThen                 → js_engine::perform_promise_then
+| Layer | Spec | Our code |
+|---|---|---|
+| Domain | <https://streams.spec.whatwg.org/#readable-stream-cancel> | `content/src/streams/readablestream.rs` → `readable_stream_cancel_ec()` |
+| Web IDL | <https://webidl.spec.whatwg.org/#a-promise-resolved-with> | `content/src/webidl/promise.rs` → `resolved_promise()` |
+| Web IDL | <https://webidl.spec.whatwg.org/#a-promise-rejected-with> | `content/src/webidl/promise.rs` → `rejected_promise()` |
+| Web IDL | <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled> ("react") | `content/src/webidl/promise.rs` → `transform_promise_to_undefined()` |
+| ECMA-262 | <https://tc39.es/ecma262/#sec-createbuiltinfunction> | `js_engine` → `create_builtin_function()` |
+| ECMA-262 | <https://tc39.es/ecma262/#sec-newpromisecapability> | `js_engine` → `new_promise_capability()` |
+| ECMA-262 | <https://tc39.es/ecma262/#sec-performpromisethen> | `js_engine` → `perform_promise_then()` |
 
-DOM spec                             Our code
-────────                             ────────
-eventTarget.addEventListener()       content/src/js/bindings/dom/
-  → Web IDL operation binding          → content/src/webidl/bindings/
-    → convert JS args to IDL types     → content/src/webidl/ type converters
-    → call user object's operation     → domain method (content/src/dom/)
-    → convert return to JS value       → js_engine trait
-```
+**Example — `eventTarget.addEventListener(type, callback)`:**
 
-**Path 2: Domain → ECMA-262 (bypasses Web IDL).**  Some HTML algorithms
-call ECMA-262 abstract operations directly, without Web IDL
-intermediation.  Realm creation, script evaluation, and agent
-management all work this way.
+| Layer | Spec | Our code |
+|---|---|---|
+| Domain | <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener> | `content/src/js/bindings/dom/event_target.rs` → `add_event_listener()` |
+| Web IDL | <https://webidl.spec.whatwg.org/#call-a-user-objects-operation> | `content/src/webidl/callback.rs` → `call_user_objects_operation()` |
+| ECMA-262 | <https://tc39.es/ecma262/#sec-call> | `js_engine` → `ExecutionContext::call()` |
+| ECMA-262 | <https://tc39.es/ecma262/#sec-get-o-p> | `js_engine` → `ExecutionContext::get()` |
 
-```
-HTML spec                            Our code
-─────────                            ────────
-creating a new JavaScript realm      content/src/html/
-  (§8.1.3.3)                           → js_engine::create_realm
-  → InitializeHostDefinedRealm         → js_engine::set_realm_global_object
+#### Path 2: Domain → ECMA-262 (bypasses Web IDL)
 
-running a classic script             content/src/html/
-  (§8.1.4.4)                           → js_engine::evaluate_script
-```
+Some HTML algorithms call ECMA-262 directly — realm creation, script
+evaluation.
 
-The rule: **read the spec, follow its call chain exactly.**  Route
-through `content/src/webidl/` only when the spec calls Web IDL.  Call
-`js_engine` directly when the spec calls ECMA-262 directly.  Never
-insert an artificial intermediary layer that doesn't exist in the spec.
+| Layer | Spec | Our code |
+|---|---|---|
+| HTML | <https://html.spec.whatwg.org/#creating-a-new-javascript-realm> | `content/src/html/` → calls `js_engine::create_realm()` |
+| ECMA-262 | <https://tc39.es/ecma262/#sec-createrealm> | `js_engine` → `JsEngine::create_realm()` |
+| HTML | <https://html.spec.whatwg.org/#run-a-classic-script> | `content/src/html/` → calls `js_engine::evaluate_script()` |
+| ECMA-262 | <https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation> | `js_engine` → `JsEngine::evaluate_script()` |
 
-**How realms and execution contexts map to our code:**
+**The rule:** read the spec, follow its call chain exactly.  Route through
+`content/src/webidl/` only when the spec calls Web IDL.  Call `js_engine`
+directly when the spec calls ECMA-262 directly.  Never insert an artificial
+intermediary layer that doesn't exist in the spec.
 
-HTML §8.1.3.2 defines the environment settings object, which owns a
-**realm execution context** — the JS runtime state shared by all
-scripts in a realm.  Our `EnvironmentSettingsObject` (in
-`content/src/html/`) owns a `BoaContext` which implements
-`ExecutionContext<T>`.  When the spec says "prepare to run script",
-the EDS's realm execution context becomes the top of the JS execution
-context stack.  The `ExecutionContext<T>` trait IS the generic
-interface to that realm execution context.
+### 3. Crate layering
 
 ```
-HTML §8.1.3.2                         Our code
-──────────────                         ────────
-environment settings object            content/src/html/environment_settings_object.rs
-  .realm execution context               owns BoaContext : ExecutionContext<T>
-
-HTML §8.1.4.4                         Our code
-──────────────                         ────────
-prepare to run script                   EDS.realm_execution_context → top of stack
-  → run a classic script                → js_engine::evaluate_script
-```
-
-```
-content/src/<domain>/           ← domain spec algorithms (streams, HTML, DOM)
-  → content/src/webidl/          ← only when the spec calls Web IDL (§3)
-  → content/src/js/bindings/     ← Web IDL interface definitions (which members)
+content/src/<domain>/           ← domain algorithms (streams, HTML, DOM)
+  → content/src/webidl/          ← only when the spec calls Web IDL
+  → content/src/js/bindings/     ← Web IDL interface definitions
   → js_engine trait               ← ECMA-262 abstract operations
-    → js_engine/src/boa/          ← Boa-specific impl (only here)
-    → js_engine/src/jsc/          ← JSC-specific impl (only here)
+    → js_engine/src/boa/          ← Boa impl (only here)
+    → js_engine/src/jsc/          ← JSC impl (only here)
 ```
 
 **Rules:**
@@ -566,6 +529,49 @@ POC is **complete** — 70/70 tests pass on Boa (content JSC blocked on Phase E)
 (`content/src/generic_js_test.rs`) proves every content pattern can be
 expressed through the generic API with zero structural `#[cfg]`.
 
+### Practical end state
+
+**Minimum shippable:**
+- No `ec_to_ctx`, `context_as_ec`, `context_as_ec_ref`, or `context_as_engine` calls outside `js_engine` backend code.
+- No `boa_engine::*` imports in production bindings, domain algorithms, Web IDL helpers, or Wasm-facing content code.
+- Backend selection happens through compile-time aliases (`crate::js::Types`, `crate::js::Engine`).
+- Generic POC remains green.
+- Content crate compiles against both backend configurations.
+- Any backend-specific code still present is isolated to bootstrap or engine-construction boundaries only.
+
+**What the remaining work does NOT require:**
+- A large expansion of `ExecutionContext<T>` with DOM or HTML methods.
+- A second generic JS abstraction layer on top of `js_engine`.
+- An immediate trait-object rewrite of all engine ownership.
+- Backend-agnostic replacement of every bootstrap detail before the main content logic can be considered generic.
+
+The actual missing abstractions are smaller and more local than that.
+
+### Test-file-first discipline (applies to all remaining phases)
+
+**Never add a new generic pattern directly to production code.**
+Every new generic interface, downcast helper, host-data abstraction,
+or subsystem entry-point signature must first be validated in
+`content/src/generic_js_test.rs` with compilation and passing unit tests
+on **both backends** (Boa and JSC) before it can be applied to any
+real production file.
+
+This means: before implementing Phase P's `platform_object_store(ec)`,
+add a test that exercises the full lifecycle (store → retrieve → mutate).
+Before converting Phase W's `structured_clone` to take `ExecutionContext<T>`,
+add a test that clones a value through the generic entry point.  The POC
+test file is the gate — no pattern enters production without passing through it first.
+
+Concrete per-phase validation requirements:
+
+| Phase | What to validate in `generic_js_test.rs` |
+|---|---|
+| **Phase D** | Return-type change only (trait methods `JsResult` → `Completion`). No new generic interface — validated by `cargo check` passing. |
+| **Phase S** | No new generic interface — streams domain methods already call only `ExecutionContext` trait methods. |
+| **Phase P** | `store_host_any` / `get_host_any` already validated. New content-owned helpers (`platform_object_store(ec)`) must be validated: store a document handle, retrieve by key, mutate. |
+| **Phase W** | Each subsystem entry point that changes signature must be exercised: structured clone round-trip, promise helper usage, Wasm namespace access. |
+| **Phase E** | `cargo check -p content` with both `--features boa` and `--no-default-features --features jsc`. No new generic interface — configuration-only change. |
+
 ### Completed phases
 
 | Phase | What | Status |
@@ -583,32 +589,47 @@ expressed through the generic API with zero structural `#[cfg]`.
 
 ### Remaining phases
 
+Six architectural blockers remain.  The phases below map to them.
+**Every phase that introduces a
+new generic interface must validate it in `content/src/generic_js_test.rs`
+first** (see test-file-first discipline above).
+
+| Blocker | Phase | What | Effort | Status |
+|---|---|---|---|---|
+| **Blocker 1** — Dispatch result-model mismatch | **Phase D** | Convert `EventDispatchHost` trait methods from `JsResult` to `Completion`. Delete `ContextEventDispatchHost` (both copies). Eliminate `js_result_to_completion` bridges from the dispatch path. | Small | 🔶 In progress — `EcDispatchHost` created; `signal_abort_ec` returns `Completion`. |
+| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. ~300 remaining `ec_to_ctx` calls. | Large | Not started |
+| **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping (document object, node caches, animation-frame queues). Uses `store_host_any` / `get_host_any` (already validated). New helpers must be validated in test file first. | Medium | Not started |
+| **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Each entry point must be validated in test file first. | Medium | Not started |
+| **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |
+| **Blocker 6** — Global-scope helpers are implicitly Boa | **Phase G** | Move `document_creation_url`, `with_global_scope`, etc. behind content-owned query helpers. | Small | Part of Phase P |
+
+**Completed phases:**
+
 | # | Phase | Effort | Status |
 |---|---|---|---|
 | **A. GC derive conversion** | Replace Boa derives with `impl_gc_traits!` on 34 types | Small | ✅ DONE |
 | **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~90% done. ~130 ec_to_ctx eliminated across 14 files. ~65 remaining in binding files. Domain helpers (`timer_handler_ec`, `timeout_ms_ec`) now use generic EC trait. |
 | **C. create_builtin_function on EC** | Moved `create_builtin_function` from `JsEngine` to `ExecutionContext`, replaced `NativeFunction::from_closure` + `FunctionObjectBuilder` in `strategy.rs`. All Web IDL infra callers updated. | Medium | ✅ DONE |
-| **D. Remove remaining adapters** | `ContextEventDispatchHost` adapters in `writablestreamdefaultcontroller.rs` and `event_target.rs` | Small | 🔶 In progress — `EcDispatchHost` created; `signal_abort_ec` returns `Completion`. Remaining sites need `EventDispatchHost` trait methods to return `Completion` instead of `JsResult`. |
-| **E. Conditional Types alias** | Switch `Types` between `BoaTypes`/`JscTypes` via `#[cfg]` | Large | Blocked on B, D |
-| **F. Generic EnvironmentSettingsObject** | Make EDS own `dyn ExecutionContext<T>` | Medium | Blocked on E |
-| **G. Delete ec_to_ctx bridge functions** | Delete `ec_to_ctx`, `context_as_ec`, `context_as_ec_ref`, `context_as_engine` | Small | Blocked on F |
 | **H. JSC content tests** | Enable 5 `#[ignore]` tests | Medium | Blocked on E |
 
 ### Dependency order
 
 ```
-A (GC derives) ─┐ ✅
-B (binding bodies) ─┤ 🔶 ~70%
-C (NativeFunction) ─┤ ⬜
-D (remaining adapters) ─┤ ⬜
-                        ├──► E (conditional Types) ──► F (generic EDS) ──► G (delete ec_to_ctx)
-                                                            │
-                                                            └──► H (JSC tests)
+Phase D (dispatch mismatch) ──► Phase S (streams domain) ──► Phase P (platform-object store)
+                                                                  │
+                                                                  ├──► Phase G (global-scope helpers)
+                                                                  │
+                                                          Phase W (subsystem entry points)
+                                                                  │
+                                                                  └──► Phase E (conditional Types) ──► Phase H (JSC tests)
 ```
 
-Phases A–D are independent and can be done in any order.
-Phase E requires A–D complete (no Boa-specific code outside `#[cfg(feature = "boa")]` gates).
-Phases F and H depend on E.
+**Why this order:**
+1. The dispatch mismatch is the smallest remaining cross-cutting blocker — fix it first.
+2. Streams is the largest concentration of remaining backend coupling — fix it next.
+3. Platform-object state is the main content-owned state hole — then content's own state is generic.
+4. Remaining subsystem entry points (structured clone, Web IDL promise, Wasm) — the long tail.
+5. Backend alias lands only once most direct backend dependencies are already gone.
 
 ### Current state (updated 2026-07-01)
 
@@ -653,34 +674,50 @@ returns `Completion` (eliminated dispatch.rs ec_to_ctx).
 
 | Blocker | Files | ~Count | What's needed |
 |---|---|---|---|
-| **Streams domain methods** | streams/*.rs | ~300 | Convert domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. Dedicated session. |
-| **Streams bindings** | js/bindings/streams/*.rs | ~65 | Uses `ec_to_ctx` because domain methods take `Context`. Follows after domain conversion. |
-| **Window bindings** | window.rs (bindings) | 11 | `set_timeout`, `clear_timeout`, `location_object` — need Boa helpers converted. |
-| **WebIDL promise** | promise.rs | 10 | Mixed Boa dependencies. |
-| **Wasm** | namespace.rs | 12 | Mixed Boa dependencies. |
-| **platform_objects bridges** | platform_objects.rs | 7 | `_ec` wrappers use ec_to_ctx internally; need underlying functions converted. |
-| **EventDispatchHost trait** | event_target.rs, abort.rs, abort_signal.rs | 7 | `EcDispatchHost` methods return `JsResult`; need trait → `Completion` conversion (Phase D). |
-| **EventTarget bindings** | event_target.rs (bindings) | 3 | `addEventListener`, `removeEventListener`, `dispatchEvent` need Boa helpers converted. |
-| **Structured clone** | safe_passing_of_structured_data.rs | 1 | 500-line function takes `&mut Context`. |
-| **document_creation_url** | hyperlink_element_utils.rs | 1 | Needs generic global-scope accessor. |
-| **with_global_scope** | html_media_element.rs | 1 | Needs trait-level host-data accessor. |
-| **PipeToState** | abort.rs | 1 | Streams `run_abort_algorithm` takes `&mut Context`. |
+| **Streams domain methods** | streams/*.rs | ~300 | Add `_ec` entry points returning `Completion`; keep `context` wrappers for internal callers. Pattern: `cancel_ec`, `get_reader_ec`, `readable_stream_cancel_ec`. |
+| **Streams bindings** | js/bindings/streams/*.rs | ~65 | Convert to call `_ec` domain methods with `ec` directly. 2 done: `cancel_method`, `get_reader_method`. |
+| **Window bindings** | window.rs (bindings) | 11 | `set_timeout`, `clear_timeout`, `location_object` — need `_ec` domain helpers. |
+| **WebIDL promise** | promise.rs | 10 | Internal `ec_to_ctx` bridges for Boa promise APIs (Phase W). |
+| **Wasm** | namespace.rs | 12 | Internal `ec_to_ctx` bridges (Phase W). |
+| **platform_objects bridges** | platform_objects.rs | 7 | `_ec` wrappers use ec_to_ctx internally; need Phase P content-owned store. |
+| **EventTarget bindings** | event_target.rs (bindings) | 3 | `addEventListener`, `removeEventListener` need `_ec` domain helpers. |
+| **Structured clone** | safe_passing_of_structured_data.rs | 1 | 500-line function takes `&mut Context` (Phase W). |
+| **document_creation_url** | hyperlink_element_utils.rs | 1 | Needs Phase P global-scope accessor. |
+| **with_global_scope** | html_media_element.rs | 1 | Needs Phase P host-data accessor. |
+| **PipeToState** | abort.rs | 1 | Streams `run_abort_algorithm` takes `&mut Context` (Phase S). |
 
 ### Next session: recommended order
 
-1. **Streams domain calls (~300)** — Dedicated session. Domain methods
-   take `&mut Context` internally and need per-method conversion. This is
-   the elephant. Each method follows the same recipe: change signature to
-   `&mut dyn ExecutionContext<T>`, replace `JsObject::get(key, ctx)` with
-   `ExecutionContext::get(ec, obj, key)`, replace `JsNativeError::typ()` with
-   `ec.new_type_error(...)`, etc.
+1. **Phase S — Streams domain calls (~300)** — The elephant.  For each domain
+   method called from a binding, add an `_ec` entry point that takes
+   `&mut dyn ExecutionContext<T>` and returns `Completion`, then convert the
+   binding to call it.  The original `context`-taking version stays as a
+   thin wrapper via `context_as_ec`.  Follow the spec chain: Streams spec →
+   Web IDL helpers (`resolved_promise`, `rejected_promise`,
+   `transform_promise_to_undefined`) → ECMA-262 trait methods.
+   Pattern already proven: `cancel_ec`, `get_reader_ec`,
+   `readable_stream_cancel_ec`, `readable_stream_close_ec`.
+   Remaining binding files to convert: `pipe_through`, `pipe_to`, tee,
+   controller close/enqueue/error, and all reader/writer methods.
 
-2. **Phase D completion** — Convert `EventDispatchHost` trait methods from
-   `JsResult` to `Completion`. Also convert `EcDispatchHost` methods to use
-   `_ec` platform-objects helpers directly (eliminate 4 ec_to_ctx).
+2. **Phase P — Platform-object host-data store** — Replace the platform-object
+   bridge layer (`platform_objects.rs`) with content-owned helpers built on
+   `store_host_any` / `get_host_any`.  Validate in `generic_js_test.rs` first.
+   Also covers Blocker 6 (global-scope query helpers like
+   `document_creation_url`, `with_global_scope`).
 
-3. **Phase E: conditional Types** — `#[cfg]` gate all Boa imports.
+3. **Phase W — Remaining subsystem entry points** — Structured clone
+   (`safe_passing_of_structured_data.rs`), Web IDL promise helpers
+   (`webidl/promise.rs`), async iterable helpers, and Wasm.  Validate each
+   entry point in `generic_js_test.rs` first.
+
+4. **Phase E — Conditional Types alias** — `#[cfg]` gate all Boa imports.
    Blocked on near-zero ec_to_ctx in binding/domain files.
+
+5. **Decide on full generic engine ownership** — After E is complete,
+   evaluate whether making `EnvironmentSettingsObject` fully generic
+   (owning `dyn ExecutionContext<T>`) is still worth the effort vs. the
+   compile-time alias boundary already achieved.
 
 ### Phase B strategy: test-file-first workflow
 
@@ -800,9 +837,20 @@ keeps the reference file legible as a template.
 
 ## Working during migration
 
-**End-of-task override:**  While working on Phase B–G migration (binding
-bodies, NativeFunction bridging, adapter removal, conditional Types), the
-standard end-of-task verification steps (WPT, navigation verification,
-clippy, fmt) are **skipped**.  Only `cargo check -p content` is required
-to validate each change.  Full verification resumes after Phase G is
-complete.
+**End-of-task override:**  While working on Phase D–E migration (dispatch
+result-model, streams domain, platform-object store, subsystem entry points,
+conditional Types), the standard end-of-task verification steps (WPT,
+navigation verification, clippy, fmt) are **skipped**.  Only
+`cargo check -p content` is required to validate each change.  Full
+verification resumes after Phase E is complete.
+
+**Test-file-first gate:**  Phases P and W introduce new generic interfaces.
+Before those phases can mark complete, each new interface must have a passing
+test in `content/src/generic_js_test.rs` on the Boa backend.  Phases D, S,
+and E are return-type-only or configuration-only changes — validated by
+`cargo check` passing.
+
+**Update this README at end of every migration task.**  The remaining-phases
+table, next-session order, ec_to_ctx counts, and phase status markers must
+reflect current state after every session.  This file is the canonical plan;
+it must never be stale.

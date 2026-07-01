@@ -16,7 +16,7 @@ use crate::js::platform_objects::{store_document_object, with_global_scope};
 use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 use js_engine::boa::BoaContext;
-use js_engine::{EcmascriptHost, ExecutionContext};
+use js_engine::{Completion, EcmascriptHost, ExecutionContext};
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -400,32 +400,37 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         &mut self.engine
     }
 
-    fn create_event_object(&mut self, event: crate::dom::Event) -> JsResult<JsObject> {
+    fn create_event_object(&mut self, event: crate::dom::Event) -> Completion<JsObject, crate::js::Types> {
         create_interface_instance::<crate::js::Types, Event>(
             event,
             js_engine::boa::context_as_ec(self.context()),
         )
-        .map_err(JsError::from_opaque)
     }
 
-    fn document_object(&mut self) -> JsResult<JsObject> {
-        crate::js::platform_objects::document_object(self.context())
+    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
+        crate::js::platform_objects::document_object(self.context()).map_err(|e| {
+            e.into_opaque(self.context()).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn global_object(&mut self) -> JsObject {
         self.context().global_object()
     }
 
-    fn resolve_element_object(&mut self, node_id: usize) -> JsResult<JsObject> {
-        crate::js::platform_objects::resolve_element_object(node_id, self.context())
+    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
+        crate::js::platform_objects::resolve_element_object(node_id, self.context()).map_err(|e| {
+            e.into_opaque(self.context()).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn resolve_existing_node_object(
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
-    ) -> JsResult<JsObject> {
-        crate::js::platform_objects::object_for_existing_node(document, node_id, self.context())
+    ) -> Completion<JsObject, crate::js::Types> {
+        crate::js::platform_objects::object_for_existing_node(document, node_id, self.context()).map_err(|e| {
+            e.into_opaque(self.context()).unwrap_or(JsValue::undefined())
+        })
     }
 
     fn current_time_millis(&self) -> f64 {

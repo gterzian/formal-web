@@ -36,22 +36,34 @@ pub(crate) enum AbortAlgorithm {
 
 impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
-    pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> JsResult<()> {
+    pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> Completion<(), crate::js::Types> {
         match self {
-            Self::Native { callback } => callback()?,
+            Self::Native { callback } => callback()
+                .map_err(|e| {
+                    // Note: Native callbacks still return JsResult; bridge to Completion.
+                    let ctx = unsafe { js_engine::boa::ec_to_ctx(host.ec()) };
+                    e.into_opaque(ctx).unwrap_or(JsValue::undefined())
+                })?,
             Self::RemoveEventListener {
                 event_target,
                 listener_id,
             } => {
                 with_event_target_mut(&JsValue::from(event_target.clone()), |target| {
                     target.remove_event_listener_by_id(*listener_id);
+                })
+                .map_err(|e| {
+                    let ctx = unsafe { js_engine::boa::ec_to_ctx(host.ec()) };
+                    e.into_opaque(ctx).unwrap_or(JsValue::undefined())
                 })?;
             }
             Self::ReadableStreamPipeTo { state } => {
                 // SAFETY: EventDispatchHost::ec() returns a &mut dyn ExecutionContext
                 // backed by BoaContext which is #[repr(transparent)] over Context.
                 let context = unsafe { js_engine::boa::ec_to_ctx(host.ec()) };
-                state.run_abort_algorithm(context)?;
+                state.run_abort_algorithm(context)
+                    .map_err(|e| {
+                        e.into_opaque(context).unwrap_or(JsValue::undefined())
+                    })?;
             }
         }
 
@@ -324,14 +336,13 @@ pub(crate) fn signal_abort(
     host: &mut impl EventDispatchHost,
     signal: &AbortSignal,
     reason: JsValue,
-) -> JsResult<()> {
+) -> Completion<(), crate::js::Types> {
     let reason = if reason.is_undefined() {
         JsValue::from(
             create_interface_instance::<crate::js::Types, DOMException>(
                 DOMException::abort_error(),
                 host.ec(),
-            )
-            .map_err(JsError::from_opaque)?,
+            )?,
         )
     } else {
         reason
@@ -356,7 +367,7 @@ pub(crate) fn signal_abort(
 }
 
 /// <https://dom.spec.whatwg.org/#run-the-abort-steps>
-fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> JsResult<()> {
+fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> Completion<(), crate::js::Types> {
     // Step 1: "For each algorithm of signal's abort algorithms: run algorithm."
     let algorithms = signal.take_abort_algorithms();
     for algorithm in algorithms {
@@ -368,9 +379,8 @@ fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> J
 
     // Step 3: "Fire an event named abort at signal."
     let signal_object = signal.object().ok_or_else(|| {
-        JsError::from(
-            JsNativeError::typ().with_message("AbortSignal is missing its JavaScript object"),
-        )
+        let ec = host.ec();
+        ec.new_type_error("AbortSignal is missing its JavaScript object")
     })?;
     let _ = fire_event(host, &signal_object, "abort", false)?;
     Ok(())

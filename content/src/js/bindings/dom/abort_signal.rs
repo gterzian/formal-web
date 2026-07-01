@@ -143,14 +143,8 @@ pub(crate) fn signal_abort_ec(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    let result = {
-        let mut host = EcDispatchHost::new(ec);
-        signal_abort(&mut host, signal, reason)
-    };
-    result.map_err(|e| {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        e.into_opaque(ctx).unwrap_or(JsValue::undefined())
-    })
+    let mut host = EcDispatchHost::new(ec);
+    signal_abort(&mut host, signal, reason)
 }
 
 pub(crate) fn abort_static(

@@ -10,7 +10,7 @@ use boa_gc::{Gc, GcRefCell};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise};
 
-use super::readablestream::readable_stream_cancel;
+use super::readablestream::{readable_stream_cancel, readable_stream_cancel_ec};
 use super::{
     ReadRequest, ReadableStream, ReadableStreamReader, ReadableStreamState,
     rejected_type_error_promise, type_error_value, with_readable_stream_ref,
@@ -63,27 +63,16 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
         // Step 1: "Let stream be reader.[[stream]]."
         let stream = self.stream_slot_value().ok_or_else(|| {
-            let error: JsError = JsNativeError::typ()
-                .with_message("ReadableStream reader is not attached to a stream")
-                .into();
-            error
-                .into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
+            ec.new_type_error("ReadableStream reader is not attached to a stream")
         })?;
 
         // Step 2: "Assert: stream is not undefined."
         debug_assert!(self.stream_slot_value().is_some());
 
         // Step 3: "Return ! ReadableStreamCancel(stream, reason)."
-        readable_stream_cancel(stream, reason, context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })
+        readable_stream_cancel_ec(stream, reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-reader-generic-initialize>
