@@ -620,8 +620,8 @@ now validated in `content/src/generic_js_test.rs`:
 
 | Pattern | POC test | Production use |
 |---|---|---|
-| ObjectInitializer composite | `object_initializer_composite_build_and_reflect` | `get_style` in html_element.rs |
-| Closure with captured state | `create_builtin_function_captures_mutable_state` | `timeout_static` in abort_signal.rs |
+| ObjectInitializer composite | `object_initializer_composite_build_and_reflect` | `get_style` in html_element.rs ✅ |
+| Closure with captured state | `create_builtin_function_captures_mutable_state` | `timeout_static` in abort_signal.rs ✅ |
 | Timer callback detection | `timer_handler_detects_callable_vs_string` | `timer_handler` in window_or_worker_global_scope.rs |
 | Timeout value conversion | `timeout_ms_conversion_pattern` | `timeout_ms` in window_or_worker_global_scope.rs |
 | Mutable downcast + ec closure | `with_object_any_mut_with_ec_inside_closure` | `set_onload`, `play`, `pause`, `set_src` |
@@ -631,15 +631,15 @@ now validated in `content/src/generic_js_test.rs`:
 | GC rooting + pressure | `gc_root_survives_throwaway_pressure` | Callback storage |
 | Nested GC root propagation | `nested_struct_gc_root_propagates` | Subtype hierarchies |
 
-**~130 ec_to_ctx eliminated across 14 binding/domain files.**
+**~135 ec_to_ctx eliminated across 16 binding/domain files.**
 Fully converted binding files: `document.rs`, `location.rs`, `node.rs`,
 `element.rs`, `html_anchor_element.rs`, `html_media_element.rs`,
-`html_iframe_element.rs`, `abort_controller.rs`.
+`html_iframe_element.rs`, `abort_controller.rs`, `html_element.rs` (get_style).
 
 Domain helpers converted to generic EC trait: `timer_handler_ec`,
 `timeout_ms_ec`, `signal_abort_ec`.
 
-**~65 ec_to_ctx remain in binding files** (streams + event_target + window).
+**~60 ec_to_ctx remain in binding files** (streams + event_target + window).
 **~300 ec_to_ctx remain in streams domain files** (methods take `&mut Context`).
 **~120 ec_to_ctx remain in other domain/WebIDL/wasm files.**
 
@@ -652,20 +652,20 @@ Domain helpers converted to generic EC trait: `timer_handler_ec`,
 | **EventDispatchHost trait** | dispatch.rs, event_target.rs, abort.rs | ~15 | Trait methods return `JsResult`. Convert to `Completion` to eliminate bridges. |
 | **platform_objects** | platform_objects.rs | ~13 | `document_object`, `global_object`, etc. need generic equivalents. |
 | **Structured clone internals** | safe_passing_of_structured_data.rs | ~10 | 500-line function takes `&mut Context`. Pattern validated in POC. |
-| **timeout_static** | abort_signal.rs | 5 | `NativeFunction`, `downcast_ref::<Window>`. Pattern validated in POC. |
 | **WebIDL promise/async_iterable** | promise.rs, async_iterable.rs | ~20 | Mixed Boa dependencies. |
 | **Wasm** | namespace.rs, mod.rs, interfaces.rs | ~25 | Mixed Boa dependencies. |
-| **ObjectInitializer (get_style)** | html_element.rs | 2 | Pattern validated in POC (`object_initializer_composite`). Ready to convert. |
+| **signal_abort_ec bridge** | abort_signal.rs | 1 | Blocked on Phase D (EventDispatchHost trait). |
+| **the_rules_for_choosing_a_navigable** | window.rs | 1 | Takes `Option<&mut Context>`. Needs Phase F (generic EDS). |
 | **document_creation_url** | hyperlink_element_utils.rs | 1 | Needs generic global-scope accessor. |
+| **with_global_scope** | html_media_element.rs | 1 | Needs trait-level host-data accessor. |
 
 ### Next session: recommended order
 
-1. **ObjectInitializer (get_style) in html_element.rs** — Pattern now validated
-   in POC (`object_initializer_composite_build_and_reflect`). Replace
-   `ObjectInitializer::new(ctx)` + `.property(...)` + `.function(...)` +
-   `.build()` with `ec.create_plain_object(None)` + `ec.set(...)` +
-   `ec.create_builtin_function(...)` + `ec.define_property_or_throw(...)`.
-   Low-risk, 2 ec_to_ctx eliminated.
+1. **Phase D completion** — Convert `EventDispatchHost` trait methods from
+   `JsResult` to `Completion`. This eliminates the `js_result_to_completion` /
+   `ec_to_ctx` bridges in all dispatch/abort callers (~15 ec_to_ctx).
+   Also eliminates the `signal_abort_ec` bridge (1 ec_to_ctx in abort_signal.rs).
+   Most impactful remaining non-streams item.
 
 2. **Streams domain calls (~300)** — Dedicated session. Domain methods
    take `&mut Context` internally and need per-method conversion. This is
@@ -674,18 +674,16 @@ Domain helpers converted to generic EC trait: `timer_handler_ec`,
    `ExecutionContext::get(ec, obj, key)`, replace `JsNativeError::typ()` with
    `ec.new_type_error(...)`, etc.
 
-3. **Phase D completion** — Convert `EventDispatchHost` trait methods from
-   `JsResult` to `Completion`. This eliminates the `js_result_to_completion` /
-   `ec_to_ctx` bridges in all dispatch/abort callers.
-
-4. **timeout_static in abort_signal.rs** — Pattern validated in POC
-   (`create_builtin_function_captures_mutable_state`). Replace
-   `NativeFunction::from_copy_closure_with_captures` with
-   `ec.create_builtin_function` + `Box::new(move |...| ...)`. Needs
-   `Window::set_timeout` to take `&mut dyn ExecutionContext<T>`.
-
-5. **Phase E: conditional Types** — `#[cfg]` gate all Boa imports.
+3. **Phase E: conditional Types** — `#[cfg]` gate all Boa imports.
    Blocked on near-zero ec_to_ctx in binding/domain files.
+
+### Completed this session
+
+| Item | Files | Eliminated |
+|---|---|---|
+| ObjectInitializer (get_style) | html_element.rs | 2 ec_to_ctx removed; `get_style` uses `ec.create_plain_object` + `ec.set` + `ec.create_builtin_function` + `ec.define_property_or_throw`. Removed `with_html_element_ref`, `resolve_style_element`, `style_css_text_getter`, `style_css_text_setter`. |
+| timeout_static | abort_signal.rs | 1 ec_to_ctx removed; `NativeFunction::from_copy_closure_with_captures` replaced with `ec.create_builtin_function`. `timeout_reason` converted to take `ec`. Used `with_object_any_mut_with` for borrow-safe Window downcast. |
+| Error conversion | window_or_worker_global_scope.rs, html/window.rs | 5 Boa error construction sites converted to `ec.new_type_error`. `context_as_ec` removed from window.rs. |
 
 ### Phase B strategy: test-file-first workflow
 

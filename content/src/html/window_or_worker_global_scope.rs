@@ -1,4 +1,4 @@
-use boa_engine::{JsError, JsNativeError, JsValue};
+use boa_engine::JsValue;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -98,15 +98,7 @@ pub(crate) trait WindowOrWorkerGlobalScope {
                 timeout_ms,
                 task_nesting_level,
             )
-            .map_err(|message| {
-                // Note: keeps ec_to_ctx — JsError → JsValue conversion requires Context.
-                let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                let js_error: JsError =
-                    JsError::from(JsNativeError::typ().with_message(message));
-                js_error
-                    .into_opaque(ctx)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })
+            .map_err(|message| ec.new_type_error(&message))
     }
 }
 

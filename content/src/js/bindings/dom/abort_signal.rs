@@ -1,6 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsValue,
-    native_function::NativeFunction,
+    JsArgs, JsValue,
 };
 use std::marker::PhantomData;
 
@@ -12,7 +11,7 @@ use crate::js::downcast::{try_with_abort_signal_mut, try_with_abort_signal_ref, 
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use crate::webidl::{callback_function_value, callback_function_value_ec, nullable_value, nullable_value_ec};
+use crate::webidl::{callback_function_value_ec, nullable_value_ec};
 
 use super::event_target::EcDispatchHost;
 
@@ -129,14 +128,14 @@ pub(crate) fn abort_reason_from_argument(
     Ok(argument.clone())
 }
 
-pub(crate) fn timeout_reason(context: &mut Context) -> Completion<JsValue, crate::js::Types> {
-    Ok(JsValue::from(create_interface_instance::<
-        crate::js::Types,
-        DOMException,
-    >(
+pub(crate) fn timeout_reason(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let exc = create_interface_instance::<crate::js::Types, DOMException>(
         DOMException::timeout_error(),
-        js_engine::boa::context_as_ec(context),
-    )?))
+        ec,
+    )?;
+    Ok(crate::js::Types::value_from_object(exc))
 }
 
 pub(crate) fn signal_abort_ec(
@@ -172,46 +171,46 @@ pub(crate) fn timeout_static(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: keeps ec_to_ctx — NativeFunction, global_object,
-    // downcast_ref::<Window> all require Context.
+    use crate::js::Types;
+
     let milliseconds = ec.to_length(args.get_or_undefined(0).clone())?;
     let signal = create_abort_signal(AbortSignal::new(), ec)?;
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let undefined = JsValue::undefined();
-    let callback = NativeFunction::from_copy_closure_with_captures(
-        |_, _, signal: &AbortSignal, context| {
-            let reason = timeout_reason(context).unwrap_or_else(|_| JsValue::undefined());
-            crate::js::completion_to_js_result(signal_abort_ec(
-                signal,
-                reason,
-                js_engine::boa::context_as_ec(context),
-            ))?;
-            Ok(JsValue::undefined())
-        },
-        signal.clone(),
-    )
-    .to_js_function(ctx.realm());
 
-    let global = ctx.global_object();
-    let window = global
-        .downcast_ref::<Window>()
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("AbortSignal.timeout() requires a Window global")
-        })
-        .map_err(|e| {
-            let js_error: boa_engine::JsError = boa_engine::JsError::from(e);
-            js_error.into_opaque(ctx).unwrap_or(undefined.clone())
-        })?;
-    let ec_ref = js_engine::boa::context_as_ec(ctx);
-    window.set_timeout(
-        &JsValue::from(callback),
-        &JsValue::from(milliseconds as f64),
-        Vec::new(),
-        ec_ref,
-    )?;
+    // Create the timeout callback as a builtin function.
+    let signal_for_callback = signal.clone();
+    let callback_fn = ec.create_builtin_function(
+        Box::new(move |_args, _this, inner_ec| {
+            let reason = timeout_reason(inner_ec).unwrap_or_else(|_| inner_ec.value_undefined());
+            signal_abort_ec(&signal_for_callback, reason, inner_ec)?;
+            Ok(inner_ec.value_undefined())
+        }),
+        0,
+        ec.property_key_from_str(""),
+    );
 
-    Ok(JsValue::from(
-        signal.object().ok_or(undefined.clone())?,
+    let callback_val = Types::value_from_object(Types::object_from_function(callback_fn));
+    let ms_val = ec.value_from_number(milliseconds as f64);
+
+    // Get the Window from the global object and schedule the timeout.
+    // Use with_object_any_mut_with to avoid borrow conflict between
+    // the downcast result and the subsequent set_timeout call.
+    let global = ec.global_object();
+    let mut set_result: Completion<u32, crate::js::Types> = Ok(0);
+    ec.with_object_any_mut_with(
+        &global,
+        Box::new(|data, ec2| {
+            set_result = match data.downcast_ref::<Window>() {
+                Some(window) => window.set_timeout(&callback_val, &ms_val, Vec::new(), ec2),
+                None => Err(ec2.new_type_error(
+                    "AbortSignal.timeout() requires a Window global",
+                )),
+            };
+        }),
+    );
+    set_result?;
+
+    Ok(Types::value_from_object(
+        signal.object().ok_or_else(|| ec.value_undefined())?,
     ))
 }
 

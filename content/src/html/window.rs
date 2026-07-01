@@ -2,7 +2,7 @@ use log::error;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 
-use boa_engine::{JsNativeError, JsValue};
+use boa_engine::JsValue;
 use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
 
@@ -122,7 +122,8 @@ pub(crate) fn window_open_steps(
     global_scope: &GlobalScope,
     event_sender: &IpcSender<ContentEvent>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    // Note: ec_to_ctx kept for the_rules_for_choosing_a_navigable which
+    // takes Option<&mut Context>.
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
     // TODO: Content process does not yet track termination nesting.
@@ -131,10 +132,7 @@ pub(crate) fn window_open_steps(
     let source_navigable_id = match global_scope.source_navigable_id() {
         Some(id) => id,
         None => {
-            return Err(crate::js::native_error_to_js_value(
-                JsNativeError::typ().with_message("window.open: no source navigable"),
-                context,
-            ));
+            return Err(ec.new_type_error("window.open: no source navigable"));
         }
     };
 
@@ -156,19 +154,14 @@ pub(crate) fn window_open_steps(
                     Some(base_url) => match base_url.join(url) {
                         Ok(resolved) => resolved,
                         Err(_) => {
-                            return Err(crate::js::native_error_to_js_value(
-                                JsNativeError::typ().with_message(
-                                    "SyntaxError: failed to parse URL in window.open",
-                                ),
-                                context,
+                            return Err(ec.new_type_error(
+                                "SyntaxError: failed to parse URL in window.open",
                             ));
                         }
                     },
                     None => {
-                        return Err(crate::js::native_error_to_js_value(
-                            JsNativeError::typ()
-                                .with_message("SyntaxError: failed to parse URL in window.open"),
-                            context,
+                        return Err(ec.new_type_error(
+                            "SyntaxError: failed to parse URL in window.open",
                         ));
                     }
                 }
@@ -192,13 +185,11 @@ pub(crate) fn window_open_steps(
         if resolved.scheme() != "about" && resolved.scheme() != "file" {
             if let Some(creation_url) = global_scope.creation_url() {
                 if creation_url.origin() != resolved.origin() {
-                    return Err(crate::js::native_error_to_js_value(
-                        JsNativeError::typ().with_message(format!(
-                            "SecurityError: cross-origin navigation to {} is blocked",
-                            resolved
-                        )),
-                        context,
-                    ));
+                    let msg = format!(
+                        "SecurityError: cross-origin navigation to {} is blocked",
+                        resolved,
+                    );
+                    return Err(ec.new_type_error(&msg));
                 }
             }
         }
@@ -295,7 +286,7 @@ pub(crate) fn window_open_steps(
     let window = result
         .return_window
         .expect("window_open_steps: all navigable branches set a return window");
-    create_window_proxy(&window, js_engine::boa::context_as_ec(context))
+    create_window_proxy(&window, ec)
 }
 
 /// <https://html.spec.whatwg.org/#get-noopener-for-window-open>

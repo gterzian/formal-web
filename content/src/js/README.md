@@ -124,8 +124,8 @@ tag, add a domain struct in `content/src/html/`, a `WebIdlInterface` impl in
    `with_element_ref` for the new type.  Also add arms in `class_list_value`
    and `class_list_set_value` if they use the element-punning pattern.
 6. **`content/src/js/bindings/html/html_element.rs`** — add a downcast arm
-   in `with_html_element_ref`, and arms in `style_css_text_getter` and
-   `style_css_text_setter`.
+   in `try_with_html_element_ref`, and arms in `element_style_attribute_ec`
+   and `set_element_style_attribute_ec`.
 7. **`content/src/js/downcast.rs`** — add arms in both
    `with_event_target_mut` and `with_event_target_ref`.
 8. **`content/src/dom/dispatch.rs`** — add an arm in `path_for_target`.
