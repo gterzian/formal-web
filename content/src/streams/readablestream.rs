@@ -1210,6 +1210,17 @@ pub(crate) fn create_readable_stream(
     // Step 8: "Return stream."
     Ok((stream, stream_object))
 }
+
+pub(crate) fn construct_readable_stream_ec(
+    new_target: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ReadableStream, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    construct_readable_stream(new_target, args, ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+}
+
 fn create_readable_stream_object(context: &mut Context) -> JsResult<(ReadableStream, JsObject)> {
     let ec_ref = js_engine::boa::context_as_ec(context);
     let stream = ReadableStream::new();

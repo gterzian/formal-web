@@ -7,20 +7,21 @@ use crate::html::{
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
-use crate::js::platform_objects::{
-    location_object as cached_location_object, store_location_object,
-};
-use crate::js::with_event_target_mut;
+use crate::js::platform_objects;
+use crate::js::downcast::try_with_event_target_mut;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use crate::webidl::{callback_function_value, nullable_value};
+use crate::webidl::{callback_function_value_ec, nullable_value_ec};
 
+use crate::dom::Element;
 use crate::js::bindings::dom::with_element_ref;
 
-use super::{hyperlink_element_utils::document_creation_url, style_declaration_object};
+use super::hyperlink_element_utils::document_creation_url_ec;
+use super::style_declaration_object;
+use super::style_declaration_object_ec;
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -190,9 +191,8 @@ fn structured_clone_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let window_object = current_window_object(this, ctx);
-    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = downcast_window_ec(&window_object, ec)?;
 
     let value = args.get_or_undefined(0).clone();
     let options = args.get(1).and_then(parse_structured_clone_options);
@@ -213,28 +213,15 @@ fn open_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let url = args
-        .get(0)
-        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
-        .transpose()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()))?
-        .unwrap_or_default();
-    let target = args
-        .get(1)
-        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
-        .transpose()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()))?
-        .unwrap_or_default();
-    let features = args
-        .get(2)
-        .map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped()))
-        .transpose()
-        .map_err(|e| e.into_opaque(ctx).unwrap_or_else(|_| JsValue::undefined()))?
-        .unwrap_or_default();
+    let url_val = args.get(0).cloned().unwrap_or_default();
+    let url = ec.to_rust_string(url_val.clone())?;
+    let target_val = args.get(1).cloned().unwrap_or_default();
+    let target = ec.to_rust_string(target_val.clone())?;
+    let features_val = args.get(2).cloned().unwrap_or_default();
+    let features = ec.to_rust_string(features_val.clone())?;
 
-    let window_object = current_window_object(this, ctx);
-    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = downcast_window_ec(&window_object, ec)?;
     window.open(&url, &target, &features, ec)
 }
 
@@ -243,17 +230,12 @@ fn request_animation_frame_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let callback = callback_function_value(args.get_or_undefined(0))?;
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
-        Ok(JsValue::from(
-            window.global_scope.request_animation_frame(callback),
-        ))
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let callback = callback_function_value_ec(args.get_or_undefined(0), ec)?;
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = downcast_window_ec(&window_object, ec)?;
+    Ok(JsValue::from(
+        window.global_scope.request_animation_frame(callback),
+    ))
 }
 
 fn get_onload(
@@ -276,40 +258,44 @@ fn set_onload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let window_object = current_window_object(this, ctx);
-        let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
-        let previous = with_window_mut(&window_object, |window| {
-            window.replace_onload(callback.clone())
+    let window_object = current_window_object_from_ec(this, ec);
+    let callback = nullable_value_ec(args.get_or_undefined(0), ec, callback_function_value_ec)?;
+
+    let previous = {
+        if let Some(data) = ec.with_object_any_mut(&window_object) {
+            if let Some(window) = data.downcast_mut::<Window>() {
+                window.replace_onload(callback.clone())
+            } else {
+                return Err(ec.new_type_error("receiver is not a Window"));
+            }
+        } else {
+            return Err(ec.new_type_error("receiver is not a Window"));
+        }
+    };
+
+    if let Some(previous) = previous {
+        let receiver = JsValue::from(window_object.clone());
+        try_with_event_target_mut(&receiver, ec, |target| {
+            target.remove_event_listener_entry("load", &previous, false);
         })?;
+    }
 
-        if let Some(previous) = previous {
-            let receiver = JsValue::from(window_object.clone());
-            with_event_target_mut(&receiver, |target| {
-                target.remove_event_listener_entry("load", &previous, false);
-            })?;
-        }
+    if let Some(callback) = callback {
+        let receiver = JsValue::from(window_object.clone());
+        try_with_event_target_mut(&receiver, ec, |target| {
+            target.add_event_listener(
+                &window_object,
+                String::from("load"),
+                Some(callback),
+                false,
+                false,
+                Some(false),
+                None,
+            );
+        })?;
+    }
 
-        if let Some(callback) = callback {
-            let receiver = JsValue::from(window_object.clone());
-            with_event_target_mut(&receiver, |target| {
-                target.add_event_listener(
-                    &window_object,
-                    String::from("load"),
-                    Some(callback),
-                    false,
-                    false,
-                    Some(false),
-                    None,
-                );
-            })?;
-        }
-
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    Ok(JsValue::undefined())
 }
 
 fn get_parent(
@@ -342,16 +328,11 @@ fn cancel_animation_frame_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let handle = args.get_or_undefined(0).to_u32(ctx)?;
-        let window_object = current_window_object(this, ctx);
-        let window = downcast_window(&window_object)?;
-        window.global_scope.cancel_animation_frame(handle);
-        Ok(JsValue::undefined())
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let handle = ec.to_uint32(args.get_or_undefined(0).clone())?;
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = downcast_window_ec(&window_object, ec)?;
+    window.global_scope.cancel_animation_frame(handle);
+    Ok(JsValue::undefined())
 }
 
 fn set_timeout_method(
@@ -359,9 +340,8 @@ fn set_timeout_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let window_object = current_window_object(this, ctx);
-    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = downcast_window_ec(&window_object, ec)?;
     Ok(JsValue::from(window.set_timeout(
         args.get_or_undefined(0),
         args.get_or_undefined(1),
@@ -375,10 +355,9 @@ fn clear_timeout_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let timer_id = crate::js::js_result_to_completion(args.get_or_undefined(0).to_u32(ctx), ctx)?;
-    let window_object = current_window_object(this, ctx);
-    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    let timer_id = ec.to_uint32(args.get_or_undefined(0).clone())?;
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = downcast_window_ec(&window_object, ec)?;
     window.clear_timeout(timer_id);
     Ok(JsValue::undefined())
 }
@@ -388,9 +367,8 @@ fn set_interval_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let window_object = current_window_object(this, ctx);
-    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = downcast_window_ec(&window_object, ec)?;
     Ok(JsValue::from(window.set_interval(
         args.get_or_undefined(0),
         args.get_or_undefined(1),
@@ -404,10 +382,9 @@ fn clear_interval_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let timer_id = crate::js::js_result_to_completion(args.get_or_undefined(0).to_u32(ctx), ctx)?;
-    let window_object = current_window_object(this, ctx);
-    let window = crate::js::js_result_to_completion(downcast_window(&window_object), ctx)?;
+    let timer_id = ec.to_uint32(args.get_or_undefined(0).clone())?;
+    let window_object = current_window_object_from_ec(this, ec);
+    let window = downcast_window_ec(&window_object, ec)?;
     window.clear_interval(timer_id);
     Ok(JsValue::undefined())
 }
@@ -417,28 +394,28 @@ fn get_computed_style_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsValue> {
-        let pseudo_elt = if args.get_or_undefined(1).is_null_or_undefined() {
-            None
-        } else {
-            Some(
-                args.get_or_undefined(1)
-                    .to_string(ctx)?
-                    .to_std_string_escaped(),
-            )
-        };
+    let pseudo_elt = if args.get_or_undefined(1).is_null_or_undefined() {
+        None
+    } else {
+        Some(ec.to_rust_string(args.get_or_undefined(1).clone())?)
+    };
 
-        with_element_ref(args.get_or_undefined(0), |element| {
-            style_declaration_object(
-                &window_computed_style_properties_for_element(element, pseudo_elt.as_deref()),
-                ctx,
-            )
-            .map(JsValue::from)
-        })?
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    // Extract element ref using with_object_any, release ec borrow before calling _ec fn.
+    let properties = {
+        let err_element = ec.new_type_error("receiver is not an Element");
+        let err_object = ec.new_type_error("element receiver is not an object");
+        let object = match <crate::js::Types as JsTypes>::value_as_object(args.get_or_undefined(0)) {
+            Some(o) => o,
+            None => return Err(err_object),
+        };
+        let element = match ec.with_object_any(&object).and_then(|a| a.downcast_ref::<Element>()) {
+            Some(e) => e,
+            None => return Err(err_element),
+        };
+        window_computed_style_properties_for_element(element, pseudo_elt.as_deref())
+    };
+    // ec borrow from with_object_any is released here.
+    style_declaration_object_ec(&properties, ec).map(JsValue::from)
 }
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
@@ -447,24 +424,18 @@ fn get_computed_style_method(
 fn location_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    (|| -> JsResult<JsObject> {
-        if let Some(object) = cached_location_object(ctx)? {
-            return Ok(object);
-        }
+    if let Some(object) = platform_objects::location_object_ec(ec)? {
+        return Ok(object);
+    }
 
-        let url = document_creation_url(ctx)?;
-        let window = ctx.global_object();
-        let object = create_interface_instance::<crate::js::Types, Location>(
-            Location::new(url, window),
-            js_engine::boa::context_as_ec(ctx),
-        )
-        .map_err(JsError::from_opaque)?;
-        store_location_object(ctx, object.clone())?;
-        Ok(object)
-    })()
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+    let url = document_creation_url_ec(ec)?;
+    let window = ec.global_object();
+    let object = create_interface_instance::<crate::js::Types, Location>(
+        Location::new(url, window),
+        ec,
+    )?;
+    platform_objects::store_location_object_ec(ec, object.clone())?;
+    Ok(object)
 }
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
@@ -487,6 +458,15 @@ fn downcast_window(object: &JsObject) -> JsResult<boa_gc::GcRef<'_, Window>> {
         JsNativeError::typ()
             .with_message("receiver is not a Window")
             .into()
+    })
+}
+
+fn downcast_window_ec<'a>(
+    object: &'a JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<boa_gc::GcRef<'a, Window>, crate::js::Types> {
+    object.downcast_ref::<Window>().ok_or_else(|| {
+        ec.new_type_error("receiver is not a Window")
     })
 }
 

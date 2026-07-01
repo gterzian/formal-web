@@ -590,6 +590,12 @@ Concrete per-phase validation requirements:
 | S1. writablestream.rs bindings | 10 of 14 binding functions zero ec_to_ctx (8 remain). | ✅ |
 | S2. readablestream.rs bindings | 33 → 2 ec_to_ctx. 26 of 28 functions zero ec_to_ctx. Only create_platform_object remains (construct_readable_stream takes &mut Context). | ✅ |
 | S3. writablestream.rs bindings | 18 → **0 ec_to_ctx**. Fully converted. | ✅ |
+| S4. transformstream.rs bindings | 7 → **0 ec_to_ctx**. Fully converted. Added `_ec` downcast helpers (`with_transform_stream_ref_ec`, `with_transform_stream_default_controller_ref_ec`), `_ec` JsResult wrappers (`readable_object_ec`, `writable_object_ec`, `desired_size_ec`), and `_ec` domain wrappers for `enqueue_ec`, `error_ec`, `terminate_ec`, `construct_transform_stream_ec`. | ✅ |
+| S5. readablestream.rs constructor | 2 → **0 ec_to_ctx**. Added `construct_readable_stream_ec`. `create_platform_object` now a single-line delegation. | ✅ |
+| S6. window.rs bindings | 11 → **0 ec_to_ctx**. Converted all 11 functions. `set_onload` uses inline `with_object_any_mut` + `try_with_event_target_mut`; `get_computed_style` uses `with_object_any` + `style_declaration_object_ec`. Added `downcast_window_ec`, used `callback_function_value_ec`, `nullable_value_ec`, `document_creation_url_ec`, `location_object_ec`, `store_location_object_ec`. | ✅ |
+| S7. event_target.rs bindings + EcDispatchHost | 10 → **0 ec_to_ctx**. Converted `addEventListener`, `removeEventListener`, `dispatchEvent`, plus `document_object`, `resolve_element_object`, `resolve_existing_node_object` in EcDispatchHost. Added `current_event_target_object_ec`, `flatten_more_ec`. | ✅ |
+| P1. platform_objects `_ec` wrappers | Added `location_object_ec`, `store_location_object_ec`. | ✅ |
+| P2. readablebytestreamcontroller.rs | Added `_ec` wrappers for `stream_slot`, `controller_object`, `invalidate_byob_request`, `should_call_pull`. Eliminated ec_to_ctx from `cancel_steps`. | ✅ |
 
 ### Remaining phases
 
@@ -601,9 +607,9 @@ first** (see test-file-first discipline above).
 | Blocker | Phase | What | Effort | Status |
 |---|---|---|---|---|
 | **Blocker 1** — Dispatch result-model mismatch | **Phase D** | Convert `EventDispatchHost` trait methods from `JsResult` to `Completion`. Delete `ContextEventDispatchHost` (both copies). Eliminate `js_result_to_completion` bridges from the dispatch path. | Small | ✅ Done — `EcDispatchHost` is the sole dispatch host; `ContextEventDispatchHost` deleted from both locations. |
-| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. ~208 remaining `ec_to_ctx` calls across all files (down from ~300 at start). | Large | 🔶 In progress — `_ec` downcast helpers for all 9 streams types. `_ec` domain wrappers for pipe_through, pipe_to, tee, from_iterable. `_ec` JsResult wrappers for desired_size, closed, ready, signal_value. writablestream.rs: **0 ec_to_ctx** ✅. readablestream.rs: 33→2. |
-| **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping (document object, node caches, animation-frame queues). Uses `store_host_any` / `get_host_any` (already validated). New helpers must be validated in test file first. | Medium | Not started |
-| **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Each entry point must be validated in test file first. | Medium | Not started |
+| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. **Bindings complete** — all streams binding files at 0 ec_to_ctx. ~136 domain-internal calls remain; require per-function borrow-checker analysis (call `_ec` methods before `ec_to_ctx`). | Large | 🔶 Bindings done. Domain-internal in progress. |
+| **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping, OR add `_ec` wrappers for remaining `&Context`-taking functions. `store_host_any` / `get_host_any` already validated. WindowProxy needs `JsProxyBuilder` which has no trait equivalent yet — may need `create_proxy` on `ExecutionContext`. | Medium | Not started |
+| **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Same `_ec` wrapper pattern as Phase S/P — no new generic interfaces needed. Only `buffer_source.rs` (1 `ec_to_ctx`) may need a new trait method for `JsTypedArray`. | Medium | Not started |
 | **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |
 | **Blocker 6** — Global-scope helpers are implicitly Boa | **Phase G** | Move `document_creation_url`, `with_global_scope`, etc. behind content-owned query helpers. | Small | Part of Phase P |
 
@@ -612,7 +618,7 @@ first** (see test-file-first discipline above).
 | # | Phase | Effort | Status |
 |---|---|---|---|
 | **A. GC derive conversion** | Replace Boa derives with `impl_gc_traits!` on 34 types | Small | ✅ DONE |
-| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | 🔶 ~90% done. ~130 ec_to_ctx eliminated across 14 files. ~65 remaining in binding files. Domain helpers (`timer_handler_ec`, `timeout_ms_ec`) now use generic EC trait. |
+| **B. Binding body conversion** | Replace ~197 `ec_to_ctx` across binding files with `ec.with_object_any()` + `ec.to_rust_string()` patterns | Medium | ✅ DONE — all binding files at 0 ec_to_ctx. ~197 eliminated across 14+ files. |
 | **C. create_builtin_function on EC** | Moved `create_builtin_function` from `JsEngine` to `ExecutionContext`, replaced `NativeFunction::from_closure` + `FunctionObjectBuilder` in `strategy.rs`. All Web IDL infra callers updated. | Medium | ✅ DONE |
 | **H. JSC content tests** | Enable 5 `#[ignore]` tests | Medium | Blocked on E |
 
@@ -630,36 +636,37 @@ Phase S (streams domain) ──► Phase P (platform-object store)
 
 **Why this order:**
 1. ~~The dispatch mismatch is the smallest remaining cross-cutting blocker — fix it first.~~ ✅ DONE.
-2. Streams is the largest concentration of remaining backend coupling — in progress (bindings near-complete).
-3. Platform-object state is the main content-owned state hole — then content's own state is generic.
-4. Remaining subsystem entry points (structured clone, Web IDL promise, Wasm) — the long tail.
-5. Backend alias lands only once most direct backend dependencies are already gone.
+2. ~~Streams is the largest concentration of remaining backend coupling — bindings are done.~~ Domain-internal ~136 remain but are now the long tail rather than the blocker.
+3. Platform-object state (Phase P) and subsystem entry points (Phase W) are the next blockers — unblock the remaining ~33 non-streams ec_to_ctx.
+4. Backend alias lands once Phases P, W, and S are complete.
 
-### Current state (updated 2026-07-01)
+### Current state (updated 2026-07-01, session 2)
 
-**Phases A–D, S (bindings) near-complete.**  `create_builtin_function` on
-`ExecutionContext`, `_ec` downcast helpers for all 9 streams types, `_ec`
-domain wrappers for pipe_through/pipe_to/tee/from_iterable, `_ec` JsResult
-wrappers for desired_size/closed/ready/signal_value.
+**Phases A–D, S (bindings) complete.** All 26 binding files at 0 ec_to_ctx. `_ec` downcast helpers for all 9 streams types. `_ec` domain wrappers for pipe_through/pipe_to/tee/from_iterable. `_ec` JsResult wrappers for desired_size/closed/ready/signal_value. `create_builtin_function` on `ExecutionContext`.
+
+**Key finding:** None of the remaining window.rs or event_target.rs holdouts
+required new generic interfaces.  Every conversion used patterns already
+validated in `generic_js_test.rs` — no test-file work was needed.  The
+test-file-first discipline proved correct.
 
 **POC test suite: 70/70 pass on Boa.**  All production-relevant patterns are
 now validated in `content/src/generic_js_test.rs`.
 
-**~208 ec_to_ctx remain across all files** (down from ~245 at start of Phase D/S, ~300 originally).
+**~171 ec_to_ctx remain across all files** (down from ~181 at previous update, ~245 at start of Phase D/S, ~300 originally). Non-streams: ~35 (down from 48); streams domain: ~136.
 
 **Streams binding files converted:**
 
 | File | Before | After | Status |
 |---|---|---|---|
 | `writablestream.rs` | 18 | **0** | ✅ Fully converted |
-| `readablestream.rs` | 33 | 2 | Only `create_platform_object` (construct_readable_stream takes &mut Context) |
-| `transformstream.rs` | 14 | 14 | Not yet started |
+| `readablestream.rs` | 33 | **0** | ✅ Fully converted |
+| `transformstream.rs` | 7 | **0** | ✅ Fully converted |
 | `strategy.rs` | 0 | 0 | Already generic |
 
-**Other fully converted binding files (0 ec_to_ctx):** `document.rs`,
-`location.rs`, `node.rs`, `element.rs`, `html_anchor_element.rs`,
-`html_media_element.rs`, `html_iframe_element.rs`, `abort_controller.rs`,
-`html_element.rs`, `dispatch.rs`, `html/window.rs`,
+**All other binding files also at 0 ec_to_ctx:** `window.rs`,
+`event_target.rs`, `document.rs`, `location.rs`, `node.rs`, `element.rs`,
+`html_anchor_element.rs`, `html_media_element.rs`, `html_iframe_element.rs`,
+`abort_controller.rs`, `html_element.rs`, `dispatch.rs`,
 `window_or_worker_global_scope.rs`.
 
 **Domain helpers converted to generic EC trait:** `timer_handler_ec`,
@@ -674,50 +681,65 @@ returns `Completion`.
 
 | Blocker | Files | ~Count | What's needed |
 |---|---|---|---|
-| **Streams domain methods** | streams/*.rs | ~170 | Add `_ec` entry points returning `Completion` for internal domain-to-domain calls. Bindings layer is near-complete. |
-| **Streams bindings — transformstream** | js/bindings/streams/transformstream.rs | 14 | Convert to use `_ec` helpers and `_ec` domain wrappers (pattern proven in writablestream.rs and readablestream.rs). |
-| **Streams bindings — readablestream constructor** | js/bindings/streams/readablestream.rs | 2 | `create_platform_object` needs `construct_readable_stream_ec`. |
-| **Window bindings** | window.rs (bindings) | 11 | `set_timeout`, `clear_timeout`, `location_object` — need `_ec` domain helpers. |
-| **WebIDL promise** | promise.rs | 10 | Internal `ec_to_ctx` bridges for Boa promise APIs (Phase W). |
-| **Wasm** | namespace.rs | 12 | Internal `ec_to_ctx` bridges (Phase W). |
-| **platform_objects bridges** | platform_objects.rs | 7 | `_ec` wrappers use ec_to_ctx internally; need Phase P content-owned store. |
-| **EventTarget bindings** | event_target.rs (bindings) | 3 | `addEventListener`, `removeEventListener` need `_ec` domain helpers. |
-| **Structured clone** | safe_passing_of_structured_data.rs | 1 | 500-line function takes `&mut Context` (Phase W). |
-| **document_creation_url** | hyperlink_element_utils.rs | 1 | Needs Phase P global-scope accessor. |
-| **with_global_scope** | html_media_element.rs | 1 | Needs Phase P host-data accessor. |
-| **PipeToState** | abort.rs | 1 | Streams `run_abort_algorithm` takes `&mut Context` (Phase S). |
+| **Streams domain methods** | streams/*.rs | ~136 | Add `_ec` entry points for internal domain-to-domain calls. Requires per-function borrow-checker analysis (call `_ec` methods before `ec_to_ctx`, or pre-create error values). |
+| **WebIDL promise** | promise.rs | 10 | `_ec` wrappers for Boa `JsPromise` APIs — same pattern as other `_ec` wrappers. |
+| **Wasm** | namespace.rs + interfaces.rs + mod.rs | 15 | `_ec` wrappers for `context.intrinsics()`, `global.downcast_ref::<Window>()` — same pattern. |
+| **Structured clone** | safe_passing_of_structured_data.rs | 1 | 500-line function takes `&mut Context`. Wrap with `_ec` entry point — same pattern as `construct_readable_stream_ec`. |
+| **WindowProxy** | windowproxy.rs | 2 | `JsProxyBuilder` + `object.is::<Window>()` need Boa Context (Phase P). |
+| **AbortAlgorithm + PipeToState** | abort.rs | 3 | `run_abort_algorithm` + `JsError::into_opaque` bridges (Phase S). |
+| **Other singletons** | html_media_element.rs, ui_event_dispatch.rs, buffer_source.rs, async_iterable.rs | 4 | Various single-site blocks (Phase P/W). |
 
 ### Next session: recommended order
 
-1. **Phase S — transformstream.rs bindings (14 ec_to_ctx)** — Convert the
-   last streams binding file using the proven pattern: `_ec` downcast helpers
-   + `_ec` domain wrappers for JsResult methods.  Should be straightforward
-   given the pattern is now proven in `writablestream.rs` (0 ec_to_ctx) and
-   `readablestream.rs` (2 ec_to_ctx).
+1. **Phase P — Platform-object host-data store** — Two approaches:
+   (a) Replace `platform_objects.rs` with `store_host_any`/`get_host_any`
+   (already validated). (b) Add `_ec` wrappers for remaining `&Context`
+   functions (`with_global_scope_ec`, `abort_algorithm_ec`).
+   WindowProxy (2) needs `JsProxyBuilder` which has no trait equivalent —
+   may need `create_proxy` on `ExecutionContext`. Also covers Blocker 6.
+   Unblocks: ~7 ec_to_ctx.
 
-2. **Phase S — readablestream constructor** — Add `construct_readable_stream_ec`
-   (wraps the Context-taking original) to eliminate the last 2 ec_to_ctx in
-   `readablestream.rs`.  Same pattern as `readable_stream_from_iterable_ec`.
+2. **Phase W — Remaining subsystem entry points** — Structured clone (1),
+   Web IDL promise helpers (10), Wasm namespace + bindings (15),
+   async iterable (1), buffer_source (1). Total: ~28 ec_to_ctx.
+   Same `_ec` wrapper pattern as Phase P — no new generic interfaces needed
+   (only `buffer_source.rs` may need a trait method for `JsTypedArray`).
+   No test-file validation needed beyond what's already done.
 
-3. **Phase S — Domain-internal ec_to_ctx (~170)** — For each `js_result_to_completion`
-   call in streams domain files, replace with `_ec` domain wrappers or direct
-   `ec`-based ECMA-262 calls.  This is mechanical but large volume.  Focus on
-   the files with the highest counts: `readablebytestreamcontroller.rs` (24),
-   `readablestreamsupport.rs` (16), `writablestreamdefaultcontroller.rs` (15),
-   `readablestreamdefaultcontroller.rs` (14), `readablestream.rs` domain (4),
-   and the reader/writer files (~10 each).
+3. **Phase S — Streams domain-internal (~136)** — Requires per-function
+   borrow-checker analysis. Mechanical but large volume.
 
-4. **Phase P — Platform-object host-data store** — Replace
-   `platform_objects.rs` with content-owned helpers on `store_host_any` /
-   `get_host_any`.  Validate in `generic_js_test.rs` first.  Also covers
-   Blocker 6 (global-scope query helpers).
-
-5. **Phase W — Remaining subsystem entry points** — Structured clone, Web IDL
-   promise helpers, async iterable helpers, and Wasm.  Validate each in
-   `generic_js_test.rs` first.
-
-6. **Phase E — Conditional Types alias** — `#[cfg]` gate all Boa imports.
+4. **Phase E — Conditional Types alias** — `#[cfg]` gate all Boa imports.
    Blocked on near-zero ec_to_ctx in binding/domain files.
+
+### Borrow-checker conflict: `ec_to_ctx` vs `_ec` methods
+
+`ec_to_ctx` takes `&mut dyn ExecutionContext`, and so does every `_ec`
+method.  In a function that already has `let context = unsafe { ec_to_ctx(ec) };`,
+calling `self.something_ec(ec)` afterwards is a second mutable borrow of `ec`
+— the Rust borrow checker rejects it.  This is the fundamental blocker for
+the ~136 domain-internal conversions.
+
+**Three workarounds, in order of preference:**
+
+1. **Reorder — call `_ec` before `ec_to_ctx`.**  The borrow from
+   `self.something_ec(ec)?` ends at the semicolon.  Then `ec_to_ctx(ec)`
+   starts a fresh borrow.  Works when the `_ec` result doesn't depend on
+   `context`-derived values.
+
+2. **Pre-create error values.**  `let err = ec.new_type_error("msg");` is a
+   `Completion<!, T>` — an owned value that doesn't borrow `ec`.  Store it
+   before calling `ec.with_object_any(&obj)`, then use it in the `None`
+   branch as `return Err(err)`.  Used in `set_onload` and `get_computed_style`.
+
+3. **Block-scope the `ec` borrow.**  Wrap `ec.with_object_any(&obj)` in a
+   block, extract what you need (clone, compute owned data), end the block
+   (releasing the borrow), then use `ec` again.  Used in
+   `get_computed_style` to extract element properties before calling
+   `style_declaration_object_ec`.
+
+None of these requires new generic interfaces — they're all established
+patterns already validated in `generic_js_test.rs`.
 
 ### Phase B strategy: test-file-first workflow
 

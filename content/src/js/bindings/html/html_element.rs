@@ -419,6 +419,15 @@ pub(crate) fn style_declaration_object(
     Ok(initializer.build())
 }
 
+pub(crate) fn style_declaration_object_ec(
+    properties: &BTreeMap<String, String>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    style_declaration_object(properties, ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+}
+
 fn get_style_property_value(
     this: &JsValue,
     args: &[JsValue],

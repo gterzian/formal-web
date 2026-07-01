@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use crate::streams::{
     ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader,
     ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader,
-    construct_readable_stream, construct_readable_stream_byob_reader,
+    construct_readable_stream_ec, construct_readable_stream_byob_reader,
     construct_readable_stream_default_reader, readable_stream_from_iterable_ec,
     with_readable_byte_stream_controller_ref, with_readable_byte_stream_controller_ref_ec,
     with_readable_stream_byob_reader_ref, with_readable_stream_byob_reader_ref_ec,
@@ -27,11 +27,7 @@ impl WebIdlInterface<crate::js::Types> for ReadableStream {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        // Note: construct_readable_stream takes &mut Context; ec_to_ctx bridge until Phase S adds _ec entry point.
-        let value_undefined = ec.value_undefined();
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        (|| -> JsResult<Self> { construct_readable_stream(new_target, args, ctx) })()
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(value_undefined))
+        construct_readable_stream_ec(new_target, args, ec)
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {

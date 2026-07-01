@@ -26,6 +26,7 @@ use super::writablestreamdefaultcontroller::{
     writable_stream_default_controller_error_if_needed,
 };
 use super::{ReadableStream, WritableStream, type_error_value};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 fn stream_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some()
@@ -112,6 +113,15 @@ impl TransformStream {
         })
     }
 
+    pub(crate) fn readable_object_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.readable_object()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     pub(crate) fn writable(&self) -> JsResult<WritableStream> {
         self.writable.borrow().clone().ok_or_else(|| {
             JsNativeError::typ()
@@ -126,6 +136,15 @@ impl TransformStream {
                 .with_message("TransformStream is missing its writable JavaScript object")
                 .into()
         })
+    }
+
+    pub(crate) fn writable_object_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.writable_object()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     pub(crate) fn controller_slot(&self) -> JsResult<TransformStreamDefaultController> {
@@ -244,9 +263,28 @@ impl TransformStreamDefaultController {
         readable_controller.get_desired_size()
     }
 
+    pub(crate) fn desired_size_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<f64>, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.desired_size()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     /// <https://streams.spec.whatwg.org/#ts-default-controller-enqueue>
     pub(crate) fn enqueue(&self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
         transform_stream_default_controller_enqueue(self.clone(), chunk, context)
+    }
+
+    pub(crate) fn enqueue_ec(
+        &self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.enqueue(chunk, ctx)
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     /// <https://streams.spec.whatwg.org/#ts-default-controller-error>
@@ -254,9 +292,28 @@ impl TransformStreamDefaultController {
         transform_stream_default_controller_error(self.clone(), reason, context)
     }
 
+    pub(crate) fn error_ec(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.error(reason, ctx)
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     /// <https://streams.spec.whatwg.org/#ts-default-controller-terminate>
     pub(crate) fn terminate(&self, context: &mut Context) -> JsResult<()> {
         transform_stream_default_controller_terminate(self.clone(), context)
+    }
+
+    pub(crate) fn terminate_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.terminate(ctx)
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 }
 
@@ -1399,6 +1456,16 @@ pub(crate) fn construct_transform_stream(
     Ok(stream)
 }
 
+pub(crate) fn construct_transform_stream_ec(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<TransformStream, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    construct_transform_stream(this, args, ctx)
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+}
+
 pub(crate) fn with_transform_stream_ref<R>(
     object: &JsObject,
     f: impl FnOnce(&TransformStream) -> R,
@@ -1407,6 +1474,21 @@ pub(crate) fn with_transform_stream_ref<R>(
         .downcast_ref::<TransformStream>()
         .ok_or_else(|| JsNativeError::typ().with_message("object is not a TransformStream"))?;
     Ok(f(&stream))
+}
+
+pub(crate) fn with_transform_stream_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&TransformStream) -> R,
+) -> Completion<R, crate::js::Types> {
+    let stream_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<TransformStream>());
+    let stream = match stream_ref {
+        Some(s) => s,
+        None => return Err(ec.new_type_error("object is not a TransformStream")),
+    };
+    Ok(f(stream))
 }
 
 pub(crate) fn with_transform_stream_default_controller_ref<R>(
@@ -1419,6 +1501,21 @@ pub(crate) fn with_transform_stream_default_controller_ref<R>(
             JsNativeError::typ().with_message("object is not a TransformStreamDefaultController")
         })?;
     Ok(f(&controller))
+}
+
+pub(crate) fn with_transform_stream_default_controller_ref_ec<R>(
+    object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&TransformStreamDefaultController) -> R,
+) -> Completion<R, crate::js::Types> {
+    let ctrl_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<TransformStreamDefaultController>());
+    let controller = match ctrl_ref {
+        Some(c) => c,
+        None => return Err(ec.new_type_error("object is not a TransformStreamDefaultController")),
+    };
+    Ok(f(controller))
 }
 
 fn get_callable_method(

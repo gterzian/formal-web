@@ -511,12 +511,32 @@ impl ReadableByteStreamController {
         })
     }
 
+    #[allow(dead_code)]
+    fn stream_slot_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<ReadableStream, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.stream_slot()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    }
+
     fn controller_object(&self) -> JsResult<JsObject> {
         self.stream_slot()?.controller_object_slot().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("ReadableByteStreamController is missing its JavaScript object")
                 .into()
         })
+    }
+
+    #[allow(dead_code)]
+    fn controller_object_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.controller_object()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-clear-algorithms>
@@ -537,6 +557,16 @@ impl ReadableByteStreamController {
             with_readable_stream_byob_request_ref(&object, |request| request.set_view_slot(None))?;
         }
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn invalidate_byob_request_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.invalidate_byob_request()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     fn update_byob_request_view(
@@ -610,12 +640,8 @@ impl ReadableByteStreamController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Option<JsObject>, crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // create_interface_instance maps Completion errors via JsError::from_opaque.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
         if self.pending_pull_intos.borrow().is_empty() {
-            crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
+            self.invalidate_byob_request_ec(ec)?;
             return Ok(None);
         }
 
@@ -688,11 +714,9 @@ impl ReadableByteStreamController {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         self.reset_queue();
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
-        crate::js::js_result_to_completion(self.invalidate_byob_request(), context)?;
+        self.invalidate_byob_request_ec(ec)?;
         for descriptor in pending {
             descriptor.cancel(ec)?;
         }
@@ -1215,6 +1239,16 @@ impl ReadableByteStreamController {
         }
 
         Ok(self.desired_size()?.is_some_and(|size| size > 0.0))
+    }
+
+    #[allow(dead_code)]
+    fn should_call_pull_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<bool, crate::js::Types> {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        self.should_call_pull()
+            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-enqueue-chunk-to-queue>
