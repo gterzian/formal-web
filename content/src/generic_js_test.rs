@@ -2095,6 +2095,232 @@ mod tests {
         drop(root);
     }
 
+    // ── ObjectInitializer composite pattern ──────────────────────────
+
+    /// Validates the generic equivalent of Boa's `ObjectInitializer`
+    /// pattern: create a plain object, set multiple data properties,
+    /// attach a method via `create_builtin_function`, define an accessor
+    /// property with getter+setter, and store a back-reference.
+    ///
+    /// This mirrors `get_style` in `html_element.rs` — the single
+    /// remaining Boa-specific blocker in that file — and proves the
+    /// exact composite pattern can be expressed through the generic API.
+    #[test]
+    fn object_initializer_composite_build_and_reflect() {
+        let mut engine = setup();
+
+        // ── Step 1: create plain object (equivalent to ObjectInitializer::new + build) ──
+        let obj = engine.create_plain_object(None);
+
+        // ── Step 2: set data properties (equivalent to initializer.property(...)) ──
+        let font_size_key = engine.property_key_from_str("font-size");
+        let font_size_camel_key = engine.property_key_from_str("fontSize");
+        let color_key = engine.property_key_from_str("color");
+        let font_size_val = engine.value_from_string(engine.js_string_from_str("12px"));
+        let color_val = engine.value_from_string(engine.js_string_from_str("#000"));
+        engine.set(obj.clone(), font_size_key.clone(), font_size_val.clone(), false).unwrap();
+        engine.set(obj.clone(), color_key.clone(), color_val, false).unwrap();
+        // Also set camelCase alias (mirrors the camel_case_property_name pattern).
+        engine.set(obj.clone(), font_size_camel_key.clone(), font_size_val, false).unwrap();
+
+        // ── Step 3: attach a method (equivalent to initializer.function(...)) ──
+        let get_property_value_fn = engine.create_builtin_function(
+            Box::new(move |args, _this, inner_ec| {
+                let prop_name = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| inner_ec.value_undefined());
+                // Return the queried property name back as a string.
+                let name = inner_ec.to_rust_string(prop_name).unwrap_or_default();
+                Ok(inner_ec.value_from_string(inner_ec.js_string_from_str(&format!("value_of_{}", name))))
+            }),
+            1,
+            engine.property_key_from_str("getPropertyValue"),
+        );
+        let method_key = engine.property_key_from_str("getPropertyValue");
+        let method_val = TestTypes::value_from_object(
+            TestTypes::object_from_function(get_property_value_fn),
+        );
+        engine.set(obj.clone(), method_key.clone(), method_val, false).unwrap();
+
+        // ── Step 4: define accessor property with getter + setter
+        //           (equivalent to defining cssText with builder.get(...).set(...)) ──
+        let backing = engine.create_plain_object(None);
+        let backing_for_getter = backing.clone();
+
+        let accessor_getter = engine.create_builtin_function(
+            Box::new(move |_args, _this, inner_ec| {
+                let bk = inner_ec.property_key_from_str("_cssText");
+                Ok(ExecutionContext::get(inner_ec, backing_for_getter.clone(), bk)
+                    .unwrap_or_else(|_| inner_ec.value_from_string(inner_ec.js_string_from_str(""))))
+            }),
+            0,
+            engine.property_key_from_str("get_cssText"),
+        );
+
+        let backing_for_setter = backing.clone();
+        let accessor_setter = engine.create_builtin_function(
+            Box::new(move |args, _this, inner_ec| {
+                let val = args.first().cloned().unwrap_or(inner_ec.value_undefined());
+                let bk = inner_ec.property_key_from_str("_cssText");
+                let _ = inner_ec.set(backing_for_setter.clone(), bk, val, false);
+                Ok(inner_ec.value_undefined())
+            }),
+            1,
+            engine.property_key_from_str("set_cssText"),
+        );
+
+        let css_text_key = engine.property_key_from_str("cssText");
+        let accessor_desc = js_engine::PropertyDescriptor {
+            value: None,
+            writable: None,
+            get: Some(accessor_getter),
+            set: Some(accessor_setter),
+            enumerable: Some(true),
+            configurable: Some(true),
+        };
+        engine
+            .define_property_or_throw(obj.clone(), css_text_key.clone(), accessor_desc)
+            .unwrap();
+
+        // ── Step 5: store a back-reference (equivalent to style_obj.set("__element", ...)) ──
+        let ref_key = engine.property_key_from_str("__element");
+        let ref_val = TestTypes::value_from_object(obj.clone());
+        engine.set(obj.clone(), ref_key.clone(), ref_val, false).unwrap();
+
+        // ── Verify: read data properties back ──
+        let read_font_size = ExecutionContext::get(&mut engine, obj.clone(), font_size_key).unwrap();
+        assert_eq!(engine.to_rust_string(read_font_size).unwrap(), "12px");
+        let read_color = ExecutionContext::get(&mut engine, obj.clone(), color_key).unwrap();
+        assert_eq!(engine.to_rust_string(read_color).unwrap(), "#000");
+
+        // ── Verify: call the method ──
+        let method_obj = ExecutionContext::get(&mut engine, obj.clone(), method_key).unwrap();
+        let method_callable = TestTypes::value_as_object(&method_obj).unwrap();
+        let arg = engine.value_from_string(engine.js_string_from_str("fontSize"));
+        let result = js_engine::EcmascriptHost::call(
+            &mut engine, &method_callable, &TestTypes::value_from_object(obj.clone()), &[arg],
+        ).unwrap();
+        assert_eq!(engine.to_rust_string(result).unwrap(), "value_of_fontSize");
+
+        // ── Verify: set via accessor, then read back ──
+        let new_css = engine.value_from_string(engine.js_string_from_str("color: red;"));
+        engine.set(obj.clone(), css_text_key.clone(), new_css, false).unwrap();
+        let read_css = ExecutionContext::get(&mut engine, obj.clone(), css_text_key).unwrap();
+        assert_eq!(engine.to_rust_string(read_css).unwrap(), "color: red;");
+
+        // ── Verify: back-reference is accessible ──
+        let read_ref = ExecutionContext::get(&mut engine, obj.clone(), ref_key).unwrap();
+        assert!(TestTypes::value_as_object(&read_ref).is_some());
+
+        // ── Verify: own property keys include all expected entries ──
+        let keys = engine.own_property_keys(obj.clone()).unwrap();
+        assert!(keys.len() >= 6, "expected at least 6 own properties, got {}", keys.len());
+    }
+
+    // ── Builtin function with captured mutable state ─────────────────
+
+    /// Validates `create_builtin_function` with `move` closure that
+    /// captures and mutates external state. This mirrors the
+    /// `NativeFunction::from_copy_closure_with_captures` pattern in
+    /// `abort_signal.rs` `timeout_static` — a state-capturing closure
+    /// that can be invoked as a JS callable.
+    #[test]
+    fn create_builtin_function_captures_mutable_state() {
+        let mut engine = setup();
+
+        let counter = Rc::new(Cell::new(0_u32));
+        let counter_for_fn = Rc::clone(&counter);
+
+        let fn_obj = engine.create_builtin_function(
+            Box::new(move |_args, _this, inner_ec| {
+                let current = counter_for_fn.get();
+                counter_for_fn.set(current + 1);
+                Ok(inner_ec.value_from_number(current as f64))
+            }),
+            0,
+            engine.property_key_from_str("incrementer"),
+        );
+
+        let undef = engine.value_undefined();
+        let callable = TestTypes::object_from_function(fn_obj);
+
+        // Invoke twice — each call sees the captured state mutate.
+        let r1 = js_engine::EcmascriptHost::call(&mut engine, &callable, &undef, &[]).unwrap();
+        assert!((engine.to_number(r1).unwrap() - 0.0).abs() < 0.001);
+        assert_eq!(counter.get(), 1);
+
+        let r2 = js_engine::EcmascriptHost::call(&mut engine, &callable, &undef, &[]).unwrap();
+        assert!((engine.to_number(r2).unwrap() - 1.0).abs() < 0.001);
+        assert_eq!(counter.get(), 2);
+    }
+
+    // ── Timer callback detection pattern ──────────────────────────────
+
+    /// Validates the `timer_handler` pattern: given a JS value, determine
+    /// whether it's a callable function or a string.  This is the exact
+    /// pattern from HTML §8.7 Step 9.7 → Web IDL "invoke a callback
+    /// function" → ECMA-262 `Call`.
+    ///
+    /// Production equivalent: `timer_handler` in
+    /// `window_or_worker_global_scope.rs`.
+    #[test]
+    fn timer_handler_detects_callable_vs_string() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+
+        // Case 1: callable function → detected as Function
+        let fn_val = engine
+            .evaluate_script("(function() { return 42; })", &realm)
+            .unwrap();
+        let fn_obj = TestTypes::value_as_object(&fn_val);
+        assert!(fn_obj.is_some());
+        assert!(engine.is_callable(&fn_val));
+
+        // Case 2: non-callable object → falls through to string conversion
+        let obj_val = engine.evaluate_script("({})", &realm).unwrap();
+        assert!(TestTypes::value_as_object(&obj_val).is_some());
+        assert!(!engine.is_callable(&obj_val));
+        // Would fall through to to_rust_string in timer_handler.
+        let stringified = engine.to_rust_string(obj_val).unwrap();
+        assert_eq!(stringified, "[object Object]");
+
+        // Case 3: plain string → not an object, falls through to string
+        let str_val = engine.value_from_string(engine.js_string_from_str("console.log('hi')"));
+        assert!(TestTypes::value_as_object(&str_val).is_none());
+        let source = engine.to_rust_string(str_val).unwrap();
+        assert_eq!(source, "console.log('hi')");
+    }
+
+    // ── Timeout value conversion pattern ─────────────────────────────
+
+    /// Validates the `timeout_ms` pattern: convert a JS value to an IDL
+    /// long (via `ToNumber`), clamp negative to zero, floor, saturate at
+    /// i32::MAX.  Production equivalent: `timeout_ms` in
+    /// `window_or_worker_global_scope.rs`.
+    #[test]
+    fn timeout_ms_conversion_pattern() {
+        let mut engine = setup();
+
+        let check = |engine: &mut dyn ExecutionContext<TestTypes>, val: f64, expected: u32| {
+            let num_val = engine.value_from_number(val);
+            let timeout = engine.to_number(num_val).unwrap();
+            let result = if !timeout.is_finite() || timeout <= 0.0 {
+                0
+            } else {
+                timeout.floor().min(i32::MAX as f64) as u32
+            };
+            assert_eq!(result, expected);
+        };
+
+        check(&mut engine, 100.0, 100);
+        check(&mut engine, 0.0, 0);
+        check(&mut engine, -5.0, 0);
+        check(&mut engine, f64::NAN, 0);
+        check(&mut engine, f64::INFINITY, 0);
+        check(&mut engine, 3.7, 3); // floor, not round
+    }
+
     /// Verifies that `Trace` propagates through nested `impl_gc_traits!`
     /// structs.  `TestButton` wraps `TestWidget` which holds an
     /// `Option<GcRootHandle<Types>>` — the outer struct's `Trace` impl

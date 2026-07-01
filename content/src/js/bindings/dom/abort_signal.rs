@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsNativeError, JsValue,
     native_function::NativeFunction,
 };
 use std::marker::PhantomData;
@@ -8,7 +8,7 @@ use crate::dom::{
     AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal, signal_abort,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
-use crate::js::downcast::{try_with_abort_signal_mut, try_with_event_target_mut};
+use crate::js::downcast::{try_with_abort_signal_mut, try_with_abort_signal_ref, try_with_event_target_mut};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -143,9 +143,15 @@ pub(crate) fn signal_abort_ec(
     signal: &AbortSignal,
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> JsResult<()> {
-    let mut host = EcDispatchHost::new(ec);
-    signal_abort(&mut host, signal, reason)
+) -> Completion<(), crate::js::Types> {
+    let result = {
+        let mut host = EcDispatchHost::new(ec);
+        signal_abort(&mut host, signal, reason)
+    };
+    result.map_err(|e| {
+        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        e.into_opaque(ctx).unwrap_or(JsValue::undefined())
+    })
 }
 
 pub(crate) fn abort_static(
@@ -156,7 +162,9 @@ pub(crate) fn abort_static(
     let reason = abort_reason_from_argument(args.get(0), ec)?;
     let value_undefined = ec.value_undefined();
     let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), ec)?;
-    Ok(JsValue::from(signal.object().ok_or(value_undefined)?))
+    Ok(crate::js::Types::value_from_object(
+        signal.object().ok_or(value_undefined)?,
+    ))
 }
 
 pub(crate) fn timeout_static(
@@ -173,7 +181,11 @@ pub(crate) fn timeout_static(
     let callback = NativeFunction::from_copy_closure_with_captures(
         |_, _, signal: &AbortSignal, context| {
             let reason = timeout_reason(context).unwrap_or_else(|_| JsValue::undefined());
-            signal_abort_ec(signal, reason, js_engine::boa::context_as_ec(context))?;
+            crate::js::completion_to_js_result(signal_abort_ec(
+                signal,
+                reason,
+                js_engine::boa::context_as_ec(context),
+            ))?;
             Ok(JsValue::undefined())
         },
         signal.clone(),
@@ -212,7 +224,7 @@ pub(crate) fn any_static(
     let signals = sequence_abort_signals(args.get_or_undefined(0), ec)?;
     let result_signal = create_abort_signal(AbortSignal::new(), ec)?;
     initialize_dependent_abort_signal(&result_signal, &signals);
-    Ok(JsValue::from(
+    Ok(crate::js::Types::value_from_object(
         result_signal.object().ok_or(value_undefined)?,
     ))
 }
@@ -226,7 +238,7 @@ fn get_aborted(
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
     if let Some(data) = ec.with_object_any(&obj) {
         if let Some(signal) = data.downcast_ref::<AbortSignal>() {
-            return Ok(JsValue::from(signal.aborted_value()));
+            return Ok(ec.value_from_bool(signal.aborted_value()));
         }
     }
     Err(ec.new_type_error("object is not an AbortSignal"))
@@ -257,7 +269,7 @@ fn throw_if_aborted(
     if let Some(data) = ec.with_object_any(&obj) {
         if let Some(signal) = data.downcast_ref::<AbortSignal>() {
             if !signal.aborted_value() {
-                return Ok(JsValue::undefined());
+                return Ok(ec.value_undefined());
             }
             return Err(signal.reason_value());
         }
@@ -277,7 +289,7 @@ fn get_onabort(
             let callback = signal.onabort_value();
             return Ok(callback
                 .map(|c| c.to_js_value())
-                .unwrap_or_else(JsValue::null));
+                .unwrap_or_else(|| ec.value_null()));
         }
     }
     Err(ec.new_type_error("object is not an AbortSignal"))
@@ -339,10 +351,8 @@ fn sequence_abort_signals(
         let signal_value = ExecutionContext::get(ec, object.clone(), index_key)?;
         let signal_object = crate::js::Types::value_as_object(&signal_value)
             .ok_or_else(|| ec.new_type_error("AbortSignal.any() requires AbortSignal objects"))?;
-        let signal = signal_object
-            .downcast_ref::<AbortSignal>()
-            .map(|s| s.clone())
-            .ok_or_else(|| ec.new_type_error("AbortSignal.any() requires AbortSignal objects"))?;
+        let signal =
+            try_with_abort_signal_ref(&signal_object, ec, |signal| signal.clone())?;
         signals.push(signal);
     }
 

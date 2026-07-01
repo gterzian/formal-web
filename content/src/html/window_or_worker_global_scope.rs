@@ -1,6 +1,6 @@
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue};
+use boa_engine::{JsError, JsNativeError, JsValue};
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::html::{GlobalScope, TimerHandler, Window};
 use crate::webidl::Callback;
@@ -29,10 +29,8 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         arguments: Vec<JsValue>,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and false."
-        let handler = crate::js::js_result_to_completion(timer_handler(handler, context), context)?;
+        let handler = timer_handler_ec(handler, ec)?;
         self.timer_initialization_steps(handler, timeout, arguments, false, None, ec)
     }
 
@@ -44,10 +42,8 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         arguments: Vec<JsValue>,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and true."
-        let handler = crate::js::js_result_to_completion(timer_handler(handler, context), context)?;
+        let handler = timer_handler_ec(handler, ec)?;
         self.timer_initialization_steps(handler, timeout, arguments, true, None, ec)
     }
 
@@ -73,45 +69,26 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         previous_id: Option<u32>,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        // Step 1: "If method context is a Window object, then let thisArg be method context's WindowProxy object; otherwise let thisArg be method context."
-        // Note: The callback invocation path always uses the current global object as `this`, so the Window case is implicit in the stored registration.
-
-        // Step 2: "If previousId was given, let id be previousId; otherwise, let id be an implementation-defined integer that is greater than zero and does not already exist in global's map of setTimeout and setInterval IDs."
-        // Note: `GlobalScope::timer_initialization_steps` owns the map of setTimeout and setInterval IDs, so it performs the concrete `id` allocation or reuse.
-
-        // Step 3: "If the surrounding agent's event loop's currently running task is a task that was created by this algorithm, then let nesting level be that task's timer nesting level. Otherwise, let nesting level be 0."
+        // Step 1-3: thisArg, id allocation, nesting level.
         let nesting_level = self
             .global_scope()
             .current_timer_nesting_level()
             .unwrap_or(0);
 
         // Step 4: "Set timeout to the result of converting timeout to an IDL long."
-        let mut timeout_ms =
-            crate::js::js_result_to_completion(timeout_ms(timeout, context), context)?;
+        let mut timeout_ms = timeout_ms_ec(timeout, ec)?;
 
-        // Step 5: "If timeout is less than 0, then set timeout to 0."
-        // Note: `timeout_ms` already clamps negative values to zero during the IDL conversion.
-
-        // Step 6: "If nesting level is greater than 5, and timeout is less than 4, then set timeout to 4."
+        // Step 5-6: clamp and nesting-level adjustments.
         if nesting_level > 5 && timeout_ms < 4 {
             timeout_ms = 4;
         }
 
-        // Step 7: "Let realm be global's relevant Realm."
-        // Note: The current content process executes all timer callbacks inside the owning `EnvironmentSettingsObject` realm, so the realm selection is implicit.
-
-        // Step 8: "Let uniqueHandle be null."
-        // Note: The content process reserves the implementation-defined timer key during scheduling so the ID map can update synchronously before the timer worker runs `run steps after a timeout`.
-
-        // Step 9: "Let task be a task that runs the following steps:"
-        // Note: The timer worker queues the task on the timer task source and later re-enters the content process with `RunWindowTimer`.
+        // Step 7-9: realm, uniqueHandle, task (handled by global_scope).
 
         // Step 10: "Set task's timer nesting level to nesting level + 1."
         let task_nesting_level = nesting_level.saturating_add(1);
 
-        // Step 11: "Let uniqueHandle be the result of running steps after a timeout given global, "setTimeout/setInterval", timeout, completionSteps, and timerKey if repeat is true, and which returns a unique internal value."
+        // Step 11: scheduling.
         self.global_scope()
             .timer_initialization_steps(
                 previous_id,
@@ -122,9 +99,12 @@ pub(crate) trait WindowOrWorkerGlobalScope {
                 task_nesting_level,
             )
             .map_err(|message| {
-                let js_error: JsError = JsError::from(JsNativeError::typ().with_message(message));
+                // Note: keeps ec_to_ctx — JsError → JsValue conversion requires Context.
+                let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                let js_error: JsError =
+                    JsError::from(JsNativeError::typ().with_message(message));
                 js_error
-                    .into_opaque(context)
+                    .into_opaque(ctx)
                     .unwrap_or_else(|_| JsValue::undefined())
             })
     }
@@ -136,22 +116,27 @@ impl WindowOrWorkerGlobalScope for Window {
     }
 }
 
-fn timer_handler(value: &JsValue, context: &mut Context) -> JsResult<TimerHandler> {
-    if let Some(object) = value.as_object() {
-        if object.is_callable() {
+fn timer_handler_ec(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<TimerHandler, crate::js::Types> {
+    if let Some(object) = <crate::js::Types as JsTypes>::value_as_object(value) {
+        if ec.is_callable(value) {
             return Ok(TimerHandler::Function {
-                callback: Callback::from_object(object.clone()),
+                callback: Callback::from_object(object),
             });
         }
     }
 
-    Ok(TimerHandler::String {
-        source: value.to_string(context)?.to_std_string_escaped(),
-    })
+    let source = ec.to_rust_string(value.clone())?;
+    Ok(TimerHandler::String { source })
 }
 
-fn timeout_ms(value: &JsValue, context: &mut Context) -> JsResult<u32> {
-    let timeout = value.to_number(context)?;
+fn timeout_ms_ec(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<u32, crate::js::Types> {
+    let timeout = ec.to_number(value.clone())?;
     if !timeout.is_finite() || timeout <= 0.0 {
         return Ok(0);
     }
