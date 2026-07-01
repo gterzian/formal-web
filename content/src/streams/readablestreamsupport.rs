@@ -7,7 +7,7 @@ use boa_engine::{
     property::Attribute,
 };
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::webidl::{
     Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
@@ -389,12 +389,11 @@ fn create_read_result(
     done: bool,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let mut initializer = ObjectInitializer::new(context);
-    initializer.property(js_string!("value"), value, Attribute::all());
-    initializer.property(js_string!("done"), done, Attribute::all());
-    Ok(JsValue::from(initializer.build()))
+    let obj = ec.create_plain_object(None);
+    let done_val = ec.value_from_bool(done);
+    ec.object_set_property(obj.clone(), "value", value)?;
+    ec.object_set_property(obj.clone(), "done", done_val)?;
+    Ok(<crate::js::Types as JsTypes>::value_from_object(obj))
 }
 
 pub(crate) fn rejected_type_error_promise(
@@ -409,24 +408,12 @@ pub(crate) fn type_error_value(
     message: &'static str,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    Ok(JsValue::from(
-        JsNativeError::typ()
-            .with_message(message)
-            .into_opaque(context),
-    ))
+    Ok(ec.new_type_error(message))
 }
 
 pub(crate) fn range_error_value(
     message: &'static str,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    Ok(JsValue::from(
-        JsNativeError::range()
-            .with_message(message)
-            .into_opaque(context),
-    ))
+    Ok(ec.new_range_error(message))
 }

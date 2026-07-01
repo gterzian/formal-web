@@ -6,7 +6,7 @@ use boa_engine::{
     native_function::NativeFunction,
     object::{
         JsObject,
-        builtins::{JsFunction, JsPromise},
+        builtins::JsPromise,
     },
 };
 
@@ -24,16 +24,6 @@ use log::error;
 /// - `transform_promise_to_undefined` → § dfn-perform-steps-once-promise-is-settled
 
 /// <https://webidl.spec.whatwg.org/#a-new-promise>
-#[inline]
-pub(crate) fn a_new_promise(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> (JsObject, ResolvingFunctions) {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    a_new_promise_boa(context)
-}
-
-/// <https://webidl.spec.whatwg.org/#a-new-promise>
 pub(crate) fn a_new_promise_boa(context: &mut Context) -> (JsObject, ResolvingFunctions) {
     let (promise, resolvers) = JsPromise::new_pending(context);
     (promise.into(), resolvers)
@@ -44,10 +34,20 @@ pub(crate) fn resolved_promise(
     value: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    // Step 1: "Return a promise resolved with value."
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    resolved_promise_boa(value, context)
+    // Step 1: "Let value be the result of converting x to a JavaScript value."
+    // Note: Step 1 is a no-op — value is already a JsValue.
+    // Step 2: "Let constructor be realm.[[Intrinsics]].[[%Promise%]]."
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    // Step 3: "Let promiseCapability be ? NewPromiseCapability(constructor)."
+    let capability = ec.new_promise_capability(intrinsics.promise)?;
+    // Step 4: "Perform ! Call(promiseCapability.[[Resolve]], undefined, « value »)."
+    let resolve_obj = <crate::js::Types as JsTypes>::object_from_function(capability.resolve);
+    let undefined = ec.value_undefined();
+    ec.call(&resolve_obj, &undefined, &[value])?;
+    // Step 5: "Return promiseCapability."
+    Ok(<crate::js::Types as JsTypes>::value_as_object(&capability.promise)
+        .unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
@@ -69,10 +69,18 @@ pub(crate) fn rejected_promise(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    // Step 1: "Return a promise rejected with reason."
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    rejected_promise_boa(reason, context)
+    // Step 1: "Let constructor be realm.[[Intrinsics]].[[%Promise%]]."
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    // Step 2: "Let promiseCapability be ? NewPromiseCapability(constructor)."
+    let capability = ec.new_promise_capability(intrinsics.promise)?;
+    // Step 3: "Perform ! Call(promiseCapability.[[Reject]], undefined, « r »)."
+    let reject_obj = <crate::js::Types as JsTypes>::object_from_function(capability.reject);
+    let undefined = ec.value_undefined();
+    ec.call(&reject_obj, &undefined, &[reason])?;
+    // Step 4: "Return promiseCapability."
+    Ok(<crate::js::Types as JsTypes>::value_as_object(&capability.promise)
+        .unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
@@ -92,18 +100,21 @@ fn rejected_promise_boa(
 /// <https://webidl.spec.whatwg.org/#js-to-promise>
 ///
 /// Converts a value into a promise, following the "JS-to-promise" coercion rules.
-/// Step 1: "Let promiseCapability be ? NewPromiseCapability(%Promise%)."
-/// Step 2: "Perform ? Call(promiseCapability.[[Resolve]], undefined, « V »)."
-/// Step 3: "Return promiseCapability."
-///
-/// Note: `Promise.resolve(value)` implements these steps directly.
 pub(crate) fn promise_from_value(
     value: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    promise_from_value_boa(value, context)
+    // Step 1: "Let promiseCapability be ? NewPromiseCapability(%Promise%)."
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let capability = ec.new_promise_capability(intrinsics.promise)?;
+    // Step 2: "Perform ? Call(promiseCapability.[[Resolve]], undefined, « V »)."
+    let resolve_obj = <crate::js::Types as JsTypes>::object_from_function(capability.resolve);
+    let undefined = ec.value_undefined();
+    ec.call(&resolve_obj, &undefined, &[value])?;
+    // Step 3: "Return promiseCapability."
+    Ok(<crate::js::Types as JsTypes>::value_as_object(&capability.promise)
+        .unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#js-to-promise>
@@ -213,9 +224,29 @@ pub(crate) fn transform_promise_to_undefined(
     promise_object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    transform_promise_to_undefined_boa(promise_object, context)
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let not_promise_err = ec.new_type_error("transform_promise_to_undefined: value is not a Promise");
+    // Step 1-2 of react: CreateBuiltinFunction returning undefined on fulfillment.
+    let on_fulfilled = ec.create_builtin_function(
+        Box::new(|_args: &[JsValue], _this: JsValue, on_fulfilled_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+            Ok(on_fulfilled_ec.value_undefined())
+        }),
+        1,
+        ec.property_key_from_str(""),
+    );
+    // Step 5 of react: "Let constructor be %Promise%."
+    let promise_constructor = intrinsics.promise;
+    // Step 6 of react: "Let newCapability be ? NewPromiseCapability(constructor)."
+    let capability = ec.new_promise_capability(promise_constructor)?;
+    let result_promise = capability.promise.clone();
+    // Step 7 of react: "PerformPromiseThen(promise, onFulfilled, onRejected, newCapability)."
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(promise_object)
+        .ok_or_else(|| not_promise_err)?;
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
+    // Step 8 of react: "Return newCapability."
+    Ok(<crate::js::Types as JsTypes>::value_as_object(&result_promise)
+        .unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>
@@ -241,9 +272,20 @@ pub(crate) fn mark_promise_as_handled(
     promise_object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    mark_promise_as_handled_boa(promise_object, context)
+    let not_promise_err = ec.new_type_error("mark_promise_as_handled: value is not a Promise");
+    // CreateBuiltinFunction returning undefined on rejection.
+    let on_rejected = ec.create_builtin_function(
+        Box::new(|_args: &[JsValue], _this: JsValue, on_rejected_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+            Ok(on_rejected_ec.value_undefined())
+        }),
+        1,
+        ec.property_key_from_str(""),
+    );
+    // PerformPromiseThen with rejection-only handler.
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(promise_object)
+        .ok_or_else(|| not_promise_err)?;
+    ec.perform_promise_then(js_promise, None, Some(on_rejected), None)?;
+    Ok(())
 }
 
 /// <https://webidl.spec.whatwg.org/#mark-a-promise-as-handled>

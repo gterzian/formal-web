@@ -1818,6 +1818,94 @@ mod tests {
         // perform_promise_then work together exactly as the Web IDL spec requires.
     }
 
+    /// Web IDL "mark a promise as handled" pattern.
+    ///
+    /// Validates PerformPromiseThen with a rejection-only handler and no
+    /// result capability — the pattern used by `mark_promise_as_handled`
+    /// to suppress unhandled-rejection warnings.
+    #[test]
+    fn perform_promise_then_rejection_only_no_capability() {
+        let mut engine = setup();
+        let empty_pk = engine.property_key_from_str("");
+        let intrinsics = engine.realm_intrinsics(&engine.current_realm());
+
+        // CreateBuiltinFunction returning undefined on rejection.
+        let on_rejected = engine.create_builtin_function(
+            Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_undefined())),
+            1,
+            empty_pk,
+        );
+
+        // Create a rejected promise.
+        let cap = engine.new_promise_capability(intrinsics.promise.clone()).unwrap();
+        let err = engine.new_type_error("test rejection");
+        let undef = engine.value_undefined();
+        engine.call(&cap.reject, &undef, &[err]).unwrap();
+        let rejected_promise =
+            TestTypes::object_as_promise(&TestTypes::value_as_object(&cap.promise).unwrap())
+                .unwrap();
+
+        // PerformPromiseThen with rejection-only handler, no capability.
+        engine
+            .perform_promise_then(rejected_promise, None, Some(on_rejected), None)
+            .unwrap();
+
+        // Flush microtasks — onRejected runs (returns undefined).
+        engine.run_jobs();
+        // No panic, no unhandled rejection — pattern validated.
+    }
+
+    /// Web IDL "a promise resolved with" + handler → microtask checkpoint.
+    ///
+    /// Validates the full end-to-end chain:
+    ///   NewPromiseCapability + Call(resolve) → perform_promise_then → run_jobs.
+    /// Ensures promise resolution propagates through the microtask queue.
+    #[test]
+    fn resolved_promise_then_microtask_chain() {
+        let mut engine = setup();
+        let empty_pk = engine.property_key_from_str("");
+        let intrinsics = engine.realm_intrinsics(&engine.current_realm());
+
+        // "a promise resolved with" pattern: NewPromiseCapability + Call(resolve).
+        let cap = engine
+            .new_promise_capability(intrinsics.promise.clone())
+            .unwrap();
+        let val = engine.value_from_number(42.0);
+        let undef = engine.value_undefined();
+        engine.call(&cap.resolve, &undef, &[val.clone()]).unwrap();
+
+        // Attach a handler via perform_promise_then.
+        let called = std::rc::Rc::new(std::cell::RefCell::new(false));
+        let called_clone = called.clone();
+        let on_fulfilled = engine.create_builtin_function(
+            Box::new(move |_args: &[<TestTypes as JsTypes>::JsValue], _this, inner_ec| {
+                *called_clone.borrow_mut() = true;
+                Ok(inner_ec.value_undefined())
+            }),
+            1,
+            empty_pk,
+        );
+        let result_cap = engine
+            .new_promise_capability(intrinsics.promise.clone())
+            .unwrap();
+        let js_promise = TestTypes::object_as_promise(
+            &TestTypes::value_as_object(&cap.promise).unwrap(),
+        )
+        .unwrap();
+        engine
+            .perform_promise_then(js_promise, Some(on_fulfilled), None, Some(result_cap))
+            .unwrap();
+
+        // Handler hasn't run yet — microtasks not flushed.
+        assert!(!*called.borrow());
+
+        // Flush microtasks.
+        engine.run_jobs();
+
+        // Handler ran during microtask checkpoint.
+        assert!(*called.borrow());
+    }
+
     // ── Object downcasts ───────────────────────────────────────────
 
     #[test]

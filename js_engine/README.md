@@ -688,8 +688,13 @@ Phase S (streams domain) ──► Phase P (platform-object store)
 
 ### Next session: recommended order
 
-1. **Add new trait methods for the hard blockers** — Promise creation, typed arrays, microtask queueing, ObjectInitializer. Each needs test-file-first validation in `generic_js_test.rs` on BOTH backends.
-2. **Phase E — Conditional Types alias** — once trait methods cover the remaining ~125 ec_to_ctx, `#[cfg]` gate all Boa imports.
+1. **Add trait methods to `ExecutionContext<T>` for the hard blockers** (test-file-first on BOTH backends):
+   - `ec.new_pending_promise() -> (T::JsObject, ResolvingFunctions)` — replaces `JsPromise::new_pending(context)` (16 sites)
+   - `ec.promise_resolve(value)` / `ec.promise_reject(value)` — replaces `JsPromise::resolve/reject(context)` (~5 sites)
+   - `ec.create_array_buffer(bytes)` / `ec.create_typed_array(...)` — replaces Boa typed array constructors (29 sites)
+   - `ec.create_platform_object::<T>(...)` / `ec.create_builtin_function(...)` — replaces `ObjectInitializer` + `NativeFunction` (~15 sites)
+   - `ec.queue_internal_microtask(...)` — replaces `queue_internal_stream_microtask(...)` (~12 sites)
+2. **Phase E — Conditional Types alias** — once trait methods cover the remaining ~118 ec_to_ctx, `#[cfg]` gate all Boa imports.
 
 ### Working note: `ec_to_ctx` after `ec_to_ctx`
 

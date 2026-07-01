@@ -10,7 +10,7 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::{
     dom::{AbortSignal, create_abort_signal, signal_abort},
@@ -807,9 +807,23 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
     // Step 1: "Let controller be a new WritableStreamDefaultController."
-    // Note: call create_writable_stream_default_controller before ec_to_ctx
-    // to avoid aliasing-borrow issues.
     let (controller, controller_object) = create_writable_stream_default_controller(ec)?;
+
+    // Step 2-9: Extract optional methods before ec_to_ctx to avoid borrow conflicts.
+    let sink_methods: Option<(
+        Option<JsObject>,
+        Option<JsObject>,
+        Option<JsObject>,
+        Option<JsObject>,
+    )> = if let Some(ref underlying_sink) = underlying_sink_object {
+        let start = get_callable_method(underlying_sink, "start", ec)?;
+        let write = get_callable_method(underlying_sink, "write", ec)?;
+        let close = get_callable_method(underlying_sink, "close", ec)?;
+        let abort = get_callable_method(underlying_sink, "abort", ec)?;
+        Some((start, write, close, abort))
+    } else {
+        None
+    };
 
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context
     let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
@@ -826,12 +840,11 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     // Step 5: "Let abortAlgorithm be an algorithm that returns a promise resolved with undefined."
     let mut abort_algorithm = AbortAlgorithm::ReturnUndefined;
 
-    if let Some(underlying_sink) = underlying_sink_object {
+    if let (Some((start, write, close, abort)), Some(underlying_sink)) =
+        (sink_methods, underlying_sink_object)
+    {
         // Step 6: "If underlyingSinkDict['start'] exists, then set startAlgorithm ..."
-        if let Some(start) = crate::js::js_result_to_completion(
-            get_callable_method(&underlying_sink, "start", context),
-            context,
-        )? {
+        if let Some(start) = start {
             start_algorithm = StartAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
                 crate::webidl::Callback::from_object(start),
@@ -839,10 +852,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         }
 
         // Step 7: "If underlyingSinkDict['write'] exists, then set writeAlgorithm ..."
-        if let Some(write) = crate::js::js_result_to_completion(
-            get_callable_method(&underlying_sink, "write", context),
-            context,
-        )? {
+        if let Some(write) = write {
             write_algorithm = WriteAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
                 crate::webidl::Callback::from_object(write),
@@ -850,10 +860,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         }
 
         // Step 8: "If underlyingSinkDict['close'] exists, then set closeAlgorithm ..."
-        if let Some(close) = crate::js::js_result_to_completion(
-            get_callable_method(&underlying_sink, "close", context),
-            context,
-        )? {
+        if let Some(close) = close {
             close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
                 crate::webidl::Callback::from_object(close),
@@ -861,10 +868,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         }
 
         // Step 9: "If underlyingSinkDict['abort'] exists, then set abortAlgorithm ..."
-        if let Some(abort) = crate::js::js_result_to_completion(
-            get_callable_method(&underlying_sink, "abort", context),
-            context,
-        )? {
+        if let Some(abort) = abort {
             abort_algorithm = AbortAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink,
                 crate::webidl::Callback::from_object(abort),
@@ -933,24 +937,24 @@ pub(crate) fn writable_stream_default_controller_write(
 fn get_callable_method(
     object: &JsObject,
     property: &'static str,
-    context: &mut Context,
-) -> JsResult<Option<JsObject>> {
-    let value = object.get(JsString::from(property), context)?;
-    if value.is_undefined() {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<JsObject>, crate::js::Types> {
+    let pk = ec.property_key_from_str(property);
+    let value = ExecutionContext::get(ec, object.clone(), pk)?;
+    if <crate::js::Types as JsTypes>::value_is_undefined(&value) {
         return Ok(None);
     }
 
-    let method = value.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message(format!(
+    let method = <crate::js::Types as JsTypes>::value_as_object(&value).ok_or_else(|| {
+        ec.new_type_error(&format!(
             "WritableStream underlyingSink.{property} must be callable when provided"
         ))
     })?;
-    if !method.is_callable() {
-        return Err(JsNativeError::typ()
-            .with_message(format!(
-                "WritableStream underlyingSink.{property} must be callable when provided"
-            ))
-            .into());
+    let method_val = <crate::js::Types as JsTypes>::value_from_object(method.clone());
+    if !ec.is_callable(&method_val) {
+        return Err(ec.new_type_error(&format!(
+            "WritableStream underlyingSink.{property} must be callable when provided"
+        )));
     }
 
     Ok(Some(method.clone()))
