@@ -628,6 +628,12 @@ field types use `GcCell<T>`.
 | `readablestreamdefaultcontroller.rs` double bridge eliminated | `cancel_steps` no longer does ec_to_ctx + context_as_ec to call `CancelAlgorithm::call` (which already takes EC). -1 ec_to_ctx. |
 | transformstream.rs bridge | Updated `create_readable_stream` call to bridge via `context_as_ec`. |
 | `cancel_resolvers.resolve` error logging restored | Two `let _ = cancel_resolvers.resolve(...)` fixed to `if let Err(error) = ... { error!(...); }`. |
+| `call_pull_if_needed` double bridge eliminated | `controller_object_ec(ec)`, `pull_algorithm.call(ec)`, `mark_promise_as_handled(ec)` — no more context_as_ec on calls that already take EC. -2 ec_to_ctx. |
+| `set_up_readable_stream_default_controller` double bridge eliminated | `start_algorithm.call(ec)` and `mark_promise_as_handled(ec)` use ec directly. -2 ec_to_ctx. |
+| `underlying_sink_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `EcmascriptHost::get`, `ec.to_rust_string`, `ec.same_value`. writablestream.rs: 1→0 ec_to_ctx. |
+| `normalize_min` → EC | Converted in readablestreambyobreader.rs. Uses `EcmascriptHost::get`, `ec.to_object`, `ec.to_number`, `ec.new_{type,range}_error`. readablestreambyobreader.rs: 2→0 ec_to_ctx. |
+
+**ec_to_ctx eliminated in 3 files:** writablestream.rs (1→0), readablestreambyobreader.rs (2→0), readablestreamdefaultcontroller.rs (4 eliminated).
 
 **2 closures remaining in `readablestream.rs`** (both from_copy_closure).
 All blocked on deeper function conversions:

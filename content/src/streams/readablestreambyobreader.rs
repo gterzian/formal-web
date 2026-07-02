@@ -88,21 +88,8 @@ impl ReadableStreamBYOBReader {
             );
         }
 
-        // Create ReadIntoRequest before ec_to_ctx (reorder workaround).
         let (read_into_request, promise) = ReadIntoRequest::new(ec)?;
-        // SAFETY: normalize_min still requires &mut Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let min = match normalize_min(options, &view, context) {
-            Ok(min) => min,
-            Err(error) => {
-                return rejected_promise(
-                    error
-                        .into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined()),
-                    ec,
-                );
-            }
-        };
+        let min = normalize_min(options, &view, ec)?;
         self.read_steps(view, min, read_into_request, ec)?;
         Ok(promise)
     }
@@ -266,23 +253,23 @@ pub(crate) fn with_readable_stream_byob_reader_ref_ec<R>(
 fn normalize_min(
     options: &JsValue,
     view: &ArrayBufferViewDescriptor,
-    context: &mut boa_engine::Context,
-) -> JsResult<usize> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<usize, crate::js::Types> {
+    use js_engine::EcmascriptHost;
     let options_object = if options.is_undefined() || options.is_null() {
         None
     } else {
-        Some(options.to_object(context)?)
+        Some(ec.to_object(options.clone())?)
     };
     let min = if let Some(options_object) = options_object {
-        let min_value = options_object.get(boa_engine::js_string!("min"), context)?;
-        if min_value.is_undefined() {
+        let min_value = EcmascriptHost::get(ec, &options_object, "min")?;
+        let undefined_value = ec.value_undefined();
+        if ec.same_value(&min_value, &undefined_value) {
             1
         } else {
-            let min_number = min_value.to_number(context)?;
+            let min_number = ec.to_number(min_value)?;
             if !min_number.is_finite() || min_number <= 0.0 || min_number.fract() != 0.0 {
-                return Err(JsNativeError::typ()
-                    .with_message("min must be a positive integer")
-                    .into());
+                return Err(ec.new_type_error("min must be a positive integer"));
             }
             min_number as usize
         }
@@ -296,9 +283,7 @@ fn normalize_min(
         view.element_length()
     };
     if min > max_min {
-        return Err(JsNativeError::range()
-            .with_message("min exceeds the supplied view length")
-            .into());
+        return Err(ec.new_range_error("min exceeds the supplied view length"));
     }
     Ok(min)
 }

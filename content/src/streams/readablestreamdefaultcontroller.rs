@@ -473,36 +473,33 @@ impl ReadableStreamDefaultController {
         self.pulling.set(true);
 
         // Step 6: "Let pullPromise be the result of performing controller.[[pullAlgorithm]]."
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let controller_object =
-            crate::js::js_result_to_completion(self.controller_object(), context)?;
+        let controller_object = self.controller_object_ec(ec)?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
-        let pull_promise = match pull_algorithm {
+        let pull_promise: JsObject = match pull_algorithm {
             Some(pull_algorithm) => {
-                pull_algorithm.call(&controller_object, js_engine::boa::context_as_ec(context))
+                JsObject::from(pull_algorithm.call(&controller_object, ec))
             }
-            None => promise_from_completion(
-                Ok(JsValue::undefined()),
-                js_engine::boa::context_as_ec(context),
-            ),
+            None => JsObject::from(promise_from_completion(Ok(JsValue::undefined()), ec)),
         };
 
+        // Note: ec_to_ctx — create_builtin_function_with_captures lives on JsEngine<T>.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        let pull_js_promise = JsPromise::from_object(pull_promise.clone())
+            .map_err(|_| JsValue::undefined())?;
         let on_fulfilled =
             crate::js::builtin_with_captures(context, self.clone(), pull_steps_on_fulfilled, 1);
         let on_rejected =
             crate::js::builtin_with_captures(context, self.clone(), pull_steps_on_rejected, 1);
-        let pull_reaction: JsObject = pull_promise
+        let pull_reaction: JsObject = pull_js_promise
             .then(Some(on_fulfilled), Some(on_rejected), context)
             .map_err(|e| {
                 e.into_opaque(context)
                     .unwrap_or_else(|_| JsValue::undefined())
             })?
             .into();
-        mark_promise_as_handled(&pull_reaction, js_engine::boa::context_as_ec(context))?;
-        mark_promise_as_handled(
-            &JsObject::from(pull_promise),
-            js_engine::boa::context_as_ec(context),
-        )?;
+        drop(context);
+        mark_promise_as_handled(&pull_reaction, ec)?;
+        mark_promise_as_handled(&pull_promise, ec)?;
         Ok(())
     }
 
@@ -859,8 +856,10 @@ pub(crate) fn set_up_readable_stream_default_controller(
     stream.set_controller_object_slot(Some(controller_object.clone()));
 
     // Step 9: "Let startResult be the result of performing startAlgorithm. (This might throw an exception.)"
-    let start_result =
-        start_algorithm.call(controller_object, js_engine::boa::context_as_ec(context))?;
+    let start_result = start_algorithm.call(controller_object, ec)?;
+
+    // Note: ec_to_ctx — JsPromise::resolve and builtin_with_captures need Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
     // Step 10: "Let startPromise be a promise resolved with startResult."
     let start_promise = JsPromise::resolve(start_result, context).map_err(|e| {
@@ -877,11 +876,9 @@ pub(crate) fn set_up_readable_stream_default_controller(
                 .unwrap_or_else(|_| JsValue::undefined())
         })?
         .into();
-    mark_promise_as_handled(&start_reaction, js_engine::boa::context_as_ec(context))?;
-    mark_promise_as_handled(
-        &JsObject::from(start_promise),
-        js_engine::boa::context_as_ec(context),
-    )?;
+    drop(context);
+    mark_promise_as_handled(&start_reaction, ec)?;
+    mark_promise_as_handled(&JsObject::from(start_promise), ec)?;
     Ok(())
 }
 

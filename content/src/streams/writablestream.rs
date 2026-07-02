@@ -614,15 +614,7 @@ pub(crate) fn construct_writable_stream(
             })?)
         };
 
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    // underlying_sink_type still takes Boa's Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    if let Some(sink_type) = underlying_sink_type(underlying_sink_object.as_ref(), context)
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?
-    {
+    if let Some(sink_type) = underlying_sink_type(underlying_sink_object.as_ref(), ec)? {
         return Err(ec.new_range_error(&format!(
             "WritableStream underlyingSink.type must be undefined, got {sink_type}"
         )));
@@ -711,20 +703,23 @@ pub(crate) fn with_writable_stream_ref_ec<R>(
 
 fn underlying_sink_type(
     underlying_sink: Option<&JsObject>,
-    context: &mut Context,
-) -> JsResult<Option<String>> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<String>, crate::js::Types> {
     let Some(underlying_sink) = underlying_sink else {
         return Ok(None);
     };
 
-    if !underlying_sink.has_property(js_string!("type"), context)? {
+    use js_engine::EcmascriptHost;
+    let type_key = ec.property_key_from_str("type");
+    if !ec.has_property(underlying_sink.clone(), type_key)? {
         return Ok(None);
     }
 
-    let sink_type = underlying_sink.get(js_string!("type"), context)?;
-    if sink_type.is_undefined() {
+    let sink_type = EcmascriptHost::get(ec, underlying_sink, "type")?;
+    let undefined_value = ec.value_undefined();
+    if ec.same_value(&sink_type, &undefined_value) {
         return Ok(None);
     }
 
-    Ok(Some(sink_type.to_string(context)?.to_std_string_escaped()))
+    Ok(Some(ec.to_rust_string(sink_type)?))
 }
