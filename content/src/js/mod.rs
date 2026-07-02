@@ -86,10 +86,9 @@ pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
         .create_builtin_function_with_captures(captures, behaviour, length, name)
 }
 
-/// EC-based version of `builtin_with_captures`.
-/// Use this in functions that already have `&mut dyn ExecutionContext`.
-/// Bridges to Context internally since `create_builtin_function_with_captures`
-/// lives on `JsEngine<T>` (factory trait), not `ExecutionContext<T>`.
+/// Convenience wrapper: creates a builtin function with captures through
+/// the [`ExecutionContext::create_builtin_function_from_behaviour`] method.
+/// Zero bridges — no `ec_to_ctx`, no unsafe.
 pub(crate) fn builtin_with_captures_ec<C: js_engine::gc::Trace + 'static>(
     ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
     captures: C,
@@ -101,9 +100,33 @@ pub(crate) fn builtin_with_captures_ec<C: js_engine::gc::Trace + 'static>(
     ) -> js_engine::Completion<boa_engine::JsValue, crate::js::Types>,
     length: u32,
 ) -> boa_engine::object::builtins::JsFunction {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    builtin_with_captures(context, captures, behaviour, length)
+    struct Captured<C> {
+        captures: C,
+        fn_ptr: fn(
+            &[boa_engine::JsValue],
+            boa_engine::JsValue,
+            &C,
+            &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+        ) -> js_engine::Completion<boa_engine::JsValue, crate::js::Types>,
+    }
+
+    impl<C: 'static> js_engine::Behaviour<crate::js::Types> for Captured<C> {
+        fn call(
+            &self,
+            args: &[boa_engine::JsValue],
+            this: boa_engine::JsValue,
+            ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+        ) -> js_engine::Completion<boa_engine::JsValue, crate::js::Types> {
+            (self.fn_ptr)(args, this, &self.captures, ec)
+        }
+    }
+
+    let name = boa_engine::property::PropertyKey::from(boa_engine::js_string!(""));
+    ec.create_builtin_function_from_behaviour(
+        Box::new(Captured { captures, fn_ptr: behaviour }),
+        length,
+        name,
+    )
 }
 
 /// Convenience wrapper that creates a `Callback` from `builtin_with_captures`.

@@ -1266,8 +1266,7 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = engine
-            .allocate_array_buffer(intrinsics.array_buffer, 8, None)
+        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None)
             .unwrap();
         assert!(!engine.is_detached_buffer(&ab));
         assert!(engine.is_fixed_length_array_buffer(&ab));
@@ -1648,8 +1647,7 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = engine
-            .allocate_array_buffer(intrinsics.array_buffer.clone(), 8, None)
+        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer.clone(), 8, None)
             .unwrap();
         let val = engine.get_value_from_buffer(
             &ab,
@@ -1677,8 +1675,7 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = engine
-            .allocate_array_buffer(intrinsics.array_buffer.clone(), 8, None)
+        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer.clone(), 8, None)
             .unwrap();
         let _cloned = engine
             .clone_array_buffer(ab.clone(), 0, 4, intrinsics.array_buffer.clone())
@@ -1707,8 +1704,7 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = engine
-            .allocate_array_buffer(intrinsics.array_buffer, 16, None)
+        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 16, None)
             .unwrap();
         let ta = engine
             .construct_typed_array_view(TypedArrayElementType::Uint8, ab.clone(), 0, 16)
@@ -1726,8 +1722,7 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = engine
-            .allocate_array_buffer(intrinsics.array_buffer, 32, None)
+        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 32, None)
             .unwrap();
         let dv = engine
             .construct_data_view_from_buffer(ab.clone(), 4, 24)
@@ -1745,8 +1740,7 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = engine
-            .allocate_array_buffer(intrinsics.array_buffer, 8, None)
+        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None)
             .unwrap();
         let data = engine.array_buffer_data(&ab);
         assert!(data.is_some());
@@ -2686,6 +2680,112 @@ mod tests {
 
         // The captures must survive the pressure — count should still be 7.
         let result = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
+        assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
+    }
+
+    // ── create_builtin_function_from_behaviour — object-safe EC trait ─
+
+    /// Validates that `create_builtin_function_from_behaviour` works through
+    /// `&mut dyn ExecutionContext<T>`.  The [`js_engine::Behaviour`] trait
+    /// object carries the captures, avoiding the generic `C: Trace` bound
+    /// that would make the trait non-dyn-compatible.
+    #[test]
+    fn create_builtin_function_from_behaviour_through_ec() {
+        let mut engine = setup();
+        let captures = Incrementor::new();
+        let pk = engine.property_key_from_str("inc");
+
+        struct CapturedIncrementor {
+            captures: Incrementor,
+        }
+
+        impl js_engine::Behaviour<TestTypes> for CapturedIncrementor {
+            fn call(
+                &self,
+                args: &[JsValue],
+                _this: JsValue,
+                ec: &mut dyn ExecutionContext<TestTypes>,
+            ) -> Completion<JsValue, TestTypes> {
+                let delta = if let Some(arg) = args.first() {
+                    ec.to_number(arg.clone()).unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                let old = self.captures.count.get();
+                self.captures.count.set(old + delta);
+                Ok(ec.value_from_number(old))
+            }
+        }
+
+        let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
+        let func = ec.create_builtin_function_from_behaviour(
+            Box::new(CapturedIncrementor { captures }),
+            0,
+            pk,
+        );
+        let func_obj = TestTypes::object_from_function(func);
+        let undef = engine.value_undefined();
+
+        let delta5 = engine.value_from_number(5.0);
+        let result =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta5]).unwrap();
+        assert!((engine.to_number(result).unwrap() - 0.0).abs() < 0.001);
+
+        let result =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
+        assert!((engine.to_number(result).unwrap() - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn create_builtin_function_from_behaviour_survives_allocation_pressure() {
+        let mut engine = setup();
+
+        struct CapturedIncrementor {
+            captures: Incrementor,
+        }
+
+        impl js_engine::Behaviour<TestTypes> for CapturedIncrementor {
+            fn call(
+                &self,
+                args: &[JsValue],
+                _this: JsValue,
+                ec: &mut dyn ExecutionContext<TestTypes>,
+            ) -> Completion<JsValue, TestTypes> {
+                let delta = if let Some(arg) = args.first() {
+                    ec.to_number(arg.clone()).unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                let old = self.captures.count.get();
+                self.captures.count.set(old + delta);
+                Ok(ec.value_from_number(old))
+            }
+        }
+
+        let pk = engine.property_key_from_str("inc");
+        let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
+        let func = ec.create_builtin_function_from_behaviour(
+            Box::new(CapturedIncrementor {
+                captures: Incrementor::new(),
+            }),
+            0,
+            pk,
+        );
+        let func_obj = TestTypes::object_from_function(func);
+        let undef = engine.value_undefined();
+
+        let delta7 = engine.value_from_number(7.0);
+        let _ =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta7]).unwrap();
+
+        for i in 0..2000 {
+            let throwaway = engine.create_empty_array();
+            let num_val = engine.value_from_number(i as f64);
+            let _ = engine.array_push(&throwaway, num_val);
+        }
+
+        let result =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 }

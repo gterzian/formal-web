@@ -536,12 +536,8 @@ impl JsEngine<JscTypes> for JscEngine {
         length: u32,
         name: JscPropertyKey,
     ) -> JscFunction {
-        // SAFETY: the content process is single-threaded, and the engine
-        // outlives all builtin function objects created from it.
         let engine_ptr: *mut JscEngine = self;
 
-        // Move captures into the StoredBehaviour closure.  They are dropped
-        // when builtin_finalize frees the StoredBehaviour box.
         let wrapped: StoredBehaviour = Box::new(
             move |args: &[JscValue], this_val: JscValue| -> Completion<JscValue, JscTypes> {
                 let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
@@ -555,14 +551,12 @@ impl JsEngine<JscTypes> for JscEngine {
         let ctx_ptr = self.ctx_ptr();
         let raw = unsafe { JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void) };
 
-        // Set `Function.prototype` as the prototype.
         let realm = self.current_realm();
         let intrinsics = self.realm_intrinsics(&realm);
         unsafe {
             JSObjectSetPrototype(ctx_ptr, raw, intrinsics.function_prototype.as_value_ref());
         }
 
-        // Set the `length` property.
         let length_key = JscString::from_rust("length");
         let length_val = JscValue {
             raw: unsafe { JSValueMakeNumber(ctx_ptr, length as f64) },
@@ -580,7 +574,6 @@ impl JsEngine<JscTypes> for JscEngine {
             );
         }
 
-        // Set the `name` property if the name is a string.
         if let JscPropertyKey::String(name_str) = &name {
             let name_key = JscString::from_rust("name");
             let name_val = JscValue {
@@ -1939,7 +1932,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
         byte_length: u64,
         max_byte_length: Option<u64>,
     ) -> Completion<JscArrayBuffer, JscTypes> {
-        // Delegate to the JsEngine<JscTypes> implementation on self.
         JsEngine::allocate_array_buffer(self, constructor, byte_length, max_byte_length)
     }
 
@@ -2688,6 +2680,66 @@ impl ExecutionContext<JscTypes> for JscEngine {
         JscObject { raw, ctx: ctx_ptr }
     }
 
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    fn create_builtin_function_from_behaviour(
+        &mut self,
+        behaviour: Box<dyn crate::Behaviour<JscTypes>>,
+        length: u32,
+        name: JscPropertyKey,
+    ) -> JscFunction {
+        let engine_ptr: *mut JscEngine = self;
+
+        let wrapped: StoredBehaviour = Box::new(
+            move |args, this_val| {
+                let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
+                let ec: &mut dyn ExecutionContext<JscTypes> = engine;
+                behaviour.call(args, this_val, ec)
+            },
+        );
+
+        let leaked: *mut StoredBehaviour = Box::into_raw(Box::new(wrapped));
+
+        let ctx_ptr = self.ctx_ptr();
+        let raw = unsafe { JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void) };
+
+        let realm = self.current_realm();
+        let intrinsics = self.realm_intrinsics(&realm);
+        unsafe {
+            JSObjectSetPrototype(ctx_ptr, raw, intrinsics.function_prototype.as_value_ref());
+        }
+
+        let length_key = JscString::from_rust("length");
+        let length_val = JscValue {
+            raw: unsafe { JSValueMakeNumber(ctx_ptr, length as f64) },
+            ctx: ctx_ptr,
+        };
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr, raw,
+                length_key.raw, length_val.raw,
+                kJSPropertyAttributeNone, &mut exc,
+            );
+        }
+
+        if let JscPropertyKey::String(name_str) = &name {
+            let name_key = JscString::from_rust("name");
+            let name_val = JscValue {
+                raw: unsafe { JSValueMakeString(ctx_ptr, name_str.raw) },
+                ctx: ctx_ptr,
+            };
+            unsafe {
+                JSObjectSetProperty(
+                    ctx_ptr, raw,
+                    name_key.raw, name_val.raw,
+                    kJSPropertyAttributeNone, &mut exc,
+                );
+            }
+        }
+
+        JscObject { raw, ctx: ctx_ptr }
+    }
+
     // ── Property Key Construction ─────────────────────────────────────────
 
     fn property_key_from_str(&self, s: &str) -> JscPropertyKey {
@@ -3255,8 +3307,7 @@ mod tests {
         let mut engine = JscEngine::new();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = engine
-            .allocate_array_buffer(intrinsics.array_buffer, 8, None)
+        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None)
             .unwrap();
         assert!(!ab.raw.is_null());
     }

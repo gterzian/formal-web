@@ -42,7 +42,7 @@ pub mod jsc_sys;
 #[cfg(feature = "jsc")]
 pub mod jsc;
 
-pub use engine::{Completion, EcmascriptHost, ExecutionContext, HostHooks, JsEngine};
+pub use engine::{Behaviour, Completion, EcmascriptHost, ExecutionContext, HostHooks, JsEngine};
 pub use enums::{
     IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation,
     PromiseState, SharedMemoryOrder, TypedArrayElementType,

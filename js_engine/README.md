@@ -328,7 +328,7 @@ same struct because Boa's `Context` serves both roles internally.
 
 | Operation | Reason |
 |---|---|
-| Native function registration (`NativeFunction::from_closure`) | `create_builtin_function_with_captures` on `JsEngine<T>` accepts a traceable captures struct + fn pointer instead of an opaque boxed closure.  Boa backend uses the safe `from_copy_closure_with_captures`.  Domain code (transformstream.rs, readablestreamdefaultcontroller.rs, etc.) still uses `NativeFunction::from_copy_closure_with_captures` directly — needs migration to the new trait method. |
+| Native function registration (`NativeFunction::from_closure`) | `create_builtin_function_with_captures` on `JsEngine<T>` accepts a traceable captures struct + fn pointer.  The EC path (`builtin_with_captures_ec`) now uses `create_builtin_function_from_behaviour` on `ExecutionContext<T>` — zero bridges.  The Context path (`builtin_with_captures`) still bridges through `context_as_engine`. |
 | Platform object construction | Uses Boa `ObjectInitializer` — needs realm's intrinsics table; passes through EC |
 | Proxy creation | Boa's proxy builder not publicly creatable |
 | `Context::eval` (script evaluation) | `JsEngine::evaluate_script` exists on the trait but callers use `Context::eval` directly; needs migration |
@@ -619,6 +619,7 @@ Concrete per-phase validation requirements:
 | W1-W2 | WebIDL promise conversion; streams helpers conversion |
 | G1-G3 | `#[gc_struct]` proc-macro; `GcCell<T>` type alias; `Clone` emitted |
 | C2-C3 | `create_builtin_function_with_captures`; 16 NativeFunction → captures migrated |
+| **B1** | `Behaviour<T>` trait; `create_builtin_function_from_behaviour` on `ExecutionContext<T>` — object-safe EC method for captures; `builtin_with_captures_ec` now zero bridges (no `ec_to_ctx`, no unsafe); 81/81 POC tests pass |
 | A-C | GC derive conversion; binding body conversion; `create_builtin_function` on EC |
 | **S-promise** | `PromiseState<T>` enum in js_engine; `promise_state()` method on `ExecutionContext<T>` trait; Boa + JSC backend impls. Replaces `JsPromise::from_object(x)?.state()` (Boa-specific) with `ec.promise_state(&obj)?`. |
 | **S1a** | PipeToState EC wrappers (18 methods); `pipe_to_on_promise_settled_ec`; `pipe_reaction_fn` + `pipe_reaction_function_ec`; `pipe_read_result_done_ec`; `queue_internal_stream_microtask_ec`; 3 ReadableStreamPipeTo closures converted to EC path |
@@ -636,11 +637,21 @@ Concrete per-phase validation requirements:
 
 ### Current state (updated 2026-07-03)
 
-**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3 complete.** All binding files
+**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1 complete.** All binding files
 at 0 ec_to_ctx.  All 34 struct/enum definitions use `#[gc_struct]`.  All domain
 field types use `GcCell<T>`.
 
-**POC test suite: 79/79 pass on Boa.**
+**POC test suite: 81/81 pass on Boa.**
+
+**`builtin_with_captures_ec` now zero bridges** — uses
+`ec.create_builtin_function_from_behaviour(Box::new(CapturedBehaviour { ... }))`
+through the [`Behaviour`] trait object.  No `ec_to_ctx`, no unsafe.
+
+**The [`Behaviour<T>`]** trait (object-safe, `js_engine/src/engine.rs`) carries
+captures through the `&mut dyn ExecutionContext<T>` boundary.  Each backend wraps
+it differently: Boa marks `dyn Behaviour` as `Trace`/`Finalize` (GC no-op —
+captures rooted by parent objects); JSC stores the box in `StoredBehaviour`,
+freed by `builtin_finalize`.
 
 **1 closure remaining in `readablestream.rs`** (from_copy_closure):
 
@@ -680,14 +691,22 @@ field types use `GcCell<T>`.
 
 **`builtin_with_captures` / `builtin_callback`:** Use
 `crate::js::builtin_with_captures(context, captures, fn_ptr, length)` for
-promise `.then()` handlers, `builtin_callback` for `SourceMethod`-wrapped
-closures.  These are the only remaining sites that need `&mut Context` —
-they use `context_as_engine(context)` internally because
-`create_builtin_function_with_captures` lives on `JsEngine<T>`.
+promise `.then()` handlers with `&mut Context`.  The EC variant
+`builtin_with_captures_ec(ec, ...)` now goes through
+`ec.create_builtin_function_from_behaviour(...)` — zero bridges.
+The Context-taking `builtin_with_captures` still uses
+`context_as_engine(context).create_builtin_function_with_captures(...)` —
+this is the legacy path.
 
 **Test-file-first:** Validate new generic patterns in
 `content/src/generic_js_test.rs` on both backends before production code.
-79/79 tests pass on Boa.
+81/81 tests pass on Boa.
+
+**`Behaviour<T>` trait design note:** `dyn Behaviour<BoaTypes>` is marked
+`Trace` + `Finalize` with no-op bodies — the captures inside the trait object
+are GC-managed objects already rooted by their parent stream/controller.
+This is safe because when the function is collected, the parent still holds
+the roots.
 
 ## Working during migration
 

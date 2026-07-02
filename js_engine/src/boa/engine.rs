@@ -48,6 +48,21 @@ use crate::{
 
 use super::types::BoaTypes;
 
+// ── GC Trace for Behaviour trait object ────────────────────────────
+//
+// `Box<dyn Behaviour<BoaTypes>>` is passed as captures to
+// `NativeFunction::from_copy_closure_with_captures`, which requires
+// `Trace`.  The trait object itself holds no GC-managed data — the
+// concrete captures inside the Behaviour impl are already rooted by
+// their parent stream/controller objects.
+unsafe impl boa_gc::Trace for dyn crate::Behaviour<BoaTypes> {
+    unsafe fn trace(&self, _tracer: &mut boa_gc::Tracer) {}
+    unsafe fn trace_non_roots(&self) {}
+    fn run_finalizer(&self) {}
+}
+
+impl boa_gc::Finalize for dyn crate::Behaviour<BoaTypes> {}
+
 /// Boa execution context.  Wraps a `boa_engine::Context` (the stateful JS
 /// runtime: realm, heap, global object) and implements
 /// `ExecutionContext<BoaTypes>`.  Also carries `JsEngine<BoaTypes>`
@@ -216,9 +231,6 @@ impl JsEngine<BoaTypes> for BoaContext {
             _ => boa_engine::js_string!(""),
         };
 
-        // SAFETY: BoaContext is `#[repr(transparent)]` over Context.
-        // `from_copy_closure_with_captures` is the safe variant — `behaviour`
-        // is a fn pointer (Copy) and `captures: C: Trace` is traced by Boa's GC.
         let native = NativeFunction::from_copy_closure_with_captures(
             move |_this: &JsValue,
                   args: &[JsValue],
@@ -1106,7 +1118,6 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         byte_length: u64,
         max_byte_length: Option<u64>,
     ) -> Completion<JsArrayBuffer, BoaTypes> {
-        // Delegate to the JsEngine<BoaTypes> implementation on self.
         JsEngine::allocate_array_buffer(self, constructor, byte_length, max_byte_length)
     }
 
@@ -1515,6 +1526,39 @@ impl ExecutionContext<BoaTypes> for BoaContext {
                 },
             ))
         };
+
+        FunctionObjectBuilder::new(&realm, native)
+            .name(name_str)
+            .length(length as usize)
+            .build()
+    }
+
+    fn create_builtin_function_from_behaviour(
+        &mut self,
+        behaviour: Box<dyn crate::Behaviour<BoaTypes>>,
+        length: u32,
+        name: PropertyKey,
+    ) -> JsFunction {
+        let realm = self.current_realm();
+        let name_str = match &name {
+            PropertyKey::String(s) => s.clone(),
+            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
+            _ => boa_engine::js_string!(""),
+        };
+
+        let native = NativeFunction::from_copy_closure_with_captures(
+            move |_this: &JsValue,
+                  args: &[JsValue],
+                  behaviour: &Box<dyn crate::Behaviour<BoaTypes>>,
+                  context: &mut Context|
+                  -> JsResult<JsValue> {
+                let engine: &mut BoaContext =
+                    unsafe { &mut *(context as *mut Context as *mut BoaContext) };
+                behaviour.call(args, _this.clone(), engine)
+                    .map_err(|e| JsError::from_opaque(e))
+            },
+            behaviour,
+        );
 
         FunctionObjectBuilder::new(&realm, native)
             .name(name_str)
@@ -1949,8 +1993,7 @@ mod tests {
         let mut engine = BoaContext::new();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = engine
-            .allocate_array_buffer(intrinsics.array_buffer, 8, None)
+        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None)
             .unwrap();
         let _ = ab;
     }

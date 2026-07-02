@@ -88,6 +88,27 @@ use crate::{Numeric, PreferredType, PropertyDescriptor, RootedPromiseCapability}
 pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
 
 // ────────────────────────────────────────────────────────────────────────────
+// Object-safe callback that carries its own captures state.
+// Used by create_builtin_function_from_behaviour on ExecutionContext<T>
+// to pass type-erased captures through the trait-object boundary.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+///
+/// Object-safe trait for a builtin function's behaviour closure, carrying
+/// its own captures (state) internally.  Implementations receive JS args,
+/// the `this` value, and the execution context.  The captures are opaque
+/// to the engine backend — only the concrete impl knows their type.
+pub trait Behaviour<T: JsTypes> {
+    fn call(
+        &self,
+        args: &[T::JsValue],
+        this: T::JsValue,
+        ec: &mut dyn ExecutionContext<T>,
+    ) -> Completion<T::JsValue, T>;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 // <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
 //
@@ -688,6 +709,20 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
                 &mut dyn ExecutionContext<T>,
             ) -> Completion<T::JsValue, T>,
         >,
+        length: u32,
+        name: T::PropertyKey,
+    ) -> T::Function;
+
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    ///
+    /// Object-safe variant: the behaviour is a [`Behaviour`] trait object
+    /// that carries its own captures state internally.  Callers implement
+    /// [`Behaviour`] on a struct holding the captures and the fn pointer;
+    /// the engine backend only sees the trait object and calls through
+    /// the vtable.
+    fn create_builtin_function_from_behaviour(
+        &mut self,
+        behaviour: Box<dyn Behaviour<T>>,
         length: u32,
         name: T::PropertyKey,
     ) -> T::Function;
