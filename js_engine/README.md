@@ -637,21 +637,37 @@ Concrete per-phase validation requirements:
 
 ### Current state (updated 2026-07-03)
 
-**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1 complete.** All binding files
+**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2 complete.** All binding files
 at 0 ec_to_ctx.  All 34 struct/enum definitions use `#[gc_struct]`.  All domain
 field types use `GcCell<T>`.
 
 **POC test suite: 81/81 pass on Boa.**
 
-**`builtin_with_captures_ec` now zero bridges** — uses
-`ec.create_builtin_function_from_behaviour(Box::new(CapturedBehaviour { ... }))`
+**`builtin_with_captures(ec, ...)` now zero bridges** — uses
+`ec.create_builtin_function_from_behaviour(Box::new(Captured { ... }))`
 through the [`Behaviour`] trait object.  No `ec_to_ctx`, no unsafe.
+The legacy Context-taking wrapper is renamed to `builtin_with_captures_ctx`.
 
-**The [`Behaviour<T>`]** trait (object-safe, `js_engine/src/engine.rs`) carries
-captures through the `&mut dyn ExecutionContext<T>` boundary.  Each backend wraps
-it differently: Boa marks `dyn Behaviour` as `Trace`/`Finalize` (GC no-op —
-captures rooted by parent objects); JSC stores the box in `StoredBehaviour`,
-freed by `builtin_finalize`.
+**`_ec` suffix eliminated for `builtin_with_captures` / `builtin_callback`.**
+`builtin_with_captures` + `builtin_callback` now take `&mut dyn ExecutionContext<T>`
+as their canonical forms.  `builtin_with_captures_ctx` + `builtin_callback_ctx`
+are the legacy Context-taking variants.
+
+**Stream controller closures converted to EC** — process_close, process_write,
+pull_steps, setup, error_steps, advance_queue closures in both
+`writablestreamdefaultcontroller.rs` and `readablestreamdefaultcontroller.rs`
+now use EC directly (their inner calls already took EC — the ec_to_ctx +
+context_as_ec bridges were a double-roundtrip no-op).
+
+**Tee close_steps and error_steps converted to EC** —
+`readable_stream_default_tee_read_request_close_steps`,
+`readable_byte_stream_tee_default_reader_close_steps`, and both
+`error_steps` variants now take EC directly; 4 `ec_to_ctx` + 4
+`context_as_ec` bridges eliminated in `readablestreamsupport.rs` closures.
+`byte_tee_close_branch` and `default_tee_close_branch` converted; 2
+remaining callers in `chunk_steps` use temporary `context_as_ec` bridge
+(those functions still need full conversion due to internal use of
+`queue_internal_stream_microtask`).
 
 **1 closure remaining in `readablestream.rs`** (from_copy_closure):
 

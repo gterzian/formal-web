@@ -652,19 +652,19 @@ fn initialize_transform_stream(
     // Step 2: "Let writeAlgorithm be the following steps, taking a chunk argument:"
     let write_algorithm = WriteAlgorithm::JavaScript(SourceMethod::new(
         context.global_object(),
-        crate::js::builtin_callback(context, stream.clone(), sink_write_algorithm_fn, 1),
+        crate::js::builtin_callback_ctx(context, stream.clone(), sink_write_algorithm_fn, 1),
     ));
 
     // Step 3: "Let abortAlgorithm be the following steps, taking a reason argument:"
     let abort_algorithm = AbortAlgorithm::JavaScript(SourceMethod::new(
         context.global_object(),
-        crate::js::builtin_callback(context, stream.clone(), sink_abort_algorithm_fn, 1),
+        crate::js::builtin_callback_ctx(context, stream.clone(), sink_abort_algorithm_fn, 1),
     ));
 
     // Step 4: "Let closeAlgorithm be the following steps:"
     let close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(
         context.global_object(),
-        crate::js::builtin_callback(context, stream.clone(), sink_close_algorithm_fn, 0),
+        crate::js::builtin_callback_ctx(context, stream.clone(), sink_close_algorithm_fn, 0),
     ));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."
@@ -1013,7 +1013,7 @@ fn transform_stream_default_controller_perform_transform(
     // Step 2: "Return the result of reacting to transformPromise with the following rejection steps given the argument r:"
     let stream = controller.stream_slot()?;
     let on_rejected =
-        crate::js::builtin_with_captures(context, stream, perform_transform_on_rejected_fn, 1);
+        crate::js::builtin_with_captures_ctx(context, stream, perform_transform_on_rejected_fn, 1);
     let result =
         JsPromise::from_object(transform_promise)?.then(None, Some(on_rejected), context)?;
     Ok(result.into())
@@ -1077,7 +1077,7 @@ fn transform_stream_default_sink_write_algorithm(
         // Step 3.2: "Assert: backpressureChangePromise is not undefined."
 
         // Step 3.3: "Return the result of reacting to backpressureChangePromise with the following fulfillment steps:"
-        let on_fulfilled = crate::js::builtin_with_captures(
+        let on_fulfilled = crate::js::builtin_with_captures_ctx(
             context,
             (stream, controller, chunk),
             controller_enqueue_on_fulfilled_fn,
@@ -1151,7 +1151,7 @@ fn transform_stream_default_sink_abort_algorithm(
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
-    let on_fulfilled = crate::js::builtin_with_captures_ec(
+    let on_fulfilled = crate::js::builtin_with_captures(
         ec,
         (
             controller.clone(),
@@ -1163,7 +1163,7 @@ fn transform_stream_default_sink_abort_algorithm(
         0,
     );
 
-    let on_rejected = crate::js::builtin_with_captures_ec(
+    let on_rejected = crate::js::builtin_with_captures(
         ec,
         (controller, readable),
         sink_abort_on_rejected_fn,
@@ -1233,14 +1233,14 @@ fn transform_stream_default_sink_close_algorithm(
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to flushPromise.
-    let on_fulfilled = crate::js::builtin_with_captures(
+    let on_fulfilled = crate::js::builtin_with_captures_ctx(
         context,
         (controller.clone(), readable.clone()),
         sink_close_on_fulfilled_fn,
         0,
     );
 
-    let on_rejected = crate::js::builtin_with_captures(
+    let on_rejected = crate::js::builtin_with_captures_ctx(
         context,
         (controller, readable),
         sink_close_on_rejected_fn,
@@ -1333,7 +1333,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
-    let on_fulfilled = crate::js::builtin_with_captures(
+    let on_fulfilled = crate::js::builtin_with_captures_ctx(
         context,
         (
             controller.clone(),
@@ -1346,7 +1346,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
         0,
     );
 
-    let on_rejected = crate::js::builtin_with_captures(
+    let on_rejected = crate::js::builtin_with_captures_ctx(
         context,
         (controller, stream, writable),
         source_cancel_on_rejected_fn,

@@ -32,7 +32,7 @@ use super::{
     TransformStream, range_error_value,
 };
 
-use js_engine::{Completion, ExecutionContext, JsEngine};
+use js_engine::{Completion, ExecutionContext, JsEngine, JsTypes};
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
 #[derive(Clone, Trace, Finalize)]
@@ -477,22 +477,18 @@ impl ReadableStreamDefaultController {
             None => JsObject::from(promise_from_completion(Ok(JsValue::undefined()), ec)),
         };
 
-        // Note: ec_to_ctx — create_builtin_function_with_captures lives on JsEngine<T>.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let pull_js_promise =
-            JsPromise::from_object(pull_promise.clone()).map_err(|_| JsValue::undefined())?;
+            crate::js::Types::object_as_promise(&pull_promise)
+                .ok_or_else(|| JsValue::undefined())?;
         let on_fulfilled =
-            crate::js::builtin_with_captures(context, self.clone(), pull_steps_on_fulfilled, 1);
+            crate::js::builtin_with_captures(ec, self.clone(), pull_steps_on_fulfilled, 1);
         let on_rejected =
-            crate::js::builtin_with_captures(context, self.clone(), pull_steps_on_rejected, 1);
-        let pull_reaction: JsObject = pull_js_promise
-            .then(Some(on_fulfilled), Some(on_rejected), context)
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?
-            .into();
-        drop(context);
+            crate::js::builtin_with_captures(ec, self.clone(), pull_steps_on_rejected, 1);
+        let pull_reaction_val =
+            ec.perform_promise_then(pull_js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
+        let pull_reaction: JsObject =
+            crate::js::Types::value_as_object(&pull_reaction_val)
+                .ok_or_else(|| ec.new_type_error("promise.then returned non-object"))?;
         mark_promise_as_handled(&pull_reaction, ec)?;
         mark_promise_as_handled(&pull_promise, ec)?;
         Ok(())
@@ -846,25 +842,18 @@ pub(crate) fn set_up_readable_stream_default_controller(
     // Step 9: "Let startResult be the result of performing startAlgorithm. (This might throw an exception.)"
     let start_result = start_algorithm.call(controller_object, ec)?;
 
-    // Note: ec_to_ctx — JsPromise::resolve and builtin_with_captures need Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
     // Step 10: "Let startPromise be a promise resolved with startResult."
-    let start_promise = JsPromise::resolve(start_result, context).map_err(|e| {
-        e.into_opaque(context)
-            .unwrap_or_else(|_| JsValue::undefined())
-    })?;
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let start_promise = ec.promise_resolve(intrinsics.promise.clone(), start_result)?;
     let on_fulfilled =
-        crate::js::builtin_with_captures(context, controller.clone(), setup_on_fulfilled, 1);
-    let on_rejected = crate::js::builtin_with_captures(context, controller, setup_on_rejected, 1);
-    let start_reaction: JsObject = start_promise
-        .then(Some(on_fulfilled), Some(on_rejected), context)
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?
-        .into();
-    drop(context);
+        crate::js::builtin_with_captures(ec, controller.clone(), setup_on_fulfilled, 1);
+    let on_rejected = crate::js::builtin_with_captures(ec, controller, setup_on_rejected, 1);
+    let start_reaction_val =
+        ec.perform_promise_then(start_promise.clone(), Some(on_fulfilled), Some(on_rejected), None)?;
+    let start_reaction: JsObject =
+        crate::js::Types::value_as_object(&start_reaction_val)
+            .ok_or_else(|| ec.new_type_error("promise.then returned non-object"))?;
     mark_promise_as_handled(&start_reaction, ec)?;
     mark_promise_as_handled(&JsObject::from(start_promise), ec)?;
     Ok(())
@@ -977,15 +966,11 @@ fn pull_steps_on_fulfilled(
     captures: &ReadableStreamDefaultController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     captures.pulling.set(false);
     let should_pull_again = captures.pull_again.get();
     if should_pull_again {
         captures.pull_again.set(false);
-        crate::js::completion_to_js_result(
-            captures.call_pull_if_needed(js_engine::boa::context_as_ec(ctx)),
-        )
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+        captures.call_pull_if_needed(ec)?;
     }
     Ok(JsValue::undefined())
 }
@@ -996,12 +981,10 @@ fn pull_steps_on_rejected(
     captures: &ReadableStreamDefaultController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    crate::js::completion_to_js_result(captures.error_steps(
+    captures.error_steps(
         args.first().cloned().unwrap_or(JsValue::undefined()),
-        js_engine::boa::context_as_ec(ctx),
-    ))
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+        ec,
+    )?;
     Ok(JsValue::undefined())
 }
 
@@ -1011,14 +994,10 @@ fn setup_on_fulfilled(
     captures: &ReadableStreamDefaultController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     captures.started.set(true);
     debug_assert!(!captures.pulling.get());
     debug_assert!(!captures.pull_again.get());
-    crate::js::completion_to_js_result(
-        captures.call_pull_if_needed(js_engine::boa::context_as_ec(ctx)),
-    )
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    captures.call_pull_if_needed(ec)?;
     Ok(JsValue::undefined())
 }
 
@@ -1028,11 +1007,9 @@ fn setup_on_rejected(
     captures: &ReadableStreamDefaultController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    crate::js::completion_to_js_result(captures.error_steps(
+    captures.error_steps(
         args.first().cloned().unwrap_or(JsValue::undefined()),
-        js_engine::boa::context_as_ec(ctx),
-    ))
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+        ec,
+    )?;
     Ok(JsValue::undefined())
 }

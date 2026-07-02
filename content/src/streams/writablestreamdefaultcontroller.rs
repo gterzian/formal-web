@@ -503,26 +503,16 @@ impl WritableStreamDefaultController {
         debug_assert!(self.queue.borrow().is_empty());
         let algorithm = self.close_algorithm(ec)?;
         let sink_close_promise = algorithm.call(ec)?;
-        // Note: ec_to_ctx — mark_close_request_in_flight and builtin_with_captures need Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        crate::js::js_result_to_completion(stream.mark_close_request_in_flight(), context)?;
+        // Note: ec_to_ctx in js_result_to_completion_ec — mark_close_request_in_flight returns JsResult.
+        crate::js::js_result_to_completion_ec(stream.mark_close_request_in_flight(), ec)?;
         let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = crate::js::builtin_with_captures(
-            context,
-            stream_for_fulfilled,
-            process_close_on_fulfilled,
-            1,
-        );
+        let on_fulfilled =
+            crate::js::builtin_with_captures(ec, stream_for_fulfilled, process_close_on_fulfilled, 1);
         let on_rejected =
-            crate::js::builtin_with_captures(context, stream, process_close_on_rejected, 1);
-        let promise = crate::js::js_result_to_completion(
-            JsPromise::from_object(sink_close_promise),
-            context,
-        )?;
-        let _ = crate::js::js_result_to_completion(
-            promise.then(Some(on_fulfilled), Some(on_rejected), context),
-            context,
-        )?;
+            crate::js::builtin_with_captures(ec, stream, process_close_on_rejected, 1);
+        let promise = crate::js::Types::object_as_promise(&sink_close_promise)
+            .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+        ec.perform_promise_then(promise, Some(on_fulfilled), Some(on_rejected), None)?;
         Ok(())
     }
 
@@ -539,32 +529,26 @@ impl WritableStreamDefaultController {
         let controller_object = self.controller_object(ec)?;
         let write_algo = self.write_algorithm(ec)?;
         let sink_write_promise = write_algo.call(&controller_object, chunk, ec)?;
-        // Note: ec_to_ctx — mark_first_write_request_in_flight still takes Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        crate::js::js_result_to_completion(stream.mark_first_write_request_in_flight(), context)?;
+        // Note: ec_to_ctx in js_result_to_completion_ec — mark_first_write_request_in_flight returns JsResult.
+        crate::js::js_result_to_completion_ec(stream.mark_first_write_request_in_flight(), ec)?;
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();
         let on_fulfilled = crate::js::builtin_with_captures(
-            context,
+            ec,
             (controller_for_fulfilled, stream_for_fulfilled),
             process_write_on_fulfilled,
             1,
         );
         let on_rejected = crate::js::builtin_with_captures(
-            context,
+            ec,
             (self.clone(), stream),
             process_write_on_rejected,
             1,
         );
-        let promise = crate::js::js_result_to_completion(
-            JsPromise::from_object(sink_write_promise),
-            context,
-        )?;
-        let _ = crate::js::js_result_to_completion(
-            promise.then(Some(on_fulfilled), Some(on_rejected), context),
-            context,
-        )?;
+        let promise = crate::js::Types::object_as_promise(&sink_write_promise)
+            .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+        ec.perform_promise_then(promise, Some(on_fulfilled), Some(on_rejected), None)?;
         Ok(())
     }
 
@@ -717,23 +701,18 @@ pub(crate) fn set_up_writable_stream_default_controller(
     // Step 15: "Let startResult be the result of performing startAlgorithm."
     let start_result = start_algorithm.call(controller_object, ec)?;
 
-    // Note: ec_to_ctx — JsPromise::resolve and builtin_with_captures need Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
     // Step 16: "Let startPromise be a promise resolved with startResult."
-    let start_promise =
-        crate::js::js_result_to_completion(JsPromise::resolve(start_result, context), context)?;
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let start_promise = ec.promise_resolve(intrinsics.promise.clone(), start_result)?;
 
     // Step 17: "Upon fulfillment of startPromise..."
     let on_fulfilled =
-        crate::js::builtin_with_captures(context, controller.clone(), setup_on_fulfilled, 1);
+        crate::js::builtin_with_captures(ec, controller.clone(), setup_on_fulfilled, 1);
 
     // Step 18: "Upon rejection of startPromise with reason r..."
-    let on_rejected = crate::js::builtin_with_captures(context, controller, setup_on_rejected, 1);
-    let _ = crate::js::js_result_to_completion(
-        start_promise.then(Some(on_fulfilled), Some(on_rejected), context),
-        context,
-    )?;
+    let on_rejected = crate::js::builtin_with_captures(ec, controller, setup_on_rejected, 1);
+    ec.perform_promise_then(start_promise, Some(on_fulfilled), Some(on_rejected), None)?;
     Ok(())
 }
 
@@ -910,11 +889,7 @@ fn process_close_on_fulfilled(
     captures: &WritableStream,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let _ = crate::js::completion_to_js_result(
-        captures.finish_in_flight_close(js_engine::boa::context_as_ec(ctx)),
-    )
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    captures.finish_in_flight_close(ec)?;
     Ok(JsValue::undefined())
 }
 
@@ -924,12 +899,10 @@ fn process_close_on_rejected(
     captures: &WritableStream,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    crate::js::completion_to_js_result(captures.finish_in_flight_close_with_error(
+    captures.finish_in_flight_close_with_error(
         args.first().cloned().unwrap_or(JsValue::undefined()),
-        js_engine::boa::context_as_ec(ctx),
-    ))
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+        ec,
+    )?;
     Ok(JsValue::undefined())
 }
 
@@ -940,7 +913,6 @@ fn process_write_on_fulfilled(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let (controller, stream) = captures;
-    // Do EC operations before ec_to_ctx to avoid borrow conflicts.
     controller.dequeue_value(ec)?;
     let state = stream.state();
     debug_assert!(state == WritableStreamState::Writable || state == WritableStreamState::Erroring);
@@ -949,12 +921,7 @@ fn process_write_on_fulfilled(
         stream.update_backpressure(backpressure, ec)?;
     }
     controller.advance_queue_if_needed(ec)?;
-    // Note: ec_to_ctx — finish_in_flight_write still takes Context.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    crate::js::completion_to_js_result(
-        stream.finish_in_flight_write(js_engine::boa::context_as_ec(ctx)),
-    )
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    stream.finish_in_flight_write(ec)?;
     Ok(JsValue::undefined())
 }
 
@@ -964,16 +931,14 @@ fn process_write_on_rejected(
     captures: &(WritableStreamDefaultController, WritableStream),
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let (controller, stream) = captures;
     if stream.state() == WritableStreamState::Writable {
         controller.clear_algorithms();
     }
-    crate::js::completion_to_js_result(stream.finish_in_flight_write_with_error(
+    stream.finish_in_flight_write_with_error(
         args.first().cloned().unwrap_or(JsValue::undefined()),
-        js_engine::boa::context_as_ec(ctx),
-    ))
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+        ec,
+    )?;
     Ok(JsValue::undefined())
 }
 
@@ -983,12 +948,8 @@ fn setup_on_fulfilled(
     captures: &WritableStreamDefaultController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     captures.set_started(true);
-    crate::js::completion_to_js_result(
-        captures.advance_queue_if_needed(js_engine::boa::context_as_ec(ctx)),
-    )
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    captures.advance_queue_if_needed(ec)?;
     Ok(JsValue::undefined())
 }
 

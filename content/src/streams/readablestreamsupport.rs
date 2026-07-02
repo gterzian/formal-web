@@ -203,25 +203,10 @@ impl ReadRequest {
                     .map(|_| ())
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-                // Tee algorithms still take Boa's Context.
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(
-                    readable_stream_default_tee_read_request_close_steps(
-                        tee_state.clone(),
-                        context,
-                    ),
-                    context,
-                )
+                readable_stream_default_tee_read_request_close_steps(tee_state.clone(), ec)
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-                // Tee algorithms still take Boa's Context.
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(
-                    readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), context),
-                    context,
-                )
+                readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), ec)
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(JsValue::undefined(), true, ec)?;
@@ -249,23 +234,12 @@ impl ReadRequest {
                 .call(&resolvers.reject, &JsValue::undefined(), &[error])
                 .map(|_| ()),
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(
-                    readable_stream_default_tee_read_request_error_steps(
-                        tee_state.clone(),
-                        context,
-                    ),
-                    context,
-                )
+                readable_stream_default_tee_read_request_error_steps(tee_state.clone());
+                Ok(())
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(
-                    readable_byte_stream_tee_default_reader_error_steps(tee_state.clone(), context),
-                    context,
-                )
+                readable_byte_stream_tee_default_reader_error_steps(tee_state.clone());
+                Ok(())
             }
             Self::ReadableStreamPipeTo { state } => {
                 let state = state.clone();

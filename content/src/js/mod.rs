@@ -69,8 +69,8 @@ pub(crate) fn native_error_to_js_value(
 }
 
 /// Convenience wrapper for `create_builtin_function_with_captures` that works
-/// from `&mut Context` (the common domain-code entry point).
-pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
+/// from `&mut Context` (the legacy domain-code entry point).
+pub(crate) fn builtin_with_captures_ctx<C: js_engine::gc::Trace + 'static>(
     context: &mut boa_engine::Context,
     captures: C,
     behaviour: fn(
@@ -89,7 +89,7 @@ pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
 /// Convenience wrapper: creates a builtin function with captures through
 /// the [`ExecutionContext::create_builtin_function_from_behaviour`] method.
 /// Zero bridges — no `ec_to_ctx`, no unsafe.
-pub(crate) fn builtin_with_captures_ec<C: js_engine::gc::Trace + 'static>(
+pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
     ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
     captures: C,
     behaviour: fn(
@@ -129,10 +129,10 @@ pub(crate) fn builtin_with_captures_ec<C: js_engine::gc::Trace + 'static>(
     )
 }
 
-/// Convenience wrapper that creates a `Callback` from `builtin_with_captures`.
+/// Convenience wrapper that creates a `Callback` from `builtin_with_captures_ctx`.
 /// Used by SourceMethod-wrapped closures in streams (e.g. writeAlgorithm,
 /// abortAlgorithm, closeAlgorithm).
-pub(crate) fn builtin_callback<C: js_engine::gc::Trace + 'static>(
+pub(crate) fn builtin_callback_ctx<C: js_engine::gc::Trace + 'static>(
     context: &mut boa_engine::Context,
     captures: C,
     behaviour: fn(
@@ -144,13 +144,13 @@ pub(crate) fn builtin_callback<C: js_engine::gc::Trace + 'static>(
     length: u32,
 ) -> crate::webidl::Callback {
     crate::webidl::Callback::from_object(
-        builtin_with_captures(context, captures, behaviour, length).into(),
+        builtin_with_captures_ctx(context, captures, behaviour, length).into(),
     )
 }
 
-/// EC-based version of `builtin_callback`.
-/// Use this in functions that already have `&mut dyn ExecutionContext`.
-pub(crate) fn builtin_callback_ec<C: js_engine::gc::Trace + 'static>(
+/// Convenience wrapper that creates a `Callback` from `builtin_with_captures`.
+/// Used by SourceMethod-wrapped closures in streams that already take EC.
+pub(crate) fn builtin_callback<C: js_engine::gc::Trace + 'static>(
     ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
     captures: C,
     behaviour: fn(
@@ -162,6 +162,6 @@ pub(crate) fn builtin_callback_ec<C: js_engine::gc::Trace + 'static>(
     length: u32,
 ) -> crate::webidl::Callback {
     crate::webidl::Callback::from_object(
-        builtin_with_captures_ec(ec, captures, behaviour, length).into(),
+        builtin_with_captures(ec, captures, behaviour, length).into(),
     )
 }
