@@ -1677,9 +1677,15 @@ mod tests {
         let intrinsics = engine.realm_intrinsics(&realm);
         let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer.clone(), 8, None)
             .unwrap();
-        let _cloned = engine
-            .clone_array_buffer(ab.clone(), 0, 4, intrinsics.array_buffer.clone())
-            .unwrap();
+        let engine_ref: &mut dyn js_engine::ExecutionContext<crate::js::Types> = &mut engine;
+        let _cloned = js_engine::ExecutionContext::clone_array_buffer(
+            engine_ref,
+            ab.clone(),
+            0,
+            4,
+            intrinsics.array_buffer.clone(),
+        )
+        .unwrap();
         let _ = engine.detach_array_buffer(ab, None);
     }
 

@@ -1877,6 +1877,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
             }
         };
 
+        let uint8_array = fetch_ctor("Uint8Array");
+
         RealmIntrinsics {
             array_buffer,
             shared_array_buffer,
@@ -1891,6 +1893,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
             uri_error,
             eval_error,
             array,
+            uint8_array,
             object_prototype,
             function_prototype,
         }
@@ -1933,6 +1936,16 @@ impl ExecutionContext<JscTypes> for JscEngine {
         max_byte_length: Option<u64>,
     ) -> Completion<JscArrayBuffer, JscTypes> {
         JsEngine::allocate_array_buffer(self, constructor, byte_length, max_byte_length)
+    }
+
+    fn clone_array_buffer(
+        &mut self,
+        src: JscArrayBuffer,
+        src_byte_offset: u64,
+        src_length: u64,
+        clone_constructor: JscConstructor,
+    ) -> Completion<JscArrayBuffer, JscTypes> {
+        JsEngine::clone_array_buffer(self, src, src_byte_offset, src_length, clone_constructor)
     }
 
     fn is_detached_buffer(&self, array_buffer: &JscArrayBuffer) -> bool {

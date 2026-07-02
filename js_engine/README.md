@@ -611,7 +611,7 @@ Concrete per-phase validation requirements:
 | Phase | What to validate in `generic_js_test.rs` |
 |---|---|
 | **Phase D** ✅ | Return-type change only (trait methods `JsResult` → `Completion`). No new generic interface — validated by `cargo check` passing. |
-| **Phase S** ✅ 🔶 | No new generic interface — streams domain methods already call only `ExecutionContext` trait methods. |
+| **Phase S** ✅ 🔶 | `clone_as_uint8_array` converted to pure EC (uses `clone_array_buffer` + `construct` + `uint8_array` intrinsics). Byte tee closures and transform sink algorithms still use Context. |
 | **Phase P** | `store_host_any` / `get_host_any` already validated. New content-owned helpers (`platform_object_store(ec)`) must be validated: store a document handle, retrieve by key, mutate. |
 | **Phase W** | Each subsystem entry point that changes signature must be exercised: structured clone round-trip, promise helper usage, Wasm namespace access. |
 | **Phase E** | `cargo check -p content` with both `--features boa` and `--no-default-features --features jsc`. No new generic interface — configuration-only change. |
@@ -637,13 +637,13 @@ Concrete per-phase validation requirements:
 | Blocker | Phase | What | Effort | Status |
 |---|---|---|---|---|
 | **Blocker 1** — Dispatch result-model mismatch | **Phase D** | Convert `EventDispatchHost` trait methods from `JsResult` to `Completion`. Delete `ContextEventDispatchHost` (both copies). Eliminate `js_result_to_completion` bridges from the dispatch path. | Small | ✅ Done — `EcDispatchHost` is the sole dispatch host; `ContextEventDispatchHost` deleted from both locations. |
-| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. | Large | ✅ Complete. All ec_to_ctx bridges removed from streams. Remaining Context-based functions (byte_tee internals, transform sink algorithms) blocked on EC trait additions (create_typed_array, symbol PropertyKey). |
+| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. | Large | ✅ Complete. `CloneAsUint8Array` converted to pure EC using `clone_array_buffer` + `construct` (added `clone_array_buffer` to EC trait, `uint8_array` to RealmIntrinsics). Remaining: deep byte_tee closures (`pull_with_byob_reader`), transform sink algorithms. |
 | **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping, OR add `_ec` wrappers for remaining `&Context`-taking functions. `store_host_any` / `get_host_any` already validated. `realm_global_object()` trait method on `ExecutionContext` provides generic access to the global object (§8.1.3). `with_global_scope_ec` in `platform_objects.rs` combines `realm_global_object()` + `with_object_any` + `downcast_ref::<Window>()` — zero `ec_to_ctx`. WindowProxy needs `JsProxyBuilder` which has no trait equivalent yet — may need `create_proxy` on `ExecutionContext`. | Medium | 🔶 platform_objects.rs 8→0 ec_to_ctx. Remaining: abort.rs (3), windowproxy.rs (2), singletons (2). |
 | **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Same `_ec` wrapper pattern as Phase S/P — no new generic interfaces needed. `buffer_source.rs` now covered by typed array trait methods (T1). | Medium | 🔶 promise.rs 9→3. Remaining: JsError helpers (3), structured clone (1), async iterable (1), wasm (6), windowproxy (2). |
 | **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |
 | **Blocker 6** — Global-scope helpers are implicitly Boa | **Phase G** | Move `document_creation_url`, `with_global_scope`, etc. behind content-owned query helpers. | Small | Part of Phase P |
 
-### Current state (updated 2026-07-04)
+### Current state (updated 2026-07-06)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2 complete.** All binding files
 at 0 ec_to_ctx.  All 34 struct/enum definitions use `#[gc_struct]`.  All domain
@@ -670,6 +670,8 @@ BoA-specific patterns replaced:
 | `resolvers.resolve.call(&u, &[v], ctx)` | `ec.call(&resolve.into(), &u, &[v])` |
 | `JsPromise::new_pending(ctx)` | `ec.new_promise_pending()?` |
 | `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function(...)` |
+| `JsUint8Array::from_iter(src, ctx)` | `ec.typed_array_buffer` + `ec.clone_array_buffer` + `ec.construct(intrinsics.uint8_array, ...)` (CloneAsUint8Array) |
+| `ec_to_ctx(ec)` + `JsUint8Array::from_iter` in CloneAsUint8Array | Pure EC: `typed_array_buffer`/`byte_offset`/`byte_length` + `clone_array_buffer` + `construct` |
 
 **Entry points converted** — `ReadableStream::pipe_to` and `ReadableStream::pipe_through`
 now take `&mut dyn ExecutionContext<T>` directly. `pipe_to_ec`/`pipe_through_ec`
@@ -712,18 +714,23 @@ from `readablestream.rs`.
   `set_up_readable_stream_default_controller` (dead), `extract_source_method`
   (converted from Context to EC)
 
-**Phase S — default tee pull/cancel converted to EC; PullAlgorithm::call and
+**Phase S — `clone_as_uint8_array` converted to pure EC** — `CloneAsUint8Array` (Streams §8.3) now uses `typed_array_buffer`/`typed_array_byte_offset`/`typed_array_byte_length`/`clone_array_buffer`/`realm_intrinsics(uint8_array)`/`construct` — all EC trait methods. Zero bridges. `clone_array_buffer` (§25.1.4) added to `ExecutionContext<T>` (was only on `JsEngine<T>`). `uint8_array` added to `RealmIntrinsics`.
+
+**Default tee pull/cancel converted to EC;** PullAlgorithm::call and
 CancelAlgorithm::call now return `Completion<JsObject, Types>` with zero ec_to_ctx.
 `_ec` wrappers bridge remaining Context-based byte_tee/from-iterable/transform functions.**
 
-**~30-35 ec_to_ctx remain** across byte tee internals, transform stream,
+**~29-34 ec_to_ctx remain** across byte tee internals, transform stream,
 platform objects, wasm namespace, structured clone, webidl helpers.
 
 ### Next session: recommended order
 
-1. **Continue Phase S — Tee closures and `from_iterator`** — Convert `byte_tee` and
-   `default_tee` closures (still pass through Context) and `from_iterator` to EC.
-   See Phase S status in the remaining phases table for scope.
+1. **Continue Phase S — `pull_with_byob_reader` and `from_iterator`** — Deep byte_tee
+   closures in `readable_byte_stream_tee_pull_with_byob_reader` still pass Context.
+   Converting requires `Behaviour` trait impls for the `NativeFunction::from_copy_closure_with_captures`
+   closures and nested `queue_internal_stream_microtask` closures. Also convert
+   transform sink algorithms (`transform_stream_default_sink_write_algorithm`,
+   `transform_stream_default_sink_close_algorithm`, etc.).
 
 2. **Continue Phase P — Remaining ec_to_ctx** — `abort.rs` (3), `windowproxy.rs` (2),
    singletons (2).

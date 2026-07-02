@@ -66,6 +66,7 @@ pub struct RealmIntrinsics<T: JsTypes> {
     pub uri_error: T::Constructor,
     pub eval_error: T::Constructor,
     pub array: T::Constructor,
+    pub uint8_array: T::Constructor,
     pub object_prototype: T::JsObject,
     pub function_prototype: T::JsObject,
 }

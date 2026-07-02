@@ -1059,6 +1059,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
                 .expect("EvalError constructor"),
             array: JsFunction::from_object(constructors.array().constructor())
                 .expect("Array constructor"),
+            uint8_array: JsFunction::from_object(constructors.typed_uint8_array().constructor())
+                .expect("Uint8Array constructor"),
             object_prototype: constructors.object().prototype(),
             function_prototype: constructors.function().prototype(),
         }
@@ -1119,6 +1121,16 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         max_byte_length: Option<u64>,
     ) -> Completion<JsArrayBuffer, BoaTypes> {
         JsEngine::allocate_array_buffer(self, constructor, byte_length, max_byte_length)
+    }
+
+    fn clone_array_buffer(
+        &mut self,
+        src: JsArrayBuffer,
+        src_byte_offset: u64,
+        src_length: u64,
+        clone_constructor: JsFunction,
+    ) -> Completion<JsArrayBuffer, BoaTypes> {
+        JsEngine::clone_array_buffer(self, src, src_byte_offset, src_length, clone_constructor)
     }
 
     fn is_detached_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {

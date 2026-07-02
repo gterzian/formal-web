@@ -474,6 +474,15 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         max_byte_length: Option<u64>,
     ) -> Completion<T::ArrayBuffer, T>;
 
+    /// <https://tc39.es/ecma262/#sec-clonearraybuffer>
+    fn clone_array_buffer(
+        &mut self,
+        src: T::ArrayBuffer,
+        src_byte_offset: u64,
+        src_length: u64,
+        clone_constructor: T::Constructor,
+    ) -> Completion<T::ArrayBuffer, T>;
+
     /// <https://tc39.es/ecma262/#sec-getvaluefrombuffer>
     fn get_value_from_buffer(
         &self,

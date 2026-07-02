@@ -2826,14 +2826,31 @@ fn clone_as_uint8_array(
     chunk: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    use boa_engine::object::builtins::JsUint8Array;
-    let view = ArrayBufferViewDescriptor::from_value(chunk, ec)?;
-    let src_bytes = view.bytes(ec)?;
-    // SAFETY: JsUint8Array::from_iter requires Boa's Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let array = JsUint8Array::from_iter(src_bytes, context)
-        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))?;
-    Ok(array.into())
+    // Step 1: Assert: O is an Object.
+    // Step 2: Assert: O has an [[ViewedArrayBuffer]] internal slot.
+    let typed_array = <crate::js::Types as JsTypes>::value_as_object(&chunk)
+        .and_then(|obj| <crate::js::Types as JsTypes>::object_as_typed_array(&obj))
+        .ok_or_else(|| ec.new_type_error("Expected a TypedArray"))?;
+
+    // Note: Step 3 (IsDetachedBuffer) is not asserted — Boa's JsArrayBuffer
+    // does not expose is_detached publicly; is_detached_buffer always returns
+    // false on the Boa backend. CloneArrayBuffer below will fail if detached.
+
+    let buffer = ec.typed_array_buffer(&typed_array)?;
+    let byte_offset = ec.typed_array_byte_offset(&typed_array)?;
+    let byte_length = ec.typed_array_byte_length(&typed_array)?;
+    let intrinsics = ec.realm_intrinsics(&ec.current_realm());
+
+    // Step 4: Let buffer be ? CloneArrayBuffer(O.[[ViewedArrayBuffer]], O.[[ByteOffset]], O.[[ByteLength]], %ArrayBuffer%).
+    let cloned = ec.clone_array_buffer(buffer, byte_offset, byte_length, intrinsics.array_buffer)?;
+
+    // Step 5: Let array be ! Construct(%Uint8Array%, « buffer »).
+    let buffer_obj = <crate::js::Types as JsTypes>::object_from_array_buffer(cloned);
+    let buffer_val = <crate::js::Types as JsTypes>::value_from_object(buffer_obj);
+    let array = ec.construct(intrinsics.uint8_array, &[buffer_val], None)?;
+
+    // Step 6: Return array.
+    Ok(<crate::js::Types as JsTypes>::value_from_object(array))
 }
 
 /// invocation.
