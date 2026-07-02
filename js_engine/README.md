@@ -691,15 +691,19 @@ Web IDL "wait for all"). Phase E (conditional Types alias) remains.
 
 ### Next session: recommended order
 
-1. **Move `wait_for_all_promises_ec` to webidl** — The function implements the Web IDL "wait for all" algorithm. Move it to `content/src/webidl/promise.rs` and update imports.
+1. **Continue Phase S — Tee closures and `from_iterator`** — Convert `byte_tee` and
+   `default_tee` closures (still pass through Context) and `from_iterator` to EC.
+   See Phase S status in the remaining phases table for scope.
 
-2. **Convert remaining `readable_stream_pipe_to` callers** — The JS bindings in `content/src/js/bindings/streams/readablestream.rs` already call `pipe_to`/`pipe_through` directly (EC versions). Verify all callers are updated.
+2. **Continue Phase P — Remaining ec_to_ctx** — `abort.rs` (3), `windowproxy.rs` (2),
+   singletons (2).
 
-3. **Phase E — Conditional Types alias** — Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice.
+3. **Continue Phase W — `JsError` helpers, structured clone, async iterable, wasm** —
+   `JsError` helpers (3), structured clone (1), async iterable (1), wasm (6),
+   windowproxy (2).
 
-4. **Convert remaining Context-based pipe helpers** — `promise_rejected_with_reason`, `promise_rejected_with_type_error`, `promise_rejected_with_error` (Context versions) can be removed if no external callers remain.
-
-5. **Prune `_ec`/`_ctx` wrappers** — `run_abort_algorithm_ctx`, `readable_stream_pipe_to` (Context version, now dead), `pipe_reaction_function` (dead).
+4. **Phase E validation (long-term)** — Once D/S/P/W are complete, verify
+   `cargo check -p content --no-default-features --features jsc` passes.
 
 ### Working notes
 

@@ -8,7 +8,7 @@ autobins = false
 [features]
 default = ["media", "boa"]
 media = []
-boa = []
+boa = ["js_engine/boa"]
 jsc = ["js_engine/jsc"]
 
 [lib]

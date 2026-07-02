@@ -11,8 +11,11 @@ pub(crate) use downcast::{
 };
 
 /// Content-level type alias for the concrete JS types in use.
-/// This is the **only** place `BoaTypes` is imported.  When we support
-/// a second backend (JSC), changing this one line switches the entire crate.
+/// Selected by cargo feature: `jsc` → JscTypes, else → BoaTypes (default).
+#[cfg(feature = "jsc")]
+pub(crate) type Types = js_engine::jsc::JscTypes;
+
+#[cfg(not(feature = "jsc"))]
 pub(crate) type Types = js_engine::boa::BoaTypes;
 
 use js_engine::JsEngine;

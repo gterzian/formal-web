@@ -3262,16 +3262,6 @@ impl PipeToState {
         self.shutdown(Some(PipeShutdownAction::Abort), ec)
     }
 
-    /// Context-taking legacy variant - callers should use `run_abort_algorithm(ec)` directly.
-    pub(crate) fn run_abort_algorithm_ctx(
-        &self,
-        context: &mut Context,
-    ) -> JsResult<()> {
-        let ec = js_engine::boa::context_as_ec(context);
-        self.run_abort_algorithm(ec)
-            .map_err(|e| JsError::from_opaque(e))
-    }
-
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
     fn wait_for_writer_ready(
         &self,
@@ -3831,23 +3821,6 @@ impl PipeToState {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Trace, Finalize)]
-struct WaitForAllState {
-    #[unsafe_ignore_trace]
-    remaining: usize,
-
-    #[unsafe_ignore_trace]
-    settled: bool,
-
-    #[unsafe_ignore_trace]
-    first_rejection_index: Option<usize>,
-
-    first_rejection_reason: Option<JsValue>,
-
-    resolvers: PromiseResolvers<crate::js::Types>,
-}
-
 #[derive(Trace, Finalize)]
 struct AbortThenCancelState {
     source: Option<ReadableStream>,
@@ -3967,147 +3940,6 @@ fn pipe_read_result_done_ec(
 
     let done = EcmascriptHost::get(ec, &result_object, "done")?;
     Ok(Some(ec.to_boolean(&done)))
-}
-
-fn wait_for_all_on_fulfilled_fn(
-    _args: &[JsValue],
-    _this: JsValue,
-    aggregate: &GcCell<WaitForAllState>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let resolution = {
-        let mut aggregate = aggregate.borrow_mut();
-        if aggregate.settled {
-            return Ok(JsValue::undefined());
-        }
-        if aggregate.remaining > 0 {
-            aggregate.remaining -= 1;
-        }
-        if aggregate.remaining == 0 {
-            aggregate.settled = true;
-            Some((
-                aggregate.resolvers.clone(),
-                aggregate.first_rejection_reason.clone(),
-            ))
-        } else {
-            None
-        }
-    };
-    if let Some((resolvers, rejection_reason)) = resolution {
-        let undefined = ec.value_undefined();
-        if let Some(rejection_reason) = rejection_reason {
-            let reject: JsObject = resolvers.reject.clone().into();
-            ec.call(&reject, &undefined, &[rejection_reason])?;
-        } else {
-            let resolve: JsObject = resolvers.resolve.clone().into();
-            ec.call(&resolve, &undefined, &[undefined.clone()])?;
-        }
-    }
-    Ok(JsValue::undefined())
-}
-
-fn wait_for_all_on_rejected_fn(
-    args: &[JsValue],
-    _this: JsValue,
-    capture: &(usize, GcCell<WaitForAllState>),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let reason = args.get_or_undefined(0).clone();
-    let resolution = {
-        let (index, aggregate) = capture;
-        let mut aggregate = aggregate.borrow_mut();
-        if aggregate.settled {
-            return Ok(JsValue::undefined());
-        }
-        if aggregate
-            .first_rejection_index
-            .is_none_or(|current_index| *index < current_index)
-        {
-            aggregate.first_rejection_index = Some(*index);
-            aggregate.first_rejection_reason = Some(reason);
-        }
-        if aggregate.remaining > 0 {
-            aggregate.remaining -= 1;
-        }
-        if aggregate.remaining == 0 {
-            aggregate.settled = true;
-            Some((
-                aggregate.resolvers.clone(),
-                aggregate.first_rejection_reason.clone(),
-            ))
-        } else {
-            None
-        }
-    };
-    if let Some((resolvers, rejection_reason)) = resolution {
-        let undefined = ec.value_undefined();
-        if let Some(rejection_reason) = rejection_reason {
-            let reject: JsObject = resolvers.reject.clone().into();
-            ec.call(&reject, &undefined, &[rejection_reason])?;
-        } else {
-            let resolve: JsObject = resolvers.resolve.clone().into();
-            ec.call(&resolve, &undefined, &[undefined.clone()])?;
-        }
-    }
-    Ok(JsValue::undefined())
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-#[allow(dead_code)]
-fn wait_for_all_promises_ec(
-    promises: Vec<JsObject>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    if promises.is_empty() {
-        return resolved_promise(ec.value_undefined(), ec);
-    }
-
-    if promises.len() == 1 {
-        if let Some(promise) = promises.into_iter().next() {
-            return Ok(promise);
-        }
-
-        return resolved_promise(ec.value_undefined(), ec);
-    }
-
-    let (promise_capability, resolvers) = ec.new_promise_pending()?;
-    let promise_obj = promise_capability
-        .as_object()
-        .map(|o| o.clone())
-        .unwrap_or_else(|| ec.realm_global_object());
-    let aggregate = gc_cell_new(WaitForAllState {
-        remaining: promises.len(),
-        settled: false,
-        first_rejection_index: None,
-        first_rejection_reason: None,
-        resolvers,
-    });
-
-    for (index, promise) in promises.into_iter().enumerate() {
-        let on_fulfilled = crate::js::builtin_with_captures(
-            ec,
-            aggregate.clone(),
-            wait_for_all_on_fulfilled_fn,
-            0,
-        );
-        let on_rejected = crate::js::builtin_with_captures(
-            ec,
-            (index, aggregate.clone()),
-            wait_for_all_on_rejected_fn,
-            1,
-        );
-
-        let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&promise)
-            .ok_or_else(|| ec.new_type_error("not a Promise"))?;
-        ec.perform_promise_then(
-            js_promise,
-            Some(on_fulfilled),
-            Some(on_rejected),
-            None,
-        )?;
-    }
-
-    Ok(promise_obj)
 }
 
 fn start_abort_cancel_on_fulfilled_fn(
